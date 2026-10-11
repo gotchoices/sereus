@@ -15,6 +15,9 @@ import type {
   RelayReservationStatus,
   StrandFormationDisclosure,
   NodeClaimPayload,
+  CadreInviteStatus,
+  CreateCadreInvitationOptions,
+  CreateCadreInvitationResult,
 } from '@serfab/cadre-core';
 import {
   startPhoneNode,
@@ -31,6 +34,9 @@ import {
   createOpenInvitation,
   publishFormationInvite,
   formStrand,
+  createCadreInvitation as createCadreInvitationImpl,
+  listCadreInvitations as listCadreInvitationsImpl,
+  withdrawCadreInvitation as withdrawCadreInvitationImpl,
   type JoinCadreResult,
   type PhoneNodeOptions,
   type SavedStartOptions,
@@ -192,6 +198,25 @@ export interface UseCadreResult {
    * Callers check {@link isOwnerDevice} first.
    */
   claimHostNode: (payload: NodeClaimPayload) => Promise<void>;
+  /**
+   * Whether `peerId` is already a machine of this cadre (a `CadrePeer` row that is not
+   * revoked), so an owner is not offered an invitation for an app the cadre holds. False
+   * when the node is not running.
+   */
+  isMemberPeer: (peerId: string) => Promise<boolean>;
+  /**
+   * Mint an invitation into this cadre (`CadreNode.createCadreInvitation`): for one app's
+   * peer id, or for whoever redeems it first. Throws when this device holds no owner key,
+   * or when neither it nor any other machine of the cadre has an address a device could dial.
+   */
+  createCadreInvitation: (options: CreateCadreInvitationOptions) => Promise<CreateCadreInvitationResult>;
+  /** Every cadre invitation this node holds, with its standing (`CadreNode.listCadreInvitations`). */
+  listCadreInvitations: () => Promise<CadreInviteStatus[]>;
+  /**
+   * Withdraw a cadre invitation by its key (`CadreNode.withdrawCadreInvitation`). False when
+   * it was already withdrawn or is not held here.
+   */
+  withdrawCadreInvitation: (key: string) => Promise<boolean>;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -642,12 +667,36 @@ export function useCadreInternal(): UseCadreResult {
     }
   }, []);
 
+  // ── Adding a device or app (cadre invitations) ─────────────────────────
+
+  const isMemberPeer = useCallback(async (candidate: string) => {
+    const controlDb = nodeRef.current?.getControlDatabase();
+    if (!controlDb) return false;
+    return (await controlDb.queryCadrePeers()).some((row) => row.peerId === candidate);
+  }, []);
+
+  const createCadreInvitation = useCallback(async (options: CreateCadreInvitationOptions) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await createCadreInvitationImpl(options);
+  }, []);
+
+  const listCadreInvitations = useCallback(async () => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await listCadreInvitationsImpl();
+  }, []);
+
+  const withdrawCadreInvitation = useCallback(async (key: string) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await withdrawCadreInvitationImpl(key);
+  }, []);
+
   return {
     status, node, peerId, ownerPublicKey, noiseCryptoMode, strands,
     selectedStrandId, activeStrand, selectStrand,
     error, runnerState, resuming, degraded, relayStatus, savedStartOptions,
     start, stop, applySeed, joinCadre, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite, isOwnerDevice, claimHostNode,
+    isMemberPeer, createCadreInvitation, listCadreInvitations, withdrawCadreInvitation,
   };
 }
 

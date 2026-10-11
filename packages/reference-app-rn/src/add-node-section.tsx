@@ -15,9 +15,9 @@ import { useEffect, useState } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NodeClaimPayload } from '@serfab/cadre-core';
 import { useCadre } from './cadre-context';
-import { describeClaimFailure, nodeReach, ownerFingerprint, readNodeCode, type NodeReach } from './node-claim';
-import { NodeCodeScanner } from './node-code-scanner';
-import { Btn, controlStyles, LabelledInput, Section } from './settings-controls';
+import { CodeScanner } from './code-scanner';
+import { describeClaimFailure, NODE_CODE_SCHEME, nodeReach, ownerFingerprint, readNodeCode, type NodeReach } from './node-claim';
+import { Btn, controlStyles, Fact, LabelledInput, Section, shortPeerId } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 /**
@@ -146,7 +146,14 @@ export function AddNodeSection({ showAlert, linkedCode, onLinkedCodeTaken }: {
 					</View>
 				</View>
 			)}
-			<NodeCodeScanner visible={scannerOpen} onScanned={handleScanned} onClose={() => setScannerOpen(false)} />
+			<CodeScanner
+				visible={scannerOpen}
+				accepts={isNodeCode}
+				hint="Point the camera at the code cadre-host shows under Join a cadre."
+				otherCodeHint="That is not a node code. Point the camera at the code cadre-host shows under Join a cadre."
+				onScanned={handleScanned}
+				onClose={() => setScannerOpen(false)}
+			/>
 			<ApprovalPrompt
 				payload={pending}
 				partyId={cadre.node?.partyId ?? '—'}
@@ -189,18 +196,8 @@ function ApprovalPrompt({ payload, partyId, ownerPublicKey, onApprove, onCancel 
 	);
 }
 
-function Fact({ label, value, note }: { label: string; value: string; note?: string }) {
-	return (
-		<View style={styles.fact}>
-			<Text style={controlStyles.label}>{label}</Text>
-			<Text style={styles.factValue} selectable>{value}</Text>
-			{note ? <Text style={styles.factNote}>{note}</Text> : null}
-		</View>
-	);
-}
-
-function shortPeerId(peerId: string): string {
-	return `${peerId.slice(0, 12)}…${peerId.slice(-6)}`;
+function isNodeCode(text: string): boolean {
+	return text.trim().startsWith(NODE_CODE_SCHEME);
 }
 
 /** True once `active` has stayed true for `ms`; false again as soon as it is not. */
@@ -218,7 +215,4 @@ function useLaterThan(active: boolean, ms: number): boolean {
 const styles = StyleSheet.create({
 	retryRow: { flexDirection: 'row', gap: 8 },
 	retryBtn: { flex: 1 },
-	fact: { marginBottom: 10 },
-	factValue: { color: '#fff', fontSize: 14 },
-	factNote: { color: '#888', fontSize: 12, marginTop: 2 },
 });

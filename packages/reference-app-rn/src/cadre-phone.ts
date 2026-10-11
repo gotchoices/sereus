@@ -14,7 +14,10 @@
 import { resolveStunServers } from '@serfab/cadre-core';
 import type {
   CadreInvitation,
+  CadreInviteStatus,
   CadreNode,
+  CreateCadreInvitationOptions,
+  CreateCadreInvitationResult,
   ControlNetworkSeed,
   ApplySeedResult,
   StrandInstance,
@@ -234,6 +237,26 @@ export function getRelayState(): RelayReservationState {
  */
 export async function addStrand(config: StrandConfig): Promise<StrandInstance> {
   return running().addStrand(config);
+}
+
+// ── Cadre invitation helpers (adding a device or app) ─────────────────────────
+
+/**
+ * Mint an invitation into this cadre, for one app's peer id or for whoever redeems it
+ * first. Thin pass-through to {@link CadreNode.createCadreInvitation}.
+ */
+export async function createCadreInvitation(options: CreateCadreInvitationOptions): Promise<CreateCadreInvitationResult> {
+  return running().createCadreInvitation(options);
+}
+
+/** Every cadre invitation the node holds, with its standing. Thin pass-through to {@link CadreNode.listCadreInvitations}. */
+export async function listCadreInvitations(): Promise<CadreInviteStatus[]> {
+  return running().listCadreInvitations();
+}
+
+/** Withdraw a cadre invitation by its key. Thin pass-through to {@link CadreNode.withdrawCadreInvitation}. */
+export async function withdrawCadreInvitation(key: string): Promise<boolean> {
+  return running().withdrawCadreInvitation(key);
 }
 
 // ── Formation helpers (closed-strand consent flow) ────────────────────────────

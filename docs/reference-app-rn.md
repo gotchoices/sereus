@@ -424,7 +424,7 @@ packages/reference-app-rn/
   app/
     _layout.tsx               # Expo Router root layout
     index.tsx                 # Chat screen (message list + input)
-    settings.tsx              # Bootstrap config (drone address, cadre invitation, seed paste, always-on node)
+    settings.tsx              # Bootstrap config (drone address, cadre invitation, add a device or app, seed paste, always-on node)
   src/
     cadre-phone.ts            # This app's phone node (kit's createPhoneNode): WebRTC, Noise, storage names, seed apply
     node-local-names.ts       # The storage names installed phones' records are filed under, pinned by a Node test
@@ -444,7 +444,10 @@ packages/reference-app-rn/
     join-failure.ts           # Plain words for each way a join can fail (NS carries a copy)
     settings-controls.tsx     # Section, button, input and styles shared by Settings and its sections
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
-    node-code-scanner.tsx     # Full-screen camera (expo-camera) that reads a node code's QR
+    add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw
+    code-scanner.tsx          # Full-screen camera (expo-camera) that reads a QR code of the kind its caller accepts
+    share-code.tsx            # Text to hand another app: QR code (react-native-svg), Copy (expo-clipboard), selectable text
+    qrcode-core.d.ts          # Types for importing the qrcode package's encoder without its renderers
     node-claim.ts             # Reads a node code; plain words for each way a claim can fail
   schemas/
     chat-simple.qsql          # Simplified chat schema (or inline string)
@@ -490,6 +493,9 @@ packages/cadre-rn/metro/
 | `expo` | npm | Framework, dev client, EAS Build |
 | `expo-router` | npm | File-based routing |
 | `expo-camera` | npm | Scans a cadre-host node code (§ Adding a Home Machine's Node). Native: needs a rebuilt dev client (§ When Native Rebuild Is Needed). Its `app.json` plugin entry sets the camera usage text; its microphone text repeats the WebRTC plugin's "Unused" one, because `microphonePermission: false` deletes the iOS key that plugin sets |
+| `expo-clipboard` | npm | The Copy button of a shown invitation (§ Adding a Device or App). Native: needs a rebuilt dev client |
+| `react-native-svg` | npm | Draws an invitation's QR code. Native: needs a rebuilt dev client |
+| `qrcode` | npm | Encodes the QR code. Only its encoder is imported (`qrcode/lib/core/qrcode`); the package root also loads canvas and SVG-string renderers the app does not draw with |
 | `@libp2p/utils` | npm | `isPrivateIp`, which decides whether a node code's addresses reach beyond the machine's home network |
 | `@babel/runtime` | npm | Helpers imported by Metro's Babel output; must be 7.29.2 or newer (below) |
 
@@ -781,6 +787,31 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 - Listing the cadre's nodes or removing one from the app. cadre-host's UI and CLI do that on the machine's side.
 
 
+## Adding a Device or App
+
+**Settings → Add a device or app** is the owner's side of [architecture.md → Handing an invitation from app to app](architecture.md#handing-an-invitation-from-app-to-app): this app makes an invitation another Sereus app redeems to join this cadre. The section shows while the node is connected. A member that is not an owner sees one line saying only an owner can add a device or app; the check reads the cadre's owner keys when the section appears, after a join, and on Refresh.
+
+**Paste request** (recommended). The other app's request (`sereus-join-request:1.…`) is pasted, or scanned with **Scan request**, then **Use request**. Before anything is made, the section refuses this app's own request and a request from a machine already in the cadre (a `CadrePeer` row). The approval prompt names the app (what it calls itself, unverified) and its peer id shortened to the first 12 and last 6 characters, for the user to compare with what the other app shows, and the **Also an owner** switch. **Add** makes an invitation for that peer id alone, valid for 24 hours.
+
+**Copy invitation.** **Make invitation** makes an open invitation: whichever app redeems it first joins. With **Also an owner** on, a warning above the button says that whoever gets the text in the next 15 minutes can manage the cadre; that is the default lifetime of an open owner invitation (24 hours for a member one).
+
+**Also an owner** is on by default in both. An owner can add and remove devices and apps and approve everything in the cadre; an app that should only take part joins as a member.
+
+**The invitation** replaces the two inputs until **Done**: a QR code, **Copy**, the selectable text, the time it is valid until, and a line for its reach. This phone keeps no copy of the text; the cadre keeps the invitation's row. A text too long for a QR code shows "Too long for a QR code; use Copy instead."
+
+| Reach | Line shown |
+| --- | --- |
+| `anywhere` | none |
+| `local-network` | the new app must be on the same Wi-Fi as the cadre's other machines |
+| `issuer-only` | (warning colour) no always-on machine can answer, so the new app can join only while this app is open and reachable; add an always-on node |
+
+**Outstanding invitations** lists the invitations that can still be redeemed, latest expiry first: who it is for (a shortened peer id, or "Anyone with the text"), owner or member, expiry, and uses when it allows more than one. **Withdraw** asks once, then files the withdrawal (`withdrawCadreInvitation`), which reaches the cadre's other machines like any other control write. The list refreshes when the section appears, after an invitation is made or withdrawn, and on **Refresh**; it is not polled.
+
+**When no invitation can be made.** `createCadreInvitation` needs an address a device could dial: this phone's relay address, or another machine of the cadre's. With neither, the alert "Could not make an invitation" carries the core error, and says this phone has no relay address when it holds no relay reservation. A device whose owner key is not wired yet (a joined app whose owner grant has not arrived) is shown the member line.
+
+The device run that covers both apps is filed with ticket `reference-app-rn-joins-existing-cadre`.
+
+
 ## Build & Development Workflow
 
 ### First-Time Setup
@@ -861,7 +892,7 @@ The observer's block and the phone's `[reload]` line appear at the same moment. 
 
 ### When Native Rebuild Is Needed
 
-Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. A change to `app.json`'s native configuration, such as the Android intent filter for `sereus-join` codes, is one too: it takes effect only in a dev client built after it. Otherwise, JS-only iteration via the dev client.
+Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. So are `expo-clipboard` and `react-native-svg` (an invitation's Copy button and QR code): a dev client built before them fails when Settings loads, because Settings imports the section that shows invitations. A change to `app.json`'s native configuration, such as the Android intent filter for `sereus-join` codes, is one too: it takes effect only in a dev client built after it. Otherwise, JS-only iteration via the dev client.
 
 ### Tracing a strand founding
 

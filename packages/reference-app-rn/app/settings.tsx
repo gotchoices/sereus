@@ -1,6 +1,6 @@
 /**
- * Settings screen — connect to cadre, join a cadre, apply seed, create strand, add an
- * always-on node.
+ * Settings screen — connect to cadre, join a cadre, add a device or app, apply seed,
+ * create strand, add an always-on node.
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -15,6 +15,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import type { RedeemCadreInvitationResult, RelayReservationStatus } from '@serfab/cadre-core';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
+import { AddDeviceSection } from '../src/add-device-section';
 import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
 import {
@@ -370,6 +371,9 @@ export default function SettingsScreen() {
           <Btn label="Join cadre" onPress={handleJoinCadre} disabled={!cadreInvitationInput.trim()} testID={TEST_IDS.settings.joinCadreBtn} />
         </Section>
       )}
+
+      {/* Add a device or app (an owner mints a cadre invitation for another app) */}
+      {connected && <AddDeviceSection showAlert={showAlert} />}
 
       {/* Strand */}
       {connected && (

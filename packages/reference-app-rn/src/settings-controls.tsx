@@ -37,6 +37,22 @@ export function Btn({ label, onPress, disabled, color, testID }: { label: string
 	);
 }
 
+/** One labelled value in an approval prompt, selectable, with an optional note under it. */
+export function Fact({ label, value, note }: { label: string; value: string; note?: string }) {
+	return (
+		<View style={controlStyles.fact}>
+			<Text style={controlStyles.label}>{label}</Text>
+			<Text style={controlStyles.factValue} selectable>{value}</Text>
+			{note ? <Text style={controlStyles.factNote}>{note}</Text> : null}
+		</View>
+	);
+}
+
+/** A peer id short enough for one line: its first 12 and last 6 characters. */
+export function shortPeerId(peerId: string): string {
+	return `${peerId.slice(0, 12)}…${peerId.slice(-6)}`;
+}
+
 export const controlStyles = StyleSheet.create({
 	section: { marginBottom: 24 },
 	sectionTitle: { color: '#6c63ff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
@@ -50,4 +66,7 @@ export const controlStyles = StyleSheet.create({
 	modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
 	modalBox: { backgroundColor: '#1e1e2e', borderRadius: 12, padding: 20, width: '85%', maxHeight: '60%' },
 	modalTitle: { color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
+	fact: { marginBottom: 10 },
+	factValue: { color: '#fff', fontSize: 14 },
+	factNote: { color: '#888', fontSize: 12, marginTop: 2 },
 });

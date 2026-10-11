@@ -1,6 +1,7 @@
 /**
- * node-code-scanner.tsx — a full-screen camera that reads the QR code a cadre-host shows
- * for a node waiting to be claimed, and hands back its text.
+ * code-scanner.tsx — a full-screen camera that reads a QR code and hands back its text,
+ * once it is a code the caller accepts: a cadre-host node code (Add an always-on node) or
+ * another app's join request (Add a device or app).
  *
  * `expo-camera` is a native module: a dev client built before it was added throws
  * "Cannot find native module 'ExpoCamera'" as this file loads, which is when Settings loads
@@ -10,29 +11,35 @@
 import { useEffect, useRef, useState } from 'react';
 import { Linking, Modal, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { CameraView, PermissionStatus, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
-import { NODE_CODE_SCHEME } from './node-claim';
 import { Btn, controlStyles } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
-export function NodeCodeScanner({ visible, onScanned, onClose }: {
-	visible: boolean;
-	/** The scanned text, which starts with `sereus-join:`; the scanner has closed. */
+interface ScannerProps {
+	/** Whether a scanned text is the kind of code this scanner is open for. */
+	accepts: (text: string) => boolean;
+	/** The line under the camera: what to point it at. */
+	hint: string;
+	/** The line shown instead once a code `accepts` refused was in view. */
+	otherCodeHint: string;
+	/** The scanned text, which `accepts` took; the scanner has closed. */
 	onScanned: (text: string) => void;
 	onClose: () => void;
-}) {
+}
+
+export function CodeScanner({ visible, ...props }: ScannerProps & { visible: boolean }) {
 	return (
-		<Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+		<Modal visible={visible} animationType="slide" onRequestClose={props.onClose}>
 			{/* Mounted only while open, so every opening starts unlatched and asks for the camera afresh. */}
-			{visible && <ScannerBody onScanned={onScanned} onClose={onClose} />}
+			{visible && <ScannerBody {...props} />}
 		</Modal>
 	);
 }
 
-function ScannerBody({ onScanned, onClose }: { onScanned: (text: string) => void; onClose: () => void }) {
+function ScannerBody({ accepts, hint, otherCodeHint, onScanned, onClose }: ScannerProps) {
 	const [permission, requestPermission] = useCameraPermissions();
 	const [sawOtherCode, setSawOtherCode] = useState(false);
-	// `onBarcodeScanned` fires many times a second while a code is in view: the first node
-	// code wins, and the ones queued behind it are dropped.
+	// `onBarcodeScanned` fires many times a second while a code is in view: the first
+	// accepted code wins, and the ones queued behind it are dropped.
 	const latched = useRef(false);
 
 	useEffect(() => {
@@ -41,7 +48,7 @@ function ScannerBody({ onScanned, onClose }: { onScanned: (text: string) => void
 
 	const handleScan = ({ data }: BarcodeScanningResult) => {
 		if (latched.current) return;
-		if (!data.trim().startsWith(NODE_CODE_SCHEME)) {
+		if (!accepts(data)) {
 			setSawOtherCode(true);
 			return;
 		}
@@ -66,11 +73,7 @@ function ScannerBody({ onScanned, onClose }: { onScanned: (text: string) => void
 				/>
 			)}
 			<View style={styles.footer}>
-				<Text style={controlStyles.hint}>
-					{sawOtherCode
-						? 'That is not a node code. Point the camera at the code cadre-host shows under Join a cadre.'
-						: 'Point the camera at the code cadre-host shows under Join a cadre.'}
-				</Text>
+				<Text style={controlStyles.hint}>{sawOtherCode ? otherCodeHint : hint}</Text>
 				<Btn label="Cancel" onPress={onClose} color="#444" testID={TEST_IDS.settings.scannerCloseBtn} />
 			</View>
 		</SafeAreaView>
@@ -85,7 +88,7 @@ function PermissionNotice({ denied, canAskAgain, onAsk }: { denied: boolean; can
 		<View style={styles.notice}>
 			<Text style={styles.noticeText}>
 				This app may not use the camera, so it cannot scan the code. Allow the camera, or close
-				this and paste the code&apos;s text into the field under Add an always-on node instead.
+				this and paste the code&apos;s text into the field instead.
 			</Text>
 			{canAskAgain
 				? <Btn label="Allow camera" onPress={onAsk} />

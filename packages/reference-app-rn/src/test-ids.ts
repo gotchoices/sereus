@@ -44,6 +44,32 @@ export const TEST_IDS = {
 		discardNodeClaimBtn: 'btn-discard-node-claim',
 		/** On the disconnected Node card: a node code opened from another app waits for Connect. */
 		waitingNodeCode: 'text-waiting-node-code',
+		/** Add a device or app: another app's pasted join request (`sereus-join-request:1.…`), read by `btn-use-join-request`. */
+		joinRequestInput: 'input-join-request',
+		/** Opens the camera to scan another app's join request. */
+		scanJoinRequestBtn: 'btn-scan-join-request',
+		useJoinRequestBtn: 'btn-use-join-request',
+		/** The join request's approval prompt: its "Also an owner" switch, and mint the invitation or not. */
+		requestOwnerSwitch: 'switch-request-owner',
+		approveJoinRequestBtn: 'btn-approve-join-request',
+		cancelJoinRequestBtn: 'btn-cancel-join-request',
+		/** The open invitation's "Also an owner" switch, and the button that mints it. */
+		openInviteOwnerSwitch: 'switch-open-invite-owner',
+		makeInvitationBtn: 'btn-make-invitation',
+		/** The `ShareCode` prefix of a minted invitation; see `shareCodeText` and `shareCodeCopyBtn`. */
+		invitationShare: 'invitation',
+		/** Clears the minted invitation off the screen. */
+		invitationDoneBtn: 'btn-invitation-done',
+		/** Re-reads the outstanding invitations. */
+		refreshInvitationsBtn: 'btn-refresh-invitations',
+		/** Per-row Withdraw on an outstanding invitation; pass the invitation's key. */
+		withdrawInvitationBtn: (key: string) => `btn-withdraw-invitation-${key}`,
+		/** The withdraw confirmation's buttons. */
+		confirmWithdrawBtn: 'btn-confirm-withdraw-invitation',
+		cancelWithdrawBtn: 'btn-cancel-withdraw-invitation',
+		/** A `ShareCode`'s selectable text and its Copy button; pass the component's `testIDPrefix`. */
+		shareCodeText: (prefix: string) => `text-${prefix}-code`,
+		shareCodeCopyBtn: (prefix: string) => `btn-${prefix}-copy`,
 		ownerKeyRow: 'row-owner-key',
 		modalTitle: 'modal-title',
 		/** Elapsed-time line under the modal title; shown only for strand-creation results. */

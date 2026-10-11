@@ -1,6 +1,6 @@
 description: Someone with an Android phone and a PC on the same Wi-Fi needs to try adding the PC's always-on node to the phone's cadre by scanning the code the PC shows, because the app's scan-and-claim screen was written and tested without any phone involved.
 architecture: docs/architecture.md#which-side-dials-the-add-a-node-flows-compared
-files: packages/reference-app-rn/src/add-node-section.tsx, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/src/node-code-scanner.tsx, packages/reference-app-rn/src/node-claim.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/app.json, packages/cadre-rn/src/phone-node/config.ts, docs/reference-app-rn.md
+files: packages/reference-app-rn/src/add-node-section.tsx, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/src/code-scanner.tsx, packages/reference-app-rn/src/node-claim.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/app.json, packages/cadre-rn/src/phone-node/config.ts, docs/reference-app-rn.md
 repro: none
 ----
 
