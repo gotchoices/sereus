@@ -69,6 +69,7 @@ import {
   JoinedStrandSession,
   KeyStoreJoinedStrandStore,
   MemoryJoinedStrandStore,
+  type JoinedStrandRecord,
   type JoinedStrandStore,
   type PartyJoinedStrandLedger
 } from './joined-strand-store.js';
@@ -1774,6 +1775,41 @@ export class CadreNode implements SAppIdLookup {
    */
   getStrandNetworkStateStore(): StrandNetworkStateStore | null {
     return this.strandNetworkStateStore;
+  }
+
+  /**
+   * The strands this machine joined from another party and has not published party-wide
+   * (see {@link CadreNodeConfig.joinedStrands}). A party that never holds a control
+   * connection never publishes, so for a one-node party this is where its joins live;
+   * `exportStrandBundle` reads it beside the `JoinedStrand` table.
+   *
+   * @throws when the node is not started.
+   */
+  listUnpublishedJoinedStrands(): Promise<JoinedStrandRecord[]> {
+    if (!this.joinedStrands) {
+      throw new Error('CadreNode must be started before listing its unpublished joined strands');
+    }
+    return this.joinedStrands.unpublishedRecords();
+  }
+
+  /**
+   * The strand-network addresses a formation carried for `strandId` (see
+   * {@link formationStrandAddrs}), as kept: attributed per peer. Empty when none were
+   * carried or the strand's peers were forgotten. A copy; the node keeps its own list.
+   */
+  getCarriedStrandAddrs(strandId: string): string[] {
+    return [...(this.formationStrandAddrs.get(strandId) ?? [])];
+  }
+
+  /**
+   * Seat `addrs` as the addresses a formation carried for `strandId`, exactly as a
+   * formation of this node's own would ({@link recordFormationStrandAddrs}): a strand
+   * move seats the exporting node's list here so the first launch has a cross-party
+   * seed. The usual rules apply: a list naming a peer replaces the strand's earlier
+   * one, and a list naming none records nothing.
+   */
+  recordCarriedStrandAddrs(strandId: string, addrs: readonly string[]): Promise<void> {
+    return this.recordFormationStrandAddrs(strandId, addrs);
   }
 
   /**

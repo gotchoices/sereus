@@ -317,6 +317,15 @@ export class JoinedStrandSession {
 		return [...offered.values()];
 	}
 
+	/**
+	 * This machine's unpublished joins, straight from the store (never the last-good list a
+	 * failed read stands in with). What a strand move exports: a party that never holds a
+	 * control connection never publishes, so its joins live only here.
+	 */
+	unpublishedRecords(): Promise<JoinedStrandRecord[]> {
+		return this.store.list();
+	}
+
 	/** Record a join `formStrand` just made. A re-join also cancels a removal a revocation queued. */
 	async remember(record: JoinedStrandRecord): Promise<void> {
 		this.pendingRemovals.delete(record.Id);

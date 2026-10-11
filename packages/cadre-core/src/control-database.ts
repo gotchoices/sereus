@@ -708,6 +708,32 @@ function joinedStrandRow(row: Record<string, SqlValue>): StrandRow {
   };
 }
 
+/** A `FormationInvite` row as {@link ControlDatabase.queryFormationInvite} reads it. */
+export interface FormationInviteRow {
+  token: string;
+  sAppId: string;
+  /** Parsed epoch ms of the stored `datetime`; null when the invitation never expires. */
+  expiresAtMs: number | null;
+  /** Null is unlimited. */
+  totalUses: number | null;
+  validationUrl: string | null;
+  /** A bound invitation's host strand; null on the responder-provisions path. */
+  strandId: string | null;
+}
+
+const FORMATION_INVITE_SELECT_SQL = 'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite';
+
+function formationInviteRowOf(row: Record<string, SqlValue>): FormationInviteRow {
+  return {
+    token: row.Token as string,
+    sAppId: row.sAppId as string,
+    expiresAtMs: parseNullableStoredDatetimeMs(row.ExpiresAt as string | number | null),
+    totalUses: (row.TotalUses as number | null) ?? null,
+    validationUrl: (row.ValidationUrl as string | null) ?? null,
+    strandId: (row.StrandId as string | null) ?? null,
+  };
+}
+
 const JOIN_REQUEST_INSERT_SQL = `
   insert into CadreControl.JoinRequest (Id, Invitation, Disclosure, RequestedAt, ExpiresAt, StampId)
     with context OwnerKey = ?, Signature = ?
@@ -3849,27 +3875,21 @@ export class ControlDatabase {
    * locked write body — same per-call opt-out, and for the same reason, as
    * {@link queryStampId}'s. Every unlocked caller keeps the default retried path.
    */
-  async queryFormationInvite(token: string, retry = true): Promise<{
-    token: string;
-    sAppId: string;
-    expiresAtMs: number | null;
-    totalUses: number | null;
-    validationUrl: string | null;
-    strandId: string | null;
-  } | null> {
+  async queryFormationInvite(token: string, retry = true): Promise<FormationInviteRow | null> {
     this.ensureInitialized();
-    const sql = 'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite where Token = ?';
-    for (const row of await this.readRows(sql, [token], 'formation-invite', retry)) {
-      return {
-        token: row.Token as string,
-        sAppId: row.sAppId as string,
-        expiresAtMs: parseNullableStoredDatetimeMs(row.ExpiresAt as string | number | null),
-        totalUses: (row.TotalUses as number | null) ?? null,
-        validationUrl: (row.ValidationUrl as string | null) ?? null,
-        strandId: (row.StrandId as string | null) ?? null,
-      };
-    }
-    return null;
+    const rows = await this.readRows(`${FORMATION_INVITE_SELECT_SQL} where Token = ?`, [token], 'formation-invite', retry);
+    return rows.length === 0 ? null : formationInviteRowOf(rows[0]!);
+  }
+
+  /**
+   * Every `FormationInvite` row, expired and spent ones included, in the shape
+   * {@link queryFormationInvite} returns one. Read by a strand move
+   * (`exportStrandBundle`), which decides per row what is still redeemable.
+   */
+  async queryFormationInvites(): Promise<FormationInviteRow[]> {
+    this.ensureInitialized();
+    const rows = await this.readRows(FORMATION_INVITE_SELECT_SQL, undefined, 'formation-invites');
+    return rows.map(formationInviteRowOf);
   }
 
   /**

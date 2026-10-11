@@ -8,7 +8,7 @@ export { canonicalJson } from './canonical-json.js';
 export { CadreNode, OWNER_INVITATION_DEFAULT_TTL_MS, CADRE_INVITATION_DEFAULT_TTL_MS } from './cadre-node.js';
 
 // Control database
-export { ControlDatabase, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef } from './control-database.js';
+export { ControlDatabase, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef } from './control-database.js';
 
 // Bounded retry for transient control-write failures (classifier + loop behind
 // ControlDatabase.lockedWithRetry; exported so the integration package can drive the
@@ -562,6 +562,21 @@ export {
   type NodeClaimAddressOptions,
   type DialAddressKind
 } from './node-claim-payload.js';
+
+// Moving a party's strands into another party of the same owner, so an app's strands follow
+// the app into the user's main cadre: the bundle one node exports from the party it leaves,
+// and its adoption by a node of the party it joined.
+export {
+  exportStrandBundle,
+  adoptStrandBundle,
+  StrandMoveNotOwnerError,
+  StrandMoveSamePartyError,
+  type StrandBundle,
+  type StrandBundleEntry,
+  type FormationInviteEntry,
+  type StrandMoveReport,
+  type StrandMoveFailure
+} from './strand-move.js';
 
 // The join request: what an app that wants to join a cadre copies to the app that manages it,
 // which mints an invitation targeted at the request's peer id. Both paste-text prefixes live here.
