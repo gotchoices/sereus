@@ -273,16 +273,19 @@ The Maestro flows launch with `clearState: true`, so they always see a fresh, id
 
 The global polyfills live in the React Native kit, [`@serfab/cadre-rn`](../packages/cadre-rn/README.md), under `packages/cadre-rn/polyfills/`. A Sereus React Native app depends on the kit rather than copying the files. In this section, `polyfills/<file>.js` means the kit's file. The Node built-in shims Metro maps (`node-os.js`, `node-crypto.js`, `empty.js`, below) are in the kit's `shims/` directory, wired in by `@serfab/cadre-rn/metro` (§ Metro Configuration).
 
-The app's job is three imports at the top of its entry file (`index.js`), before `expo-router/entry` loads any library code. This is critical because libp2p and its dependencies reference Web APIs at import time, so `@serfab/cadre-rn/polyfills` must come first:
+The app's job is four imports at the top of its entry file (`index.js`), before `expo-router/entry` loads any library code. This is critical because libp2p and its dependencies reference Web APIs at import time, so `@serfab/cadre-rn/polyfills` must come first:
 
 ```js
 import '@serfab/cadre-rn/polyfills';          // hermes.js, intl-pluralrules.js, event.js, in that order
+import '@serfab/cadre-rn/polyfills/native-crypto';   // native Ed25519 and digest from react-native-quick-crypto
 import '@serfab/cadre-rn/polyfills/webrtc';   // react-native-webrtc registerGlobals(), for @libp2p/webrtc
 import '@serfab/cadre-rn/boot-check';         // audit.js and reload-reason.js, under __DEV__ only (below)
 import 'expo-router/entry';                   // App code starts here
 ```
 
 The boot check is imported rather than called, and its position is the point: every statement in `index.js`'s own body runs only after all of its imports have evaluated, which includes `expo-router/entry` and the app tree behind it. A global that is missing would crash at that import and the table would never print. Imported here, it prints first.
+
+Native crypto loads before anything imports libp2p because `@libp2p/crypto` probes for WebCrypto Ed25519 once, when its `keys/ed25519` module evaluates, and signs in pure `@noble/curves` for the rest of the run if the probe failed. It loads after `/polyfills` because requiring quick-crypto loads its `readable-stream`, which reads globals `hermes.js` installs.
 
 The WebRTC globals load after `Intl.PluralRules` and EventTarget. They need only `crypto.getRandomValues` from `hermes.js`. One side effect of the order: `react-native-webrtc`'s own copy of `event-target-shim` checks for a global `Event` and `EventTarget` when it loads and, if they exist, chains its classes onto them. Neither React Native 0.79 nor Expo 53 installs those globals, so before the kit it found none; now it finds `event-target-polyfill`'s.
 
@@ -312,7 +315,7 @@ These patch `globalThis` to provide APIs that Hermes does not yet support:
 |-----|-------------|-------|
 | `process.env.DEBUG` (development builds only) | `debug`, for cadre-core's `sereus:cadre:timing` bring-up and founding timings | Set to `sereus:cadre:timing` as the file's first statement. Each bundled copy of `debug` reads the variable once when it loads, so it must be set before any library module loads. A value that is already set is left alone. See "Tracing a strand founding" |
 | `crypto.getRandomValues()` | @noble/hashes, @libp2p/crypto, @noble/curves | via `react-native-get-random-values` (native CSPRNG). No Math.random fallback — without the native module any libp2p key generation is unsafe, so we want loud breakage rather than silent insecurity |
-| `crypto.subtle.digest()` | multiformats/hashes/sha2-browser | Async SHA-256/SHA-512 via @noble/hashes at boot; replaced with react-native-quick-crypto's native hash when `@serfab/cadre-rn/noise-crypto` loads (`/native-digest`) |
+| `crypto.subtle.digest()` | multiformats/hashes/sha2-browser | Async SHA-256/SHA-512 via @noble/hashes at boot; replaced with react-native-quick-crypto's native hash when `@serfab/cadre-rn/polyfills/native-crypto` or `@serfab/cadre-rn/noise-crypto` loads (`/native-digest`) |
 | `structuredClone()` | @optimystic/db-core (transform tracker, cache-source, coordinator) | via `@ungap/structured-clone` (spec-compliant); handles Date, Map, Set, circular refs |
 | `Symbol.asyncIterator` | `for await...of` on custom iterables | Some Hermes versions omit this. Guarded definition uses `Symbol.for('Symbol.asyncIterator')` (registry) so independent polyfills converge on the same symbol |
 | `ReadableStream`, `WritableStream`, `TransformStream` | Vercel AI SDK, streaming libraries | via `web-streams-polyfill`. No-op under Expo SDK 53: Expo's Metro config adds `expo/virtual/streams.js` as a bundle polyfill, which runs before the entry module, and the 2026-09-16 device audit reported all three `native` |
@@ -332,6 +335,7 @@ These patch `globalThis` to provide APIs that Hermes does not yet support:
 |------|--------|-------------|-------|
 | `packages/cadre-rn/polyfills/intl-pluralrules.js` | `Intl.PluralRules` | moat-maker (error messages) | English-only ordinal/cardinal shim |
 | `packages/cadre-rn/polyfills/event.js` | `EventTarget`, `Event`, `CustomEvent` | libp2p, @libp2p/interface | Imports the [`event-target-polyfill`](https://www.npmjs.com/package/event-target-polyfill) npm package (spec-complete: handles `capture`, `once`, and `signal` options on `addEventListener`), then adds a minimal `CustomEvent` shim on top — `event-target-polyfill` does not include `CustomEvent`, which libp2p's `safeDispatchEvent` uses internally |
+| `packages/cadre-rn/polyfills/native-crypto.js` | `crypto.subtle` `generateKey`, `importKey`, `exportKey`, `sign`, `verify`; native `digest` | @libp2p/crypto's `keys/ed25519/index.browser.js`, which signs through WebCrypto when its load-time probe succeeds | react-native-quick-crypto's `subtle`, through `@serfab/cadre-rn/native-ed25519`. Exported separately as `@serfab/cadre-rn/polyfills/native-crypto`, so an app without quick-crypto need not install it |
 | `packages/cadre-rn/polyfills/webrtc.js` | `RTCPeerConnection`, `RTCSessionDescription`, `RTCIceCandidate`, … | @libp2p/webrtc's private-to-public `browser` variants, which read the engine off the globals | `react-native-webrtc`'s `registerGlobals()`. Exported separately as `@serfab/cadre-rn/polyfills/webrtc`, so an app without WebRTC need not install the native module |
 
 > A hand-rolled inline `EventTarget` class is technically sufficient for libp2p's current usage but quietly drops `once`, `signal`, and capture semantics. We prefer the npm package so future libp2p versions (or other consumers) that rely on those options keep working without surprises. It is a dependency of `@serfab/cadre-rn`; dropping it there produces `Unable to resolve module event-target-polyfill` Metro failures.
@@ -438,6 +442,7 @@ packages/cadre-rn/polyfills/
   hermes.js                   # Runtime globals: crypto, AbortSignal, WebSocket, structuredClone, etc.
   intl-pluralrules.js         # Intl.PluralRules for moat-maker
   event.js                    # Event, CustomEvent, EventTarget globals for Hermes
+  native-crypto.js            # @serfab/cadre-rn/polyfills/native-crypto: native Ed25519 and digest behind crypto.subtle
   webrtc.js                   # @serfab/cadre-rn/polyfills/webrtc: registerGlobals() for @libp2p/webrtc
   boot-check.js               # @serfab/cadre-rn/boot-check: audit, then reload-reason
   registry.js                 # Records which globals each polyfill actually patched
@@ -480,7 +485,9 @@ packages/cadre-rn/metro/
 
 **React Native drops abort reasons, which is why that failure was opaque.** `Libraries/Core/setUpXHR.js` installs the `abort-controller` npm package (3.0.0) as the global `AbortController`/`AbortSignal`, unconditionally replacing whatever the engine had. That release predates the DOM's `reason`: its `abort()` takes no argument and nothing ever defines `signal.reason`. Every `controller.abort(err)` in the bundle therefore lost its error, and `throwIfAborted` fell back to a generic `AbortError`. `polyfills/hermes.js` records the reason on the signal before delegating, so a dial timeout now surfaces as `TimeoutError` and a cancelled operation carries whatever the caller passed.
 
-**`crypto.subtle` provides `digest` and nothing else.** The polyfill defines a `crypto.subtle` object with a single `digest` method. `@libp2p/crypto`'s `keys/index.js` calls `crypto.subtle.importKey` and `exportKey` for ECDSA and RSA keys, and `@libp2p/keychain` calls the AES-GCM surface (`encrypt`, `decrypt`, `deriveKey`) through `ciphers/aes-gcm.browser.js`. None of those exist, so any of them throws a `TypeError` the moment it is reached. The phone does not reach them: it uses Ed25519, which libp2p signs in pure `@noble/curves` unless the app imports `@serfab/cadre-rn/polyfills/native-crypto` (then native `generateKey`/`importKey`/`exportKey`/`sign`/`verify` from react-native-quick-crypto join `digest`), and it does not use the libp2p keychain. This is a dormant path, not a working one — adding a second key type, or anything that wants the keychain, breaks immediately and needs real WebCrypto first.
+**`crypto.subtle` has no AES-GCM surface.** `polyfills/hermes.js` defines a `crypto.subtle` object with a single `digest` method, and `polyfills/native-crypto.js` (which this app imports) adds react-native-quick-crypto's `generateKey`, `importKey`, `exportKey`, `sign` and `verify`. Those serve every algorithm quick-crypto supports, so besides Ed25519 signing, `@libp2p/crypto`'s `keys/index.js` ECDSA and RSA `importKey`/`exportKey` calls reach quick-crypto; the phone uses only Ed25519, so that path is unexercised here. `@libp2p/keychain` calls `encrypt`, `decrypt` and `deriveKey` through `ciphers/aes-gcm.browser.js`; nothing installs them, so any of them throws a `TypeError` the moment it is reached. The phone does not use the keychain. This is a dormant path, not a working one — anything that wants the keychain breaks immediately and needs those methods first.
+
+An app without `/polyfills/native-crypto` has only `digest`: libp2p signs Ed25519 in pure `@noble/curves` (169 ms per verify on a Galaxy S7, against 0.72 ms native), and the ECDSA and RSA calls throw a `TypeError` as well.
 
 **Checked during the same audit and found not to be gaps.** Each was read out of installed sources, and several were confirmed against the string table of an exported Android bundle (`dist/_expo/static/js/android/index-*.hbc` from `yarn test:bundle`) — a string that a module would have to contain is decisive about whether Metro bundled that module.
 

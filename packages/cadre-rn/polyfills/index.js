@@ -4,6 +4,7 @@
 // The app imports this module first, before anything else in its entry file. libp2p and
 // its dependencies read these globals while their modules evaluate, so a library module
 // evaluated earlier has already captured `undefined`. After it, the app imports
+// `@serfab/cadre-rn/polyfills/native-crypto` (if it has react-native-quick-crypto),
 // `@serfab/cadre-rn/polyfills/webrtc` (only if it uses @libp2p/webrtc), then
 // `@serfab/cadre-rn/boot-check`, then its own code.
 //

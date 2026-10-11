@@ -2,7 +2,7 @@
 // Both do nothing in a release build.
 //
 // The app imports this after every polyfill (`@serfab/cadre-rn/polyfills`, and
-// `/polyfills/webrtc` if used) and before its own entry (`expo-router/entry` in the
+// `/polyfills/native-crypto` and `/polyfills/webrtc` if used) and before its own entry (`expo-router/entry` in the
 // reference app). That position is the point:
 // - audit.js prints the native / polyfilled / gap / MISSING table. A call in the entry
 //   module's own body would run only after all of its imports had evaluated, the app tree

@@ -8,10 +8,13 @@
  * signature a phone node makes or checks runs in JavaScript: sereus-chat measured 169 ms per
  * verify on a Galaxy S7 against 0.72 ms native, and Optimystic verifies on its reads.
  *
- * `installNativeEd25519` fills the methods libp2p's Ed25519 path calls -- `generateKey`,
- * `importKey`, `exportKey`, `sign`, `verify` -- from a native `SubtleCrypto`, only where the
- * global one lacks them: real WebCrypto is left alone. Signatures are byte-identical to
- * noble's, Ed25519 being deterministic.
+ * `installNativeEd25519` installs the methods libp2p's Ed25519 path calls -- `generateKey`,
+ * `importKey`, `exportKey`, `sign`, `verify` -- from a native `SubtleCrypto` when the global
+ * one lacks any of them; a global that has all five (real WebCrypto) is left alone. They are
+ * installed as a set, replacing any of the five already present, because a `CryptoKey` is
+ * opaque to every implementation but the one that made it: a foreign `importKey` feeding a
+ * native `sign` would fail every signature. They serve every algorithm quick-crypto knows,
+ * not only Ed25519. Signatures are byte-identical to noble's, Ed25519 being deterministic.
  *
  * TIMING. @libp2p/crypto runs its probe once, when its Ed25519 module is evaluated, and keeps
  * the answer. So the install must precede any libp2p import: hence the boot-time
@@ -30,7 +33,7 @@ export type SubtleLike = Partial<Record<Method, (...args: never[]) => unknown>> 
 const NATIVE_ED25519_TAG = Symbol.for('@serfab/cadre-rn/native-ed25519');
 
 export type NativeEd25519Outcome =
-	/** Missing methods were filled from the native WebCrypto. */
+	/** The five methods were installed from the native WebCrypto. */
 	| 'installed'
 	/** This module already filled them. */
 	| 'already'
@@ -48,24 +51,24 @@ function isTagged(subtle: SubtleLike): boolean {
 }
 
 /**
- * Fill `subtle`'s missing Ed25519 methods from `native`. All or nothing: if `native` lacks any
- * of them, nothing changes, so libp2p's probe never sees a half-native WebCrypto.
+ * Install `native`'s Ed25519 methods on `subtle` unless `subtle` already has all of them. All or
+ * nothing: if `native` lacks any of them, nothing changes, so libp2p's probe never sees a
+ * half-native WebCrypto.
  */
 export function installNativeEd25519(native: SubtleLike | undefined, subtle: SubtleLike | undefined = globalSubtle()): NativeEd25519Outcome {
 	if (!subtle || !native) return 'unavailable';
 	if (isTagged(subtle)) return 'already';
-	const missing = ED25519_METHODS.filter(method => typeof subtle[method] !== 'function');
-	if (missing.length === 0) return 'not-needed';
-	if (missing.some(method => typeof native[method] !== 'function')) return 'unavailable';
+	if (ED25519_METHODS.every(method => typeof subtle[method] === 'function')) return 'not-needed';
+	if (ED25519_METHODS.some(method => typeof native[method] !== 'function')) return 'unavailable';
 	const target = subtle as Record<Method, unknown> & Record<symbol, unknown>;
-	for (const method of missing) {
+	for (const method of ED25519_METHODS) {
 		target[method] = (native[method] as (...args: unknown[]) => unknown).bind(native);
 	}
 	target[NATIVE_ED25519_TAG] = true;
 	return 'installed';
 }
 
-/** Whether this module filled `subtle`'s Ed25519 methods. */
+/** Whether this module installed `subtle`'s Ed25519 methods. */
 export function nativeEd25519Active(subtle: SubtleLike | undefined = globalSubtle()): boolean {
 	return !!subtle && isTagged(subtle);
 }

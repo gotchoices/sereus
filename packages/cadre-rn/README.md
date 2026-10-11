@@ -13,7 +13,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | `@serfab/cadre-rn/noise-crypto` | `buildNoiseCrypto(mode)`, `NoiseCryptoMode`, `DEFAULT_NOISE_CRYPTO_MODE`: runs libp2p's Noise connection encryption in native code. Loading it also switches `crypto.subtle.digest` to native SHA-256/512 (see `native-digest`) |
 | `@serfab/cadre-rn/native-digest` | `installNativeDigest(createHash)`, `nativeDigestActive()`: replaces the boot polyfill's JavaScript `crypto.subtle.digest` with a native hash |
 | `@serfab/cadre-rn/polyfills` | Side effects only: the web APIs libp2p and Optimystic read that Hermes and React Native lack (`AbortSignal.timeout` / `any`, abort reasons, `WebSocket.prototype.bufferedAmount`, `Promise.withResolvers`, `structuredClone`, `DOMException`, `crypto.subtle.digest`, EventTarget / `CustomEvent`, `Intl.PluralRules`, timer `ref()` / `unref()`, and more) |
-| `@serfab/cadre-rn/native-ed25519` | `installNativeEd25519(nativeSubtle)`, `nativeEd25519Active()`: fills `crypto.subtle`'s missing Ed25519 methods from a native WebCrypto |
+| `@serfab/cadre-rn/native-ed25519` | `installNativeEd25519(nativeSubtle)`, `nativeEd25519Active()`: installs `crypto.subtle`'s key, sign and verify methods from a native WebCrypto when any is missing |
 | `@serfab/cadre-rn/polyfills/native-crypto` | Side effects only: native Ed25519 and SHA-256/512 behind `crypto.subtle` from boot, through `react-native-quick-crypto` |
 | `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()`, for apps that use `@libp2p/webrtc` |
 | `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: a boot-time table of which globals are native, polyfilled, known gaps or missing, and a `[reload] <reason>` log line before any reload started from JavaScript |
@@ -127,12 +127,13 @@ Use the same options object for the key store and the anchor slot. `keychainAcce
 ```js
 // index.js: the app's entry module (package.json "main")
 import '@serfab/cadre-rn/polyfills';          // first
+import '@serfab/cadre-rn/polyfills/native-crypto';   // only if the app has react-native-quick-crypto
 import '@serfab/cadre-rn/polyfills/webrtc';   // only if the app uses @libp2p/webrtc
 import '@serfab/cadre-rn/boot-check';         // after every polyfill, before the app
 import 'expo-router/entry';                   // or AppRegistry.registerComponent(...)
 ```
 
-`boot-check` goes after every polyfill and before the app's own code because both of its parts act at import time: the audit table has to print before an import-time crash could, and the reload logger has to be installed before the app tree evaluates. In a development build logcat shows the table under `[cadre-rn] polyfill audit`, and warns with `[cadre-rn] MISSING globals` if a global the stack reads is absent. `RTCPeerConnection` reads as a known gap in an app that does not import `/polyfills/webrtc`.
+`boot-check` goes after every polyfill and before the app's own code because both of its parts act at import time: the audit table has to print before an import-time crash could, and the reload logger has to be installed before the app tree evaluates. In a development build logcat shows the table under `[cadre-rn] polyfill audit`, and warns with `[cadre-rn] MISSING globals` if a global the stack reads is absent. `RTCPeerConnection` reads as a known gap in an app that does not import `/polyfills/webrtc`, and `crypto.subtle.importKey` in one that does not import `/polyfills/native-crypto`.
 
 Each patch checks for the API first and does nothing where the runtime already provides it. The reference app's [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#polyfills) lists what each one patches and which library needs it.
 
@@ -243,11 +244,10 @@ import '@serfab/cadre-rn/polyfills/native-crypto';   // right after /polyfills, 
 import '@serfab/cadre-rn/boot-check';
 ```
 
-It fills `generateKey`, `importKey`, `exportKey`, `sign` and `verify` from react-native-quick-crypto's `subtle`, only where the global `crypto.subtle` lacks them, and installs the native digest (`native-digest`) at the same time. **It has to load at boot**: @libp2p/crypto decides between WebCrypto and JavaScript once, when its Ed25519 module is evaluated, and keeps the answer, so filling the methods later -- from `noise-crypto`, which itself imports libp2p -- would be too late for Ed25519. The digest has no such constraint.
+It installs `generateKey`, `importKey`, `exportKey`, `sign` and `verify` from react-native-quick-crypto's `subtle` when the global `crypto.subtle` lacks any of them, and installs the native digest (`native-digest`) at the same time. **It has to load at boot**: @libp2p/crypto decides between WebCrypto and JavaScript once, when its Ed25519 module is evaluated, and keeps the answer, so filling the methods later -- from `noise-crypto`, which itself imports libp2p -- would be too late for Ed25519. The digest has no such constraint.
 
-`installNativeEd25519(nativeSubtle, subtle?)` (`@serfab/cadre-rn/native-ed25519`) is the logic, importing no native module: all or nothing, so a probe never sees half a WebCrypto, and a complete WebCrypto is left alone. It returns `'installed'`, `'already'`, `'not-needed'` or `'unavailable'`.
+`installNativeEd25519(nativeSubtle, subtle?)` (`@serfab/cadre-rn/native-ed25519`) is the logic, importing no native module. It installs the five as a set, replacing any already present, because a `CryptoKey` from one implementation is unusable by another's `sign`; all or nothing, so a probe never sees half a WebCrypto; and a complete WebCrypto is left alone. The methods serve every algorithm quick-crypto supports, so libp2p's ECDSA and RSA key import and export reach quick-crypto too. It returns `'installed'`, `'already'`, `'not-needed'` or `'unavailable'`.
 
 ### What the app must install
 
 react-native-quick-crypto, react-native-nitro-modules and react-native-quick-base64, as for `noise-crypto`, and a native rebuild. Quick-crypto needs React Native's new architecture.
-

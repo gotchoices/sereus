@@ -27,5 +27,5 @@ const ed25519 = installNativeEd25519(qc.subtle);
 if (ed25519 === 'installed') markPolyfilled('crypto.subtle.importKey');
 else if (ed25519 === 'unavailable') console.warn('[cadre-rn] native Ed25519 unavailable: libp2p signs and verifies in pure JS');
 
-const digest = installNativeDigest(algorithm => qc.createHash(algorithm));
-if (digest === 'check-failed') console.warn('[cadre-rn] native digest failed its check: block hashing stays in pure JS');
+// installNativeDigest warns on its own if the native hash fails its check.
+installNativeDigest(algorithm => qc.createHash(algorithm));

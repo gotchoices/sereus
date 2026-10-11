@@ -75,14 +75,15 @@ const PROBES = [
 		key: 'RTCPeerConnection',
 		gap: 'only apps that import @serfab/cadre-rn/polyfills/webrtc install it',
 	},
-	{ path: 'DOMException', key: 'DOMException' },
-
-	// Known gaps — documented in docs/reference-app-rn.md § Key Dependencies.
+	// Stands for the five key methods polyfills/native-crypto.js installs together.
 	{
 		path: 'crypto.subtle.importKey',
 		key: 'crypto.subtle.importKey',
 		gap: 'only apps that import @serfab/cadre-rn/polyfills/native-crypto install it; without it libp2p signs Ed25519 in pure JS (@noble/curves)',
 	},
+	{ path: 'DOMException', key: 'DOMException' },
+
+	// Known gaps — documented in docs/reference-app-rn.md § Key Dependencies.
 	{
 		path: 'crypto.subtle.encrypt',
 		gap: 'AES-GCM is only reached through @libp2p/keychain, which this app does not use',

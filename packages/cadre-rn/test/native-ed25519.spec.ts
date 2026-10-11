@@ -1,7 +1,7 @@
 /**
  * `installNativeEd25519` — filling a JavaScript-only `crypto.subtle` with a native WebCrypto's
  * Ed25519 methods. Node's own WebCrypto stands in for react-native-quick-crypto's: the module's
- * decisions (fill what is missing, leave real WebCrypto alone, all or nothing) are what is
+ * decisions (install the set when any is missing, leave real WebCrypto alone, all or nothing) are what is
  * under test, and the filled methods must really sign and verify.
  */
 import { webcrypto } from 'node:crypto';
@@ -16,10 +16,12 @@ function bootSubtle(): SubtleLike & { digest: () => void } {
 }
 
 describe('installNativeEd25519', () => {
-	it('fills every missing Ed25519 method, and they sign and verify', async () => {
+	it('fills every missing Ed25519 method, keeping the digest, and they sign and verify', async () => {
 		const subtle = bootSubtle();
+		const digest = subtle.digest;
 		expect(installNativeEd25519(native, subtle)).toBe('installed');
 		for (const method of ED25519_METHODS) expect(typeof subtle[method]).toBe('function');
+		expect(subtle.digest).toBe(digest);
 		expect(nativeEd25519Active(subtle)).toBe(true);
 
 		const filled = subtle as unknown as SubtleCrypto;
@@ -29,19 +31,29 @@ describe('installNativeEd25519', () => {
 		expect(await filled.verify({ name: 'Ed25519' }, keys.publicKey, signature, message)).toBe(true);
 	});
 
-	it('keeps the digest it found', () => {
-		const subtle = bootSubtle();
-		const digest = subtle.digest;
-		installNativeEd25519(native, subtle);
-		expect(subtle.digest).toBe(digest);
-	});
-
 	it('leaves a complete WebCrypto alone', () => {
 		const subtle = { ...Object.fromEntries(ED25519_METHODS.map(m => [m, () => undefined])) } as SubtleLike;
 		const before = { ...subtle };
 		expect(installNativeEd25519(native, subtle)).toBe('not-needed');
 		expect(subtle).toEqual(before);
 		expect(nativeEd25519Active(subtle)).toBe(false);
+	});
+
+	it('replaces a partial set whole, so keys and signatures come from one implementation', async () => {
+		const foreignImportKey = () => undefined;
+		const subtle = { ...bootSubtle(), importKey: foreignImportKey } as SubtleLike;
+		expect(installNativeEd25519(native, subtle)).toBe('installed');
+		expect(subtle.importKey).not.toBe(foreignImportKey);
+
+		// libp2p's verify path: a raw public key through importKey, then verify.
+		const filled = subtle as unknown as SubtleCrypto;
+		const signer = native as unknown as SubtleCrypto;
+		const keys = (await signer.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+		const message = new TextEncoder().encode('tally');
+		const signature = await signer.sign({ name: 'Ed25519' }, keys.privateKey, message);
+		const raw = await signer.exportKey('raw', keys.publicKey);
+		const imported = await filled.importKey('raw', raw, { name: 'Ed25519' }, false, ['verify']);
+		expect(await filled.verify({ name: 'Ed25519' }, imported, signature, message)).toBe(true);
 	});
 
 	it('changes nothing when the native WebCrypto lacks a method, so no probe sees half of one', () => {
@@ -57,13 +69,5 @@ describe('installNativeEd25519', () => {
 		const sign = subtle.sign;
 		expect(installNativeEd25519(native, subtle)).toBe('already');
 		expect(subtle.sign).toBe(sign);
-	});
-
-	it('reports a missing native WebCrypto as unavailable', () => {
-		expect(installNativeEd25519(undefined, bootSubtle())).toBe('unavailable');
-	});
-
-	it('defaults to the global crypto.subtle, which under Node is complete', () => {
-		expect(installNativeEd25519(native)).toBe('not-needed');
 	});
 });

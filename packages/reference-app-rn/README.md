@@ -340,7 +340,7 @@ React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fa
 
 ### How it works
 
-1. **`index.js`** imports `@serfab/cadre-rn/polyfills`, then `@serfab/cadre-rn/polyfills/webrtc`, then `@serfab/cadre-rn/boot-check` (the development-build audit table and reload logger), then hands off to Expo Router
+1. **`index.js`** imports `@serfab/cadre-rn/polyfills`, then `@serfab/cadre-rn/polyfills/native-crypto` (native Ed25519 and digest), then `@serfab/cadre-rn/polyfills/webrtc`, then `@serfab/cadre-rn/boot-check` (the development-build audit table and reload logger), then hands off to Expo Router
 2. **`metro.config.js`** calls `withCadreMetro` from `@serfab/cadre-rn/metro`, which maps Node.js built-in modules (`node:crypto`, `node:os`, …) to the kit's shim files via `extraNodeModules`, resolves the kit's native peers from this app, and rewrites `@libp2p/crypto`'s Node files to their `.browser.js` variants (see *libp2p/crypto Node → browser rewrite* below, and [docs/reference-app-rn.md § Metro Configuration](../../docs/reference-app-rn.md#metro-configuration))
 
 ### Polyfill inventory

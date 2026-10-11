@@ -136,8 +136,9 @@ const PROVIDED: Record<string, Provision> = {
 	},
 	'crypto.subtle': {
 		by: 'allowlist',
-		why: 'the polyfill provides digest only. importKey/exportKey and the AES-GCM surface are absent, '
-			+ 'and the phone reaches neither: it uses Ed25519 (pure noble) and no libp2p keychain. '
+		why: 'the boot polyfill provides digest, and polyfills/native-crypto adds quick-crypto\'s '
+			+ 'generateKey/importKey/exportKey/sign/verify. The AES-GCM surface is absent, and the phone '
+			+ 'does not reach it: it uses no libp2p keychain. '
 			+ 'Documented in docs/reference-app-rn.md § Key Dependencies.',
 	},
 	'crypto.randomUUID': {
