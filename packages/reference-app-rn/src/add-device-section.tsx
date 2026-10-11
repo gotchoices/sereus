@@ -38,7 +38,9 @@ const OWNER_SWITCH_LINE = 'An owner can add and remove devices and apps and appr
 /** Shown before an open owner invitation is made: whoever holds its text becomes an owner. */
 const BEARER_WARNING = `Anyone who gets this invitation in the next ${OWNER_INVITATION_DEFAULT_TTL_MS / 60_000} minutes can manage your cadre. Send it only to your own app, and not through a chat or email others can read.`;
 
-const NO_ADDRESS_LINE = 'This phone has no relay address, and no always-on machine of your cadre has one either.';
+// Chosen on the relay status, not on which error core threw, so it states only what that
+// status shows: the cadre's other machines are not checked here.
+const NO_ADDRESS_LINE = 'This phone has no relay address, so an invitation can be made only while an always-on machine of your cadre has one.';
 
 /** What a minted invitation's reach means for the new app; nothing to add when it is `anywhere`. */
 const REACH_LINE: Record<CadreInvitationReach, { text: string; warning: boolean } | null> = {
@@ -138,7 +140,11 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 			return;
 		}
 		try {
-			if (!await cadre.isOwnerDevice()) {
+			// The approval prompt renders only in the owner view, so a request opened from
+			// another app while the standing was still unread (or unreadable) settles it here.
+			const owner = await cadre.isOwnerDevice();
+			setStanding(owner ? 'owner' : 'member');
+			if (!owner) {
 				showAlert('Only an owner can add a device or app', 'This app is a member of this cadre, not an owner.');
 				return;
 			}
