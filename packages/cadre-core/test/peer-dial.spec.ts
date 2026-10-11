@@ -25,10 +25,10 @@ import { startSilentServer, type SilentServer } from './silent-server.js';
  * that never answer the WebSocket upgrade (`silent-server.ts`).
  *
  * Checked against real libp2p rather than doubles because two of the claims are
- * about libp2p's dial queue — that a one-address dial of a transport the node
- * lacks fails at once, and that timing out one address and dialing the next for
- * the same peer does not join the aborted dial — so an upgrade that changes either
- * fails here.
+ * about libp2p's dialing — that a one-address dial of a transport the node lacks
+ * fails at once, and that an attempt reaches its own address while another dial
+ * of the same peer is in flight, which a dial through libp2p's queue would join
+ * instead — so an upgrade that changes either fails here.
  */
 
 const nodes: Libp2p[] = [];
@@ -78,6 +78,32 @@ describe('dialPeerAddrs — addresses that never answer', () => {
 		const before = Date.now();
 		await expect(oneDial.dial(addrs, { signal: AbortSignal.timeout(totalMs) })).rejects.toThrow();
 		expect(Date.now() - before).toBeGreaterThanOrEqual(totalMs - 50);
+	});
+
+	it('dials every address even while another dial of the same peer is in flight', async () => {
+		const target = await startNode([webSockets()], ['/ip4/127.0.0.1/tcp/0/ws']);
+		// libp2p's own per-address limit, kept well past this test so the concurrent dial's
+		// job is still on its first address when every attempt here has ended.
+		const dialer = await startNode([webSockets()], [], { addressDialTimeout: 10_000, dialTimeout: 10_000 });
+		const dead = [await silentServer(), await silentServer()];
+		const addrs = [...dead.map((server) => bound(server.wsAddr, target)), ...wsAddrs(target)];
+		await dialer.peerStore.merge(target.peerId, { multiaddrs: [multiaddr(dead[0].wsAddr)] });
+		const totalMs = 2 * PER_ADDRESS_MS + 2 * SLACK_MS;
+
+		const ours = dialPeerAddrs(dialer, addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial');
+		// What FRET's membership probe does once the peer's addresses are in the address
+		// book: a dial by peer id, which libp2p's queue joins to any job for that id.
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const other = new AbortController();
+		const concurrent = dialer.dial(target.peerId, { signal: other.signal }).catch(() => undefined);
+		try {
+			const connection = await ours;
+			expect(connection.remotePeer.toString()).toBe(target.peerId.toString());
+			expect(dead.map((server) => server.accepted() > 0)).toEqual([true, true]);
+		} finally {
+			other.abort();
+			await concurrent;
+		}
 	});
 
 	it('stops at the total limit when no address answers, naming the addresses it never tried', async () => {
@@ -215,10 +241,15 @@ function recordingDialer(peerId: PeerId): AddrDialer & { dialed: Multiaddr[]; co
 	};
 }
 
-async function startNode(transports: Libp2pOptions['transports'], listen: string[]): Promise<Libp2p> {
+async function startNode(
+	transports: Libp2pOptions['transports'],
+	listen: string[],
+	connectionManager: Libp2pOptions['connectionManager'] = {},
+): Promise<Libp2p> {
 	const node = await createLibp2p({
 		addresses: { listen },
 		transports,
+		connectionManager,
 		connectionEncrypters: [noise()],
 		streamMuxers: [yamux()],
 	});

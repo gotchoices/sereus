@@ -781,10 +781,8 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 						await delay(25);
 					}
 				});
-				// The sibling's own dial is in flight alongside the signalling leg.
-				if (!passSettled) {
-					expect(dialQueuePeerIds(owner.node)).toContain(sibling.peerId);
-				}
+				// The sibling's own dial runs outside the queue (`peer-dial.ts` → `dialAddr`), so
+				// only its relay hop is visible there; the wait above is what shows it in flight.
 
 				await within('node.stop() (WebRTC dial in flight)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
 				await within('reconcileControlCohort() (after stop)', MULTI_RECONCILE_TIMEOUT_MS, () => pass);

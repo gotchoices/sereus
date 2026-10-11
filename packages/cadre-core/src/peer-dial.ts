@@ -16,22 +16,25 @@
  * borrowing a node from a cadre-host whose only reachable address was the
  * forwarded loopback one never connected for this reason.
  *
- * So the addresses are dialed here, each as its own `dial()` with its own time
- * limit ({@link PeerDialBudget.perAddressMs}), inside a limit for the whole peer
- * ({@link PeerDialBudget.totalMs}). One address per call also means libp2p's
- * sorter has nothing to reorder, so the order is chosen here
- * ({@link directBeforeRelayed}).
+ * So the addresses are dialed here, each as its own transport-manager dial
+ * ({@link dialAddr}) with its own time limit ({@link PeerDialBudget.perAddressMs}),
+ * inside a limit for the whole peer ({@link PeerDialBudget.totalMs}). One address
+ * per call also means libp2p's sorter has nothing to reorder, so the order is
+ * chosen here ({@link directBeforeRelayed}). The dial goes around libp2p's dial
+ * queue because the queue joins any dial of a peer to a queued job for that peer
+ * id, whatever address the new dial names — see {@link dialAddr}.
  *
  * Dependency-free apart from `control-stream.ts`, so any module may import it
  * without creating an import cycle.
  */
 
 import debug from 'debug';
-import type { Connection, PeerId } from '@libp2p/interface';
+import type { Connection, ConnectionGater, Libp2pStatus, PeerId } from '@libp2p/interface';
 import { peerIdFromString } from '@libp2p/peer-id';
 import type { Component, Multiaddr } from '@multiformats/multiaddr';
 import { withDeadline } from './control-stream.js';
 import { relayedDialBudgetMs } from './link-budget.js';
+import { trailingPeerId } from './peer-record.js';
 
 const log = debug('sereus:cadre:peer-dial');
 
@@ -124,7 +127,79 @@ export const DEFAULT_PEER_DIAL_BUDGET: Readonly<PeerDialBudget> = {
 export interface AddrDialer {
 	/** This node's id, to recognise an address that relays through this node ({@link relaysThrough}). */
 	readonly peerId: PeerId;
+	/** libp2p's lifecycle state: {@link dialAddr} refuses to start an attempt once it is not `started`. */
+	readonly status?: Libp2pStatus;
 	dial(addr: Multiaddr, options: { signal: AbortSignal }): Promise<Connection>;
+}
+
+/**
+ * The libp2p internals a queue-free dial reaches — real fields on libp2p's node class, absent
+ * from the `Libp2p` interface (the seam `relay-reservation.ts` already uses).
+ */
+interface DialComponentsLike {
+	components?: {
+		transportManager?: { dial?: (addr: Multiaddr, options: { signal: AbortSignal }) => Promise<Connection> };
+		connectionGater?: ConnectionGater;
+	};
+}
+
+/**
+ * libp2p's `stop` event, which ends an attempt the dial queue would otherwise have aborted at
+ * shutdown. Structural so an {@link AddrDialer} double need not provide it.
+ */
+interface StopEventsLike {
+	addEventListener?: (type: 'stop', listener: () => void) => void;
+	removeEventListener?: (type: 'stop', listener: () => void) => void;
+}
+
+/**
+ * Dial ONE address outside libp2p's dial queue. The queue joins any new dial to a queued job
+ * for the same peer id, whatever address the new dial names, and a joined job ends only when
+ * every caller has aborted — so while another caller dials this peer (FRET's membership probe,
+ * an Optimystic cluster client), a per-address attempt through the queue waits on whatever
+ * address that job is on instead of its own. The transport manager dials exactly the address
+ * given; the two gater hooks the queue would have consulted are run here, and the upgrader
+ * still runs `denyOutboundConnection` and verifies the peer id the address carries during the
+ * Noise handshake. A relayed address still passes through the queue for its relay leg (the
+ * circuit transport dials the relay by peer id).
+ *
+ * The queue would also have aborted the attempt at shutdown; here the node's `status` is
+ * checked before dialing and its `stop` event aborts an attempt in flight. Without
+ * `transportManager.dial` (libp2p internals moved) the attempt goes through the queue, logged.
+ */
+export async function dialAddr(dialer: AddrDialer, addr: Multiaddr, signal: AbortSignal, label: string): Promise<Connection> {
+	if (dialer.status !== undefined && dialer.status !== 'started') {
+		throw new Error(`${label}: not dialed, the node is ${dialer.status}`);
+	}
+	const components = (dialer as AddrDialer & DialComponentsLike).components;
+	const manager = components?.transportManager;
+	if (typeof manager?.dial !== 'function') {
+		log('%s: no transportManager.dial on this node — libp2p internals moved? dialing through the queue', label);
+		return dialer.dial(addr, { signal });
+	}
+	await assertDialAllowed(components?.connectionGater, addr, label);
+	const events = dialer as AddrDialer & StopEventsLike;
+	const controller = new AbortController();
+	const onAbort = (): void => controller.abort(signal.reason);
+	const onStop = (): void => controller.abort(new Error(`${label}: the node stopped`));
+	signal.addEventListener('abort', onAbort, { once: true });
+	events.addEventListener?.('stop', onStop);
+	try {
+		return await manager.dial(addr, { signal: controller.signal });
+	} finally {
+		signal.removeEventListener('abort', onAbort);
+		events.removeEventListener?.('stop', onStop);
+	}
+}
+
+async function assertDialAllowed(gater: ConnectionGater | undefined, addr: Multiaddr, label: string): Promise<void> {
+	const id = trailingPeerId(addr);
+	if (id !== null && await gater?.denyDialPeer?.(peerIdFromString(id))) {
+		throw new Error(`${label}: the connection gater denies dialing ${id}`);
+	}
+	if (await gater?.denyDialMultiaddr?.(addr)) {
+		throw new Error(`${label}: the connection gater denies dialing ${addr.toString()}`);
+	}
 }
 
 /**
@@ -167,7 +242,7 @@ interface AddrAttemptFailure {
 }
 
 /**
- * Dial one peer from `addrs`, one address per `dial()` call, and return the
+ * Dial one peer from `addrs`, one address per {@link dialAddr} call, and return the
  * first connection that forms. Direct addresses are tried before relayed ones
  * ({@link directBeforeRelayed}); otherwise the given order is kept.
  *
@@ -175,8 +250,8 @@ interface AddrAttemptFailure {
  * dialing one could only fail with `Can not dial self`. When that leaves nothing
  * of a non-empty list, this throws {@link SelfRelayOnlyError} without dialing.
  *
- * Addresses naming a transport this node lacks are not filtered out first: a
- * one-address `dial()` rejects those at once (`NoValidAddressesError`), so they
+ * Addresses naming a transport this node lacks are not filtered out first: the
+ * transport manager rejects those at once (`TransportUnavailableError`), so they
  * cost a log line, not time.
  *
  * Otherwise throws when no address connects — see {@link tryAddrsInTurn} for the error.
@@ -195,7 +270,7 @@ export async function dialPeerAddrs(
 	if (addrs.length > 0 && dialable.length === 0) {
 		throw new SelfRelayOnlyError(label);
 	}
-	return tryAddrsInTurn(directBeforeRelayed(dialable), budget, label, (addr, signal) => dialer.dial(addr, { signal }));
+	return tryAddrsInTurn(directBeforeRelayed(dialable), budget, label, (addr, signal) => dialAddr(dialer, addr, signal, label));
 }
 
 /**
@@ -212,17 +287,17 @@ export async function dialPeerAddrs(
  * failed, in order, with the first failure as `cause` — so the report shows the
  * address that mattered, not only whichever happened to be tried last.
  *
- * Between attempts this waits for one macrotask (`setTimeout(0)`). libp2p's dial
- * queue lets a new `dial()` join any queued dial job for the same peer id
- * WITHOUT checking whether that job has already finished, and an aborted job
- * leaves the queue a few microtasks after its callers are rejected. Timing out
- * one address and immediately dialing the next for the same peer therefore
- * joins the dying job, which rejects the new dial with `AbortError` before it
- * touches the network — the next address is never tried. Seen against libp2p
- * 3.1.3, and the queue's join is unchanged in 3.3.11; `test/peer-dial.spec.ts`
- * dials real nodes so an upgrade that changes it shows up there. All of the
- * queue's cleanup runs as microtasks, so it has finished by the time a
- * macrotask runs.
+ * Between attempts this waits for one macrotask (`setTimeout(0)`). A direct
+ * address is dialed outside libp2p's dial queue ({@link dialAddr}), but a relayed
+ * address still passes through it for the relay leg, and the queue lets a new
+ * dial join any queued job for the same peer id WITHOUT checking whether that
+ * job has already finished: an aborted job leaves the queue a few microtasks
+ * after its callers are rejected, so a next attempt through the same relay made
+ * at once would join the dying job and be rejected with `AbortError` before it
+ * touches the network. All of the queue's cleanup runs as microtasks, so it has
+ * finished by the time a macrotask runs. Seen against libp2p 3.1.3, and the
+ * queue's join is unchanged in 3.3.11; `test/peer-dial.spec.ts` dials real nodes
+ * so an upgrade that changes it shows up there.
  */
 export async function tryAddrsInTurn<T>(
 	addrs: readonly Multiaddr[],
