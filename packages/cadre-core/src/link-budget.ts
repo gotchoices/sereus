@@ -282,10 +282,15 @@ export const RELAY_RESERVE_REQUEST_ROUND_TRIPS = 1;
  *
  * The protocol work measured is 2 — dial the relay ({@link RELAY_DIAL_ROUND_TRIPS}) plus request
  * the reservation ({@link RELAY_RESERVE_REQUEST_ROUND_TRIPS}). It is budgeted at twice that,
- * because the wait afterwards may instead be satisfied by libp2p's own relay discovery, which
- * repeats both legs after identify has run; 4 is therefore the largest thing this one deadline
- * can be asked to contain, and the poll interval (`DEFAULT_RELAY_RESERVE_POLL_MS`) rounds up on
- * top of it.
+ * because on a node that keeps libp2p's own relay discovery (a browser tab driving a bare
+ * `/p2p-circuit` through `reserveRelays`) the wait afterwards may instead be satisfied by
+ * discovery, which repeats both legs after identify has run; 4 is therefore the largest thing
+ * this one deadline can be asked to contain, and the poll interval
+ * (`DEFAULT_RELAY_RESERVE_POLL_MS`) rounds up on top of it.
+ *
+ * NOTE: on a node with configured relays discovery is off (`node-transports.ts`), so there the
+ * doubling is only headroom, and it is what an unreachable configured relay costs every launch
+ * (the whole deadline is polled out). If that launch cost ever matters, budget those nodes at 2.
  */
 export const RELAY_RESERVATION_ROUND_TRIPS = 2 * (RELAY_DIAL_ROUND_TRIPS + RELAY_RESERVE_REQUEST_ROUND_TRIPS);
 

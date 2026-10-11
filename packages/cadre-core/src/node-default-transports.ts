@@ -25,7 +25,9 @@ import type { ListenTransportOptions } from './relay-addrs.js';
  *
  * NOTE: mirrors `createLibp2pNode`'s default list in
  * `../optimystic/packages/db-p2p/src/libp2p-node.ts` (cadre never sets its `disableTcp`). That file
- * is the source of truth; if its defaults change, this list has to follow.
+ * is the source of truth; if its defaults change, this list has to follow. If db-p2p ever takes an
+ * option to build its default list with relay discovery off, use that and drop this module and
+ * `NetworkConfig.defaultTransports`.
  */
 export function nodeDefaultTransports({ wsPort }: ListenTransportOptions): Libp2pTransports {
   return [
