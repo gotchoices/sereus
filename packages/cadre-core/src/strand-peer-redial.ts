@@ -273,7 +273,7 @@ class StrandPeerRedialLoop implements StrandPeerRedial {
   private async dialAny(known: ReadonlyMap<string, Multiaddr[]>): Promise<boolean> {
     const members = [...known];
     const outcomes = await Promise.allSettled(members.map(([peerId, addrs]) =>
-      dialPeerAddrs(this.deps.node, addrs, this.timings.budget, `strand ${this.deps.label} redial of ${peerId}`)
+      dialPeerAddrs(this.deps.node, peerId, addrs, this.timings.budget, `strand ${this.deps.label} redial of ${peerId}`)
     ));
     outcomes.forEach((outcome, i) => {
       if (outcome.status === 'rejected') {

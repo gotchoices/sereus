@@ -35,8 +35,7 @@ import {
 } from './control-database.js';
 import { verifyCadreInviteRow, verifyCadreInviteRedemption } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed25519-key.js';
-import { trailingPeerId } from './peer-record.js';
-import { nextMacrotask } from './peer-dial.js';
+import { dialAddr, nextMacrotask, trailingPeerId } from './peer-dial.js';
 import { chainMessages } from './control-retry.js';
 import { isRetriableControlWriteFailure } from './control-write-retry.js';
 import type { CadreInviteRow, SeedPeer } from './types.js';
@@ -786,8 +785,11 @@ export interface CadreInviteRedemption {
 }
 
 /**
- * Open one stream to `addr`, send the request, half-close, read the one reply frame.
+ * Dial `addr`, open one stream to it, send the request, half-close, read the one reply frame.
  * `signal` is the per-address deadline: it cancels the dial and resets a live stream.
+ *
+ * The address is dialed outside libp2p's dial queue (`dialAddr`), so another dial of the
+ * member in flight cannot capture this attempt; an open connection is still reused.
  */
 async function exchangeRedemption(
   node: Libp2p,
@@ -797,8 +799,9 @@ async function exchangeRedemption(
   budgetMs: number,
   protocolId: string
 ): Promise<CadreInviteAccepted | CadreInviteRefusalFrame> {
+  const connection = await dialAddr(node, addr, signal, 'Cadre invitation redemption');
   // `runOnLimitedConnection`: a member may be reachable only through a relay (see `register`).
-  const rawStream = await node.dialProtocol(addr, protocolId, { runOnLimitedConnection: true, signal });
+  const rawStream = await connection.newStream(protocolId, { runOnLimitedConnection: true, signal });
   return await exchangeFrame(
     rawStream as unknown as ControlStream,
     signal,
@@ -833,7 +836,8 @@ export async function redeemAtMembers(node: Libp2p, options: RedeemAtMembersOpti
   const budgetMs = options.addressBudgetMs ?? relayedRequestBudgetMs(options.linkRoundTripMs);
   const outcomes: CadreInviteAddressOutcome[] = [];
   for (const addr of options.invitation.members) {
-    // Between attempts: libp2p's dial queue needs a macrotask to drop an aborted job.
+    // Between attempts: a relayed address's relay leg goes through libp2p's dial queue, which
+    // needs a macrotask to drop an aborted job (see `tryAddrsInTurn`).
     if (outcomes.length > 0) await nextMacrotask();
     let parsed: Multiaddr;
     try {

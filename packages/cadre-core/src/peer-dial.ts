@@ -22,10 +22,14 @@
  * per call also means libp2p's sorter has nothing to reorder, so the order is
  * chosen here ({@link directBeforeRelayed}). The dial goes around libp2p's dial
  * queue because the queue joins any dial of a peer to a queued job for that peer
- * id, whatever address the new dial names — see {@link dialAddr}.
+ * id, whatever address the new dial names — see {@link dialAddr}. Every address
+ * is bound to the peer the caller expects ({@link withTrailingPeerId}) so the
+ * handshake verifies who answered.
  *
- * Dependency-free apart from `control-stream.ts`, so any module may import it
- * without creating an import cycle.
+ * Dependency-free apart from `control-stream.ts` and `link-budget.ts`, so any
+ * module may import it without creating an import cycle. That is why the two
+ * address helpers ({@link trailingPeerId}, {@link withTrailingPeerId}) live here
+ * and `peer-record.ts`, which pulls in the crypto plugin, re-exports them.
  */
 
 import debug from 'debug';
@@ -34,9 +38,56 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import type { Component, Multiaddr } from '@multiformats/multiaddr';
 import { withDeadline } from './control-stream.js';
 import { relayedDialBudgetMs } from './link-budget.js';
-import { trailingPeerId } from './peer-record.js';
 
 const log = debug('sereus:cadre:peer-dial');
+
+/**
+ * The peer id a multiaddr terminates in, or `null` when it names none.
+ *
+ * The LAST `/p2p/` component is the dial target: a circuit address
+ * (`…/p2p/<relay>/p2p-circuit/p2p/<target>`) names the relay first and the peer
+ * being reached last. Replaces the deprecated `Multiaddr.getPeerId()`, which
+ * cannot express that distinction.
+ */
+export function trailingPeerId(addr: Multiaddr): string | null {
+	const p2p = addr.getComponents().filter((c) => c.name === 'p2p');
+	return p2p.length > 0 ? (p2p[p2p.length - 1].value ?? null) : null;
+}
+
+/**
+ * `addr` guaranteed to terminate in `/p2p/<peerId>` — the shape every dial needs,
+ * since the upgrader verifies that id during the handshake — or `null` when it
+ * cannot, because the address already terminates in a DIFFERENT peer id and
+ * therefore does not reach `peerId` at all.
+ *
+ * Three input shapes, matching what a `CadrePeer` record can legitimately carry:
+ *
+ * - no `/p2p/` component (`/ip4/1.2.3.4/tcp/4001`) — the suffix is appended;
+ * - a relay hop with the destination missing (`…/p2p/<relay>/p2p-circuit`) — the
+ *   last component is the circuit, not a peer id, so the suffix is appended and
+ *   the address becomes the full `…/p2p/<relay>/p2p-circuit/p2p/<peerId>`;
+ * - already terminating in `/p2p/<X>` — returned untouched when `X` is `peerId`,
+ *   dropped otherwise.
+ *
+ * This is deliberately the same rule libp2p applies internally in
+ * `calculateMultiaddrs` (append when the LAST component is not `p2p`) followed by
+ * its wrong-peer-id filter, so a normalized list matches what libp2p would have
+ * built anyway. Normalizing before a list dial is what keeps a list from mixing
+ * suffixed and unsuffixed entries, which `getPeerAddress` rejects outright
+ * ("Multiaddrs must all have the same peer id or have no peer id") — taking the
+ * whole peer down with it, not just the odd address.
+ *
+ * Throws when `peerId` does not parse as a peer id (the encapsulation validates
+ * it). Never use before signature verification: verification runs against the
+ * original on-record strings.
+ */
+export function withTrailingPeerId(addr: Multiaddr, peerId: string): Multiaddr | null {
+	const components = addr.getComponents();
+	if (components[components.length - 1]?.name !== 'p2p') {
+		return addr.encapsulate(`/p2p/${peerId}`);
+	}
+	return trailingPeerId(addr) === peerId ? addr : null;
+}
 
 /**
  * Default limit on ONE address's dial attempt, in ms, at the DEFAULT declared link round trip:
@@ -123,12 +174,29 @@ export const DEFAULT_PEER_DIAL_BUDGET: Readonly<PeerDialBudget> = {
 	totalMs: DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
 };
 
+/** What {@link dialAddr} reads of a connection the node holds, to decide whether to hand it back instead of dialing. */
+export interface ReusableConnection {
+	remotePeer: { toString(): string };
+	status?: Connection['status'];
+	limits?: Connection['limits'];
+	/** Whether the connection is direct rather than relayed; absent counts as direct. */
+	direct?: boolean;
+}
+
 /** The slice of a libp2p node {@link dialPeerAddrs} uses. */
 export interface AddrDialer {
 	/** This node's id, to recognise an address that relays through this node ({@link relaysThrough}). */
 	readonly peerId: PeerId;
 	/** libp2p's lifecycle state: {@link dialAddr} refuses to start an attempt once it is not `started`. */
 	readonly status?: Libp2pStatus;
+	/**
+	 * The connections this node holds to `peerId`. {@link dialAddr} returns an open one without relay
+	 * limits rather than opening a second — what libp2p's dial queue did (`findExistingConnection`)
+	 * and the transport manager does not. Optional so a double need not provide it, and typed by
+	 * what is read of each connection so the strand redial's node slice (bare `remotePeer`s, which
+	 * never count as open) satisfies it without a cast.
+	 */
+	getConnections?(peerId?: PeerId): ReadonlyArray<ReusableConnection>;
 	dial(addr: Multiaddr, options: { signal: AbortSignal }): Promise<Connection>;
 }
 
@@ -160,12 +228,22 @@ interface StopEventsLike {
  * address that job is on instead of its own. The transport manager dials exactly the address
  * given; the two gater hooks the queue would have consulted are run here, and the upgrader
  * still runs `denyOutboundConnection` and verifies the peer id the address carries during the
- * Noise handshake. A relayed address still passes through the queue for its relay leg (the
- * circuit transport dials the relay by peer id).
+ * Noise handshake, so the address must carry the id of the peer expected to answer
+ * ({@link withTrailingPeerId}). An open connection to that peer without relay limits is handed
+ * back instead of dialing ({@link reusableConnection}), as the queue would have. A relayed
+ * address still passes through the queue for its relay leg (the circuit transport dials the
+ * relay by peer id).
  *
  * The queue would also have aborted the attempt at shutdown; here the node's `status` is
  * checked before dialing and its `stop` event aborts an attempt in flight. Without
  * `transportManager.dial` (libp2p internals moved) the attempt goes through the queue, logged.
+ *
+ * What else the queue did that this does not: record the outcome in the peer store
+ * (`LAST_DIAL_SUCCESS_KEY` / `LAST_DIAL_FAILURE_KEY`, read only by libp2p's own address sorter,
+ * which these dials do not use); apply `maxParallelDials` and `maxDialQueueLength`; and refuse
+ * a dial of this node's own id before touching the network — the upgrader still throws
+ * `Can not dial self` after the handshake, `dialPeerAddrs` drops addresses relaying through this
+ * node, `applySeed` skips itself, and the reconcile pass never lists itself.
  */
 export async function dialAddr(dialer: AddrDialer, addr: Multiaddr, signal: AbortSignal, label: string): Promise<Connection> {
 	if (dialer.status !== undefined && dialer.status !== 'started') {
@@ -177,7 +255,13 @@ export async function dialAddr(dialer: AddrDialer, addr: Multiaddr, signal: Abor
 		log('%s: no transportManager.dial on this node — libp2p internals moved? dialing through the queue', label);
 		return dialer.dial(addr, { signal });
 	}
-	await assertDialAllowed(components?.connectionGater, addr, label);
+	const target = boundPeer(addr, label);
+	const open = reusableConnection(dialer, target, addr);
+	if (open !== undefined) {
+		log('%s: reusing the open connection to %s', label, target);
+		return open;
+	}
+	await assertDialAllowed(components?.connectionGater, target, addr, label);
 	const events = dialer as AddrDialer & StopEventsLike;
 	const controller = new AbortController();
 	const onAbort = (): void => controller.abort(signal.reason);
@@ -185,17 +269,64 @@ export async function dialAddr(dialer: AddrDialer, addr: Multiaddr, signal: Abor
 	signal.addEventListener('abort', onAbort, { once: true });
 	events.addEventListener?.('stop', onStop);
 	try {
+		// NOTE: a relayed address's relay leg still goes through the dial queue (the circuit
+		// transport dials the relay by peer id), so another dial of the relay can join it. Fine
+		// while a relay connection is normally already open for the reservation; revisit if a
+		// relayed attempt is ever seen timing out while a dial of the relay by id is in flight.
 		return await manager.dial(addr, { signal: controller.signal });
+	} catch (err) {
+		// A transport reports an aborted connect as its own failure ("Could not connect to …");
+		// why it was aborted — the deadline, or the stop — is the error worth surfacing.
+		throw controller.signal.aborted ? controller.signal.reason : err;
 	} finally {
 		signal.removeEventListener('abort', onAbort);
 		events.removeEventListener?.('stop', onStop);
 	}
 }
 
-async function assertDialAllowed(gater: ConnectionGater | undefined, addr: Multiaddr, label: string): Promise<void> {
+/**
+ * The peer `addr` is bound to, or `undefined` when it names none. Throws, naming the address,
+ * when the id it carries does not parse: the upgrader would reject the same address after
+ * connecting, so failing before the network costs nothing and says why.
+ */
+function boundPeer(addr: Multiaddr, label: string): PeerId | undefined {
 	const id = trailingPeerId(addr);
-	if (id !== null && await gater?.denyDialPeer?.(peerIdFromString(id))) {
-		throw new Error(`${label}: the connection gater denies dialing ${id}`);
+	if (id === null) {
+		return undefined;
+	}
+	try {
+		return peerIdFromString(id);
+	} catch (err) {
+		throw new Error(`${label}: ${addr.toString()} does not end in a peer id that parses`, { cause: err });
+	}
+}
+
+/**
+ * An open connection to `target` without relay limits, when the node holds one — the rule
+ * libp2p's dial queue applied before dialing (`findExistingConnection`): a direct connection is
+ * preferred, and a relayed one is not reused for a direct address, so the dial can upgrade the
+ * link. `undefined` when the node holds none, or does not expose its connections.
+ *
+ * Returned as the `Connection` it is on a real node. A double that reports an open connection
+ * must supply what its caller uses of one.
+ */
+function reusableConnection(dialer: AddrDialer, target: PeerId | undefined, addr: Multiaddr): Connection | undefined {
+	if (target === undefined || dialer.getConnections === undefined) {
+		return undefined;
+	}
+	const expected = target.toString();
+	const open = dialer.getConnections(target)
+		.filter((c) => c.status === 'open' && c.limits === undefined && c.remotePeer.toString() === expected);
+	const existing = open.find((c) => c.direct !== false) ?? open[0];
+	if (existing === undefined || (existing.direct === false && !isRelayed(addr))) {
+		return undefined;
+	}
+	return existing as Connection;
+}
+
+async function assertDialAllowed(gater: ConnectionGater | undefined, target: PeerId | undefined, addr: Multiaddr, label: string): Promise<void> {
+	if (target !== undefined && await gater?.denyDialPeer?.(target)) {
+		throw new Error(`${label}: the connection gater denies dialing ${target.toString()}`);
 	}
 	if (await gater?.denyDialMultiaddr?.(addr)) {
 		throw new Error(`${label}: the connection gater denies dialing ${addr.toString()}`);
@@ -242,13 +373,19 @@ interface AddrAttemptFailure {
 }
 
 /**
- * Dial one peer from `addrs`, one address per {@link dialAddr} call, and return the
+ * Dial `peerId` from `addrs`, one address per {@link dialAddr} call, and return the
  * first connection that forms. Direct addresses are tried before relayed ones
  * ({@link directBeforeRelayed}); otherwise the given order is kept.
  *
- * Addresses that relay through this node are dropped first ({@link relaysThrough}):
- * dialing one could only fail with `Can not dial self`. When that leaves nothing
- * of a non-empty list, this throws {@link SelfRelayOnlyError} without dialing.
+ * Every address is first bound to `peerId` ({@link withTrailingPeerId}), so the
+ * handshake verifies that the peer expected is the one that answered; an address
+ * naming another peer is dropped and logged. When that leaves nothing of a
+ * non-empty list — every address names someone else, or `peerId` does not parse —
+ * this throws without dialing.
+ *
+ * Addresses that relay through this node are dropped next ({@link relaysThrough}):
+ * dialing one could only fail with `Can not dial self`. When that leaves nothing,
+ * this throws {@link SelfRelayOnlyError} without dialing.
  *
  * Addresses naming a transport this node lacks are not filtered out first: the
  * transport manager rejects those at once (`TransportUnavailableError`), so they
@@ -256,21 +393,50 @@ interface AddrAttemptFailure {
  *
  * Otherwise throws when no address connects — see {@link tryAddrsInTurn} for the error.
  *
+ * @param peerId The peer every address must reach, as every caller already holds it
+ *   (a `CadrePeer` row key, a seed peer's id, a strand member's id).
  * @param label Names the dial in timeout messages and logs, e.g.
  *   `reconcileControlCohort dial of sibling <peerId>`; each attempt reads
  *   `<label> via <addr>`.
  */
 export async function dialPeerAddrs(
 	dialer: AddrDialer,
+	peerId: string,
 	addrs: readonly Multiaddr[],
 	budget: PeerDialBudget,
 	label: string,
 ): Promise<Connection> {
-	const dialable = withoutSelfRelayed(dialer, addrs, label);
-	if (addrs.length > 0 && dialable.length === 0) {
+	const bound = boundTo(peerId, addrs, label);
+	if (addrs.length > 0 && bound.length === 0) {
+		throw new Error(`${label}: none of the ${addrs.length} candidate addresses binds to ${peerId}`);
+	}
+	const dialable = withoutSelfRelayed(dialer, bound, label);
+	if (bound.length > 0 && dialable.length === 0) {
 		throw new SelfRelayOnlyError(label);
 	}
 	return tryAddrsInTurn(directBeforeRelayed(dialable), budget, label, (addr, signal) => dialAddr(dialer, addr, signal, label));
+}
+
+/**
+ * `addrs` each bound to `peerId` ({@link withTrailingPeerId}). An address naming another peer
+ * is dropped, as is every address when `peerId` cannot be encapsulated (it does not parse);
+ * each drop is logged with its reason.
+ */
+function boundTo(peerId: string, addrs: readonly Multiaddr[], label: string): Multiaddr[] {
+	const bound: Multiaddr[] = [];
+	for (const addr of addrs) {
+		try {
+			const withId = withTrailingPeerId(addr, peerId);
+			if (withId === null) {
+				log('%s: dropping %s — it names a peer other than %s', label, addr.toString(), peerId);
+			} else {
+				bound.push(withId);
+			}
+		} catch (err) {
+			log('%s: cannot bind %s to %s: %o', label, addr.toString(), peerId, err);
+		}
+	}
+	return bound;
 }
 
 /**
@@ -341,8 +507,12 @@ export async function tryAddrsInTurn<T>(
  * bounded amount of time, so the caller's order is the better guide.
  */
 export function directBeforeRelayed(addrs: readonly Multiaddr[]): Multiaddr[] {
-	const relayed = (addr: Multiaddr): boolean => addr.getComponents().some((c) => c.name === 'p2p-circuit');
-	return [...addrs.filter((addr) => !relayed(addr)), ...addrs.filter(relayed)];
+	return [...addrs.filter((addr) => !isRelayed(addr)), ...addrs.filter(isRelayed)];
+}
+
+/** Whether `addr` reaches its target through a circuit relay. */
+function isRelayed(addr: Multiaddr): boolean {
+	return addr.getComponents().some((c) => c.name === 'p2p-circuit');
 }
 
 /** `addrs` without those that relay through `dialer` itself, each dropped one logged. */

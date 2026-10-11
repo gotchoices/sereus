@@ -50,6 +50,15 @@ interface FakeControlOpts {
 /** A stand-in relay peer id, for the circuit addresses these tests build. */
 const RELAY_ID = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 
+/**
+ * Real peer ids for the siblings the fakes dial: the dial binds every address to the peer it
+ * expects (`dialPeerAddrs`), which needs an id that parses. Self stays synthetic — it is never dialed.
+ */
+const SIBLING_1 = await realPeerId();
+const SIBLING_A = await realPeerId();
+const SIBLING_B = await realPeerId();
+const M = await Promise.all([1, 2, 3, 4].map(() => realPeerId()));
+
 /** A minimal control-node fake exposing only what reconcile reads. */
 function fakeControlNode(opts: FakeControlOpts): unknown {
   return {
@@ -198,16 +207,16 @@ describe('CadreNode.reconcileControlCohort', () => {
     const { dialCalls, resolvedFor } = injectCohort(node, {
       members: [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-1', multiaddr: null }
+        { peerId: SIBLING_1, multiaddr: null }
       ],
       connections: []
     });
 
     // The pass reports the sibling it dialled, so a caller can tell this pass
     // opened the link.
-    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: ['sibling-1'] });
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [SIBLING_1] });
 
-    expect(resolvedFor).toEqual(['sibling-1']);
+    expect(resolvedFor).toEqual([SIBLING_1]);
     expect(dialCalls).toHaveLength(1);
   });
 
@@ -219,16 +228,16 @@ describe('CadreNode.reconcileControlCohort', () => {
     const { dialCalls, resolvedFor } = injectCohort(node, {
       members: [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-1', multiaddr: null }
+        { peerId: SIBLING_1, multiaddr: null }
       ],
-      connections: ['sibling-1']
+      connections: [SIBLING_1]
     });
 
     // Not reported as dialled: a link something else opened is not this pass's.
     await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
 
     expect(dialCalls).toEqual([]);
-    expect(resolvedFor).toEqual(['sibling-1']);
+    expect(resolvedFor).toEqual([SIBLING_1]);
   });
 
   it('never dials self even if self appears as a sibling row', async () => {
@@ -336,8 +345,8 @@ describe('CadreNode.reconcileControlCohort', () => {
     (node as unknown as { controlDatabase: unknown }).controlDatabase = {
       queryCadrePeers: async () => [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-a', multiaddr: null },
-        { peerId: 'sibling-b', multiaddr: null }
+        { peerId: SIBLING_A, multiaddr: null },
+        { peerId: SIBLING_B, multiaddr: null }
       ],
       getOwnerKeys: async () => new Set<string>()
     };
@@ -347,7 +356,7 @@ describe('CadreNode.reconcileControlCohort', () => {
     // A per-peer dial failure must not throw out of the pass; both siblings are
     // attempted, and a failed dial is not reported as dialled.
     await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
-    expect(resolvedFor.sort()).toEqual(['sibling-a', 'sibling-b']);
+    expect(resolvedFor.sort()).toEqual([SIBLING_A, SIBLING_B].sort());
   });
 
   it('abandons a dial that never answers at controlCohort.dialTimeoutMs and dials the next sibling', async () => {
@@ -378,8 +387,8 @@ describe('CadreNode.reconcileControlCohort', () => {
     (node as unknown as { controlDatabase: unknown }).controlDatabase = {
       queryCadrePeers: async () => [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-a', multiaddr: null },
-        { peerId: 'sibling-b', multiaddr: null }
+        { peerId: SIBLING_A, multiaddr: null },
+        { peerId: SIBLING_B, multiaddr: null }
       ],
       getOwnerKeys: async () => new Set<string>()
     };
@@ -387,7 +396,7 @@ describe('CadreNode.reconcileControlCohort', () => {
       async (id: string) => { dialedPeers.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
 
     await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
-    expect(dialedPeers.sort()).toEqual(['sibling-a', 'sibling-b']);
+    expect(dialedPeers.sort()).toEqual([SIBLING_A, SIBLING_B].sort());
     // One deadline per sibling, and each one cancelled its dial rather than
     // leaking it — the whole point of `withDeadline` over a bare `withTimeout`.
     expect(dialSignals.map((s) => s.aborted)).toEqual([true, true]);
@@ -398,14 +407,14 @@ describe('CadreNode.reconcileControlCohort', () => {
     const { dialCalls, queryCalls } = injectCohort(node, {
       members: [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-1', multiaddr: null }
+        { peerId: SIBLING_1, multiaddr: null }
       ]
     });
 
     const results = await Promise.all([node.reconcileControlCohort(), node.reconcileControlCohort()]);
 
     // The joining call resolves to the in-flight pass's own result.
-    expect(results).toEqual([{ dialed: ['sibling-1'] }, { dialed: ['sibling-1'] }]);
+    expect(results).toEqual([{ dialed: [SIBLING_1] }, { dialed: [SIBLING_1] }]);
     // One coalesced pass. A single pass reads membership twice (the per-stream
     // authz snapshot refresh, then sibling enumeration) — so 2 here, not 4,
     // proves the second reconcile call rode the first's in-flight run.
@@ -418,7 +427,7 @@ describe('CadreNode.reconcileControlCohort', () => {
     const { dialCalls, resolvedFor, queryCalls } = injectCohort(node, {
       members: [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-1', multiaddr: null }
+        { peerId: SIBLING_1, multiaddr: null }
       ],
       running: false
     });
@@ -443,17 +452,16 @@ describe('CadreNode.reconcileControlCohort', () => {
   });
 
   it('honors the configured targetDegree cap end-to-end', async () => {
-    // Self + 4 non-owner siblings, targetDegree 2 → only 2 dials. (The
-    // synthetic non-Ed25519 ids never classify as backbone; the backbone-preference
-    // ordering itself is covered by control-cohort.spec.ts.)
+    // Self + 4 non-owner siblings, targetDegree 2 → only 2 dials, whichever two
+    // the backbone preference picks (that ordering is covered by control-cohort.spec.ts).
     const node = new CadreNode(createConfig({ network: { controlCohort: { targetDegree: 2 } } }));
     const { dialCalls } = injectCohort(node, {
       members: [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'm-1', multiaddr: null },
-        { peerId: 'm-2', multiaddr: null },
-        { peerId: 'm-3', multiaddr: null },
-        { peerId: 'm-4', multiaddr: null }
+        { peerId: M[0], multiaddr: null },
+        { peerId: M[1], multiaddr: null },
+        { peerId: M[2], multiaddr: null },
+        { peerId: M[3], multiaddr: null }
       ]
     });
 
@@ -753,7 +761,7 @@ describe('CadreNode.reconcileControlCohort — revoked-row reap sweep', () => {
     const { reapCalls } = injectCohort(node, {
       members: [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-1', multiaddr: null }
+        { peerId: SIBLING_1, multiaddr: null }
       ],
       connections: []
     });
@@ -769,9 +777,9 @@ describe('CadreNode.reconcileControlCohort — revoked-row reap sweep', () => {
       selfPeerId: 'self-peer',
       members: [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-1', multiaddr: null }
+        { peerId: SIBLING_1, multiaddr: null }
       ],
-      connections: ['sibling-1']
+      connections: [SIBLING_1]
     });
 
     await node.reconcileControlCohort();
@@ -804,16 +812,16 @@ describe('CadreNode.reconcileControlCohort — revoked-row reap sweep', () => {
     const { reapCalls, dialCalls, resolvedFor } = injectCohort(node, {
       members: [
         { peerId: 'self-peer', multiaddr: null },
-        { peerId: 'sibling-1', multiaddr: null }
+        { peerId: SIBLING_1, multiaddr: null }
       ],
       connections: ['some-other-peer'],
       reapThrows: true
     });
 
-    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: ['sibling-1'] });
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [SIBLING_1] });
 
     expect(reapCalls).toEqual(['self-peer']);
-    expect(resolvedFor).toEqual(['sibling-1']);
+    expect(resolvedFor).toEqual([SIBLING_1]);
     expect(dialCalls).toHaveLength(1);
   });
 });
@@ -856,13 +864,13 @@ function injectLedgerOwner(
 
 const SELF_AND_SIBLING = [
   { peerId: 'self-peer', multiaddr: null },
-  { peerId: 'sibling-1', multiaddr: null }
+  { peerId: SIBLING_1, multiaddr: null }
 ];
 
 describe('CadreNode.reconcileControlCohort — revocation ledger marker', () => {
   it('files the marker on a connected owner node, then never again in this process', async () => {
     const node = new CadreNode(createConfig());
-    injectCohort(node, { members: SELF_AND_SIBLING, connections: ['sibling-1'] });
+    injectCohort(node, { members: SELF_AND_SIBLING, connections: [SIBLING_1] });
     const { filings } = injectLedgerOwner(node);
 
     await node.reconcileControlCohort();
@@ -885,7 +893,7 @@ describe('CadreNode.reconcileControlCohort — revocation ledger marker', () => 
 
   it('does NOT file on a node that cannot sign as an owner', async () => {
     const node = new CadreNode(createConfig());
-    injectCohort(node, { members: SELF_AND_SIBLING, connections: ['sibling-1'] });
+    injectCohort(node, { members: SELF_AND_SIBLING, connections: [SIBLING_1] });
     const { filings } = injectLedgerOwner(node, { canAuthorize: false });
 
     await node.reconcileControlCohort();
@@ -895,7 +903,7 @@ describe('CadreNode.reconcileControlCohort — revocation ledger marker', () => 
 
   it('an already-open answer also ends the attempts', async () => {
     const node = new CadreNode(createConfig());
-    injectCohort(node, { members: SELF_AND_SIBLING, connections: ['sibling-1'] });
+    injectCohort(node, { members: SELF_AND_SIBLING, connections: [SIBLING_1] });
     const { filings } = injectLedgerOwner(node, { outcomes: ['already-open'] });
 
     await node.reconcileControlCohort();
@@ -909,7 +917,7 @@ describe('CadreNode.reconcileControlCohort — revocation ledger marker', () => 
     const { dialCalls, reapCalls } = injectCohort(node, { members: SELF_AND_SIBLING, connections: ['some-other-peer'] });
     const { filings } = injectLedgerOwner(node, { outcomes: [new Error('ledger boom'), 'opened'] });
 
-    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: ['sibling-1'] });
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [SIBLING_1] });
     expect(filings()).toBe(1);
     expect(reapCalls).toEqual(['self-peer']);
     expect(dialCalls).toHaveLength(1);
@@ -998,14 +1006,14 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
     const owner = await realPeerId();
     const bootstrapAddr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`;
     const { dialCalls } = injectCohort(node, {
-      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: 'sibling-1', multiaddr: null }]
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: SIBLING_1, multiaddr: null }]
     });
     recordSeed(node, seedWith([{ peerId: owner, multiaddrs: [bootstrapAddr], isOwner: true }]));
 
     await node.reconcileControlCohort();
 
-    // The stubbed resolver's sibling address, and nothing from the seed.
-    expect(dialedAddrs(dialCalls)).toEqual(['/ip4/1.2.3.4/tcp/4001']);
+    // The stubbed resolver's sibling address, bound to the sibling, and nothing from the seed.
+    expect(dialedAddrs(dialCalls)).toEqual([`/ip4/1.2.3.4/tcp/4001/p2p/${SIBLING_1}`]);
   });
 
   it('binds a bootstrap address that names no peer to the peer it was retained under', async () => {

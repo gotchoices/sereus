@@ -1003,17 +1003,20 @@ describe('CadreNode', () => {
       });
 
       // Sender: stub the signed-record address resolution and loop the control
-      // node's dialProtocol straight into the receiver service (no real libp2p).
+      // node's dial (the wake dials each address on its own, `dialAddr`, and opens
+      // its stream on the connection returned) straight into the receiver service.
       const sender = new CadreNode(createConfig());
       (sender as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs =
         async () => [multiaddr('/ip4/1.2.3.4/tcp/4001')];
       (sender as unknown as { controlNode: unknown }).controlNode = {
-        dialProtocol: async () => {
-          const { clientStream, serverStream } = duplexPair();
-          void (receiver as unknown as { handleStream(s: unknown, p: string): Promise<void> })
-            .handleStream(serverStream, 'sender-peer');
-          return clientStream;
-        }
+        dial: async () => ({
+          newStream: async () => {
+            const { clientStream, serverStream } = duplexPair();
+            void (receiver as unknown as { handleStream(s: unknown, p: string): Promise<void> })
+              .handleStream(serverStream, 'sender-peer');
+            return clientStream;
+          }
+        })
       };
 
       const ack = await sender.pushWake('target-peer', 'push-strand', 'activity');
@@ -1029,7 +1032,7 @@ describe('CadreNode', () => {
       const sender = new CadreNode(createConfig());
       (sender as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs = async () => [];
       (sender as unknown as { controlNode: unknown }).controlNode = {
-        dialProtocol: async () => { throw new Error('should not dial'); }
+        dial: async () => { throw new Error('should not dial'); }
       };
 
       await expect(sender.pushWake('target-peer', 'push-strand')).rejects.toThrow(/no dialable/i);

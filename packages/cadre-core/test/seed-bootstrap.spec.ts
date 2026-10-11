@@ -1377,7 +1377,8 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
 
     releaseOwnerDial();
     await handled;
-    expect(ownerDials).toEqual([ownerAddr]);
+    // The seed's address carries no peer id; the dial binds it to the owner's.
+    expect(ownerDials).toEqual([`${ownerAddr}/p2p/${ownerPeerId}`]);
     expect(applied).toEqual([1]);
   });
 

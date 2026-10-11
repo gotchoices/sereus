@@ -25,7 +25,6 @@
  * key), and its binding to `peerId` is checked separately at resolve time.
  */
 
-import type { Multiaddr } from '@multiformats/multiaddr';
 import { digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
 import { controlAuthorizationFields } from './control-authorization.js';
 import type { PeerAddressRecord, PeerResolveTrustPolicy } from './types.js';
@@ -127,51 +126,9 @@ export function isSignalingAddr(addr: string): boolean {
   return addr.includes(SIGNALING_PREFIX);
 }
 
-/**
- * The peer id a multiaddr terminates in, or `null` when it names none.
- *
- * The LAST `/p2p/` component is the dial target: a circuit address
- * (`…/p2p/<relay>/p2p-circuit/p2p/<target>`) names the relay first and the peer
- * being reached last. Replaces the deprecated `Multiaddr.getPeerId()`, which
- * cannot express that distinction.
- */
-export function trailingPeerId(addr: Multiaddr): string | null {
-  const p2p = addr.getComponents().filter((c) => c.name === 'p2p');
-  return p2p.length > 0 ? (p2p[p2p.length - 1].value ?? null) : null;
-}
-
-/**
- * `addr` guaranteed to terminate in `/p2p/<peerId>` — the shape every dial path
- * needs — or `null` when it cannot, because the address already terminates in a
- * DIFFERENT peer id and therefore does not reach `peerId` at all.
- *
- * Three input shapes, matching what a `CadrePeer` record can legitimately carry:
- *
- * - no `/p2p/` component (`/ip4/1.2.3.4/tcp/4001`) — the suffix is appended;
- * - a relay hop with the destination missing (`…/p2p/<relay>/p2p-circuit`) — the
- *   last component is the circuit, not a peer id, so the suffix is appended and
- *   the address becomes the full `…/p2p/<relay>/p2p-circuit/p2p/<peerId>`;
- * - already terminating in `/p2p/<X>` — returned untouched when `X` is `peerId`,
- *   dropped otherwise.
- *
- * This is deliberately the same rule libp2p applies internally in
- * `calculateMultiaddrs` (append when the LAST component is not `p2p`) followed by
- * its wrong-peer-id filter, so a normalized list matches what libp2p would have
- * built anyway. Normalizing before the dial is what keeps a list from mixing
- * suffixed and unsuffixed entries, which `getPeerAddress` rejects outright
- * ("Multiaddrs must all have the same peer id or have no peer id") — taking the
- * whole peer down with it, not just the odd address.
- *
- * Never use before signature verification: verification runs against the
- * original on-record strings.
- */
-export function withTrailingPeerId(addr: Multiaddr, peerId: string): Multiaddr | null {
-  const components = addr.getComponents();
-  if (components[components.length - 1]?.name !== 'p2p') {
-    return addr.encapsulate(`/p2p/${peerId}`);
-  }
-  return trailingPeerId(addr) === peerId ? addr : null;
-}
+// The two address helpers are defined in `peer-dial.ts`, which must stay free of this module
+// (it pulls in the crypto plugin) to remain importable from anywhere without a cycle.
+export { trailingPeerId, withTrailingPeerId } from './peer-dial.js';
 
 /**
  * Return `addrs` with signaling (`/p2p-circuit`) addrs first, otherwise stable.

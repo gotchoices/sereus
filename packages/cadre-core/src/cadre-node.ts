@@ -3291,8 +3291,9 @@ export class CadreNode implements SAppIdLookup {
    * ({@link bootstrapDialAddrs}).
    *
    * An address naming a DIFFERENT trailing peer id is dropped: it does not reach
-   * `peerId`, so it does not belong in this peer's candidate list (libp2p's own
-   * dial queue filters the same shape out one layer lower).
+   * `peerId`, so it does not belong in this peer's candidate list (`dialPeerAddrs`
+   * binds every address to the peer it is given and drops the same shape one
+   * layer lower; here it is dropped before it can reach the address book).
    */
   private normalizeDialAddrs(addrs: Multiaddr[], peerId: string): Multiaddr[] {
     // Keyed by the NORMALIZED string, so two entries differing only by the suffix
@@ -3799,6 +3800,7 @@ export class CadreNode implements SAppIdLookup {
       log('reconcileControlCohort: dialing sibling %s (%d addr(s))', sibling.peerId, addrs.length);
       await dialPeerAddrs(
         controlNode,
+        sibling.peerId,
         addrs,
         this.controlDialBudget(),
         `reconcileControlCohort dial of sibling ${sibling.peerId}`
@@ -3834,9 +3836,9 @@ export class CadreNode implements SAppIdLookup {
    *
    * The list may name transports this node cannot dial (a lent node reports TCP
    * and `/ws` addresses to a phone that dials WebSockets only). That needs no
-   * filtering here: libp2p's dial queue (`calculateMultiaddrs`, libp2p 3.3.11)
-   * rejects an address no transport can dial before touching the network, so
-   * such an address costs a log line.
+   * filtering here: libp2p's transport manager rejects an address no transport
+   * can dial before touching the network (`TransportUnavailableError`), so such
+   * an address costs a log line.
    *
    * The list is NOT handed to one `dial()`. libp2p tries a multi-address dial's
    * addresses one after another under a single deadline, and sorts loopback
@@ -4065,6 +4067,7 @@ export class CadreNode implements SAppIdLookup {
       log('reconcileControlCohort(cold-start): dialing bootstrap peer %s (%d addr(s))', peerId, parsed.length);
       await dialPeerAddrs(
         controlNode,
+        peerId,
         parsed,
         this.controlDialBudget(),
         `reconcileControlCohort cold-start dial of bootstrap peer ${peerId}`

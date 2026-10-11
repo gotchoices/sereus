@@ -30,7 +30,7 @@ import type { Multiaddr } from '@multiformats/multiaddr';
 import type { StrandInstance, WakeRequest, WakeAck } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { type ControlStream, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
-import { tryAddrsInTurn } from './peer-dial.js';
+import { dialAddr, tryAddrsInTurn } from './peer-dial.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-wake');
@@ -356,12 +356,14 @@ export async function dialWake(
 }
 
 /**
- * Open one stream, send the request, half-close, and read the ack.
+ * Dial one address, open one stream, send the request, half-close, and read the ack.
  *
- * `signal` is the per-attempt deadline from {@link dialWake}: it goes to
- * `dialProtocol` so a timeout during connect aborts the dial, and into
- * {@link exchangeFrame} so a timeout after the stream is open resets it —
- * releasing the otherwise unbounded ack-read.
+ * The address is dialed outside libp2p's dial queue (`dialAddr`), so another dial of
+ * the target in flight cannot capture this attempt; an open connection is still reused.
+ *
+ * `signal` is the per-attempt deadline from {@link dialWake}: it goes to the dial so a
+ * timeout during connect aborts it, and into {@link exchangeFrame} so a timeout after
+ * the stream is open resets it — releasing the otherwise unbounded ack-read.
  */
 async function sendWake(
   node: Libp2p,
@@ -371,12 +373,13 @@ async function sendWake(
   timeoutMs: number,
   signal: AbortSignal,
 ): Promise<WakeAck> {
+  const connection = await dialAddr(node, addr, signal, 'Wake dial');
   // `runOnLimitedConnection: true`: the target may be reachable only over a
   // circuit-relay connection (the signaling-first addr), which libp2p marks
   // "limited". The wake exchange is a single tiny request→ack well within the
   // relay's data/duration cap, so opening it on the limited connection is safe
   // and is the whole point of dialing the relay address.
-  const rawStream = await node.dialProtocol(addr, protocolId, { runOnLimitedConnection: true, signal });
+  const rawStream = await connection.newStream(protocolId, { runOnLimitedConnection: true, signal });
 
   const ack = await exchangeFrame(
     rawStream as unknown as ControlStream,

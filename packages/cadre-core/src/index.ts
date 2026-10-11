@@ -481,8 +481,11 @@ export {
 } from './control-cohort.js';
 
 // Dialing one peer from several candidate addresses, each under its own time
-// limit, so an address that never answers cannot starve the rest.
+// limit, so an address that never answers cannot starve the rest. Each address is
+// bound to the peer expected and dialed outside libp2p's dial queue (`dialAddr`),
+// so another dial of the same peer in flight cannot capture the attempt.
 export {
+  dialAddr,
   dialPeerAddrs,
   SelfRelayOnlyError,
   PeerUnreachableError,

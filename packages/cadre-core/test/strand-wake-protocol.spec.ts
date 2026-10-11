@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { multiaddr } from '@multiformats/multiaddr';
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from '@libp2p/interface';
 import {
   StrandWakeService,
@@ -206,15 +206,28 @@ describe('StrandWakeService.handleStream — read-timeout + concurrency cap', ()
 });
 
 describe('dialWake — sender round-trip against a live receiver', () => {
-  /** A mock control node whose dialProtocol loops straight into a receiver service. */
-  function loopbackNode(receiver: StrandWakeService, remotePeerId = 'member-peer'): Libp2p {
+  /**
+   * A control-node double from a function answering each address's dial with the stream the
+   * wake will run on, or failing the dial. `sendWake` dials each address on its own (`dialAddr`,
+   * which falls back to `dial` on a node without libp2p's internals) and opens its stream on the
+   * connection that returns.
+   */
+  function dialing(open: (addr: Multiaddr) => Promise<unknown>): Libp2p {
     return {
-      dialProtocol: async () => {
-        const { clientStream, serverStream } = duplexPair();
-        void runHandleStream(receiver, serverStream, remotePeerId);
-        return clientStream;
+      dial: async (addr: Multiaddr) => {
+        const stream = await open(addr);
+        return { newStream: async () => stream };
       }
     } as unknown as Libp2p;
+  }
+
+  /** A control-node double whose dials loop straight into a receiver service. */
+  function loopbackNode(receiver: StrandWakeService, remotePeerId = 'member-peer'): Libp2p {
+    return dialing(async () => {
+      const { clientStream, serverStream } = duplexPair();
+      void runHandleStream(receiver, serverStream, remotePeerId);
+      return clientStream;
+    });
   }
 
   it('sends a request and returns the receiver ack, waking the strand', async () => {
@@ -263,15 +276,13 @@ describe('dialWake — sender round-trip against a live receiver', () => {
     const receiver = makeService(instance, { wake: async () => { instance.status = 'active'; } });
 
     let attempts = 0;
-    const node = {
-      dialProtocol: async () => {
-        attempts++;
-        if (attempts === 1) throw new Error('first address unreachable');
-        const { clientStream, serverStream } = duplexPair();
-        void runHandleStream(receiver, serverStream, 'member-peer');
-        return clientStream;
-      }
-    } as unknown as Libp2p;
+    const node = dialing(async () => {
+      attempts++;
+      if (attempts === 1) throw new Error('first address unreachable');
+      const { clientStream, serverStream } = duplexPair();
+      void runHandleStream(receiver, serverStream, 'member-peer');
+      return clientStream;
+    });
 
     const ack = await dialWake(
       node,
@@ -284,7 +295,7 @@ describe('dialWake — sender round-trip against a live receiver', () => {
   });
 
   it('throws when given no dialable addresses', async () => {
-    const node = { dialProtocol: async () => { throw new Error('should not dial'); } } as unknown as Libp2p;
+    const node = dialing(async () => { throw new Error('should not dial'); });
     await expect(dialWake(node, [], { strandId: 's' })).rejects.toThrow(/no dialable/i);
   });
 
@@ -304,11 +315,9 @@ describe('dialWake — sender round-trip against a live receiver', () => {
     // `lastError` was thrown, so a two-address wake reported the address tried
     // LAST while the interesting failure (the signaling addr, tried first) was
     // invisible. An entire fix-stage ticket was written about the wrong address.
-    const node = {
-      dialProtocol: async (addr: { toString(): string }) => {
-        throw new Error(`unreachable via ${addr.toString()}`);
-      }
-    } as unknown as Libp2p;
+    const node = dialing(async (addr) => {
+      throw new Error(`unreachable via ${addr.toString()}`);
+    });
 
     const circuit = multiaddr('/ip4/9.9.9.9/tcp/4001/p2p-circuit');
     const direct = multiaddr('/ip4/10.255.0.1/tcp/4001/ws');
@@ -323,11 +332,9 @@ describe('dialWake — sender round-trip against a live receiver', () => {
   });
 
   it('carries the FIRST failure as the cause of the aggregated error', async () => {
-    const node = {
-      dialProtocol: async (addr: { toString(): string }) => {
-        throw new Error(`boom ${addr.toString()}`);
-      }
-    } as unknown as Libp2p;
+    const node = dialing(async (addr) => {
+      throw new Error(`boom ${addr.toString()}`);
+    });
 
     const first = multiaddr('/ip4/1.1.1.1/tcp/1');
     const err = await dialWakeError(dialWake(node, [first, multiaddr('/ip4/2.2.2.2/tcp/2')], { strandId: 's' }));
@@ -337,9 +344,7 @@ describe('dialWake — sender round-trip against a live receiver', () => {
   });
 
   it('throws the single failure unchanged when there is only one candidate', async () => {
-    const node = {
-      dialProtocol: async () => { throw new Error('the only reason'); }
-    } as unknown as Libp2p;
+    const node = dialing(async () => { throw new Error('the only reason'); });
 
     await expect(dialWake(node, [multiaddr('/ip4/1.1.1.1/tcp/1')], { strandId: 's' }))
       .rejects.toThrow('the only reason');
@@ -349,9 +354,7 @@ describe('dialWake — sender round-trip against a live receiver', () => {
     // Three blackholing addresses: pre-fix this cost 3 x timeoutMs with nothing
     // choosing that number. The budget makes the target peer the unit, and the
     // untried candidates are named rather than silently skipped.
-    const node = {
-      dialProtocol: () => new Promise<never>(() => { /* blackhole: never settles */ })
-    } as unknown as Libp2p;
+    const node = dialing(() => new Promise<never>(() => { /* blackhole: never settles */ }));
 
     const addrs = [
       multiaddr('/ip4/1.1.1.1/tcp/1'),
@@ -375,17 +378,15 @@ describe('dialWake — sender round-trip against a live receiver', () => {
     const receiver = makeService(instance, { wake: async () => { instance.status = 'active'; } });
 
     let attempts = 0;
-    const node = {
-      dialProtocol: async () => {
-        attempts++;
-        if (attempts === 1) {
-          return await new Promise<never>(() => { /* blackhole: burns the first slice */ });
-        }
-        const { clientStream, serverStream } = duplexPair();
-        void runHandleStream(receiver, serverStream, 'member-peer');
-        return clientStream;
+    const node = dialing(async () => {
+      attempts++;
+      if (attempts === 1) {
+        return await new Promise<never>(() => { /* blackhole: burns the first slice */ });
       }
-    } as unknown as Libp2p;
+      const { clientStream, serverStream } = duplexPair();
+      void runHandleStream(receiver, serverStream, 'member-peer');
+      return clientStream;
+    });
 
     const ack = await dialWake(
       node,
@@ -403,9 +404,7 @@ describe('dialWake — sender round-trip against a live receiver', () => {
     // sender's unbounded ack-read leaked the dangling stream. The per-attempt
     // AbortController now fires on timeout and resets the live stream.
     const clientStream = new PausableStream();
-    const node = {
-      dialProtocol: async () => clientStream
-    } as unknown as Libp2p;
+    const node = dialing(async () => clientStream);
 
     await expect(
       dialWake(node, [multiaddr('/ip4/1.2.3.4/tcp/4001')], { strandId: 's' }, { timeoutMs: 50 })

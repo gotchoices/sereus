@@ -29,7 +29,17 @@ import { startSilentServer, type SilentServer } from './silent-server.js';
  * answered. The dropped addresses are loopback servers that never answer (`silent-server.ts`).
  */
 
-/** Small, so the test is quick; the per-peer limit below is what the old dial would exhaust. */
+/**
+ * Small, so the test is quick; the per-peer limit below is what the old dial would exhaust.
+ *
+ * The live address has to connect inside this after the two silent ones each spend it. Measured
+ * (the `dial-past-dead:` lines each case prints, whole pass past the two silent addresses):
+ * isolated 1120 ms (reconcile) and 1154 ms (claim); under a full `yarn workspace @serfab/cadre-core
+ * test` run, three runs, 1204–1357 ms (reconcile) and 1274–1513 ms (claim). So the live dial plus
+ * the pass's remaining work took at most 357 ms of this limit under load (the claim's figure also
+ * holds the seed exchange after the dial). Raise this only on a measurement showing the live
+ * attempt itself timing out.
+ */
 const PER_ADDRESS_MS = 500;
 const PER_PEER_MS = 5_000;
 /** Scheduling room on a loaded machine; far below the per-peer limit the old dial needed. */
@@ -61,6 +71,7 @@ describe('CadreNode — adding a drone whose first addresses never answer', () =
 			const started = Date.now();
 			await owner.node.reconcileControlCohort();
 			const elapsed = Date.now() - started;
+			console.log(`dial-past-dead: reconcile pass past two silent addresses took ${elapsed} ms`);
 
 			const connections = connectionsTo(owner.node, dronePeerId);
 			expect(connections.some((c) => c.status === 'open' && c.direction === 'outbound')).toBe(true);
@@ -105,6 +116,7 @@ describe('CadreNode — claiming a node whose first addresses never answer', () 
 				secret,
 			});
 			const elapsed = Date.now() - started;
+			console.log(`dial-past-dead: claim past two silent addresses took ${elapsed} ms`);
 
 			expect(claimable.isAwaitingClaim()).toBe(false);
 			expect(silent.map((server) => server.accepted() > 0)).toEqual([true, true]);

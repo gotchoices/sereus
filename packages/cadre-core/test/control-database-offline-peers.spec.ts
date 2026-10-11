@@ -21,6 +21,7 @@ import {
 	type OfflinePeer
 } from './control-db-node-helpers.js';
 import type { NetworkConfig, NodeProfile } from '../src/types.js';
+import { startSilentServer, type SilentServer } from './silent-server.js';
 
 /**
  * A cadre of MORE THAN ONE whose known siblings are all unreachable — the
@@ -204,6 +205,17 @@ const mintBlackholePeer = (owner: OwnerNode, n: number): Promise<OfflinePeer> =>
 	mintBlackholePeerOn(owner.node, within, n, OP_TIMEOUT_MS);
 
 /**
+ * Mint a sibling at a loopback address that accepts the connection and never answers it
+ * (`silent-server.ts`): what a dial to it costs is the same as a blackhole's, and the server's
+ * accept count shows the dial in flight — which libp2p's dial queue cannot, since the pass
+ * dials each address outside it (`peer-dial.ts` → `dialAddr`).
+ */
+async function mintSilentPeer(owner: OwnerNode, server: SilentServer): Promise<OfflinePeer> {
+	const key = await generateKeyPair('Ed25519');
+	return insertOfflinePeer(owner, key, [`${server.wsAddr}/p2p/${peerIdFromPrivateKey(key).toString()}`]);
+}
+
+/**
  * Mint a DEPARTED sibling: a real second `CadreNode` started on a loopback
  * WebSocket listen address, its genuinely-published address captured, then
  * stopped — so the OS refuses the connection immediately.
@@ -342,13 +354,13 @@ interface WebRtcPeer extends OfflinePeer {
 /**
  * The peerIds libp2p currently has dials queued or in flight for.
  *
- * This is what lets a case assert dial IDENTITY rather than mere queue depth.
- * A WebRTC dial puts TWO entries here: the sibling itself, and the RELAY HOP
- * out of its `…/p2p-circuit/webrtc/…` address — the latter appears only because
- * `@libp2p/webrtc` claimed the address, decapsulated `/webrtc` and re-dialed the
- * signalling leg. No other configured transport produces it, so its presence is
- * proof the WebRTC dial path actually ran and not merely that something was
- * queued.
+ * This is what lets a case assert dial IDENTITY. The pass dials each sibling
+ * address outside the queue (`peer-dial.ts` → `dialAddr`), so a sibling's own
+ * dial never appears here; a WebRTC dial puts ONE entry here, the RELAY HOP out
+ * of its `…/p2p-circuit/webrtc/…` address — it appears only because
+ * `@libp2p/webrtc` claimed the address, decapsulated `/webrtc` and dialed the
+ * signalling leg by relay peer id. No other configured transport produces it, so
+ * its presence is proof the WebRTC dial path actually ran.
  */
 function dialQueuePeerIds(node: CadreNode): string[] {
 	return node.getControlNode()!.getDialQueue()
@@ -642,24 +654,25 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 			}
 		}, 180_000);
 
-		it('stop() resolves inside its budget with a blackhole dial in flight', async () => {
+		it('stop() resolves inside its budget with a dial in flight to an address that never answers', async () => {
 			const owner = await bootOwnerNode('transaction', 'stop-mid-dial');
+			const silent = await startSilentServer();
 			try {
-				await mintBlackholePeer(owner, 21);
+				await mintSilentPeer(owner, silent);
 
-				// Kick a pass and wait until its blackhole dial is actually IN FLIGHT
-				// (visible in libp2p's dial queue) — stopping before the pass reaches
-				// the dial would test nothing. If the pass somehow settles first (e.g.
-				// a network that answers TEST-NET-1), proceed anyway: stop() must be
-				// bounded regardless.
+				// Kick a pass and wait until its dial is actually IN FLIGHT — the silent
+				// server has accepted the connection it will never answer — stopping
+				// before the pass reaches the dial would test nothing. If the pass somehow
+				// settles first, proceed anyway: stop() must be bounded regardless.
 				const pass = owner.node.reconcileControlCohort();
 				let passSettled = false;
 				void pass.then(() => { passSettled = true; }, () => { passSettled = true; });
-				await within('dial in flight (dial queue non-empty)', OP_TIMEOUT_MS, async () => {
-					while (!passSettled && owner.node.getControlNode()!.getDialQueue().length === 0) {
+				await within('dial in flight (silent server accepted it)', OP_TIMEOUT_MS, async () => {
+					while (!passSettled && silent.accepted() === 0) {
 						await delay(25);
 					}
 				});
+				expect(passSettled).toBe(false);
 
 				// Shutdown must not wait on an unanswerable connect…
 				await within('node.stop() (dial in flight)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
@@ -669,6 +682,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 				// stop() is the subject here, so it is called in the body; this is the
 				// leak guard for the paths that never reach it (stop() is idempotent).
 				await within('node.stop() (guard)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
+				await silent.close();
 			}
 		}, 120_000);
 
@@ -767,12 +781,13 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 					[sibling.directAddr, '@libp2p/webrtc-direct']
 				]);
 
-				// Same shape as the blackhole stop-mid-dial case, but waiting on the
-				// RELAY HOP rather than on queue depth: that entry exists only if the
-				// WebRTC dial path actually ran (see `dialQueuePeerIds`), so this is
-				// what makes the case about a WebRTC dial and not about any dial. If
-				// the pass settles first (e.g. a network that answers TEST-NET-1)
-				// proceed anyway — stop() must be bounded either way.
+				// Same shape as the stop-mid-dial case above, but waiting on the
+				// RELAY HOP in libp2p's dial queue rather than on a silent server's
+				// accept: that entry exists only if the WebRTC dial path actually ran
+				// (see `dialQueuePeerIds`), so this is what makes the case about a
+				// WebRTC dial and not about any dial. If the pass settles first (e.g. a
+				// network that answers TEST-NET-1) proceed anyway — stop() must be
+				// bounded either way.
 				const pass = owner.node.reconcileControlCohort();
 				let passSettled = false;
 				void pass.then(() => { passSettled = true; }, () => { passSettled = true; });

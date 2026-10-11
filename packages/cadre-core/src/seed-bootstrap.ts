@@ -203,14 +203,6 @@ function deliveryDialAddrs(peerId: string, addrs: readonly string[]): Multiaddr[
 }
 
 /**
- * A connection to `peerId` that `node` already holds and a seed stream can use: open and without
- * relay limits, the rule libp2p applies when `dialProtocol` reuses a connection.
- */
-function openUnlimitedConnection(node: Libp2p, peerId: PeerId): Connection | undefined {
-  return node.getConnections(peerId).find((c) => c.status === 'open' && c.limits === undefined);
-}
-
-/**
  * Configuration for the SeedBootstrapService
  */
 export interface SeedBootstrapConfig {
@@ -988,7 +980,8 @@ export class SeedBootstrapService {
     // and an undefined self simply matches nothing.
     // Every one of an owner's addresses is a candidate, each on its own time limit
     // (`dialPeerAddrs`), so an owner whose first address never answers neither
-    // stalls seed application nor goes undialed at its other addresses.
+    // stalls seed application nor goes undialed at its other addresses. The seed's
+    // addresses carry no peer id; the dial binds each to the owner's.
     const selfPeerId = node.peerId?.toString();
     let ownerDialsAttempted = 0;
     let ownerDialsFailed = 0;
@@ -1001,7 +994,7 @@ export class SeedBootstrapService {
         const addrs = parseDialAddrs(peer.multiaddrs);
 
         log('Dialing owner peer: %s (%d addr(s))', peer.peerId, addrs.length);
-        await dialPeerAddrs(node, addrs, this.dialBudget, `Owner dial of ${peer.peerId}`);
+        await dialPeerAddrs(node, peer.peerId, addrs, this.dialBudget, `Owner dial of ${peer.peerId}`);
       } catch (error) {
         // Counted even when the owner reaches us only through our own relay: this node is still
         // not connected to it, and `ownerDialsFailed` is how the caller learns that.
@@ -1138,25 +1131,20 @@ export class SeedBootstrapService {
   }
 
   /**
-   * A connection to `peerId` for {@link deliverSeed}: one already open, or one dialed from
-   * `addrs` by {@link dialPeerAddrs} — each address on `dialBudget.perAddressMs`, the whole
-   * peer within `dialBudget.totalMs`, direct addresses before relayed ones and the given
-   * order otherwise.
+   * A connection to `peerId` for {@link deliverSeed}, from {@link dialPeerAddrs}: one already
+   * open without relay limits, or one dialed from `addrs` — each address on
+   * `dialBudget.perAddressMs`, the whole peer within `dialBudget.totalMs`, direct addresses
+   * before relayed ones and the given order otherwise.
    *
    * @throws {PeerUnreachableError} when no connection formed, with the dial's error as `cause`.
    */
   private async connectForDelivery(node: Libp2p, peerId: PeerId, addrs: readonly Multiaddr[]): Promise<Connection> {
-    const open = openUnlimitedConnection(node, peerId);
-    if (open) {
-      log('Seed delivery to %s reuses an open connection', peerId);
-      return open;
-    }
     // NOTE: a relayed address can return a limited connection, on which `sendSeed`'s stream
     // open then fails as a plain error rather than `PeerUnreachableError`, though nothing was
     // sent. Claim codes carry no relay addresses today; if a delivery target ever may, count a
     // limited connection as unreachable here.
     try {
-      return await dialPeerAddrs(node, addrs, this.dialBudget, `Seed delivery dial of ${peerId}`);
+      return await dialPeerAddrs(node, peerId.toString(), addrs, this.dialBudget, `Seed delivery dial of ${peerId}`);
     } catch (error) {
       throw new PeerUnreachableError(peerId.toString(), error);
     }

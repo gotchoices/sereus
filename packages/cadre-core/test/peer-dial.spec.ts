@@ -8,8 +8,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Connection, PeerId } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
-import { dialPeerAddrs, directBeforeRelayed, tryAddrsInTurn, SelfRelayOnlyError, type AddrDialer } from '../src/peer-dial.js';
-import { withTrailingPeerId } from '../src/peer-record.js';
+import { dialAddr, dialPeerAddrs, directBeforeRelayed, tryAddrsInTurn, withTrailingPeerId, SelfRelayOnlyError, type AddrDialer } from '../src/peer-dial.js';
 import { startSilentServer, type SilentServer } from './silent-server.js';
 
 /**
@@ -24,11 +23,13 @@ import { startSilentServer, type SilentServer } from './silent-server.js';
  * dropped ones used it all up. Here the dropped addresses are loopback TCP servers
  * that never answer the WebSocket upgrade (`silent-server.ts`).
  *
- * Checked against real libp2p rather than doubles because two of the claims are
+ * Checked against real libp2p rather than doubles because most of the claims are
  * about libp2p's dialing — that a one-address dial of a transport the node lacks
- * fails at once, and that an attempt reaches its own address while another dial
- * of the same peer is in flight, which a dial through libp2p's queue would join
- * instead — so an upgrade that changes either fails here.
+ * fails at once, that an attempt reaches its own address while another dial of
+ * the same peer is in flight, which a dial through libp2p's queue would join
+ * instead, that an open connection is handed back as the queue would have, and
+ * that the node's stop ends an attempt the queue no longer tracks — so an upgrade
+ * that changes any of them fails here.
  */
 
 const nodes: Libp2p[] = [];
@@ -58,7 +59,7 @@ describe('dialPeerAddrs — addresses that never answer', () => {
 		const totalMs = 2 * PER_ADDRESS_MS + 2 * SLACK_MS;
 
 		const started = Date.now();
-		const connection = await dialPeerAddrs(dialer, addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial');
+		const connection = await dialPeerAddrs(dialer, target.peerId.toString(), addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial');
 		const elapsed = Date.now() - started;
 
 		expect(connection.remotePeer.toString()).toBe(target.peerId.toString());
@@ -90,7 +91,7 @@ describe('dialPeerAddrs — addresses that never answer', () => {
 		await dialer.peerStore.merge(target.peerId, { multiaddrs: [multiaddr(dead[0].wsAddr)] });
 		const totalMs = 2 * PER_ADDRESS_MS + 2 * SLACK_MS;
 
-		const ours = dialPeerAddrs(dialer, addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial');
+		const ours = dialPeerAddrs(dialer, target.peerId.toString(), addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial');
 		// What FRET's membership probe does once the peer's addresses are in the address
 		// book: a dial by peer id, which libp2p's queue joins to any job for that id.
 		await new Promise((resolve) => setTimeout(resolve, 100));
@@ -115,7 +116,7 @@ describe('dialPeerAddrs — addresses that never answer', () => {
 		const totalMs = 2.5 * PER_ADDRESS_MS;
 
 		const started = Date.now();
-		const error = await dialPeerAddrs(dialer, addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial')
+		const error = await dialPeerAddrs(dialer, target.peerId.toString(), addrs, { perAddressMs: PER_ADDRESS_MS, totalMs }, 'test dial')
 			.then(() => null, (err: unknown) => err as Error);
 		const elapsed = Date.now() - started;
 
@@ -142,7 +143,7 @@ describe('dialPeerAddrs — a list naming a transport the dialer lacks', () => {
 		expect(tcpFirst[0].toString()).not.toContain('/ws');
 
 		const started = Date.now();
-		const connection = await dialPeerAddrs(phone, tcpFirst, { perAddressMs: 5_000, totalMs: 10_000 }, 'test dial');
+		const connection = await dialPeerAddrs(phone, lent.peerId.toString(), tcpFirst, { perAddressMs: 5_000, totalMs: 10_000 }, 'test dial');
 
 		expect(connection.remotePeer.toString()).toBe(lent.peerId.toString());
 		expect(connection.remoteAddr.toString()).toContain('/ws');
@@ -160,7 +161,7 @@ describe('dialPeerAddrs — addresses that relay through the dialer itself', () 
 		const throughOther = circuitVia(await newPeerId(), target);
 		const dialer = recordingDialer(self);
 
-		const connection = await dialPeerAddrs(dialer, [circuitVia(self, target), throughOther], { perAddressMs: 100, totalMs: 100 }, 'test dial');
+		const connection = await dialPeerAddrs(dialer, target.toString(), [circuitVia(self, target), throughOther], { perAddressMs: 100, totalMs: 100 }, 'test dial');
 
 		expect(dialer.dialed.map(String)).toEqual([throughOther.toString()]);
 		expect(connection).toBe(dialer.connection);
@@ -168,12 +169,71 @@ describe('dialPeerAddrs — addresses that relay through the dialer itself', () 
 
 	it('rejects with SelfRelayOnlyError, dialing nothing, when every address relays through the dialer', async () => {
 		const self = await newPeerId();
+		const target = await newPeerId();
 		const dialer = recordingDialer(self);
-		const addrs = [circuitVia(self, await newPeerId()), circuitVia(self, await newPeerId())];
+		const addrs = [circuitVia(self, target), circuitVia(self, target, '/ip4/10.0.0.2/tcp/4001/ws')];
 
-		await expect(dialPeerAddrs(dialer, addrs, { perAddressMs: 100, totalMs: 100 }, 'test dial'))
+		await expect(dialPeerAddrs(dialer, target.toString(), addrs, { perAddressMs: 100, totalMs: 100 }, 'test dial'))
 			.rejects.toBeInstanceOf(SelfRelayOnlyError);
 		expect(dialer.dialed).toEqual([]);
+	});
+});
+
+describe('dialPeerAddrs — binding every address to the peer expected', () => {
+	it('binds a bare address and drops one naming another peer', async () => {
+		const self = await newPeerId();
+		const target = await newPeerId();
+		const other = await newPeerId();
+		const dialer = recordingDialer(self);
+		const bare = multiaddr('/ip4/10.0.0.1/tcp/4001/ws');
+
+		await dialPeerAddrs(dialer, target.toString(), [bare, multiaddr(`/ip4/10.0.0.2/tcp/4001/ws/p2p/${other.toString()}`)], { perAddressMs: 100, totalMs: 100 }, 'test dial');
+
+		expect(dialer.dialed.map(String)).toEqual([`${bare.toString()}/p2p/${target.toString()}`]);
+	});
+
+	it('rejects without dialing when no address binds to the peer', async () => {
+		const self = await newPeerId();
+		const dialer = recordingDialer(self);
+		const addrs = [multiaddr(`/ip4/10.0.0.2/tcp/4001/ws/p2p/${(await newPeerId()).toString()}`)];
+
+		await expect(dialPeerAddrs(dialer, (await newPeerId()).toString(), addrs, { perAddressMs: 100, totalMs: 100 }, 'test dial'))
+			.rejects.toThrow(/none of the 1 candidate addresses binds to/);
+		expect(dialer.dialed).toEqual([]);
+	});
+});
+
+describe('dialPeerAddrs — a connection already open to the peer', () => {
+	it('hands back the open connection without dialing', async () => {
+		// What libp2p's dial queue did before dialing (`findExistingConnection`) and the
+		// transport manager does not: the silent address sits first, so a dial would be held
+		// there for its whole limit.
+		const target = await startNode([webSockets()], ['/ip4/127.0.0.1/tcp/0/ws']);
+		const dialer = await startNode([webSockets()], []);
+		const open = await dialer.dial(wsAddrs(target)[0]);
+		const dead = await silentServer();
+		const addrs = [bound(dead.wsAddr, target), ...wsAddrs(target)];
+
+		const connection = await dialPeerAddrs(dialer, target.peerId.toString(), addrs, { perAddressMs: PER_ADDRESS_MS, totalMs: 2 * PER_ADDRESS_MS }, 'test dial');
+
+		expect(connection).toBe(open);
+		expect(dead.accepted()).toBe(0);
+	});
+});
+
+describe('dialAddr — the node stops with an attempt in flight', () => {
+	it('rejects the attempt promptly, naming the stop', async () => {
+		// The queue aborted its jobs at shutdown; a transport-manager dial has no such tie, so
+		// the helper listens for the node's `stop` event instead.
+		const dialer = await startNode([webSockets()], []);
+		const dead = await silentServer();
+		const attempt = dialAddr(dialer, boundTo(dead.wsAddr, await newPeerId()), new AbortController().signal, 'test dial');
+		await until(() => dead.accepted() > 0);
+
+		const stopped = Date.now();
+		await dialer.stop();
+		await expect(attempt).rejects.toThrow(/the node stopped/);
+		expect(Date.now() - stopped).toBeLessThan(SLACK_MS);
 	});
 });
 
@@ -221,9 +281,20 @@ async function newPeerId(): Promise<PeerId> {
 	return peerIdFromPrivateKey(await generateKeyPair('Ed25519'));
 }
 
-/** `target`'s circuit address through a reservation it holds on `relay`. */
-function circuitVia(relay: PeerId, target: PeerId): Multiaddr {
-	return multiaddr(`/ip4/10.0.0.1/tcp/4001/ws/p2p/${relay.toString()}/p2p-circuit/p2p/${target.toString()}`);
+/** `target`'s circuit address through a reservation it holds on `relay`, reached at `via`. */
+function circuitVia(relay: PeerId, target: PeerId, via = '/ip4/10.0.0.1/tcp/4001/ws'): Multiaddr {
+	return multiaddr(`${via}/p2p/${relay.toString()}/p2p-circuit/p2p/${target.toString()}`);
+}
+
+/** Poll `condition` every 10 ms until it holds, giving up after `SLACK_MS`. */
+async function until(condition: () => boolean): Promise<void> {
+	const deadline = Date.now() + SLACK_MS;
+	while (!condition()) {
+		if (Date.now() > deadline) {
+			throw new Error('condition never held');
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
 }
 
 /** An {@link AddrDialer} that records each address it is asked to dial and answers every one. */
@@ -263,9 +334,13 @@ async function silentServer(): Promise<SilentServer> {
 	return server;
 }
 
-/** `addr` bound to `node`'s peer id, as `CadreNode` binds every dial candidate. */
+/** `addr` bound to `node`'s peer id, as every dial candidate is bound. */
 function bound(addr: string, node: Libp2p): Multiaddr {
-	const withId = withTrailingPeerId(multiaddr(addr), node.peerId.toString());
+	return boundTo(addr, node.peerId);
+}
+
+function boundTo(addr: string, peerId: PeerId): Multiaddr {
+	const withId = withTrailingPeerId(multiaddr(addr), peerId.toString());
 	if (withId === null) {
 		throw new Error(`cannot bind ${addr} to a peer id`);
 	}

@@ -49,33 +49,42 @@ type Responder = (stream: ControlStream) => Promise<void>;
  */
 type Route = Responder | 'unreachable' | { dropReplyOf: Responder };
 
-/** A `Libp2p` double routing `dialProtocol` by address, recording the order it was asked in. */
+/**
+ * A `Libp2p` double routing each address's dial, recording the order it was asked in. The
+ * redemption dials each address on its own (`dialAddr`, which falls back to `dial` on a node
+ * without libp2p's internals) and opens its stream on the connection that returns.
+ */
 function dialerOver(routes: Record<string, Route>): { node: Libp2p; dials: string[] } {
   const dials: string[] = [];
   const node = {
-    dialProtocol: async (addr: { toString(): string }) => {
+    dial: async (addr: { toString(): string }) => {
       const key = addr.toString();
       dials.push(key);
       const route = routes[key];
       if (route === undefined || route === 'unreachable') {
         throw new Error(`dial of ${key} failed`);
       }
-      const [memberEnd, deviceEnd] = makeStreamPair();
-      if (typeof route === 'function') {
-        void route(memberEnd).catch((err: unknown) => console.error('responder threw', err));
-        return deviceEnd;
-      }
-      void route.dropReplyOf(memberEnd).catch((err: unknown) => console.error('responder threw', err));
-      // The device's writes still reach the member; its reads end at once.
-      return {
-        send: (data: Uint8Array) => deviceEnd.send(data),
-        close: () => deviceEnd.close(),
-        abort: (err: Error) => deviceEnd.abort(err),
-        async *[Symbol.asyncIterator]() { /* end-of-stream before any reply */ }
-      } satisfies ControlStream;
+      return { newStream: async () => deviceStream(route) };
     }
   } as unknown as Libp2p;
   return { node, dials };
+}
+
+/** The device end of a stream pair whose member end `route` answers. */
+function deviceStream(route: Responder | { dropReplyOf: Responder }): ControlStream {
+  const [memberEnd, deviceEnd] = makeStreamPair();
+  if (typeof route === 'function') {
+    void route(memberEnd).catch((err: unknown) => console.error('responder threw', err));
+    return deviceEnd;
+  }
+  void route.dropReplyOf(memberEnd).catch((err: unknown) => console.error('responder threw', err));
+  // The device's writes still reach the member; its reads end at once.
+  return {
+    send: (data: Uint8Array) => deviceEnd.send(data),
+    close: () => deviceEnd.close(),
+    abort: (err: Error) => deviceEnd.abort(err),
+    async *[Symbol.asyncIterator]() { /* end-of-stream before any reply */ }
+  } satisfies ControlStream;
 }
 
 /** A responder that answers a canned reply without reading the request. */
