@@ -663,7 +663,7 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   `strand-relay-only-restart-reconverges.integration.ts`, the reproduction of
   gotchoices/sereus#18. What carries the addresses across the restart is the saved FRET table
   alone. A second always-on arm cuts one party out of the other's saved table before the
-  rebuild — the state a delivered FRET leave notice would leave — and the write must still
+  rebuild — the state left when one side's table has lost the other — and the write must still
   cross. Two opt-in arms:
   `RESTART_NEGATIVE_CONTROL=1` runs it with the network state in memory too and passes only if
   the post-restart write never crosses within its 180 s budget, and `RESTART_TWO_PROCESS=1`

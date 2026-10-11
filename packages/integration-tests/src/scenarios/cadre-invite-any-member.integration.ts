@@ -21,7 +21,7 @@
  * waits for:
  * - The stopped owner must have left it first; a member write made while it is still there
  *   waits on it for the whole commit budget. A's graceful stop sends M a FRET leave notice, which
- *   removes A at once (about 1 s measured, one poll); a phone that vanishes without one is marked
+ *   marks A dead at once (about 1 s measured, one poll); a phone that vanishes without one is marked
  *   dead after three probe ticks in which it could not be contacted, about 5 s. FRET ticket
  *   `fret-evicts-an-address-less-peer-that-disconnects`.
  * - P joins it the moment P connects to redeem, so M's cohort for every control block is

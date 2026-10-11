@@ -53,12 +53,10 @@
  *   from. Opt-in because it costs that whole budget.
  * - One-sided memory (always runs): once both nodes have stopped, B is cut out of A's saved
  *   table, so only B's saved table names the other side, and phase 2 must still cross: B
- *   dials A. That is the state a DELIVERED leave notice leaves behind. A stopping strand
- *   node sends FRET's leave notice, and a receiver drops the leaver from its routing table,
- *   so its later saves omit it. The notice races libp2p's own teardown, and lost in every
- *   run measured, here and over direct connections (the leaver stayed in the other side's
- *   table, marked dead, with its record) — so the arm builds the state through the store
- *   instead of waiting for it.
+ *   dials A. That is the state left when one side's table has lost the other (a record aged
+ *   out, an evicted entry). A delivered leave notice does not produce it: the receiver marks
+ *   the leaver dead and keeps its entry and record (FRET 1.0.2). So the arm builds the state
+ *   through the store.
  * - `RESTART_TWO_PROCESS=1`: each party runs in its own `node` child process
  *   (`harness/fixtures/strand-restart-party.mjs`) over a temp directory with real on-disk
  *   stores (`FileRawStorage`, `FileKeyStore`, `FileStrandNetworkStateStore`). The children

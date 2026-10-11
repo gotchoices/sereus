@@ -34,7 +34,7 @@ Measured 2026-10-07 in `control-stream-authz.integration.ts`, step 5, with tempo
 - Today: while the member holds a live cadre invitation or an open formation invitation; on a relay-enabled member, for the 5.5 s relay-only window, or for as long as it holds an admitted relay reservation; and any delegate (a member's strand node).
 - After `stranger-connections-admitted-provisionally`: on every enrolled member, at any time, for about 28.5 s per connection.
 
-Closing the connection afterwards does not undo it. An address-less peer that disconnects stays a live FRET member (`fret-evicts-an-address-less-peer-that-disconnects`), so the stranger can stay in the cohort with no way to reach it.
+Closing the connection afterwards undoes it only after a delay: since FRET 1.0.2 (`fret-evicts-an-address-less-peer-that-disconnects`), an address-less peer that disconnects is marked dead after three probe ticks it cannot be contacted in (about 5 s), so the stranger stays in the cohort for that long after it leaves, with no way to reach it.
 
 ## Proposed mechanism (recommended default)
 
