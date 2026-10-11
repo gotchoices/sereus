@@ -148,7 +148,7 @@ export interface UseCadreResult {
    */
   applySeed: (encoded: string) => Promise<void>;
   /**
-   * Join the cadre a pasted base64url cadre invitation names: decode it, then redeem
+   * Join the cadre a pasted cadre invitation (`sereus-invite:1.…`) names: decode it, then redeem
    * it at one of the members it lists (`CadreNode.redeemCadreInvitation`, which pins
    * the invitation's owner keys before dialing). Throws the node's own errors —
    * `CadreInviteRejectedError`, `CadreInviteUnreachableError`,

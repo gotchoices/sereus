@@ -6,7 +6,7 @@
  * invitation reaches once its minting machine is gone ({@link cadreInvitationReach}).
  */
 
-import { classifyDialAddress, destinationPeerIdOf } from './node-claim-payload.js';
+import { classifyDialAddress, destinationPeerIdOf, type DialAddressKind } from './node-claim-payload.js';
 import type { CadreInvitationReach } from './types.js';
 
 /**
@@ -17,19 +17,21 @@ import type { CadreInvitationReach } from './types.js';
  * NOTE: a cadre invitation, which may be carried in a QR code, is capped harder
  * ({@link CADRE_INVITATION_MAX_ADDRS}); an open strand invitation keeps these caps. If open
  * invitations are ever carried in a QR code too, cap them the same way.
- * NOTE: the per-machine cap keeps the record's order (relay first, then direct addresses as the
- * machine published them, loopback included). If a sibling with many interfaces is seen to have
- * its reachable address cut, rank loopback and private addresses last before slicing.
+ * NOTE: for an open strand invitation the per-machine cap keeps the record's order (relay first,
+ * then direct addresses as the machine published them, loopback included); a cadre invitation
+ * ranks them first. If an open invitation's sibling is seen to have its reachable address cut,
+ * rank the same way.
  */
 export const INVITATION_SIBLING_MACHINES = 3;
 export const INVITATION_ADDRS_PER_SIBLING = 4;
 
 /**
  * Most addresses a cadre invitation names in total, so its text fits one QR code. Measured
- * with relay addresses of about 150 characters and direct WebSocket addresses of about 85,
- * alternating, and three owner keys: 1,972 characters encoded at 6 addresses, against 2,953
- * bytes in the largest QR code at error-correction level L. Each further address costs about
- * 170 characters, each further owner key about 60.
+ * with three owner keys: 2,206 characters encoded at 6 relayed addresses of about 155
+ * characters (the worst case, since ranking puts relayed addresses first), 1,972 with relayed
+ * and direct WebSocket addresses alternating, against 2,331 bytes in the largest QR code at
+ * error-correction level M (2,953 at L). Each further address costs about 170 characters, each
+ * further owner key about 60.
  */
 export const CADRE_INVITATION_MAX_ADDRS = 6;
 
@@ -66,9 +68,11 @@ export function selectInvitationSiblingAddrs(
  * The `members` of a cadre invitation: the minting machine's own addresses first (at most
  * {@link INVITATION_ADDRS_PER_SIBLING}), then the other machines' in
  * {@link selectInvitationSiblingAddrs} order (at most {@link CADRE_INVITATION_ADDRS_PER_SIBLING}
- * each), the whole list cut to {@link CADRE_INVITATION_MAX_ADDRS}.
+ * each), the whole list cut to {@link CADRE_INVITATION_MAX_ADDRS}. Each machine's addresses are
+ * ranked for a phone before they are cut ({@link rankForPhone}): libp2p reports a machine
+ * listening on every interface with its loopback and private addresses ahead of its relayed one.
  *
- * NOTE: accepted tradeoff — with two or more other machines, only the first two addresses of
+ * NOTE: accepted tradeoff — with two or more other machines, only the best two addresses of
  * each survive, connected machines first, so a reachable address of a sibling can be cut. Size
  * was weighed over completeness, so the text fits a QR code; revisit if redemptions are seen
  * failing for want of a sibling address the record held.
@@ -78,10 +82,23 @@ export function selectCadreInvitationMembers(
 	siblings: InvitationSibling[],
 	connected: ReadonlySet<string>
 ): string[] {
+	const ranked = siblings.map((sibling) => ({ ...sibling, addrs: rankForPhone(sibling.addrs) }));
 	return [
-		...own.slice(0, INVITATION_ADDRS_PER_SIBLING),
-		...selectInvitationSiblingAddrs(siblings, connected, CADRE_INVITATION_ADDRS_PER_SIBLING),
+		...rankForPhone(own).slice(0, INVITATION_ADDRS_PER_SIBLING),
+		...selectInvitationSiblingAddrs(ranked, connected, CADRE_INVITATION_ADDRS_PER_SIBLING),
 	].slice(0, CADRE_INVITATION_MAX_ADDRS);
+}
+
+/** Order in which a phone is likeliest to reach an address: from anywhere, on its network, on that machine, not at all. */
+const PHONE_DIAL_RANK: Record<DialAddressKind, number> = { relay: 0, name: 0, public: 0, private: 1, loopback: 2 };
+
+/** `addrs` best first for a phone dialing them ({@link PHONE_DIAL_RANK}), ties in their given order; one a phone cannot dial (plain TCP) last. */
+function rankForPhone(addrs: readonly string[]): string[] {
+	const rankOf = (addr: string): number => {
+		const kind = classifyDialAddress(addr);
+		return kind === undefined ? 3 : PHONE_DIAL_RANK[kind];
+	};
+	return addrs.map((addr) => ({ addr, rank: rankOf(addr) })).sort((a, b) => a.rank - b.rank).map(({ addr }) => addr);
 }
 
 /**

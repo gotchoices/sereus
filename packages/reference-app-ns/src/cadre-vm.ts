@@ -314,7 +314,7 @@ export class CadreViewModel extends Observable {
 			return decodeCadreInvitation(encoded);
 		} catch (err) {
 			throw new Error(
-				'Cadre invitation could not be read (expected a base64url cadre invitation)',
+				'Cadre invitation could not be read (expected text starting with "sereus-invite:1.")',
 				{ cause: err },
 			);
 		}

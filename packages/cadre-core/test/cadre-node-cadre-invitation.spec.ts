@@ -61,9 +61,10 @@ describe('CadreNode.createCadreInvitation', () => {
     const { invitation, encoded } = await owner.node.createCadreInvitation({ grantsOwner: false });
     expect(invitation.partyId).toBe(owner.node.partyId);
     expect(invitation.ownerKeys).toEqual([owner.ownerKey.publicKeyB64]);
-    // Alone in its party, the invitation names this machine's own addresses, the first four.
+    // Alone in its party, the invitation names only this machine's own addresses, at most four.
     expect(invitation.members.length).toBeGreaterThan(0);
-    expect(invitation.members).toEqual(owner.node.getMultiaddrs().slice(0, INVITATION_ADDRS_PER_SIBLING));
+    expect(invitation.members.length).toBeLessThanOrEqual(INVITATION_ADDRS_PER_SIBLING);
+    expect(owner.node.getMultiaddrs()).toEqual(expect.arrayContaining(invitation.members));
     expect(decodeCadreInvitation(encoded)).toEqual(invitation);
   });
 

@@ -364,7 +364,7 @@ export default function SettingsScreen() {
             owner&apos;s keys and admits this phone at one of the members the
             invitation names. Distinct from the closed-strand &quot;Paste invite&quot; below.
           </Text>
-          <LabelledInput label="Paste cadre invitation" value={cadreInvitationInput} onChangeText={setCadreInvitationInput} placeholder="base64url cadre invitation" multiline testID={TEST_IDS.settings.cadreInvitationInput} />
+          <LabelledInput label="Paste cadre invitation" value={cadreInvitationInput} onChangeText={setCadreInvitationInput} placeholder="sereus-invite:1.…" multiline testID={TEST_IDS.settings.cadreInvitationInput} />
           <Btn label="Join cadre" onPress={handleJoinCadre} disabled={!cadreInvitationInput.trim()} testID={TEST_IDS.settings.joinCadreBtn} />
         </Section>
       )}

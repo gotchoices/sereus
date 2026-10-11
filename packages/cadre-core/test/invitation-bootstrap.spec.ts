@@ -22,20 +22,20 @@ function direct(peerId: string, port: number): string {
 	return `/ip4/192.168.1.20/tcp/${port}/ws/p2p/${peerId}`;
 }
 
-/** Relay and direct addresses alternating, as the measurement behind `CADRE_INVITATION_MAX_ADDRS` used. */
-function addressesOf(relay: string, peerId: string, count: number): string[] {
-	return Array.from({ length: count }, (_, i) => (i % 2 === 0 ? relayed(relay, peerId) : direct(peerId, 4001 + i)));
+/** A machine reachable only through relays: the longest addresses, which ranking puts first. */
+function relayedOnly(relays: readonly string[], peerId: string): string[] {
+	return relays.map((relay) => relayed(relay, peerId));
 }
 
 describe('cadre invitation addresses', () => {
-	it('keeps an invitation with three owner keys, and more addresses offered than the cap, within one QR code', async () => {
-		const relay = await newPeerId();
+	it('keeps an invitation with three owner keys, and more relayed addresses offered than the cap, within one QR code', async () => {
+		const relays = await Promise.all([0, 1, 2, 3, 4].map(newPeerId));
 		const issuer = await newPeerId();
 		const siblings: InvitationSibling[] = await Promise.all([0, 1, 2].map(async (i) => {
 			const peerId = await newPeerId();
-			return { peerId, updatedAt: i, addrs: addressesOf(relay, peerId, 4) };
+			return { peerId, updatedAt: i, addrs: relayedOnly(relays.slice(0, 4), peerId) };
 		}));
-		const members = selectCadreInvitationMembers(addressesOf(relay, issuer, 5), siblings, new Set());
+		const members = selectCadreInvitationMembers(relayedOnly(relays, issuer), siblings, new Set());
 		const owners = [freshKeyPair(), freshKeyPair(), freshKeyPair()];
 		const signed = {
 			key: freshKeyPair().publicKey,
@@ -56,10 +56,23 @@ describe('cadre invitation addresses', () => {
 		});
 
 		expect(members).toHaveLength(6);
-		// Measured 1,930 characters with these shapes. The largest QR code holds 2,953 bytes at error-correction
-		// level L; the margin is for a field added to the bundle or the error-correction level
-		// the screens choose. A loosened cap or a new field that crosses it fails here first.
-		expect(encoded.length).toBeLessThanOrEqual(2_048);
+		// Measured 2,206 characters with these shapes. The largest QR code holds 2,331 bytes at error-correction
+		// level M (2,953 at L); a loosened cap or a new bundle field that crosses that fails here first.
+		expect(encoded.length).toBeLessThanOrEqual(2_331);
+	});
+
+	it('keeps each machine\'s relayed address when loopback and private ones are listed ahead of it', async () => {
+		const relay = await newPeerId();
+		const issuer = await newPeerId();
+		const sibling = await newPeerId();
+		const loopback = (peerId: string): string => `/ip4/127.0.0.1/tcp/4001/ws/p2p/${peerId}`;
+		// As libp2p reports a machine listening on every interface: loopback, then each private interface, then the relay.
+		const own = [loopback(issuer), direct(issuer, 4001), direct(issuer, 4002), direct(issuer, 4003), relayed(relay, issuer)];
+		const siblingAddrs = [loopback(sibling), direct(sibling, 4001), relayed(relay, sibling)];
+
+		const members = selectCadreInvitationMembers(own, [{ peerId: sibling, updatedAt: 0, addrs: siblingAddrs }], new Set());
+
+		expect(members).toEqual([relayed(relay, issuer), direct(issuer, 4001), direct(issuer, 4002), direct(issuer, 4003), relayed(relay, sibling), direct(sibling, 4001)]);
 	});
 
 	it('judges reach on the other machines only: anywhere, local network, or the issuer alone', async () => {

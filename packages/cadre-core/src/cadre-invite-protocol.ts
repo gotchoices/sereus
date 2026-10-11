@@ -852,6 +852,8 @@ async function underDeadlineAndCaller<T>(
   const abort = (): void => either.abort();
   deadline.addEventListener('abort', abort, { once: true });
   caller.addEventListener('abort', abort, { once: true });
+  // An abort between the caller's last check and the listener above fired no event.
+  if (caller.aborted) abort();
   try {
     return await op(either.signal);
   } finally {
@@ -957,14 +959,13 @@ export async function redeemInPasses(node: Libp2p, options: RedeemInPassesOption
         state: 'waiting', pass, retryAtMs: Date.now() + pauseMs, reason: waitReason(error.outcomes), outcomes: error.outcomes
       });
       log('redemption pass %d found no member ready; the next pass in %d ms', pass, pauseMs);
-      // NOTE: a node stopped during this pause is noticed only when it ends, so the timer keeps a
-      // Node process alive up to a minute past the stop. If that is ever seen holding up an exit,
-      // abort `signal` from the embedder's stop.
-      await pause(pauseMs, options.signal);
+      await pause(pauseMs, options.signal, node);
     }
   }
 }
 
+// NOTE: judged by this device's clock, so one running ahead ends a wait before the members
+// would refuse it. If waits are seen ending early on skewed phones, allow a grace margin here.
 function refuseIfExpired(invite: CadreInviteRow): void {
   const expiresAtMs = parseNullableStoredDatetimeMs(invite.expiresAt);
   if (expiresAtMs !== null && expiresAtMs <= Date.now()) {
@@ -974,7 +975,7 @@ function refuseIfExpired(invite: CadreInviteRow): void {
 
 /** A stopped node's every dial fails at once, which would otherwise read as "no member answered" until expiry. */
 function refuseIfStopped(node: Libp2p): void {
-  if (node.status !== undefined && node.status !== 'started') {
+  if (node.status !== 'started') {
     throw new Error(`Cadre invitation redemption stopped waiting: the node is ${node.status}`);
   }
 }
@@ -1001,21 +1002,36 @@ function reportProgress(onProgress: ((progress: CadreJoinProgress) => void) | un
   }
 }
 
-/** Wait `ms`, or reject with `signal`'s reason as soon as it aborts; the timer is cleared either way. */
-function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+/**
+ * Wait `ms`, or reject with `signal`'s reason as soon as it aborts. Ends early, resolving, when
+ * `node` stops (or is already stopped), so the next pass's stop check ends the wait without a
+ * timer holding the process open. Listeners and timer are cleared however it ends.
+ */
+function pause(ms: number, signal: AbortSignal | undefined, node: Libp2p): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
       return;
     }
-    const onAbort = (): void => {
+    if (node.status !== 'started') {
+      resolve();
+      return;
+    }
+    const settle = (): void => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      node.removeEventListener('stop', onStop);
+    };
+    const onAbort = (): void => {
+      settle();
       reject(signal!.reason);
     };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
+    const onStop = (): void => {
+      settle();
       resolve();
-    }, ms);
+    };
+    const timer = setTimeout(onStop, ms);
     signal?.addEventListener('abort', onAbort, { once: true });
+    node.addEventListener('stop', onStop, { once: true });
   });
 }
