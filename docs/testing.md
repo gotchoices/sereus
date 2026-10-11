@@ -680,10 +680,13 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   gotchoices/sereus#44. Arms: loopback, 100 ms one-way `pipelined`, and a 20 ms `serial` frame
   cap with the event loop kept 70% busy, which makes the joiner commit with a cohort of only
   itself and is kept as `it.fails` until that stops; a fourth arm restarts that joiner over
-  the storage it kept, on an undelayed link, and the founder must then hold the rows. All four
-  run by default although the third waits out its 180 s gate (about 4 minutes) and the fourth
-  takes about 80 s: they are a regression reproduction, not a measurement, and the third arm
-  has to run to turn red when the fix lands, which is the signal its `it.fails` exists for.
+  the storage it kept, on an undelayed link, and the founder must then hold the rows; a fifth
+  repeats that restart with the frame cap and the busy event loop still in force, where only
+  the strand member redial (`strand-peer-redial.ts`) reconnects the two strand nodes. All five
+  run by default although the third waits out its 180 s gate (about 4 minutes), the fourth
+  takes about 85 s and the fifth about 95 s: they are a regression reproduction, not a
+  measurement, the third arm has to run to turn red when the fix lands, which is the signal its
+  `it.fails` exists for, and the fifth is the only end-to-end check of the member redial.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the

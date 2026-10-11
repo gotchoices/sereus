@@ -17,7 +17,10 @@ const mocks = vi.hoisted(() => {
   const createLibp2pNode = vi.fn(async (_options: Record<string, unknown>) => ({
     coordinatedRepo: {},
     stop,
-    peerId: { toString: () => 'strand-peer' }
+    peerId: { toString: () => 'strand-peer' },
+    getConnections: () => [],
+    addEventListener: () => {},
+    removeEventListener: () => {}
   }));
   // The first-sync gate probes `Strand.Header` on every non-founder launch; this double
   // reports the row held, so every launch here is a machine that has synced before.

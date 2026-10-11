@@ -40,7 +40,7 @@ const mocks = vi.hoisted(() => {
   const ensureFounderBootstrap = vi.fn(async () => {});
   /** `Strand.Header` row count the double reports, per strand id (absent ⇒ 0). */
   const headerCounts = new Map<string, number>();
-  const createLibp2pNode = vi.fn(async () => ({ coordinatedRepo: {}, stop, peerId: { toString: () => 'peer' } }));
+  const createLibp2pNode = vi.fn(async () => ({ coordinatedRepo: {}, stop, peerId: { toString: () => 'peer' }, getConnections: () => [], addEventListener: () => {}, removeEventListener: () => {} }));
   // Non-arrow so `new StrandDatabase(...)` is constructable; captures the strand id the
   // manager passes so the probe answers for THAT strand.
   const StrandDatabase = vi.fn(function StrandDatabaseMock(config: { strandId: string }) {

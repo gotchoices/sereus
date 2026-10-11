@@ -44,18 +44,23 @@
  * cutting the circuit and failing the joiner's in-flight schema read (`cohort-unreachable`). This
  * harness relay runs libp2p's stock monitor, not the ops relay's 30 s ping deadline
  * (`backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`). The launch keeps
- * its runtime and retries the database build 5 s later (`strand-deferred-join-keeps-its-runtime`);
- * that build succeeds from the delivered blocks, but nothing redials the founder in between, so the
- * joiner is writable with only the relay connected.
+ * its runtime and retries the database build 5 s later (`strand-deferred-join-keeps-its-runtime`),
+ * and that build succeeds from the delivered blocks. Both strand nodes' member redial
+ * (`strand-peer-redial.ts`) dials the moment the circuit drops, but that dial fails within
+ * milliseconds ("the connection muxer is closed") and the next round waits out the 21.5 s backoff,
+ * so the joiner is writable, with only the relay connected, about 8 s after the cut.
  *
  * The fourth arm is the restart the phones also tried: the third arm's solo commit, then the
  * joiner stops, is rebuilt over the storage it kept (raw stores, saved strand network state,
  * joined-strand record) and re-claims the strand, and the founder must then hold every row. The
  * restart runs on an undelayed link: there the restarted strand node reconnects and peer-join
- * backfill delivers the solo-committed blocks, which the founder accepts. Restarted on the slow
- * link instead, the two strand nodes never reconnect -- every redial is a FRET maintenance ping
- * whose whole budget, dial included, is 2 s, and a relayed dial on that link takes longer -- which
- * is the reproduction for ticket `strand-peers-redial-on-the-declared-link-budget`, not this arm.
+ * backfill delivers the solo-committed blocks, which the founder accepts.
+ *
+ * The fifth arm restarts on the slow link instead, the frame cap and the busy event loop still in
+ * force. There FRET's maintenance pings cannot reconnect the two strand nodes -- each is allowed
+ * 2 s, dial included, and a relayed dial on that link takes longer -- so what reconnects them is
+ * the strand member redial, which dials with the relayed-dial budget the declared link gives
+ * (`strand-peer-redial.ts`). The rows reached the founder about 45 s after the restart began.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -320,17 +325,22 @@ async function claimDiscoveredStrand(node: CadreNode, strandId: string, sAppConf
 	return await node.addStrand({ strandRow, sAppConfig, awaitFirstSync: false });
 }
 
+interface RestartOptions {
+	/** Keep the frame cap and the busy event loop through the restart, instead of lifting them first. */
+	slowRestart?: boolean;
+}
+
 /**
  * The third arm's journey up to the joiner's stop, then a restart of the joiner over the storage
- * it kept, on an undelayed link. The founder must then hold every row.
+ * it kept, on an undelayed link unless `slowRestart`. The founder must then hold every row.
  */
-async function runJoinerRestartDelivers(): Promise<void> {
+async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void> {
 	let link: ReturnType<typeof installWsLatency> | undefined = installWsLatency({ delayMs: 20, mode: 'serial' });
 	let release: (() => void) | undefined = occupyEventLoop(0.7);
 	let relay: DedicatedRelay | undefined;
 	let A: CadreNode | undefined;
 	let B: CadreNode | undefined;
-	const label = 'restart';
+	const label = opts.slowRestart ? 'slow restart' : 'restart';
 	try {
 		const runTag = Date.now();
 		const strandId = `strand-joiner-restart-${runTag}`;
@@ -367,10 +377,12 @@ async function runJoinerRestartDelivers(): Promise<void> {
 		// third arm passing), this arm no longer exercises delivery after a restart.
 		console.log(`[first-commit ${label}] founder held the joiner's rows when it stopped: ${await holdsJoinerSeat(aDb)}`);
 
-		release();
-		release = undefined;
-		link.restore();
-		link = undefined;
+		if (!opts.slowRestart) {
+			release();
+			release = undefined;
+			link.restore();
+			link = undefined;
+		}
 		const tRestart = Date.now();
 		B = await startPartyNode(bHome, relay);
 		await claimDiscoveredStrand(B, strandId, sApp);
@@ -404,5 +416,9 @@ describe("a joiner's first transaction over a relayed link", () => {
 
 	it("delivers the rows of a commit made alone once the joiner restarts over its kept storage", async () => {
 		await runJoinerRestartDelivers();
+	}, 1_800_000);
+
+	it("delivers the rows of a commit made alone once the joiner restarts over its kept storage, still on the slow link", async () => {
+		await runJoinerRestartDelivers({ slowRestart: true });
 	}, 1_800_000);
 });

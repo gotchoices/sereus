@@ -44,6 +44,8 @@ import { strandNodeAddrs } from './strand-network-config.js';
 import { resolveRelayServer } from './relay-server.js';
 import { strandCohortTopicOption, type StrandReactivityConfig } from './strand-reactivity.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
+import { strandRedialTimings, superviseStrandPeerRedial, type StrandPeerRedial } from './strand-peer-redial.js';
+import { groupAddrsByPeerId } from './peer-addr-book.js';
 import { isCohortUnreachableRead } from './control-read-retry.js';
 import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 
@@ -491,6 +493,13 @@ export class StrandInstanceManager {
    */
   private relaySupervisors: Map<string, RelayReservationSupervisor[]> = new Map();
   /**
+   * The per-strand redial of the strand's other members (`strand-peer-redial.ts`), keyed by
+   * strand id. Same lifecycle as {@link relaySupervisors}: started in `buildStrandRuntime` once
+   * the libp2p node exists, stopped first in `releaseRuntime`, so a hibernating strand dials
+   * nobody and a resume redials over the new node.
+   */
+  private peerRedials: Map<string, StrandPeerRedial> = new Map();
+  /**
    * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
    * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
    * Private for the same reason `backfills` is: runtime plumbing, not part of the
@@ -889,6 +898,17 @@ export class StrandInstanceManager {
       // map immediately so the failure rollback (releaseRuntime) stops them like every
       // other runtime component.
       this.relaySupervisors.set(strandId, this.startRelaySupervisors(strandId, node, relayDialAddrs, config));
+      // Redials the strand's other members whenever none is connected, on the budget the
+      // declared link gives a relayed dial — what reconnects two restarted phones on a slow
+      // link, where FRET's own redial cannot (`strand-peer-redial.ts`). The relays are
+      // excluded by peer id: the node is connected to them throughout, and they are no member.
+      this.peerRedials.set(strandId, superviseStrandPeerRedial({
+        label: strandId,
+        node,
+        seed: config.bootstrapNodes ?? [],
+        excluded: new Set(groupAddrsByPeerId([...relayDialAddrs]).keys()),
+        ...(revocationEnforcer && { isRevoked: (peerId: string) => revocationEnforcer.isRevoked(peerId) })
+      }, strandRedialTimings(config.network?.linkRoundTripMs)));
 
       const databaseBuild = await this.buildStrandDatabase(instance, config, node);
       if (!this.isCurrentRuntime(instance, node)) {
@@ -1225,6 +1245,8 @@ export class StrandInstanceManager {
       relaySupervisors.forEach((supervisor) => supervisor.stop());
       this.relaySupervisors.delete(instance.strandId);
     }
+    this.peerRedials.get(instance.strandId)?.stop();
+    this.peerRedials.delete(instance.strandId);
     // Backfill next — before the database closes and the libp2p node stops — so
     // no NEW catch-up push is issued against a torn-down transport. A push already
     // in flight is not awaited; it fails into the module's own per-chunk catch.

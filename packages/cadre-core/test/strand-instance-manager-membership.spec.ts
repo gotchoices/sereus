@@ -43,6 +43,9 @@ const mocks = vi.hoisted(() => {
     stop,
     keyNetwork: {},
     peerId: { toString: () => 'own-transport-peer' },
+    getConnections: () => [],
+    addEventListener: () => {},
+    removeEventListener: () => {},
   }));
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
     return {

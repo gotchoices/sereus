@@ -25,7 +25,10 @@ const mocks = vi.hoisted(() => {
   const createLibp2pNode = vi.fn(async (_options: Record<string, unknown>) => ({
     coordinatedRepo: {},
     stop: nodeStop,
-    peerId: { toString: () => 'strand-delegate-peer' }
+    peerId: { toString: () => 'strand-delegate-peer' },
+    getConnections: () => [],
+    addEventListener: () => {},
+    removeEventListener: () => {}
   }));
   let initializeFails = false;
   // The first-sync gate probes `Strand.Header` on every non-founder launch; this double

@@ -3,7 +3,8 @@
  * entries carrying REAL signed libp2p address records, as `exportTable()` serialises them.
  *
  * Not a `*.spec.ts` file, so vitest never runs it as a suite — it is imported by
- * `strand-fret-addrs.spec.ts` and `cadre-node-strand-addr-refresh.spec.ts`.
+ * `strand-fret-addrs.spec.ts`, `cadre-node-strand-addr-refresh.spec.ts` and
+ * `strand-peer-redial.spec.ts`.
  */
 
 import { PeerRecord, RecordEnvelope, type PeerRecordInit } from '@libp2p/peer-record';
@@ -16,6 +17,7 @@ import { toString as uint8ArrayToString } from 'uint8arrays';
 export interface FretEntryFake {
   id: string;
   addressRecord?: { envelope: string; confirmedAt: number };
+  membership?: 'member' | 'foreign' | 'unknown';
 }
 
 /**

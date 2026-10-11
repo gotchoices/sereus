@@ -10,7 +10,9 @@
  * hour would have no address for a peer whose connection then drops, although FRET
  * still holds that peer's record. `CadreNode.refreshStrandPeerAddrs` re-merges the
  * records on every pass, which is what keeps another party's strand nodes dialable;
- * own-party siblings are re-resolved separately, over the strand-addr RPC.
+ * own-party siblings are re-resolved separately, over the strand-addr RPC. The strand
+ * peer redial (`strand-peer-redial.ts`) reads the same records, and FRET's membership
+ * labels, to choose whom to dial.
  *
  * How long a record is available here is FRET's rule, not this module's: while FRET
  * holds the entry, and at most 14 days after the record was last confirmed (a peer
@@ -37,6 +39,8 @@ interface FretTableSlice {
     id: string;
     /** `envelope` is the base64url of a marshaled libp2p record envelope. */
     addressRecord?: { envelope: string };
+    /** FRET's `MembershipState`: `'member'`, `'foreign'` or `'unknown'`; absent in tables that predate it. */
+    membership?: string;
   }>;
 }
 
@@ -66,6 +70,17 @@ export interface FretPeerAddrs {
 }
 
 /**
+ * Whether FRET has seen a peer speak this strand network's protocols (`'member'`), seen it
+ * list protocols without any of them (`'foreign'`), or not judged it yet (`'unknown'`).
+ *
+ * The relay a strand node reserves on is `'foreign'`, and that label is the only thing in
+ * the table that tells it from a member: FRET files every connected peer, and adopts the
+ * signed record identify delivers for it, so the relay's entry carries a record as a
+ * member's does.
+ */
+export type FretMembership = 'member' | 'foreign' | 'unknown';
+
+/**
  * The addresses of every peer `host`'s FRET table holds a usable signed record for,
  * `host` itself excluded. A node with no FRET service (a db-p2p build without it, a
  * test double) reads as an empty table. One bad record never costs the others: it is
@@ -76,13 +91,8 @@ export interface FretPeerAddrs {
  */
 export async function strandFretPeerAddrs(host: FretAddrHost): Promise<FretPeerAddrs> {
   const result: FretPeerAddrs = { peers: new Map(), rejected: 0 };
-  const fret = host.services?.fret;
-  if (!isFretTableSource(fret)) {
-    return result;
-  }
-  const selfId = host.peerId.toString();
-  for (const entry of fret.exportTable().entries) {
-    if (entry.id === selfId || entry.addressRecord === undefined) {
+  for (const entry of fretTableEntries(host)) {
+    if (entry.addressRecord === undefined) {
       continue;
     }
     const addrs = await verifiedRecordAddrs(entry.id, entry.addressRecord.envelope);
@@ -93,6 +103,30 @@ export async function strandFretPeerAddrs(host: FretAddrHost): Promise<FretPeerA
     }
   }
   return result;
+}
+
+/**
+ * FRET's membership label for every peer `host`'s table holds, `host` itself excluded.
+ * Checks no signature, so a caller that needs only the labels pays for one table export
+ * rather than one record verification per peer. Throws what `exportTable()` throws.
+ */
+export function strandFretMembership(host: FretAddrHost): Map<string, FretMembership> {
+  return new Map(fretTableEntries(host).map((entry) => [entry.id, asMembership(entry.membership)]));
+}
+
+/** The table's entries other than `host`'s own; none when the node runs no FRET service. */
+function fretTableEntries(host: FretAddrHost): FretTableSlice['entries'] {
+  const fret = host.services?.fret;
+  if (!isFretTableSource(fret)) {
+    return [];
+  }
+  const selfId = host.peerId.toString();
+  return fret.exportTable().entries.filter((entry) => entry.id !== selfId);
+}
+
+/** A label FRET did not write (a table that predates it, or a value this module does not know) is no judgement. */
+function asMembership(label: string | undefined): FretMembership {
+  return label === 'member' || label === 'foreign' ? label : 'unknown';
 }
 
 function isFretTableSource(service: unknown): service is FretTableSource {
