@@ -154,10 +154,10 @@
 			<div class="buttons">
 				<button
 					onclick={() => void useRequest()}
-					disabled={add.minting || !add.requestText.trim()}
+					disabled={add.minting !== null || !add.requestText.trim()}
 					data-testid="btn-use-request"
 				>
-					Use request
+					{add.minting === 'request' ? 'Making the invitation…' : 'Use request'}
 				</button>
 			</div>
 			{@render noticeFor('request')}
@@ -169,8 +169,8 @@
 				<p class="hint warn" data-testid="bearer-warning">{BEARER_WARNING}</p>
 			{/if}
 			<div class="buttons">
-				<button onclick={() => void makeOpenInvitation()} disabled={add.minting} data-testid="btn-make-invitation">
-					{add.minting ? 'Making the invitation…' : 'Make invitation'}
+				<button onclick={() => void makeOpenInvitation()} disabled={add.minting !== null} data-testid="btn-make-invitation">
+					{add.minting === 'open' ? 'Making the invitation…' : 'Make invitation'}
 				</button>
 			</div>
 			{@render noticeFor('open')}

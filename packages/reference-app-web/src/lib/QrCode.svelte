@@ -12,6 +12,8 @@
 	// Level L: an invitation runs to about 2,000 characters, and the lowest error correction
 	// keeps the modules as large as that allows, so a camera reads it from a screen. The
 	// encoder refuses only text too long for any QR code.
+	// NOTE: at 24rem a ~1,200-character invitation draws about 3 CSS px per module, never read
+	// by a phone camera in a test; if phones fail to scan it, draw it wider.
 	const svg = $derived(
 		QRCode.toString(text, { type: 'svg', errorCorrectionLevel: 'L', margin: 2 }).catch((err: unknown) => {
 			console.warn('[reference-app-web] no QR code for this text:', err);

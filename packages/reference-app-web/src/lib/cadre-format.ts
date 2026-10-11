@@ -5,6 +5,8 @@
 /**
  * The short form of a peer id that both apps show while one adds the other, so the owner
  * can compare them. Must match the phone app's `shortPeerId`, or the two codes never agree.
+ * NOTE: two hand-kept copies of one format; if a third surface (cadre-host's UI) shows the
+ * code, move it into cadre-core and import it everywhere.
  */
 export function peerCode(peerId: string): string {
 	return `${peerId.slice(0, 12)}…${peerId.slice(-6)}`;

@@ -68,7 +68,8 @@ interface AddDeviceState {
 	pending: CadreJoinRequest | null;
 	requestOwner: boolean;
 	openOwner: boolean;
-	minting: boolean;
+	/** Which flow's invitation is being made, while one is. */
+	minting: NoticeArea | null;
 	minted: MintedInvitation | null;
 	/** The live invitations, latest expiry first. */
 	invitations: CadreInviteStatus[];
@@ -82,7 +83,7 @@ const state = $state<AddDeviceState>({
 	pending: null,
 	requestOwner: true,
 	openOwner: true,
-	minting: false,
+	minting: null,
 	minted: null,
 	invitations: [],
 	listError: null,
@@ -175,7 +176,7 @@ export function dismissMinted(): void {
 /** Mint an invitation and show it; false when none was made. */
 async function mint(options: CreateCadreInvitationOptions, title: string, area: NoticeArea): Promise<boolean> {
 	if (state.minting) return false;
-	state.minting = true;
+	state.minting = area;
 	state.notice = null;
 	try {
 		const { invitation, encoded, reach } = await createCadreInvitation(options);
@@ -190,7 +191,7 @@ async function mint(options: CreateCadreInvitationOptions, title: string, area: 
 		state.notice = mintFailure(area, err);
 		return false;
 	} finally {
-		state.minting = false;
+		state.minting = null;
 	}
 }
 
