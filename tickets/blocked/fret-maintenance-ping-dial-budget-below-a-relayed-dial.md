@@ -3,7 +3,7 @@ files: ../Fret/packages/fret/src/service/fret-service.ts (MAINTENANCE_RPC_TIMEOU
 ----
 # Upstream (FRET): maintenance pings dial within a 2 s whole-call budget
 
-**Blocked on:** a dependency outside this repo (`../Fret`, read-only per `tickets/rules/sibling-repos.md`). Unblocks when FRET dials peers it has to reconnect to on a budget that can cover a relayed dial on the host's declared link, and Sereus adopts that release. Someone needs to pass the proposal below to FRET's board (its agent or maintainer); nothing here can file it.
+**Blocked on:** a dependency outside this repo (`../Fret`, read-only per `tickets/rules/sibling-repos.md`). Unblocks when FRET dials peers it has to reconnect to on a budget that can cover a relayed dial on the host's declared link, and Sereus adopts that release. Filed in `../Fret` as `tickets/fix/maintenance-ping-dial-budget-below-a-relayed-dial`.
 
 ## The finding
 
