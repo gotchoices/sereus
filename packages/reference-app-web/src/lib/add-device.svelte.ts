@@ -24,13 +24,13 @@ import {
 } from '@serfab/cadre-core';
 import {
 	createCadreInvitation,
+	getCadreNode,
 	getRelayState,
 	isMemberPeer,
 	isOwner,
 	listCadreInvitations,
 	withdrawCadreInvitation,
 } from './cadre-web.js';
-import { currentPeerId } from './store.svelte.js';
 import { pushError } from './diagnostics.svelte.js';
 
 // Chosen on the relay status, not on which error core threw, so it states only what that
@@ -129,7 +129,7 @@ export async function useRequest(): Promise<void> {
 		state.notice = notice('request', 'Cannot use this request', errorMessage(err));
 		return;
 	}
-	if (request.peerId === currentPeerId()) {
+	if (request.peerId === getCadreNode()?.peerId?.toString()) {
 		state.notice = notice('request', 'Cannot use this request', 'This is this tab\'s own request. Open the other app and copy its request there.');
 		return;
 	}
@@ -171,6 +171,18 @@ export async function makeOpenInvitation(): Promise<void> {
 /** Take the minted invitation off the card; the cadre still holds its row. */
 export function dismissMinted(): void {
 	state.minted = null;
+}
+
+/**
+ * Forget the minted invitation and the pending approval: the tab is leaving its party (a
+ * join), or coming back to it after a failed join. Both belong to the party the node ran
+ * when they were made, and the card would otherwise show them as the running party's. The
+ * standing and the list re-read on the next `running`.
+ */
+export function resetAddDeviceCard(): void {
+	state.minted = null;
+	state.pending = null;
+	state.notice = null;
 }
 
 /** Mint an invitation and show it; false when none was made. */

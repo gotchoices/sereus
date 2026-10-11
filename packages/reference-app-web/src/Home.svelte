@@ -109,7 +109,7 @@
 </section>
 
 <section class="actions">
-	<button onclick={handleRestart} disabled={busy || node.status === 'starting'}>
+	<button onclick={handleRestart} disabled={busy || node.status === 'starting' || node.status === 'joining'}>
 		Restart node
 	</button>
 </section>
@@ -210,7 +210,7 @@
 
 <footer>
 	<p>
-		Identity and party id persist in IndexedDB and survive reloads. The solo
+		Identity and the start record (the party, founded or joined) persist in IndexedDB and survive reloads. The solo
 		chat strand needs no peers; a strand formed via an invitation is a
 		closed strand keyed by the minted member key. Control-network authorization
 		(owner keys, formation invites/usage, strand membership) is visible on
@@ -261,7 +261,8 @@
 	.status-running {
 		color: #1f7a3b;
 	}
-	.status-starting {
+	.status-starting,
+	.status-joining {
 		color: #8a5a00;
 	}
 	.status-error {

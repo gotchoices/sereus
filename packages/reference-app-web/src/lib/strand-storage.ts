@@ -42,7 +42,7 @@ const DB_PREFIX = 'sereus-strand-';
 
 /**
  * The key of the database holding this tab's **node-local** `kv` records — its
- * Ed25519 identity, its persisted party id, the trusted-owner anchor, the
+ * Ed25519 identity, its start record (party id, founded or joined), the per-party trusted-owner anchor, the
  * bootstrap peers, the enrolled-machine count (see `node-local-slots.ts`).
  *
  * NOT a cadre-core scope key. It is spelled `'control'` only because that is the

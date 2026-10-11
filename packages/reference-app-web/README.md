@@ -25,7 +25,8 @@ CadreNode → control network (CadreControl) → signed open chat strand (chat s
   Optimystic. A solo node coordinates its own writes, so DML lands on the
   strand's IndexedDB-backed storage with no peers needed.
 
-Identity (Ed25519 peer key) and the party id persist in IndexedDB across reloads.
+Identity (Ed25519 peer key) and the start record (the party, and whether the tab
+founded or joined it) persist in IndexedDB across reloads.
 
 It also drives the **consent/invitation strand-formation flow** (Phase 2): a tab
 can mint an `OpenInvitation` for the chat sApp (responder) or join via a pasted
@@ -54,7 +55,9 @@ stores both in IndexedDB (in the `sereus-strand-control` database's `kv` store),
 and starts the cadre node. Reload preserves the peer ID and party ID. Each
 control/strand network gets its own IndexedDB database:
 
-- `sereus-strand-control` — control network blocks + identity + party id.
+- `sereus-strand-control` — the node-local records: identity, the start record
+  (`party-start`), the per-party records (`<record>.<partyId>`) and any strand move record.
+- `sereus-strand-control-<encoded party id>` — one party's control network blocks.
 - `sereus-strand-sereus-web-chat` — the chat strand's blocks (participants/messages).
 
 Delete those databases from DevTools → Application → Storage to reset identity
@@ -66,7 +69,8 @@ and stored messages.
   chat-strand status, owner state, relay (dialability) status, Restart, and
   the **strand-formation panel**: create an invitation (responder) / join via a
   pasted invitation (initiator), showing the resulting strand id + membership type.
-- `#/cadre` — **Cadre** — cadre membership: **Add a device or app** (see
+- `#/cadre` — **Cadre** — cadre membership: **Join my existing cadre** (see
+  [Joining an existing cadre](#joining-an-existing-cadre)) and **Add a device or app** (see
   [Adding a device or app](#adding-a-device-or-app)).
 - `#/messages` — compose / list chat messages backed by the strand's
   `App.Participant` / `App.Message` tables (Quereus SQL). The chat sApp is
@@ -89,13 +93,27 @@ every key is known ahead of time — and the provider returns a cached
 
 ### Two databases, not one
 
-The tab's **node-local** `kv` records — its Ed25519 identity, its persisted party id,
-the trusted-owner anchor, the bootstrap peers, the enrolled-machine count — stay in the
-database historically named `sereus-strand-control` (`NODE_LOCAL_STORE_KEY`). They
-cannot move into the party-scoped control database, because the party id that names it
-is one of the records read out of them. So `startCadre` opens the node-local database
-first, reads the party id, and only then opens `sereus-strand-control-<encoded party
-id>` for the control **blocks**.
+The tab's **node-local** `kv` records — its Ed25519 identity, its start record, the
+trusted-owner anchor, the bootstrap peers, the enrolled-machine count, the strand network
+state — stay in the database historically named `sereus-strand-control`
+(`NODE_LOCAL_STORE_KEY`). They cannot move into the party-scoped control database, because
+the party id that names it is one of the records read out of them. So `startCadre` opens
+the node-local database first, reads the start record, and only then opens
+`sereus-strand-control-<encoded party id>` for the control **blocks**.
+
+**The start record** (`lib/party-start.ts`, `kv` key `party-start`) is one JSON record per
+tab: `{ v: 1, partyId, origin: 'founded' | 'joined', formerPartyId? }`, written in one put.
+A tab with none mints a party and writes `origin: 'founded'`; a join rewrites it once a
+member admitted the tab ([Joining an existing cadre](#joining-an-existing-cadre)). A record
+that is present but unreadable fails the start with a clear message rather than starting a
+fresh party over it; clear the site's data to start over. The old `party-id` key is not
+read: a tab upgraded across this change starts a fresh party.
+
+**Per-party records.** The four durable records are filed under `<record>.<partyId>`
+(`partyKvKey` in `lib/node-local-slots.ts`), as the phone kit files its records, because a
+tab that joins another cadre switches party, and comes back to the one it founded when the
+join fails: one key per tab would have the joined party's first save overwrite the founded
+party's records. Records under the old party-less keys are orphaned, unread.
 
 A tab upgraded across this change keeps its identity, party id and trust anchor, and
 comes up with an **empty control block store** — strands it founded before the upgrade
@@ -238,6 +256,53 @@ machine of the cadre holding one, *Make invitation* fails and says the tab has n
 address. With a relay and no other machine (the usual solo tab) it succeeds with the
 open-tab warning.
 
+## Joining an existing cadre
+
+The Cadre page's **Join my existing cadre** card is the joining side of
+[handing an invitation from app to app](../../docs/architecture.md#handing-an-invitation-from-app-to-app):
+a tab that founded a cadre of its own on first load joins the user's main cadre, with the
+phone app's flow and wording (`lib/join-cadre.svelte.ts`, `lib/join-flow.ts`,
+`JoinCadre.svelte`). The web app has no kit; `lib/cadre-web.ts` follows the phone kit's
+sequence itself ([An app joins an existing cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre)).
+
+- **This tab's request** — the join request (`encodeCadreJoinRequest`, app name "Sereus web
+  reference") as a QR code and copyable text, with the tab's code (the short peer id) to
+  compare with what the owner's app shows. Paste it in that app under *Add a device or app*
+  → *Paste request*, or ask it for an open invitation.
+- **Join** — paste the response or open invitation and choose *Join*. A response made for
+  another app's request is refused before anything stops. Already in the invitation's party
+  (a second invitation, say one granting owner), the tab redeems in place. Otherwise its one
+  node moves: the founded party's strands, pending joins and invitations are exported and
+  kept as a move record (`lib/web-strand-move.ts`, `kv` key `strand-move.<partyId>`), the
+  node stops and starts in the invitation's party (Home's status reads `joining`, and the
+  "Add a device or app" card forgets its minted invitation and pending approval), and the
+  invitation is redeemed there, waiting for a member to answer. The card shows each step:
+  joining (with *Cancel* while it waits), admitted, moving strands, then done with the
+  standing and the moved count. A join refused, expired or cancelled puts the tab back in
+  the party it left, unchanged, and says why.
+- **The move needs an owner grant.** When the founded party holds anything to move and the
+  invitation makes the tab a member, the join is refused up front: every row a move seats is
+  owner-signed. The tab's own chat strand has no control row, so a fresh tab's export is
+  empty and a member invitation is fine; the chat strand keeps working in the joined party
+  as the same local strand.
+- **After admission** the start record names the joined party (`origin: 'joined'`, the
+  founded party as `formerPartyId`), and the tab's key is wired for signing only when the
+  party lists it as an owner (`wireOwnKeyIfOwner`; after an owner grant it is asked again
+  every 2 s for up to a minute while the row arrives). Home's **Owner** row reads `enrolled`
+  or `member`. A joined party never runs owner genesis, so a reload cannot seat the tab's key
+  as a founding `OwnerKey` row of a cadre it merely joined.
+- **Every start adopts** the move records naming its party, once the tab's key is wired as
+  an owner there, before it reports `running`: a tab closed after admission finishes the
+  move on its next load, and a member whose owner grant arrived late finishes it at the
+  next start (*Restart node* on Home). Moved strands reach the party as rows, party keys
+  and invitations; the tab does not open them (it has no `strand:discovered` handler).
+- **The founded party stays in IndexedDB** under its own names (its control block database,
+  its `<record>.<partyId>` records) until the tab dissolves it, a later ticket.
+- **Two same-origin tabs** share the node-local database and the start record. A join in
+  one tab switches the other only on its next load; until then the other keeps running the
+  left party against that party's stores. Unsupported, on the same footing as the two-tab
+  note in `lib/node-local-slots.ts`.
+
 ## Diagnostics (`#/diag`)
 
 Polls every two seconds while the tab is visible. Surfaces:
@@ -316,6 +381,7 @@ src/
   App.svelte             # nav + hash route switcher (Home, Cadre, Messages, Activity, Diagnostics)
   Home.svelte            # node status + party/peer/control/strand/relay state + strand-formation panel
   Cadre.svelte           # /cadre — cadre membership page
+  JoinCadre.svelte       # /cadre's "Join my existing cadre" card
   AddDevice.svelte       # /cadre's "Add a device or app" card
   Messages.svelte        # /messages — chat strand send / list
   Activity.svelte        # /log — CadreNode lifecycle event log
@@ -324,12 +390,17 @@ src/
   polyfills.ts           # Buffer global + timer .ref/.unref shim
   main.css               # global styles
   lib/
-    cadre-web.ts             # CadreNode lifecycle (control net, owner genesis, chat strand)
+    cadre-web.ts             # CadreNode lifecycle (control net, owner step, chat strand, the join)
+    party-start.ts           # the start record: party id, founded or joined, the party left
+    web-strand-move.ts       # move records: the founded party's strands carried into the joined one
+    node-local-slots.ts      # per-party kv slots for the durable node-local records
     strand-storage.ts        # per-scope IndexedDB IRawStorage provider (pre-open bridge)
     chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
     store.svelte.ts          # Svelte 5 runes store: node state + CadreNode event log
     network.svelte.ts        # strand-formation panel state (create / join invitation)
     add-device.svelte.ts     # "Add a device or app" state: request, approval, mint, list, withdraw
+    join-cadre.svelte.ts     # "Join my existing cadre" state: the request, the join and its steps
+    join-flow.ts             # the join's steps, their words, and the words for each failure
     cadre-format.ts          # peer-id code + expiry text shared by the Cadre page's cards
     relay-config.ts          # optional circuit-relay multiaddr from a runtime manifest
     messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
@@ -384,6 +455,14 @@ yarn workspace @serfab/reference-app-web test:e2e
   bootstrap-mesh distributed suite, which asserted *membership-free* Optimystic
   convergence over a shared network — a model that no longer exists now that chat
   data lives in a strand cohort.
+- **Tier 2 — join an existing cadre** (`e2e/distributed/join-cadre.spec.ts`) — an
+  in-process headless cadre (`e2e/fixtures/cadre-member.ts`: owner genesis, a loopback
+  WebSocket listener) mints a **member** invitation targeted at the tab's peer id; the tab
+  pastes it under *Join my existing cadre*, and Home then shows that party and `member`.
+  After a reload the same two values hold, the tab's key is absent from the party's
+  `OwnerKey` rows (`__cadre.isOwner()` is false) and the start record says `joined`: the
+  defect this pins is a joined party running owner genesis on every start. Same gate and
+  self-skip as the formation tier.
 
 Wiring this suite into CI is out of scope for the current ticket — it stops at
 "runs cleanly locally."

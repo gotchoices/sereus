@@ -1,4 +1,5 @@
 <script lang="ts">
+	import JoinCadre from './JoinCadre.svelte';
 	import AddDevice from './AddDevice.svelte';
 </script>
 
@@ -9,9 +10,11 @@
 
 	<p class="hint">
 		Your cadre is the set of devices and apps that hold your data together. An owner adds
-		another device or app by giving it an invitation.
+		another device or app by giving it an invitation, and a tab that started on its own can
+		join the cadre another app already holds.
 	</p>
 
+	<JoinCadre />
 	<AddDevice />
 </section>
 

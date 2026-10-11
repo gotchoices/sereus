@@ -9,6 +9,11 @@
  *
  * Phase 1 is a solo single-node cadre, so `mode` is always `'solo'` (one node,
  * no peers). Phase 2 introduces multi-node cadres / cross-party strands.
+ *
+ * The store also runs the join of an existing cadre ({@link joinCadre}): it tears down
+ * what it attached to the left party's node, drives `cadre-web.ts`'s switch, and
+ * attaches to whichever node runs afterwards, the joined party's or, after a failure,
+ * the left party's again.
  */
 
 import {
@@ -22,13 +27,22 @@ import {
 	getOwnerState,
 	getRelayState,
 	noRelayState,
+	decodeInvitationForThisTab,
+	redeemInPlace,
+	recordStrandMove,
+	switchToParty,
+	returnToStoredParty,
+	type JoinOptions,
+	type JoinOutcome,
 	type OwnerState,
 	type RelayState,
 } from './cadre-web.js';
 import type { CadreNode, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
+import { resetAddDeviceCard } from './add-device.svelte.js';
 
-export type NodeStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'error';
+/** `joining`: started in the party an invitation names and redeeming it there; not admitted yet. */
+export type NodeStatus = 'idle' | 'starting' | 'joining' | 'running' | 'stopped' | 'error';
 /** Phase 1 is a single-node cadre. Kept for the header badge + Phase-2 growth. */
 export type CadreMode = 'solo';
 
@@ -150,6 +164,16 @@ function syncRelay(): void {
 	}
 }
 
+/** Pull the owner step's outcome into reactive state, recording it. */
+function syncOwner(): void {
+	state.owner = getOwnerState().state;
+	if (state.owner === 'error') {
+		record('owner:error', getOwnerState().error ?? 'unknown');
+	} else {
+		record(`owner:${state.owner}`);
+	}
+}
+
 // NOTE: relay posture refreshes on this 4s tick, so a lost reservation shows up
 // in the UI up to 4s late. If a formation flow ever needs it sooner, read
 // `getRelayState()` directly at the decision point (createInvitation already
@@ -172,25 +196,36 @@ function stopRefreshPoll(): void {
 }
 
 export async function start(): Promise<void> {
-	if (state.status === 'starting' || state.status === 'running') return;
+	if (state.status === 'starting' || state.status === 'joining' || state.status === 'running') return;
 	state.status = 'starting';
 	state.error = null;
+	let node: CadreNode;
 	try {
-		const node = await startCadre();
+		node = await startCadre();
+	} catch (err) {
+		failed('startCadre', err);
+		return;
+	}
+	await attachRunningNode(node);
+}
+
+/**
+ * Attach the page layer to a node that has just come up: subscribe to its events, fill the
+ * reactive state, bring up the signed chat strand and start the refresh poll. Reports
+ * `running`, or `error` when the chat strand cannot be added (a `SchemaVerificationError`
+ * surfaces here).
+ */
+async function attachRunningNode(node: CadreNode): Promise<void> {
+	try {
 		subscribe(node);
 
 		state.peerId = node.peerId?.toString() ?? null;
 		state.partyId = getPartyId();
 		state.controlConnected = node.isRunning;
-		state.owner = getOwnerState().state;
 		// control:connected fires inside start(), before we can subscribe; record
 		// it synthetically so the event log opens with the real lifecycle step.
 		record('control:connected', state.partyId ?? '');
-		if (state.owner === 'error') {
-			record('owner:error', getOwnerState().error ?? 'unknown');
-		} else {
-			record(`owner:${state.owner}`);
-		}
+		syncOwner();
 
 		// Relay reservation (dialability for formation) settles inside start(); the
 		// poll below keeps it current if the reservation is later lost or regained.
@@ -203,33 +238,43 @@ export async function start(): Promise<void> {
 
 		state.status = 'running';
 	} catch (err) {
-		state.error = err instanceof Error ? err.message : String(err);
-		state.status = 'error';
-		pushError('startCadre', err);
-		console.error('[reference-app-web] startCadre failed:', err);
+		failed('startCadre', err);
 	}
+}
+
+function failed(where: string, err: unknown): void {
+	state.error = err instanceof Error ? err.message : String(err);
+	state.status = 'error';
+	pushError(where, err);
+	console.error(`[reference-app-web] ${where} failed:`, err);
+}
+
+/** Let go of the running node: stop polling it and forget the subscriptions, which die with it. */
+function releaseNode(): void {
+	stopRefreshPoll();
+	subscribed = false;
+}
+
+function resetNodeState(): void {
+	state.peerId = null;
+	state.partyId = null;
+	state.controlConnected = false;
+	state.strandStatus = null;
+	state.strandConnectedPeers = null;
+	state.strandError = null;
+	state.owner = 'pending';
+	state.relay = noRelayState();
 }
 
 export async function stop(): Promise<void> {
 	if (state.status !== 'running') return;
 	try {
-		stopRefreshPoll();
-		subscribed = false;
+		releaseNode();
 		await stopCadre();
-		state.peerId = null;
-		state.partyId = null;
-		state.controlConnected = false;
-		state.strandStatus = null;
-		state.strandConnectedPeers = null;
-		state.strandError = null;
-		state.owner = 'pending';
-		state.relay = noRelayState();
+		resetNodeState();
 		state.status = 'stopped';
 	} catch (err) {
-		state.error = err instanceof Error ? err.message : String(err);
-		state.status = 'error';
-		pushError('stopCadre', err);
-		console.error('[reference-app-web] stopCadre failed:', err);
+		failed('stopCadre', err);
 	}
 }
 
@@ -239,6 +284,69 @@ export async function restart(): Promise<void> {
 		await stop();
 	}
 	await start();
+}
+
+/**
+ * Join the cadre a pasted invitation names (docs/architecture.md → "An app joins an existing
+ * cadre"). Already running in that party: redeem in place. Otherwise the running party's
+ * strands are recorded for the move (refused up front when the invitation does not make the
+ * tab an owner and there is something to move), the node is stopped and started in the
+ * invitation's party (status `joining`), and the invitation redeemed there, waiting for a
+ * member until one answers or `options.signal` aborts. Admitted: the start record names the
+ * joined party, its strands are adopted, and the store attaches as after any start. Anything
+ * else: the tab goes back to the party it left and the join's error is thrown; a failure
+ * going back leaves the store in `error` with that message, the join's error still thrown.
+ *
+ * The "Add a device or app" card's minted invitation and pending approval belong to the party
+ * the node ran when they were made, so a switch, and a rollback, forget them.
+ */
+export async function joinCadre(encoded: string, options: JoinOptions = {}): Promise<JoinOutcome> {
+	if (state.status !== 'running') throw new Error('The node is not running.');
+	const invitation = decodeInvitationForThisTab(encoded);
+	if (invitation.partyId === state.partyId) {
+		const outcome = await redeemInPlace(invitation, options);
+		syncOwner();
+		return outcome;
+	}
+	const movingFrom = await recordStrandMove(invitation);
+	record('join:leaving', state.partyId ?? '');
+	releaseNode();
+	resetNodeState();
+	resetAddDeviceCard();
+	state.status = 'joining';
+	state.partyId = invitation.partyId;
+	state.peerId = getCadreNode()?.peerId?.toString() ?? null;
+	try {
+		const outcome = await switchToParty(invitation, options, movingFrom);
+		record('join:admitted', invitation.partyId);
+		await attachRunningNode(requireNode());
+		return outcome;
+	} catch (err) {
+		record('join:failed', err instanceof Error ? err.message : String(err));
+		await startLeftPartyAgain(movingFrom);
+		throw err;
+	}
+}
+
+/** After a failed join: start the party the tab left and attach to it; a failure here is the store's `error`, not the join's. */
+async function startLeftPartyAgain(movingFrom: string | undefined): Promise<void> {
+	resetNodeState();
+	resetAddDeviceCard();
+	state.status = 'starting';
+	let node: CadreNode;
+	try {
+		node = await returnToStoredParty(movingFrom);
+	} catch (err) {
+		failed('returnToStoredParty', err);
+		return;
+	}
+	await attachRunningNode(node);
+}
+
+function requireNode(): CadreNode {
+	const node = getCadreNode();
+	if (!node) throw new Error('CadreNode not started');
+	return node;
 }
 
 export function currentPeerId(): string | null {
