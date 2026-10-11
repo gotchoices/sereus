@@ -117,3 +117,5 @@ Worth noting alongside it: `control-database.ts` is now the package's second-lar
 `wc -l packages/cadre-core/src/cadre-node.ts` → 8218 lines (8131 before `party-wide-joined-strands`). That ticket added the party-wide joined-strand adapter (`createPartyJoinedStrandLedger`, `enrolledOwnerSigningKey`, about 60 lines plus doc comments); the publish/remove/leave policy itself went into `joined-strand-store.ts`.
 
 - Evidence (review of `owner-anchor-derivation`, 2026-10-07): the trusted-owner anchor sync, its apply step and the shared invitation-chain source added about 140 lines to this file; measured `wc -l packages/cadre-core/src/cadre-node.ts` = 9,375.
+
+`wc -l packages/cadre-core/src/strand-instance-manager.ts` → **1978** (2026-10-11, review of `strand-deferred-join-keeps-its-runtime`, which split the database phase out of `buildStrandRuntime` into `buildStrandDatabase` and added the deferred-join retry around it, about +80 lines). Its retry timer map (`unreachableJoinRetries`) would move into the per-strand runtime-components object suggested above along with the other four.

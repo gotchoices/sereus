@@ -891,6 +891,12 @@ export class StrandInstanceManager {
       this.relaySupervisors.set(strandId, this.startRelaySupervisors(strandId, node, relayDialAddrs, config));
 
       const databaseBuild = await this.buildStrandDatabase(instance, config, node);
+      if (!this.isCurrentRuntime(instance, node)) {
+        // A stop released this runtime during the database phase (`stopStrand` does not
+        // wait for builds); arming the loops below would restart them on a stopped node.
+        log('Strand %s was stopped while its runtime was being built', strandId);
+        return;
+      }
 
       // The membership reconciler: finish this party's join on every machine —
       // redeem a staged formation invitation if one is pending, then write the
@@ -1094,12 +1100,17 @@ export class StrandInstanceManager {
     // and `publishDatabase` kicks the reconciler when the wait ends, so a joiner's membership
     // rows land with the strand rather than one retry later.
     t0 = performance.now();
-    if (config.founder === true || await strandFirstSyncComplete(strandDb.getDatabase(), strandId)) {
+    const synced = config.founder === true || await strandFirstSyncComplete(strandDb.getDatabase(), strandId);
+    timing('[buildStrandRuntime:%s] first-sync probe: %dms', strandId, Math.round(performance.now() - t0));
+    if (this.firstSyncGates.get(strandId) !== gate) {
+      // A stop released the runtime during the probe and closed this database through its gate.
+      return 'released';
+    }
+    if (synced) {
       this.publishDatabase(instance, strandDb);
     } else {
       gate.start();
     }
-    timing('[buildStrandRuntime:%s] first-sync probe: %dms', strandId, Math.round(performance.now() - t0));
     return 'built';
   }
 
@@ -1165,6 +1176,7 @@ export class StrandInstanceManager {
       build = await this.trackRuntimeBuild(strandId, this.buildStrandDatabase(instance, config, node));
     } catch (error) {
       if (!this.isCurrentRuntime(instance, node)) {
+        log('Strand %s: a database retry failed after its runtime was released: %o', strandId, error);
         return;
       }
       await this.releaseRuntime(instance).catch((cleanupErr) => {

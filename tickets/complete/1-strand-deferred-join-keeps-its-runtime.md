@@ -39,3 +39,30 @@ The scenario's header paragraph now gives this cause instead of the torn-down ru
 - `stopStrand` does not wait for an in-flight database retry (it never waited for builds). The retry's gate identity check and `isCurrentRuntime` cover a stop during `initialize()`; a stop landing during the first-sync probe's `await` can still attach an already-closed database to the discarded instance. Harmless as far as I can see; the same window existed for `startStrand` builds before.
 - A founder request (`foundExistingStrand`) against a launch waiting for a seed returns `'needs-resume'`; `CadreNode`'s wake is then a no-op (the runtime is live) and `ensureFounderBootstrap` throws, now with a message naming both causes. Before the change the rebuild-as-founder would also have been refused while the seed was unheard, so the outcome is the same; only reachable for a founder given a seed.
 - No other integration scenario was run; the change touches every strand launch whose first database build fails `cohort-unreachable`.
+
+## Review findings
+
+Read the `ticket(implement): strand-deferred-join-keeps-its-runtime` diff first, then the surrounding manager code (`startStrand`, `quiesceStrand`, `stopStrand`, `attachSApp`, `foundExistingStrand`, `publishDatabase`, `releaseRuntime`), `CadreNode`'s founder path, and optimystic's `CollectionFactory.dispose`/`shutdown`.
+
+**Fixed in this pass (minor):**
+
+- A stop during the initial build's database phase let `buildStrandRuntime` carry on: it restarted the revocation enforcer that `releaseRuntime` had just stopped, armed a new reconciler and backfill on the stopped node, and overwrote the `'stopped'` status with `'syncing'`. The new `'released'` result was returned but ignored by this caller, and an `'awaiting-seed'` result after a stop had the same effect. `buildStrandRuntime` now returns right after the database phase when `isCurrentRuntime` is false. The window existed before this change too (`stopStrand` never waited for builds).
+- The window the implementer flagged: a stop during the first-sync probe's `await` would publish the closed database onto the discarded instance and fire `onWritable` for a stopped strand. `buildStrandDatabase` now re-checks its gate's identity after the probe and returns `'released'`.
+- `retryUnreachableJoin` dropped a failed retry's error without logging when the runtime had been released meanwhile; it now logs it (project rule against unlogged exceptions).
+- `docs/strands.md` deferred-join bullet: removed the sentence about the plugin's composition release, a second topic in a one-claim bullet (the plugin README owns that contract).
+
+**Checked, no change needed:**
+
+- `CollectionFactory.dispose()` exists in optimystic since well before the 1.12.1 range the plugin depends on, so the `CollectionFactory` shim is accurate. Only cadre-core injects a node into `connectToStrand`, and `releaseRuntime` stops it itself, so no caller relied on `shutdown()` stopping an injected node.
+- Retry ordering: the retry is scheduled only after the whole build, re-reads the retained config, is tracked in `runtimeBuilds` (quiesce, wake and `attachSApp` wait for it), skips while a quiesce is pending, and re-checks `isCurrentRuntime` before rescheduling. A retry that publishes runs `publishDatabase` with status `'syncing'`, so `strand:writable` fires as for a gated joiner.
+- A deferred launch now has a node, so a wake is a no-op where it used to trigger a full rebuild; the retry timer covers it. Founder request against a deferred launch: as the handoff says, same refusal as before.
+- Tests: the manager spec's retry assertion is the reproduction of the defect (node kept, retry on the same node) and stays; the plugin spec's `stop` assertion pins the injected-node contract. No test added for the stop-during-build fixes: the window needs a stop timed inside `initialize()` or the probe, which only a mocked `StrandDatabase` could reproduce.
+- Docs: `docs/strands.md`, the plugin README ("will not stop it on shutdown"), and the comments in `strand-database.ts` and `strand-first-sync-gate.ts` match the code. `docs/testing.md`'s scenario line is still accurate.
+- Error handling, resource cleanup and type safety: `discardDatabaseAttempt` closes the failed attempt; `StrandDatabase.close()` is safe to call twice; no `any`.
+
+**Recorded, not ticketed:**
+
+- `strand-instance-manager.ts` is 1978 lines (`wc -l`); added as evidence on `backlog/debt-cadre-node-single-file-size` rather than a new ticket.
+- The third arm of `joiner-first-commit-over-slow-relay` still fails. The implementer already recorded this on `backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`, `blocked/optimystic-write-made-alone-owes-no-one` and `implement/strand-peers-redial-on-the-declared-link-budget`. Nothing new to file.
+
+**Validation:** `yarn lint` clean; cadre-core typecheck clean; cadre-core 161 files / 2426 tests pass; quereus-plugin-sereus 12 files / 156 tests pass; after rebuilding cadre-core, `strand-chat-participants-converge.integration.ts` passes (3 tests, including the unreachable-host deferral). The slow-relay scenario was not re-run: these fixes only touch the stop-during-build path, which it does not exercise.
