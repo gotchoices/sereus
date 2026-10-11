@@ -587,7 +587,9 @@ function ownerKeyWired(): boolean {
  * asserts `diag-owner` reaches `genesis|existing` on a solo boot, and
  * `cadre-core/test/control-database-solo.spec.ts` covers the no-listen-address
  * control path under explicit deadlines. If that changes, bound the operation in
- * cadre-core rather than wrapping each call site here.
+ * cadre-core rather than wrapping each call site here. The same holds for the joined
+ * party's {@link wireJoinedOwnerKey}: its deadline bounds the re-asks, not one
+ * `wireOwnKeyIfOwner` call (the kit races each against a timer; this copy does not).
  */
 async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
 	try {
@@ -764,6 +766,11 @@ export async function switchToParty(
 	const redemption = await cadre.redeemCadreInvitation(invitation, redeemOptions(options));
 	reportProgress(options, { state: 'admitted', grantsOwner: redemption.grantsOwner });
 	await wireJoinedOwnerKey(cadre, redemption.grantsOwner);
+	// NOTE: written after the owner key is wired, as the phone kit's `startAndRedeem` does. With
+	// an owner grant whose row is slow to arrive, that wait can run up to `GRANTED_OWNER_WAIT_MS`
+	// after the member admitted the tab; a tab closed inside it reloads into the party it left
+	// while the joined party already lists it, and its targeted invitation is spent. If that is
+	// ever hit, write the record right after the redemption, here and in the kit.
 	await writePartyStart(requireNodeLocalHandle(), joined);
 	if (movingFrom !== undefined && ownerKeyWired()) reportProgress(options, { state: 'moving-strands' });
 	const strandMove = await settleJoinMove(cadre, formerPartyId);

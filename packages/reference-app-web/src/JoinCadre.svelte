@@ -89,13 +89,15 @@
 				Join
 			</button>
 		</div>
-		{#if join.failure}
-			<div class="notice" data-testid="join-failure">
-				<strong>{join.failure.title}</strong>
-				<p>{join.failure.message}</p>
-				<button class="small" onclick={dismissJoinFailure}>Dismiss</button>
-			</div>
-		{/if}
+	{/if}
+	<!-- Outside the status branch: a join whose rollback also failed leaves the node stopped,
+	     and the join's own failure must still be readable here, not only the store's on Home. -->
+	{#if join.failure}
+		<div class="notice" data-testid="join-failure">
+			<strong>{join.failure.title}</strong>
+			<p>{join.failure.message}</p>
+			<button class="small" onclick={dismissJoinFailure}>Dismiss</button>
+		</div>
 	{/if}
 </section>
 

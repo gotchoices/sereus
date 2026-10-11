@@ -46,9 +46,11 @@
 
 	const reachLine = $derived(add.minted ? REACH_LINE[add.minted.reach] : null);
 
-	// A restart replaces the node, and the owner standing may change with it.
+	// The standing follows the owner step: a restart replaces the node, and an invitation
+	// redeemed in place (an owner grant for the party the tab already runs) changes it with
+	// the node still `running`, so the step's outcome is a dependency too.
 	$effect(() => {
-		if (node.status !== 'running') return;
+		if (node.status !== 'running' || node.owner === 'pending') return;
 		untrack(() => void refreshAddDevice());
 	});
 

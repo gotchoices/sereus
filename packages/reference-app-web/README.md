@@ -115,11 +115,10 @@ tab that joins another cadre switches party, and comes back to the one it founde
 join fails: one key per tab would have the joined party's first save overwrite the founded
 party's records. Records under the old party-less keys are orphaned, unread.
 
-A tab upgraded across this change keeps its identity, party id and trust anchor, and
-comes up with an **empty control block store** — strands it founded before the upgrade
-are not carried over. `runOwnerGenesis` re-anchors on every start, so the tab still
-boots. The old unscoped blocks are left in place, unread and undeleted: they belong to
-a party that was never recorded alongside them, which is the defect the scoping fixed.
+The node-local database also holds the control **blocks** of tabs that ran before the
+block store became party-scoped. They are left in place, unread and undeleted: they
+belong to a party that was never recorded alongside them, which is the defect the scoping
+fixed (see the `NODE_LOCAL_STORE_KEY` comment in `lib/strand-storage.ts`).
 
 ## Solo cadre (Phase 1)
 

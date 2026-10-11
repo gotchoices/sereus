@@ -305,6 +305,7 @@ export async function joinCadre(encoded: string, options: JoinOptions = {}): Pro
 	const invitation = decodeInvitationForThisTab(encoded);
 	if (invitation.partyId === state.partyId) {
 		const outcome = await redeemInPlace(invitation, options);
+		record('join:admitted', invitation.partyId);
 		syncOwner();
 		return outcome;
 	}
