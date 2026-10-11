@@ -8,8 +8,9 @@
  * is what names the party every per-party record (`node-local-slots.ts`) is read through. A
  * tab mints a party and writes `{ origin: 'founded' }` on its first load; a join rewrites the
  * record once a member admitted the tab, with `origin: 'joined'` and the founded party it
- * left as `formerPartyId`. A joined party never runs owner genesis: genesis on a party whose
- * control store has not arrived would seat this tab as a second founder.
+ * left as `formerPartyId`, until dissolving that party drops it (`web-dissolve.ts`). A joined
+ * party never runs owner genesis: genesis on a party whose control store has not arrived would
+ * seat this tab as a second founder.
  */
 import type { OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
 
@@ -20,7 +21,7 @@ export interface PartyStart {
 	v: typeof RECORD_VERSION;
 	partyId: string;
 	origin: PartyOrigin;
-	/** The party this tab founded and left by joining another; its data stays in IndexedDB under its own names. */
+	/** The party this tab founded and left by joining another; its data stays in IndexedDB under its own names until the tab dissolves it. */
 	formerPartyId?: string;
 }
 
@@ -31,7 +32,18 @@ export const PARTY_START_KV_KEY = 'party-start';
 
 /** A tab with no start record founds a party of its own. */
 export function newFoundedStart(): PartyStart {
-	return { v: RECORD_VERSION, partyId: crypto.randomUUID(), origin: 'founded' };
+	return foundedStart(crypto.randomUUID());
+}
+
+export function foundedStart(partyId: string): PartyStart {
+	return { v: RECORD_VERSION, partyId, origin: 'founded' };
+}
+
+/** `start` without `formerPartyId` when it names `partyId`. */
+export function withoutFormerParty(start: PartyStart, partyId: string): PartyStart {
+	if (start.formerPartyId !== partyId) return start;
+	const { formerPartyId: _removed, ...rest } = start;
+	return rest;
 }
 
 /** The start a join writes once a member admitted the tab into `partyId`. */

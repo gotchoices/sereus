@@ -79,7 +79,9 @@ export function partyKvKey(key: string, partyId: string): string {
  * other tab's newly-recorded entries (a bootstrap peer, a trust anchor) can be
  * dropped. Acceptable — re-seeding refills them — but real; see the ticket
  * `2.1-web-durable-node-local-stores` for the fuller rationale. The same two tabs
- * share the start record too: a join in one switches the other only on its next load.
+ * share the start record too: a join in one switches the other only on its next load,
+ * and a removal of the left party in one stops at that party's database while the other
+ * still runs it (`strand-storage.ts` → `deleteStore`).
  */
 export function kvSlot(handle: OptimysticWebDBHandle, key: string): DurableSlot {
 	return {

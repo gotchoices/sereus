@@ -609,7 +609,7 @@ One pass is the default and what `cadre start --invitation` uses; it leaves expi
 
 #### An app joins an existing cadre
 
-A phone app that already runs a one-node cadre of its own (party B) joins the user's main cadre (party A) by moving its one node from B to A: `PhoneNode.joinCadre` in `@serfab/cadre-rn/phone-node` ([kit README → Phone node](../packages/cadre-rn/README.md#phone-node)). The browser reference app has no kit and follows the same sequence itself, over IndexedDB, in `reference-app-web/src/lib/cadre-web.ts` ([reference-app-web README → Joining an existing cadre](../packages/reference-app-web/README.md#joining-an-existing-cadre)); the duplication is tracked as `debt-web-app-repeats-the-phone-kit-join-sequence`.
+A phone app that already runs a one-node cadre of its own (party B) joins the user's main cadre (party A) by moving its one node from B to A: `PhoneNode.joinCadre` in `@serfab/cadre-rn/phone-node` ([kit README → Phone node](../packages/cadre-rn/README.md#phone-node)). The browser reference app has no kit and follows the same sequence itself, the join, the move and the dissolve, over IndexedDB, in `reference-app-web/src/lib/web-join.ts` and `web-dissolve.ts` ([reference-app-web README → Joining an existing cadre](../packages/reference-app-web/README.md#joining-an-existing-cadre)); the duplication is tracked as `debt-web-app-repeats-the-phone-kit-join-sequence`.
 
 **One node per app, keeping its identity.** The node is switched, not doubled:
 
@@ -2330,7 +2330,7 @@ transport-only demos:
 |-----|----------|---------|----------|
 | `packages/reference-app-rn` | React Native / Hermes (phone) | `LevelDBRawStorage` | control network + open chat strand; seed apply; WebSocket/relay transports; Maestro e2e (drone fixture + sidecar) |
 | `packages/reference-app-ns` | NativeScript / V8 (Android) · JSC (iOS) | SQLite (`db-p2p-storage-ns`) | control network + open chat strand; seed apply; WebSocket/relay transports; **reuses the RN Maestro e2e** (only the app id differs) |
-| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo owner self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; an owner adds a device or app by cadre invitation, and a tab joins an existing cadre by one, moving its node and carrying its strands (Cadre page); WebSocket/relay/WebRTC transports |
+| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo owner self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; an owner adds a device or app by cadre invitation, and a tab joins an existing cadre by one, moving its node, carrying its strands and then removing the cadre it left (Cadre page); WebSocket/relay/WebRTC transports |
 
 The browser app ([reference-app-web/README.md](../packages/reference-app-web/README.md))
 drives the full **consent/invitation formation path** end-to-end — it is the

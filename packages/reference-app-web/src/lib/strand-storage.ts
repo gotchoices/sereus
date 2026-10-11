@@ -117,3 +117,53 @@ export async function closeStores(): Promise<void> {
 	handles.clear();
 	storages.clear();
 }
+
+/**
+ * {@link deleteStore} gave up: another connection keeps the database open, in practice a second
+ * tab of this site still running the party it belongs to. The deletion stays queued in the
+ * browser and runs once that connection closes.
+ */
+export class StoreDeleteBlockedError extends Error {
+	constructor(readonly key: string) {
+		super(`IndexedDB database ${DB_PREFIX + key} is open in another tab of this site; it is deleted once that tab closes`);
+		this.name = 'StoreDeleteBlockedError';
+	}
+}
+
+/**
+ * Keys whose deletion this page asked for and another connection blocked. A second request for
+ * one would queue behind the first and settle only when that connection closes, so it is refused
+ * at once instead.
+ */
+const blockedDeletes = new Set<string>();
+
+/**
+ * Delete the database of `key`, closing this page's handle on it first. Succeeds when there is no
+ * such database. Throws {@link StoreDeleteBlockedError} rather than waiting while another tab
+ * holds it open: the browser fires `blocked` and would otherwise wait for as long as that tab runs.
+ */
+export async function deleteStore(key: string): Promise<void> {
+	if (blockedDeletes.has(key)) throw new StoreDeleteBlockedError(key);
+	handles.get(key)?.close();
+	handles.delete(key);
+	storages.delete(key);
+	await deleteDatabase(key);
+}
+
+function deleteDatabase(key: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const request = indexedDB.deleteDatabase(DB_PREFIX + key);
+		request.onsuccess = () => {
+			blockedDeletes.delete(key);
+			resolve();
+		};
+		request.onerror = () => {
+			blockedDeletes.delete(key);
+			reject(request.error ?? new Error(`Deleting IndexedDB database ${DB_PREFIX + key} failed`));
+		};
+		request.onblocked = () => {
+			blockedDeletes.add(key);
+			reject(new StoreDeleteBlockedError(key));
+		};
+	});
+}

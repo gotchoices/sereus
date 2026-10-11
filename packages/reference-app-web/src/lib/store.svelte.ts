@@ -10,10 +10,10 @@
  * Phase 1 is a solo single-node cadre, so `mode` is always `'solo'` (one node,
  * no peers). Phase 2 introduces multi-node cadres / cross-party strands.
  *
- * The store also runs the join of an existing cadre ({@link joinCadre}): it tears down
- * what it attached to the left party's node, drives `cadre-web.ts`'s switch, and
- * attaches to whichever node runs afterwards, the joined party's or, after a failure,
- * the left party's again.
+ * The store also runs the join of an existing cadre ({@link joinCadre}) and the removal of
+ * the cadre the tab left ({@link dissolveFormerParty}): each tears down what it attached to
+ * the running node, drives `web-join.ts`'s steps, and attaches to whichever node runs
+ * afterwards.
  */
 
 import {
@@ -27,16 +27,22 @@ import {
 	getOwnerState,
 	getRelayState,
 	noRelayState,
+	type OwnerState,
+	type RelayState,
+} from './cadre-web.js';
+import {
 	decodeInvitationForThisTab,
+	finishStrandMove,
+	planDissolve,
 	redeemInPlace,
 	recordStrandMove,
+	removeFormerParty,
 	switchToParty,
 	returnToStoredParty,
 	type JoinOptions,
 	type JoinOutcome,
-	type OwnerState,
-	type RelayState,
-} from './cadre-web.js';
+} from './web-join.js';
+import type { StrandMoveOutcome } from './web-strand-move.js';
 import type { CadreNode, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
 import { resetAddDeviceCard } from './add-device.svelte.js';
@@ -327,6 +333,64 @@ export async function joinCadre(encoded: string, options: JoinOptions = {}): Pro
 		await startLeftPartyAgain(movingFrom);
 		throw err;
 	}
+}
+
+/**
+ * Adopt the strands a join left waiting, on the running node (Retry on the Cadre page). The
+ * owner standing is read again: the adoption needs the tab's key wired as an owner, and asks the
+ * party for it first.
+ */
+export async function retryStrandMove(): Promise<StrandMoveOutcome | undefined> {
+	if (state.status !== 'running') throw new Error('The node is not running.');
+	const outcome = await finishStrandMove();
+	syncOwner();
+	record('move:retried', outcome?.state ?? 'nothing waiting');
+	return outcome;
+}
+
+/**
+ * Remove the cadre this tab founded and left (docs/architecture.md → "Dissolving the party it
+ * left"); `discard` gives up the strand and join ids the running party does not hold. Refused
+ * with nothing stopped when the running start names no such party or a move from it waits
+ * (`StrandMovePendingError`). Otherwise the store lets go of the node, `web-join.ts` stops it,
+ * reads the old party alone and removes it, and the stored party is started and attached
+ * again, status `starting` meanwhile. A refusal (`FormerPartyNotEmptyError`, nothing deleted)
+ * or a failure is thrown once the party has started again; a failure of that start is then the
+ * store's `error` only. After a removal, a failed start is both the store's `error` and the
+ * call's.
+ */
+export async function dissolveFormerParty(discard: readonly string[] = []): Promise<void> {
+	if (state.status !== 'running') throw new Error('The node is not running.');
+	const plan = await planDissolve();
+	record('dissolve:removing', plan.formerPartyId);
+	releaseNode();
+	resetNodeState();
+	state.status = 'starting';
+	try {
+		await removeFormerParty(plan, discard);
+	} catch (err) {
+		record('dissolve:stopped', err instanceof Error ? err.message : String(err));
+		await startStoredParty('dissolveFormerParty');
+		throw err;
+	}
+	record('dissolve:removed', plan.formerPartyId);
+	if (!(await startStoredParty('dissolveFormerParty'))) throw new Error(state.error ?? 'The node did not start again.');
+}
+
+/**
+ * Start the stored party and attach to it, as a load does. False when it did not reach
+ * `running`; the failure is then the store's `error`, reported under `where`.
+ */
+async function startStoredParty(where: string): Promise<boolean> {
+	let node: CadreNode;
+	try {
+		node = await startCadre();
+	} catch (err) {
+		failed(where, err);
+		return false;
+	}
+	await attachRunningNode(node);
+	return state.status === 'running';
 }
 
 /** After a failed join: start the party the tab left and attach to it; a failure here is the store's `error`, not the join's. */

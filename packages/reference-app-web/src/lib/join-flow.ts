@@ -1,18 +1,19 @@
 /**
- * join-flow.ts — the steps "Join my existing cadre" shows once Join is pressed, the plain
- * words for each, and the words for each way a join can fail before a member admits the tab.
- * No Svelte: `join-cadre.svelte.ts` holds the flow and `JoinCadre.svelte` renders it.
+ * join-flow.ts — the steps "Join my existing cadre" shows once Join is pressed, through moving
+ * this tab's strands and removing the cadre it left, the plain words for each, and the words
+ * for each way a join can fail before a member admits the tab. No Svelte:
+ * `join-cadre.svelte.ts` holds the flow and `JoinCadre.svelte` renders it.
  *
  * The wording is the phone app's (`reference-app-rn/src/join-flow.ts` and `join-failure.ts`),
- * with "this app" changed to "this tab" and "chats" to "strands": the two apps share no code
- * by design. The steps after admission that remove the old cadre are the dissolve ticket's.
+ * with "this app" changed to "this tab", "chats" to "strands" and "this phone" to "this
+ * browser": the two apps share no code by design.
  */
 import {
 	CadreInviteRejectedError,
 	CadreInviteReplyInvalidError,
 	CadreInviteUnreachableError,
 } from '@serfab/cadre-core';
-import type { WebJoinProgress } from './cadre-web.js';
+import type { WebJoinProgress } from './web-join.js';
 import { strands, StrandsNeedOwnerJoinError } from './web-strand-move.js';
 
 export type JoinFlow =
@@ -20,8 +21,24 @@ export type JoinFlow =
 	| { step: 'joining'; wait?: 'no-member-answered' | 'member-not-ready'; retryAtMs?: number }
 	| { step: 'admitted'; grantsOwner: boolean }
 	| { step: 'moving-strands' }
-	/** Some of the old cadre's strands are not in the joined one yet; the next start, or Restart on Home, adopts them. */
+	| { step: 'removing-old-cadre' }
+	/**
+	 * Some of the old cadre's strands are not in the joined one yet, so the old cadre cannot be
+	 * removed. Retry adopts them now; the next start, or Restart on Home, does too.
+	 */
 	| { step: 'move-incomplete'; moved: number; waiting: string[]; reason: 'owner-key-not-wired' | 'adoption-failed' | 'partial'; message?: string }
+	/** The old cadre stays in this browser: it has other machines, or (none listed) the user chose to keep what only it holds. */
+	| { step: 'old-cadre-kept'; otherMachines: string[] }
+	/** The old cadre holds strands or pending joins the joined cadre does not; removing it deletes them. */
+	| { step: 'confirm-discard'; strandIds: string[]; pendingJoinIds: string[] }
+	/** The old cadre is in this browser and nothing is removing it; `error` when the last removal failed. */
+	| { step: 'old-cadre-remains'; error?: string }
+	/**
+	 * A removal began and could not finish; the next start of the tab's node finishes it.
+	 * `blocked`: another tab of this site holds the old cadre's database open.
+	 */
+	| { step: 'removal-unfinished'; blocked: boolean; error?: string }
+	/** `grantsOwner`: the tab is an owner of the cadre it joined. */
 	| { step: 'done'; grantsOwner: boolean; moved: number };
 
 export interface JoinFlowText {
@@ -55,9 +72,9 @@ export function flowForProgress(progress: WebJoinProgress): JoinFlow {
 }
 
 const INCOMPLETE_REASON: Record<Extract<JoinFlow, { step: 'move-incomplete' }>['reason'], string> = {
-	'owner-key-not-wired': 'This tab is not an owner of your cadre yet, so its strands cannot move. They move at the next start after it is.',
-	'adoption-failed': 'Moving stopped. The next start tries again.',
-	partial: 'Some could not be moved this time. The next start tries again.',
+	'owner-key-not-wired': 'This tab is not an owner of your cadre yet, so its strands cannot move. Once it is, Retry moving or the next start moves them.',
+	'adoption-failed': 'Moving stopped. Retry moving, or the next start tries again.',
+	partial: 'Some could not be moved this time. Retry moving, or the next start tries again.',
 };
 
 export function joinFlowText(flow: JoinFlow): JoinFlowText {
@@ -68,11 +85,28 @@ export function joinFlowText(flow: JoinFlow): JoinFlowText {
 			return { line: flow.grantsOwner ? 'Admitted. Setting this tab up as an owner…' : 'Admitted as a member. Finishing the setup…' };
 		case 'moving-strands':
 			return { line: 'Moving this tab’s strands into your cadre…' };
+		case 'removing-old-cadre':
+			return { line: 'Removing this tab’s old cadre from this browser…' };
 		case 'move-incomplete':
 			return {
 				line: incompleteMoveLine(flow.moved, flow.waiting.length),
 				detail: flow.reason === 'adoption-failed' && flow.message ? `Moving stopped: ${flow.message}` : INCOMPLETE_REASON[flow.reason],
 			};
+		case 'old-cadre-kept':
+			return {
+				line: flow.otherMachines.length > 0
+					? `This tab’s old cadre also has other machines (${flow.otherMachines.length}), so it was kept in this browser. Nothing was lost; you can ignore this.`
+					: 'This tab’s old cadre was kept in this browser.',
+			};
+		case 'confirm-discard':
+			return { line: discardQuestion(flow.strandIds.length + flow.pendingJoinIds.length) };
+		case 'old-cadre-remains':
+			return {
+				line: 'This tab’s old cadre is still in this browser.',
+				...(flow.error ? { detail: `Removing it failed: ${flow.error}` } : {}),
+			};
+		case 'removal-unfinished':
+			return unfinishedRemovalText(flow);
 		case 'done':
 			return { line: doneLine(flow.grantsOwner, flow.moved) };
 	}
@@ -98,7 +132,22 @@ function incompleteMoveLine(moved: number, waiting: number): string {
 	return `${strands(waiting)} ${waiting === 1 ? 'is' : 'are'} still waiting to move.`;
 }
 
-/** The count is left out when nothing moved: a join with nothing to move. */
+function discardQuestion(count: number): string {
+	const items = count === 1 ? '1 item from this tab’s old cadre is' : `${count} items from this tab’s old cadre are`;
+	return `${items} not in your cadre (they may have been removed there). Delete them with the old cadre?`;
+}
+
+const NEXT_START = 'The next start of this tab’s node finishes it: reload this page, or Restart node on Home.';
+
+function unfinishedRemovalText(flow: Extract<JoinFlow, { step: 'removal-unfinished' }>): JoinFlowText {
+	if (flow.blocked) return { line: 'Close this site’s other tabs to finish removing the old cadre.', detail: NEXT_START };
+	return {
+		line: 'Removing this tab’s old cadre did not finish.',
+		detail: flow.error ? `${NEXT_START} It stopped at: ${flow.error}` : NEXT_START,
+	};
+}
+
+/** The count is left out when nothing moved: a join with nothing to move, or a removal finished after a reload. */
 function doneLine(grantsOwner: boolean, moved: number): string {
 	const joined = `This tab is now part of your cadre, as ${grantsOwner ? 'an owner' : 'a member'}.`;
 	return moved > 0 ? `${joined} ${strands(moved)} moved.` : joined;

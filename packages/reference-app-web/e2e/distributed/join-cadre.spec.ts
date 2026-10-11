@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { controlStorageScope } from '@serfab/cadre-core';
 import { readFixtureState } from '../fixtures/state.js';
 import { startCadreMember, type CadreMemberHandle } from '../fixtures/cadre-member.js';
 
@@ -20,6 +21,10 @@ import { startCadreMember, type CadreMemberHandle } from '../fixtures/cadre-memb
  * the tab could seat its own key as a founding `OwnerKey` row of a cadre it merely joined.
  * After the reload the tab must still be in A, still a `member`, with its key absent from A's
  * `OwnerKey` rows (`__cadre.isOwner()` false) and its start record saying `joined`.
+ *
+ * Admitted with nothing to move, the card goes on to remove B (architecture.md → "Dissolving the
+ * party it left"): B holds no strand and no other machine, so its control block database goes
+ * and the start record stops naming it as `formerPartyId`.
  *
  * Process model, as `formation-convergence.spec.ts`: the member boots in `beforeAll` (the
  * worker), `global-setup` only writes the coarse availability gate.
@@ -45,6 +50,11 @@ async function partyStart(page: Page): Promise<ReturnType<CadreHooks['getPartySt
 		if (!hooks) throw new Error('__cadre hook not present on window');
 		return hooks.getPartyStart();
 	});
+}
+
+/** The names of the IndexedDB databases this page's origin holds. */
+async function databaseNames(page: Page): Promise<string[]> {
+	return page.evaluate(async () => (await indexedDB.databases()).map((db) => db.name ?? ''));
 }
 
 async function homeText(page: Page, testId: string): Promise<string> {
@@ -83,8 +93,8 @@ test.describe('Tier 2 / join an existing cadre', () => {
 		test.skip(Boolean(skipReason), skipReason ?? 'distributed tier unavailable');
 	});
 
-	test('a tab joins a cadre by invitation and stays a member after a reload', async ({ page }) => {
-		// Two node starts, a redemption over loopback WebSocket and a reload: widen the budget.
+	test('a tab joins a cadre by invitation, removes the one it left, and stays a member after a reload', async ({ page }) => {
+		// Four node starts, a redemption over loopback WebSocket and a reload: widen the budget.
 		test.setTimeout(180_000);
 		const a = requireMember();
 
@@ -102,7 +112,8 @@ test.describe('Tier 2 / join an existing cadre', () => {
 		//    app" would from the tab's pasted request.
 		const { encoded } = await a.mintInvitation({ peerId, grantsOwner: false });
 
-		// 3. The tab pastes it under "Join my existing cadre" and joins.
+		// 3. The tab pastes it under "Join my existing cadre" and joins; the done line shows only
+		//    once B has been removed too.
 		await page.goto('/#/cadre');
 		await expect(page.getByTestId('cadre-invitation-in')).toBeVisible({ timeout: 60_000 });
 		await page.getByTestId('cadre-invitation-in').fill(encoded);
@@ -126,6 +137,11 @@ test.describe('Tier 2 / join an existing cadre', () => {
 		await expect(page.getByTestId('home-party-id')).toHaveText(a.partyId);
 		await expect(page.getByTestId('home-owner')).toHaveText('member');
 		expect(await isOwner(page)).toBe(false);
-		expect(await partyStart(page)).toEqual({ v: 1, partyId: a.partyId, origin: 'joined', formerPartyId: partyB });
+		expect(await partyStart(page)).toEqual({ v: 1, partyId: a.partyId, origin: 'joined' });
+
+		// 6. B's control block database is gone; A's is not.
+		const databases = await databaseNames(page);
+		expect(databases).not.toContain(`sereus-strand-${controlStorageScope(partyB)}`);
+		expect(databases).toContain(`sereus-strand-${controlStorageScope(a.partyId)}`);
 	});
 });

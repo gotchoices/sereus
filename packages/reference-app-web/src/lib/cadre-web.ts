@@ -20,10 +20,11 @@
  * A tab founds a party on its first load and self-seeds as its owner (mirroring
  * `cadre-cli start --owner`); the solo chat strand coordinates its own writes, so DML
  * lands on the strand's IndexedDB without any peers. A tab can then join the user's
- * existing cadre by invitation ({@link switchToParty}), which moves its one node to that
- * party, carrying the founded party's strands along (`web-strand-move.ts`). The web app
- * has no kit: this module follows the phone kit's sequence (architecture.md → "An app
- * joins an existing cadre"; `packages/cadre-rn/src/phone-node/node.ts`) itself.
+ * existing cadre by invitation, which moves its one node to that party, carrying the
+ * founded party's strands along, and later remove the party it left. The web app has no
+ * kit: `web-join.ts` follows the phone kit's sequence (architecture.md → "An app joins an
+ * existing cadre"; `packages/cadre-rn/src/phone-node/node.ts`) itself, over this module's
+ * lifecycle exports.
  *
  * Beyond the solo strand, this module also drives the **consent/invitation
  * strand-formation** flow: relay reservation for dialability, responder-side
@@ -43,9 +44,6 @@ import {
 	PersistentStrandNetworkStateStore,
 	controlStorageScope,
 	resolveStunServers,
-	exportStrandBundle,
-	decodeCadreInvitation,
-	encodeCadreJoinRequest,
 } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
@@ -60,10 +58,6 @@ import type {
 	CreateCadreInvitationOptions,
 	CreateCadreInvitationResult,
 	CadreInviteStatus,
-	CadreInvitation,
-	CadreJoinProgress,
-	RedeemCadreInvitationOptions,
-	RedeemCadreInvitationResult,
 } from '@serfab/cadre-core';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRawStorage } from '@optimystic/db-p2p';
@@ -95,21 +89,15 @@ import {
 	STRAND_NETWORK_KV_KEY,
 } from './node-local-slots.js';
 import {
-	joinedStart,
+	foundedStart,
 	newFoundedStart,
 	readPartyStart,
 	writePartyStart,
 	type PartyOrigin,
 	type PartyStart,
 } from './party-start.js';
-import {
-	adoptMovesInto,
-	deferredOutcome,
-	joinMoveRecord,
-	StrandMoveRecords,
-	waitingStrandIds,
-	type StrandMoveOutcome,
-} from './web-strand-move.js';
+import { adoptMovesInto, StrandMoveRecords } from './web-strand-move.js';
+import { finishRemovalAtStart, type UnfinishedRemoval } from './web-dissolve.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
 
@@ -120,9 +108,6 @@ import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-
  * owner and it is wired for signing, `member` when it does not.
  */
 export type OwnerState = 'pending' | 'genesis' | 'existing' | 'enrolled' | 'member' | 'error';
-
-/** The name this tab gives in its join request, for the owner's approval prompt. */
-export const WEB_APP_NAME = 'Sereus web reference';
 
 /**
  * Relay-reservation posture for the dialable side of formation — cadre-core owns
@@ -217,9 +202,12 @@ let controlStoreKey: string | null = null;
 /**
  * The start the running node was started with. The stored record, except during a join,
  * when it is the joined party's unwritten start until a member admits the tab
- * ({@link switchToParty}). Null before a start and after {@link stopCadre}.
+ * (`web-join.ts` → `switchToParty`), and while a dissolve reads the party it removes
+ * ({@link readPartyAlone}). Null before a start and after {@link stopCadre}.
  */
 let partyStart: PartyStart | null = null;
+/** The removal a dissolve marker names that the running node's start could not finish. */
+let unfinishedRemoval: UnfinishedRemoval | null = null;
 let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
 let ownerState: OwnerState = 'pending';
@@ -252,6 +240,19 @@ export function getPartyId(): string | null {
 /** The start the running node was started with (see {@link partyStart}); null while no node runs. */
 export function getPartyStart(): PartyStart | null {
 	return partyStart;
+}
+
+/** The strand move records, over the node-local database; null while no node runs. */
+export function getMoveRecords(): StrandMoveRecords | null {
+	return moveRecords;
+}
+
+/**
+ * The old cadre's removal a marker names that the running node's start tried to finish and could
+ * not (`web-dissolve.ts` → `finishRemovalAtStart`); null when there was none. The next start retries.
+ */
+export function getUnfinishedRemoval(): UnfinishedRemoval | null {
+	return unfinishedRemoval;
 }
 
 export function getChatStrandId(): string | null {
@@ -351,7 +352,9 @@ async function trackIdentityFirstSeen(
  * Starts the party `start` names, or the stored start record's, minting a party of
  * this tab's own when there is no record yet. A passed `start` is never written here:
  * a join passes the joined party's start and writes it only once a member admitted the
- * tab, and a rollback passes nothing, so the stored record is read again.
+ * tab, and a rollback passes nothing, so the stored record is read again. Before the
+ * node is built, a removal a dissolve marker names is finished (`finishRemovalAtStart`),
+ * and the start drops that party as `formerPartyId`.
  *
  * The owner step depends on how the tab came to the party: a founded party runs owner
  * genesis, a joined one only wires the key when the party lists it as an owner
@@ -378,12 +381,36 @@ export async function startCadre(start?: PartyStart): Promise<CadreNode> {
 }
 
 /**
+ * Start a node for `partyId` alone to run `read` on it, then stop it, whatever `read` does: a
+ * dissolve reads the party it removes this way (`web-join.ts` → `removeFormerParty`). Nothing
+ * is written to the start record, no strand launches, no relay is reserved, no owner step runs
+ * and no move is adopted; the node never reaches the store. Throws while a node runs.
+ */
+export async function readPartyAlone<T>(partyId: string, read: (cadre: CadreNode) => Promise<T>): Promise<T> {
+	if (node) throw new Error('A node is running; stop it before reading another party');
+	try {
+		return await read(await bringUp(foundedStart(partyId), 'read'));
+	} finally {
+		// The read's own error, if any, is the one to report.
+		await stopCadre().catch((err: unknown) => {
+			console.warn(`[reference-app-web] stopping the node started to read party ${partyId} failed:`, err);
+		});
+	}
+}
+
+/** `run`: the tab's node. `read`: a node started only to read a party ({@link readPartyAlone}). */
+type BringUpPurpose = 'run' | 'read';
+
+/**
  * Open the stores, build and start the node for `start` (the stored record's, or a fresh
  * founded party's, when none is given), set every module-level getter's source, and
  * reserve the relay. The owner step is the caller's: {@link startCadre} settles it by
- * origin, while a join redeems its invitation first ({@link switchToParty}).
+ * origin, while a join redeems its invitation first (`web-join.ts` → `switchToParty`).
+ *
+ * `read` builds the node {@link readPartyAlone} needs: no strand admitted, no relay, no debug
+ * hook, and no dissolve marker finished, since the party read may be the one a marker names.
  */
-async function bringUp(start?: PartyStart): Promise<CadreNode> {
+export async function bringUp(start?: PartyStart, purpose: BringUpPurpose = 'run'): Promise<CadreNode> {
 	// Two databases, opened in order, because the second's NAME depends on the first's
 	// contents. The node-local database holds this tab's identity, its start record and
 	// its per-party durable slots; cadre-core's control block store is keyed by party id,
@@ -391,7 +418,8 @@ async function bringUp(start?: PartyStart): Promise<CadreNode> {
 	await openStores([NODE_LOCAL_STORE_KEY]);
 	const nodeLocalHandle = getStoreHandle(NODE_LOCAL_STORE_KEY)!;
 
-	const resolved = start ?? (await loadOrCreatePartyStart(nodeLocalHandle));
+	const named = start ?? (await loadOrCreatePartyStart(nodeLocalHandle));
+	const resolved = purpose === 'run' ? await finishBegunRemoval(nodeLocalHandle, named) : named;
 	const { partyId } = resolved;
 	identityFirstSeenMs = await trackIdentityFirstSeen(nodeLocalHandle, DEFAULT_PEER_KEY_NAME);
 	const privateKey = await loadOrCreateBrowserPeerKey(nodeLocalHandle);
@@ -408,7 +436,7 @@ async function bringUp(start?: PartyStart): Promise<CadreNode> {
 	// Relay multiaddr(s) from the runtime manifest. When configured, the tab
 	// listens on `/p2p-circuit` (+`/webrtc`) so it can hold a relay reservation
 	// and become dialable for strand formation. Empty → Phase-1 solo posture.
-	const relayAddrs = resolveRelayAddrs();
+	const relayAddrs = purpose === 'run' ? resolveRelayAddrs() : [];
 
 	// STUN for the WebRTC upgrade: each relay is also a STUN server. `[]` with no
 	// relay configured and no override (host/LAN candidates still work).
@@ -502,7 +530,7 @@ async function bringUp(start?: PartyStart): Promise<CadreNode> {
 			// formed strand's cohort node (cadre-core threads it to both).
 			connectionGater: { denyDialMultiaddr: () => false },
 		},
-		strandFilter: { mode: 'all' },
+		strandFilter: purpose === 'run' ? { mode: 'all' } : { mode: 'none' },
 		hibernation: { enabled: false },
 		trustedOwners: { store: trustedOwnerStore },
 		bootstrapPeers: { store: bootstrapPeerStore },
@@ -514,6 +542,7 @@ async function bringUp(start?: PartyStart): Promise<CadreNode> {
 	node = cadre;
 	partyStart = resolved;
 	await cadre.start();
+	if (purpose === 'read') return cadre;
 
 	exposeDebugHook(cadre);
 	// Fail-soft in cadre-core: an unreachable relay leaves the tab in the solo
@@ -538,6 +567,13 @@ async function loadOrCreatePartyStart(handle: OptimysticWebDBHandle): Promise<Pa
 	return fresh;
 }
 
+/** `finishRemovalAtStart`, keeping what it could not finish for {@link getUnfinishedRemoval}. */
+async function finishBegunRemoval(handle: OptimysticWebDBHandle, starting: PartyStart): Promise<PartyStart> {
+	const { start, unfinished } = await finishRemovalAtStart(handle, starting);
+	unfinishedRemoval = unfinished;
+	return start;
+}
+
 function requireStart(): PartyStart {
 	if (!partyStart) throw new Error('CadreNode not started');
 	return partyStart;
@@ -546,12 +582,6 @@ function requireStart(): PartyStart {
 function requireMoveRecords(): StrandMoveRecords {
 	if (!moveRecords) throw new Error('CadreNode not started');
 	return moveRecords;
-}
-
-function requireNodeLocalHandle(): OptimysticWebDBHandle {
-	const handle = getStoreHandle(NODE_LOCAL_STORE_KEY);
-	if (!handle) throw new Error('node-local database not open');
-	return handle;
 }
 
 // ── Owner step ────────────────────────────────────────────────────────────────
@@ -565,7 +595,7 @@ function settleOwnerKey(cadre: CadreNode, origin: PartyOrigin, granted = false):
 }
 
 /** Whether this tab's key is wired for owner signing on the running node, whichever way the start settled it. */
-function ownerKeyWired(): boolean {
+export function ownerKeyWired(): boolean {
 	return ownerState === 'genesis' || ownerState === 'existing' || ownerState === 'enrolled';
 }
 
@@ -619,7 +649,7 @@ async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
  * the row has not reached this node, not that it is no owner. It is asked again every 2 s
  * for up to a minute; a start that gives up wires it on the next start.
  */
-async function wireJoinedOwnerKey(cadre: CadreNode, granted: boolean): Promise<void> {
+export async function wireJoinedOwnerKey(cadre: CadreNode, granted: boolean): Promise<void> {
 	try {
 		const deadline = Date.now() + GRANTED_OWNER_WAIT_MS;
 		while (!(await cadre.wireOwnKeyIfOwner())) {
@@ -637,233 +667,6 @@ async function wireJoinedOwnerKey(cadre: CadreNode, granted: boolean): Promise<v
 		ownerError = err instanceof Error ? err.message : String(err);
 		console.warn('[reference-app-web] wiring the joined owner key failed:', err);
 	}
-}
-
-// ── Joining an existing cadre ─────────────────────────────────────────────────
-//
-// The tab's one node moves from the party it runs (B, usually the one it founded) to the
-// party an invitation names (A), keeping its identity (architecture.md → "An app joins an
-// existing cadre"). The sequence is the phone kit's (`cadre-rn/src/phone-node/node.ts` →
-// `joinCadre`), as four steps the store's join action runs in order:
-// `decodeInvitationForThisTab`, then either `redeemInPlace` (already in A) or
-// `recordStrandMove` + `switchToParty`, with `returnToStoredParty` as the rollback.
-// NOTE: this file is about 1,400 lines (`wc -l`), the formation panel's helpers and the e2e
-// hooks the largest part after the lifecycle. If it grows further, move this join section
-// (through `joinOutcome`) to a module of its own over the lifecycle's exports.
-
-/** A join's progress: the redemption's passes and pauses, then the steps after a member admitted the tab. */
-export type WebJoinProgress =
-	| CadreJoinProgress
-	/** A member admitted the tab; its owner key is being wired and the start record saved. */
-	| { state: 'admitted'; grantsOwner: boolean }
-	/** The tab's key is wired as an owner and the strands this join recorded are being adopted. */
-	| { state: 'moving-strands' };
-
-export interface JoinOptions {
-	/** Cancels the join while it waits for a member; the caller then goes back to the party it left. */
-	signal?: AbortSignal;
-	/** A listener that throws is logged and ignored. */
-	onProgress?: (progress: WebJoinProgress) => void;
-}
-
-/** What an admitted join reports. */
-export interface JoinOutcome {
-	redemption: RedeemCadreInvitationResult;
-	/** The party this tab founded and has left, when it founded one; kept in the start record. */
-	formerPartyId?: string;
-	/** How moving that party's strands into this one settled; absent when there was nothing to move. */
-	strandMove?: StrandMoveOutcome;
-}
-
-/** The words the page shows for a response the owner app made from another app's request. */
-const RESPONSE_FOR_ANOTHER_APP = 'This response was made for another app. Copy this tab’s request again and ask for a new one.';
-
-/** The join request this tab shows under "Join my existing cadre": its peer id and name. */
-export function joinRequestText(): string {
-	return encodeCadreJoinRequest({ v: 1, peerId: requirePeerId(), appName: WEB_APP_NAME });
-}
-
-/**
- * Decode a pasted invitation, refusing one targeted at another peer id before anything
- * stops: the members would refuse it too, but only after this tab had left its own cadre to ask.
- */
-export function decodeInvitationForThisTab(encoded: string): CadreInvitation {
-	const peerId = requirePeerId();
-	const invitation = decodeCadreInvitation(encoded);
-	const target = invitation.invite.peerId;
-	if (target && target !== peerId) throw new Error(RESPONSE_FOR_ANOTHER_APP);
-	return invitation;
-}
-
-function requirePeerId(): string {
-	const peerId = node?.peerId?.toString();
-	if (!peerId) throw new Error('CadreNode not started');
-	return peerId;
-}
-
-/**
- * Redeem on the node already running in the invitation's party; nothing to switch or roll
- * back. An owner grant arriving by a second invitation finishes a move an earlier join deferred.
- */
-export async function redeemInPlace(invitation: CadreInvitation, options: JoinOptions = {}): Promise<JoinOutcome> {
-	const cadre = node;
-	const start = requireStart();
-	if (!cadre || start.partyId !== invitation.partyId) {
-		throw new Error(`The invitation is for party ${invitation.partyId}; this tab runs ${start.partyId}`);
-	}
-	const redemption = await cadre.redeemCadreInvitation(invitation, redeemOptions(options));
-	reportProgress(options, { state: 'admitted', grantsOwner: redemption.grantsOwner });
-	await wireJoinedOwnerKey(cadre, redemption.grantsOwner);
-	const strandMove = await settleJoinMove(cadre, start.formerPartyId);
-	return joinOutcome(redemption, start.formerPartyId, strandMove);
-}
-
-/**
- * Before leaving the running party for the invitation's: export the strands of a party this
- * tab founded and keep them in the node-local database for the joined party to adopt; the
- * party's id when there was anything to move. Throws `StrandsNeedOwnerJoinError`, or the
- * export's or the write's error: switching without the record would lose the strands. An
- * empty export removes the party's record instead: one left by an earlier join that never
- * finished describes strands the party no longer holds, and adopting it would bring them back.
- * Leaving a party the tab joined exports nothing: that party's strands are its owners'.
- */
-export async function recordStrandMove(invitation: CadreInvitation): Promise<string | undefined> {
-	const cadre = node;
-	const start = requireStart();
-	if (!cadre) throw new Error('CadreNode not started');
-	if (start.origin === 'joined') return undefined;
-	const record = joinMoveRecord(await exportStrandBundle(cadre), invitation);
-	if (!record) {
-		await requireMoveRecords().remove(start.partyId);
-		return undefined;
-	}
-	await requireMoveRecords().save(record);
-	return start.partyId;
-}
-
-/**
- * Stop the running node, start one in the invitation's party and redeem there, waiting for
- * a member to answer. Nothing is written until a member has admitted this tab; admitted, the
- * start record is written before the strands are adopted, so a tab closed mid-adoption
- * reloads into the joined party and finishes the move there. The caller runs
- * {@link returnToStoredParty} when this throws.
- *
- * `movingFrom` is what {@link recordStrandMove} returned: the founded party whose strands
- * wait, if any, reported as `moving-strands` once the tab's key is wired.
- */
-export async function switchToParty(
-	invitation: CadreInvitation,
-	options: JoinOptions,
-	movingFrom: string | undefined,
-): Promise<JoinOutcome> {
-	options.signal?.throwIfAborted();
-	const leaving = requireStart();
-	// The party this tab founded, carried through any later join.
-	const formerPartyId = leaving.origin === 'founded' ? leaving.partyId : leaving.formerPartyId;
-	const joined = joinedStart(invitation.partyId, formerPartyId);
-	await stopCadre();
-	const cadre = await bringUp(joined);
-	const redemption = await cadre.redeemCadreInvitation(invitation, redeemOptions(options));
-	reportProgress(options, { state: 'admitted', grantsOwner: redemption.grantsOwner });
-	await wireJoinedOwnerKey(cadre, redemption.grantsOwner);
-	// NOTE: written after the owner key is wired, as the phone kit's `startAndRedeem` does. With
-	// an owner grant whose row is slow to arrive, that wait can run up to `GRANTED_OWNER_WAIT_MS`
-	// after the member admitted the tab; a tab closed inside it reloads into the party it left
-	// while the joined party already lists it, and its targeted invitation is spent. If that is
-	// ever hit, write the record right after the redemption, here and in the kit.
-	await writePartyStart(requireNodeLocalHandle(), joined);
-	if (movingFrom !== undefined && ownerKeyWired()) reportProgress(options, { state: 'moving-strands' });
-	const strandMove = await settleJoinMove(cadre, formerPartyId);
-	return joinOutcome(redemption, formerPartyId, strandMove);
-}
-
-/**
- * After a failed or cancelled {@link switchToParty}: discard the move record the join wrote,
- * stop whatever runs and start the stored party again (the record is unchanged, so that is
- * the party the tab left). Throws the restart's error; the join's own error is the one to show.
- */
-export async function returnToStoredParty(movingFrom: string | undefined): Promise<CadreNode> {
-	try {
-		await stopCadre();
-	} catch (err) {
-		// The stores are closed either way (see `stopCadre`); the restart below reopens them.
-		console.warn('[reference-app-web] stopping the joined party’s node after a failed join failed:', err);
-	}
-	await openStores([NODE_LOCAL_STORE_KEY]);
-	await discardStrandMove(new StrandMoveRecords(requireNodeLocalHandle()), movingFrom);
-	return startCadre();
-}
-
-async function discardStrandMove(records: StrandMoveRecords, fromPartyId: string | undefined): Promise<void> {
-	if (fromPartyId === undefined) return;
-	try {
-		await records.remove(fromPartyId);
-	} catch (err) {
-		// Harmless when left: it names the party the join failed to reach, and the next join
-		// from this party replaces it.
-		console.warn(`[reference-app-web] could not discard the strand move record of party ${fromPartyId}:`, err);
-	}
-}
-
-/**
- * The move from `formerPartyId` as an admitted join reports it: adopted with every other move
- * naming this party once the tab's key is wired as its owner, deferred otherwise. Never throws:
- * the tab is admitted, and what is not adopted now is adopted by the next start.
- */
-async function settleJoinMove(cadre: CadreNode, formerPartyId: string | undefined): Promise<StrandMoveOutcome | undefined> {
-	const records = requireMoveRecords();
-	try {
-		if (ownerKeyWired()) {
-			const outcomes = await adoptMovesInto(cadre, records);
-			return formerPartyId === undefined ? undefined : outcomes.get(formerPartyId);
-		}
-		const record = formerPartyId === undefined ? undefined : await records.load(formerPartyId);
-		return record?.targetPartyId === cadre.partyId ? { state: 'deferred', reason: 'owner-key-not-wired' } : undefined;
-	} catch (err) {
-		console.warn('[reference-app-web] reading the strand move records failed; the next start retries:', err);
-		return formerPartyId === undefined ? undefined : deferredOutcome(err);
-	}
-}
-
-/**
- * The strands of the party this tab founded and left that are not seated in the running party
- * yet, or `undefined` when none wait. A read IndexedDB refuses throws.
- */
-export async function pendingStrandMove(): Promise<{ fromPartyId: string; strandIds: string[] } | undefined> {
-	const formerPartyId = requireStart().formerPartyId;
-	if (formerPartyId === undefined) return undefined;
-	const record = await requireMoveRecords().load(formerPartyId);
-	return record && { fromPartyId: formerPartyId, strandIds: waitingStrandIds(record) };
-}
-
-/** Wait for a member: a tab joining by invitation may be the only machine of the party up. */
-function redeemOptions(options: JoinOptions): RedeemCadreInvitationOptions {
-	return {
-		waitForMember: true,
-		...(options.signal ? { signal: options.signal } : {}),
-		...(options.onProgress ? { onProgress: options.onProgress } : {}),
-	};
-}
-
-/** Tell the join's listener; one that throws must not fail a join a member has already admitted. */
-function reportProgress(options: JoinOptions, progress: WebJoinProgress): void {
-	try {
-		options.onProgress?.(progress);
-	} catch (err) {
-		console.warn('[reference-app-web] join progress listener threw:', err);
-	}
-}
-
-function joinOutcome(
-	redemption: RedeemCadreInvitationResult,
-	formerPartyId: string | undefined,
-	strandMove: StrandMoveOutcome | undefined,
-): JoinOutcome {
-	return {
-		redemption,
-		...(formerPartyId !== undefined && { formerPartyId }),
-		...(strandMove !== undefined && { strandMove }),
-	};
 }
 
 // ── Strand formation (consent / invitation flow) ──────────────────────────────
@@ -1234,6 +1037,7 @@ export async function stopCadre(): Promise<void> {
 		ownerState = 'pending';
 		ownerError = null;
 		ownerPublicKey = null;
+		unfinishedRemoval = null;
 		formedStrands.clear();
 		// The slot closures captured `nodeLocalHandle`, now closed by `closeStores()`
 		// above — drop the references so nothing can write through a closed handle.

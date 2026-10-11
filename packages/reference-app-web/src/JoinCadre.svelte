@@ -7,7 +7,11 @@
 		dismissJoinFlow,
 		joinCadreState,
 		joinExistingCadre,
+		keepOldCadre,
 		refreshJoinRequest,
+		removeOldCadre,
+		resumeUnfinishedJoin,
+		retryStrandMove,
 	} from './lib/join-cadre.svelte.js';
 	import { joinFlowText } from './lib/join-flow.js';
 	import { peerCode } from './lib/cadre-format.js';
@@ -23,9 +27,13 @@
 	const flowText = $derived(join.flow ? joinFlowText(join.flow) : null);
 
 	// The request names this tab's peer id, the same in every party; re-read after a restart or a join.
+	// A start may also have left a join's later steps undone: the old cadre, or strands to move.
 	$effect(() => {
 		if (node.status !== 'running') return;
-		untrack(refreshJoinRequest);
+		untrack(() => {
+			refreshJoinRequest();
+			void resumeUnfinishedJoin();
+		});
 	});
 </script>
 
@@ -39,10 +47,23 @@
 			{#if flowText.detail}
 				<p class="hint" data-testid="join-flow-detail">{flowText.detail}</p>
 			{/if}
+			<!-- No action while the tab is admitted and still moving or removing: none of it rolls back. -->
 			<div class="buttons">
 				{#if join.flow.step === 'joining'}
 					<button onclick={cancelJoin} data-testid="btn-cancel-join">Cancel</button>
-				{:else if join.flow.step === 'done' || join.flow.step === 'move-incomplete'}
+				{:else if join.flow.step === 'move-incomplete'}
+					<button onclick={() => void retryStrandMove()} data-testid="btn-retry-strand-move">Retry moving</button>
+					<button onclick={dismissJoinFlow} data-testid="btn-join-flow-later">Later</button>
+				{:else if join.flow.step === 'confirm-discard'}
+					{@const discard = [...join.flow.strandIds, ...join.flow.pendingJoinIds]}
+					<button class="danger" onclick={() => void removeOldCadre(discard)} data-testid="btn-discard-old-cadre-items">
+						Delete them
+					</button>
+					<button onclick={keepOldCadre} data-testid="btn-keep-old-cadre">Keep old cadre</button>
+				{:else if join.flow.step === 'old-cadre-remains'}
+					<button onclick={() => void removeOldCadre()} data-testid="btn-remove-old-cadre">Remove it now</button>
+					<button onclick={dismissJoinFlow} data-testid="btn-join-flow-later">Later</button>
+				{:else if join.flow.step === 'old-cadre-kept' || join.flow.step === 'removal-unfinished' || join.flow.step === 'done'}
 					<button onclick={dismissJoinFlow} data-testid="btn-join-flow-ok">OK</button>
 				{/if}
 			</div>
@@ -175,6 +196,11 @@
 	button:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	button.danger {
+		color: #b3261e;
+		border-color: #e3b4b0;
 	}
 
 	button.small {

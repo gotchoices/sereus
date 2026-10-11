@@ -56,7 +56,8 @@ and starts the cadre node. Reload preserves the peer ID and party ID. Each
 control/strand network gets its own IndexedDB database:
 
 - `sereus-strand-control` — the node-local records: identity, the start record
-  (`party-start`), the per-party records (`<record>.<partyId>`) and any strand move record.
+  (`party-start`), the per-party records (`<record>.<partyId>`), any strand move record and,
+  while the old cadre is being removed, the dissolve marker (`dissolving-party`).
 - `sereus-strand-control-<encoded party id>` — one party's control network blocks.
 - `sereus-strand-sereus-web-chat` — the chat strand's blocks (participants/messages).
 
@@ -261,8 +262,8 @@ The Cadre page's **Join my existing cadre** card is the joining side of
 [handing an invitation from app to app](../../docs/architecture.md#handing-an-invitation-from-app-to-app):
 a tab that founded a cadre of its own on first load joins the user's main cadre, with the
 phone app's flow and wording (`lib/join-cadre.svelte.ts`, `lib/join-flow.ts`,
-`JoinCadre.svelte`). The web app has no kit; `lib/cadre-web.ts` follows the phone kit's
-sequence itself ([An app joins an existing cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre)).
+`JoinCadre.svelte`). The web app has no kit; `lib/web-join.ts` follows the phone kit's
+sequence itself, over `lib/cadre-web.ts`'s lifecycle ([An app joins an existing cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre)).
 
 - **This tab's request** — the join request (`encodeCadreJoinRequest`, app name "Sereus web
   reference") as a QR code and copyable text, with the tab's code (the short peer id) to
@@ -276,9 +277,9 @@ sequence itself ([An app joins an existing cadre](../../docs/architecture.md#an-
   node stops and starts in the invitation's party (Home's status reads `joining`, and the
   "Add a device or app" card forgets its minted invitation and pending approval), and the
   invitation is redeemed there, waiting for a member to answer. The card shows each step:
-  joining (with *Cancel* while it waits), admitted, moving strands, then done with the
-  standing and the moved count. A join refused, expired or cancelled puts the tab back in
-  the party it left, unchanged, and says why.
+  joining (with *Cancel* while it waits), admitted, moving strands, removing the old cadre,
+  then done with the standing and the moved count. A join refused, expired or cancelled puts
+  the tab back in the party it left, unchanged, and says why.
 - **The move needs an owner grant.** When the founded party holds anything to move and the
   invitation makes the tab a member, the join is refused up front: every row a move seats is
   owner-signed. The tab's own chat strand has no control row, so a fresh tab's export is
@@ -293,14 +294,63 @@ sequence itself ([An app joins an existing cadre](../../docs/architecture.md#an-
 - **Every start adopts** the move records naming its party, once the tab's key is wired as
   an owner there, before it reports `running`: a tab closed after admission finishes the
   move on its next load, and a member whose owner grant arrived late finishes it at the
-  next start (*Restart node* on Home). Moved strands reach the party as rows, party keys
-  and invitations; the tab does not open them (it has no `strand:discovered` handler).
+  next start (*Restart node* on Home). A move the join left incomplete shows *Retry moving*,
+  which asks the party again whether the tab's key is an owner and adopts on the running
+  node. Moved strands reach the party as rows, party keys and invitations; the tab does not
+  open them (it has no `strand:discovered` handler).
 - **The founded party stays in IndexedDB** under its own names (its control block database,
-  its `<record>.<partyId>` records) until the tab dissolves it, a later ticket.
+  its `<record>.<partyId>` records) until the tab removes it, which the card does on its own
+  once the move has finished ([Removing the cadre the tab left](#removing-the-cadre-the-tab-left)).
 - **Two same-origin tabs** share the node-local database and the start record. A join in
   one tab switches the other only on its next load; until then the other keeps running the
   left party against that party's stores. Unsupported, on the same footing as the two-tab
   note in `lib/node-local-slots.ts`.
+
+### Removing the cadre the tab left
+
+Once a join's move has finished, the card goes on to remove the party the tab founded and
+left (B), so the tab runs only as a member of the cadre it joined (A): "Removing this tab's
+old cadre from this browser…", then done. It follows [Dissolving the party it
+left](../../docs/architecture.md#dissolving-the-party-it-left), the phone kit's sequence
+(`lib/web-join.ts` → `planDissolve`, `removeFormerParty`; the checks and deletions in
+`lib/web-dissolve.ts`), driven by the store's `dissolveFormerParty`:
+
+1. **Refused before anything stops** unless the running start names a `formerPartyId` other
+   than its own party, and while B's move record exists (`StrandMovePendingError`): the card
+   shows the strands still waiting, with *Retry moving*.
+2. A's holdings are read on the running node (`readStrandHoldings`).
+3. The node stops and a node is started for B alone (no strand launched, no relay, no owner
+   step, nothing written to the start record) to export B's strands and list its machines.
+4. **Refused, nothing deleted,** when B holds a strand or open pending join A does not, or a
+   machine other than this tab (`FormerPartyNotEmptyError`). Other machines: "kept in this
+   browser; nothing was lost". Only strands or joins: the card asks "Delete them with the old
+   cadre?", and *Delete them* removes again with those ids discarded.
+5. **Removed:** B's control block database (`deleteStore` in `lib/strand-storage.ts`, which
+   closes this page's handle first), B's four `<record>.<B>` records and its move record; the
+   start record drops `formerPartyId`. Strand block databases stay: a moved strand's
+   database is A's copy too.
+6. The store starts A again, as after a load, whatever happened above.
+
+**A marker makes the removal resumable.** `kv` `dissolving-party` = `{ v: 1, partyId: B }` is
+written before the first deletion and deleted after the start record stops naming B. Every
+start reads it first: a marker naming another party finishes the deletions without checking
+again and drops that party as `formerPartyId`; one naming the party being started was not
+written by a removal and is deleted with a warning. A tab closed partway finishes on its next
+load.
+
+**Another tab of this site still running B** keeps B's database open, and the browser fires
+`blocked` on the delete and waits for that tab. `deleteStore` does not wait: the removal stops
+with the marker kept, and the card says "Close this site's other tabs to finish removing the
+old cadre". The browser deletes the database once that tab closes, and the next start (a
+reload, or *Restart node* on Home) finishes the rest. A second delete of the same database
+from this page while the first still waits is refused at once, since it would wait behind
+the first.
+
+**On load**, a running start that still names B shows "This tab's old cadre is still in this
+browser" with *Remove it now* and *Later* (or the waiting strands, when a move is
+unfinished); a removal a start could not finish shows what stopped it. Each is shown once per
+start of the node, not on every visit to the page. An old cadre kept on purpose is shown
+again after each reload.
 
 ## Diagnostics (`#/diag`)
 
@@ -389,7 +439,9 @@ src/
   polyfills.ts           # Buffer global + timer .ref/.unref shim
   main.css               # global styles
   lib/
-    cadre-web.ts             # CadreNode lifecycle (control net, owner step, chat strand, the join)
+    cadre-web.ts             # CadreNode lifecycle (control net, owner step, chat strand, reading a party alone)
+    web-join.ts              # joining an existing cadre, retrying the move, dissolving the party left
+    web-dissolve.ts          # the dissolve's refusals, marker and removal steps
     party-start.ts           # the start record: party id, founded or joined, the party left
     web-strand-move.ts       # move records: the founded party's strands carried into the joined one
     node-local-slots.ts      # per-party kv slots for the durable node-local records
@@ -460,7 +512,9 @@ yarn workspace @serfab/reference-app-web test:e2e
   pastes it under *Join my existing cadre*, and Home then shows that party and `member`.
   After a reload the same two values hold, the tab's key is absent from the party's
   `OwnerKey` rows (`__cadre.isOwner()` is false) and the start record says `joined`: the
-  defect this pins is a joined party running owner genesis on every start. Same gate and
+  defect this pins is a joined party running owner genesis on every start. The card also
+  removes the party the tab founded, which held nothing to move, so the start record names
+  no `formerPartyId` and that party's control block database is gone. Same gate and
   self-skip as the formation tier.
 
 Wiring this suite into CI is out of scope for the current ticket — it stops at
