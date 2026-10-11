@@ -13,6 +13,8 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | `@serfab/cadre-rn/noise-crypto` | `buildNoiseCrypto(mode)`, `NoiseCryptoMode`, `DEFAULT_NOISE_CRYPTO_MODE`: runs libp2p's Noise connection encryption in native code. Loading it also switches `crypto.subtle.digest` to native SHA-256/512 (see `native-digest`) |
 | `@serfab/cadre-rn/native-digest` | `installNativeDigest(createHash)`, `nativeDigestActive()`: replaces the boot polyfill's JavaScript `crypto.subtle.digest` with a native hash |
 | `@serfab/cadre-rn/polyfills` | Side effects only: the web APIs libp2p and Optimystic read that Hermes and React Native lack (`AbortSignal.timeout` / `any`, abort reasons, `WebSocket.prototype.bufferedAmount`, `Promise.withResolvers`, `structuredClone`, `DOMException`, `crypto.subtle.digest`, EventTarget / `CustomEvent`, `Intl.PluralRules`, timer `ref()` / `unref()`, and more) |
+| `@serfab/cadre-rn/native-ed25519` | `installNativeEd25519(nativeSubtle)`, `nativeEd25519Active()`: fills `crypto.subtle`'s missing Ed25519 methods from a native WebCrypto |
+| `@serfab/cadre-rn/polyfills/native-crypto` | Side effects only: native Ed25519 and SHA-256/512 behind `crypto.subtle` from boot, through `react-native-quick-crypto` |
 | `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()`, for apps that use `@libp2p/webrtc` |
 | `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: a boot-time table of which globals are native, polyfilled, known gaps or missing, and a `[reload] <reason>` log line before any reload started from JavaScript |
 | `@serfab/cadre-rn/metro` | CommonJS, for `metro.config.js`: `withCadreMetro(config, options)` adds the Metro settings a Sereus app needs (Node built-in shims, one copy of each native module, libp2p's browser variants) |
@@ -229,3 +231,23 @@ All four are optional peer dependencies of this package: an app that never impor
 `installNativeDigest(createHash, subtle?)` replaces `crypto.subtle.digest` with one over a Node-style `createHash`, for SHA-256 and SHA-512; any other algorithm stays with the previous digest. It replaces only the digest `polyfills/hermes.js` tagged as its JavaScript fallback, so real WebCrypto, or a digest the app installed itself, is left alone. It checks the hash against a known SHA-256 vector first, and keeps the fallback, with a warning, if the check fails. It returns `'installed'`, `'already'`, `'not-polyfilled'` or `'check-failed'`. `nativeDigestActive()` reports whether the native digest is in place.
 
 It imports no native module. `noise-crypto` calls it, so an app that passes native Noise crypto needs nothing more; an app that does not can call it with its own `createHash` after the polyfills have loaded.
+
+## Native Ed25519 (`@serfab/cadre-rn/polyfills/native-crypto`)
+
+@libp2p/crypto signs and verifies Ed25519 through WebCrypto when it can, and otherwise in pure JavaScript (`@noble/curves`). Hermes has no WebCrypto beyond the boot polyfill's digest, so without this a phone does every signature in JavaScript: 169 ms per verify on a Galaxy S7, against 0.72 ms native (measured by sereus-chat).
+
+```js
+// index.js
+import '@serfab/cadre-rn/polyfills';
+import '@serfab/cadre-rn/polyfills/native-crypto';   // right after /polyfills, before libp2p
+import '@serfab/cadre-rn/boot-check';
+```
+
+It fills `generateKey`, `importKey`, `exportKey`, `sign` and `verify` from react-native-quick-crypto's `subtle`, only where the global `crypto.subtle` lacks them, and installs the native digest (`native-digest`) at the same time. **It has to load at boot**: @libp2p/crypto decides between WebCrypto and JavaScript once, when its Ed25519 module is evaluated, and keeps the answer, so filling the methods later -- from `noise-crypto`, which itself imports libp2p -- would be too late for Ed25519. The digest has no such constraint.
+
+`installNativeEd25519(nativeSubtle, subtle?)` (`@serfab/cadre-rn/native-ed25519`) is the logic, importing no native module: all or nothing, so a probe never sees half a WebCrypto, and a complete WebCrypto is left alone. It returns `'installed'`, `'already'`, `'not-needed'` or `'unavailable'`.
+
+### What the app must install
+
+react-native-quick-crypto, react-native-nitro-modules and react-native-quick-base64, as for `noise-crypto`, and a native rebuild. Quick-crypto needs React Native's new architecture.
+

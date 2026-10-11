@@ -80,7 +80,8 @@ const PROBES = [
 	// Known gaps — documented in docs/reference-app-rn.md § Key Dependencies.
 	{
 		path: 'crypto.subtle.importKey',
-		gap: 'WebCrypto beyond digest is absent; the phone uses Ed25519 (pure noble) and no libp2p keychain',
+		key: 'crypto.subtle.importKey',
+		gap: 'only apps that import @serfab/cadre-rn/polyfills/native-crypto install it; without it libp2p signs Ed25519 in pure JS (@noble/curves)',
 	},
 	{
 		path: 'crypto.subtle.encrypt',
