@@ -9,11 +9,12 @@
  * browser.ts).
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
 import { NatStore, publicInterfaceAddress } from '../nat/index.js';
+import { packageVersion } from '../package-version.js';
 
 import { openBrowser } from './browser.js';
 import { writeHostConfig, type HostConfigFile } from './config.js';
@@ -105,7 +106,7 @@ export class Installer {
 
   constructor(opts: InstallerOptions = {}) {
     this.platform = opts.platform ?? detectPlatform();
-    this.installerVersion = opts.installerVersion ?? readPackageVersion();
+    this.installerVersion = opts.installerVersion ?? packageVersion;
   }
 
   async install(opts: InstallOptions): Promise<InstallResult> {
@@ -245,18 +246,6 @@ function seedNatSettings(dataDir: string, upnpEnabled: boolean): void {
 
 function randomInstallId(): string {
   return randomBytes(16).toString('hex');
-}
-
-function readPackageVersion(): string {
-  // Best-effort: read the package.json next to dist/ at runtime.
-  try {
-    const here = new URL('../../package.json', import.meta.url);
-    const raw = readFileSync(here, 'utf8');
-    const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version ?? '0.0.0-unknown';
-  } catch {
-    return '0.0.0-unknown';
-  }
 }
 
 // Exposed for tests that drive the wizard with a custom prompt fn.

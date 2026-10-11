@@ -18,12 +18,13 @@
  */
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
 
 import { Command, InvalidArgumentError } from 'commander';
 
 import { Installer } from '../installer/index.js';
+import { packageVersion } from '../package-version.js';
 import { readHostConfig, updateHostConfig } from '../installer/config.js';
 import {
   configPath as resolveConfigPath,
@@ -81,7 +82,7 @@ const program = new Command();
 program
   .name('cadre-host')
   .description('Sereus cadre node manager for self-hosted basement-PC deployments')
-  .version(readPackageVersion());
+  .version(packageVersion);
 
 // ============================================================================
 // install — run the first-run wizard + register the system service
@@ -244,7 +245,7 @@ program
       const serviceHost = createServiceHost(platform);
       const updateService = new UpdateService({
         dataDir: cfg.dataDir,
-        currentVersion: readPackageVersion(),
+        currentVersion: packageVersion,
         settings: cfg.updates,
         ...(cfg.updates.manifestUrl ? { manifestUrl: cfg.updates.manifestUrl } : {}),
         restart: async () => {
@@ -430,19 +431,6 @@ function parseIntArg(raw: string): number {
     throw new Error(`Invalid integer: ${raw}`);
   }
   return n;
-}
-
-function readPackageVersion(): string {
-  try {
-    // dist/bin/host.js -> ../../package.json
-    const here = dirname(fileURLToPath(import.meta.url));
-    const pkgPath = resolve(here, '..', '..', 'package.json');
-    const raw = readFileSync(pkgPath, 'utf8');
-    const parsed = JSON.parse(raw) as { version?: string };
-    return parsed.version ?? '0.0.0-unknown';
-  } catch {
-    return '0.0.0-unknown';
-  }
 }
 
 function waitForTermination(): Promise<void> {

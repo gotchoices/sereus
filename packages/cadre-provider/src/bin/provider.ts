@@ -8,6 +8,7 @@ import { Command } from 'commander';
 import debug from 'debug';
 import { PORT_EXPECTED, isPortNumber, loadConfig, redactConfigSecrets } from '../config/index.js';
 import { createProviderServer } from '../server/server.js';
+import { packageVersion } from '../package-version.js';
 
 const log = debug('cadre:provider:cli');
 
@@ -28,7 +29,7 @@ const program = new Command();
 program
   .name('cadre-provider')
   .description('Sereus Cadre Provider Service - host cadre nodes for users')
-  .version('0.0.1');
+  .version(packageVersion);
 
 program
   .command('start')

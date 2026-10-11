@@ -9,6 +9,7 @@ import type { BillingService } from '../service/billing-service.js';
 import type { Container } from '../types.js';
 import { Scope, hasPermission } from './permissions.js';
 import { validateCreateContainerRequest } from './create-request-validation.js';
+import { packageVersion } from '../package-version.js';
 
 const log = debug('cadre:provider:routes');
 
@@ -84,7 +85,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
   // GET /status - Health check
   app.get(`${basePath}/status`, async (_request, reply) => {
     log('GET %s/status', basePath);
-    return reply.send({ ok: true, service: 'cadre-provider', version: '0.0.1' });
+    return reply.send({ ok: true, service: 'cadre-provider', version: packageVersion });
   });
 
   // POST /containers - Create a new container
