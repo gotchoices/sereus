@@ -528,10 +528,10 @@ export function useCadreInternal(): UseCadreResult {
         return;
       }
       if (unmounted) return;
+      // Options before the read state, so no render sees `read` with a saved start still null.
+      if (saved) setSavedStartOptions(saved.options);
       setSavedStartRead('read');
-      if (!saved) return;
-      setSavedStartOptions(saved.options);
-      if (!saved.autoStart || optsRef.current) return;
+      if (!saved?.autoStart || optsRef.current) return;
       await start(saved.options);
     };
     void resume();

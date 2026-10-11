@@ -656,6 +656,31 @@ describe('useCadreInternal — resuming the last session at launch', () => {
     expect(sink.current!.status).toBe('idle');
     expect(sink.current!.savedStartOptions).toEqual(SAVED_OPTS);
   });
+
+  // Settings asks "Do you already use Sereus apps?" while the read found nothing; a start
+  // saves one, and a Disconnect after it must not bring the question back.
+  it('reads as no party until a start succeeds, and keeps the party after a Disconnect', async () => {
+    const sink = await mountLaunched();
+    expect(sink.current!.savedStartRead).toBe('read');
+    expect(sink.current!.savedStartOptions).toBeNull();
+
+    await act(async () => {
+      await sink.current!.start(OPTS);
+      await sink.current!.stop();
+    });
+
+    expect(sink.current!.savedStartOptions).toEqual(OPTS);
+  });
+
+  // A failed read is not "nothing saved": Settings must not ask, or Yes could join over a party it holds.
+  it('reports a launch read that threw as failed, not as read', async () => {
+    vi.mocked(loadSavedStartOptions).mockRejectedValueOnce(new Error('store unreadable'));
+
+    const sink = await mountLaunched();
+
+    expect(sink.current!.savedStartRead).toBe('failed');
+    expect(sink.current!.savedStartOptions).toBeNull();
+  });
 });
 
 describe('useCadreInternal — joining an existing cadre', () => {

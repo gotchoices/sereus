@@ -262,7 +262,8 @@ export default function SettingsScreen() {
   // The launch read found no saved start (a founded or joined party saves one), so this app has no cadre yet.
   const noCadreYet = cadre.savedStartRead === 'read' && cadre.savedStartOptions === null;
   // Asked before Connect can found a cadre; a failed launch read is not asked about, its error line explains.
-  const asking = noCadreYet && cadre.status === 'idle' && cadre.joinFlow === null;
+  // `error` too: a first-launch join whose start failed keeps the Yes state and its paste, not the Connect form.
+  const asking = noCadreYet && (cadre.status === 'idle' || cadre.status === 'error') && cadre.joinFlow === null;
   const firstLaunchJoin = asking && firstLaunchAnswer === 'join';
   const nodeCodeHint = linkedNodeCode !== null && (
     <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.waitingNodeCode}>
