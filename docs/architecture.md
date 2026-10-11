@@ -635,7 +635,7 @@ The join moves B's strands into A ([Moving the app's strands](#moving-the-apps-s
 
 The start is saved only once a member admitted the app, so an app killed while waiting relaunches into B, and a push wake into the killed process starts B too. A's partial storage is reused by the next attempt, and an invitation a member already honoured is answered as already a member when pasted again. A `stop` during a join cancels it.
 
-A bundle not adopted at the join (the owner key not wired yet, or the app killed after the start was saved) is adopted by the next start whose key is wired, before it reports `running`. The kit keeps it until an adoption fails nothing, so no record for B means B's move finished, which is what dissolving B relies on ([kit README → Moving the app's strands](../packages/cadre-rn/README.md#moving-the-apps-strands)).
+A bundle not adopted at the join (the owner key not wired yet, or the app killed after the start was saved) is adopted by the next start whose key is wired, before it reports `running`. The kit keeps it until an adoption fails nothing, so no record for B means nothing from B waits to be adopted ([kit README → Moving the app's strands](../packages/cadre-rn/README.md#moving-the-apps-strands)). That alone does not prove every strand reached A: a record the kit cannot parse is deleted with a warning, B's rows staying in its storage.
 
 ##### Moving the app's strands
 

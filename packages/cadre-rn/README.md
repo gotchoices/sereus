@@ -92,13 +92,13 @@ Nothing is saved until a member admits the app, so a kill while waiting relaunch
 
 Leaving a party it founded, `joinCadre` carries that party's strands, pending joins and invitations into the party it joins, with cadre-core's `exportStrandBundle` and `adoptStrandBundle` ([architecture.md → Moving the app's strands](../../docs/architecture.md#moving-the-apps-strands)). Leaving a party it joined moves nothing: that party's strands are its owners' to move.
 
-- **Before anything stops**, the strands are exported from the running node, or from a node started for the export alone when none runs (status goes `starting` and back to `stopped`). The bundle is kept in the secure store, `cadre/strand-move/<base64url party id>`, one record per party left: it holds read secrets, party keys and bearer invitations.
+- **Before anything stops**, the strands are exported from the running node, or from a node started for the export alone when none runs (status goes `starting` and back to `stopped`). The bundle is kept in the secure store, `cadre/strand-move/<base64url party id>`, one record per party left: it holds read secrets, party keys and bearer invitations. An empty export removes the party's earlier record instead.
 - **The join is refused** with `StrandsNeedOwnerJoinError`, the party left running and unchanged, when there is something to move and the invitation does not grant owner: every row a move seats is owner-signed. A failed export or record write is thrown the same way.
 - **Admitted**, the start is saved, then the bundle is adopted if the app's key is wired as an owner, then the join reports `running`. A kill during the adoption relaunches into the joined party, which finishes it.
 - **`result.strandMove`** is `{ state: 'done' | 'partial', report }` (`partial`: `report.failed` lists what is retried), or `{ state: 'deferred', reason: 'owner-key-not-wired' }`, or `{ state: 'deferred', reason: 'adoption-failed', error }`. Absent when there was nothing to move.
 - **A deferred or partial move** is retried by every start whose owner key is wired, before it reports `running`, or at once by `finishStrandMove()`. The record is deleted when an adoption fails nothing; strands the joined party refuses permanently (it participates in them under its own identity) are left out of later retries and listed in each report.
 - **A failed join** deletes the record it wrote, so the next join exports afresh.
-- **The left party's rows stay** in its storage, for dissolving the old cadre. No record for `formerPartyId` means its move finished.
+- **The left party's rows stay** in its storage, for dissolving the old cadre. No record for `formerPartyId` means nothing from it waits to be adopted; a record the kit cannot parse is deleted with a warning, so the absence is not proof that every strand arrived.
 
 ### Helpers
 

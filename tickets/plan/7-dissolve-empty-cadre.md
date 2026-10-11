@@ -41,3 +41,7 @@ Two corrections to the note above, from what landed in `packages/cadre-rn/src/ph
 - **`pendingStrandMove()` returns `{ fromPartyId, toPartyId, strandIds, refused }`** for the record of `formerPartyId` (the running start's, else the saved one's), whatever party it names. `toPartyId` can differ from the running party when the app joined a third party before the move finished; dissolving must refuse then too, since the record is adopted only into `toPartyId`.
 
 A join from a stopped app also writes the record: the kit starts B's node for the export alone. So "the saved start names B as `formerPartyId` and no record for B exists" holds only after the move finished, whichever way the join ran.
+
+## Note from reviewing `move-strand-between-cadres`
+
+"No record for B" means nothing from B waits to be adopted, not that every strand reached A: the kit deletes, with a warning, a move record it cannot parse (`StrandMoveRecords.read` in `packages/cadre-rn/src/phone-node/strand-move.ts`). Keep this ticket's own check, every strand and pending join of B also present in A, rather than relying on the record's absence alone.

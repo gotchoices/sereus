@@ -114,9 +114,10 @@ export class StrandMoveRecords {
 	}
 
 	/**
-	 * The record in `slot`. One that does not parse is deleted with a warning: the strands are
-	 * still in the left party's storage, and a missing record never reads as a finished move to
-	 * anything that would delete that storage without the user's say.
+	 * The record in `slot`. One that does not parse is deleted with a warning: nothing can adopt
+	 * it, and the strands are still in the left party's storage. Its absence then reads as
+	 * "nothing waiting", so code that deletes that storage must not take a missing record alone
+	 * as proof that every strand reached the joined party.
 	 */
 	private async read(slot: KeyId): Promise<StrandMoveRecord | undefined> {
 		const bytes = await this.keyStore.get(slot);

@@ -557,6 +557,8 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	// ── join ─────────────────────────────────────────────────────────────────
+	// NOTE: this file is about 860 lines (`wc -l`), the join and its strand move the largest part.
+	// If the join grows further, move it to a module of its own over a narrow view of this runtime.
 
 	private async join(invitation: CadreInvitation, options: JoinCadreOptions, signal: AbortSignal): Promise<JoinCadreResult> {
 		signal.throwIfAborted();
@@ -594,6 +596,10 @@ class PhoneNodeRuntime implements PhoneNode {
 		const leaving = restore ?? (await this.readSavedStart())?.options ?? null;
 		const founded = foundedPartyLeft(invitation.partyId, leaving);
 		// The party this app founded, carried through any later join.
+		// NOTE: leaving a joined party while the move from `formerPartyId` into it is still pending
+		// (the key never wired as an owner there) leaves that record naming the party left, adopted
+		// only if the app goes back; `pendingStrandMove` keeps reporting it. If apps need the move
+		// to follow the app, retarget the record to the invitation's party here.
 		const formerPartyId = founded?.partyId ?? leaving?.formerPartyId;
 		const joined: PhoneNodeOptions = {
 			partyId: invitation.partyId,
@@ -620,12 +626,17 @@ class PhoneNodeRuntime implements PhoneNode {
 	 * Export the founded party's strands and keep them in the secure store for the joined party to
 	 * adopt; the party's id when there was anything to move. Throws `StrandsNeedOwnerJoinError`, or
 	 * the export's or the write's error: switching without the record would lose the strands.
+	 * An empty export removes the party's record instead: one left by an earlier join that never
+	 * finished describes strands the party no longer holds, and adopting it would bring them back.
 	 */
 	private async recordStrandMove(founded: PhoneNodeOptions, invitation: CadreInvitation): Promise<string | undefined> {
 		const running = this.node;
 		const bundle = running?.isRunning ? await exportStrandBundle(running) : await this.exportStopped(founded);
 		const record = joinMoveRecord(bundle, invitation);
-		if (!record) return undefined;
+		if (!record) {
+			await this.moves.remove(founded.partyId);
+			return undefined;
+		}
 		await this.moves.save(record);
 		return founded.partyId;
 	}
