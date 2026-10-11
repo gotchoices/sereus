@@ -35,7 +35,6 @@ export interface StatusResponse {
 }
 
 export function registerStatusRoute(app: FastifyInstance, opts: StatusRouteOptions): void {
-
   app.get('/api/status', async (): Promise<StatusResponse> => {
     const nodes = opts.orchestrator.listNodes().map((n) => ({
       id: n.id,

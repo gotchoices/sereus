@@ -42,7 +42,7 @@ describe('cadre-host CLI smoke test', () => {
       encoding: 'utf8',
     });
     // The built CLI reads package.json at runtime, so this holds even against a
-    // stale dist — it catches the version falling back to '0.0.0-unknown'.
+    // stale dist — it catches dist/package-version.js resolving the wrong path.
     const pkg = JSON.parse(
       readFileSync(resolve(here, '../../package.json'), 'utf8'),
     ) as { version: string };
