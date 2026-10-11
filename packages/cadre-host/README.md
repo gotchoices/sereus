@@ -40,10 +40,10 @@ If you'd rather skip `npx` and the symlink, the explicit path `./node_modules/.b
 
 The wizard (run either way):
 
-1. Prompts for the data directory, UI port, UPnP toggle and whether to configure DDNS now (defaults shown in `[...]`).
+1. Prompts for the data directory and UI port (defaults shown in `[...]`), skipping any you gave as a flag. It asks about UPnP only on a machine behind a router: one that holds a public IP address (a VPS) is reached directly, and the wizard says so instead of asking.
 2. Writes `<dataDir>/host.config.json` and seeds `<dataDir>/nat.json` with the UPnP choice.
 3. Registers a per-user service: `systemctl --user` unit (Linux), `LaunchAgent` (macOS), or NSSM service (Windows; requires `nssm.exe` on PATH — see `service/README.md`).
-4. Opens `http://127.0.0.1:<uiPort>/` in your browser.
+4. Prints how to open the UI: the URL on a desktop (and opens it), or, over SSH or on a machine with no display, the exact `ssh -L` command to run from your own computer. Everything else (a public name, joining a cadre, ports) happens in the UI.
 
 Run `cadre-host install --non-interactive --data-dir <path>` for unattended provisioning.
 
@@ -145,7 +145,12 @@ cadre-host node retry <id>        # start an invitation node again once a member
 
 ## Reachability — can people actually reach your nodes?
 
-Every node this machine runs needs two ports reachable from outside your home network: its libp2p TCP port and its WebSocket port (the one a phone dials). cadre-host asks your router to map both over UPnP as each node starts, and reports per node whether that worked. After installing (and any time your network changes):
+Every node this machine runs needs two ports reachable from outside your home network: its libp2p TCP port and its WebSocket port (the one a phone dials). How they get there depends on where the machine sits, and cadre-host works that out itself (**Connectivity → Network**, or `cadre-host nat settings --network auto|lan|public`):
+
+- **Behind a router** (a home or office network): cadre-host asks the router to map both ports over UPnP as each node starts, or you forward them by hand (below).
+- **On a public IP address** (a VPS, or a server with a routed address): there is nothing to map. Each node is reached at its own ports, and the status shows them as `direct`. Allow them through any firewall on the machine (`sudo ufw allow <tcp>:<ws>/tcp`, which the status prints for you) and in your hosting provider's firewall. No `nat forward` is needed.
+
+`auto` (the default) picks public when one of the machine's interfaces holds a public IPv4 address, re-checked every few minutes. After installing (and any time your network changes):
 
 ```bash
 cadre-host nat status     # UPnP and router state, external IP, and per node: mapped / forwarded by hand / unreachable, with what to do

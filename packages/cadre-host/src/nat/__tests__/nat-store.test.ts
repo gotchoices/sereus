@@ -24,6 +24,7 @@ describe('NatStore', () => {
   it('returns defaults when file is missing', () => {
     const store = new NatStore(tmpRoot);
     const s = store.load();
+    expect(s.network).toBe('auto');
     expect(s.upnpEnabled).toBe(true);
     expect(s.forwards).toEqual({});
     expect(s.ddns.providerId).toBeNull();
@@ -56,6 +57,8 @@ describe('NatStore', () => {
     expect(s.upnpEnabled).toBe(false);
     expect(s.forwards).toEqual({});
     expect('externalPort' in s).toBe(false);
+    // Written before network modes existed: reads as `auto`.
+    expect(s.network).toBe('auto');
 
     store.update({ upnpEnabled: true });
     const raw = rawFile();

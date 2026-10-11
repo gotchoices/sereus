@@ -13,6 +13,7 @@ export const PORT_KIND_LABEL: Record<PortKind, string> = { tcp: 'TCP', ws: 'WebS
 export const VERDICT_LABEL: Record<NodeVerdict, string> = {
 	mapped: 'reachable (UPnP)',
 	manual: 'reachable (forwarded by hand)',
+	direct: 'reachable (public IP)',
 	unreachable: 'not reachable from outside',
 };
 
@@ -24,6 +25,7 @@ export function verdictTone(verdict: NodeVerdict): 'ok' | 'warn' {
 export function routeLabel(route: PortRoute | null): string {
 	if (!route) return 'not available';
 	if (route.externalPort === null) return `${route.internalPort} → not mapped`;
+	if (route.source === 'direct') return `${route.internalPort} (public, as-is)`;
 	return `${route.internalPort} → ${route.externalPort} (${route.source === 'manual' ? 'forwarded by hand' : 'UPnP'})`;
 }
 

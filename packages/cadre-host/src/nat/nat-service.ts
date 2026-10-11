@@ -9,6 +9,7 @@ import {
   type NatHandlers,
   type NatSettingsFile,
   type NatStatusSnapshot,
+  type NetworkMode,
   type NodeReachability,
   type PortKind,
   type PortRoute,
@@ -26,6 +27,7 @@ import { evaluateHostReachability, evaluateNodeReachability } from './reachabili
 import { DdnsUpdater } from './ddns/updater.js';
 import { getProvider, listProviders } from './ddns/index.js';
 import { buildPublicAddresses, isPublicIpv4 } from './address-resolver.js';
+import { effectiveNetworkMode, publicInterfaceAddress } from './network-mode.js';
 import { createSecretsStore, ddnsAccount, type SecretsStore } from './secrets/index.js';
 import { AddressWatch, type NodeAddressesStaleListener } from './address-watch.js';
 import type { ManagedNodeInfo, NodeStateListener } from '../orchestrator/types.js';
@@ -80,6 +82,8 @@ export interface NatServiceOptions {
   store?: NatStore;
   /** Lease TTL asked of the router. Default 1 h. */
   leaseTtlMs?: number;
+  /** Test-only: stub the interface read behind `network: auto`. Default: `publicInterfaceAddress()`. */
+  publicInterfaceAddress?: () => string | null;
 }
 
 /** A node's two mapped ports — `tcp` is `NodePorts.p2p`, `ws` is `NodePorts.ws`. */
@@ -103,6 +107,11 @@ const PORT_KINDS: ReadonlyArray<PortKind> = ['tcp', 'ws'];
 
 function noRoute(internalPort: number): PortRoute {
   return { internalPort, externalPort: null, source: null, leaseExpiresAt: null, error: null };
+}
+
+/** Public mode: the port is reached at its own number, with nothing to map. */
+function directRoute(internalPort: number): PortRoute {
+  return { internalPort, externalPort: internalPort, source: 'direct', leaseExpiresAt: null, error: null };
 }
 
 function manualRoute(internalPort: number, externalPort: number): PortRoute {
@@ -168,6 +177,9 @@ export class NatService {
 
   private currentSettings: NatSettingsFile;
   private gateway: NatGatewayStatus = { found: false, lanAddress: null, routerExternalIp: null, lastError: null };
+  /** The public IPv4 an interface holds (`publicInterfaceAddress`), re-read at start and on every probe. */
+  private publicInterfaceIp: string | null = null;
+  private readonly readInterfaces: () => string | null;
   private latestIp: ExternalIpResult | null = null;
   private lastTestedAt: Date | null = null;
   private readonly table = new Map<string, NodeEntry>();
@@ -193,6 +205,7 @@ export class NatService {
     this.secretsStore = opts.secretsStore ?? null;
     this.injectedDetector = opts.externalIpDetector ?? null;
     this.secretsRootDir = opts.rootDir;
+    this.readInterfaces = opts.publicInterfaceAddress ?? (() => publicInterfaceAddress());
     this.currentSettings = this.store.load();
     this.addressWatch = new AddressWatch(() => this.nowFn().getTime());
   }
@@ -211,7 +224,9 @@ export class NatService {
     if (!this.secretsStore) {
       this.secretsStore = await createSecretsStore(this.secretsRootDir);
     }
-    if (this.currentSettings.upnpEnabled) await this.discoverGateway();
+    this.publicInterfaceIp = this.readInterfaces();
+    log('network mode %s (setting %s, public interface address %s)', this.networkMode(), this.currentSettings.network, this.publicInterfaceIp ?? 'none');
+    if (this.usesUpnp()) await this.discoverGateway();
     await this.detectIp();
 
     this.ddnsUpdater = new DdnsUpdater({
@@ -269,11 +284,12 @@ export class NatService {
 
   /** Cheap read of the current snapshot. */
   getStatus(): NatStatusSnapshot {
-    const cgnatDetected = this.latestIp?.cgnat ?? false;
+    const cgnatDetected = this.cgnatDetected();
     const nodes = [...this.table.values()]
       .sort((a, b) => a.nodeId.localeCompare(b.nodeId))
       .map((entry) => this.describeNode(entry, cgnatDetected));
     return {
+      network: { setting: this.currentSettings.network, mode: this.networkMode(), publicInterfaceIp: this.publicInterfaceIp },
       upnpEnabled: this.currentSettings.upnpEnabled,
       gateway: { ...this.gateway, routerExternalIp: this.latestIp?.routerIp ?? null },
       externalIp: this.detectedIp(),
@@ -363,12 +379,16 @@ export class NatService {
    * rather than at the next restart; then re-detect the external IP.
    */
   async redetect(): Promise<void> {
-    if (this.currentSettings.upnpEnabled && !this.gateway.found) {
-      await this.enqueue(async () => {
-        await this.discoverGateway();
-        if (this.gateway.found) await this.reconcileOnce({ mapMissing: true });
-      });
-    }
+    await this.enqueue(async () => {
+      // Interfaces change (a VPS gains an address, a laptop moves networks): re-read them, and
+      // re-route every node when the mode `auto` lands on changes.
+      const modeBefore = this.networkMode();
+      this.publicInterfaceIp = this.readInterfaces();
+      const modeChanged = this.networkMode() !== modeBefore;
+      if (modeChanged) log('network mode changed to %s', this.networkMode());
+      if (this.usesUpnp() && !this.gateway.found) await this.discoverGateway();
+      if (modeChanged || (this.usesUpnp() && this.gateway.found)) await this.reconcileOnce({ mapMissing: true });
+    });
     await this.detectIp();
     this.publish();
   }
@@ -378,7 +398,8 @@ export class NatService {
   /** Re-discover the router if needed, re-map everything, re-detect the IP, then return a fresh snapshot. */
   async testReachability(): Promise<NatStatusSnapshot> {
     await this.enqueue(async () => {
-      if (this.currentSettings.upnpEnabled && !this.gateway.found) await this.discoverGateway();
+      this.publicInterfaceIp = this.readInterfaces();
+      if (this.usesUpnp() && !this.gateway.found) await this.discoverGateway();
       await this.reconcileOnce({ mapMissing: false });
       await this.renewOnce();
     });
@@ -394,7 +415,8 @@ export class NatService {
   /** Replace settings; persists to disk and reconfigures the runtime. */
   async putSettings(patch: Partial<Omit<NatSettingsFile, 'version' | 'forwards'>>): Promise<NatStatusSnapshot> {
     const next = this.store.update(patch);
-    const upnpChanged = next.upnpEnabled !== this.currentSettings.upnpEnabled;
+    const wasUsingUpnp = this.usesUpnp();
+    const modeBefore = this.networkMode();
     const ddnsChanged =
       next.ddns.providerId !== this.currentSettings.ddns.providerId ||
       next.ddns.hostname !== this.currentSettings.ddns.hostname ||
@@ -406,12 +428,12 @@ export class NatService {
       if (ddnsChanged && this.ddnsUpdater) {
         await this.ddnsUpdater.updateSettings(next.ddns);
       }
-      if (upnpChanged) {
-        // Turning UPnP on with no gateway known yet: look for one before the
-        // pass, so the pass can map. Turning it off: the pass releases every
-        // `upnp` route and keeps the manual ones.
+      if (this.usesUpnp() !== wasUsingUpnp || this.networkMode() !== modeBefore) {
+        // UPnP coming into use (turned on, or leaving public mode) with no gateway known yet:
+        // look for one before the pass, so the pass can map. Going out of use: the pass
+        // releases every `upnp` route and keeps the manual ones; public mode adds `direct` ones.
         await this.enqueue(async () => {
-          if (next.upnpEnabled && !this.gateway.found) await this.discoverGateway();
+          if (this.usesUpnp() && !this.gateway.found) await this.discoverGateway();
           await this.reconcileOnce({ mapMissing: true });
         });
       }
@@ -587,8 +609,13 @@ export class NatService {
         entry.routes[kind] = manualRoute(route.internalPort, forward);
         continue;
       }
-      if (route.source === 'manual') {
+      if (route.source === 'manual' || route.source === 'direct') {
         entry.routes[kind] = noRoute(route.internalPort);
+      }
+      if (this.networkMode() === 'public') {
+        if (route.source === 'upnp') await this.unmapRoute(entry, kind);
+        entry.routes[kind] = directRoute(route.internalPort);
+        continue;
       }
       if (!this.currentSettings.upnpEnabled) {
         if (entry.routes[kind]!.source === 'upnp') await this.unmapRoute(entry, kind);
@@ -606,12 +633,12 @@ export class NatService {
 
   private async renewOnce(): Promise<void> {
     if (!this.started) return;
-    if (!this.currentSettings.upnpEnabled || !this.gateway.found) return;
+    if (!this.usesUpnp() || !this.gateway.found) return;
     for (const entry of this.table.values()) {
       if (!this.started) break;
       if (!entry.running) continue;
       for (const kind of this.kindsOf(entry)) {
-        if (entry.routes[kind]!.source === 'manual') continue;
+        if (entry.routes[kind]!.source !== 'upnp' && entry.routes[kind]!.source !== null) continue;
         await this.mapRoute(entry, kind);
       }
     }
@@ -735,10 +762,26 @@ export class NatService {
     return this.latestIp?.publicIp ?? this.latestIp?.routerIp ?? null;
   }
 
-  /** The IP used in `/ip4/` addresses: only a public IPv4 counts. */
+  /** The IP used in `/ip4/` addresses: only a public IPv4 counts. Public mode prefers the interface's own. */
   private publicIpv4(): string | null {
+    if (this.networkMode() === 'public' && this.publicInterfaceIp) return this.publicInterfaceIp;
     const ip = this.detectedIp();
     return ip && isPublicIpv4(ip) ? ip : null;
+  }
+
+  /** The mode in effect: the `network` setting, or what `auto` reads from the interfaces. */
+  private networkMode(): NetworkMode {
+    return effectiveNetworkMode(this.currentSettings.network, this.publicInterfaceIp);
+  }
+
+  /** UPnP is asked for nothing in public mode: there is no router to ask. */
+  private usesUpnp(): boolean {
+    return this.currentSettings.upnpEnabled && this.networkMode() === 'lan';
+  }
+
+  /** An interface holding the public address rules out carrier-grade NAT, whatever the probes say. */
+  private cgnatDetected(): boolean {
+    return this.networkMode() === 'public' ? false : this.latestIp?.cgnat ?? false;
   }
 
   // --- status assembly ---
@@ -751,7 +794,7 @@ export class NatService {
       ws,
       hostKnown: this.hostKnown(),
       cgnatDetected,
-      upnpEnabled: this.currentSettings.upnpEnabled,
+      upnpEnabled: this.usesUpnp(),
       gatewayFound: this.gateway.found,
       lanAddress: this.gateway.lanAddress,
     });
@@ -774,7 +817,7 @@ export class NatService {
     return buildPublicAddresses({
       ddnsHostname: this.currentSettings.ddns.hostname,
       externalIp: this.publicIpv4(),
-      cgnatDetected: this.latestIp?.cgnat ?? false,
+      cgnatDetected: this.cgnatDetected(),
       tcp,
       ws,
     });
@@ -783,12 +826,13 @@ export class NatService {
   private routeOrPrediction(nodeId: string, kind: PortKind, internalPort: number, entry: NodeEntry | undefined): PortRoute {
     const forward = this.currentSettings.forwards[nodeId]?.[kind];
     if (forward !== undefined) return manualRoute(internalPort, forward);
+    if (this.networkMode() === 'public') return directRoute(internalPort);
     const existing = entry?.routes[kind];
     if (existing && existing.internalPort === internalPort) {
       const route = this.effectiveRoute(existing);
       if (route.source !== null || route.error !== null) return route;
     }
-    if (this.currentSettings.upnpEnabled && this.gateway.found) {
+    if (this.usesUpnp() && this.gateway.found) {
       return { internalPort, externalPort: internalPort, source: 'upnp', leaseExpiresAt: null, error: null };
     }
     return noRoute(internalPort);

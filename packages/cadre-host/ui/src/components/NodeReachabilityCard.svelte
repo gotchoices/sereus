@@ -134,6 +134,7 @@
 	{/if}
 	{#if instruction}<p class="small instruction">{instruction}</p>{/if}
 
+	{#if node.verdict !== 'direct'}
 	<details open={node.verdict === 'unreachable' || hasManual}>
 		<summary>I forwarded these ports</summary>
 		<form class="forward" onsubmit={save}>
@@ -175,6 +176,7 @@
 			</p>
 		</form>
 	</details>
+	{/if}
 </div>
 
 <style>

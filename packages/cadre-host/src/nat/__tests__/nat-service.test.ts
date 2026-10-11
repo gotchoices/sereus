@@ -147,6 +147,8 @@ function rig(opts: {
   detector?: ExternalIpDetector;
   fetch?: typeof fetch;
   secrets?: SecretsStore;
+  /** The public IPv4 an interface holds; default none (a machine behind a router). */
+  publicInterfaceIp?: string | null;
 } = {}): Rig {
   const mapper = opts.mapper ?? new FakeMapper();
   const nodes = opts.nodes ?? new FakeNodes();
@@ -157,6 +159,8 @@ function rig(opts: {
     secretsStore: opts.secrets ?? makeSecrets(),
     portMapper: mapper,
     externalIpDetector: opts.detector ?? makeDetector({ pub: '203.0.113.10' }),
+    // Deterministic: never read the test machine's real interfaces.
+    publicInterfaceAddress: () => opts.publicInterfaceIp ?? null,
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
   });
   nodes.announce = (id, ports) => svc.publicAddressesFor(id, ports);
@@ -536,5 +540,69 @@ describe('NatService — external IP and change notification', () => {
     await startAndSettle(svc);
     await expect(svc.putDdns({ providerId: 'no-such-provider', hostname: 'x', config: {} }))
       .rejects.toMatchObject({ code: 'ddns_provider_unknown' });
+  });
+});
+
+describe('NatService network mode', () => {
+  it('auto: a public IPv4 on an interface means public mode: direct routes, no UPnP, the interface IP announced', async () => {
+    const { svc, mapper, nodes } = rig({ publicInterfaceIp: '198.51.100.7', detector: makeDetector({ pub: '198.51.100.7' }) });
+    nodes.add('n1', { p2p: 10002, ws: 10003 });
+    await startAndSettle(svc);
+
+    const status = svc.getStatus();
+    expect(status.network).toEqual({ setting: 'auto', mode: 'public', publicInterfaceIp: '198.51.100.7' });
+    expect(status.gateway.found).toBe(false);
+    expect(mapper.mapCalls).toEqual([]);
+    const n1 = node(svc, 'n1');
+    expect(n1.verdict).toBe('direct');
+    expect(n1.reason).toMatch(/sudo ufw allow 10002:10003\/tcp/);
+    expect(n1.tcp).toMatchObject({ internalPort: 10002, externalPort: 10002, source: 'direct' });
+    expect(n1.publicAddrs).toEqual(['/ip4/198.51.100.7/tcp/10002', '/ip4/198.51.100.7/tcp/10003/ws']);
+    expect(svc.publicAddressesFor('n1', { p2p: 10002, ws: 10003 })).toEqual(n1.publicAddrs);
+    expect(status.directReachability).toBe('reachable');
+    expect(status.cgnatDetected).toBe(false);
+  });
+
+  it('public mode announces the hostname when one is set, and a manual forward still wins', async () => {
+    const { svc, nodes } = rig({ publicInterfaceIp: '198.51.100.7' });
+    nodes.add('n1', { p2p: 10002, ws: 10003 });
+    await startAndSettle(svc);
+    await svc.putSettings({ ddns: { providerId: 'external', hostname: 'kjeib.example.org', externallyManaged: true, intervalMs: 300_000 } });
+    expect(node(svc, 'n1').publicAddrs).toEqual(['/dns4/kjeib.example.org/tcp/10002', '/dns4/kjeib.example.org/tcp/10003/ws']);
+
+    await svc.putForward('n1', { ws: 443 });
+    expect(node(svc, 'n1').ws).toMatchObject({ externalPort: 443, source: 'manual' });
+    expect(node(svc, 'n1').verdict).toBe('manual');
+  });
+
+  it('auto with only private addresses stays in LAN mode and maps over UPnP as before', async () => {
+    const { svc, mapper, nodes } = rig();
+    nodes.add('n1', { p2p: 10002, ws: 10003 });
+    await startAndSettle(svc);
+    expect(svc.getStatus().network.mode).toBe('lan');
+    expect(mapper.mapCalls).toEqual(expect.arrayContaining([10002, 10003]));
+    expect(node(svc, 'n1').verdict).toBe('mapped');
+  });
+
+  it('switching the setting re-routes: lan → public releases UPnP mappings; public → lan maps again', async () => {
+    const { svc, mapper, nodes } = rig();
+    nodes.add('n1', { p2p: 10002, ws: 10003 });
+    await startAndSettle(svc);
+    expect(node(svc, 'n1').verdict).toBe('mapped');
+
+    await svc.putSettings({ network: 'public' });
+    expect(svc.getStatus().network).toMatchObject({ setting: 'public', mode: 'public' });
+    expect(mapper.unmapCalls).toEqual(expect.arrayContaining([10002, 10003]));
+    expect(node(svc, 'n1').verdict).toBe('direct');
+
+    await svc.putSettings({ network: 'lan' });
+    expect(svc.getStatus().network.mode).toBe('lan');
+    expect(node(svc, 'n1').verdict).toBe('mapped');
+  });
+
+  it('refuses an unknown network setting', async () => {
+    const { svc } = rig();
+    await svc.start();
+    await expect(svc.putSettings({ network: 'vpn' as never })).rejects.toMatchObject({ code: 'invalid_config' });
   });
 });

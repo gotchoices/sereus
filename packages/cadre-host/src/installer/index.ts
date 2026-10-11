@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
-import { NatStore } from '../nat/index.js';
+import { NatStore, publicInterfaceAddress } from '../nat/index.js';
 
 import { openBrowser } from './browser.js';
 import { writeHostConfig, type HostConfigFile } from './config.js';
@@ -69,6 +69,8 @@ export interface InstallOptions {
   serviceHost?: ServiceHost;
   /** Test-only: stub the interactive wizard. Production callers leave unset. */
   wizard?: (defaults: WizardDefaults) => Promise<WizardAnswers>;
+  /** Test-only: stub the interface read that decides whether to ask about UPnP. */
+  publicInterfaceAddress?: () => string | null;
 }
 
 export interface InstallResult {
@@ -207,7 +209,6 @@ export class Installer {
       dataDir: opts.dataDir ?? defaults.dataDir,
       uiPort: opts.uiPort ?? defaults.uiPort,
       upnpEnabled: opts.noUpnp ? false : defaults.upnpEnabled,
-      configureDdns: false,
     };
   }
 
@@ -225,6 +226,9 @@ export class Installer {
       dataDir: opts.dataDir ?? platformDefaults.dataDir,
       uiPort: opts.uiPort ?? platformDefaults.uiPort,
       upnpEnabled: opts.noUpnp ? false : platformDefaults.upnpEnabled,
+      // A flag answers its question: the wizard asks only for what the command line left open.
+      given: { dataDir: opts.dataDir !== undefined, uiPort: opts.uiPort !== undefined, upnpEnabled: opts.noUpnp === true },
+      publicInterfaceIp: (opts.publicInterfaceAddress ?? publicInterfaceAddress)(),
     };
     const wizard = opts.wizard ?? runWizard;
     return await wizard(defaults);

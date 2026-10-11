@@ -23,6 +23,9 @@ export type {
   NatStatusSnapshot,
   NatGatewayStatus,
   NatDdnsStatus,
+  NatNetworkStatus,
+  NetworkMode,
+  NetworkSetting,
   NatSettingsFile,
   NatDdnsSettings,
   NatHandlers,
@@ -63,6 +66,7 @@ export type {
 export { evaluateNodeReachability, evaluateHostReachability } from './reachability.js';
 export type { NodeVerdictInput, NodeVerdictResult } from './reachability.js';
 export { buildPublicAddresses, isPublicIpv4 } from './address-resolver.js';
+export { publicInterfaceAddress, effectiveNetworkMode } from './network-mode.js';
 export type { PublicAddressInput } from './address-resolver.js';
 export {
   BUILTIN_PROVIDERS,
