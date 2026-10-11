@@ -23,8 +23,8 @@
  * `schemas/control.qsql` (pinned on one database by `control-revocation-replay.spec.ts`).
  *
  * M follows a replicated change at its next membership refresh, and on M nothing but the timed
- * control-cohort reconcile runs one (every 15 s by default): a row that arrives by replication
- * raises no local notification. The scenario never drives a refresh, so each step covers the
+ * control-cohort reconcile runs one (every 15 s by default, 2 s here): a row that arrives by
+ * replication raises no local notification. The scenario never drives a refresh, so each step covers the
  * whole path, and each wait on M's anchor follows a wait on the replicated row or tombstone
  * itself, so a timeout names which of the two did not arrive.
  */
@@ -41,18 +41,13 @@ import {
 const STARTUP_MS = 60_000;
 /** One row or tombstone crossing an already-open connection. */
 const OP_MS = 30_000;
+/** M's control-cohort reconcile interval, the timer that runs M's membership refresh (default 15 s). */
+const M_RECONCILE_MS = 2_000;
 /**
- * A row M already holds reaching M's anchor: one control-cohort reconcile interval (15 s by
- * default) plus that pass. Measured 14.0–14.9 s per step over eight runs, four of them in
- * parallel, because each step's write lands just after the tick that ended the previous wait.
- *
- * NOTE: M keeps the default interval although that is ~45 s of the run. With M at 2 s, B's vouch
- * of C lands ~1.5 s after A's `addOwner` and failed 2 of 3 runs beside the other invite scenarios:
- * one validator rejects it as `unavailable (unmaterializable)`, the vote tracked by
- * `fresh-strand-replica-vetoes-writes-while-catching-up`. Once that lands, pass `reconcileMs` to
- * M (a `startPinningMember` option to add) and shorten this budget.
+ * A row M already holds reaching M's anchor: one {@link M_RECONCILE_MS} interval plus that pass.
+ * Measured at most 2.1 s per step over 16 runs, 8 of them in parallel.
  */
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 10_000;
 /** The seed trust policy's refusal of a signer outside the receiver's anchor (`anchoredTrustPolicy`). */
 const UNANCHORED_SIGNER = 'Signer key is not an anchored owner (anchored trust policy)';
 
@@ -72,7 +67,7 @@ describe('E2E the trusted-owner anchor follows owner additions and removals', ()
 			const aOwnerKey = await makeOwnOwner(owner, aKey);
 			const aPeerId = owner.peerId!.toString();
 
-			M = await startPinningMember(partyId, aOwnerKey);
+			M = await startPinningMember(partyId, aOwnerKey, { reconcileMs: M_RECONCILE_MS });
 			const member = M.node;
 			await admitMember(owner, M, STARTUP_MS);
 			B = await startPinningMember(partyId, aOwnerKey, { ownerCapable: true });

@@ -30,6 +30,8 @@ export interface PinningMemberOptions {
 	 * seed the same way. It anchors the member's own key on the member alone.
 	 */
 	ownerCapable?: boolean;
+	/** The member's `network.controlCohort.reconcileMs`; on a pinning member that timer is what runs its membership refresh. */
+	reconcileMs?: number;
 }
 
 /**
@@ -42,6 +44,7 @@ export async function startPinningMember(partyId: string, ownerKey: string, opti
 	const node = new CadreNode(controlNodeConfig({
 		partyId, privateKey: key, profile: 'storage', strandFilter: 'none', pinnedOwnerKeys: [ownerKey],
 		...(options.storageProvider ? { storageProvider: options.storageProvider } : {}),
+		...(options.reconcileMs !== undefined ? { reconcileMs: options.reconcileMs } : {}),
 	}));
 	await node.start();
 	if (options.ownerCapable) {
