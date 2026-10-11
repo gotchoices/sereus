@@ -54,7 +54,7 @@ export function evaluateNodeReachability(input: NodeVerdictInput): NodeVerdictRe
 /**
  * Host roll-up: `cgnat` when CGNAT is detected and no node is reachable
  * through a manual route; `unknown` with no running nodes; `reachable` when
- * every running node is `mapped`/`manual`; else `unreachable`.
+ * every running node is `mapped`/`manual`/`direct`; else `unreachable`.
  */
 export function evaluateHostReachability(
   nodes: ReadonlyArray<Pick<NodeReachability, 'running' | 'verdict'>>,

@@ -148,12 +148,12 @@ cadre-host node retry <id>        # start an invitation node again once a member
 Every node this machine runs needs two ports reachable from outside your home network: its libp2p TCP port and its WebSocket port (the one a phone dials). How they get there depends on where the machine sits, and cadre-host works that out itself (**Connectivity → Network**, or `cadre-host nat settings --network auto|lan|public`):
 
 - **Behind a router** (a home or office network): cadre-host asks the router to map both ports over UPnP as each node starts, or you forward them by hand (below).
-- **On a public IP address** (a VPS, or a server with a routed address): there is nothing to map. Each node is reached at its own ports, and the status shows them as `direct`. Allow them through any firewall on the machine (`sudo ufw allow <tcp>:<ws>/tcp`, which the status prints for you) and in your hosting provider's firewall. No `nat forward` is needed.
+- **On a public IP address** (a VPS, or a server with a routed address): there is nothing to map. Each node is reached at its own ports, and the status shows them as `direct`. Allow them through any firewall on the machine (`sudo ufw allow <tcp>:<ws>/tcp`, which the status prints for you) and in your hosting provider's firewall. No `nat forward` is needed. A cloud machine whose interface holds only a private address while the provider forwards its public IP to it (AWS, GCP) reads as behind a router: set `--network public` there.
 
 `auto` (the default) picks public when one of the machine's interfaces holds a public IPv4 address, re-checked every few minutes. After installing (and any time your network changes):
 
 ```bash
-cadre-host nat status     # UPnP and router state, external IP, and per node: mapped / forwarded by hand / unreachable, with what to do
+cadre-host nat status     # network mode, UPnP and router state, external IP, and per node: mapped / forwarded by hand / direct / unreachable, with what to do
 cadre-host nat test       # re-run the probes right now
 ```
 

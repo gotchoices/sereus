@@ -373,21 +373,18 @@ export class NatService {
   }
 
   /**
-   * The 5-minute probe pass: while UPnP is on and no router has answered,
-   * search again and map the running nodes as soon as one does — a host that
-   * boots before its network, or a router that comes up later, is found here
-   * rather than at the next restart; then re-detect the external IP.
+   * The 5-minute probe pass: re-read the interfaces and re-route every node when
+   * the mode `auto` lands on changes; while UPnP is in use and no router has
+   * answered, search again and map the running nodes as soon as one does — a
+   * host that boots before its network, or a router that comes up later, is
+   * found here rather than at the next restart; then re-detect the external IP.
    */
   async redetect(): Promise<void> {
     await this.enqueue(async () => {
-      // Interfaces change (a VPS gains an address, a laptop moves networks): re-read them, and
-      // re-route every node when the mode `auto` lands on changes.
-      const modeBefore = this.networkMode();
-      this.publicInterfaceIp = this.readInterfaces();
-      const modeChanged = this.networkMode() !== modeBefore;
-      if (modeChanged) log('network mode changed to %s', this.networkMode());
-      if (this.usesUpnp() && !this.gateway.found) await this.discoverGateway();
-      if (modeChanged || (this.usesUpnp() && this.gateway.found)) await this.reconcileOnce({ mapMissing: true });
+      const modeChanged = this.refreshNetworkMode();
+      const gatewayWasFound = this.gateway.found;
+      if (this.usesUpnp() && !gatewayWasFound) await this.discoverGateway();
+      if (modeChanged || (!gatewayWasFound && this.gateway.found)) await this.reconcileOnce({ mapMissing: true });
     });
     await this.detectIp();
     this.publish();
@@ -398,7 +395,7 @@ export class NatService {
   /** Re-discover the router if needed, re-map everything, re-detect the IP, then return a fresh snapshot. */
   async testReachability(): Promise<NatStatusSnapshot> {
     await this.enqueue(async () => {
-      this.publicInterfaceIp = this.readInterfaces();
+      this.refreshNetworkMode();
       if (this.usesUpnp() && !this.gateway.found) await this.discoverGateway();
       await this.reconcileOnce({ mapMissing: false });
       await this.renewOnce();
@@ -767,6 +764,18 @@ export class NatService {
     if (this.networkMode() === 'public' && this.publicInterfaceIp) return this.publicInterfaceIp;
     const ip = this.detectedIp();
     return ip && isPublicIpv4(ip) ? ip : null;
+  }
+
+  /**
+   * Re-read the interfaces (a VPS gains an address, a laptop moves networks); true when that
+   * changed the mode in effect, so the caller re-routes every node in the same pass.
+   */
+  private refreshNetworkMode(): boolean {
+    const modeBefore = this.networkMode();
+    this.publicInterfaceIp = this.readInterfaces();
+    const changed = this.networkMode() !== modeBefore;
+    if (changed) log('network mode changed to %s (public interface address %s)', this.networkMode(), this.publicInterfaceIp ?? 'none');
+    return changed;
   }
 
   /** The mode in effect: the `network` setting, or what `auto` reads from the interfaces. */

@@ -12,6 +12,11 @@ import type { NetworkMode, NetworkSetting } from './types.js';
  * The first public IPv4 an interface holds, or null. A VPS's `eth0` holds its public address
  * directly; a machine behind a router holds only private ones (its public address lives on the
  * router). Docker bridges, VPNs and other private interfaces never qualify.
+ *
+ * NOTE: any interface counts, not only the one on the route to the internet, so a LAN machine
+ * with a public address on a second card or a tunnel reads as public (the `lan` setting fixes it);
+ * if that is reported, decide on the default route's source address instead (the UDP-connect probe
+ * in cadre-core's `primaryLanAddress`).
  */
 export function publicInterfaceAddress(
   interfaces: Record<string, NetworkInterfaceInfo[] | undefined> = networkInterfaces(),

@@ -128,7 +128,7 @@ The claim secret is in four places: the record in `hosted-nodes.json`, which eve
 The claim details carry the NAT layer's verdict for the node (`reachability`: its `NodeReachability` entry, or `null` before the NAT layer has one; see [Reachability verdict](#reachability-verdict)), and the CLI and the Join page warn when it reads `unreachable`.
 
 - **At home the code still works.** Every hosted node listens on its WebSocket port on all interfaces, and the code carries the LAN addresses, so a phone on the host's network claims an unreachable node.
-- **Away from home** a phone reaches the node only through its public addresses, which the NAT layer maps through the router over UPnP or the user forwards by hand ([NAT and DDNS](#nat-and-ddns)). Whether those addresses answer is up to the router: the verdict is a heuristic, not a dial-back.
+- **Away from home** a phone reaches the node only through its public addresses: on a machine holding a public IP, its own ports; behind a router, ports the NAT layer maps over UPnP or the user forwards by hand ([NAT and DDNS](#nat-and-ddns)). Whether those addresses answer is up to the router: the verdict is a heuristic, not a dial-back.
 - **Behind CGNAT** neither a mapping nor a forward helps; the node needs a relay reservation, which cadre-host does not give its nodes yet (`feat-cadre-host-children-reserve-on-a-relay`).
 
 ### From the CLI
@@ -237,10 +237,11 @@ Cadre-host runs on machines that are typically behind NAT, and sometimes on one 
 - **`public`:** an interface holds a public IPv4, as on a VPS.
   - Every node port gets a `direct` route: reached at its own number, with nothing to map.
   - No UPnP discovery or mapping runs, and CGNAT is ruled out.
-  - Public addresses use the interface's address, or the DDNS hostname when one is set.
+  - Public addresses use the interface's address, or the DDNS hostname when one is set. Set `public` by hand on a cloud machine whose interface holds only a private address and whose provider forwards its public IP one-to-one (as on AWS or GCP): the addresses then use the detected external IP.
   - The node's verdict is `direct`, and its reason is the firewall reminder (which ports to allow) rather than router advice.
-  - A manual forward still wins, for a public machine behind a provider's NAT.
-- **`auto`:** reads the interfaces (`publicInterfaceAddress`) at start and on every probe pass. A change of mode re-routes every node, and leaving `lan` releases its UPnP mappings.
+  - A manual forward still wins, for a public machine behind a provider's NAT that changes port numbers. The Connectivity page hides the forwarding form on a `direct` node; `cadre-host nat forward` still takes one.
+- **`auto`:** reads the interfaces (`publicInterfaceAddress`) at start, on every probe pass and on `nat test`. A change of mode re-routes every node, and leaving `lan` releases its UPnP mappings.
+  - Any non-loopback interface counts, so a machine behind a router that also holds a public address on a second network card or a tunnel reads as `public`; set `lan` there. The Connectivity page and `nat status` show the address `auto` found.
 
 In LAN mode, for the nodes it runs to be dialable from the open internet, cadre-host composes three layers, each fail-safe and independent:
 
@@ -261,7 +262,7 @@ In LAN mode, for the nodes it runs to be dialable from the open internet, cadre-
 
 ### UPnP gateway
 
-Discovery listens 10 s for the first IPv4 gateway to answer the SSDP search; none within that time means UPnP is unavailable (`gateway.found: false` with the reason; manual forwards still work). It runs at start, on a UPnP toggle, on `nat test`, and, while UPnP is on and no router has answered, on the 5-minute probe timer, so a host that boots before its network finds the router without a restart and maps its running nodes at once. The library searches for `InternetGatewayDevice:2` only; a router that implements only version 1 of the UPnP gateway profile reads as not found. Mappings point at the local IPv4 address whose subnet contains the router — not every local address, which would leave stray mappings for VPN and container interfaces — and that address is reported as `gateway.lanAddress`, since it is the one a user forwards to. Two limits of the library: it deletes only mappings this process made, so after a host restart the previous process's mappings expire with their lease rather than being deleted; and its delete names the internal port as the external one, so a mapping the router granted on another external port also expires rather than being deleted.
+Discovery listens 10 s for the first IPv4 gateway to answer the SSDP search; none within that time means UPnP is unavailable (`gateway.found: false` with the reason; manual forwards still work). It runs only in LAN mode: at start, on a UPnP toggle or a change into LAN mode, on `nat test`, and, while UPnP is on and no router has answered, on the 5-minute probe timer, so a host that boots before its network finds the router without a restart and maps its running nodes at once. The library searches for `InternetGatewayDevice:2` only; a router that implements only version 1 of the UPnP gateway profile reads as not found. Mappings point at the local IPv4 address whose subnet contains the router — not every local address, which would leave stray mappings for VPN and container interfaces — and that address is reported as `gateway.lanAddress`, since it is the one a user forwards to. Two limits of the library: it deletes only mappings this process made, so after a host restart the previous process's mappings expire with their lease rather than being deleted; and its delete names the internal port as the external one, so a mapping the router granted on another external port also expires rather than being deleted.
 
 ### External IP detection
 
@@ -280,15 +281,16 @@ Each node in the status snapshot (`nodes: NodeReachability[]`, with a `PortRoute
 |---|---|
 | either port has no route, or the host part is unknown (no DDNS hostname and no public IPv4), or the node's routes are UPnP routes under CGNAT | `unreachable` |
 | otherwise, either port forwarded by hand | `manual` |
+| otherwise, either port reached as-is (public mode) | `direct` |
 | otherwise | `mapped` |
 
-An `unreachable` node carries a plain-language `reason` naming the failing port, its internal port, the LAN address and what to do: forward it, or turn UPnP on, or, under CGNAT, whatever else failed the port, that neither UPnP nor a forward will help and a relay is needed (relay support is `backlog/feat-cadre-host-children-reserve-on-a-relay`). The host-level `directReachability` rolls the running nodes up:
+A `direct` node's `reason` is the firewall reminder: its TCP and WebSocket ports and a `sudo ufw allow` line for them, never the health, metrics or UI ports. An `unreachable` node carries a plain-language `reason` naming the failing port, its internal port, the LAN address and what to do: forward it, or turn UPnP on, or, under CGNAT, whatever else failed the port, that neither UPnP nor a forward will help and a relay is needed (relay support is `backlog/feat-cadre-host-children-reserve-on-a-relay`). The host-level `directReachability` rolls the running nodes up:
 
 | Conditions | Verdict |
 |---|---|
 | CGNAT detected and no node is reachable through a manual route | `cgnat` |
 | no running nodes | `unknown` |
-| every running node is `mapped` or `manual` | `reachable` |
+| every running node is `mapped`, `manual` or `direct` | `reachable` |
 | otherwise | `unreachable` |
 
 This is a heuristic, not a real dial-back. A future ticket will enable libp2p's AutoNAT service in `@optimystic/db-p2p`'s `libp2p-node-base.ts` and use its verdict here.
@@ -327,7 +329,7 @@ cadre-host then uses the hostname in every node's public addresses and shows it 
 
 `NatService.publicAddressesFor(nodeId, ports)` builds, from cached state, the multiaddrs through which one node is reachable from outside; the same list is `publicAddrs` on the node's status entry:
 
-- The host part is `/dns4/<hostname>` when a DDNS hostname is configured (externally managed included), else `/ip4/<externalIp>` when the detected IP is a public IPv4, else there is none and the list is empty.
+- The host part is `/dns4/<hostname>` when a DDNS hostname is configured (externally managed included), else `/ip4/<ip>`: in public mode the interface's public address when one holds it, otherwise the detected external IP when it is a public IPv4. With neither there is none and the list is empty.
 - A DDNS hostname must be a DNS name (dot-separated letters, digits and inner hyphens). Settings refuse any other value, and one already in a hand-edited `nat.json` is ignored here, because a single malformed address would stop every hosted node from starting ([Public addresses reach the node](#public-addresses-reach-the-node)).
 - A hostname given for a DDNS provider is stored as that provider's full name, so DuckDNS's bare `foo` is stored as `foo.duckdns.org`: the node announces the stored name, which has to resolve on its own.
 - One address per port that has a route: `<host>/tcp/<externalPort>` and `<host>/tcp/<externalPort>/ws`, with the external port the router granted or the user entered. No `/p2p/` suffix: the node appends its own.
@@ -343,7 +345,7 @@ A node learns its public addresses once, at start, and is restarted when they ch
 
 - **At spawn.** The orchestrator asks `publicAddressesFor` for every node it starts and passes the list to the child as `CADRE_APPEND_ANNOUNCE_ADDRS`. libp2p adds those addresses to the ones it reports for its listen addresses, so the node's own `CadrePeer` row and the invitations it mints (cadre-core `collectSelfAddrs`) carry both. The append form is deliberate: `CADRE_ANNOUNCE_ADDRS` would replace the reported set and drop the LAN addresses a phone at home dials. An empty list sets nothing, and a failure computing it starts the node without public addresses rather than not at all.
 - **Recorded.** The list is kept on the node's handle as `announcedAddrs`, persisted in the orchestrator's `state.json` and shown in `/api/nodes`, so a node re-attached after a host restart is compared against what it was actually started with.
-- **Compared.** After every NAT pass and every settings write, `NatService` compares each running node's `announcedAddrs` with `publicAddressesFor` for it, as sets. They differ when a mapping lands on a port other than the one predicted at spawn, when a mapping fails or comes back, when a forward is set or cleared, when UPnP is toggled, when the DDNS hostname is set or cleared, when the CGNAT flag flips, or when the external IP changes while no DDNS hostname is set.
+- **Compared.** After every NAT pass and every settings write, `NatService` compares each running node's `announcedAddrs` with `publicAddressesFor` for it, as sets. They differ when a mapping lands on a port other than the one predicted at spawn, when a mapping fails or comes back, when a forward is set or cleared, when UPnP is toggled, when the DDNS hostname is set or cleared, when the CGNAT flag flips, when the network mode changes, or when the external IP changes while no DDNS hostname is set.
 - **Restarted.** A difference restarts that node, which comes back with the same peer id and ports ([A respawned node keeps its addresses](#respawn-keeping-a-hosted-node-up)) and the current addresses. The restart goes through `HostedNodeSupervisor.restart`, which stops and respawns the node on the supervisor's serialized queue without spending its respawn budget. A node that is not running is left to the crash path.
 - **Rate-limited.** At most one address restart per node per 10 minutes (`NAT_ADDRESS_RESTART_MIN_INTERVAL_MS`). A difference found inside that window is acted on by the first pass after it (the 1-minute reconcile timer at the latest), so a flapping router costs each node at most one restart per window.
 - **Use DDNS.** With a DDNS hostname the addresses name the hostname rather than the IP, so a change of the home's external IP changes no announced address and restarts nothing. Without one, every IP change restarts every node that has a public address.

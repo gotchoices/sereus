@@ -42,7 +42,7 @@ import {
   HOSTED_NODE_REAP_SWEEP_MS,
   HOSTED_NODE_SPAWNING_TTL_MS,
 } from '../hosted/index.js';
-import { NatService, publicInterfaceAddress } from '../nat/index.js';
+import { effectiveNetworkMode, NatService, NatStore, publicInterfaceAddress } from '../nat/index.js';
 import type { ManualForwardPatch } from '../nat/types.js';
 import { createSecretsStore } from '../nat/secrets/index.js';
 import {
@@ -115,7 +115,8 @@ program
         ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
         ...(typeof opts.uiPort === 'number' ? { uiPort: opts.uiPort } : {}),
         noUpnp: opts.upnp === false,
-        openBrowser: opts.browser !== false,
+        // Headless, a browser would open nowhere the admin can see; the `ssh -L` lines below say how instead.
+        openBrowser: opts.browser !== false && !isHeadless(),
         system: Boolean(opts.system),
         ...(opts.nodePath ? { nodePath: opts.nodePath } : {}),
         noService: opts.service === false,
@@ -129,9 +130,11 @@ program
         console.log('  Service:      not registered (--no-service)');
         console.log(`  Run the host: cadre-host start --data-dir "${result.dataDir}"`);
       }
+      // A re-install keeps the `network` setting an earlier one recorded in nat.json.
       const publicIp = publicInterfaceAddress();
-      console.log(publicIp
-        ? `  Network:      public IP ${publicIp}: nodes are reached directly. Allow their ports through your firewall (the UI lists them).`
+      const mode = effectiveNetworkMode(new NatStore(result.dataDir).load().network, publicIp);
+      console.log(mode === 'public'
+        ? `  Network:      public IP${publicIp ? ` ${publicIp}` : ''}: nodes are reached directly. Allow their ports through your firewall (the UI lists them).`
         : '  Network:      behind a router: nodes need UPnP or a port forward (the UI shows which).');
       console.log('');
       for (const line of uiAccessLines(Number(new URL(result.uiUrl).port), isHeadless())) console.log(line);

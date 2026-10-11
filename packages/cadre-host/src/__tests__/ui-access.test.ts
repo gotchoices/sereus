@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isHeadless, uiAccessLines } from '../bin/ui-access.js';
+import { currentLogin, isHeadless, uiAccessLines } from '../bin/ui-access.js';
 
 describe('isHeadless', () => {
   it('is true over SSH on any platform, and on Linux without a display', () => {
@@ -18,5 +18,13 @@ describe('uiAccessLines', () => {
     const lines = uiAccessLines(8765, true, { user: 'kyle', host: 'kjeib' });
     expect(lines).toContain('  ssh -L 8765:127.0.0.1:8765 kyle@kjeib');
     expect(lines.join('\n')).toContain('http://127.0.0.1:8765');
+  });
+});
+
+describe('currentLogin', () => {
+  it('over SSH, names the server address and port the client connected to', () => {
+    const who = currentLogin({ SSH_CONNECTION: '198.51.100.20 51234 203.0.113.7 2222' });
+    expect(who).toMatchObject({ host: '203.0.113.7', sshPort: 2222 });
+    expect(uiAccessLines(8765, true, who)[1]).toBe(`  ssh -p 2222 -L 8765:127.0.0.1:8765 ${who.user}@203.0.113.7`);
   });
 });
