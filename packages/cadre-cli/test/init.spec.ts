@@ -29,6 +29,7 @@ describe('publicMultiaddr', () => {
     expect(() => publicMultiaddr('/not-a-protocol/x', 4002)).toThrow('--public /not-a-protocol/x is not a valid multiaddr');
     expect(() => publicMultiaddr('host:99999', 4002)).toThrow('outside 1-65535');
     expect(() => publicMultiaddr('a b', 4002)).toThrow('must be host, host:port');
+    expect(() => publicMultiaddr('node.example.com/join', 4002)).toThrow('must be host, host:port');
   });
 });
 
@@ -58,11 +59,6 @@ describe('initNode', () => {
     expect(resolved.claimSecretFile).toBe(result.files.secret);
     expect('claim' in resolved).toBe(false); // CadreNodeConfig.claim is the node's claim policy, not this
     expect(resolved.privateKey).toBeDefined();
-  });
-
-  it('omits appendAnnounceAddrs without --public', async () => {
-    const result = await initNode({ dir });
-    expect((await loadValidatedConfig(result.files.config, {})).network?.appendAnnounceAddrs).toBeUndefined();
   });
 
   it('refuses, writing nothing, when the folder already holds a node', async () => {

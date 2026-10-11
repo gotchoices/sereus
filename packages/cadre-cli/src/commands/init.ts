@@ -7,6 +7,7 @@ import yaml from 'js-yaml';
 import { multiaddr } from '@multiformats/multiaddr';
 import { CLAIM_SECRET_BYTES, EnrollmentService } from '@serfab/cadre-core';
 import type { CliConfigFile } from '../config/types.js';
+import { writePrivateFile } from './private-file.js';
 
 /** The files `cadre init` writes, by name inside the node's directory. */
 export const INIT_FILES = {
@@ -41,6 +42,8 @@ export interface InitResult {
   appendAnnounceAddrs: string[];
   /** Scripts added to an existing package.json in `dir`. */
   scriptsAdded: string[];
+  /** Why a package.json in `dir` was left alone: it does not parse. */
+  packageJsonSkipped?: string;
 }
 
 /**
@@ -57,7 +60,7 @@ export function publicMultiaddr(spec: string, defaultPort: number): string {
     }
     return trimmed;
   }
-  const match = /^(?:\[(?<v6>[^\]]+)\]|(?<host>[^:\s]+))(?::(?<port>\d+))?$/.exec(trimmed);
+  const match = /^(?:\[(?<v6>[^\]]+)\]|(?<host>[^:/\s]+))(?::(?<port>\d+))?$/.exec(trimmed);
   const host = match?.groups?.v6 ?? match?.groups?.host;
   if (!host) {
     throw new Error(`--public ${trimmed} must be host, host:port, [ipv6]:port or a multiaddr starting with /`);
@@ -122,44 +125,38 @@ export async function initNode(options: InitOptions): Promise<InitResult> {
 
   fs.mkdirSync(dir, { recursive: true });
   const { peerId, privateKey } = await new EnrollmentService().createCadrePeer();
-  writePrivate(files.key, privateKey);
+  writePrivateFile(files.key, privateKey);
   fs.writeFileSync(files.id, peerId.toString(), 'utf-8');
-  writePrivate(files.secret, `${randomBytes(CLAIM_SECRET_BYTES).toString('base64url')}\n`);
+  writePrivateFile(files.secret, `${randomBytes(CLAIM_SECRET_BYTES).toString('base64url')}\n`);
   fs.writeFileSync(files.config, CONFIG_HEADER + yaml.dump(initConfig(dir, tcpPort, wsPort, appendAnnounceAddrs)), 'utf-8');
   fs.mkdirSync(path.join(dir, 'state'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'data'), { recursive: true });
 
-  return { dir, peerId: peerId.toString(), files, appendAnnounceAddrs, scriptsAdded: addPackageScripts(dir) };
-}
-
-/** Write a file only its owner can read (mode 600 from creation, not chmod after). */
-function writePrivate(file: string, data: string | Uint8Array): void {
-  fs.writeFileSync(file, data, { mode: 0o600 });
-  fs.chmodSync(file, 0o600); // an umask may have narrowed the create mode further; never widen past 600
+  return { dir, peerId: peerId.toString(), files, appendAnnounceAddrs, ...addPackageScripts(dir) };
 }
 
 /**
  * When `dir` holds a package.json (the usual `npm init -y && npm i @serfab/cadre-cli` folder),
  * add `start` and `code` scripts it lacks, so `npm start` runs the node. Existing scripts are
- * never replaced. Returns the names added.
+ * never replaced. Returns the names added, or why a package.json it cannot parse was left alone.
  */
-function addPackageScripts(dir: string): string[] {
+function addPackageScripts(dir: string): Pick<InitResult, 'scriptsAdded' | 'packageJsonSkipped'> {
   const pkgPath = path.join(dir, 'package.json');
-  if (!fs.existsSync(pkgPath)) return [];
+  if (!fs.existsSync(pkgPath)) return { scriptsAdded: [] };
   let pkg: { scripts?: Record<string, string> } & Record<string, unknown>;
   try {
     pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-  } catch {
-    return [];
+  } catch (err) {
+    return { scriptsAdded: [], packageJsonSkipped: err instanceof Error ? err.message : String(err) };
   }
   const wanted: Record<string, string> = { start: 'cadre start', code: 'cadre code --qr' };
   const scripts = { ...(pkg.scripts ?? {}) };
   // `npm init -y` writes a placeholder test script; a start script it never writes.
   const added = Object.keys(wanted).filter((name) => scripts[name] === undefined);
-  if (added.length === 0) return [];
+  if (added.length === 0) return { scriptsAdded: [] };
   for (const name of added) scripts[name] = wanted[name]!;
   fs.writeFileSync(pkgPath, `${JSON.stringify({ ...pkg, scripts }, null, 2)}\n`, 'utf-8');
-  return added;
+  return { scriptsAdded: added };
 }
 
 function collect(value: string, previous: string[]): string[] {
@@ -188,9 +185,10 @@ export const initCommand = new Command('init')
       if (result.appendAnnounceAddrs.length > 0) {
         console.log(`  Public:    ${result.appendAnnounceAddrs.join(', ')}`);
       } else {
-        console.log('  Public:    none — phones reach this node on its LAN only (re-run with --public host[:port] to add one)');
+        console.log('  Public:    none — phones reach this node on its LAN only (add one under network.appendAnnounceAddrs in the config)');
       }
       if (result.scriptsAdded.length > 0) console.log(`  package.json: added scripts ${result.scriptsAdded.join(', ')}`);
+      if (result.packageJsonSkipped) console.warn(`⚠ package.json left alone, no scripts added: it does not parse (${result.packageJsonSkipped})`);
       console.log('');
       console.log('Next:');
       console.log(`  1. Open TCP ${options.wsPort} (WebSocket, for phones) and ${options.port} to this machine; forward ${options.wsPort} through your router for phones away from home.`);

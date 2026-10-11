@@ -10,6 +10,7 @@ import { specifiedEnv } from '@serfab/config-check';
 import { loadValidatedConfig } from '../config/loader.js';
 import { commandEnv } from '../config/env.js';
 import { resolveClaimSecret } from './claim-secret.js';
+import { writePrivateFile } from './private-file.js';
 import { queryRuntime } from './status-query.js';
 
 /** Exit code when no running node answered, as `cadre status` uses. */
@@ -148,6 +149,7 @@ export const codeCommand = new Command('code')
   });
 
 /** The claim secret, from CADRE_CLAIM_SECRET or the config's claim.secretFile; the config may be absent when the env names it. */
+// NOTE: this reads the secret from this shell's sources, not from the running node, so a node started with another secret gets a code it refuses; if that is ever reported, have `/status` carry a fingerprint of the secret and compare it here.
 async function claimSecretFor(configPath: string): Promise<string> {
   const envSecret = specifiedEnv(commandEnv('CADRE_CLAIM_SECRET'));
   let secretFile: string | undefined;
@@ -194,10 +196,7 @@ async function writeImages(text: string, options: CodeOptions): Promise<void> {
 }
 
 async function writeQrImage(file: string, type: 'png' | 'svg', text: string): Promise<void> {
-  if (type === 'png') {
-    await QRCode.toFile(file, text, { ...QR_OPTIONS, type: 'png', width: 512 });
-  } else {
-    fs.writeFileSync(file, await QRCode.toString(text, { ...QR_OPTIONS, type: 'svg' }));
-  }
-  fs.chmodSync(file, 0o600);
+  writePrivateFile(file, type === 'png'
+    ? await QRCode.toBuffer(text, { ...QR_OPTIONS, type: 'png', width: 512 })
+    : await QRCode.toString(text, { ...QR_OPTIONS, type: 'svg' }));
 }
