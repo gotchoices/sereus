@@ -63,10 +63,12 @@ export interface StrandDatabaseConfig {
  * but delegates the actual SQL-surface composition — plugin registration, node
  * wiring, catalog hydration, schema apply — to `connectToStrand` from
  * `@serfab/quereus-plugin-sereus`, the single shared composition. The libp2p
- * node is injected here, so `connectToStrand` never *creates* the node;
- * `StrandInstanceManager` owns the node lifecycle. (The strand connection's
- * `shutdown` still stops the injected node via the collection factory, so the
- * manager's own `node.stop()` is an idempotent second stop — see `close()`.)
+ * node is injected here, so `connectToStrand` neither creates nor stops it:
+ * `StrandInstanceManager` owns the node lifecycle, and a failed or closed
+ * database leaves the node running.
+ *
+ * One instance is one attempt: a failed {@link initialize} is closed and a new
+ * instance built for the next attempt.
  */
 export class StrandDatabase {
   private db: Database | null = null;
@@ -103,10 +105,8 @@ export class StrandDatabase {
     this.db = new Database();
 
     // Delegate to the shared composition. The node is injected, so:
-    //  - `connectToStrand` never creates a node (its `createdNode` stays null);
-    //    `StrandInstanceManager` owns the node lifecycle. Its `shutdown` does
-    //    still stop the injected node via the collection factory, so the
-    //    manager's later `node.stop()` is an idempotent second stop;
+    //  - `connectToStrand` never creates or stops a node; `StrandInstanceManager`
+    //    owns the node lifecycle;
     //  - no `storage` is passed: the plugin consumes it only to build a local
     //    transactor's raw-storage factory or to create a node it was not given,
     //    and cadre-core always injects the node and runs the network transactor.
@@ -132,8 +132,8 @@ export class StrandDatabase {
 
     // Founder-only: write the one-time membership bootstrap now that the schema is
     // applied (connectToStrand has returned). A throw here propagates out of
-    // initialize() so buildStrandRuntime's rollback tears the half-built strand
-    // down rather than leaking a node. Joiners skip this — their rows arrive via sync.
+    // initialize(), and the caller closes this half-built database (close() runs the
+    // composition's shutdown). Joiners skip this — their rows arrive via sync.
     if (this.config.founder === true) {
       await this.bootstrapFounder();
     }
@@ -261,9 +261,9 @@ export class StrandDatabase {
 
   /**
    * Close the database and cleanup resources. Runs the strand-connection
-   * shutdown (collection-factory teardown, which also stops the injected node),
-   * then closes the `Database`. `StrandInstanceManager.releaseRuntime` issues a
-   * further idempotent `node.stop()` after this returns.
+   * shutdown (collection-factory teardown; the injected node keeps running),
+   * then closes the `Database`. Safe on an instance whose {@link initialize}
+   * failed part-way.
    */
   async close(): Promise<void> {
     if (this.shutdownStrand) {

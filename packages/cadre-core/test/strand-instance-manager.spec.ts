@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { StrandInstanceManager, getStrandStoragePath } from '../src/strand-instance-manager.js';
+import { StrandInstanceManager, getStrandStoragePath, UNREACHABLE_JOIN_RETRY_MS } from '../src/strand-instance-manager.js';
+import { StrandDatabase } from '../src/strand-database.js';
 import { signSchema, SchemaVerificationError } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
@@ -101,12 +102,13 @@ describe('StrandInstanceManager', () => {
       await manager.stopAll();
     }, 30000);
 
-    it('keeps a launch whose seed is unreachable tracked and syncing, not failed', async () => {
+    it('keeps a launch whose seed is unreachable syncing on its running node, retrying only the database', async () => {
       // A bootstrapNodes seed is forwarded to createLibp2pNode. The seed is BOGUS and
       // unreachable, and Optimystic will not rule the schema catalog never-created while a
       // bootstrap peer is unheard, so the database cannot be built. The launch must not fail:
-      // it stays tracked as 'syncing' with no database and rebuilds on a timer
-      // (deferUnreachableJoin) until a seed peer answers.
+      // it stays tracked as 'syncing' with no database, and retries the database build on a
+      // timer (deferUnreachableJoin) on the SAME running node, whose connections a seed peer
+      // answering late is reached through.
       const manager = new StrandInstanceManager();
       // A real, parseable peer id — the libp2p bootstrap module validates it.
       const seedPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
@@ -119,8 +121,20 @@ describe('StrandInstanceManager', () => {
       expect(instance.status).toBe('syncing');
       expect(instance.database).toBeUndefined();
       expect(manager.getInstance('seeded-strand')).toBe(instance);
+      const node = instance.libp2pNode;
+      expect(node?.status).toBe('started');
 
-      await manager.stopAll();
+      const initialize = vi.spyOn(StrandDatabase.prototype, 'initialize');
+      try {
+        await vi.waitFor(() => expect(initialize.mock.settledResults[0]?.type).toBe('rejected'),
+          { timeout: UNREACHABLE_JOIN_RETRY_MS + 10_000, interval: 100 });
+        expect(instance.libp2pNode).toBe(node);
+        expect(node?.status).toBe('started');
+        expect(manager.isAwaitingFirstSync('seeded-strand')).toBe(true);
+      } finally {
+        initialize.mockRestore();
+        await manager.stopAll();
+      }
     }, 30000);
 
     it('should return existing instance if already running', async () => {

@@ -309,7 +309,9 @@ describe('connectToStrand', () => {
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
 		expect(createLibp2pNode).not.toHaveBeenCalled();
 
+		// The caller owns an injected node: cadre-core keeps it up across a database rebuild.
 		await result.shutdown();
+		expect(mockNode.stop).not.toHaveBeenCalled();
 	});
 
 	it('should throw when libp2pNode is provided without coordinatedRepo', async () => {

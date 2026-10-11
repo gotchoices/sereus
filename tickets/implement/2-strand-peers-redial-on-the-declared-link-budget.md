@@ -39,7 +39,9 @@ A running strand node that holds no connection to any other strand member, while
 
 Add the slow-restart arm to `joiner-first-commit-over-slow-relay.integration.ts`: the fourth arm's journey without releasing the busy loop and the frame cap before the restart, asserting the founder then holds the rows. Today it never converges (the 180 s gate expires; the arm takes about 7 minutes in all). With the fix it must pass. Decide whether it runs by default (cost) and record the decision in the scenario line of `docs/testing.md`.
 
-If `implement/strand-deferred-join-keeps-its-runtime` has landed and the joiner's first commit is no longer made alone, the arm needs another way to leave the founder without the rows at the moment of the restart (a write made after the founder's strand node is stopped, say, with the founder restarted first) — the subject here is reconnection after a restart on a slow link, not the solo commit.
+`strand-deferred-join-keeps-its-runtime` landed and the joiner's first commit is still made alone: the harness relay cuts the founder-to-joiner circuit during the first join (its stock ping monitor; `backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`, third arm), and nothing redials the founder before the deferred database retry 5 s later makes the joiner writable. That is the state this ticket's supervisor covers (a running strand node with no member connected), so re-run the third arm once the redial is in; it passes only if the redial reconnects before that retry, or before the write.
+
+If the joiner's first commit is no longer made alone, the arm needs another way to leave the founder without the rows at the moment of the restart (a write made after the founder's strand node is stopped, say, with the founder restarted first) — the subject here is reconnection after a restart on a slow link, not the solo commit.
 
 ## TODO
 

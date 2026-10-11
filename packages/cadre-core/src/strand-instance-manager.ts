@@ -1,5 +1,5 @@
 import debug from 'debug';
-import type { PrivateKey } from '@libp2p/interface';
+import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase } from './strand-database.js';
@@ -51,11 +51,24 @@ const log = debug('sereus:cadre:strand-manager');
 
 /**
  * How often a joining launch that could not build its database, because no seed peer had
- * answered, rebuilds its runtime (`StrandInstanceManager.deferUnreachableJoin`). Each attempt
- * starts a libp2p node and dials the seed, so it is spaced well above the first-sync gate's
- * probe cadence.
+ * answered, retries the build on its running libp2p node
+ * (`StrandInstanceManager.deferUnreachableJoin`). Each attempt composes a fresh database and
+ * re-reads the schema catalog over the network, so it is spaced well above the first-sync
+ * gate's probe cadence.
+ *
+ * NOTE: the 5 s dates from when each attempt also rebuilt the libp2p node. A joiner whose seed
+ * peer answered just after a failed attempt waits up to this long to become writable; if that
+ * wait shows up in a measured join, try a shorter first retry.
  */
 export const UNREACHABLE_JOIN_RETRY_MS = 5_000;
+
+/**
+ * How one database build of a runtime ended ({@link StrandInstanceManager.buildStrandDatabase}):
+ * published or held by the first-sync gate; failed only because no seed peer has answered yet;
+ * or overtaken by a release of the runtime it was building on.
+ */
+type StrandDatabaseBuild = 'built' | 'awaiting-seed' | 'released';
+
 const timing = debug('sereus:cadre:timing');
 
 /** One caller blocked in {@link StrandInstanceManager.whenWritable}. */
@@ -499,12 +512,13 @@ export class StrandInstanceManager {
   private strandStorages: Map<string, IRawStorage> = new Map();
   /**
    * The runtime build in flight per strand id (`buildStrandRuntime`, from `startStrand` or
-   * `resumeStrand`), present until it settles. The instance is tracked for the whole build,
-   * with its database not yet constructed or not yet initialized, so a caller that must act
-   * on the FINISHED runtime ({@link attachSApp}, {@link whenRuntimeBuilt}) waits on this instead. A failed build's
-   * rejection belongs to the call that started it.
+   * `resumeStrand`, or a deferred join's database retry), present until it settles. The
+   * instance is tracked for the whole build, with its database not yet constructed or not yet
+   * initialized, so a caller that must act on the FINISHED runtime ({@link attachSApp},
+   * {@link whenRuntimeBuilt}) waits on this instead. A failed build's rejection belongs to the
+   * call that started it.
    */
-  private runtimeBuilds: Map<string, Promise<void>> = new Map();
+  private runtimeBuilds: Map<string, Promise<unknown>> = new Map();
   /**
    * The latest resume or quiesce requested per strand id, present until it settles. Each one
    * starts only once the one requested before it has settled, so a wake that lands during a
@@ -515,9 +529,9 @@ export class StrandInstanceManager {
    */
   private transitions: Map<string, RuntimeTransition> = new Map();
   /**
-   * The pending rebuild per strand id of a launch whose database could not be built
+   * The pending database retry per strand id of a launch whose database could not be built
    * because no seed peer had answered yet ({@link deferUnreachableJoin}). Cleared by
-   * {@link releaseRuntime}, so a stop, a quiesce or a resume cancels it.
+   * {@link releaseRuntime}, so a stop or a quiesce cancels it.
    */
   private unreachableJoinRetries: Map<string, unknown> = new Map();
   private stopping = false;
@@ -649,10 +663,10 @@ export class StrandInstanceManager {
   }
 
   /** Hold `build` in {@link runtimeBuilds} until it settles, and settle as it does. */
-  private async trackRuntimeBuild(strandId: string, build: Promise<void>): Promise<void> {
+  private async trackRuntimeBuild<T>(strandId: string, build: Promise<T>): Promise<T> {
     this.runtimeBuilds.set(strandId, build);
     try {
-      await build;
+      return await build;
     } finally {
       if (this.runtimeBuilds.get(strandId) === build) {
         this.runtimeBuilds.delete(strandId);
@@ -686,10 +700,13 @@ export class StrandInstanceManager {
    * cohort-derived values. Storage is the
    * one input it does NOT re-read from `config`: that belongs to the instance and
    * comes from `strandStorages`.
+   *
+   * A database that cannot be built because no seed peer has answered yet does not fail the
+   * build: the runtime comes up `'syncing'` without it and the database phase alone is
+   * retried on the same node ({@link deferUnreachableJoin}).
    */
   private async buildStrandRuntime(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
     const strandId = instance.strandId;
-    const { sAppConfig } = config;
 
     // Refuse a bad `linkRoundTripMs` before any strand bring-up, for the reason
     // `CadreNode.start()` does: every budget derived from it here is behind a condition
@@ -706,9 +723,6 @@ export class StrandInstanceManager {
     // services must derive its prefix from the SAME string the node was built
     // with — hence one binding for both, not two literals that can drift.
     const networkName = `strand-${strandId}`;
-    // Set when the database build failed only because no seed peer has answered yet; see
-    // {@link deferUnreachableJoin}.
-    let joinWaitsForSeed = false;
     const protocolPrefix = `/optimystic/${networkName}`;
 
     // Whether this node runs the circuit-relay server, and its init — the same
@@ -876,72 +890,21 @@ export class StrandInstanceManager {
       // other runtime component.
       this.relaySupervisors.set(strandId, this.startRelaySupervisors(strandId, node, relayDialAddrs, config));
 
-      // Create and initialize the StrandDatabase.
-      //
-      // Held by the first-sync gate (registered before initialize) rather than attached
-      // to the instance: a failed init is then cleaned up by releaseRuntime below through
-      // the gate (close() is safe on a partially-initialized db), and the app only ever
-      // sees `instance.database` once this machine is allowed to write to the strand.
-      t0 = performance.now();
-      const strandDb = new StrandDatabase({
-        strandId,
-        sAppConfig,
-        libp2pNode: node,
-        coordinatedRepo: node.coordinatedRepo,
-        // Founder bootstrap inputs: the strand's type drives which membership rows
-        // are written, and the PARTY's own key (partyMemberPrivateKey, resolved by the
-        // caller from the control-layer StrandPartyKey row) derives the founding
-        // Member/Manager key. The row's shared MemberPrivateKey rides along as the
-        // read-gating secret only — it derives nobody's identity.
-        strandType: config.strandRow.Type,
-        memberPrivateKey: config.strandRow.MemberPrivateKey ?? undefined,
-        partyMemberPrivateKey: config.partyMemberPrivateKey,
-        founder: config.founder
-      });
-      const gate = new StrandFirstSyncGate({
-        label: strandId,
-        database: strandDb,
-        onHeaderHeld: () => this.publishDatabase(instance, strandDb)
-      }, config.firstSync);
-      this.firstSyncGates.set(strandId, gate);
-      try {
-        await strandDb.initialize();
-      } catch (error) {
-        joinWaitsForSeed = isCohortUnreachableRead(error);
-        throw error;
-      }
-      timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
-
-      // The first-sync write gate. A founder just wrote the Header in its bootstrap; any
-      // other machine may commit only once it holds the Header — which it can only have
-      // received from a peer (now, or on an earlier run over the same store) — and has read
-      // each App table once, so their collections are fetched too. Publishing the database
-      // is what makes the strand writable to the app; until then the instance stays
-      // `'syncing'` and the gate re-probes on its cadence. Everything armed below reads
-      // `instance.database` lazily, so the reconciler and enforcer wait with it — and
-      // `publishDatabase` kicks the reconciler when the wait ends, so a joiner's membership
-      // rows land with the strand rather than one retry later.
-      t0 = performance.now();
-      if (config.founder === true || await strandFirstSyncComplete(strandDb.getDatabase(), strandId)) {
-        this.publishDatabase(instance, strandDb);
-      } else {
-        gate.start();
-      }
-      timing('[buildStrandRuntime:%s] first-sync probe: %dms', strandId, Math.round(performance.now() - t0));
+      const databaseBuild = await this.buildStrandDatabase(instance, config, node);
 
       // The membership reconciler: finish this party's join on every machine —
       // redeem a staged formation invitation if one is pending, then write the
       // durable machine→party binding (Strand.MemberPeer). Armed here, the one
-      // seam where the strand's transport peer id and a live Database both exist
-      // for launch AND hibernation resume, for closed strands that carry the
+      // seam where the strand's transport peer id exists and its database has been
+      // attempted, for launch AND hibernation resume, for closed strands that carry the
       // party's own membership key. start() kicks an immediate pass WITHOUT
       // awaiting it — a joiner at this instant has not synced the founder's rows
       // and may lack write quorum, so bring-up is never blocked; an unfinished join
       // then retries on a short doubling ladder capped at the configured
       // pollIntervalMs (which is also the flat cadence while nobody has admitted this
       // party yet), and the loop stops once the member row and this machine's own
-      // binding are both in place. Armed AFTER the gate above, so a gated launch
-      // always has a reconciler registered by the time the gate can publish.
+      // binding are both in place. Armed AFTER the database phase above, so a gated or
+      // deferred launch always has a reconciler registered by the time it can publish.
       if (config.strandRow.Type === 'c' && config.partyMemberPrivateKey
         && config.membershipReconciliation?.enabled !== false) {
         const reconciler = new StrandMembershipReconciler({
@@ -1038,7 +1001,11 @@ export class StrandInstanceManager {
       // No `lastActivity` stamp: bringing a runtime up is not activity. A check-in marks
       // activity before its resume and must see only what landed while the strand was up.
       instance.status = liveStrandStatus(instance);
-      if (instance.status === 'syncing') {
+      if (databaseBuild === 'awaiting-seed') {
+        // Armed only now that the build is over: a retry firing mid-build would find the
+        // build in flight.
+        this.deferUnreachableJoin(instance);
+      } else if (instance.status === 'syncing') {
         log('Strand %s launched as a joiner with no Strand.Header held yet — writes are withheld until ' +
           'a member of the strand is reached', strandId);
       }
@@ -1050,17 +1017,105 @@ export class StrandInstanceManager {
       await this.releaseRuntime(instance).catch((cleanupErr) => {
         log('buildStrandRuntime cleanup for strand %s also failed: %o', strandId, cleanupErr);
       });
-      if (joinWaitsForSeed) {
-        this.deferUnreachableJoin(instance, error);
-        return;
-      }
       throw error;
     }
   }
 
   /**
+   * The database phase of a runtime build, on the libp2p node already attached: create the
+   * StrandDatabase, initialize it, then publish it or arm its first-sync gate. Run by
+   * {@link buildStrandRuntime} and again by each {@link retryUnreachableJoin}, with a new
+   * StrandDatabase per attempt.
+   *
+   * Returns `'awaiting-seed'` when initialize failed only because no seed peer has answered
+   * (`cohort-unreachable`): that attempt's database is closed and the node keeps running. Any
+   * other failure throws, with the attempt's database left with its gate for
+   * {@link releaseRuntime} to close.
+   */
+  private async buildStrandDatabase(
+    instance: StrandInstance,
+    config: StartStrandConfig,
+    node: Libp2pNodeWithRepo
+  ): Promise<StrandDatabaseBuild> {
+    const strandId = instance.strandId;
+    // Held by the first-sync gate (registered before initialize) rather than attached
+    // to the instance: a failed init is then cleaned up through the gate (close() is safe on
+    // a partially-initialized db), and the app only ever sees `instance.database` once this
+    // machine is allowed to write to the strand.
+    let t0 = performance.now();
+    const strandDb = new StrandDatabase({
+      strandId,
+      sAppConfig: config.sAppConfig,
+      libp2pNode: node,
+      coordinatedRepo: node.coordinatedRepo,
+      // Founder bootstrap inputs: the strand's type drives which membership rows
+      // are written, and the PARTY's own key (partyMemberPrivateKey, resolved by the
+      // caller from the control-layer StrandPartyKey row) derives the founding
+      // Member/Manager key. The row's shared MemberPrivateKey rides along as the
+      // read-gating secret only — it derives nobody's identity.
+      strandType: config.strandRow.Type,
+      memberPrivateKey: config.strandRow.MemberPrivateKey ?? undefined,
+      partyMemberPrivateKey: config.partyMemberPrivateKey,
+      founder: config.founder
+    });
+    const gate = new StrandFirstSyncGate({
+      label: strandId,
+      database: strandDb,
+      onHeaderHeld: () => this.publishDatabase(instance, strandDb)
+    }, config.firstSync);
+    this.firstSyncGates.set(strandId, gate);
+    try {
+      await strandDb.initialize();
+    } catch (error) {
+      if (!isCohortUnreachableRead(error)) {
+        throw error;
+      }
+      await this.discardDatabaseAttempt(strandId, gate);
+      log('Strand %s: no seed peer has answered yet, so this joiner cannot build its database (%s); ' +
+        'its runtime stays up and the build is retried every %dms',
+        strandId, error instanceof Error ? error.message : String(error), UNREACHABLE_JOIN_RETRY_MS);
+      return 'awaiting-seed';
+    }
+    timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
+    if (this.firstSyncGates.get(strandId) !== gate) {
+      // A stop released the runtime while initialize ran, closing this database through its
+      // gate part-way; close what initialize finished after that.
+      await strandDb.close();
+      return 'released';
+    }
+
+    // The first-sync write gate. A founder just wrote the Header in its bootstrap; any
+    // other machine may commit only once it holds the Header — which it can only have
+    // received from a peer (now, or on an earlier run over the same store) — and has read
+    // each App table once, so their collections are fetched too. Publishing the database
+    // is what makes the strand writable to the app; until then the instance stays
+    // `'syncing'` and the gate re-probes on its cadence. Everything armed after the database
+    // phase reads `instance.database` lazily, so the reconciler and enforcer wait with it —
+    // and `publishDatabase` kicks the reconciler when the wait ends, so a joiner's membership
+    // rows land with the strand rather than one retry later.
+    t0 = performance.now();
+    if (config.founder === true || await strandFirstSyncComplete(strandDb.getDatabase(), strandId)) {
+      this.publishDatabase(instance, strandDb);
+    } else {
+      gate.start();
+    }
+    timing('[buildStrandRuntime:%s] first-sync probe: %dms', strandId, Math.round(performance.now() - t0));
+    return 'built';
+  }
+
+  /** Close a database attempt that failed to initialize, and drop its gate if it is still the registered one. */
+  private async discardDatabaseAttempt(strandId: string, gate: StrandFirstSyncGate): Promise<void> {
+    gate.stop();
+    if (this.firstSyncGates.get(strandId) === gate) {
+      this.firstSyncGates.delete(strandId);
+    }
+    await gate.database.close();
+  }
+
+  /**
    * Keep a launch `'syncing'` when its database could not be built because no seed peer has
-   * answered yet, and rebuild the runtime every {@link UNREACHABLE_JOIN_RETRY_MS}.
+   * answered yet, and retry the database build every {@link UNREACHABLE_JOIN_RETRY_MS} on the
+   * runtime already up.
    *
    * Optimystic (since 1.11.0) will not rule a block never-created while any of a node's
    * `bootstrapNodes` is unheard, so a joiner alone with an unreachable seed cannot build even
@@ -1070,14 +1125,15 @@ export class StrandInstanceManager {
    * strand until the watcher relaunched it, and `addStrand` would reject with a raw Optimystic
    * error. Deferring gives a joiner the same contract the first-sync gate gives one that did
    * build: the strand stays tracked, {@link whenWritable} waits and rejects with the retryable
-   * `StrandAwaitingFirstSyncError`, and the launch proceeds once a seed peer answers. A failed
-   * composition stops the injected libp2p node, so each retry rebuilds the whole runtime.
+   * `StrandAwaitingFirstSyncError`, and the launch proceeds once a seed peer answers.
+   *
+   * The libp2p node, its connections and the background loops stay up meanwhile. A seed peer
+   * can answer just after the schema read gave up on it — on a slow link it connects and its
+   * peer-join backfill delivers the whole store — and the retry then builds the database, and
+   * runs the first-sync probe, while that peer is still connected.
    */
-  private deferUnreachableJoin(instance: StrandInstance, error: unknown): void {
+  private deferUnreachableJoin(instance: StrandInstance): void {
     const strandId = instance.strandId;
-    instance.status = 'syncing';
-    log('Strand %s: no seed peer has answered yet, so this joiner cannot build its database (%s); ' +
-      'retrying in %dms', strandId, error instanceof Error ? error.message : String(error), UNREACHABLE_JOIN_RETRY_MS);
     const timer = setTimeout(() => {
       this.unreachableJoinRetries.delete(strandId);
       void this.retryUnreachableJoin(instance);
@@ -1086,21 +1142,47 @@ export class StrandInstanceManager {
     this.unreachableJoinRetries.set(strandId, timer);
   }
 
-  /** One retry scheduled by {@link deferUnreachableJoin}, unless the strand was stopped or rebuilt since. */
+  /**
+   * One retry scheduled by {@link deferUnreachableJoin}: the database phase again, on the
+   * runtime still attached. Skipped when the strand was stopped or released since — a quiesce
+   * releases it and the resume after rebuilds the whole runtime — or already has a database.
+   * A failure other than an unanswered seed releases the runtime and marks the strand
+   * `'error'`, as a failed resume does.
+   */
   private async retryUnreachableJoin(instance: StrandInstance): Promise<void> {
     const strandId = instance.strandId;
     const config = this.launchConfigs.get(strandId);
-    if (this.stopping || this.instances.get(strandId) !== instance || !config
-      || instance.libp2pNode || this.runtimeBuilds.has(strandId) || this.transitions.has(strandId)) {
+    // Every strand node is built by `buildStrandRuntime`, as a node with its coordinated repo.
+    const node = instance.libp2pNode as Libp2pNodeWithRepo | undefined;
+    if (!config || !node || !this.isCurrentRuntime(instance, node) || instance.database
+      || this.firstSyncGates.has(strandId) || this.isQuiescing(strandId)) {
       return;
     }
+    let build: StrandDatabaseBuild;
     try {
-      await this.trackRuntimeBuild(strandId, this.buildStrandRuntime(instance, config));
+      // Tracked like any runtime build, so a wake, a quiesce or an sApp attach waits for it
+      // rather than acting on a database that is still initializing.
+      build = await this.trackRuntimeBuild(strandId, this.buildStrandDatabase(instance, config, node));
     } catch (error) {
+      if (!this.isCurrentRuntime(instance, node)) {
+        return;
+      }
+      await this.releaseRuntime(instance).catch((cleanupErr) => {
+        log('Strand %s: releasing the runtime after a failed database retry also failed: %o', strandId, cleanupErr);
+      });
       instance.status = 'error';
       instance.error = error instanceof Error ? error.message : String(error);
-      log('Strand %s: rebuilding a joiner that was waiting for a seed peer failed: %s', strandId, instance.error);
+      log('Strand %s: building the database of a joiner that was waiting for a seed peer failed: %s', strandId, instance.error);
+      return;
     }
+    if (build === 'awaiting-seed' && this.isCurrentRuntime(instance, node) && !this.isQuiescing(strandId)) {
+      this.deferUnreachableJoin(instance);
+    }
+  }
+
+  /** Whether `instance` is still tracked, with `node` still its runtime's libp2p node. */
+  private isCurrentRuntime(instance: StrandInstance, node: Libp2p): boolean {
+    return !this.stopping && this.instances.get(instance.strandId) === instance && instance.libp2pNode === node;
   }
 
   /**
@@ -1590,8 +1672,9 @@ export class StrandInstanceManager {
    * schema signature is checked before anything changes; the retained launch config takes
    * the sApp, so every later rebuild applies it through `composeStrand`; the live database —
    * published, or still held by the first-sync gate — gets the schema; and only then does
-   * the instance record `sAppInfo` and the sApp's latency hint. A quiesced instance gets the
-   * config alone, and its next resume applies the schema.
+   * the instance record `sAppInfo` and the sApp's latency hint. An instance with no live
+   * database gets the config alone: a quiesced one applies the schema at its next resume, a
+   * launch waiting for a seed peer at its next database retry.
    *
    * @returns `'already-attached'` when the instance already runs an sApp — a DIFFERENT one
    *   is logged and left as it is, as a second claim of a claimed strand always has been —
@@ -1633,7 +1716,7 @@ export class StrandInstanceManager {
     if (database) {
       await database.attachAppSchema(sAppConfig);
     } else {
-      log('attachSApp: strand %s is quiesced — its next resume applies the sApp schema', strandId);
+      log('attachSApp: strand %s has no live database — its next build applies the sApp schema', strandId);
     }
     instance.sAppInfo = sAppInfo;
     if (sAppConfig.latencyHint) {
@@ -1649,14 +1732,13 @@ export class StrandInstanceManager {
   /**
    * Whether `strandId` is launched but still waiting for its first sync — a joiner whose
    * runtime is up while its database is withheld (status `'syncing'`, or `'idle'` after
-   * the hibernation manager's idle timer fired on it), or one waiting to rebuild because no
-   * seed peer had answered ({@link deferUnreachableJoin}). `false` for a writable, quiesced,
-   * or untracked strand. The predicate {@link whenWritable}'s callers gate on.
+   * the hibernation manager's idle timer fired on it), including one whose database build
+   * waits for a seed peer to answer ({@link deferUnreachableJoin}). `false` for a writable,
+   * quiesced, or untracked strand. The predicate {@link whenWritable}'s callers gate on.
    */
   isAwaitingFirstSync(strandId: string): boolean {
     const instance = this.instances.get(strandId);
-    return instance !== undefined
-      && (isAwaitingFirstSync(instance) || this.unreachableJoinRetries.has(strandId));
+    return instance !== undefined && isAwaitingFirstSync(instance);
   }
 
   /**
@@ -1819,8 +1901,9 @@ export class StrandInstanceManager {
     const database = instance.database ?? gate?.database;
     if (!database) {
       throw new Error(
-        `Cannot run the founder bootstrap for strand ${strandId}: it is quiesced, so there ` +
-        'is no live database to write to — resume it first.'
+        `Cannot run the founder bootstrap for strand ${strandId}: it has no live database to ` +
+        'write to — it is quiesced (resume it first), or its database build is waiting for a ' +
+        'seed peer to answer.'
       );
     }
     // Forward the RETAINED config's party key: a foundExistingStrand that flipped a

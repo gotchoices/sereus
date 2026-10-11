@@ -38,12 +38,15 @@
  * stopped, they never do. It logs how long each step took and every node's peer id, so a run's
  * `DEBUG=optimystic:db-p2p:*` log can be read against them.
  *
- * Why the joiner had no strand peer (`fix/joiner-write-made-alone-lost-when-it-stops`): its first
- * strand runtime DID connect to the founder's strand node, and the founder's peer-join backfill
- * delivered every block, but that runtime's schema read had already timed out on the slow link.
- * The launch was deferred as "no seed peer has answered", its runtime torn down (closing the one
- * connection) and rebuilt 5 s later over a store that now held everything, so the rebuilt runtime
- * passed the first-sync gate with only the relay connected.
+ * Why the joiner has no strand peer in the third arm: its strand node connects to the founder's
+ * through the relay and the founder's peer-join backfill delivers every block, but about 2 s later
+ * the relay's libp2p connection monitor aborts its connections to both strand nodes on a late ping,
+ * cutting the circuit and failing the joiner's in-flight schema read (`cohort-unreachable`). This
+ * harness relay runs libp2p's stock monitor, not the ops relay's 30 s ping deadline
+ * (`backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`). The launch keeps
+ * its runtime and retries the database build 5 s later (`strand-deferred-join-keeps-its-runtime`);
+ * that build succeeds from the delivered blocks, but nothing redials the founder in between, so the
+ * joiner is writable with only the relay connected.
  *
  * The fourth arm is the restart the phones also tried: the third arm's solo commit, then the
  * joiner stops, is rebuilt over the storage it kept (raw stores, saved strand network state,

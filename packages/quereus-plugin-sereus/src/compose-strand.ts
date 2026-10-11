@@ -18,7 +18,26 @@ const timing = debug('sereus:plugin:strand:timing');
  */
 interface CollectionFactory {
 	registerLibp2pNode(networkName: string, node: Libp2p, coordinatedRepo: IRepo): void;
+	/** Releases the read caches and network watches; leaves every registered node running. */
+	dispose(): Promise<void>;
+	/** {@link dispose}, after stopping every registered node. */
 	shutdown(): Promise<void>;
+}
+
+/**
+ * Release a composition's collection factory. A node the composition created is stopped
+ * with it; an injected node is left running, because it belongs to the caller — cadre-core
+ * keeps a strand's node up across a failed database build and retries the build on it.
+ */
+async function releaseCollectionFactory(collectionFactory: CollectionFactory, createdNode: Libp2p | null): Promise<void> {
+	if (!createdNode) {
+		await collectionFactory.dispose();
+		return;
+	}
+	await collectionFactory.shutdown();
+	// Stopped again for a node created but not yet registered (a missing `coordinatedRepo`);
+	// a second stop of a registered one is a no-op.
+	await createdNode.stop();
 }
 
 /**
@@ -317,7 +336,7 @@ export async function composeStrand(
 		// where strand-level declarative DDL is applied. Keep new schema wiring
 		// here so it stays a one-location edit across Node, browser, and cadre-core.
 		//
-		// NOTE: neither apply is retried — a failure tears the strand down and throws,
+		// NOTE: neither apply is retried here — a failure releases this composition and throws,
 		// and a later connect builds a fresh `Database` and re-hydrates from storage. A
 		// failed apply is normally taken back whole (Quereus unwinds its migration steps
 		// and verifies the catalog against a pre-apply fingerprint), so the next connect
@@ -334,22 +353,13 @@ export async function composeStrand(
 		}
 	} catch (err) {
 		// Clean up resources if setup fails after partial initialization.
-		await collectionFactory.shutdown();
-		if (createdNode) {
-			await createdNode.stop();
-		}
+		await releaseCollectionFactory(collectionFactory, createdNode);
 		await releaseStorageCache();
 		throw err;
 	}
 
-	// 8. Return result with hydrate counts + shutdown handler. `shutdown` tears
-	// down the collection factory, and `collectionFactory.shutdown()` stops EVERY
-	// node registered with it — including an injected one (registered via
-	// `registerLibp2pNode`). So an injected node IS stopped on `shutdown`; the
-	// `createdNode` guard below only avoids a redundant second `stop()` on a node
-	// we created ourselves, it is not what spares an injected node. A caller that
-	// needs an injected node to outlive `shutdown` must re-create it (cadre-core's
-	// `StrandInstanceManager` instead re-stops it, which is idempotent).
+	// 8. Return result with hydrate counts + shutdown handler. `shutdown` releases the
+	// collection factory and stops the node only if this composition created it.
 	return {
 		vtables: [],
 		functions: [],
@@ -358,10 +368,7 @@ export async function composeStrand(
 		transactor: resolvedTransactor,
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
-			await collectionFactory.shutdown();
-			if (createdNode) {
-				await createdNode.stop();
-			}
+			await releaseCollectionFactory(collectionFactory, createdNode);
 			await releaseStorageCache();
 			log('Strand connection %s shut down', strandId);
 		},

@@ -401,9 +401,9 @@ describe('Chat participants on a closed cross-party strand', () => {
 			expect(instance).toBeDefined();
 			expect(instance!.status).toBe('syncing');
 			expect(instance!.database).toBeUndefined();
-			// No `libp2pNode` assertion: with no seed peer answering, the joiner cannot build even
-			// its schema catalog, so its runtime is torn down and rebuilt on a timer
-			// (`StrandInstanceManager.deferUnreachableJoin`) and a node exists only mid-rebuild.
+			// With no seed peer answering, the joiner cannot build even its schema catalog; its
+			// runtime stays up and only the database build is retried on a timer
+			// (`StrandInstanceManager.deferUnreachableJoin`).
 			// The retry contract: the same call rejects the same way while the host is gone,
 			// without tearing anything down (an app can keep calling until a member appears).
 			await expect(launchOnJoiner(side, joined)).rejects.toThrow(StrandAwaitingFirstSyncError);
