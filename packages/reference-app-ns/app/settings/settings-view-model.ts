@@ -131,7 +131,7 @@ export class SettingsViewModel extends Observable {
 		return this._seedInput.trim().length > 0;
 	}
 
-	/** `isEnabled` for the Join cadre button — mirrors RN's `disabled={!cadreInvitationInput.trim()}`. */
+	/** `isEnabled` for the Join cadre button — mirrors RN's `disabled={!invitationText.trim()}`. */
 	get canJoinCadre(): boolean {
 		return this._cadreInvitationInput.trim().length > 0;
 	}

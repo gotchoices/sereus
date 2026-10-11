@@ -99,7 +99,7 @@ Whoever adds NS secure storage should move both together.
 **Redeeming a cadre invitation is this app's only writer of the anchor.**
 Settings' Join a Cadre section takes a pasted invitation (`input-cadre-invitation`,
 `btn-join-cadre`) and hands it to `CadreNode.redeemCadreInvitation`
-(`CadreViewModel.joinCadre`, mirroring reference-app-rn), which pins the bundle's
+(`CadreViewModel.joinCadre`), which pins the bundle's
 owner keys before dialing the members it names. The pin persists and sticks even
 if the redemption then fails, so a retry or a later seed from the same owner is
 anchored. The Seed Bootstrap field (`input-seed`) is accepted only when the seed's

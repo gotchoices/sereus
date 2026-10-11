@@ -440,7 +440,8 @@ packages/reference-app-rn/
     noise-crypto-config.ts    # Default Noise crypto mode: EXPO_PUBLIC_NOISE_CRYPTO, else symmetric
     cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
-    use-cadre.ts              # React hook: cadre lifecycle, joining an existing cadre and what follows, seed application
+    use-cadre.ts              # React hook: cadre lifecycle, seed application, strands, invitations
+    use-join-flow.ts          # Its part behind Join my existing cadre: the join, moving chats, removing the old cadre
     join-flow.ts              # The steps after Join (joining, moving chats, removing the old cadre) and their words
     join-failure.ts           # Plain words for each way a join can fail before admission (NS carries a copy)
     settings-controls.tsx     # Section, button, input and styles shared by Settings and its sections
@@ -822,7 +823,7 @@ Neither side has had a device run yet; ticket `reference-app-rn-first-launch-ask
 
 **Open invitation.** An invitation from the other app's **Copy invitation** goes into the same field: both are `sereus-invite:1.` text.
 
-**The steps.** From Join on, one line and its buttons replace the inputs. `use-cadre.ts` holds the flow, so it survives a tab switch; the words are `join-flow.ts`'s.
+**The steps.** From Join on, one line and its buttons replace the inputs. The app-wide hook holds the flow (`use-join-flow.ts`, part of `use-cadre.ts`), so it survives a tab switch; the words are `join-flow.ts`'s.
 
 | Step | Line | Buttons |
 | --- | --- | --- |

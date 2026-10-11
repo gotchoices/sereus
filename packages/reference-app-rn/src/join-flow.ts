@@ -1,8 +1,8 @@
 /**
  * join-flow.ts — the steps "Join my existing cadre" shows once Join is tapped, and the plain
  * words for each (docs/reference-app-rn.md → "Joining an existing cadre"). No React: the hook
- * (`use-cadre.ts`) holds the flow, so it survives a tab switch, and `join-cadre-section.tsx`
- * renders it.
+ * (`use-join-flow.ts`, part of `use-cadre.ts`) holds the flow, so it survives a tab switch,
+ * and `join-cadre-section.tsx` renders it.
  */
 
 import type { PhoneJoinProgress } from '@serfab/cadre-rn/phone-node';

@@ -52,7 +52,7 @@ import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE
 import { resolveRelayAddrs } from './relay-config';
 
 export type { JoinCadreResult, PhoneJoinProgress, PhoneNodeOptions, StrandMoveOutcome } from '@serfab/cadre-rn/phone-node';
-// The errors `use-cadre.ts` tells apart after a join, re-exported so the hook reaches the kit only
+// The errors `use-join-flow.ts` tells apart after a join, re-exported so the hook reaches the kit only
 // through this module, which its tests mock.
 export { FormerPartyNotEmptyError, StrandMovePendingError } from '@serfab/cadre-rn/phone-node';
 export { StrandMoveNotOwnerError } from '@serfab/cadre-core';
