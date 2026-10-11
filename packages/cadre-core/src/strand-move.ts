@@ -143,8 +143,9 @@ async function exportStrands(node: CadreNode, database: ControlDatabase): Promis
 	for (const row of await database.queryStrands()) {
 		entries.set(row.Id, await exportStrand(node, database, 'own', row));
 	}
-	// Publication needs a control connection, which a one-node party never holds, so its joins
-	// are usually machine-local records and its `JoinedStrand` table empty. Both are read.
+	// Publication needs a control connection, so a one-node party's joins are machine-local
+	// records until it holds one (a relay's or a foreign party's node counts) and `JoinedStrand`
+	// rows after. Both are read.
 	const unpublished = (await node.listUnpublishedJoinedStrands()).map(joinedStrandRow);
 	for (const row of [...await database.queryJoinedStrands(), ...unpublished]) {
 		if (!entries.has(row.Id)) {

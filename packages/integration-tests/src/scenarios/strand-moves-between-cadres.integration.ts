@@ -75,7 +75,8 @@ const STRAND_WATCH_MS = 1_000;
 /**
  * Longer than the test. Any control connection counts as connected, N holds one to P's node
  * after the formations, and a connected owner pass would publish T's join into B's own
- * `JoinedStrand` table. Parked, the join stays machine-local, the shape of a one-node party.
+ * `JoinedStrand` table. Parked, the join stays machine-local, the shape of a one-node party that
+ * has not yet held a control connection; the published shape goes through the same export loop.
  *
  * NOTE: a `self:peer:update` on N's control node (an address change) also starts a pass; none
  * occurs on loopback after start. If step 1 fails on "B never publishes T", look there.
@@ -222,7 +223,7 @@ async function pJoinsClosedStrand(P: CadreNode, invited: InvitedStrand, sApp: SA
 	return { db, memberKey };
 }
 
-/** N redeems T's invitation and runs T: a join recorded on N alone, which its one-node party never publishes. */
+/** N redeems T's invitation and runs T: a join recorded on N alone, which N's parked reconcile pass never publishes. */
 async function nJoinsOpenStrand(N: CadreNode, invited: InvitedStrand, sApp: SAppConfig): Promise<Database> {
 	const T = invited.strandId;
 	const formed = await N.formStrand(N.decodeInvitation(invited.envelope), { partyId: N.partyId, purpose: 'strand T' });

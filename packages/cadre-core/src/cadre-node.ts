@@ -1779,9 +1779,9 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * The strands this machine joined from another party and has not published party-wide
-   * (see {@link CadreNodeConfig.joinedStrands}). A party that never holds a control
-   * connection never publishes, so for a one-node party this is where its joins live;
-   * `exportStrandBundle` reads it beside the `JoinedStrand` table.
+   * (see {@link CadreNodeConfig.joinedStrands}). Publication needs a control connection,
+   * so a one-node party's joins live here until it holds one; `exportStrandBundle` reads
+   * it beside the `JoinedStrand` table.
    *
    * @throws when the node is not started.
    */

@@ -319,8 +319,9 @@ export class JoinedStrandSession {
 
 	/**
 	 * This machine's unpublished joins, straight from the store (never the last-good list a
-	 * failed read stands in with). What a strand move exports: a party that never holds a
-	 * control connection never publishes, so its joins live only here.
+	 * failed read stands in with). What a strand move exports beside the `JoinedStrand`
+	 * table: a machine publishes only while it holds a control connection, so until then its
+	 * joins live only here.
 	 */
 	unpublishedRecords(): Promise<JoinedStrandRecord[]> {
 		return this.store.list();
