@@ -51,6 +51,7 @@ export const ENV_MAPPINGS = {
   // JSON value rather than as many dotted leaves.
   CADRE_PUSH: { path: 'push', kind: 'json' },
   CADRE_NODE_STATE_DIR: { path: 'nodeState.dir', kind: 'string' },
+  CADRE_CLAIM_SECRET_FILE: { path: 'claim.secretFile', kind: 'string' },
 } as const satisfies Record<string, EnvMapping>;
 
 /**

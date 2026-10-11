@@ -164,11 +164,14 @@ export async function resolveConfig(
 
   // Everything not resolved into something else is carried over as-is, so a key added to
   // `CliConfig` reaches the node without being listed here.
-  const { identity: _identity, nodeState: _nodeState, strandFilter, ...nodeFacing } = config;
+  // `claim` is stripped like `identity`: `CadreNodeConfig.claim` is the node's claim policy, which
+  // `cadre start` builds from the secret, not this file reference.
+  const { identity: _identity, nodeState: _nodeState, strandFilter, claim, ...nodeFacing } = config;
   return {
     ...nodeFacing,
     privateKey,
     nodeStateDir,
     strandFilter: parseStrandFilter(strandFilter),
+    ...(claim?.secretFile ? { claimSecretFile: path.resolve(claim.secretFile) } : {}),
   };
 }

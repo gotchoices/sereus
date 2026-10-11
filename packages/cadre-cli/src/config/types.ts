@@ -156,6 +156,16 @@ export interface CliConfig {
    * `PushCredentials`.
    */
   push?: PushCredentials;
+
+  /**
+   * Waiting to be claimed, with the secret kept in a file rather than the environment — what
+   * `cadre init` writes. `CADRE_CLAIM_SECRET` is the environment form; a start that sets both is
+   * refused. Read by `cadre start` and `cadre code`; never passed to the node as written.
+   */
+  claim?: {
+    /** File holding the base64url claim secret (32 random bytes). Relative paths resolve against the working directory, as `identity.keyFile` does. */
+    secretFile?: string;
+  };
 }
 
 /**
@@ -182,7 +192,7 @@ export type CliConfigFile = DeepPartial<CliConfig>;
  * `hibernation`, `push`, ...) are {@link CliConfig}'s own; only the three keys that resolve
  * into something else are replaced.
  */
-export interface ResolvedConfig extends Omit<CliConfig, 'identity' | 'nodeState' | 'strandFilter'> {
+export interface ResolvedConfig extends Omit<CliConfig, 'identity' | 'nodeState' | 'strandFilter' | 'claim'> {
   privateKey?: PrivateKey;
   /**
    * Directory for this node's durable node-local stores (the bootstrap-peer
@@ -193,4 +203,6 @@ export interface ResolvedConfig extends Omit<CliConfig, 'identity' | 'nodeState'
    */
   nodeStateDir: string;
   strandFilter: StrandFilter;
+  /** `claim.secretFile`, resolved to an absolute path. Kept apart from the node-facing keys: `CadreNodeConfig.claim` means something else. */
+  claimSecretFile?: string;
 }

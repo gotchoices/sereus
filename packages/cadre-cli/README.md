@@ -4,16 +4,20 @@ CLI wrapper for Sereus cadre nodes - start, monitor, and manage cadre node insta
 
 ## Quick Start
 
+An always-on node for the cadre on your phone, claimed by scanning a code:
+
 ```bash
-# Install
-npm install -g @serfab/cadre-cli
-
-# Create identity
-cadre enroll create --output . --name my-node
-
-# Start (after configuring cadre.yaml)
-cadre start -c cadre.yaml
+mkdir my-node && cd my-node
+npm init -y && npm install @serfab/cadre-cli
+npx cadre init --public my-node.example.com    # identity, claim secret, cadre.yaml; --public is where phones reach it from outside
+npx cadre start                                 # or: npm start (init adds the script); waits to be claimed
+npx cadre code --qr                             # in another terminal: the code to scan with the Sereus app on your phone
 ```
+
+`init` listens on TCP 4001 and WebSocket 4002 (`--port`, `--ws-port`); phones dial the WebSocket port, so that is
+the one to open and forward through a router. After the claim, `cadre start` serves the phone's cadre on every
+later start. See [Waiting to be claimed](#waiting-to-be-claimed) and [The node code](#the-node-code). To configure a
+node by hand instead, start from [example.cadre.yaml](./example.cadre.yaml).
 
 ## Installation
 
@@ -189,11 +193,24 @@ cadre start -c cadre.yaml --identity-file node.key
 
 While it waits, the node accepts a stranger's connection, because the claim seed has to ride one, and nothing else on it: control-database streams and relay reservations are refused until the claim. The secret is one-time: the first owner whose proof verifies becomes the node's owner, any other claimant is refused as `already-claimed`, and the same owner claiming again is accepted. Each proof is bound to this node's peer ID, so the node must keep its identity file for the secret to stay usable, and a proof made for one node claims no other.
 
-The claim names the cadre. A node waiting to be claimed cannot know which party it will serve, so its config's `controlNetwork.partyId` is a placeholder — use `unclaimed` — and the party comes from the claim seed. The node records the claim as `claim.json` in the node-state directory (`nodeState.dir`): the party, the owner key and the time, never the secret. It writes the record before it anchors the owner, and once the claim seed is acknowledged it restarts in-process into the claimed party (the log says `• Restarting into party <id>`, then `✓ Restarted into party <id> as a node claimed by owner <key>`): the same identity and listen addresses, the health, metrics and admin servers kept, and the owner, whose device retained the node's addresses when it claimed, reconnects. A restart that fails exits the process non-zero for the supervisor to respawn it. Every later `cadre start` reads the record first: it serves the record's party, anchors the record's owner, ignores the config's placeholder party (and prints `• Claimed by owner <key> into party <id>` saying so), and refuses the same options the secret does. A `claim.json` that is present but unreadable or malformed refuses the start, because a node that came up unclaimed would be claimable by anyone holding the secret while its owner's cadre had lost it. The secret may stay set after the claim: a claimed node ignores it (`• Already claimed; CADRE_CLAIM_SECRET is ignored`) and, with it set, answers a rival claimant `already-claimed` rather than as an untrusted seed. The files the placeholder party created while the node waited (`trusted-owners.unclaimed.json` and the like) are left in place and never opened again.
+The claim names the cadre. A node waiting to be claimed cannot know which party it will serve, so its config's `controlNetwork.partyId` is a placeholder — use `unclaimed` — and the party comes from the claim seed. The node records the claim as `claim.json` in the node-state directory (`nodeState.dir`): the party, the owner key and the time, never the secret. It writes the record before it anchors the owner, and once the claim seed is acknowledged it restarts in-process into the claimed party (the log says `• Restarting into party <id>`, then `✓ Restarted into party <id> as a node claimed by owner <key>`): the same identity and listen addresses, the health, metrics and admin servers kept, and the owner, whose device retained the node's addresses when it claimed, reconnects. A restart that fails exits the process non-zero for the supervisor to respawn it. Every later `cadre start` reads the record first: it serves the record's party, anchors the record's owner, ignores the config's placeholder party (and prints `• Claimed by owner <key> into party <id>` saying so), and refuses the same options the secret does. A `claim.json` that is present but unreadable or malformed refuses the start, because a node that came up unclaimed would be claimable by anyone holding the secret while its owner's cadre had lost it. The secret may stay set after the claim: a claimed node ignores it (`• Already claimed; <source> is ignored`) and, with it set, answers a rival claimant `already-claimed` rather than as an untrusted seed. The files the placeholder party created while the node waited (`trusted-owners.unclaimed.json` and the like) are left in place and never opened again.
 
 `/status` reports `node.claim` as `claimed` as soon as a claim is on record (read at start, or written in this process — before the claimant is acknowledged, and kept across the restart, so a poller never sees it flip back), `awaiting` with a secret and no record, and `none` without a secret. When claimed, `node.claimedBy` is the record's owner key, and `node.partyId` names the party the running node serves — the claimed one once the restart completes. cadre-host's join flow reads both.
 
-`CADRE_CLAIM_SECRET`, and a claim on record, cannot be combined with `--owner`, `--seed`, `--invitation` (or `CADRE_INVITATION`), `--pin-owner-key` or `CADRE_OWNER_KEYS`: each is another way to choose the node's owner, and `cadre start` refuses the combination, naming every conflicting option. The secret is read from the environment only, because a flag value shows in the process list, and it is never printed or logged.
+A claim secret, and a claim on record, cannot be combined with `--owner`, `--seed`, `--invitation` (or `CADRE_INVITATION`), `--pin-owner-key` or `CADRE_OWNER_KEYS`: each is another way to choose the node's owner, and `cadre start` refuses the combination, naming every conflicting option. The secret comes from `CADRE_CLAIM_SECRET` or from a file the config names, `claim.secretFile` (what `cadre init` writes; `CADRE_CLAIM_SECRET_FILE` sets it from the environment), never from a flag, because a flag value shows in the process list. Setting both is refused. A secret file must hold the secret and nothing else; `cadre start` and `cadre code` warn when other accounts can read it. The secret is never printed or logged.
+
+### The node code
+
+`cadre code` asks the running node (its health `/status`, `--health-port` or `CADRE_HEALTH_PORT`) for its peer ID and addresses, reads the claim secret from `claim.secretFile` or `CADRE_CLAIM_SECRET`, and prints the code the owner's phone scans: `sereus-join:1.<base64url>`, cadre-core's `encodeNodeClaimPayload`, the same code cadre-host shows. It refuses a node that is not `awaiting` a claim.
+
+The code carries the node's non-loopback addresses a phone can dial, DNS names first (the public names in `network.appendAnnounceAddrs`, which work away from home), then the LAN ones. A phone has no TCP transport, so TCP addresses are left out unless `--all`; a shorter code is also a smaller QR code.
+
+- `--qr` also draws it as a QR code in the terminal.
+- `--png <file>` / `--svg <file>` write it as an image (mode 600, since it carries the secret), on any platform.
+- `--open` opens that image in the desktop's viewer (macOS, Windows, Linux with `DISPLAY` or `WAYLAND_DISPLAY`), writing a temporary PNG when neither image option is given; without a display it says so.
+- `--link <url>` prints `<url>#sereus-join:1.…` and encodes that in the QR code instead. The code rides in the fragment, which browsers never send to a server. Which URL opens which app is the app's to define (a Universal Link or App Link for its domain).
+
+Only the code goes to stdout, so `cadre code > code.txt` captures exactly it. Whoever uses the code first owns the node: show it only to the phone that should claim it.
 
 ### Strands
 
@@ -285,6 +302,7 @@ says so rather than starting without it.
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation (`true`/`false`/`1`/`0`) |
 | `CADRE_LATENCY_HINT` | `hibernation.defaultLatencyHint` | Default latency hint: `realtime`, `interactive`, `background` or `archive` |
 | `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher polling interval in milliseconds |
+| `CADRE_CLAIM_SECRET_FILE` | `claim.secretFile` | File holding the claim secret, the file form of `CADRE_CLAIM_SECRET` ([Waiting to be claimed](#waiting-to-be-claimed)); `cadre init` writes it. Setting both is refused |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets, the claim record `claim.json`). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
 | `CADRE_HEALTH_PORT` | _(env only)_ | Health server port for `cadre start`, and the port `cadre status` queries; the env value wins over `--health-port` |
 | `CADRE_METRICS_PORT` | _(env only)_ | Metrics server port for `cadre start`; the env value wins over `--metrics-port` |

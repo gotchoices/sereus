@@ -49,6 +49,14 @@ strandFilter: all
 # nodeState:
 #   dir: /var/lib/cadre
 
+# Wait to be claimed by the owner's phone (optional): a file holding a one-time
+# claim secret (base64url of 32 random bytes, mode 600). Set controlNetwork.partyId
+# to the placeholder "unclaimed"; the claim names the party. 'cadre init' writes
+# this block; 'cadre code' prints the code the phone scans. See the README's
+# "Waiting to be claimed".
+# claim:
+#   secretFile: /var/lib/cadre/claim.secret
+
 # Storage configuration (for storage profile)
 storage:
   type: file
