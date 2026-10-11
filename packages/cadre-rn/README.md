@@ -194,7 +194,8 @@ An Expo app lists the kit under `plugins` in its `app.json`:
 
 At prebuild the plugin sets `android:usesCleartextTraffic="true"` on the `<application>` element of `android/app/src/main/AndroidManifest.xml`. Android release builds refuse plain `ws://` connections without it, so the app can dial no `/ws` address; React Native's template opts debug builds in, which hides the problem until the first release build. Dialing without TLS is safe because Noise encrypts and authenticates every libp2p connection against the peer id in the address; the reference app's [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#release-builds-cleartext-websocket) has the reasoning.
 
-- **It overrides `false`.** The plugin sets `true` even where the app's manifest or another plugin (such as `expo-build-properties`' `android.usesCleartextTraffic`) set `false`. When two plugins set the attribute, the one listed **first** in `plugins` wins, because Expo runs manifest changes in reverse order of the list.
+- **It overrides `false` in the manifest.** The plugin sets `true` even where the app's own manifest says `false`.
+- **Against another plugin, the one listed first wins.** When another plugin also sets the attribute (such as `expo-build-properties`' `android.usesCleartextTraffic`), the one listed **first** in `plugins` wins, because Expo runs manifest changes in reverse order of the list.
 - **A network security config takes precedence.** Android follows an `android:networkSecurityConfig` file over the manifest flag, so an app whose file forbids cleartext must permit it there. The plugin does not edit that file.
 - **iOS is unchanged.** Whether App Transport Security blocks React Native's WebSocket has not been checked; the docs section linked above says what would settle it.
 
