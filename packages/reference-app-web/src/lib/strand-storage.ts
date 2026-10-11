@@ -161,6 +161,10 @@ function deleteDatabase(key: string): Promise<void> {
 			blockedDeletes.delete(key);
 			reject(request.error ?? new Error(`Deleting IndexedDB database ${DB_PREFIX + key} failed`));
 		};
+		// NOTE: read as another tab holding the database open. The spec also fires `blocked` for this
+		// page's own connection while it closes with a transaction still running, which
+		// `stopCadre` awaiting `node.stop()` should rule out; if the card ever says to close other
+		// tabs with none open, wait briefly for `success` here before giving up.
 		request.onblocked = () => {
 			blockedDeletes.add(key);
 			reject(new StoreDeleteBlockedError(key));

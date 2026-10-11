@@ -242,11 +242,6 @@ export function getPartyStart(): PartyStart | null {
 	return partyStart;
 }
 
-/** The strand move records, over the node-local database; null while no node runs. */
-export function getMoveRecords(): StrandMoveRecords | null {
-	return moveRecords;
-}
-
 /**
  * The old cadre's removal a marker names that the running node's start tried to finish and could
  * not (`web-dissolve.ts` → `finishRemovalAtStart`); null when there was none. The next start retries.
@@ -574,12 +569,14 @@ async function finishBegunRemoval(handle: OptimysticWebDBHandle, starting: Party
 	return start;
 }
 
-function requireStart(): PartyStart {
+/** {@link getPartyStart}, throwing while no node runs. */
+export function requireStart(): PartyStart {
 	if (!partyStart) throw new Error('CadreNode not started');
 	return partyStart;
 }
 
-function requireMoveRecords(): StrandMoveRecords {
+/** The strand move records, over the node-local database; throws while no node runs. */
+export function requireMoveRecords(): StrandMoveRecords {
 	if (!moveRecords) throw new Error('CadreNode not started');
 	return moveRecords;
 }

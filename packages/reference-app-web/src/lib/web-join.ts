@@ -31,17 +31,17 @@ import type { OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
 import {
 	bringUp,
 	getCadreNode,
-	getMoveRecords,
 	getNodeLocalDbHandle,
-	getPartyStart,
 	ownerKeyWired,
 	readPartyAlone,
+	requireMoveRecords,
+	requireStart,
 	startCadre,
 	stopCadre,
 	wireJoinedOwnerKey,
 } from './cadre-web.js';
 import { openStores, NODE_LOCAL_STORE_KEY } from './strand-storage.js';
-import { joinedStart, writePartyStart, type PartyStart } from './party-start.js';
+import { joinedStart, writePartyStart } from './party-start.js';
 import {
 	adoptMovesInto,
 	deferredOutcome,
@@ -165,6 +165,11 @@ export async function switchToParty(
 	options.signal?.throwIfAborted();
 	const leaving = requireStart();
 	// The party this tab founded, carried through any later join.
+	// NOTE: leaving a joined party while the move from `formerPartyId` into it is still pending
+	// (the key never wired as an owner there) leaves that record naming the party left, as in the
+	// phone kit; the card then offers *Retry moving*, which adopts only into the running party, and
+	// the old cadre is never removed. If that is ever hit, retarget the record to the invitation's
+	// party here, and in the kit.
 	const formerPartyId = leaving.origin === 'founded' ? leaving.partyId : leaving.formerPartyId;
 	await stopCadre();
 	const cadre = await bringUp(joinedStart(invitation.partyId, formerPartyId));
@@ -336,18 +341,6 @@ function requireNode(): CadreNode {
 	const cadre = getCadreNode();
 	if (!cadre) throw new Error('CadreNode not started');
 	return cadre;
-}
-
-function requireStart(): PartyStart {
-	const start = getPartyStart();
-	if (!start) throw new Error('CadreNode not started');
-	return start;
-}
-
-function requireMoveRecords(): StrandMoveRecords {
-	const records = getMoveRecords();
-	if (!records) throw new Error('CadreNode not started');
-	return records;
 }
 
 function requireNodeLocalHandle(): OptimysticWebDBHandle {
