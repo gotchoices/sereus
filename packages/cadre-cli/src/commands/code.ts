@@ -182,7 +182,9 @@ async function writeImages(text: string, options: CodeOptions): Promise<void> {
   }
   let file = written[0];
   if (!file) {
-    file = path.join(os.tmpdir(), `cadre-node-code-${process.pid}.png`);
+    // A fresh private directory (mode 700), not a predictable name in the shared temp dir: the
+    // image carries the claim secret, and a pre-planted file or symlink there could capture it.
+    file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cadre-node-code-')), 'node-code.png');
     await writeQrImage(file, 'png', text);
     console.error(`QR code written to ${file} (delete it once the node is claimed)`);
   }

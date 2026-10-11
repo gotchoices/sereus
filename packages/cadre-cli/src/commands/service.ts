@@ -64,7 +64,8 @@ function systemdQuote(word: string): string {
 
 function renderLaunchd(spec: ServiceSpec, argv: string[]): string {
   const xml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const log = (stream: string) => xml(path.join(spec.workdir, `${spec.name}.${stream}.log`));
+  // launchd is macOS-only: POSIX joins, whatever platform renders the plist.
+  const log = (stream: string) => xml(path.posix.join(spec.workdir, `${spec.name}.${stream}.log`));
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
