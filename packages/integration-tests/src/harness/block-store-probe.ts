@@ -53,6 +53,8 @@ export class BlockStoreProbeError extends Error {
  * One capture belongs to ONE node. Two nodes sharing a capture would share their stores
  * and any replication assertion between them would pass for the worst possible reason —
  * see {@link RawStorageCapture.forStrand}, which refuses that shape when it can see it.
+ * One node may serve several parties in turn (an app's node switching cadres), so a
+ * capture can hold several control stores beside one store per strand id.
  */
 export interface RawStorageCapture {
 	/** Pass as `storage.provider` in a `CadreNodeConfig`. */
@@ -63,6 +65,8 @@ export interface RawStorageCapture {
 	 * The control database's store. Throws if the node never asked for one, rather than
 	 * minting an empty store the way `provider(...)` would — an empty store passes every
 	 * coverage assertion vacuously, which is the failure this module exists to prevent.
+	 * Throws too when the node served more than one party, rather than picking one of
+	 * their stores.
 	 */
 	control(): IRawStorage;
 	/** Every scope the provider has been asked for so far (the control key plus strand ids). */
@@ -93,30 +97,23 @@ export function captureRawStorage(factory: () => IRawStorage = () => new MemoryR
 		return created;
 	};
 
-	/**
-	 * The store minted under a control scope key, or null before the node asked for one.
-	 *
-	 * NOTE: returns the FIRST control-scoped store, which is unambiguous only because one
-	 * capture belongs to one node and one node serves one party (see the interface doc
-	 * above). If a scenario ever drives two party ids through a single capture, this would
-	 * silently answer for whichever started first — make it refuse a second control scope
-	 * then, rather than picking.
-	 */
-	const controlOrNull = (): IRawStorage | null => {
-		for (const [scope, store] of stores) {
-			if (isControlStorageScope(scope)) return store;
-		}
-		return null;
-	};
+	/** Every store minted under a control scope key: one per party the node has served. */
+	const controlStores = (): IRawStorage[] =>
+		[...stores].filter(([scope]) => isControlStorageScope(scope)).map(([, store]) => store);
 
 	const control = (): IRawStorage => {
-		const store = controlOrNull();
-		if (!store) {
+		const found = controlStores();
+		if (found.length === 0) {
 			throw new BlockStoreProbeError(
 				`no control-database store was created yet; scopes seen so far: [${[...stores.keys()].join(', ')}]`,
 			);
 		}
-		return store;
+		if (found.length > 1) {
+			throw new BlockStoreProbeError(
+				`the node served ${found.length} parties, so there is no one control-database store; scopes seen so far: [${[...stores.keys()].join(', ')}]`,
+			);
+		}
+		return found[0]!;
 	};
 
 	const forStrand = (strandId: string): IRawStorage => {
@@ -131,11 +128,11 @@ export function captureRawStorage(factory: () => IRawStorage = () => new MemoryR
 				`no raw store was created for strand '${strandId}'; scopes seen so far: [${[...stores.keys()].join(', ')}]`,
 			);
 		}
-		// Scope collapse: if the control scope and the strand scope resolved to the SAME
+		// Scope collapse: if a control scope and the strand scope resolved to the SAME
 		// object, this capture is not actually per-scope (e.g. a `factory` returning a
 		// shared singleton) and every comparison below would silently include control
 		// blocks. Fail naming the cause rather than compare garbage.
-		if (store === controlOrNull()) {
+		if (controlStores().includes(store)) {
 			throw new BlockStoreProbeError(
 				`strand '${strandId}' and the control database resolved to the SAME raw store — ` +
 				'the capture is not per-scope, so strand-only comparisons are impossible',

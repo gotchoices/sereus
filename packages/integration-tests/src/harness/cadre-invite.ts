@@ -34,6 +34,13 @@ export interface PinningMemberOptions {
 	ownerCapable?: boolean;
 	/** The member's `network.controlCohort.reconcileMs`; on a pinning member that timer is what runs its membership refresh. */
 	reconcileMs?: number;
+	/**
+	 * Run a storage replica of every strand the party lists (`hostUnclaimedStrands`), as the
+	 * production storage profile does. Default false: the member runs no strand at all.
+	 */
+	hostUnclaimedStrands?: boolean;
+	/** The member's strand watcher poll cadence; meaningful only with {@link hostUnclaimedStrands}. */
+	strandWatchMs?: number;
 }
 
 /**
@@ -44,10 +51,14 @@ export interface PinningMemberOptions {
 export async function startPinningMember(partyId: string, ownerKey: string, options: PinningMemberOptions = {}): Promise<InviteMember> {
 	const key = options.key ?? await generateKeyPair('Ed25519');
 	const node = new CadreNode(controlNodeConfig({
-		partyId, privateKey: key, profile: 'storage', strandFilter: 'none', pinnedOwnerKeys: [ownerKey],
+		partyId, privateKey: key, profile: 'storage', pinnedOwnerKeys: [ownerKey],
+		...(options.hostUnclaimedStrands
+			? { strandFilter: 'all', hostUnclaimedStrands: true }
+			: { strandFilter: 'none' }),
 		...(options.listenAddrs ? { listenAddrs: options.listenAddrs } : {}),
 		...(options.storageProvider ? { storageProvider: options.storageProvider } : {}),
 		...(options.reconcileMs !== undefined ? { reconcileMs: options.reconcileMs } : {}),
+		...(options.strandWatchMs !== undefined ? { strandWatchMs: options.strandWatchMs } : {}),
 	}));
 	await node.start();
 	if (options.ownerCapable) {

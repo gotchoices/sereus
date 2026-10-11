@@ -136,6 +136,17 @@ describe('captureRawStorage', () => {
 		expect(() => capture.control()).toThrow(/scopes seen so far: \[strand-1\]/);
 	});
 
+	it('refuses to pick a control store once the node has served two parties, and still serves its strands', () => {
+		// An app's node that switches cadres asks for a second control scope over the same
+		// strand stores; answering with either party's store would compare the wrong blocks.
+		const capture = captureRawStorage();
+		capture.provider(CONTROL);
+		const strand = capture.provider('strand-1');
+		capture.provider(controlStorageScope('second-party'));
+		expect(() => capture.control()).toThrow(/served 2 parties/);
+		expect(capture.forStrand('strand-1')).toBe(strand);
+	});
+
 	it('refuses to serve a control scope as a strand', () => {
 		const capture = captureRawStorage();
 		capture.provider(CONTROL);

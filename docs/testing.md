@@ -701,6 +701,15 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   strand keeps running) — `strand-always-on-replica-hosts-cross-party-join.integration.ts`.
   The replica serving a replacement phone is not repeated here; that is
   `strand-always-on-replica-survives-phone-loss.integration.ts` (the one-party line above).
+- One machine moving its strands from one party to another of the same owner (an app's node
+  founds a one-machine party, founds a closed strand another party joins, joins an open strand
+  that party founded, and writes one row while cut off from it; it then exports its strands,
+  restarts for the user's main party under the same key over the same raw stores, is admitted
+  at that party's always-on member and adopts them; the other party's node, told nothing,
+  receives the row written alone and keeps syncing both ways, the always-on member hosts both
+  strands and holds every block the app's node holds, and a stranger redeems the moved
+  formation invitation in the new party) — `strand-moves-between-cadres.integration.ts`.
+  Loopback; the app's control node restarts on the same port, its strand nodes on new ones.
 - Membership actions issued from a party's second machine on that shape (a closed strand's
   invite consumed, both of a party's machines registered as devices of ONE member, and a
   promoted manager issuing/admitting — all authored on a machine that neither founded the

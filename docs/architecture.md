@@ -650,6 +650,8 @@ A party's participation in a strand is control-database state, not strand-databa
 
 **What stays in B.** Nothing is deleted: `Strand` and `StrandPartyKey` have no reap branch, each delete needs a B-owner signature and tombstone, and B's node is not running when the adoption happens. B's storage as a whole goes when the empty cadre is dissolved.
 
+`strand-moves-between-cadres.integration.ts` runs the move over a real network: a closed strand B founded and an open strand it joined keep syncing with the other party, which is told nothing, and A's always-on member hosts both.
+
 ### When Is a Seed Needed?
 
 | Instigator | Adding | Seed Needed? | Who Dials Whom? |
