@@ -34,6 +34,12 @@ import { peerJoinPushBudget } from './link-budget.js';
 // If Optimystic ever grows a cohort-join catch-up of its own, delete this module rather
 // than running two.
 //
+// NOTE: strand nodes pass db-p2p no `kvStore`, so Optimystic's under-replication ledger (the
+// copies a node owes peers) dies at every restart. This module's whole-store push on connect is
+// what delivers a write a machine made alone after it restarts (`joiner-first-commit-over-slow-relay`,
+// restart arm). If this module is narrowed (the cohort filter above) or deleted, give strand
+// nodes a persistent kvStore first.
+//
 // Membership — the one place the two networks differ, expressed as the optional
 // `authorizePeer` dep:
 //

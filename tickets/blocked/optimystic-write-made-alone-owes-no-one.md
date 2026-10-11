@@ -17,3 +17,9 @@ Optimystic's ticket names the likely fix (record as owed the members the node kn
 - Re-run `joiner-first-commit-over-slow-relay.integration.ts`. Its third arm is `it.fails` (`fix/joiner-write-made-alone-lost-when-it-stops` commits it); when it starts failing, the bug is fixed: make it a plain `it`.
 - If the fix stage of `joiner-write-made-alone-lost-when-it-stops` found a Sereus-side delivery defect after restart, confirm both together.
 - Reply on #44 and close it.
+
+## Sereus-side findings (fix stage of `joiner-write-made-alone-lost-when-it-stops`, 2026-10-11)
+
+- The scenario is committed; its third arm reproduced in the one committed-scenario run here and in all four scratch runs of the same shape. In this harness the solo commit has a Sereus cause too: a deferred join tore down the joiner's one connection to the founder and rebuilt over a store that already held everything (`implement/strand-deferred-join-keeps-its-runtime`). That fix may flip the third arm before this upstream fix lands. If it does, the arm no longer tests this ticket; the upstream fix is then confirmed by its own Optimystic repros, not by this scenario.
+- Delivery after a restart is not blocked on this ticket in Sereus: peer-join backfill pushes the restarted joiner's whole store when its strand node reconnects, and the founder accepted the solo-committed blocks (they carry the self-signed solo proof). The scenario's fourth arm measured 24.5 s from the restart to the founder holding the rows. On a slow link the strand nodes never reconnect at all; that is `implement/strand-peers-redial-on-the-declared-link-budget` and `blocked/fret-maintenance-ping-dial-budget-below-a-relayed-dial`, not Optimystic.
+- Strand nodes stay without a persistent `kvStore`: the under-replication ledger is redundant with backfill's push on connect. A `NOTE:` in `peer-join-backfill.ts` says to add one before that module is narrowed or deleted.

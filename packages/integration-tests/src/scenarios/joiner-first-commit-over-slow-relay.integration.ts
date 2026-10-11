@@ -1,0 +1,405 @@
+/**
+ * A joiner's first transaction over a slow relayed link — the shape a two-party app's
+ * "take your seat" act has, measured where it fails on real phones.
+ *
+ * Found on two phones (a Galaxy S7 and an Android emulator) running the Taleus tally app over
+ * the public relay: the joiner's strand took minutes to become writable; its first-sync probe
+ * and its first transaction both failed on tables NOBODY had written yet ("cohort-unreachable:
+ * the repo could not determine whether it exists"); and once, the joiner's first transaction
+ * reported success while the founder never saw any of its rows, even after both restarted.
+ *
+ * The schema reproduces the app's shape with nothing app-specific in it:
+ * - several tables, most of which the founder never writes (the app has 17);
+ * - the joiner's first act writes three tables in ONE transaction: a seat, its key, and its
+ *   profile -- two of which the founder already wrote to;
+ * - a constraint on the key reads a table nobody has written (`Revocation`), as an
+ *   authorization check does.
+ *
+ * Topology: the blind-relay pair (`blind-relay-phone-to-phone-e2e`): two relay-only parties,
+ * one dedicated relay, a closed strand formed by bound invitation. Arms: loopback, and a slow
+ * link (`harness/ws-latency.ts`). `WS_SEND_DELAY_MS` / `WS_SEND_DELAY_MODE` pin the delay for a
+ * sweep.
+ *
+ * The third arm adds what the phones had and the latency arms do not: a 20 ms per-frame cap
+ * (`serial`, a frame-RATE limit) and an event loop kept 70% busy -- the shape of a phone whose JS
+ * thread is mostly occupied (a Galaxy S7 profiled at 70% busy while serving a joiner). Both are
+ * process-wide, so they slow every node and the relay alike: "every machine is a slow phone", not
+ * "one slow peer". `EVENT_LOOP_BUSY=<fraction>` applies the busy loop to any arm for a sweep.
+ *
+ * What it asserts, after the joiner's first sync: the joiner's first transaction commits, and
+ * every row of it is readable on the founder even though the joiner stops the moment its commit
+ * returns. A commit that reported success must not live only on the machine that made it.
+ *
+ * What it found (Optimystic 1.12.1, Sereus 1.14.0): under a slow link the joiner's strand node can
+ * be connected to nothing but the relay when its strand becomes writable. Its commit then resolves
+ * a cluster of only itself for every block and commits with `quorum: 'local'`
+ * (`coordinator-repo` `commit:solo-cohort`, `cohortSize: 1, soleIsSelf: true`) in about 0.1 s,
+ * reporting success. The rows reach the founder only if the joiner later reconnects and syncs;
+ * stopped, they never do. It logs how long each step took and every node's peer id, so a run's
+ * `DEBUG=optimystic:db-p2p:*` log can be read against them.
+ *
+ * Why the joiner had no strand peer (`fix/joiner-write-made-alone-lost-when-it-stops`): its first
+ * strand runtime DID connect to the founder's strand node, and the founder's peer-join backfill
+ * delivered every block, but that runtime's schema read had already timed out on the slow link.
+ * The launch was deferred as "no seed peer has answered", its runtime torn down (closing the one
+ * connection) and rebuilt 5 s later over a store that now held everything, so the rebuilt runtime
+ * passed the first-sync gate with only the relay connected.
+ *
+ * The fourth arm is the restart the phones also tried: the third arm's solo commit, then the
+ * joiner stops, is rebuilt over the storage it kept (raw stores, saved strand network state,
+ * joined-strand record) and re-claims the strand, and the founder must then hold every row. The
+ * restart runs on an undelayed link: there the restarted strand node reconnects and peer-join
+ * backfill delivers the solo-committed blocks, which the founder accepts. Restarted on the slow
+ * link instead, the two strand nodes never reconnect -- every redial is a FRET maintenance ping
+ * whose whole budget, dial included, is 2 s, and a relayed dial on that link takes longer -- which
+ * is the reproduction for ticket `strand-peers-redial-on-the-declared-link-budget`, not this arm.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import type { PrivateKey } from '@libp2p/interface';
+import {
+	CadreNode,
+	InMemoryKeyStore,
+	KeyStoreJoinedStrandStore,
+	PersistentStrandNetworkStateStore,
+	generateStrandMemberKey,
+} from '@serfab/cadre-core';
+import type { DurableSlot, SAppConfig, StrandInstance, StrandRow } from '@serfab/cadre-core';
+import type { Database } from '@quereus/quereus';
+import {
+	waitUntil,
+	controlNodeConfig,
+	createSignedSAppConfig,
+	makeOwnOwner,
+	startDedicatedRelay,
+	installWsLatency,
+	captureRawStorage,
+	type DedicatedRelay,
+	type RawStorageCapture,
+	type WsLatencyOptions,
+} from '../harness/index.js';
+
+/** Most tables are never written by the founder; `Revocation` is never written at all. */
+const SCHEMA = `
+table Seat (
+    Side text primary key,
+    Sid text
+);
+table Party (
+    Sid text primary key,
+    Name text
+);
+table Revocation (
+    Sid text,
+    PublicKey text,
+    primary key (Sid, PublicKey)
+);
+table PartyKey (
+    Sid text,
+    PublicKey text,
+    primary key (Sid, PublicKey),
+    constraint NotRevoked check on insert (not exists (
+        select 1 from Revocation R where R.Sid = New.Sid and R.PublicKey = New.PublicKey))
+);
+table Terms (Id text primary key, Body text);
+table Contract (Id text primary key, Body text);
+table Ledger (Id text primary key, Body text);
+table Invoice (Id text primary key, Body text);
+table CloseRequest (Id text primary key, Body text);
+table Trading (Id text primary key, Body text);
+`;
+
+const SAPP_ID = 'sapp-joiner-first-commit';
+const YEAR_MS = 365 * 24 * 3600_000;
+
+/** Generous on purpose: the arm reports how long each step took; a gate only bounds a hang. */
+const FIRST_SYNC_MS = 600_000;
+const CONVERGE = { timeoutMs: 180_000, intervalMs: 500 } as const;
+
+/** The joiner's "take your seat" act: three tables, one transaction. */
+function seatBatch(side: string, sid: string, publicKey: string, name: string): string {
+	return [
+		`insert into App.Seat (Side, Sid) values ('${side}', '${sid}');`,
+		`insert into App.PartyKey (Sid, PublicKey) values ('${sid}', '${publicKey}');`,
+		`insert into App.Party (Sid, Name) values ('${sid}', '${name}');`,
+	].join('\n');
+}
+
+async function rows(db: Database, sql: string): Promise<Record<string, unknown>[]> {
+	const out: Record<string, unknown>[] = [];
+	for await (const row of db.eval(sql)) out.push({ ...row });
+	return out;
+}
+
+/** Keep the event loop busy `fraction` of every 100 ms until the returned stop is called. */
+function occupyEventLoop(fraction: number): () => void {
+	const busyMs = Math.round(fraction * 100);
+	const timer = setInterval(() => {
+		const until = Date.now() + busyMs;
+		while (Date.now() < until) { /* a phone's JS thread, busy elsewhere */ }
+	}, 100);
+	return () => clearInterval(timer);
+}
+
+const ENV_EVENT_LOOP_BUSY = Number(process.env.EVENT_LOOP_BUSY ?? 0);
+
+interface RunOptions {
+	/** Holds every outbound WebSocket frame in the process this long. */
+	latency?: WsLatencyOptions;
+	/** Fraction of every 100 ms this process's event loop is kept busy. */
+	eventLoopBusy?: number;
+}
+
+function since(t0: number): string {
+	return `${((Date.now() - t0) / 1000).toFixed(1)} s`;
+}
+
+async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
+	const link = opts.latency === undefined ? undefined : installWsLatency(opts.latency);
+	const busy = ENV_EVENT_LOOP_BUSY || (opts.eventLoopBusy ?? 0);
+	const release = busy > 0 ? occupyEventLoop(busy) : undefined;
+	let relay: DedicatedRelay | undefined;
+	let A: CadreNode | undefined;
+	let B: CadreNode | undefined;
+	// The link in force, which `WS_SEND_DELAY_MS` may have pinned over the arm's request.
+	const label = (link ? `${link.delayMs} ms ${link.mode}` : 'loopback')
+		+ (busy > 0 ? `, event loop ${busy * 100}% busy` : '');
+	try {
+		const runTag = Date.now();
+		const strandId = `strand-joiner-first-commit-${runTag}`;
+		const sApp = createSignedSAppConfig(SCHEMA, '0.1.0');
+		relay = await startDedicatedRelay();
+
+		// ── Founder: relay-only, founds the closed strand and takes its own seat ──
+		const aKey = await generateKeyPair('Ed25519');
+		A = new CadreNode(controlNodeConfig({
+			partyId: `first-commit-a-${runTag}`,
+			privateKey: aKey,
+			listenAddrs: [],
+			relayAddrs: [relay.dialAddr],
+		}));
+		await A.start();
+		await makeOwnOwner(A, aKey);
+		const memberPrivateKey = await generateStrandMemberKey();
+		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
+		const aDb = founded.instance.database!.getDatabase();
+		await aDb.exec(seatBatch('S', 'sid-a', 'key-a', 'Founder'), undefined, { transaction: true });
+
+		const invitation = await A.createOpenInvitation(SAPP_ID, YEAR_MS);
+		await A.publishFormationInvite(invitation.token, SAPP_ID, { strandId, expiresAtMs: Date.now() + YEAR_MS, totalUses: 1 });
+		const encoded = A.encodeInvitation(invitation);
+
+		// ── Joiner: relay-only, forms through the relay and launches the strand ──
+		const bKey = await generateKeyPair('Ed25519');
+		B = new CadreNode(controlNodeConfig({
+			partyId: `first-commit-b-${runTag}`,
+			privateKey: bKey,
+			listenAddrs: [],
+			relayAddrs: [relay.dialAddr],
+		}));
+		await B.start();
+		await makeOwnOwner(B, bKey);
+		const formResult = await B.formStrand(B.decodeInvitation(encoded), {
+			partyId: `first-commit-b-${runTag}`,
+			purpose: 'joiner first commit over a slow relay',
+		});
+		const bStrandRow: StrandRow = {
+			Id: strandId,
+			MemberPrivateKey: formResult.memberPrivateKey ?? null,
+			Type: 'c',
+			FounderOwnerKey: null,
+		};
+		const tJoin = Date.now();
+		await B.addStrand({ strandRow: bStrandRow, sAppConfig: sApp, awaitFirstSync: false });
+		const bStrand = await B.whenStrandWritable(strandId, { timeoutMs: FIRST_SYNC_MS });
+		console.log(`[first-commit ${label}] joiner writable after ${since(tJoin)}`);
+		console.log(`[first-commit ${label}] peers: founder control ${A.peerId}, founder strand ${founded.instance.libp2pNode!.peerId}, `
+			+ `joiner control ${B.peerId}, joiner strand ${bStrand.libp2pNode!.peerId}, relay ${relay.peerId}`);
+		console.log(`[first-commit ${label}] joiner strand connections: ${bStrand.libp2pNode!.getConnections().map(c => c.remotePeer.toString()).join(', ')}`);
+		const bDb = bStrand.database!.getDatabase();
+
+		// ── The joiner's first act ──
+		const tCommit = Date.now();
+		await bDb.exec(seatBatch('F', 'sid-b', 'key-b', 'Joiner'), undefined, { transaction: true });
+		console.log(`[first-commit ${label}] joiner's seat committed after ${since(tCommit)}`);
+
+		// ── A committed transaction does not depend on the committer staying up ──
+		// The joiner goes away the moment its commit returns, as a phone does when its app is
+		// backgrounded. A commit the strand's cohort accepted is already held by the founder; one
+		// the joiner made with a cohort of only itself (optimystic's `commit:solo-cohort`, which
+		// a slow link produces -- see the file header) exists nowhere else, and is lost.
+		await B.stop();
+		const tReach = Date.now();
+		await waitUntil(
+			async () => {
+				const seats = await rows(aDb, 'select Side from App.Seat');
+				const keys = await rows(aDb, 'select Sid from App.PartyKey');
+				const parties = await rows(aDb, 'select Sid from App.Party');
+				return seats.some(r => r.Side === 'F')
+					&& keys.some(r => r.Sid === 'sid-b')
+					&& parties.some(r => r.Sid === 'sid-b');
+			},
+			{ ...CONVERGE, description: "every row of the joiner's committed transaction is readable on the founder after the joiner stops" },
+		);
+		console.log(`[first-commit ${label}] joiner's rows readable on the founder ${since(tReach)} after the joiner stopped`);
+		expect((await rows(aDb, 'select Side from App.Seat')).map(r => r.Side).sort()).toEqual(['F', 'S']);
+	} finally {
+		await Promise.allSettled([B?.stop(), A?.stop()]);
+		await relay?.stop();
+		release?.();
+		link?.restore();
+	}
+}
+
+/** Every row of the joiner's seat batch is readable on `db`. */
+async function holdsJoinerSeat(db: Database): Promise<boolean> {
+	const seats = await rows(db, 'select Side from App.Seat');
+	const keys = await rows(db, 'select Sid from App.PartyKey');
+	const parties = await rows(db, 'select Sid from App.Party');
+	return seats.some(r => r.Side === 'F') && keys.some(r => r.Sid === 'sid-b') && parties.some(r => r.Sid === 'sid-b');
+}
+
+/** An in-memory {@link DurableSlot}: the text a phone keeps on disk, held outside the node. */
+function memorySlot(): DurableSlot {
+	let text: string | undefined;
+	return { load: async () => text, save: async (next) => { text = next; } };
+}
+
+/** What a party keeps across a restart; a node rebuilt over the same objects is a restart, not a new machine. */
+interface PartyHome {
+	partyId: string;
+	key: PrivateKey;
+	storage: RawStorageCapture;
+	joinedKeys: InMemoryKeyStore;
+	networkStateSlot: DurableSlot;
+}
+
+async function partyHome(partyId: string): Promise<PartyHome> {
+	return {
+		partyId,
+		key: await generateKeyPair('Ed25519'),
+		storage: captureRawStorage(),
+		joinedKeys: new InMemoryKeyStore(),
+		networkStateSlot: memorySlot(),
+	};
+}
+
+async function startPartyNode(home: PartyHome, relay: DedicatedRelay): Promise<CadreNode> {
+	const node = new CadreNode(controlNodeConfig({
+		partyId: home.partyId,
+		privateKey: home.key,
+		listenAddrs: [],
+		relayAddrs: [relay.dialAddr],
+		storageProvider: home.storage.provider,
+		joinedStrandStore: new KeyStoreJoinedStrandStore(home.joinedKeys, home.partyId),
+		strandNetworkStateStore: await PersistentStrandNetworkStateStore.open(home.networkStateSlot, home.partyId),
+	}));
+	await node.start();
+	return node;
+}
+
+/** Re-claim `strandId` from `strand:discovered` (the remembered join), as an app does after a restart. */
+async function claimDiscoveredStrand(node: CadreNode, strandId: string, sAppConfig: SAppConfig): Promise<StrandInstance> {
+	const strandRow = await new Promise<StrandRow>((resolve) => {
+		const onDiscovered = (event: { strandId: string; strand: StrandRow }): void => {
+			if (event.strandId !== strandId) return;
+			node.off('strand:discovered', onDiscovered);
+			resolve(event.strand);
+		};
+		node.on('strand:discovered', onDiscovered);
+		const backlog = node.getDiscoveredStrands().get(strandId);
+		if (backlog) {
+			node.off('strand:discovered', onDiscovered);
+			resolve(backlog);
+		}
+	});
+	return await node.addStrand({ strandRow, sAppConfig, awaitFirstSync: false });
+}
+
+/**
+ * The third arm's journey up to the joiner's stop, then a restart of the joiner over the storage
+ * it kept, on an undelayed link. The founder must then hold every row.
+ */
+async function runJoinerRestartDelivers(): Promise<void> {
+	let link: ReturnType<typeof installWsLatency> | undefined = installWsLatency({ delayMs: 20, mode: 'serial' });
+	let release: (() => void) | undefined = occupyEventLoop(0.7);
+	let relay: DedicatedRelay | undefined;
+	let A: CadreNode | undefined;
+	let B: CadreNode | undefined;
+	const label = 'restart';
+	try {
+		const runTag = Date.now();
+		const strandId = `strand-joiner-restart-${runTag}`;
+		const sApp = createSignedSAppConfig(SCHEMA, '0.1.0');
+		relay = await startDedicatedRelay();
+		const aHome = await partyHome(`restart-a-${runTag}`);
+		const bHome = await partyHome(`restart-b-${runTag}`);
+
+		A = await startPartyNode(aHome, relay);
+		await makeOwnOwner(A, aHome.key);
+		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey: await generateStrandMemberKey(), sAppConfig: sApp });
+		const aDb = founded.instance.database!.getDatabase();
+		await aDb.exec(seatBatch('S', 'sid-a', 'key-a', 'Founder'), undefined, { transaction: true });
+		const invitation = await A.createOpenInvitation(SAPP_ID, YEAR_MS);
+		await A.publishFormationInvite(invitation.token, SAPP_ID, { strandId, expiresAtMs: Date.now() + YEAR_MS, totalUses: 1 });
+
+		B = await startPartyNode(bHome, relay);
+		await makeOwnOwner(B, bHome.key);
+		const formResult = await B.formStrand(B.decodeInvitation(A.encodeInvitation(invitation)), {
+			partyId: bHome.partyId,
+			purpose: 'joiner restart delivers a write made alone',
+		});
+		await B.addStrand({
+			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null },
+			sAppConfig: sApp,
+			awaitFirstSync: false,
+		});
+		const bStrand = await B.whenStrandWritable(strandId, { timeoutMs: FIRST_SYNC_MS });
+		await bStrand.database!.getDatabase().exec(seatBatch('F', 'sid-b', 'key-b', 'Joiner'), undefined, { transaction: true });
+		const stopping = B;
+		B = undefined;
+		await stopping.stop();
+		// Logged, not asserted: once the joiner's first commit stops being made alone (the
+		// third arm passing), this arm no longer exercises delivery after a restart.
+		console.log(`[first-commit ${label}] founder held the joiner's rows when it stopped: ${await holdsJoinerSeat(aDb)}`);
+
+		release();
+		release = undefined;
+		link.restore();
+		link = undefined;
+		const tRestart = Date.now();
+		B = await startPartyNode(bHome, relay);
+		await claimDiscoveredStrand(B, strandId, sApp);
+		await waitUntil(() => holdsJoinerSeat(aDb),
+			{ ...CONVERGE, description: "every row the joiner committed alone is readable on the founder after the joiner restarts" });
+		console.log(`[first-commit ${label}] joiner's rows readable on the founder ${since(tRestart)} after the restart began`);
+	} finally {
+		await Promise.allSettled([B?.stop(), A?.stop()]);
+		await relay?.stop();
+		release?.();
+		link?.restore();
+	}
+}
+
+describe("a joiner's first transaction over a relayed link", () => {
+	it('commits, and its rows outlive the joiner, on loopback', async () => {
+		await runJoinerFirstCommit();
+	}, 900_000);
+
+	it('commits, and its rows outlive the joiner, with 100 ms of one-way latency', async () => {
+		await runJoinerFirstCommit({ latency: { delayMs: 100, mode: 'pipelined' } });
+	}, 1_800_000);
+
+	// KNOWN FAILURE, kept as `it.fails` so the suite stays green while it reproduces: the joiner's
+	// strand node holds only the relay connection when its strand becomes writable, commits with a
+	// cohort of itself (`commit:solo-cohort`), and the rows are lost when it stops. When this arm
+	// starts failing, the bug is fixed: make it a plain `it`.
+	it.fails('commits, and its rows outlive the joiner, on a 20 ms frame cap with a 70%-busy event loop', async () => {
+		await runJoinerFirstCommit({ latency: { delayMs: 20, mode: 'serial' }, eventLoopBusy: 0.7 });
+	}, 1_800_000);
+
+	it("delivers the rows of a commit made alone once the joiner restarts over its kept storage", async () => {
+		await runJoinerRestartDelivers();
+	}, 1_800_000);
+});

@@ -673,6 +673,17 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   the same live in-memory stores and keeps module state. The two-process arm takes 12–15 s and
   could run by default; it is opt-in only because the in-process arm already gates the
   behaviour. Loopback-instant link, one shared relay.
+- Relayed strand plane across parties, the JOINER'S FIRST WRITE on a slow link (the
+  blind-relay shape; the joiner writes three tables in one transaction and stops the moment
+  the commit returns, and the founder must then hold every row) —
+  `joiner-first-commit-over-slow-relay.integration.ts`, the reproduction of
+  gotchoices/sereus#44. Arms: loopback, 100 ms one-way `pipelined`, and a 20 ms `serial` frame
+  cap with the event loop kept 70% busy, which makes the joiner commit with a cohort of only
+  itself and is kept as `it.fails` until that stops; a fourth arm restarts that joiner over
+  the storage it kept, on an undelayed link, and the founder must then hold the rows. All four
+  run by default although the third waits out its 180 s gate (about 4 minutes) and the fourth
+  takes about 80 s: they are a regression reproduction, not a measurement, and the third arm
+  has to run to turn red when the fix lands, which is the signal its `it.fails` exists for.
 - Harness self-coverage of the topology builder — `harness-topology.integration.ts`.
 - Cross-party strand with multi-machine parties (two parties × two machines: four machines,
   the strand replication breadth — a write still commits with one machine off, and the
