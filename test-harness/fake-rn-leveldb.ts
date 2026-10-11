@@ -205,9 +205,15 @@ export function fakeRNLevelDBOpener(): RNLevelDBOpenFn {
 /**
  * A fake device that also keeps rn-leveldb's per-name lock: opening a name that is already open,
  * and not yet closed, throws as the native module does ("DB is open"). For a test that must show a
- * host closes every database it opened. `openNames` lists the names open now.
+ * host closes every database it opened. `openNames` lists the names open now; `destroy` stands in
+ * for `LevelDB.destroyDB`, throwing for an open name and otherwise dropping its data, so the next
+ * open of that name finds it empty.
  */
-export function lockingFakeRNLevelDB(): { openFn: RNLevelDBOpenFn; openNames: () => string[] } {
+export function lockingFakeRNLevelDB(): {
+	openFn: RNLevelDBOpenFn;
+	openNames: () => string[];
+	destroy: (name: string) => void;
+} {
 	const byName = new Map<string, FakeRNLevelDB>();
 	const open = new Set<string>();
 	const openFn: RNLevelDBOpenFn = (name) => {
@@ -221,5 +227,9 @@ export function lockingFakeRNLevelDB(): { openFn: RNLevelDBOpenFn; openNames: ()
 		db.onClose = () => open.delete(name);
 		return db;
 	};
-	return { openFn, openNames: () => [...open].sort() };
+	const destroy = (name: string): void => {
+		if (open.has(name)) throw new Error(`fake rn-leveldb: DB is open! Cannot destroy: ${name}`);
+		byName.delete(name);
+	};
+	return { openFn, openNames: () => [...open].sort(), destroy };
 }

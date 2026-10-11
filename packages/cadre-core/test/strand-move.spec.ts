@@ -4,7 +4,15 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { PERSISTED_STATE_VERSION, type PersistedNetworkState } from '@optimystic/db-p2p';
 import type { CadreNode } from '../src/cadre-node.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
-import { adoptStrandBundle, exportStrandBundle, type FormationInviteEntry, type StrandBundle, type StrandBundleEntry } from '../src/strand-move.js';
+import {
+	adoptStrandBundle,
+	exportStrandBundle,
+	unheldBundleContent,
+	type FormationInviteEntry,
+	type StrandBundle,
+	type StrandBundleEntry
+} from '../src/strand-move.js';
+import type { PendingJoin } from '../src/types.js';
 import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
@@ -140,4 +148,30 @@ describe('adoptStrandBundle', () => {
 		expect(await db.queryFormationInvite(orphan.token)).toBeNull();
 		expect(await db.queryFormationInvite(unbound.token)).toMatchObject({ sAppId: 'sapp', totalUses: 1, strandId: null });
 	}, 60_000);
+});
+
+describe('unheldBundleContent', () => {
+	it('lacks a strand held under no kind and a join still open, not a finished or expired one', () => {
+		const now = 1_000_000;
+		const strand = (Id: string): StrandBundleEntry => ({ kind: 'own', row: { Id, Type: 'o', MemberPrivateKey: null }, partyKey: null, carriedAddrs: [] });
+		const join = (Id: string, ExpiresAt: number, outcome: PendingJoin['outcome'] = null): PendingJoin =>
+			({ Id, Invitation: 'invitation', Disclosure: '{}', RequestedAt: now - 1, ExpiresAt, StampId: 'stamp-' + Id, outcome });
+		const bundle: StrandBundle = {
+			v: 1,
+			partyId: 'former-party',
+			exportedAt: now,
+			strands: [strand('held-strand'), strand('unheld-strand')],
+			pendingJoins: [
+				join('held-open', now + 1),
+				join('unheld-open', now + 1),
+				join('unheld-finished', now + 1, { kind: 'failed', RecordedAt: now, Code: 'expired', Reason: 'expired' }),
+				join('unheld-expired', now)
+			],
+			formationInvites: []
+		};
+
+		const unheld = unheldBundleContent(bundle, { strandIds: new Set(['held-strand']), pendingJoinIds: new Set(['held-open']) }, now);
+
+		expect(unheld).toEqual({ strandIds: ['unheld-strand'], pendingJoinIds: ['unheld-open'] });
+	});
 });

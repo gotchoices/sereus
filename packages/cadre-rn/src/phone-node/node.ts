@@ -15,6 +15,7 @@ import {
 	PersistentEnrolledMachineStore,
 	PersistentStrandNetworkStateStore,
 	PersistentTrustedOwnerStore,
+	readStrandHoldings,
 } from '@serfab/cadre-core';
 import type {
 	CadreInvitation,
@@ -23,7 +24,6 @@ import type {
 	CadreNodeEvents,
 	RedeemCadreInvitationOptions,
 	RedeemCadreInvitationResult,
-	StrandBundle,
 	StrandMoveReport,
 } from '@serfab/cadre-core';
 import type { Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
@@ -49,6 +49,18 @@ import {
 // Type-only: the noise-crypto module loads react-native-quick-crypto at runtime.
 import type { NoiseCryptoMode } from '../noise-crypto.js';
 import { buildPhoneNodeConfig, runOwnerGenesis, wireJoinedOwnerKey, type OwnerGenesisResult } from './config.js';
+import {
+	finishMarkedRemoval,
+	finishRemovalAtStart,
+	formerPartyRead,
+	formerPartyRefusal,
+	readFormerParty,
+	removeParty,
+	StrandMovePendingError,
+	withoutFormerParty,
+	type DissolveFormerPartyOptions,
+	type PartyStorage,
+} from './dissolve.js';
 import { parseSavedStart, serializeSavedStart, type PhoneNodeOptions, type SavedStart } from './options.js';
 import {
 	adoptMoveRecord,
@@ -61,10 +73,15 @@ import {
 	type StrandMoveOutcome,
 } from './strand-move.js';
 
-/** `rn-leveldb`, as the app passes it: `{ openFn: (n, c, e) => new LevelDB(n, c, e), WriteBatch: LevelDBWriteBatch }`. */
+/**
+ * `rn-leveldb`, as the app passes it:
+ * `{ openFn: (n, c, e) => new LevelDB(n, c, e), WriteBatch: LevelDBWriteBatch, destroy: (name) => LevelDB.destroyDB(name) }`.
+ */
 export interface LevelDBNative {
 	openFn: RNLevelDBOpenFn;
 	WriteBatch: RNLevelDBWriteBatchCtor;
+	/** rn-leveldb's `LevelDB.destroyDB(name)`: deletes a closed database; throws when it is open. */
+	destroy: (name: string) => void;
 }
 
 /** What the app's platform provides. Fixed for the app's lifetime. */
@@ -77,7 +94,7 @@ export interface PhoneNodePlatform {
 	 * start read the identity while the device is locked.
 	 */
 	secureStoreOptions?: SecureStoreKeyStoreOptions;
-	/** `rn-leveldb`'s two constructors; every database is opened through them. */
+	/** `rn-leveldb`'s two constructors, through which every database is opened, and its `destroyDB`. */
 	leveldb: LevelDBNative;
 	/**
 	 * libp2p transports, given the relays the node reserves on. Default: WebSockets and circuit
@@ -132,6 +149,11 @@ export interface PhoneNodeNames {
 	 * collide with the `<record>.<partyId>` keys of `/node-local`.
 	 */
 	savedStartKey: string;
+	/**
+	 * Key, inside {@link PhoneNodeNames.nodeLocalDb}, of the record naming a party whose dissolve
+	 * has begun. Dot-free and one per app, as {@link PhoneNodeNames.savedStartKey} is.
+	 */
+	dissolveMarkerKey: string;
 }
 
 export const DEFAULT_PHONE_NODE_NAMES: PhoneNodeNames = {
@@ -139,6 +161,7 @@ export const DEFAULT_PHONE_NODE_NAMES: PhoneNodeNames = {
 	nodeLocalDb: 'sereus-node-local',
 	nodeLocalKvPrefix: 'sereus:node-local:',
 	savedStartKey: 'start-options',
+	dissolveMarkerKey: 'dissolving-party',
 };
 
 export type PhoneNodeStatus =
@@ -231,6 +254,19 @@ export interface PhoneNode {
 	 */
 	finishStrandMove(): Promise<StrandMoveReport | undefined>;
 	/**
+	 * Delete the local storage of `formerPartyId`, the party this app founded and left, once the
+	 * running party holds everything it holds and no other machine is in it. Runs in turn with
+	 * start, stop, restart and join. Stops the running node, reads the former party from a node
+	 * started for that alone, and starts the running party again, without `formerPartyId` once the
+	 * former party is removed; a failure of that last start is the call's error.
+	 *
+	 * Refused before anything stops: with an `Error` unless running with a `formerPartyId`, and
+	 * with `StrandMovePendingError` while a move from it waits. Refused after the read, the running
+	 * party started again and nothing deleted: with `FormerPartyNotEmptyError`, whose strand and
+	 * pending-join ids `options.discard` may give up.
+	 */
+	dissolveFormerParty(options?: DissolveFormerPartyOptions): Promise<void>;
+	/**
 	 * The last start, or `undefined` when none is saved or the record is unusable. A read fault
 	 * throws. Called during a stop, it answers after the stop has saved `autoStart: false`.
 	 */
@@ -291,8 +327,8 @@ class PhoneNodeRuntime implements PhoneNode {
 	/** One per join called and not yet settled, so a stop can cancel them. */
 	private readonly joins = new Set<AbortController>();
 	/**
-	 * Start, stop, restart and join run one at a time, in call order: each opens or closes the
-	 * databases the others use, so a start overlapping a stop would build on handles the stop then closes.
+	 * Start, stop, restart, join and dissolve run one at a time, in call order: each opens or closes
+	 * the databases the others use, so a start overlapping a stop would build on handles the stop then closes.
 	 */
 	private transitions: Promise<unknown> = Promise.resolve();
 	private currentStatus: PhoneNodeStatus = { state: 'stopped' };
@@ -396,6 +432,12 @@ class PhoneNodeRuntime implements PhoneNode {
 		});
 	}
 
+	dissolveFormerParty(options: DissolveFormerPartyOptions = {}): Promise<void> {
+		// A start called from here on runs after this dissolve rather than joining a start whose node it stops.
+		this.starting = null;
+		return this.inTurn(() => this.dissolve(options.discard ?? []));
+	}
+
 	on<K extends keyof CadreNodeEvents>(event: K, handler: (data: CadreNodeEvents[K]) => void): () => void {
 		const subscription: Subscription = {
 			attach: (node) => node.on(event, handler),
@@ -474,14 +516,36 @@ class PhoneNodeRuntime implements PhoneNode {
 		}
 	}
 
-	/** Build the node for `options`, every subscription attached, and start it. */
+	/** Build the node for `options`, every subscription attached, and start it, after finishing a begun dissolve. */
 	private async bringUp(options: PhoneNodeOptions): Promise<{ node: CadreNode; resolved: PhoneNodeOptions }> {
-		const resolved = await this.resolveOptions(options);
+		const dissolved = await finishRemovalAtStart(this.partyStorage());
+		const resolved = withoutFormerParty(await this.resolveOptions(options), dissolved);
 		const node = new CadreNode(await this.buildConfig(resolved));
 		this.current = node;
 		for (const subscription of this.subscriptions) subscription.attach(node);
 		await node.start();
 		return { node, resolved };
+	}
+
+	/**
+	 * Start a node for `options`' party only to run `read` on it, then stop it. Nothing subscribes,
+	 * nothing is saved and no strand launches: the node never reports running. A join exports the
+	 * strands of a stopped party this way, and a dissolve reads the party it removes.
+	 */
+	private async readAlone<T>(options: PhoneNodeOptions, read: (node: CadreNode) => Promise<T>, purpose: string): Promise<T> {
+		this.setStatus({ state: 'starting' });
+		try {
+			const config = await this.buildConfig(await this.resolveOptions(options));
+			const node = new CadreNode({ ...config, strandFilter: { mode: 'none' } });
+			this.current = node;
+			await node.start();
+			return await read(node);
+		} finally {
+			// The read's own error, if any, is the one to report.
+			await this.shutDown().catch((err: unknown) => {
+				console.warn(`[cadre-rn/phone-node] stopping the node started to ${purpose} failed:`, err);
+			});
+		}
 	}
 
 	/** A founded party runs owner genesis; a joined one only wires a key the party already lists. */
@@ -557,8 +621,9 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	// ── join ─────────────────────────────────────────────────────────────────
-	// NOTE: this file is about 860 lines (`wc -l`), the join and its strand move the largest part.
-	// If the join grows further, move it to a module of its own over a narrow view of this runtime.
+	// NOTE: this file is about 970 lines (`wc -l`), the join and its strand move the largest part,
+	// the dissolve's transition next (its checks and removal are in `dissolve.ts`). If either grows
+	// further, move it to a module of its own over a narrow view of this runtime.
 
 	private async join(invitation: CadreInvitation, options: JoinCadreOptions, signal: AbortSignal): Promise<JoinCadreResult> {
 		signal.throwIfAborted();
@@ -631,7 +696,7 @@ class PhoneNodeRuntime implements PhoneNode {
 	 */
 	private async recordStrandMove(founded: PhoneNodeOptions, invitation: CadreInvitation): Promise<string | undefined> {
 		const running = this.node;
-		const bundle = running?.isRunning ? await exportStrandBundle(running) : await this.exportStopped(founded);
+		const bundle = running?.isRunning ? await exportStrandBundle(running) : await this.readAlone(founded, exportStrandBundle, 'export strands');
 		const record = joinMoveRecord(bundle, invitation);
 		if (!record) {
 			await this.moves.remove(founded.partyId);
@@ -639,25 +704,6 @@ class PhoneNodeRuntime implements PhoneNode {
 		}
 		await this.moves.save(record);
 		return founded.partyId;
-	}
-
-	/**
-	 * Start the founded party's node only to export its strands, then stop it. Nothing subscribes
-	 * and nothing is saved: the node never reports running.
-	 */
-	private async exportStopped(founded: PhoneNodeOptions): Promise<StrandBundle> {
-		this.setStatus({ state: 'starting' });
-		try {
-			const node = new CadreNode(await this.buildConfig(await this.resolveOptions(founded)));
-			this.current = node;
-			await node.start();
-			return await exportStrandBundle(node);
-		} finally {
-			// The export's own error, if any, is the one to report.
-			await this.shutDown().catch((err: unknown) => {
-				console.warn('[cadre-rn/phone-node] stopping the node started to export strands failed:', err);
-			});
-		}
 	}
 
 	/**
@@ -731,6 +777,47 @@ class PhoneNodeRuntime implements PhoneNode {
 		}
 	}
 
+	// ── dissolve ─────────────────────────────────────────────────────────────
+
+	/** docs/architecture.md → "Dissolving the party it left". */
+	private async dissolve(discard: readonly string[]): Promise<void> {
+		await finishMarkedRemoval(this.partyStorage());
+		const { node, running, formerPartyId } = this.runningWithFormerParty();
+		const record = await this.moves.load(formerPartyId);
+		if (record) throw new StrandMovePendingError(pendingMove(record));
+		const holdings = await readStrandHoldings(node);
+		try {
+			await this.shutDown();
+			const content = await this.readAlone(formerPartyRead(formerPartyId, running), readFormerParty, 'read the party it left');
+			const refusal = formerPartyRefusal(content, holdings, discard, Date.now());
+			if (refusal) throw refusal;
+			await removeParty(this.partyStorage(), formerPartyId);
+		} catch (err) {
+			await this.startAgainAfterDissolve(running);
+			throw err;
+		}
+		await this.buildAndStart(withoutFormerParty(running, formerPartyId));
+	}
+
+	private runningWithFormerParty(): { node: CadreNode; running: PhoneNodeOptions; formerPartyId: string } {
+		const node = this.node;
+		const running = this.runningOptions;
+		const formerPartyId = running?.formerPartyId;
+		if (!node?.isRunning || !running || formerPartyId === undefined) {
+			throw new Error('Nothing to dissolve: the phone node is not running with a former party, one this app founded and left');
+		}
+		return { node, running, formerPartyId };
+	}
+
+	/** After a refused or failed dissolve. The dissolve's own error is the one its caller gets; this one is only logged. */
+	private async startAgainAfterDissolve(running: PhoneNodeOptions): Promise<void> {
+		try {
+			await this.buildAndStart(running);
+		} catch (err) {
+			console.warn('[cadre-rn/phone-node] starting the running party again after a dissolve failed:', err);
+		}
+	}
+
 	// ── stop ─────────────────────────────────────────────────────────────────
 
 	private async stopAndClearAutoStart(): Promise<void> {
@@ -782,14 +869,33 @@ class PhoneNodeRuntime implements PhoneNode {
 	private database(name: string): LevelDbHandle {
 		let db = this.databases.get(name);
 		if (!db) {
-			db = openOptimysticRNDb({ ...this.platform.leveldb, name });
+			const { openFn, WriteBatch } = this.platform.leveldb;
+			db = openOptimysticRNDb({ openFn, WriteBatch, name });
 			this.databases.set(name, db);
 		}
 		return db;
 	}
 
+	private nodeLocalKv(): LevelDBKVStore {
+		return new LevelDBKVStore(this.database(this.names.nodeLocalDb), this.names.nodeLocalKvPrefix);
+	}
+
 	private nodeLocalSlot(key: string): DurableSlot {
-		return kvStoreSlot(new LevelDBKVStore(this.database(this.names.nodeLocalDb), this.names.nodeLocalKvPrefix), key);
+		return kvStoreSlot(this.nodeLocalKv(), key);
+	}
+
+	private partyStorage(): PartyStorage {
+		return {
+			nodeLocal: this.nodeLocalKv(),
+			markerKey: this.names.dissolveMarkerKey,
+			savedStartKey: this.names.savedStartKey,
+			storagePrefix: this.names.storagePrefix,
+			destroyDatabase: (name) => this.platform.leveldb.destroy(name),
+			secureStore: this.platform.secureStore,
+			secureStoreOptions: this.platform.secureStoreOptions,
+			keyStore: this.keyStore,
+			moves: this.moves,
+		};
 	}
 
 	/** The saved start, read directly: inside a transition, `loadSavedStart` would wait on a stop queued behind it. */

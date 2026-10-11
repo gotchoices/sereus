@@ -269,6 +269,10 @@ What the node last started with — party id, bootstrap addresses, relay address
 
 The Maestro flows launch with `clearState: true`, so they always see a fresh, idle app.
 
+### Dissolve marker (app-private LevelDB)
+
+The party whose local storage the kit is deleting, while `PhoneNode.dissolveFormerParty` removes the cadre this app founded and left ([architecture.md → Dissolving the party it left](architecture.md#dissolving-the-party-it-left)). One record under the kit's default key `dissolving-party` in the same `sereus-node-local` database, beside the start options and, like them, one per install rather than party-scoped. It is written before the first deletion and deleted after the start options stop naming that party as `formerPartyId`, so a launch after a crash partway finishes the deletion before it starts the node. This app does not offer the dissolve in its UI yet (`reference-apps-join-existing-cadre`); `cadre-phone.ts` passes rn-leveldb's `LevelDB.destroyDB` to the kit for it.
+
 ## cadre-core React Native Compatibility
 
 ### Validated (2026-02-23)

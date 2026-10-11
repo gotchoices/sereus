@@ -615,7 +615,7 @@ A phone app that already runs a one-node cadre of its own (party B) joins the us
 - **A second node beside B's would collide or split the owner key.** With the same identity both nodes claim one peer id (competing relay reservations) and open the same strand databases, whose storage scopes are strand ids rather than party-scoped; with a second identity the app's owner key in A differs from the key that founded B's strands, which moving a strand needs (`Strand.AuthorizedInsert` requires `FounderOwnerKey` to be the writer's owner key).
 - **The identity is per app, not per party.** The kit keeps one key in the secure store (`DEFAULT_IDENTITY_KEY_ID`), so the peer id in a join request is the peer id that redeems, and the app's owner key in A is its owner key in B.
 
-The join moves B's strands into A ([Moving the app's strands](#moving-the-apps-strands)): the kit exports them before B's node stops and adopts them once the app's key is wired as an owner of A, so they open on the phone in A (steps below). B's data stays on disk under its own names: the control store under `controlStorageScope(B)`, the `<record>.<B>` node-local keys and B's anchor slot.
+The join moves B's strands into A ([Moving the app's strands](#moving-the-apps-strands)): the kit exports them before B's node stops and adopts them once the app's key is wired as an owner of A, so they open on the phone in A (steps below). B's data stays on disk under its own names: the control store under `controlStorageScope(B)`, the `<record>.<B>` node-local keys and B's anchor slot, until the app dissolves B ([Dissolving the party it left](#dissolving-the-party-it-left)).
 
 **A joined party never runs owner genesis.** Genesis (`ensureOwnerKey`, then `initializeSeedBootstrap`) on a party whose control store has not arrived inserts the app's key as a founding `OwnerKey` row, the stranger's genesis-inserted key the node-local trusted-owner anchor exists to contain (under [Seed Delivery Protocol](#seed-delivery-protocol)). The saved start therefore records how the app came to its party, `origin`:
 
@@ -651,9 +651,27 @@ A party's participation in a strand is control-database state, not strand-databa
 
 **Pending joins.** Every row `queryPendingJoins` returns moves, with its outcome, under a fresh request stamp. A `joined` outcome's membership invitation is the seat the party's membership reconciler may not have redeemed yet; A's retry loop re-stages it from the moved row at its next read, as it does for a join finished on another owner machine. A `failed` outcome is history for the user to dismiss. A request A already holds for the same invitation is read as done; its outcome is left alone unless the request is the bundle's own and still pending.
 
-**What stays in B.** Nothing is deleted: `Strand` and `StrandPartyKey` have no reap branch, each delete needs a B-owner signature and tombstone, and B's node is not running when the adoption happens. B's storage as a whole goes when the empty cadre is dissolved.
+**What stays in B.** Nothing is deleted: `Strand` and `StrandPartyKey` have no reap branch, each delete needs a B-owner signature and tombstone, and B's node is not running when the adoption happens. B's local storage as a whole goes when the app dissolves B ([Dissolving the party it left](#dissolving-the-party-it-left)).
 
 `strand-moves-between-cadres.integration.ts` runs the move over a real network: a closed strand B founded and an open strand it joined keep syncing with the other party, which is told nothing, and A's always-on member hosts both.
+
+##### Dissolving the party it left
+
+`PhoneNode.dissolveFormerParty()` deletes B's local storage once A holds everything B holds and no other machine is in B, so the app runs only as a member of A. It is local: it writes nothing to A's control database, nor to B's, whose last `OwnerKey` row `OwnerKey.MinOneOwner` would keep anyway.
+
+**The check reads B's storage.** The move record cannot show the move complete: it is deleted once an adoption fails nothing, and one that does not parse is deleted with a warning. A node serves one party, so the dissolve, in turn with start, stop and join, reads A's holdings, stops A's node, starts a node for B alone (no addresses, no strand launched, nothing saved) to export B's bundle and list its `CadrePeer` rows, stops it, and starts A again. That is one restart of A for a rare action the user starts. A record of B's content kept at the join was rejected: it would be a second durable record that can be lost the way the move record can, and B's storage is the only ground truth. While B's move record exists the dissolve is refused before anything stops (`StrandMovePendingError`).
+
+**What A must hold.** cadre-core's `readStrandHoldings` and `unheldBundleContent` make the comparison, so any embedder can make the same check:
+
+- **Every strand id of B's export, under either kind.** A strand the move refused is one A already holds, so it passes: its data stays reachable from A, and only B's seat in it is lost, which the join already reported.
+- **Every pending join of B still open** (no outcome, before `ExpiresAt`). A `joined` one's strand is covered by the strand check, a `failed` one is history, and an expired one can never be attempted.
+- **No formation invitation.** B's node never runs again, so an invitation the move dropped was unredeemable from the join on.
+
+**Refusal and discard.** Anything A lacks, or a `CadrePeer` row of B other than the app's own node, refuses the dissolve with `FormerPartyNotEmptyError` naming them; A starts again and nothing is deleted. Something A dropped after the move (a moved strand the user left, a moved join dismissed and reaped) reads the same as something never moved, so the caller may pass the named strand and join ids back as `discard` to dissolve anyway. Other machines cannot be discarded: they may hold B's data, and removing them is the user's choice, made in B (`CadreNode.removePeer`).
+
+**What is deleted.** B's control database, its `<record>.<B>` node-local keys, its anchor slot, its unpublished joined-strand records and its move record; then the saved start stops naming B as `formerPartyId`, and A starts again without it. Strand databases stay: a strand's storage scope is its strand id, so A's copy of a moved strand is the same database, and a discarded strand's is kept for A to reuse if it joins that strand again.
+
+**A marker makes the removal resumable.** A node-local record naming B is written before the first deletion and deleted after the saved start stops naming B. Every start, and every dissolve, first finishes a removal a marker names, without checking again, since the check passed before the marker was written; a start also drops `formerPartyId` when the marker names it. Each deletion succeeds on what is already gone, so a crash at any step is finished by the next launch.
 
 ### When Is a Seed Needed?
 

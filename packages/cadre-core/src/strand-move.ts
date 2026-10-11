@@ -15,7 +15,8 @@
  * nodes never run at once, so the move has two ends: {@link exportStrandBundle} reads everything
  * B's node knows about its strands while it still runs, the embedder carries the bundle across
  * the switch as data, and {@link adoptStrandBundle} seats it on A's node once the app's key is
- * an owner there. Nothing is deleted in B; dissolving it is the embedder's later step.
+ * an owner there. Nothing is deleted in B; dissolving it is the embedder's later step, once
+ * {@link unheldBundleContent} finds nothing of B's export that A's {@link readStrandHoldings} lacks.
  *
  * Built over `CadreNode`'s public surface, so `cadre-node.ts` does not grow by the feature.
  */
@@ -122,7 +123,7 @@ export class StrandMoveSamePartyError extends Error {
  * @throws when the node is not started.
  */
 export async function exportStrandBundle(node: CadreNode): Promise<StrandBundle> {
-	const database = requireControlDatabase(node, 'export');
+	const database = requireControlDatabase(node, 'export a strand bundle');
 	const now = Date.now();
 	const bundle: StrandBundle = {
 		v: 1,
@@ -216,7 +217,7 @@ async function exportFormationInvites(database: ControlDatabase, now: number): P
  * @throws when the node is not started, beside the two typed refusals.
  */
 export async function adoptStrandBundle(node: CadreNode, bundle: StrandBundle): Promise<StrandMoveReport> {
-	const database = requireControlDatabase(node, 'adopt');
+	const database = requireControlDatabase(node, 'adopt a strand bundle');
 	if (bundle.partyId === node.partyId) {
 		throw new StrandMoveSamePartyError(node.partyId);
 	}
@@ -505,6 +506,57 @@ function sameRequest(live: PendingJoin, request: JoinRequestFields): boolean {
 		&& live.ExpiresAt === request.ExpiresAt;
 }
 
+/** What a party already holds of strands and joins, read from its running node. */
+export interface StrandHoldings {
+	strandIds: ReadonlySet<string>;
+	pendingJoinIds: ReadonlySet<string>;
+}
+
+/**
+ * Every strand id the node's party holds, of either kind (`Strand`, `JoinedStrand` and this
+ * machine's unpublished joins), and every pending join id it holds, whatever the outcome.
+ *
+ * @throws when the node is not started.
+ */
+export async function readStrandHoldings(node: CadreNode): Promise<StrandHoldings> {
+	const database = requireControlDatabase(node, 'read its strand holdings');
+	const strands = [
+		...await database.queryStrands(),
+		...await database.queryJoinedStrands(),
+		...await node.listUnpublishedJoinedStrands()
+	];
+	return {
+		strandIds: new Set(strands.map((row) => row.Id)),
+		pendingJoinIds: new Set((await database.queryPendingJoins()).map((join) => join.Id))
+	};
+}
+
+/**
+ * What of `bundle` a party with `holdings` lacks, so the exporting party can be dissolved only
+ * when this is empty. A strand counts as held under any kind: one the adoption refused is in
+ * the holdings (that is why it was refused), so its data stays reachable and only the
+ * exporting party's seat in it is lost. A pending join counts only while open at `nowMs`: a
+ * `joined` one's strand is covered by the strand check, a `failed` one is history, and an
+ * expired one can never be attempted. Formation invitations are not compared: the exporting
+ * node never runs again once dissolved, so one the adoption dropped was unredeemable from then.
+ */
+export function unheldBundleContent(bundle: StrandBundle, holdings: StrandHoldings, nowMs: number): {
+	strandIds: string[];
+	pendingJoinIds: string[];
+} {
+	return {
+		strandIds: bundle.strands.map((entry) => entry.row.Id).filter((strandId) => !holdings.strandIds.has(strandId)),
+		pendingJoinIds: bundle.pendingJoins
+			.filter((join) => isOpenJoin(join, nowMs) && !holdings.pendingJoinIds.has(join.Id))
+			.map((join) => join.Id)
+	};
+}
+
+/** No outcome yet, and before `ExpiresAt`: the pending-join runner attempts nothing at or after it. */
+function isOpenJoin(join: PendingJoin, nowMs: number): boolean {
+	return join.outcome === null && nowMs < join.ExpiresAt;
+}
+
 /** Content only: `Type` and the read secret. `FounderOwnerKey` is provenance, and a moved strand's changes. */
 function sameStrandContent(live: StrandRow, desired: StrandBundleEntry['row']): boolean {
 	return live.Type === desired.Type && (live.MemberPrivateKey ?? null) === (desired.MemberPrivateKey ?? null);
@@ -515,10 +567,10 @@ function isExpired(expiresAtMs: number | null, now: number): boolean {
 	return expiresAtMs !== null && expiresAtMs <= now;
 }
 
-function requireControlDatabase(node: CadreNode, action: 'export' | 'adopt'): ControlDatabase {
+function requireControlDatabase(node: CadreNode, action: string): ControlDatabase {
 	const database = node.getControlDatabase();
 	if (database === null) {
-		throw new Error(`CadreNode must be started before it can ${action} a strand bundle`);
+		throw new Error(`CadreNode must be started before it can ${action}`);
 	}
 	return database;
 }

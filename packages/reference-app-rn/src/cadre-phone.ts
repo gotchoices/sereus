@@ -64,7 +64,11 @@ export type SavedStartOptions = SavedStart;
 const phone = createPhoneNode({
   secureStore: SecureStore,
   secureStoreOptions: { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK },
-  leveldb: { openFn: (n, c, e) => new LevelDB(n, c, e), WriteBatch: LevelDBWriteBatch },
+  leveldb: {
+    openFn: (n, c, e) => new LevelDB(n, c, e),
+    WriteBatch: LevelDBWriteBatch,
+    destroy: (name) => LevelDB.destroyDB(name),
+  },
   // Phone → peer direct upgrade: a relayed `/p2p-circuit` connection hole-punches to a
   // direct `/webrtc` data path, the relay staying signalling-only. Each relay is also a
   // STUN server; `EXPO_PUBLIC_STUN_URLS` overrides the derived list.

@@ -9,9 +9,17 @@
  */
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ed25519PublicKeyFromPrivate, type CadreInvitation, type SAppConfig } from '@serfab/cadre-core';
+import {
+	adoptStrandBundle,
+	controlStorageScope,
+	ed25519PublicKeyFromPrivate,
+	exportStrandBundle,
+	type CadreInvitation,
+	type SAppConfig,
+} from '@serfab/cadre-core';
 import { FakeWriteBatch, lockingFakeRNLevelDB } from '../../../../test-harness/fake-rn-leveldb.js';
 import { secureStoreKeySegment } from '../../src/key-store.js';
+import { anchorSlotKey } from '../../src/node-local.js';
 import {
 	createPhoneNode,
 	DEFAULT_PHONE_NODE_NAMES,
@@ -40,7 +48,7 @@ function device(overrides: Partial<PhoneNodePlatform> = {}) {
 	const secureStore = new FakeSecureStore();
 	const platform: PhoneNodePlatform = {
 		secureStore,
-		leveldb: { openFn: leveldb.openFn, WriteBatch: FakeWriteBatch },
+		leveldb: { openFn: leveldb.openFn, WriteBatch: FakeWriteBatch, destroy: leveldb.destroy },
 		names: {
 			storagePrefix: `spec${sequence}-`,
 			nodeLocalDb: `spec${sequence}-node-local`,
@@ -402,6 +410,67 @@ describe('createPhoneNode — joining another party', () => {
 	}, LIFECYCLE_MS * 3);
 });
 
+describe('createPhoneNode — dissolving the party it left', () => {
+	/** Whether `party`'s control database holds any entry. Opened and closed again, so it must not be open. */
+	function controlDatabaseHoldsData(platform: PhoneNodePlatform, leveldb: ReturnType<typeof lockingFakeRNLevelDB>, party: string): boolean {
+		const db = leveldb.openFn(`${platform.names!.storagePrefix}${controlStorageScope(party)}`, true, false);
+		try {
+			return db.newIterator().seekToFirst().valid();
+		} finally {
+			db.close();
+		}
+	}
+
+	it('deletes the left party\'s storage once the running party holds its strands, and runs on without formerPartyId', async () => {
+		const { platform, leveldb, secureStore, partyId: former } = device();
+		const phone = phoneNode(platform);
+		const strandId = `${former}-strand`;
+		const left = await phone.start(options(former));
+		await left.foundStrand({ strandId, type: 'o', sAppConfig: NOTES_SAPP });
+		const bundle = await exportStrandBundle(left);
+		await phone.stop();
+		const joined = options(`${former}-joined`);
+		// Founded rather than joined, so no member of the joined party is needed: the dissolve does not read `origin`.
+		await adoptStrandBundle(await phone.start({ ...joined, formerPartyId: former }), bundle);
+		expect(secureStore.map.has(anchorSlotKey(former))).toBe(true);
+
+		await phone.dissolveFormerParty();
+
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+		const saved = await phone.loadSavedStart();
+		expect(saved?.options).toEqual(joined);
+		expect(secureStore.map.has(anchorSlotKey(former))).toBe(false);
+		expect(controlDatabaseHoldsData(platform, leveldb, former)).toBe(false);
+		await phone.stop();
+		const again = await phone.start(saved!.options);
+		expect(await again.getControlDatabase()?.queryStrand(strandId)).toMatchObject({ Id: strandId });
+	}, LIFECYCLE_MS * 6);
+
+	it('refuses while the left party holds a strand the running party lacks, and dissolves once it is discarded', async () => {
+		const { platform, leveldb, partyId: former } = device();
+		const phone = phoneNode(platform);
+		const strandId = `${former}-strand`;
+		const left = await phone.start(options(former));
+		await left.foundStrand({ strandId, type: 'o', sAppConfig: NOTES_SAPP });
+		await phone.stop();
+		await phone.start({ ...options(`${former}-joined`), formerPartyId: former });
+
+		await expect(phone.dissolveFormerParty()).rejects.toMatchObject({
+			name: 'FormerPartyNotEmptyError',
+			strandIds: [strandId],
+			pendingJoinIds: [],
+			otherMachines: [],
+		});
+
+		expect(phone.status.state).toBe('running');
+		expect(phone.options?.formerPartyId).toBe(former);
+		expect(controlDatabaseHoldsData(platform, leveldb, former)).toBe(true);
+		await phone.dissolveFormerParty({ discard: [strandId] });
+		expect(phone.options?.formerPartyId).toBeUndefined();
+		expect(controlDatabaseHoldsData(platform, leveldb, former)).toBe(false);
+	}, LIFECYCLE_MS * 6);
+});
+
 describe('createPhoneNode — storage names', () => {
 	it('pins the default names: renaming one orphans every installed phone\'s records', () => {
 		expect(DEFAULT_PHONE_NODE_NAMES).toEqual({
@@ -409,6 +478,7 @@ describe('createPhoneNode — storage names', () => {
 			nodeLocalDb: 'sereus-node-local',
 			nodeLocalKvPrefix: 'sereus:node-local:',
 			savedStartKey: 'start-options',
+			dissolveMarkerKey: 'dissolving-party',
 		});
 	});
 });

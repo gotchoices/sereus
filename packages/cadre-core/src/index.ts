@@ -565,12 +565,16 @@ export {
 
 // Moving a party's strands into another party of the same owner, so an app's strands follow
 // the app into the user's main cadre: the bundle one node exports from the party it leaves,
-// and its adoption by a node of the party it joined.
+// its adoption by a node of the party it joined, and the check that the party it left holds
+// nothing the joined one lacks before it is dissolved.
 export {
   exportStrandBundle,
   adoptStrandBundle,
+  readStrandHoldings,
+  unheldBundleContent,
   StrandMoveNotOwnerError,
   StrandMoveSamePartyError,
+  type StrandHoldings,
   type StrandBundle,
   type StrandBundleEntry,
   type FormationInviteEntry,

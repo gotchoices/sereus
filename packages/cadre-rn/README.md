@@ -22,7 +22,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 
 ## Phone node
 
-`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity in the secure store, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, and moves the node to another party's cadre by invitation. Call it once, at module scope; a second call over the same storage names throws while the first is running.
+`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity in the secure store, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by invitation, and deletes the cadre it left once that cadre is empty. Call it once, at module scope; a second call over the same storage names throws while the first is running.
 
 ```ts
 import * as SecureStore from 'expo-secure-store';           // or an adapter over the app's own secure store
@@ -33,7 +33,7 @@ import { buildNoiseCrypto, DEFAULT_NOISE_CRYPTO_MODE } from '@serfab/cadre-rn/no
 export const phone = createPhoneNode({
 	secureStore: SecureStore,
 	secureStoreOptions: { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK },
-	leveldb: { openFn: (n, c, e) => new LevelDB(n, c, e), WriteBatch: LevelDBWriteBatch },
+	leveldb: { openFn: (n, c, e) => new LevelDB(n, c, e), WriteBatch: LevelDBWriteBatch, destroy: (name) => LevelDB.destroyDB(name) },
 	noiseCrypto: { build: buildNoiseCrypto, defaultMode: DEFAULT_NOISE_CRYPTO_MODE },
 	names: { storagePrefix: 'myapp-', nodeLocalDb: 'myapp-node-local', nodeLocalKvPrefix: 'myapp:node-local:' },
 	dataVersion: '1',
@@ -55,6 +55,7 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `joinCadre(invitation, options?)` | Joins the cadre a decoded cadre invitation names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result, `formerPartyId` and `strandMove` (see [Moving the app's strands](#moving-the-apps-strands)). On a refusal, an expiry while waiting (`invite-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause). |
 | `pendingStrandMove()` | The move from `formerPartyId` still waiting to be adopted: the party it moves to, the strands not seated there yet and those it refused. `undefined` when none waits. |
 | `finishStrandMove()` | Adopts the waiting move on the running node now, in turn with start, stop and join, and returns cadre-core's `StrandMoveReport`; `undefined` when no move names the running party. Throws `StrandMoveNotOwnerError` while the app's key is no owner there. |
+| `dissolveFormerParty(options?)` | Deletes the local storage of `formerPartyId` once the running party holds everything it holds and no other machine is in it, and starts the running party again without `formerPartyId` (see [Dissolving the left cadre](#dissolving-the-left-cadre)). |
 | `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`. |
 | `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
 | `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the invitation's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), or `failed` (with the error). |
@@ -84,7 +85,7 @@ const joined = await phone.joinCadre(decodeCadreInvitation(pasted), {
 The saved start records how the app came to its party:
 
 - **`origin`**: `'founded'` (or absent) runs owner genesis on every start; `'joined'`, which `joinCadre` saves, never does, and wires the identity key only when the party lists it as an owner, so the app reports `owner: 'member'` otherwise. A start that names no `origin` takes the saved start's when it is for the same party.
-- **`formerPartyId`**: the party this app founded and left. Its data stays on disk under its own names until the old cadre is dissolved.
+- **`formerPartyId`**: the party this app founded and left. Its data stays on disk under its own names until `dissolveFormerParty()` deletes it, which also drops this field.
 
 Nothing is saved until a member admits the app, so a kill while waiting relaunches into the party it left. `stop()` cancels a join in progress.
 
@@ -98,7 +99,29 @@ Leaving a party it founded, `joinCadre` carries that party's strands, pending jo
 - **`result.strandMove`** is `{ state: 'done' | 'partial', report }` (`partial`: `report.failed` lists what is retried), or `{ state: 'deferred', reason: 'owner-key-not-wired' }`, or `{ state: 'deferred', reason: 'adoption-failed', error }`. Absent when there was nothing to move.
 - **A deferred or partial move** is retried by every start whose owner key is wired, before it reports `running`, or at once by `finishStrandMove()`. The record is deleted when an adoption fails nothing; strands the joined party refuses permanently (it participates in them under its own identity) are left out of later retries and listed in each report.
 - **A failed join** deletes the record it wrote, so the next join exports afresh.
-- **The left party's rows stay** in its storage, for dissolving the old cadre. No record for `formerPartyId` means nothing from it waits to be adopted; a record the kit cannot parse is deleted with a warning, so the absence is not proof that every strand arrived.
+- **The left party's rows stay** in its storage until it is dissolved (below). No record for `formerPartyId` means nothing from it waits to be adopted; a record the kit cannot parse is deleted with a warning, so the absence is not proof that every strand arrived.
+
+#### Dissolving the left cadre
+
+Once the move has finished, `dissolveFormerParty()` deletes what the party the app founded and left still holds on the phone, so the app runs only as a member of the party it joined ([architecture.md → Dissolving the party it left](../../docs/architecture.md#dissolving-the-party-it-left)). It runs in turn with start, stop and join, and takes a restart of the running node: it stops it, starts a node for the left party alone to read that party's strands, pending joins and machines from its own storage, stops that node, and starts the running party again.
+
+```ts
+import { FormerPartyNotEmptyError } from '@serfab/cadre-rn/phone-node';
+
+try {
+	await phone.dissolveFormerParty();
+} catch (err) {
+	if (!(err instanceof FormerPartyNotEmptyError) || err.otherMachines.length > 0) throw err;
+	// The user confirmed giving up what the running party does not hold.
+	await phone.dissolveFormerParty({ discard: [...err.strandIds, ...err.pendingJoinIds] });
+}
+```
+
+- **Refused before anything stops** with a plain `Error` unless the node runs with a `formerPartyId`, and with `StrandMovePendingError` (`pending`, as `pendingStrandMove()` reports it) while a move from that party waits: call `finishStrandMove()` first, in the party the move names.
+- **Refused after the read** with `FormerPartyNotEmptyError`, the running party started again and nothing deleted, when the left party holds a strand the running party does not, or a pending join still open there, or has a machine other than this app's node (`strandIds`, `pendingJoinIds`, `otherMachines`). A strand or join the running party dropped after the move reads the same, so the ids may be passed back as `discard`; other machines may not: remove them in the left party first.
+- **Removed:** the left party's control database (through `leveldb.destroy`, rn-leveldb's `LevelDB.destroyDB`), its node-local records, its trusted-owner anchor, its unpublished joined-strand records and its move record; the saved start drops `formerPartyId`. Strand databases stay: a moved strand's database is the running party's copy.
+- **A crash partway** is finished by the next start, or the next call: a node-local record under `names.dissolveMarkerKey` (`dissolving-party`) names the party from before the first deletion until the last.
+- **A failure starting the running party again** after the removal is the call's error, the node down; after a refusal it is logged and leaves `status` `failed`.
 
 ### Helpers
 
