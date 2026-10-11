@@ -1,5 +1,5 @@
 description: Two Sereus apps on the same phone exchange the join request and the invitation automatically by opening each other through a deep link, so the user confirms once in the owner app instead of copying and pasting twice.
-prereq: reference-apps-join-existing-cadre
+prereq: reference-app-rn-joins-existing-cadre, reference-app-rn-first-launch-asks-before-founding
 files: packages/cadre-rn/src/, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/app.json, docs/reference-app-rn.md, docs/architecture.md
 difficulty: medium
 ----
@@ -13,7 +13,7 @@ difficulty: medium
 3. On Allow, A issues an invitation targeted at B's peer id (`app-joins-existing-cadre-by-invitation`) and opens `returnUrl` with it. On Deny, it opens `returnUrl` with a refusal.
 4. B redeems the invitation and continues the reference-apps flow (join → move strands → dissolve).
 
-Copy/paste from `reference-apps-join-existing-cadre` stays as the fallback: for a second device, for an owner app that does not support the link, and when the round trip fails.
+Copy/paste from `reference-app-rn-joins-existing-cadre` and `reference-app-rn-owner-adds-device-or-app` stays as the fallback: for a second device, for an owner app that does not support the link, and when the round trip fails.
 
 ## Security
 

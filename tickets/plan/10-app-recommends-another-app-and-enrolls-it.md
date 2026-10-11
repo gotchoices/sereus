@@ -16,7 +16,7 @@ B does not exist yet, so the invitation cannot name its peer id. Approving in A 
 
 The invitation reaches B on first launch:
 - **Android:** the Play Install Referrer carries it (or a handoff id that B exchanges with A through the ticket-9 intent, if the invitation is too large for the referrer).
-- **iOS:** there is no install referrer. On first launch B asks "Join an existing cadre?" (the first-launch prompt in `reference-apps-join-existing-cadre`) and opens owner apps through the ticket-9 discovery. A finds the pending handoff for B and returns the invitation without asking again; the user already approved it.
+- **iOS:** there is no install referrer. On first launch B asks "Join an existing cadre?" (the first-launch prompt from `reference-app-rn-first-launch-asks-before-founding`) and opens owner apps through the ticket-9 discovery. A finds the pending handoff for B and returns the invitation without asking again; the user already approved it.
 
 B redeems the invitation at a reachable cadre machine (ticket 5). It has no strands yet, so nothing needs moving.
 
