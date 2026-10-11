@@ -25,6 +25,7 @@ import { join } from 'node:path';
 
 import { decodeNodeClaimPayload } from '@serfab/cadre-core';
 
+import type { ClaimAddressSettings } from '../../installer/config.js';
 import type { NodeReachability } from '../../nat/types.js';
 import type { HostedNodeAddressSource } from '../claim-details.js';
 import { HostedNodeService, HOSTED_NODE_SPAWNING_TTL_MS } from '../hosted-node-service.js';
@@ -39,10 +40,19 @@ const PEER_ID = '12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp';
 /** The owner key `/status.node.claimedBy` reports after a claim. */
 const OWNER_KEY = Buffer.alloc(32, 7).toString('base64url');
 
+/** What a home server's child reports: loopback, the LAN, a Docker bridge and a VPN interface, TCP and WebSocket. */
+const HOME_SERVER_ADDRS = [
+  `/ip4/127.0.0.1/tcp/4101/ws/p2p/${PEER_ID}`,
+  `/ip4/192.168.1.20/tcp/4001/p2p/${PEER_ID}`,
+  `/ip4/192.168.1.20/tcp/4101/ws/p2p/${PEER_ID}`,
+  `/ip4/172.18.0.1/tcp/4101/ws/p2p/${PEER_ID}`,
+  `/ip4/10.9.9.1/tcp/4101/ws/p2p/${PEER_ID}`,
+];
+
 /** A NAT layer with no public address and no verdicts. */
 const NO_ADDRESSES: HostedNodeAddressSource = {
   publicAddressesFor: () => [],
-  getStatus: () => ({ nodes: [] }),
+  getStatus: () => ({ nodes: [], gateway: { lanAddress: null } }),
 };
 
 /** A store whose next `put` fails once — the post-spawn write-failure path. */
@@ -124,13 +134,22 @@ interface Harness {
   changes: HostedNodeChange[];
 }
 
-function makeHarness(opts: { store?: HostedNodeStore; addresses?: HostedNodeAddressSource; now?: () => Date } = {}): Harness {
+function makeHarness(opts: {
+  store?: HostedNodeStore;
+  addresses?: HostedNodeAddressSource;
+  now?: () => Date;
+  claimAddressSettings?: () => ClaimAddressSettings | undefined;
+  primaryLan?: () => Promise<string | undefined>;
+} = {}): Harness {
   const orch = new FakeOrchestrator();
   const store = opts.store ?? new HostedNodeStore(join(tmpRoot, 'hosted'));
   const svc = new HostedNodeService({
     orchestrator: orch,
     store,
     addresses: opts.addresses ?? NO_ADDRESSES,
+    // Deterministic: never probe the test machine's real route unless a test says so.
+    primaryLan: opts.primaryLan ?? (async () => undefined),
+    ...(opts.claimAddressSettings ? { claimAddressSettings: opts.claimAddressSettings } : {}),
     ...(opts.now ? { now: opts.now } : {}),
   });
   const changes: HostedNodeChange[] = [];
@@ -231,7 +250,7 @@ describe('HostedNodeService.join', () => {
 });
 
 describe('HostedNodeService.claimDetails', () => {
-  it('answers the QR payload: public addresses with the peer id first, then the LAN addresses, loopback dropped', async () => {
+  it('answers the QR payload: phone-dialable public addresses first, then only the gateway\'s LAN address', async () => {
     const reachability: NodeReachability = {
       nodeId: '', running: true, verdict: 'mapped', reason: null,
       tcp: { internalPort: 4001, externalPort: 4001, source: 'upnp', leaseExpiresAt: null, error: null },
@@ -245,19 +264,19 @@ describe('HostedNodeService.claimDetails', () => {
           asked.push({ nodeId, ports });
           return ['/ip4/203.0.113.5/tcp/4001', '/ip4/203.0.113.5/tcp/4101/ws'];
         },
-        getStatus: () => ({ nodes: [{ ...reachability, nodeId: asked[0]?.nodeId ?? '' }] }),
+        getStatus: () => ({ nodes: [{ ...reachability, nodeId: asked[0]?.nodeId ?? '' }], gateway: { lanAddress: '192.168.1.20' } }),
       },
     });
     const view = await svc.join();
-    stubStatusFetch({});
+    stubStatusFetch({ multiaddrs: HOME_SERVER_ADDRS });
 
     const details = await svc.claimDetails(view.id);
 
     // The fake's ports for dock_1, straight from the orchestrator handle.
     expect(asked).toEqual([{ nodeId: view.id, ports: { health: 9001, metrics: 9101, p2p: 4001, ws: 4101 } }]);
     expect(details.peerId).toBe(PEER_ID);
+    // No TCP (a phone cannot dial it), no Docker bridge or VPN interface.
     expect(details.multiaddrs).toEqual([
-      `/ip4/203.0.113.5/tcp/4001/p2p/${PEER_ID}`,
       `/ip4/203.0.113.5/tcp/4101/ws/p2p/${PEER_ID}`,
       `/ip4/192.168.1.20/tcp/4101/ws/p2p/${PEER_ID}`,
     ]);
@@ -269,6 +288,35 @@ describe('HostedNodeService.claimDetails', () => {
     });
     // The peer id is cached on the record; the view carries it.
     expect(svc.get(view.id)?.peerId).toBe(PEER_ID);
+  });
+
+  it('falls back to the machine\'s primary address when no UPnP gateway answered', async () => {
+    const { svc } = makeHarness({ primaryLan: async () => '172.18.0.1' });
+    const view = await svc.join();
+    stubStatusFetch({ multiaddrs: HOME_SERVER_ADDRS });
+    expect((await svc.claimDetails(view.id)).multiaddrs).toEqual([`/ip4/172.18.0.1/tcp/4101/ws/p2p/${PEER_ID}`]);
+  });
+
+  it('follows claimAddresses: a public name replaces public IPs, lan none or an IP, and an exact addrs list', async () => {
+    let settings: ClaimAddressSettings | undefined = { lan: 'none' };
+    const { svc } = makeHarness({
+      addresses: {
+        publicAddressesFor: () => ['/dns4/home.example.org/tcp/4101/ws', '/ip4/203.0.113.5/tcp/4101/ws'],
+        getStatus: () => ({ nodes: [], gateway: { lanAddress: '192.168.1.20' } }),
+      },
+      claimAddressSettings: () => settings,
+    });
+    const view = await svc.join();
+    stubStatusFetch({ multiaddrs: HOME_SERVER_ADDRS });
+
+    expect((await svc.claimDetails(view.id)).multiaddrs).toEqual([`/dns4/home.example.org/tcp/4101/ws/p2p/${PEER_ID}`]);
+    settings = { lan: '10.9.9.1' };
+    expect((await svc.claimDetails(view.id)).multiaddrs).toEqual([
+      `/dns4/home.example.org/tcp/4101/ws/p2p/${PEER_ID}`,
+      `/ip4/10.9.9.1/tcp/4101/ws/p2p/${PEER_ID}`,
+    ]);
+    settings = { addrs: ['/dns4/proxy.example.org/tcp/443/wss'] };
+    expect((await svc.claimDetails(view.id)).multiaddrs).toEqual([`/dns4/proxy.example.org/tcp/443/wss/p2p/${PEER_ID}`]);
   });
 
   it('is 503 until the child answers, and 409 once the node is no longer unclaimed', async () => {

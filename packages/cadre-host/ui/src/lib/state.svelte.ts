@@ -170,6 +170,13 @@ export interface HostConfigFile {
 		autoApply: boolean;
 		manifestUrl?: string;
 	};
+	/** Which addresses claim codes carry; absent ⇒ automatic. */
+	claimAddresses?: {
+		/** 'auto', 'none' or an IP address. */
+		lan?: string;
+		/** Exact addresses instead of the automatic choice. */
+		addrs?: string[];
+	};
 }
 
 // --- Application state ---

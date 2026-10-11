@@ -12,7 +12,10 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { dirname } from 'node:path';
+
+import { multiaddr } from '@multiformats/multiaddr';
 
 export interface UpdatesConfig {
   /** When true, the daily-check timer auto-applies updates. Default false. */
@@ -41,6 +44,52 @@ export interface PushSettings {
   debounceMs?: number;
 }
 
+/**
+ * Which addresses a hosted node's QR code carries (cadre-core's `selectNodeClaimAddresses`).
+ * Absent ⇒ `{ lan: 'auto' }`. Read on every claim-code request, so an edit applies to the
+ * next code shown.
+ */
+export interface ClaimAddressSettings {
+  /**
+   * The LAN address a phone at home dials: `'auto'` (the address on the router's subnet, else
+   * the machine's primary one), `'none'` (public addresses only), or an IP address. Other
+   * private addresses (Docker bridges, VPNs) are left out either way.
+   */
+  lan?: string;
+  /**
+   * Exact addresses to put in every code instead (each without `/p2p/`; the node's peer id is
+   * appended), for an operator who knows better than the rule, such as one name behind a proxy.
+   */
+  addrs?: string[];
+}
+
+/** Why a `claimAddresses` value is unacceptable, naming the field; undefined when it is fine. */
+export function claimAddressSettingsProblem(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '"claimAddresses" must be an object';
+  const o = value as Record<string, unknown>;
+  for (const key of Object.keys(o)) {
+    if (key !== 'lan' && key !== 'addrs') return `Unknown setting "claimAddresses.${key}"`;
+  }
+  if (o.lan !== undefined) {
+    if (typeof o.lan !== 'string' || (o.lan !== 'auto' && o.lan !== 'none' && isIP(o.lan) === 0)) {
+      return '"claimAddresses.lan" must be "auto", "none" or an IP address';
+    }
+  }
+  if (o.addrs !== undefined) {
+    if (!Array.isArray(o.addrs) || !o.addrs.every((a) => typeof a === 'string')) {
+      return '"claimAddresses.addrs" must be a list of multiaddr strings';
+    }
+    for (const addr of o.addrs as string[]) {
+      try {
+        multiaddr(addr.trim());
+      } catch {
+        return `"claimAddresses.addrs" entry "${addr}" is not a valid multiaddr`;
+      }
+    }
+  }
+  return undefined;
+}
+
 export interface HostConfigFile {
   version: 3;
   /** A stable per-install id, for log correlation. */
@@ -63,6 +112,8 @@ export interface HostConfigFile {
    * they are read from the secret store at node-spawn time (`src/push/`).
    */
   push?: PushSettings;
+  /** Which addresses claim codes carry; absent ⇒ automatic. */
+  claimAddresses?: ClaimAddressSettings;
 }
 
 const CURRENT_VERSION = 3;

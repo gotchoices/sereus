@@ -150,6 +150,36 @@ describe('/api/settings routes', () => {
     expect(body.error.message).toMatch(/uiPort/);
   });
 
+  it('PUT claimAddresses persists it, and refuses a bad lan or address naming the field', async () => {
+    writeConfig(dataDir);
+    app = Fastify();
+    registerErrorHandler(app);
+    const settingsStore = new HostSettingsStore({ dataDir });
+    registerSettingsRoutes(app, { settingsStore, nat: fakeNat().svc });
+    const put = (payload: unknown) => app!.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify(payload),
+    });
+
+    const ok = await put({ claimAddresses: { lan: '192.168.2.27', addrs: [' /dns4/bateman.cc/tcp/51234/ws ', ''] } });
+    expect(ok.statusCode).toBe(200);
+    expect(settingsStore.read().claimAddresses).toEqual({ lan: '192.168.2.27', addrs: ['/dns4/bateman.cc/tcp/51234/ws'] });
+
+    for (const [payload, message] of [
+      [{ claimAddresses: { lan: 'sometimes' } }, /claimAddresses.lan/],
+      [{ claimAddresses: { addrs: ['not a multiaddr'] } }, /claimAddresses.addrs/],
+      [{ claimAddresses: { extra: [] } }, /claimAddresses.extra/],
+      [{ claimAddresses: 'auto' }, /must be an object/],
+    ] as const) {
+      const res = await put(payload);
+      expect(res.statusCode).toBe(400);
+      expect((res.json() as { error: { message: string } }).error.message).toMatch(message);
+    }
+    expect(settingsStore.read().claimAddresses?.lan).toBe('192.168.2.27');
+  });
+
   it('PUT unknown setting returns 400', async () => {
     writeConfig(dataDir);
     app = Fastify();

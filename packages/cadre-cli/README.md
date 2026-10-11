@@ -203,7 +203,11 @@ A claim secret, and a claim on record, cannot be combined with `--owner`, `--see
 
 `cadre code` asks the running node (its health `/status`, `--health-port` or `CADRE_HEALTH_PORT`) for its peer ID and addresses, reads the claim secret from `claim.secretFile` or `CADRE_CLAIM_SECRET`, and prints the code the owner's phone scans: `sereus-join:1.<base64url>`, cadre-core's `encodeNodeClaimPayload`, the same code cadre-host shows. It refuses a node that is not `awaiting` a claim.
 
-The code carries the node's non-loopback addresses a phone can dial, DNS names first (the public names in `network.appendAnnounceAddrs`, which work away from home), then the LAN ones. A phone has no TCP transport, so TCP addresses are left out unless `--all`; a shorter code is also a smaller QR code.
+The code carries only addresses a phone can use (cadre-core's `selectNodeClaimAddresses`, the same rule cadre-host applies): public names first (`network.appendAnnounceAddrs`, which work away from home; raw public IPs only when there is no name), then one LAN address, the machine's primary one. A phone has no TCP transport and dials each address in turn on its own timeout, so TCP, Docker bridges, VPNs and other interfaces are left out; a shorter code is also a smaller QR code.
+
+- `--lan <ip>` names the LAN address instead; `--no-lan` leaves LAN addresses out (a machine reached by its public name only).
+- `--addr <multiaddr>` (repeatable) puts exactly those addresses in the code.
+- `--all` keeps every address the node reports, TCP and every interface included.
 
 - `--qr` also draws it as a QR code in the terminal.
 - `--png <file>` / `--svg <file>` write it as an image (mode 600, since it carries the secret), on any platform.

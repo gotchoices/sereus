@@ -550,8 +550,10 @@ export {
 export {
   encodeNodeClaimPayload,
   decodeNodeClaimPayload,
+  selectNodeClaimAddresses,
   NODE_CLAIM_PAYLOAD_PREFIX,
-  type NodeClaimPayload
+  type NodeClaimPayload,
+  type NodeClaimAddressOptions
 } from './node-claim-payload.js';
 
 // Schema Verification

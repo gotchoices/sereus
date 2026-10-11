@@ -112,7 +112,8 @@ describe('/api/hosted-nodes join by invitation, over the real service', () => {
     const hostedNodes = new HostedNodeService({
       orchestrator: orch,
       store,
-      addresses: { publicAddressesFor: () => [], getStatus: () => ({ nodes: [] }) },
+      addresses: { publicAddressesFor: () => [], getStatus: () => ({ nodes: [], gateway: { lanAddress: null } }) },
+      primaryLan: async () => undefined,
     });
     app = Fastify();
     registerErrorHandler(app);

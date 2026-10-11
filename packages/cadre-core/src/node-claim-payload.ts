@@ -13,7 +13,20 @@
  * `@libp2p/peer-id` and `uint8arrays`, so it loads on React Native and in the browser.
  */
 import { peerIdFromString } from '@libp2p/peer-id';
-import { multiaddr, CODE_P2P, CODE_P2P_CIRCUIT } from '@multiformats/multiaddr';
+import {
+	multiaddr,
+	CODE_DNS,
+	CODE_DNS4,
+	CODE_DNS6,
+	CODE_DNSADDR,
+	CODE_IP4,
+	CODE_IP6,
+	CODE_IP6ZONE,
+	CODE_P2P,
+	CODE_P2P_CIRCUIT,
+	CODE_WS,
+	CODE_WSS,
+} from '@multiformats/multiaddr';
 import { fromString as uint8ArrayFromString, toString as uint8ArrayToString } from 'uint8arrays';
 import { canonicalJson } from './canonical-json.js';
 import { parseClaimSecret } from './claim-proof.js';
@@ -65,6 +78,89 @@ export function decodeNodeClaimPayload(text: string): NodeClaimPayload {
 	}
 	if (typeof secret !== 'string') throw new Error('A claim payload must carry the claim secret');
 	return requireNodeClaimPayload({ peerId, multiaddrs, secret });
+}
+
+/** How {@link selectNodeClaimAddresses} narrows a node's addresses. */
+export interface NodeClaimAddressOptions {
+	/**
+	 * The machine's LAN address, the one a phone at home reaches it on. A string keeps only
+	 * the private addresses on that IP (dropping Docker bridges, VPN and other interfaces no
+	 * phone can reach); `null` drops every private address (a machine reached only by its
+	 * public name); absent keeps them all, for a caller that cannot tell.
+	 */
+	lan?: string | null;
+	/** Keep addresses a phone cannot dial: plain TCP. Default false, since phones dial WebSocket and relay only. */
+	includeTcp?: boolean;
+}
+
+/**
+ * The addresses a node code should carry, from the ones a node knows it has (`/status`,
+ * a NAT layer's public addresses). A phone dials them in turn, each on its own timeout, so
+ * every address it cannot reach only delays a failing claim, and makes the QR code bigger.
+ *
+ * - Each gains `/p2p/<peerId>` when it lacks a destination; loopback, unspecified and
+ *   unparsable ones are dropped, and so is plain TCP unless `includeTcp`.
+ * - Public names (`/dns*`) come first: they work away from home. Public IP addresses are
+ *   kept only when there is no public name, since they reach the same machine.
+ * - Private addresses follow, narrowed by {@link NodeClaimAddressOptions.lan}; relay
+ *   addresses last.
+ *
+ * Pure and dependency-light, like the codec beside it, so it loads on React Native too.
+ * Finding the LAN address is the caller's (Node: `@serfab/cadre-core/primary-lan-address`).
+ */
+export function selectNodeClaimAddresses(reported: readonly string[], peerId: string, options: NodeClaimAddressOptions = {}): string[] {
+	const names: string[] = [];
+	const publicIps: string[] = [];
+	const privates: string[] = [];
+	const relayed: string[] = [];
+	for (const raw of reported) {
+		const classified = classifyClaimAddress(raw.trim(), peerId, options);
+		if (!classified) continue;
+		({ name: names, public: publicIps, private: privates, relay: relayed })[classified.kind].push(classified.addr);
+	}
+	return [...new Set([...names, ...(names.length > 0 ? [] : publicIps), ...privates, ...relayed])];
+}
+
+type ClaimAddressKind = 'name' | 'public' | 'private' | 'relay';
+
+/** One address's place in {@link selectNodeClaimAddresses}, or undefined to drop it. */
+function classifyClaimAddress(addr: string, peerId: string, options: NodeClaimAddressOptions): { kind: ClaimAddressKind; addr: string } | undefined {
+	let components: ReturnType<ReturnType<typeof multiaddr>['getComponents']>;
+	try {
+		components = multiaddr(addr).getComponents();
+	} catch {
+		return undefined;
+	}
+	const withId = components.some((c) => c.code === CODE_P2P) ? addr : `${addr}/p2p/${peerId}`;
+	if (components.some((c) => c.code === CODE_P2P_CIRCUIT)) return { kind: 'relay', addr: withId };
+	if (!options.includeTcp && !components.some((c) => c.code === CODE_WS || c.code === CODE_WSS)) return undefined;
+	const host = components[0];
+	if (!host?.value) return undefined;
+	if (host.code === CODE_DNS || host.code === CODE_DNS4 || host.code === CODE_DNS6 || host.code === CODE_DNSADDR) {
+		return host.value === 'localhost' ? undefined : { kind: 'name', addr: withId };
+	}
+	if (host.code !== CODE_IP4 && host.code !== CODE_IP6 && host.code !== CODE_IP6ZONE) return undefined;
+	const ip = host.code === CODE_IP6ZONE ? components[1]?.value ?? '' : host.value;
+	if (isLoopbackOrUnspecified(ip)) return undefined;
+	if (host.code !== CODE_IP6ZONE && !isPrivateIp(ip)) return { kind: 'public', addr: withId };
+	if (options.lan === null) return undefined;
+	if (options.lan !== undefined && ip !== options.lan) return undefined;
+	return { kind: 'private', addr: withId };
+}
+
+function isLoopbackOrUnspecified(ip: string): boolean {
+	return ip.startsWith('127.') || ip === '0.0.0.0' || ip === '::1' || ip === '::';
+}
+
+/** RFC 1918, carrier-grade NAT (100.64/10), link-local, and IPv6 unique-local / link-local. */
+function isPrivateIp(ip: string): boolean {
+	if (ip.includes(':')) return /^(f[cd]|fe[89ab])/i.test(ip);
+	const [a, b] = ip.split('.').map(Number) as [number, number];
+	return a === 10
+		|| (a === 172 && b >= 16 && b <= 31)
+		|| (a === 192 && b === 168)
+		|| (a === 169 && b === 254)
+		|| (a === 100 && b >= 64 && b <= 127);
 }
 
 /** The shape rules both directions apply. Returns the payload with its fields trimmed. */

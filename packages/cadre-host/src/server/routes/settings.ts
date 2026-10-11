@@ -8,6 +8,7 @@
  *   - upnpEnabled   accepted → also propagated to NatService.putSettings
  *   - updates.autoApply  accepted → propagated to UpdateService.putSettings
  *   - updates.manifestUrl accepted → propagated to UpdateService.putSettings
+ *   - claimAddresses accepted (replaced whole) → read by the next claim code
  *   - anything else 400 invalid_setting
  *
  * GET returns the full `HostConfigFile` (the SPA wants the full shape so it
@@ -19,10 +20,11 @@ import type { FastifyInstance } from 'fastify';
 import type { NatService } from '../../nat/index.js';
 import type { UpdateService } from '../../update/index.js';
 import type { HostSettingsStore } from '../settings-store.js';
+import { claimAddressSettingsProblem, type ClaimAddressSettings } from '../../installer/config.js';
 
 const FORBIDDEN_KEYS = new Set<string>(['uiPort', 'dataDir', 'installId', 'installedAt', 'installerVersion', 'version']);
 
-const WRITABLE_TOP_KEYS = new Set<string>(['upnpEnabled', 'updates']);
+const WRITABLE_TOP_KEYS = new Set<string>(['upnpEnabled', 'updates', 'claimAddresses']);
 const WRITABLE_UPDATES_KEYS = new Set<string>(['autoApply', 'manifestUrl']);
 
 export interface SettingsRoutesOptions {
@@ -50,7 +52,7 @@ export function registerSettingsRoutes(app: FastifyInstance, opts: SettingsRoute
     }
 
     const current = settingsStore.read();
-    const patch: { upnpEnabled?: boolean; updates?: typeof current.updates } = {};
+    const patch: { upnpEnabled?: boolean; updates?: typeof current.updates; claimAddresses?: ClaimAddressSettings } = {};
 
     if ('upnpEnabled' in body) {
       patch.upnpEnabled = body.upnpEnabled as boolean;
@@ -74,6 +76,13 @@ export function registerSettingsRoutes(app: FastifyInstance, opts: SettingsRoute
       }
     }
 
+    if ('claimAddresses' in body) {
+      const { lan, addrs } = body.claimAddresses as ClaimAddressSettings;
+      patch.claimAddresses = {
+        ...(lan !== undefined ? { lan } : {}),
+        ...(addrs !== undefined ? { addrs: addrs.map((a) => a.trim()).filter((a) => a.length > 0) } : {}),
+      };
+    }
     const next = settingsStore.update(patch);
     return { ok: true, data: next };
   });
@@ -90,6 +99,10 @@ function validatePatch(body: Record<string, unknown>): { error?: string } {
   }
   if ('upnpEnabled' in body && typeof body.upnpEnabled !== 'boolean') {
     return { error: '"upnpEnabled" must be a boolean' };
+  }
+  if ('claimAddresses' in body) {
+    const problem = claimAddressSettingsProblem(body.claimAddresses);
+    if (problem) return { error: problem };
   }
   if ('updates' in body) {
     if (!body.updates || typeof body.updates !== 'object') {

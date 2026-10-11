@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { decodeNodeClaimPayload, encodeNodeClaimPayload } from '@serfab/cadre-core';
-import { nodeCodeLink, openerFor, selectClaimAddresses } from '../src/commands/code.js';
+import { claimAddressesFor, nodeCodeLink, openerFor } from '../src/commands/code.js';
 import { resolveClaimSecret } from '../src/commands/claim-secret.js';
 
 /**
@@ -21,45 +21,38 @@ const REPORTED = [
   `/dns4/node.example.com/tcp/4002/ws/p2p/${PEER}`,
 ];
 
-describe('selectClaimAddresses', () => {
-  it('keeps phone-dialable, non-loopback addresses with DNS names first', () => {
-    expect(selectClaimAddresses(REPORTED, PEER)).toEqual([
+describe('claimAddressesFor', () => {
+  const LAN = async () => '192.168.2.27';
+  const withLan = [...REPORTED, `/ip4/172.20.0.1/tcp/4002/ws/p2p/${PEER}`];
+
+  it('keeps the public name and the auto-detected LAN address (the rule itself is cadre-core\'s)', async () => {
+    expect(await claimAddressesFor(withLan, PEER, {}, LAN)).toEqual([
       `/dns4/node.example.com/tcp/4002/ws/p2p/${PEER}`,
       `/ip4/192.168.2.27/tcp/4002/ws/p2p/${PEER}`,
     ]);
   });
 
-  it('keeps only the main LAN address among private ones (no Docker bridges or VPNs), unless all', () => {
-    const reported = [
+  it('takes --lan as given, and --no-lan as none', async () => {
+    const reported = [...withLan, `/ip4/10.9.9.1/tcp/4002/ws/p2p/${PEER}`];
+    expect(await claimAddressesFor(reported, PEER, { lan: '10.9.9.1' }, LAN)).toEqual([
       `/dns4/node.example.com/tcp/4002/ws/p2p/${PEER}`,
-      `/ip4/192.168.2.27/tcp/4002/ws/p2p/${PEER}`,
-      `/ip4/172.20.0.1/tcp/4002/ws/p2p/${PEER}`,
       `/ip4/10.9.9.1/tcp/4002/ws/p2p/${PEER}`,
-      `/ip4/203.0.113.7/tcp/4002/ws/p2p/${PEER}`,
-    ];
-    expect(selectClaimAddresses(reported, PEER, false, '192.168.2.27')).toEqual([
-      `/dns4/node.example.com/tcp/4002/ws/p2p/${PEER}`,
-      `/ip4/192.168.2.27/tcp/4002/ws/p2p/${PEER}`,
-      `/ip4/203.0.113.7/tcp/4002/ws/p2p/${PEER}`,
     ]);
-    expect(selectClaimAddresses(reported, PEER, false)).toHaveLength(5);
-    expect(selectClaimAddresses(reported, PEER, true, '192.168.2.27')).toHaveLength(5);
+    expect(await claimAddressesFor(reported, PEER, { lan: false }, LAN)).toEqual([`/dns4/node.example.com/tcp/4002/ws/p2p/${PEER}`]);
   });
 
-  it('keeps TCP with all, and appends a missing /p2p suffix once', () => {
-    expect(selectClaimAddresses(['/ip4/10.0.0.5/tcp/4001', `/ip4/10.0.0.5/tcp/4001/p2p/${PEER}`], PEER, true))
-      .toEqual([`/ip4/10.0.0.5/tcp/4001/p2p/${PEER}`]);
+  it('uses an --addr list exactly, appending /p2p once', async () => {
+    expect(await claimAddressesFor(withLan, PEER, { addr: ['/dns4/a.example/tcp/1/ws', `/dns4/b.example/tcp/2/ws/p2p/${PEER}`] }, LAN))
+      .toEqual([`/dns4/a.example/tcp/1/ws/p2p/${PEER}`, `/dns4/b.example/tcp/2/ws/p2p/${PEER}`]);
   });
 
-  it('keeps wss and relay addresses', () => {
-    const relay = `/dns4/relay.example.org/tcp/443/wss/p2p/12D3KooWRelayPeerIdAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/p2p-circuit/p2p/${PEER}`;
-    expect(selectClaimAddresses([`/dns4/n.example.com/tcp/443/wss/p2p/${PEER}`, relay], PEER))
-      .toEqual([`/dns4/n.example.com/tcp/443/wss/p2p/${PEER}`, relay]);
+  it('keeps everything, TCP included, with --all', async () => {
+    expect(await claimAddressesFor(withLan, PEER, { all: true }, LAN)).toHaveLength(4);
   });
 
-  it('yields a list encodeNodeClaimPayload accepts and decodes back', () => {
+  it('yields a list encodeNodeClaimPayload accepts and decodes back', async () => {
     const secret = randomBytes(32).toString('base64url');
-    const multiaddrs = selectClaimAddresses(REPORTED, PEER);
+    const multiaddrs = await claimAddressesFor(REPORTED, PEER, {}, LAN);
     const code = encodeNodeClaimPayload({ peerId: PEER, multiaddrs, secret });
     expect(decodeNodeClaimPayload(code)).toEqual({ peerId: PEER, multiaddrs, secret });
   });
