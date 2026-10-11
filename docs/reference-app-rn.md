@@ -651,7 +651,7 @@ For local development (phone and drone on the same machine or LAN):
 ### Step 3: Connect the Phone
 
 1. Open the Expo app on the phone (or emulator)
-2. Go to the **Settings** tab
+2. Go to the **Settings** tab. On a first launch the Node card asks "Do you already use Sereus apps?" ([Joining an Existing Cadre → First launch](#joining-an-existing-cadre)); tap **No, start fresh** for the Connect form
 3. Enter:
    - **Party ID**: `reference-chat-party` (must match `controlNetwork.partyId` in the drone config)
    - **Bootstrap addr**: the multiaddr from Step 2
@@ -812,12 +812,14 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 
 **When no invitation can be made.** `createCadreInvitation` needs an address a device could dial: this phone's relay address, or another machine of the cadre's. With neither, the alert "Could not make an invitation" carries the core error, and says this phone has no relay address when it holds no relay reservation. A device whose owner key is not wired yet (a joined app whose owner grant has not arrived) is shown the member line.
 
-Neither side has had a device run yet; ticket `reference-app-rn-first-launch-asks-before-founding` files one covering both.
+Neither side has had a device run yet; `tickets/blocked/rn-device-run-join-existing-cadre.md` covers both.
 
 
 ## Joining an Existing Cadre
 
-**Settings → Join my existing cadre** is the joining side of [architecture.md → Handing an invitation from app to app](architecture.md#handing-an-invitation-from-app-to-app): an app that started a cadre of its own joins the cadre another Sereus app holds, moves its chats into it and removes its own cadre from this phone ([architecture.md → An app joins an existing cadre](architecture.md#an-app-joins-an-existing-cadre)). The section shows while the node is connected, and whenever a join's steps are on screen, whatever the status.
+**Settings → Join my existing cadre** is the joining side of [architecture.md → Handing an invitation from app to app](architecture.md#handing-an-invitation-from-app-to-app): an app that started a cadre of its own joins the cadre another Sereus app holds, moves its chats into it and removes its own cadre from this phone ([architecture.md → An app joins an existing cadre](architecture.md#an-app-joins-an-existing-cadre)). The section shows while the node is connected, whenever a join's steps are on screen, whatever the status, and on a first launch after **Yes, join my cadre**.
+
+**First launch.** While the app has no cadre, the Node card asks "Do you already use Sereus apps?" in place of the Connect form, so the app never founds a cadre it would then have to leave. It asks when the launch read of the saved start (`savedStartRead` in `use-cadre.ts`) found none, the status is `idle` and no join is on screen. **Yes, join my cadre** shows the join section with no node running (nothing moves and nothing is removed), and **Back** returns to the question; **No, start fresh** shows the Connect form. The answer is screen state: until a start is saved (by Connect or by a join), the question comes back at the next launch. A launch read that failed does not ask; its error line explains, and the Connect form is the recovery.
 
 **Request and response** (recommended). The section shows this app's join request (`sereus-join-request:1.…`) as a QR code, **Copy** and text, and under it the peer id shortened as **Code**, which the other app's approval prompt shows for the user to compare. The request carries the app's peer id (`identityPeerId()`, readable with no node running) and `app.json`'s `name`. The other app pastes or scans it under **Add a device or app → Paste request** and makes an invitation for this app alone; that response is pasted, or scanned with **Scan**, into **Paste response or invitation**, then **Join**. A response made for another app's request is refused before anything stops.
 
@@ -833,7 +835,7 @@ Neither side has had a device run yet; ticket `reference-app-rn-first-launch-ask
 | removing | removing this app's old cadre from this phone | none |
 | done | part of the cadre, as an owner or a member, and how many chats moved | OK |
 
-Nothing is cancellable once a member admitted the app, since the kit never rolls an admitted join back. While the node stops and starts again (the join, and the removal) the Node card shows "Switching cadre…" in place of the Connect form, the connected sections hide, and the hook holds no node, so nothing writes through a stopped one.
+Nothing is cancellable once a member admitted the app, since the kit never rolls an admitted join back. While the node stops and starts again (the join, and the removal) the Node card shows "Switching cadre…" ("Joining your cadre…" on a first launch) in place of the Connect form, the connected sections hide, and the hook holds no node, so nothing writes through a stopped one.
 
 **What each failure leaves.**
 
@@ -989,18 +991,14 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 
 | Flow | What it covers |
 |------|----------------|
-| `flows/1-connect-and-send.yaml` | Cold launch → connect → join → create strand → send message → local echo |
+| `flows/1-connect-and-send.yaml` | Cold launch → join on first launch → create strand → send message → local echo |
 | `flows/2-drone-to-phone.yaml` | Drone-side HTTP insert appears in phone chat within 5s |
 | `flows/3-round-trip.yaml` | Bidirectional: phone send seen by drone; drone send seen by phone; both visible |
 | `flows/4-solo-create-strand.yaml` | No drone: connect alone (empty party id and bootstrap) → create strand → result modal with its elapsed time |
 
-Flows 1–3 share `_setup.yaml` for the connect/join/strand bootstrap. Flow 4 connects alone and does not use it; the orchestrator still runs it with the rest of the directory, and it can be run by itself with `maestro test -e MAESTRO_APP_ID=… maestro/flows/4-solo-create-strand.yaml`.
+Flows 1–3 share `_setup.yaml` for the join/strand bootstrap. Flow 4 does not use it: it answers the first-launch question with **No, start fresh** (a conditional tap, since the NativeScript app that reuses the flow has no question) and connects alone. The orchestrator still runs it with the rest of the directory, and it can be run by itself with `maestro test -e MAESTRO_APP_ID=… maestro/flows/4-solo-create-strand.yaml`.
 
-The phone joins the drone's cadre the way a fresh install would: `_setup.yaml`
-connects with blank fields, so the phone founds a cadre of its own, then pastes
-the drone's invitation under **Join my existing cadre** and taps **Join**, which
-switches the app to the drone's party and removes the cadre it founded (it holds
-no chats, so nothing moves). The fixture enrolls its own owner key (`ensureOwnerKey`) and
+The phone joins the drone's cadre the way a fresh install of a user who already has a cadre would: `_setup.yaml` answers the first-launch question with **Yes, join my cadre**, pastes the drone's invitation and taps **Join**, so the app never founds a cadre of its own and nothing moves or is removed. The fixture enrolls its own owner key (`ensureOwnerKey`) and
 mints an owner-granting cadre invitation valid for an hour
 (`createCadreInvitation`) whose member address is the drone's ws listener;
 `start.mjs` writes it as `cadreInvitation`, and the orchestrator threads it in as

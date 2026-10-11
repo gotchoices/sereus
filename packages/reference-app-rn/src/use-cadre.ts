@@ -100,6 +100,8 @@ function unreachableInviteMessage(relay: RelayReservationState): string {
 
 export type CadreStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
+export type SavedStartRead = 'reading' | 'read' | 'failed';
+
 export interface UseCadreResult extends JoinFlowActions {
   /** Current connection status */
   status: CadreStatus;
@@ -141,10 +143,16 @@ export interface UseCadreResult extends JoinFlowActions {
    */
   relayStatus: RelayReservationStatus;
   /**
-   * The options the node last started with, read once at launch for the Settings form
-   * to prefill from. Null until that read resolves, and when nothing is saved.
+   * The options the node last started with, read at launch for the Settings form to
+   * prefill from, and replaced by every start, join or dissolve that succeeds. Null until
+   * that read resolves, and while nothing is saved.
    */
   savedStartOptions: PhoneNodeOptions | null;
+  /**
+   * How the launch read of the saved start went: `read` whether or not it found one, so
+   * `read` with null {@link savedStartOptions} means this app has no party yet.
+   */
+  savedStartRead: SavedStartRead;
   /** Start the node with the given options */
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
@@ -238,6 +246,7 @@ export function useCadreInternal(): UseCadreResult {
   const [degraded, setDegraded] = useState(false);
   const [relayStatus, setRelayStatus] = useState<RelayReservationStatus>(() => getRelayState().status);
   const [savedStartOptions, setSavedStartOptions] = useState<PhoneNodeOptions | null>(null);
+  const [savedStartRead, setSavedStartRead] = useState<SavedStartRead>('reading');
   // Track the latest node so event handlers always reference it
   const nodeRef = useRef<CadreNode | null>(node);
   nodeRef.current = node;
@@ -473,6 +482,8 @@ export function useCadreInternal(): UseCadreResult {
       optsRef.current = opts;
       showNode(await startPhoneNode(opts));
       setStatus('connected');
+      // The kit saved this start; Settings asks before founding only while none is saved.
+      setSavedStartOptions(getRunningOptions() ?? opts);
       // Acquire + publish the FCM/APNs device token so a server peer can push-wake
       // this phone while suspended. Best-effort: permission-denied / pre-membership
       // defers silently and retries on the next start (see push-wake-native).
@@ -511,11 +522,14 @@ export function useCadreInternal(): UseCadreResult {
         // start before anything is saved.
         console.warn('[use-cadre] could not read the saved start options:', err);
         if (!unmounted) {
+          setSavedStartRead('failed');
           setError(`Could not read the saved connection settings: ${err instanceof Error ? err.message : String(err)}`);
         }
         return;
       }
-      if (unmounted || !saved) return;
+      if (unmounted) return;
+      setSavedStartRead('read');
+      if (!saved) return;
       setSavedStartOptions(saved.options);
       if (!saved.autoStart || optsRef.current) return;
       await start(saved.options);
@@ -681,7 +695,7 @@ export function useCadreInternal(): UseCadreResult {
   return {
     status, node, peerId, ownerPublicKey, noiseCryptoMode, strands,
     selectedStrandId, activeStrand, selectStrand,
-    error, runnerState, resuming, degraded, relayStatus, savedStartOptions,
+    error, runnerState, resuming, degraded, relayStatus, savedStartOptions, savedStartRead,
     start, stop, applySeed, dialPeer, createStrand,
     identityPeerId, joinRequestText, ...joinFlowActions,
     createClosedStrandWithInvite, joinViaInvite, isOwnerDevice, claimHostNode,

@@ -4,7 +4,8 @@ appId: ${MAESTRO_APP_ID}
 #
 # Guards the 2026-09-14 device report (fix ticket rn-solo-founding-stall-on-device):
 # on a phone with no drone and no peers, "Create Chat Strand" showed no result for
-# minutes. This flow connects with an empty party id and no bootstrap address, so it
+# minutes. This flow answers the RN app's first-launch question with No, then
+# connects with an empty party id and no bootstrap address, so it
 # needs no drone fixture and does not use _setup.yaml. Both apps' run-e2e.mjs
 # (reference-app-rn and reference-app-ns) still run it with the rest of
 # maestro/flows/; the drone env vars they pass are unused here. Assert only elements
@@ -17,6 +18,19 @@ appId: ${MAESTRO_APP_ID}
     clearState: true
 
 - tapOn: "Settings"
+
+# ── First launch: start fresh ─────────────────────────────────────────────
+# The RN app asks "Do you already use Sereus apps?" before it founds a cadre; No
+# shows the Connect form. The NS app has no question, so the tap is conditional; a
+# `visible` condition waits for the element as an optional lookup does, which covers
+# the launch read the question waits on.
+- runFlow:
+    when:
+      visible:
+        id: "btn-first-launch-fresh"
+    commands:
+      - tapOn:
+          id: "btn-first-launch-fresh"
 
 # ── Connect alone ─────────────────────────────────────────────────────────
 # Party id and bootstrap address stay empty: Settings generates a party id and the

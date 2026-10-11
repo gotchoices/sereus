@@ -480,7 +480,7 @@ The orchestrator:
 | `flows/3-round-trip.yaml` | bidirectional (app→drone and drone→app both visible) + monotonic timestamps |
 | `flows/4-solo-create-strand.yaml` | no drone: connect alone → create strand → `Strand created` within 60 s |
 
-Flow 4 uses no drone and no `_setup.yaml`, only `btn-connect`, `btn-disconnect`, `btn-create-strand`, `modal-title` and `btn-modal-ok`. Flows 1–3 share `_setup.yaml` and the `_helpers/*.js`
+Flow 4 uses no drone and no `_setup.yaml`; it taps the RN app's `btn-first-launch-fresh` only when it shows, so on NS it uses only `btn-connect`, `btn-disconnect`, `btn-create-strand`, `modal-title` and `btn-modal-ok`. Flows 1–3 share `_setup.yaml` and the `_helpers/*.js`
 (`discover-phone-strand.js`, `drone-insert.js`, `drone-assert-phone-message.js`,
 `assert-monotonic-timestamps.js`). The app-created strand syncs to the drone via
 `strandFilter:all`; `discover-phone-strand.js` polls the sidecar `/status` to find

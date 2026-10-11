@@ -1,11 +1,10 @@
 appId: ${MAESTRO_APP_ID}
 ---
 # Shared bootstrap for all e2e flows.
-# Launches the phone app, connects with blank fields (founding its own cadre, as
-# a fresh install does), joins the drone's cadre under "Join my existing cadre"
-# by redeeming its invitation (which switches the app to the drone's party and
-# removes the cadre it founded), creates a chat strand, and switches to the Chat
-# tab.
+# Launches the phone app fresh, answers the first-launch question "Do you already
+# use Sereus apps?" with Yes, joins the drone's cadre by redeeming its invitation
+# (the app never founds a cadre of its own), creates a chat strand, and switches
+# to the Chat tab.
 #
 # Env vars (injected by scripts/run-e2e.mjs):
 #   CADRE_INVITATION         — drone's cadre invitation (pins the drone owner key
@@ -27,24 +26,15 @@ appId: ${MAESTRO_APP_ID}
 # Settings tab.
 - tapOn: "Settings"
 
-# ── Connect ───────────────────────────────────────────────────────────────
-# Party ID and Bootstrap addr stay blank: the phone founds a cadre of its own.
-# The Relay field, the Connection encryption choice and their captions sit between
-# the bootstrap field and this button, which can put it below the fold on a short
-# screen. Scrolling to an element already on screen does nothing.
-- scrollUntilVisible:
-    element:
-      id: "btn-connect"
-    direction: DOWN
-- tapOn:
-    id: "btn-connect"
+# ── Join the drone's cadre on first launch ─────────────────────────────────
+# A fresh install has no saved start, so the Node card asks before founding.
 - extendedWaitUntil:
     visible:
-      id: "btn-disconnect"
+      id: "btn-first-launch-join"
     timeout: 15000
-
-# ── Join the cadre ────────────────────────────────────────────────────────
-# "Join my existing cadre" sits below Seed Bootstrap, and its own request (a QR
+- tapOn:
+    id: "btn-first-launch-join"
+# "Join my existing cadre" sits below the Node card, and its own request (a QR
 # code) sits above the field, which can put the field below the fold.
 - scrollUntilVisible:
     element:
@@ -60,11 +50,11 @@ appId: ${MAESTRO_APP_ID}
     direction: DOWN
 - tapOn:
     id: "btn-join-cadre"
-# The join stops the phone's own node, starts one in the drone's party, dials the
-# drone and waits for its answer, and wires the phone's owner key; then it
-# removes the cadre the phone founded (it holds no chats, so nothing moves),
-# which restarts the node once more. The connected sections come back above the
-# join section when it is done, which can push the done line below the fold.
+# The join starts a node in the drone's party (the build's default relay and
+# encryption), dials the drone, waits for its answer and wires the phone's owner
+# key. No cadre of the app's own exists, so nothing moves and nothing is removed.
+# The connected sections come back above the join section when it is done, which
+# can push the done line below the fold.
 - scrollUntilVisible:
     element:
       id: "btn-join-flow-ok"
@@ -77,8 +67,8 @@ appId: ${MAESTRO_APP_ID}
     id: "btn-join-flow-ok"
 
 # ── Create strand ─────────────────────────────────────────────────────────
-# The connected sections were hidden while the node switched party, so the
-# button may no longer be on screen.
+# The connected sections appeared above the join section, so the button may
+# not be on screen.
 - scrollUntilVisible:
     element:
       id: "btn-create-strand"

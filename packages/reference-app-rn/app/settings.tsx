@@ -121,6 +121,8 @@ export default function SettingsScreen() {
   const foundingRef = useRef(false);
   const foundingElapsedMs = useFoundingClock(founding);
   const [linkedNodeCode, setLinkedNodeCode] = useLinkedNodeCode();
+  // Screen state, not saved: until a start is saved the question comes back on the next launch.
+  const [firstLaunchAnswer, setFirstLaunchAnswer] = useState<FirstLaunchAnswer | null>(null);
 
   const showAlert = useCallback((title: string, message: string, detail?: string) => {
     setModal({ title, message, detail });
@@ -257,6 +259,18 @@ export default function SettingsScreen() {
   const connected = cadre.status === 'connected';
   // A join or the old cadre's removal is stopping and starting the node; the join section says how far it got.
   const switching = cadre.status === 'connecting' && cadre.joinFlow !== null;
+  // The launch read found no saved start (a founded or joined party saves one), so this app has no cadre yet.
+  const noCadreYet = cadre.savedStartRead === 'read' && cadre.savedStartOptions === null;
+  // Asked before Connect can found a cadre; a failed launch read is not asked about, its error line explains.
+  const asking = noCadreYet && cadre.status === 'idle' && cadre.joinFlow === null;
+  const firstLaunchJoin = asking && firstLaunchAnswer === 'join';
+  const nodeCodeHint = linkedNodeCode !== null && (
+    <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.waitingNodeCode}>
+      {cadre.status === 'connecting'
+        ? 'A node code is waiting. The prompt to add the node opens once this phone connects.'
+        : 'A node code is waiting. Connect first, and the prompt to add the node opens.'}
+    </Text>
+  );
 
   return (
     // `handled`: a tap on a button while the keyboard is up presses it, instead of only
@@ -292,7 +306,21 @@ export default function SettingsScreen() {
             <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
           </>
         ) : switching ? (
-          <InfoRow label="Status" value="Switching cadre…" color="#ff9800" />
+          <InfoRow label="Status" value={noCadreYet ? 'Joining your cadre…' : 'Switching cadre…'} color="#ff9800" />
+        ) : cadre.savedStartRead === 'reading' ? (
+          <InfoRow label="Status" value={cadre.status} color="#ff9800" />
+        ) : asking && firstLaunchAnswer === null ? (
+          <>
+            <FirstLaunchQuestion onAnswer={setFirstLaunchAnswer} />
+            {nodeCodeHint}
+          </>
+        ) : firstLaunchJoin ? (
+          <>
+            <InfoRow label="Status" value={cadre.status} color="#ff9800" />
+            <Text style={controlStyles.hint}>This app joins your cadre under Join my existing cadre below.</Text>
+            <Btn label="Back" onPress={() => setFirstLaunchAnswer(null)} color="#444" testID={TEST_IDS.settings.firstLaunchBackBtn} />
+            {nodeCodeHint}
+          </>
         ) : (
           <>
             <InfoRow label="Status" value={cadre.status} color="#ff9800" />
@@ -306,13 +334,7 @@ export default function SettingsScreen() {
             </Text>
             <NoiseCryptoChoice value={noiseCryptoMode} onChange={setNoiseCryptoMode} />
             <Btn label="Connect" onPress={handleConnect} disabled={cadre.status === 'connecting'} testID={TEST_IDS.settings.connectBtn} />
-            {linkedNodeCode !== null && (
-              <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.waitingNodeCode}>
-                {cadre.status === 'connecting'
-                  ? 'A node code is waiting. The prompt to add the node opens once this phone connects.'
-                  : 'A node code is waiting. Connect first, and the prompt to add the node opens.'}
-              </Text>
-            )}
+            {nodeCodeHint}
           </>
         )}
       </Section>
@@ -338,8 +360,8 @@ export default function SettingsScreen() {
         </Section>
       )}
 
-      {/* Join my existing cadre; also while a join and what follows it are on screen, whatever the status */}
-      {(connected || cadre.joinFlow !== null) && <JoinCadreSection showAlert={showAlert} />}
+      {/* Join my existing cadre; also while a join and what follows it are on screen, whatever the status, and on first launch after Yes */}
+      {(connected || cadre.joinFlow !== null || firstLaunchJoin) && <JoinCadreSection showAlert={showAlert} firstLaunch={noCadreYet} />}
 
       {/* Add a device or app (an owner mints a cadre invitation for another app) */}
       {connected && <AddDeviceSection showAlert={showAlert} />}
@@ -411,6 +433,23 @@ export default function SettingsScreen() {
 }
 
 // ── Reusable sub-components ──────────────────────────────────────────────────
+
+type FirstLaunchAnswer = 'join' | 'fresh';
+
+/** Asked in place of the Connect form while this app has no cadre, so it never founds one it would then leave. */
+function FirstLaunchQuestion({ onAnswer }: { onAnswer: (answer: FirstLaunchAnswer) => void }) {
+  return (
+    <View>
+      <Text style={styles.question}>Do you already use Sereus apps?</Text>
+      <Text style={controlStyles.hint}>
+        If another Sereus app, on this phone or another device, already holds your cadre,
+        this app joins it instead of starting its own.
+      </Text>
+      <Btn label="Yes, join my cadre" onPress={() => onAnswer('join')} testID={TEST_IDS.settings.firstLaunchJoinBtn} />
+      <Btn label="No, start fresh" onPress={() => onAnswer('fresh')} color="#444" testID={TEST_IDS.settings.firstLaunchFreshBtn} />
+    </View>
+  );
+}
 
 function InfoRow({ label, value, color, onPress, testID }: { label: string; value: string; color?: string; onPress?: () => void; testID?: string }) {
   const valueText = (
@@ -512,6 +551,7 @@ const styles = StyleSheet.create({
   option: { backgroundColor: '#2a2a3e', borderRadius: 8, borderWidth: 1, borderColor: '#2a2a3e', paddingHorizontal: 12, paddingVertical: 8, marginBottom: 6 },
   optionSelected: { borderColor: '#6c63ff' },
   optionText: { color: '#fff', fontSize: 14 },
+  question: { color: '#fff', fontSize: 15, fontWeight: '600', marginBottom: 6 },
   error: { color: '#f44336', textAlign: 'center', marginTop: 12 },
   modalDetail: { color: '#aaa', fontSize: 13, marginTop: -6, marginBottom: 12 },
   modalScroll: { maxHeight: 200, marginBottom: 8 },

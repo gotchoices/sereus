@@ -15,6 +15,11 @@ export const TEST_IDS = {
 		/** Connected Node card row naming the mode the running node was built with. */
 		noiseCryptoRow: 'row-noise-crypto',
 		connectBtn: 'btn-connect',
+		/** First launch, no cadre yet: "Do you already use Sereus apps?" — Yes shows the join section, No the Connect form. */
+		firstLaunchJoinBtn: 'btn-first-launch-join',
+		firstLaunchFreshBtn: 'btn-first-launch-fresh',
+		/** After Yes: back to the question. */
+		firstLaunchBackBtn: 'btn-first-launch-back',
 		disconnectBtn: 'btn-disconnect',
 		seedInput: 'input-seed',
 		applySeedBtn: 'btn-apply-seed',
