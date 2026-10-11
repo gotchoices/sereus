@@ -110,8 +110,9 @@ async function main() {
 
 	// Mint the cadre invitation the phone redeems at this drone (`_setup.yaml`
 	// pastes it into `input-cadre-invitation`). Its member address is the ws
-	// listener above, so the phone dials the drone directly.
-	const { encoded: cadreInvitation } = await node.createCadreInvitation({ grantsOwner: false });
+	// listener above, so the phone dials the drone directly. It makes the phone an
+	// owner, because the phone then creates a strand; an hour covers a slow device run.
+	const { encoded: cadreInvitation } = await node.createCadreInvitation({ grantsOwner: true, expiresInMs: 60 * 60_000 });
 
 	// Create pre-configured chat strand
 	const strand = await node.addStrand({
@@ -127,7 +128,8 @@ async function main() {
 		['drone', 'Test Drone'],
 	);
 
-	// Resolve the WS bootstrap address (includes peer ID)
+	// The WS address, logged for a manual run; the e2e phone reaches the drone through
+	// the invitation's member address instead.
 	const multiaddrs = node.getMultiaddrs();
 	const bootstrapAddr = multiaddrs.find((a) => a.includes('/ws')) ?? multiaddrs[0];
 	console.log(`  Bootstrap addr: ${bootstrapAddr}`);
@@ -141,8 +143,6 @@ async function main() {
 
 	// Write test-data.json
 	const testData = {
-		partyId: PARTY_ID,
-		droneBootstrapAddr: bootstrapAddr,
 		strandId,
 		cadreInvitation,
 	};

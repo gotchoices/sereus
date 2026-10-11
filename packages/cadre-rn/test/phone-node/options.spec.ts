@@ -13,6 +13,8 @@ const SAVED: SavedStart = {
 		bootstrapAddrs: ['/ip4/192.168.1.20/tcp/4002/ws/p2p/12D3KooWBootstrapPeerForTheStartOptionsTest'],
 		relayAddrs: ['/ip4/203.0.113.7/tcp/4002/ws/p2p/12D3KooWRelayPeerForTheStartOptionsTest'],
 		noiseCryptoMode: 'full',
+		origin: 'joined',
+		formerPartyId: 'party-1c9e',
 	},
 	autoStart: true,
 	writtenBy: 'app-data-3',
@@ -42,7 +44,7 @@ describe('parseSavedStart', () => {
 	});
 
 	it('keeps the party id when a lesser field is malformed, defaulting that field', () => {
-		const parsed = parseSavedStart(recordWith({ noiseCryptoMode: 'turbo', relayAddrs: 'not-a-list' }));
+		const parsed = parseSavedStart(recordWith({ noiseCryptoMode: 'turbo', relayAddrs: 'not-a-list', origin: 'adopted', formerPartyId: 7 }));
 
 		expect(parsed).toEqual({
 			options: { partyId: SAVED.options.partyId, bootstrapAddrs: SAVED.options.bootstrapAddrs, relayAddrs: [] },

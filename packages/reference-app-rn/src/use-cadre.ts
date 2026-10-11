@@ -11,7 +11,6 @@ import type { CadreNode } from '@serfab/cadre-core';
 import type {
   StrandInstance,
   CadreNodeEvents,
-  RedeemCadreInvitationResult,
   RelayReservationState,
   RelayReservationStatus,
   StrandFormationDisclosure,
@@ -24,11 +23,15 @@ import {
   getOwnerPublicKey,
   getNoiseCryptoMode,
   getRelayState,
+  getRunningOptions,
+  getPhoneNodeStatus,
+  joinCadreByInvitation,
   loadSavedStartOptions,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
   publishFormationInvite,
   formStrand,
+  type JoinCadreResult,
   type PhoneNodeOptions,
   type SavedStartOptions,
 } from './cadre-phone';
@@ -148,13 +151,15 @@ export interface UseCadreResult {
    */
   applySeed: (encoded: string) => Promise<void>;
   /**
-   * Join the cadre a pasted cadre invitation (`sereus-invite:1.…`) names: decode it, then redeem
-   * it at one of the members it lists (`CadreNode.redeemCadreInvitation`, which pins
-   * the invitation's owner keys before dialing). Throws the node's own errors —
-   * `CadreInviteRejectedError`, `CadreInviteUnreachableError`,
+   * Join the cadre a pasted cadre invitation (`sereus-invite:1.…`) names, switching this app
+   * to it: the kit's `PhoneNode.joinCadre` stops the node, starts it in the invitation's
+   * party and redeems there (pinning the invitation's owner keys first), waiting for one of
+   * the members it lists to answer. Needs no started node. On failure the app is back in
+   * the party it left. Throws the decoder's error, or the redemption's —
+   * `CadreInviteRejectedError` (`invite-spent` once the invitation expires while waiting),
    * `CadreInviteReplyInvalidError` — or a plain `Error` for a precondition.
    */
-  joinCadre: (encodedInvitation: string) => Promise<RedeemCadreInvitationResult>;
+  joinCadre: (encodedInvitation: string) => Promise<JoinCadreResult>;
   /** Dial a peer by multiaddr while already connected */
   dialPeer: (addr: string) => Promise<void>;
   /** Create a new chat strand and return its instance */
@@ -354,6 +359,27 @@ export function useCadreInternal(): UseCadreResult {
     };
   }, [node, refreshStrands]);
 
+  // Show `running` (the kit's node, or none) and what is read off it.
+  const showNode = useCallback((running: CadreNode | null) => {
+    setNode(running);
+    nodeRef.current = running;
+    setPeerId(running?.peerId?.toString() ?? null);
+    setOwnerPublicKey(getOwnerPublicKey());
+    setNoiseCryptoMode(getNoiseCryptoMode());
+    setStrands(new Map(running?.getStrands() ?? []));
+  }, []);
+
+  // Take on whatever node the kit runs now (or none), after a transition the kit drove
+  // from start to finish: a join switches the node, or puts the left party's back.
+  const adoptRunningNode = useCallback(() => {
+    showNode(getPhoneNode());
+    // The runner's cold start must start the party the app is in now.
+    optsRef.current = getRunningOptions() ?? optsRef.current;
+    const kit = getPhoneNodeStatus();
+    if (kit.state === 'failed') setError(kit.error.message);
+    setStatus(kit.state === 'running' ? 'connected' : kit.state === 'failed' ? 'error' : 'idle');
+  }, [showNode]);
+
   // ── Background lifecycle (AppState-driven) ───────────────────────────────
 
   // Cold-start hook for the runner: re-run `startPhoneNode` with the last opts
@@ -362,14 +388,8 @@ export function useCadreInternal(): UseCadreResult {
   const ensureNode = useCallback(async () => {
     const opts = optsRef.current;
     if (!opts) return;
-    const started = await startPhoneNode(opts);
-    setNode(started);
-    nodeRef.current = started;
-    setPeerId(started.peerId?.toString() ?? null);
-    setOwnerPublicKey(getOwnerPublicKey());
-    setNoiseCryptoMode(getNoiseCryptoMode());
-    setStrands(new Map(started.getStrands()));
-  }, []);
+    showNode(await startPhoneNode(opts));
+  }, [showNode]);
 
   // Own the OS foreground/background lifecycle once the node exists. The runner
   // observes the node singleton (it does not fight the manual Settings start/stop)
@@ -425,13 +445,7 @@ export function useCadreInternal(): UseCadreResult {
       setStatus('connecting');
       setError(null);
       optsRef.current = opts;
-      const started = await startPhoneNode(opts);
-      setNode(started);
-      nodeRef.current = started;
-      setPeerId(started.peerId?.toString() ?? null);
-      setOwnerPublicKey(getOwnerPublicKey());
-      setNoiseCryptoMode(getNoiseCryptoMode());
-      setStrands(new Map(started.getStrands()));
+      showNode(await startPhoneNode(opts));
       setStatus('connected');
       // Acquire + publish the FCM/APNs device token so a server peer can push-wake
       // this phone while suspended. Best-effort: permission-denied / pre-membership
@@ -442,7 +456,7 @@ export function useCadreInternal(): UseCadreResult {
       setError(msg);
       setStatus('error');
     }
-  }, []);
+  }, [showNode]);
 
   // ── Launch: resume the last session ────────────────────────────────────
 
@@ -496,15 +510,10 @@ export function useCadreInternal(): UseCadreResult {
     // failure); must run before stopPhoneNode tears the node down.
     await clearDeviceTokenRegistration();
     await stopPhoneNode();
-    setNode(null);
-    nodeRef.current = null;
-    setPeerId(null);
-    setOwnerPublicKey(null);
-    setNoiseCryptoMode(null);
-    setStrands(new Map());
+    showNode(null);
     setSelectedStrandId(null);
     setStatus('idle');
-  }, []);
+  }, [showNode]);
 
   const applySeed = useCallback(async (encoded: string) => {
     const current = nodeRef.current;
@@ -516,15 +525,21 @@ export function useCadreInternal(): UseCadreResult {
     }
   }, []);
 
-  // Guard ordering matches `applySeed`: throw 'Node not started' before touching
-  // anything. The decode is standalone (no node), so it runs after the guard only
-  // to keep the two failures in one order.
+  // The node this hook holds stops as soon as the join begins; whichever runs afterwards —
+  // the joined party's, or the left party's again — is adopted either way.
   const joinCadre = useCallback(async (encodedInvitation: string) => {
-    const current = nodeRef.current;
-    if (!current) throw new Error('Node not started');
     const invitation = decodeCadreInvitation(encodedInvitation);
-    return current.redeemCadreInvitation(invitation);
-  }, []);
+    setStatus('connecting');
+    setError(null);
+    try {
+      const joined = await joinCadreByInvitation(invitation);
+      // As after a Connect: publish the device token, now in the joined party.
+      void acquireAndRegisterDeviceToken();
+      return joined;
+    } finally {
+      adoptRunningNode();
+    }
+  }, [adoptRunningNode]);
 
   const dialPeer = useCallback(async (addr: string) => {
     await dialPeerImpl(addr);

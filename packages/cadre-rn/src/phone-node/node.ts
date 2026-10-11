@@ -1,7 +1,8 @@
 /**
  * `createPhoneNode` — build, start, stop and rebuild a phone's `CadreNode` the prescribed way:
  * identity in the secure store, the four node-local stores durable and party-scoped, LevelDB
- * storage per scope, owner genesis, and the last start remembered for unattended starts.
+ * storage per scope, owner genesis, the last start remembered for unattended starts, and the
+ * switch to another party's cadre by invitation.
  *
  * Nothing native is imported here. The app passes in its secure store, `rn-leveldb`'s two
  * constructors and its transports, so a Node test runs this code over fakes.
@@ -14,7 +15,14 @@ import {
 	PersistentStrandNetworkStateStore,
 	PersistentTrustedOwnerStore,
 } from '@serfab/cadre-core';
-import type { CadreNodeConfig, CadreNodeEvents } from '@serfab/cadre-core';
+import type {
+	CadreInvitation,
+	CadreJoinProgress,
+	CadreNodeConfig,
+	CadreNodeEvents,
+	RedeemCadreInvitationOptions,
+	RedeemCadreInvitationResult,
+} from '@serfab/cadre-core';
 import type { Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import {
 	LevelDBKVStore,
@@ -37,7 +45,7 @@ import {
 } from '../node-local.js';
 // Type-only: the noise-crypto module loads react-native-quick-crypto at runtime.
 import type { NoiseCryptoMode } from '../noise-crypto.js';
-import { buildPhoneNodeConfig, runOwnerGenesis, type OwnerGenesisResult } from './config.js';
+import { buildPhoneNodeConfig, runOwnerGenesis, wireJoinedOwnerKey, type OwnerGenesisResult } from './config.js';
 import { parseSavedStart, serializeSavedStart, type PhoneNodeOptions, type SavedStart } from './options.js';
 
 /** `rn-leveldb`, as the app passes it: `{ openFn: (n, c, e) => new LevelDB(n, c, e), WriteBatch: LevelDBWriteBatch }`. */
@@ -123,12 +131,32 @@ export const DEFAULT_PHONE_NODE_NAMES: PhoneNodeNames = {
 export type PhoneNodeStatus =
 	| { state: 'stopped' }
 	| { state: 'starting' }
+	/** Started in the party an invitation names and redeeming it there; not admitted yet, so `PhoneNode.node` is null. */
+	| { state: 'joining'; node: CadreNode }
 	| { state: 'running'; node: CadreNode; owner: OwnerGenesisResult }
 	| { state: 'failed'; error: Error };
 
+/** How {@link PhoneNode.joinCadre} runs. */
+export interface JoinCadreOptions {
+	/** Relays the joined node reserves on. Default: the running start's, else the saved one's. */
+	relayAddrs?: string[];
+	/** Default: the running start's, else the saved one's, else the platform default. */
+	noiseCryptoMode?: NoiseCryptoMode;
+	/** Cancels the join: the app goes back to the party it left, and the call throws the signal's reason. */
+	signal?: AbortSignal;
+	/** Each redemption pass and each pause while no member is ready, for a "waiting for an always-on machine" display. */
+	onProgress?: (progress: CadreJoinProgress) => void;
+}
+
+/** What an admitted {@link PhoneNode.joinCadre} returns. */
+export interface JoinCadreResult extends RedeemCadreInvitationResult {
+	/** The party this app founded and has left, when it founded one; saved as `PhoneNodeOptions.formerPartyId`. */
+	formerPartyId?: string;
+}
+
 export interface PhoneNode {
 	readonly status: PhoneNodeStatus;
-	/** The running node, or null; null as soon as a stop or restart begins tearing it down. */
+	/** The running node, or null; null as soon as a stop or restart begins tearing it down, and while joining. */
 	readonly node: CadreNode | null;
 	/** The options the running node was started with, the Noise mode resolved; null unless running. */
 	readonly options: PhoneNodeOptions | null;
@@ -152,6 +180,24 @@ export interface PhoneNode {
 	 */
 	restart(options: PhoneNodeOptions): Promise<CadreNode>;
 	/**
+	 * Join the cadre `invitation` names: this app's one node moves to that party, keeping its
+	 * identity, so the peer id an owner targeted is the one that redeems. Runs in turn with
+	 * start, stop and restart; a start called meanwhile runs after it, and a `stop` cancels it.
+	 *
+	 * Already running in that party: redeems on the running node (a device already admitted is
+	 * answered as such) and wires its owner key. Otherwise: stops the running node, starts one
+	 * for the invitation's party with `origin: 'joined'` (status `joining`), and redeems there,
+	 * waiting for a member to answer until one accepts, one refuses, the invitation expires
+	 * (`invite-spent`) or `options.signal` aborts. Admitted: wires the owner key when the party
+	 * lists it, saves the start (`autoStart: true`) and reports `running`. Anything else: stops
+	 * that node, starts again what was running before (a node that was stopped stays stopped),
+	 * and throws the join's error; a failure restarting is logged and leaves status `failed`.
+	 *
+	 * The start is saved only once admitted, so an app killed while waiting relaunches into the
+	 * party it left. The left party's data stays on disk under its own names.
+	 */
+	joinCadre(invitation: CadreInvitation, options?: JoinCadreOptions): Promise<JoinCadreResult>;
+	/**
 	 * The last start, or `undefined` when none is saved or the record is unusable. A read fault
 	 * throws. Called during a stop, it answers after the stop has saved `autoStart: false`.
 	 */
@@ -164,7 +210,10 @@ export interface PhoneNode {
 	 */
 	on<K extends keyof CadreNodeEvents>(event: K, handler: (data: CadreNodeEvents[K]) => void): () => void;
 	onStatus(listener: (status: PhoneNodeStatus) => void): () => void;
-	/** The owner public key (base64url) for pairing; null unless running. Never private material. */
+	/**
+	 * The owner public key (base64url) for pairing; null unless running, and for a member of a
+	 * joined party that does not list it as an owner. Never private material.
+	 */
 	ownerPublicKey(): string | null;
 }
 
@@ -188,7 +237,7 @@ const phoneNodes = new Map<string, PhoneNode>();
 export function createPhoneNode(platform: PhoneNodePlatform): PhoneNode {
 	const names: PhoneNodeNames = { ...DEFAULT_PHONE_NODE_NAMES, ...platform.names };
 	const existing = phoneNodes.get(names.storagePrefix);
-	if (existing && (existing.status.state === 'starting' || existing.status.state === 'running')) {
+	if (existing && ['starting', 'joining', 'running'].includes(existing.status.state)) {
 		throw new Error(
 			`a phone node over storage prefix '${names.storagePrefix}' is already ${existing.status.state}; ` +
 			'create one per app and share it',
@@ -205,9 +254,11 @@ class PhoneNodeRuntime implements PhoneNode {
 	private runningOptions: PhoneNodeOptions | null = null;
 	private starting: Promise<CadreNode> | null = null;
 	private stopping: Promise<void> | null = null;
+	/** One per join called and not yet settled, so a stop can cancel them. */
+	private readonly joins = new Set<AbortController>();
 	/**
-	 * Start, stop and restart run one at a time, in call order: each opens or closes the databases
-	 * the others use, so a start overlapping a stop would build on handles the stop then closes.
+	 * Start, stop, restart and join run one at a time, in call order: each opens or closes the
+	 * databases the others use, so a start overlapping a stop would build on handles the stop then closes.
 	 */
 	private transitions: Promise<unknown> = Promise.resolve();
 	private currentStatus: PhoneNodeStatus = { state: 'stopped' };
@@ -243,6 +294,11 @@ class PhoneNodeRuntime implements PhoneNode {
 	stop(): Promise<void> {
 		// A start called from here on runs after this stop rather than joining the one it ends.
 		this.starting = null;
+		// A join can wait for a member until its invitation expires; the user's disconnect ends it.
+		// NOTE: the cancelled join starts the party it left again, and only then does this stop
+		// stop it. If that restart makes Disconnect noticeably slow, let a join cancelled by a stop
+		// save the left start with `autoStart: false` and stay stopped instead.
+		for (const join of this.joins) join.abort(new Error('the phone node was stopped during a join'));
 		const stopping = this.inTurn(() => this.stopAndClearAutoStart());
 		this.stopping = stopping;
 		const settled = (): void => {
@@ -260,11 +316,26 @@ class PhoneNodeRuntime implements PhoneNode {
 		});
 	}
 
+	joinCadre(invitation: CadreInvitation, options: JoinCadreOptions = {}): Promise<JoinCadreResult> {
+		// A start called from here on runs after this join rather than joining a start it replaces.
+		this.starting = null;
+		const cancel = new AbortController();
+		const release = relayAbort(options.signal, cancel);
+		this.joins.add(cancel);
+		const joining = this.inTurn(() => this.join(invitation, options, cancel.signal));
+		const settled = (): void => {
+			this.joins.delete(cancel);
+			release();
+		};
+		joining.then(settled, settled);
+		return joining;
+	}
+
 	async loadSavedStart(): Promise<SavedStart | undefined> {
 		// A stop in progress decides `autoStart`: answer after it, so an unattended start does
 		// not act on the value the stop is replacing. Its failure is its caller's.
 		await this.stopping?.catch(() => undefined);
-		return parseSavedStart(await this.nodeLocalSlot(this.names.savedStartKey).load());
+		return this.readSavedStart();
 	}
 
 	on<K extends keyof CadreNodeEvents>(event: K, handler: (data: CadreNodeEvents[K]) => void): () => void {
@@ -289,7 +360,7 @@ class PhoneNodeRuntime implements PhoneNode {
 
 	ownerPublicKey(): string | null {
 		const node = this.node;
-		if (!node) return null;
+		if (!node || (this.currentStatus.state === 'running' && this.currentStatus.owner === 'member')) return null;
 		try {
 			return node.getIdentityOwnerKey().publicKeyB64;
 		} catch (err) {
@@ -324,33 +395,61 @@ class PhoneNodeRuntime implements PhoneNode {
 	private async buildAndStart(options: PhoneNodeOptions): Promise<CadreNode> {
 		this.setStatus({ state: 'starting' });
 		try {
-			const resolved = this.resolveOptions(options);
-			const node = new CadreNode(await this.buildConfig(resolved));
-			this.current = node;
-			for (const subscription of this.subscriptions) subscription.attach(node);
-			await node.start();
-			const owner = await runOwnerGenesis(node, this.platform.ownerGenesisTimeoutMs);
-			this.runningOptions = resolved;
-			// Saved only now, so a start that failed never replaces the last one that came up.
-			await this.saveStart({ options: resolved, autoStart: true, writtenBy: this.platform.dataVersion });
-			this.setStatus({ state: 'running', node, owner });
+			const { node, resolved } = await this.bringUp(options);
+			await this.markRunning(node, resolved, await this.settleOwnerKey(node, resolved));
 			return node;
 		} catch (err) {
 			// The start's own error is the one to report; a failure tearing down after it is only logged.
 			await this.shutDown().catch((cleanupErr: unknown) => {
 				console.warn('[cadre-rn/phone-node] cleaning up after a failed start failed:', cleanupErr);
 			});
-			const error = err instanceof Error ? err : new Error(String(err));
+			const error = toError(err);
 			this.setStatus({ state: 'failed', error });
 			throw error;
 		}
 	}
 
-	/** The options with the Noise mode resolved, so a later build's default does not change a device that already ran. */
-	private resolveOptions(options: PhoneNodeOptions): PhoneNodeOptions {
+	/** Build the node for `options`, every subscription attached, and start it. */
+	private async bringUp(options: PhoneNodeOptions): Promise<{ node: CadreNode; resolved: PhoneNodeOptions }> {
+		const resolved = await this.resolveOptions(options);
+		const node = new CadreNode(await this.buildConfig(resolved));
+		this.current = node;
+		for (const subscription of this.subscriptions) subscription.attach(node);
+		await node.start();
+		return { node, resolved };
+	}
+
+	/** A founded party runs owner genesis; a joined one only wires a key the party already lists. */
+	private settleOwnerKey(node: CadreNode, options: PhoneNodeOptions): Promise<OwnerGenesisResult> {
+		const timeoutMs = this.platform.ownerGenesisTimeoutMs;
+		return options.origin === 'joined' ? wireJoinedOwnerKey(node, { timeoutMs }) : runOwnerGenesis(node, timeoutMs);
+	}
+
+	/** Report a node that came up, saving its options only now, so a failed start never replaces the last one that came up. */
+	private async markRunning(node: CadreNode, resolved: PhoneNodeOptions, owner: OwnerGenesisResult): Promise<void> {
+		this.runningOptions = resolved;
+		await this.saveStart({ options: resolved, autoStart: true, writtenBy: this.platform.dataVersion });
+		this.setStatus({ state: 'running', node, owner });
+	}
+
+	/**
+	 * The options as this start runs and saves them. The Noise mode is resolved, so a later
+	 * build's default does not change a device that already ran. Options naming no `origin`
+	 * take the saved start's `origin` and `formerPartyId` when it is for the same party, so a
+	 * party this app joined, started again from a hand-typed party id, does not run owner genesis.
+	 */
+	private async resolveOptions(options: PhoneNodeOptions): Promise<PhoneNodeOptions> {
+		const resolved = { ...options };
 		const defaultMode = this.platform.noiseCrypto?.defaultMode;
-		if (options.noiseCryptoMode !== undefined || defaultMode === undefined) return options;
-		return { ...options, noiseCryptoMode: defaultMode };
+		if (resolved.noiseCryptoMode === undefined && defaultMode !== undefined) resolved.noiseCryptoMode = defaultMode;
+		if (resolved.origin === undefined) {
+			const saved = (await this.readSavedStart())?.options;
+			if (saved?.partyId === resolved.partyId) {
+				if (saved.origin !== undefined) resolved.origin = saved.origin;
+				if (saved.formerPartyId !== undefined) resolved.formerPartyId = saved.formerPartyId;
+			}
+		}
+		return resolved;
 	}
 
 	/**
@@ -382,6 +481,86 @@ class PhoneNodeRuntime implements PhoneNode {
 	private buildNoiseCrypto(mode: NoiseCryptoMode | undefined): NoiseCryptoInterface | undefined {
 		const noiseCrypto = this.platform.noiseCrypto;
 		return noiseCrypto && mode ? noiseCrypto.build(mode) : undefined;
+	}
+
+	// ── join ─────────────────────────────────────────────────────────────────
+
+	private async join(invitation: CadreInvitation, options: JoinCadreOptions, signal: AbortSignal): Promise<JoinCadreResult> {
+		signal.throwIfAborted();
+		const running = this.node;
+		if (running?.isRunning && this.runningOptions?.partyId === invitation.partyId) {
+			return this.redeemInPlace(running, this.runningOptions, invitation, options, signal);
+		}
+		return this.switchParty(invitation, options, signal);
+	}
+
+	/** Redeem on the node already running in the invitation's party; nothing to switch or roll back. */
+	private async redeemInPlace(
+		node: CadreNode,
+		running: PhoneNodeOptions,
+		invitation: CadreInvitation,
+		options: JoinCadreOptions,
+		signal: AbortSignal,
+	): Promise<JoinCadreResult> {
+		const redemption = await node.redeemCadreInvitation(invitation, redeemOptions(options, signal));
+		const owner = await wireJoinedOwnerKey(node, { timeoutMs: this.platform.ownerGenesisTimeoutMs, granted: redemption.grantsOwner });
+		if (owner === 'enrolled') this.setStatus({ state: 'running', node, owner });
+		return withFormerParty(redemption, running.formerPartyId);
+	}
+
+	/**
+	 * Stop the running node, start one in the invitation's party and redeem there; on any
+	 * failure, go back to what ran before. Nothing is saved until a member has admitted this app.
+	 */
+	private async switchParty(invitation: CadreInvitation, options: JoinCadreOptions, signal: AbortSignal): Promise<JoinCadreResult> {
+		const restore = this.runningOptions;
+		const leaving = restore ?? (await this.readSavedStart())?.options ?? null;
+		const formerPartyId = formerPartyAfterJoining(invitation.partyId, leaving);
+		const joined: PhoneNodeOptions = {
+			partyId: invitation.partyId,
+			// None needed: the redemption retains the member that admits this app as a dial
+			// target in the party's bootstrap-peer store, which every later start reads.
+			bootstrapAddrs: [],
+			relayAddrs: options.relayAddrs ?? leaving?.relayAddrs ?? [],
+			origin: 'joined',
+		};
+		const noiseCryptoMode = options.noiseCryptoMode ?? leaving?.noiseCryptoMode;
+		if (noiseCryptoMode !== undefined) joined.noiseCryptoMode = noiseCryptoMode;
+		if (formerPartyId !== undefined) joined.formerPartyId = formerPartyId;
+		try {
+			await this.shutDown();
+			return withFormerParty(await this.startAndRedeem(joined, invitation, options, signal), formerPartyId);
+		} catch (err) {
+			await this.returnToLeftParty(restore);
+			throw err;
+		}
+	}
+
+	private async startAndRedeem(
+		joined: PhoneNodeOptions,
+		invitation: CadreInvitation,
+		options: JoinCadreOptions,
+		signal: AbortSignal,
+	): Promise<RedeemCadreInvitationResult> {
+		this.setStatus({ state: 'starting' });
+		const { node, resolved } = await this.bringUp(joined);
+		this.setStatus({ state: 'joining', node });
+		const redemption = await node.redeemCadreInvitation(invitation, redeemOptions(options, signal));
+		const owner = await wireJoinedOwnerKey(node, { timeoutMs: this.platform.ownerGenesisTimeoutMs, granted: redemption.grantsOwner });
+		await this.markRunning(node, resolved, owner);
+		return redemption;
+	}
+
+	/** After a failed join: stop the joined party's node and start again what ran before, if anything did. */
+	private async returnToLeftParty(restore: PhoneNodeOptions | null): Promise<void> {
+		try {
+			await this.shutDown();
+			if (restore) await this.buildAndStart(restore);
+		} catch (err) {
+			// The join's own error is the one its caller gets; this one is only logged.
+			console.warn('[cadre-rn/phone-node] going back to the party a failed join left failed:', err);
+			if (this.currentStatus.state !== 'failed') this.setStatus({ state: 'failed', error: toError(err) });
+		}
 	}
 
 	// ── stop ─────────────────────────────────────────────────────────────────
@@ -445,6 +624,11 @@ class PhoneNodeRuntime implements PhoneNode {
 		return kvStoreSlot(new LevelDBKVStore(this.database(this.names.nodeLocalDb), this.names.nodeLocalKvPrefix), key);
 	}
 
+	/** The saved start, read directly: inside a transition, `loadSavedStart` would wait on a stop queued behind it. */
+	private async readSavedStart(): Promise<SavedStart | undefined> {
+		return parseSavedStart(await this.nodeLocalSlot(this.names.savedStartKey).load());
+	}
+
 	/** Best-effort: a failed write is logged and changes nothing about the node. */
 	private async saveStart(saved: SavedStart): Promise<void> {
 		try {
@@ -464,6 +648,40 @@ class PhoneNodeRuntime implements PhoneNode {
 			}
 		}
 	}
+}
+
+function toError(err: unknown): Error {
+	return err instanceof Error ? err : new Error(String(err));
+}
+
+/** Abort `target` with `source`'s reason when `source` aborts; returns the unsubscribe. */
+function relayAbort(source: AbortSignal | undefined, target: AbortController): () => void {
+	if (!source) return () => {};
+	const abort = (): void => target.abort(source.reason);
+	if (source.aborted) {
+		abort();
+		return () => {};
+	}
+	source.addEventListener('abort', abort, { once: true });
+	return () => source.removeEventListener('abort', abort);
+}
+
+/** Wait for a member: a phone joining by invitation is often the only machine of the party up. */
+function redeemOptions(options: JoinCadreOptions, signal: AbortSignal): RedeemCadreInvitationOptions {
+	return { waitForMember: true, signal, ...(options.onProgress ? { onProgress: options.onProgress } : {}) };
+}
+
+/**
+ * The party a join leaves behind for clean-up: the one this app founded, carried through any
+ * later join. Nothing when it leaves no start, or when it is already in the party it joins.
+ */
+function formerPartyAfterJoining(partyId: string, leaving: PhoneNodeOptions | null): string | undefined {
+	if (!leaving || leaving.origin === 'joined' || leaving.partyId === partyId) return leaving?.formerPartyId;
+	return leaving.partyId;
+}
+
+function withFormerParty(redemption: RedeemCadreInvitationResult, formerPartyId: string | undefined): JoinCadreResult {
+	return formerPartyId === undefined ? redemption : { ...redemption, formerPartyId };
 }
 
 /** WebSockets to dial the party's machines and relays, and circuit relay to be reachable through one. */

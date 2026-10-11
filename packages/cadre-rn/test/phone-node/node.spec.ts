@@ -7,8 +7,9 @@
  * Each case uses its own storage prefix and party, because `createPhoneNode` refuses a
  * second live node over one prefix (one of the cases below).
  */
+import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SAppConfig } from '@serfab/cadre-core';
+import { ed25519PublicKeyFromPrivate, type CadreInvitation, type SAppConfig } from '@serfab/cadre-core';
 import { FakeWriteBatch, lockingFakeRNLevelDB } from '../../../../test-harness/fake-rn-leveldb.js';
 import {
 	createPhoneNode,
@@ -53,6 +54,32 @@ function device(overrides: Partial<PhoneNodePlatform> = {}) {
 
 function options(partyId: string, relayAddrs: string[] = []) {
 	return { partyId, bootstrapAddrs: [], relayAddrs };
+}
+
+/**
+ * A well-formed invitation to another party, signed by a key nobody holds, that expired a
+ * minute ago: a waiting redemption refuses it by this device's clock before dialing anyone.
+ */
+function expiredInvitation(partyId: string): CadreInvitation {
+	const ownerKey = ed25519PublicKeyFromPrivate(randomBytes(32).toString('base64url'));
+	const invitePrivateKey = randomBytes(32).toString('base64url');
+	return {
+		v: 1,
+		partyId,
+		invitePrivateKey,
+		invite: {
+			key: ed25519PublicKeyFromPrivate(invitePrivateKey),
+			peerId: null,
+			grantsOwner: true,
+			expiresAt: new Date(Date.now() - 60_000).toISOString(),
+			totalUses: 1,
+			stampId: 'phone-node-spec-invite',
+			issuerKey: ownerKey,
+			issuerSig: 'never-checked-by-the-device',
+		},
+		ownerKeys: [ownerKey],
+		members: [],
+	};
 }
 
 const started: PhoneNode[] = [];
@@ -292,6 +319,36 @@ describe('createPhoneNode — restart and subscriptions', () => {
 
 		expect(handler).not.toHaveBeenCalled();
 	}, LIFECYCLE_MS);
+});
+
+describe('createPhoneNode — joining another party', () => {
+	it('never seats itself as a founder of a party it joined: no owner row, and reported as a member', async () => {
+		// Owner genesis on a joined party whose control store has not arrived would insert
+		// this app's key as a second founding owner.
+		const { platform, partyId } = device();
+		const phone = phoneNode(platform);
+
+		const node = await phone.start({ ...options(partyId), origin: 'joined' });
+
+		expect(await node.getControlDatabase()?.hasOwnerKey()).toBe(false);
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'member' });
+		expect(phone.ownerPublicKey()).toBeNull();
+	}, LIFECYCLE_MS);
+
+	it('goes back to the party it left, its options and saved start unchanged, when the join fails', async () => {
+		const { platform, partyId } = device();
+		const phone = phoneNode(platform);
+		const left = await phone.start(options(partyId));
+		const savedBefore = await phone.loadSavedStart();
+
+		await expect(phone.joinCadre(expiredInvitation(`${partyId}-joined`)))
+			.rejects.toMatchObject({ name: 'CadreInviteRejectedError', code: 'invite-spent' });
+
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+		expect(phone.node).not.toBe(left);
+		expect(phone.options).toEqual(savedBefore?.options);
+		expect(await phone.loadSavedStart()).toEqual(savedBefore);
+	}, LIFECYCLE_MS * 3);
 });
 
 describe('createPhoneNode — storage names', () => {

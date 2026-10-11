@@ -256,12 +256,14 @@ Both records are party-scoped, as are the enrolled-machine count and the strand 
 
 ### Start options (app-private LevelDB)
 
-What the node last started with — party id, bootstrap addresses, relay addresses and Noise crypto mode — plus `autoStart`, whether to start again unattended. One record under the key `start-options` in the same `sereus-node-local` database, deliberately **not** party-scoped: it is what selects the party every record above is filed under. The kit's `parseSavedStart` (`@serfab/cadre-rn/phone-node`) parses it: unparseable JSON, an unknown version or a missing party id counts as no record (logged), while a malformed address list or Noise mode falls back to its default rather than costing the phone its party id. Not the enclave: nothing in it is secret or trust-bearing, and a relay list can outgrow SecureStore's value limit.
+What the node last started with — party id, bootstrap addresses, relay addresses, Noise crypto mode, and how the app came to that party (`origin`, `formerPartyId`, below) — plus `autoStart`, whether to start again unattended. One record under the key `start-options` in the same `sereus-node-local` database, deliberately **not** party-scoped: it is what selects the party every record above is filed under. The kit's `parseSavedStart` (`@serfab/cadre-rn/phone-node`) parses it: unparseable JSON, an unknown version or a missing party id counts as no record (logged), while a malformed address list or Noise mode falls back to its default rather than costing the phone its party id. Not the enclave: nothing in it is secret or trust-bearing, and a relay list can outgrow SecureStore's value limit.
 
-- **Written** only by the kit's `PhoneNode` (`cadre-phone.ts` is this app's): after every successful start (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
+- **Written** only by the kit's `PhoneNode` (`cadre-phone.ts` is this app's): after every successful start and after a **Join cadre** a member admitted (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
 - **Read** once at app launch (`use-cadre.ts`). With `autoStart` true the app connects by itself with those options, exactly as a Connect tap would — this is what keeps a solo phone in the same party across relaunches instead of founding a new one. Either way the Settings form prefills from them. The same options are what the background runner's cold start uses after the OS kills the node, and what a push wake into a killed process starts from (`push-wake-native.ts`), again only while `autoStart` is true. A read fault shows "Could not read the saved connection settings" under the Node card and starts nothing.
 - **Stored values win over build defaults.** Relays and Noise mode are saved as resolved, not as "use the build default", so a later build with a different `EXPO_PUBLIC_RELAY_ADDR` or `EXPO_PUBLIC_NOISE_CRYPTO` does not change a device that has already connected. To pick up a new default: Disconnect, clear the Relay field (empty means the build default) or choose the mode, and Connect.
 - **Switching party** is Disconnect, edit Party ID, Connect. The old party's records stay on disk and are read again if the phone switches back.
+- **Joining another cadre** is Settings → **Join cadre** with a pasted cadre invitation: the kit's `joinCadre` stops this app's node, starts one in the invitation's party, and waits there until a member the invitation names admits the phone ([architecture.md → An app joins an existing cadre](architecture.md#an-app-joins-an-existing-cadre)). Only then is the record saved, with `origin: 'joined'` and `formerPartyId`, the party this app founded and left; a failed join puts the left party's node back and saves nothing.
+- **`origin`** is `'founded'` (or absent) for a party this app started itself, which runs owner genesis on every start, and `'joined'` for one it joined by invitation, which never does: the phone is an owner there only when the party lists its key, and the Node card shows no owner key otherwise. A Connect whose Party ID is the saved party keeps the saved `origin`.
 - **Overlapping starts** — a launch auto-start, a push-wake cold start, the runner's resume and a Connect tap — share one start in flight, so they never build two nodes; the first caller's options win. Disconnect during a start waits for it, then stops the node it produced; a start during a Disconnect runs after it, and a cold start reading the record mid-Disconnect reads `autoStart: false`.
 - **Reinstall.** On iOS the trusted-owner anchor lives in the Keychain, which survives an uninstall; this record does not. A reinstalled phone picks a new party id and the surviving anchor, filed under the old one, is never read again — the same outcome as before start options were saved.
 
@@ -658,7 +660,7 @@ If the nodes can't discover each other automatically (e.g., after a restart with
 2. Paste the encoded seed into the **Seed** field on the phone's Settings screen and tap **Apply Seed**
 3. Or apply via the drone's CLI: `--seed <base64url-encoded-seed>`
 
-> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`anchoredTrustPolicy`) trusts only owner keys in the phone's node-local trusted-owner anchor, which is seeded out of band and never from replicated control state. A phone that has not been given the issuing cadre's owner key will therefore **reject** a seed signed by that cadre, no matter what its `OwnerKey` table has synced. A phone that is not the founder joins instead by pasting the cadre invitation an owner issued into **Paste cadre invitation** (the Join a Cadre section) and tapping **Join cadre** (`CadreNode.redeemCadreInvitation`): that pins the invitation's owner keys into the anchor and admits the phone at one of the member machines the invitation names, so later seeds from the same owner are accepted. The seed field is for a phone that already trusts the signer.
+> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`anchoredTrustPolicy`) trusts only owner keys in the phone's node-local trusted-owner anchor, which is seeded out of band and never from replicated control state. A phone that has not been given the issuing cadre's owner key will therefore **reject** a seed signed by that cadre, no matter what its `OwnerKey` table has synced. A phone that is not the founder joins instead by pasting the cadre invitation an owner issued into **Paste cadre invitation** (the Join a Cadre section) and tapping **Join cadre** (the kit's `PhoneNode.joinCadre`, which redeems with `CadreNode.redeemCadreInvitation`): that switches the app to the invitation's party, pins the invitation's owner keys into the anchor and admits the phone at one of the member machines the invitation names, so later seeds from the same owner are accepted. The seed field is for a phone that already trusts the signer.
 
 ### Step 5: Create a Strand
 
@@ -897,8 +899,7 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 
 1. Spawns `test-fixture/start.mjs` (in-memory drone with WS + HTTP sidecar)
 2. Waits for `GET http://127.0.0.1:4080/health` to return 200
-3. Reads `test-fixture/test-data.json` for `partyId`, `droneBootstrapAddr`,
-   `strandId`, `cadreInvitation`
+3. Reads `test-fixture/test-data.json` for `strandId` and `cadreInvitation`
 4. Runs `adb reverse tcp:4002` and `tcp:4080` so the Android emulator can
    reach the host-bound fixture
 5. Spawns Maestro against `maestro/flows/`, passing the test-data fields as
@@ -923,16 +924,16 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 
 Flows 1–3 share `_setup.yaml` for the connect/join/strand bootstrap. Flow 4 connects alone and does not use it; the orchestrator still runs it with the rest of the directory, and it can be run by itself with `maestro test -e MAESTRO_APP_ID=… maestro/flows/4-solo-create-strand.yaml`.
 
-The cold phone has nothing in its node-local trusted-owner anchor, and
-control-sync can never put the drone's owner key there. The phone therefore
-joins the drone's cadre the way a real device would: the fixture enrolls its own
-owner key (`ensureOwnerKey`) and mints a cadre invitation
+The phone joins the drone's cadre the way a fresh install would: `_setup.yaml`
+connects with blank fields, so the phone founds a cadre of its own, then pastes
+the drone's invitation and taps **Join cadre**, which switches the app to the
+drone's party. The fixture enrolls its own owner key (`ensureOwnerKey`) and
+mints an owner-granting cadre invitation valid for an hour
 (`createCadreInvitation`) whose member address is the drone's ws listener;
-`start.mjs` writes it as `cadreInvitation`, the orchestrator threads it in as
-`CADRE_INVITATION`, and `_setup.yaml` pastes it into `input-cadre-invitation`
-and taps **Join cadre**, asserting the `Joined cadre` modal. Redeeming it pins
-the drone's owner key and admits the phone at the drone, after which the control
-database syncs under a trusted anchor.
+`start.mjs` writes it as `cadreInvitation`, and the orchestrator threads it in as
+`CADRE_INVITATION`. Redeeming it pins the drone's owner key and admits the phone
+at the drone as an owner (the flow then creates a strand, which only an owner
+can), after which the control database syncs under a trusted anchor.
 
 After the phone creates its strand, `_helpers/discover-phone-strand.js`
 polls the drone's `/status` endpoint to discover the strand the drone has

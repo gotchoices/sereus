@@ -265,7 +265,7 @@ The orchestrator (`scripts/run-e2e.mjs`):
    HTTP sidecar on port 4080
 2. Waits for `/health`
 3. `adb reverse tcp:4002` + `tcp:4080` so the emulator can reach host loopback
-4. Runs `maestro test maestro/flows/ -e PARTY_ID=… -e BOOTSTRAP_ADDR=… …`
+4. Runs `maestro test maestro/flows/ -e CADRE_INVITATION=… -e STRAND_ID=… …`
 
 ### Prerequisites
 
@@ -281,7 +281,7 @@ The orchestrator (`scripts/run-e2e.mjs`):
 
 | File | What it covers |
 |------|----------------|
-| `maestro/_setup.yaml` | Connect, apply seed, create strand, discover the shared strand |
+| `maestro/_setup.yaml` | Connect (founding the phone's own cadre), join the drone's cadre by invitation, create strand, discover the shared strand |
 | `maestro/flows/1-connect-and-send.yaml` | Send a message; local echo appears |
 | `maestro/flows/2-drone-to-phone.yaml` | Drone HTTP insert → phone displays it |
 | `maestro/flows/3-round-trip.yaml` | Phone send → drone sees; drone send → phone sees; both visible |
@@ -297,11 +297,11 @@ The orchestrator (`scripts/run-e2e.mjs`):
 
 - **"adb reverse" warning**: emulator not running, or wrong device default —
   run `adb devices` to confirm and `emulator -avd <name>` to start one.
-- **Connection fails** (Settings shows `Status: error` with the message in red under the Node card): the WS dial from the
-  emulator's `127.0.0.1:4002` did not tunnel to host. Verify
-  `adb reverse --list` shows both rules; if `adb reverse` is not supported on
-  the device, override `BOOTSTRAP_ADDR` to use `10.0.2.2:4002` instead and
-  pass it through `run-e2e.mjs`.
+- **The join never finishes** (the flow times out waiting for the `Joined cadre`
+  modal): the phone dials the member address in the drone's invitation, its
+  `127.0.0.1:4002` listener, and that dial did not tunnel to the host. Verify
+  `adb reverse --list` shows both rules; a device without `adb reverse` cannot
+  reach the drone.
 - **`maestro: command not found`**: install Maestro per the link above;
   override `MAESTRO_BIN=/path/to/maestro` if not on PATH.
 

@@ -102,18 +102,26 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 	};
 }
 
-/** How owner genesis ended: `PhoneNodeStatus.owner`. */
-export type OwnerGenesisResult = 'enrolled' | 'failed' | 'timed-out';
+/**
+ * How the start settled this node's owner key: `PhoneNodeStatus.owner`. `'enrolled'`: the key
+ * is an owner and wired for signing. `'member'`: a party this app joined does not list the key
+ * as an owner. `'failed'` and `'timed-out'`: see {@link runOwnerGenesis}.
+ */
+export type OwnerGenesisResult = 'enrolled' | 'member' | 'failed' | 'timed-out';
 
-/** Default bound on {@link runOwnerGenesis}. */
+/** Default bound on {@link runOwnerGenesis} and {@link wireJoinedOwnerKey}. */
 export const DEFAULT_OWNER_GENESIS_TIMEOUT_MS = 60_000;
+
+/** How often {@link wireJoinedOwnerKey} asks again for an owner key a redemption just granted. */
+const GRANTED_OWNER_RECHECK_MS = 2_000;
 
 /**
  * Self-genesis the phone as its own party's owner: enroll the identity's owner key in the control
  * database, then bring up seed bootstrap (which lets the node author its own `CadrePeer` row). A
  * node must be an enrolled owner to publish strands, and `CadreNode.requestJoin` works only on one.
  * The first node to enroll becomes the founding owner; for a later joiner that has already synced
- * one, `ensureOwnerKey` is a no-op.
+ * one, `ensureOwnerKey` is a no-op. Only for a party this app founded: a joined party's start
+ * runs {@link wireJoinedOwnerKey} instead.
  *
  * Fail-soft and bounded: a failure or a genesis that has not settled within `timeoutMs` is logged
  * and returned, and the start stands — the phone can still join discovered strands and sync. A
@@ -123,25 +131,59 @@ export const DEFAULT_OWNER_GENESIS_TIMEOUT_MS = 60_000;
  * write against an unresponsive member can hold the write lock for about 84 s, so an unbounded wait
  * here is a real stall. Move the bound into cadre-core and drop `timeoutMs` when it has one.
  */
-export async function runOwnerGenesis(
+export function runOwnerGenesis(
 	node: CadreNode,
 	timeoutMs: number = DEFAULT_OWNER_GENESIS_TIMEOUT_MS,
 ): Promise<OwnerGenesisResult> {
-	const genesis = enrollOwner(node).then(
-		(): OwnerGenesisResult => 'enrolled',
-		(err: unknown): OwnerGenesisResult => {
-			console.warn('[cadre-rn/phone-node] owner self-genesis failed:', err);
-			return 'failed';
-		},
-	);
+	return withinBound('owner self-genesis', enrollOwner(node).then((): OwnerGenesisResult => 'enrolled'), timeoutMs);
+}
+
+/**
+ * The owner step of a party this app joined: wire the identity key for signing only when the
+ * party lists it as a live owner (`CadreNode.wireOwnKeyIfOwner`), never insert an `OwnerKey` row,
+ * so a joined app can neither seat itself as a founder nor anchor a key that is no owner's.
+ * Fail-soft and bounded as {@link runOwnerGenesis} is.
+ *
+ * `granted`: a redemption has just made this key an owner, so a key not listed yet means the row
+ * has not reached this node, not that it is no owner. It is asked again every 2 s until it is
+ * wired or the bound passes; a start that timed out wires it on the next start.
+ */
+export function wireJoinedOwnerKey(
+	node: CadreNode,
+	options: { timeoutMs?: number; granted?: boolean } = {},
+): Promise<OwnerGenesisResult> {
+	let expired = false;
+	const wiring = async (): Promise<OwnerGenesisResult> => {
+		while (!(await node.wireOwnKeyIfOwner())) {
+			if (!options.granted || expired) return 'member';
+			await new Promise((resolve) => setTimeout(resolve, GRANTED_OWNER_RECHECK_MS));
+		}
+		return 'enrolled';
+	};
+	return withinBound('wiring the joined owner key', wiring(), options.timeoutMs ?? DEFAULT_OWNER_GENESIS_TIMEOUT_MS)
+		.finally(() => {
+			expired = true;
+		});
+}
+
+/** `settling`, or `'failed'` when it rejects (logged), or `'timed-out'` when it has not settled within `timeoutMs` (logged). */
+async function withinBound(
+	label: string,
+	settling: Promise<OwnerGenesisResult>,
+	timeoutMs: number,
+): Promise<OwnerGenesisResult> {
+	const settled = settling.catch((err: unknown): OwnerGenesisResult => {
+		console.warn(`[cadre-rn/phone-node] ${label} failed:`, err);
+		return 'failed';
+	});
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const deadline = new Promise<OwnerGenesisResult>((resolve) => {
 		timer = setTimeout(() => resolve('timed-out'), timeoutMs);
 	});
 	try {
-		const result = await Promise.race([genesis, deadline]);
+		const result = await Promise.race([settled, deadline]);
 		if (result === 'timed-out') {
-			console.warn(`[cadre-rn/phone-node] owner self-genesis has not settled after ${timeoutMs} ms; starting without it`);
+			console.warn(`[cadre-rn/phone-node] ${label} has not settled after ${timeoutMs} ms; starting without it`);
 		}
 		return result;
 	} finally {

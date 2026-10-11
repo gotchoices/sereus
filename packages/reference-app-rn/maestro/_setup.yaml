@@ -1,14 +1,16 @@
 appId: ${MAESTRO_APP_ID}
 ---
 # Shared bootstrap for all e2e flows.
-# Launches the phone app, connects to the drone fixture, joins the drone's cadre
-# by redeeming its invitation, creates a chat strand, and switches to the Chat tab.
+# Launches the phone app, connects with blank fields (founding its own cadre, as
+# a fresh install does), joins the drone's cadre by redeeming its invitation
+# (which switches the app to the drone's party), creates a chat strand, and
+# switches to the Chat tab.
 #
 # Env vars (injected by scripts/run-e2e.mjs):
-#   PARTY_ID, BOOTSTRAP_ADDR — from test-data.json
 #   CADRE_INVITATION         — drone's cadre invitation (pins the drone owner key
-#                              and admits the phone at the drone, so the cold
-#                              phone trusts what it then syncs)
+#                              and admits the phone at the drone as an owner, so
+#                              the phone trusts what it then syncs and can found
+#                              a strand)
 #   STRAND_ID                — drone's pre-created strand
 #   SIDECAR_URL              — drone HTTP base URL
 #   MAESTRO_APP_ID           — phone app bundle id
@@ -25,14 +27,7 @@ appId: ${MAESTRO_APP_ID}
 - tapOn: "Settings"
 
 # ── Connect ───────────────────────────────────────────────────────────────
-- tapOn:
-    id: "input-party-id"
-- inputText: ${PARTY_ID}
-- hideKeyboard
-- tapOn:
-    id: "input-bootstrap-addr"
-- inputText: ${BOOTSTRAP_ADDR}
-- hideKeyboard
+# Party ID and Bootstrap addr stay blank: the phone founds a cadre of its own.
 # The Relay field, the Connection encryption choice and their captions sit between
 # the bootstrap field and this button, which can put it below the fold on a short
 # screen. Scrolling to an element already on screen does nothing.
@@ -59,16 +54,23 @@ appId: ${MAESTRO_APP_ID}
 - hideKeyboard
 - tapOn:
     id: "btn-join-cadre"
-# The join dials the drone and waits for its answer.
+# The join stops the phone's own node, starts one in the drone's party, dials the
+# drone and waits for its answer, then wires the phone's owner key.
 - extendedWaitUntil:
     visible:
       id: "modal-title"
       text: "Joined cadre"
-    timeout: 15000
+    timeout: 60000
 - tapOn:
     id: "btn-modal-ok"
 
 # ── Create strand ─────────────────────────────────────────────────────────
+# The connected sections were hidden while the node switched party, so the
+# button may no longer be on screen.
+- scrollUntilVisible:
+    element:
+      id: "btn-create-strand"
+    direction: DOWN
 - tapOn:
     id: "btn-create-strand"
 - assertVisible:

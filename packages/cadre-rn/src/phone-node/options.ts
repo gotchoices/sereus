@@ -3,8 +3,9 @@
  *
  * The record is one per app, not party-scoped: it is what *selects* the party, so every other
  * node-local record is read through the `partyId` it carries. `PhoneNode.start` writes it after
- * every successful start (`autoStart: true`) and `stop` rewrites it with `autoStart: false`; an
- * app's launch and a push wake into a killed process read it to start the node unattended.
+ * every successful start and `joinCadre` once a member admitted the app (`autoStart: true`), and
+ * `stop` rewrites it with `autoStart: false`; an app's launch and a push wake into a killed
+ * process read it to start the node unattended.
  */
 
 // Type-only: the noise-crypto module loads react-native-quick-crypto at runtime.
@@ -23,7 +24,21 @@ export interface PhoneNodeOptions {
 	relayAddrs: string[];
 	/** How much of Noise's crypto runs natively; read only when the node is built. */
 	noiseCryptoMode?: NoiseCryptoMode;
+	/**
+	 * How this app came to `partyId`. A `'founded'` party runs owner genesis on every start; a
+	 * `'joined'` one never does, because genesis on a party whose control store has not arrived
+	 * would seat this app as a second founder. Absent means `'founded'`.
+	 */
+	origin?: PhoneNodeOrigin;
+	/**
+	 * The party this app founded and left by joining another (`PhoneNode.joinCadre`). Its data
+	 * stays on disk under its own names, for moving its strands and dissolving the old cadre.
+	 */
+	formerPartyId?: string;
 }
+
+/** Whether this app founded its party, or joined it by invitation. */
+export type PhoneNodeOrigin = 'founded' | 'joined';
 
 /** The last start, as `PhoneNode.loadSavedStart` reports it. */
 export interface SavedStart {
@@ -55,18 +70,22 @@ interface StartRecord {
 	bootstrapAddrs: string[];
 	relayAddrs: string[];
 	noiseCryptoMode?: NoiseCryptoMode;
+	origin?: PhoneNodeOrigin;
+	formerPartyId?: string;
 	autoStart: boolean;
 	writtenBy?: string;
 }
 
 export function serializeSavedStart(saved: SavedStart): string {
-	const { partyId, bootstrapAddrs, relayAddrs, noiseCryptoMode } = saved.options;
+	const { partyId, bootstrapAddrs, relayAddrs, noiseCryptoMode, origin, formerPartyId } = saved.options;
 	const record: StartRecord = {
 		version: RECORD_VERSION,
 		partyId,
 		bootstrapAddrs,
 		relayAddrs,
 		noiseCryptoMode,
+		origin,
+		formerPartyId,
 		autoStart: saved.autoStart,
 		writtenBy: saved.writtenBy,
 	};
@@ -77,9 +96,9 @@ export function serializeSavedStart(saved: SavedStart): string {
  * The saved record, or `undefined` when there is none or it is unusable (logged).
  *
  * Only the party id is worth discarding a record over. A malformed optional field falls back to
- * its default — `[]` for an address list, the build default for the Noise mode, `false` for
- * `autoStart` — so a damaged record still keeps the phone in its party, at worst needing the user
- * to start the node by hand.
+ * its default — `[]` for an address list, the build default for the Noise mode, absent for
+ * `origin` and `formerPartyId`, `false` for `autoStart` — so a damaged record still keeps the
+ * phone in its party, at worst needing the user to start the node by hand.
  */
 export function parseSavedStart(text: string | undefined): SavedStart | undefined {
 	if (text === undefined) return undefined;
@@ -96,6 +115,10 @@ export function parseSavedStart(text: string | undefined): SavedStart | undefine
 		relayAddrs: stringArrayOrEmpty(record.relayAddrs),
 	};
 	if (isNoiseCryptoMode(record.noiseCryptoMode)) options.noiseCryptoMode = record.noiseCryptoMode;
+	if (record.origin === 'founded' || record.origin === 'joined') options.origin = record.origin;
+	if (typeof record.formerPartyId === 'string' && record.formerPartyId.trim().length > 0) {
+		options.formerPartyId = record.formerPartyId;
+	}
 	const saved: SavedStart = { options, autoStart: record.autoStart === true };
 	if (typeof record.writtenBy === 'string') saved.writtenBy = record.writtenBy;
 	return saved;

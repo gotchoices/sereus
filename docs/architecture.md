@@ -563,7 +563,7 @@ The device (`redeemAtMembers`) tries the bundle's addresses one at a time, each 
 
 A device the invitation makes an owner still has to wire its own key for signing afterwards, and on every later start: `CadreNode.wireOwnKeyIfOwner()` wires the identity key (`initializeSeedBootstrap`, which anchors it) only when that key is a live `OwnerKey` row here, and returns whether it did. It never inserts an `OwnerKey` row, unlike `ensureOwnerKey`, so a machine that joined someone else's cadre can neither genesis-insert itself into it nor anchor its own key while it is not an owner. A redemption seats the request's `peerKey`, the key behind the device's peer id, so the identity key is the right one to look for. Other machines derive that device's key into their anchors from the row's stored proof on their next membership refresh ("How the anchor follows the owner table" under [Seed Delivery Protocol](#seed-delivery-protocol)), so its vouches are accepted without a seed from it.
 
-The headless surface is `cadre enroll invite` on the owner's admin channel and `cadre start --invitation` on the device ([cadre-cli README → Join by invitation](../packages/cadre-cli/README.md#join-by-invitation-the-owner-may-be-offline)); the reference apps paste the bundle into **Paste cadre invitation** and tap **Join cadre**. The invitation is the only way a device joins through an invite: there is no path where the owner must be online and sign at the moment of joining.
+The headless surface is `cadre enroll invite` on the owner's admin channel and `cadre start --invitation` on the device ([cadre-cli README → Join by invitation](../packages/cadre-cli/README.md#join-by-invitation-the-owner-may-be-offline)); the reference apps paste the bundle into **Paste cadre invitation** and tap **Join cadre**, which in the React Native app switches the app to the invitation's party ([An app joins an existing cadre](#an-app-joins-an-existing-cadre)). The invitation is the only way a device joins through an invite: there is no path where the owner must be online and sign at the moment of joining.
 
 #### Handing an invitation from app to app
 
@@ -604,6 +604,35 @@ A minting machine that is itself always on (cadre-cli, cadre-host) can read `iss
 - **What still ends it at once.** A final refusal or an invalid reply ends the call as it ends one pass, and a stopped node ends the wait.
 
 One pass is the default and what `cadre start --invitation` uses; it leaves expiry to the member's clock. `app-joins-cadre-by-invitation.integration.ts` runs both flows, the targeted one through a pass on which the only always-on member was down.
+
+#### An app joins an existing cadre
+
+A phone app that already runs a one-node cadre of its own (party B) joins the user's main cadre (party A) by moving its one node from B to A: `PhoneNode.joinCadre` in `@serfab/cadre-rn/phone-node` ([kit README → Phone node](../packages/cadre-rn/README.md#phone-node)).
+
+**One node per app, keeping its identity.** The node is switched, not doubled:
+
+- **A node serves one party.** Every node-local store is party-scoped and refuses another party's records, and `redeemCadreInvitation` refuses an invitation for another party, so one node serving both would be a rewrite of `CadreNode`.
+- **A second node beside B's would collide or split the owner key.** With the same identity both nodes claim one peer id (competing relay reservations) and open the same strand databases, whose storage scopes are strand ids rather than party-scoped; with a second identity the app's owner key in A differs from the key that founded B's strands, which moving a strand needs (`Strand.AuthorizedInsert` requires `FounderOwnerKey` to be the writer's owner key).
+- **The identity is per app, not per party.** The kit keeps one key in the secure store (`DEFAULT_IDENTITY_KEY_ID`), so the peer id in a join request is the peer id that redeems, and the app's owner key in A is its owner key in B.
+
+While the app runs in A, B's strands are not open on the phone until they are moved. B's data stays on disk under its own names: the control store under `controlStorageScope(B)`, the `<record>.<B>` node-local keys and B's anchor slot.
+
+**A joined party never runs owner genesis.** Genesis (`ensureOwnerKey`, then `initializeSeedBootstrap`) on a party whose control store has not arrived inserts the app's key as a founding `OwnerKey` row, the stranger's genesis-inserted key the node-local trusted-owner anchor exists to contain (under [Seed Delivery Protocol](#seed-delivery-protocol)). The saved start therefore records how the app came to its party, `origin`:
+
+- **`'founded'`** (or absent) runs genesis on every start, as a solo phone needs.
+- **`'joined'`** calls only `wireOwnKeyIfOwner`: the app is an owner (`'enrolled'`) when the party lists its key and a member (`'member'`, no owner key reported) otherwise, so an owner that later adds it as an owner is picked up on the next start.
+- **A start that names no origin** takes the saved start's when it is for the same party, so a joined party started again from a typed party id does not run genesis.
+
+`formerPartyId` records the party the app founded and left, carried through any later join, for moving its strands and dissolving the old cadre.
+
+**The switch and its rollback.** `joinCadre` runs as one transition in the kit's queue, so no start, stop or restart interleaves with it:
+
+1. Already running in A: redeem on the running node (a device already admitted is answered as such) and wire the owner key.
+2. Otherwise stop B's node and start one for A with no bootstrap addresses (the redemption retains the answering member as a cold-start dial target), status `joining`, and redeem with `waitForMember`.
+3. Admitted: wire the owner key, asking again for up to the genesis bound after an owner grant until the row reaches the phone, then save the start (`origin: 'joined'`, `autoStart: true`) and report `running`.
+4. Refused, expired, cancelled, or the start failed: stop A's node, start again what was running before (a node that was stopped stays stopped), and rethrow the join's error.
+
+The start is saved only once a member admitted the app, so an app killed while waiting relaunches into B, and a push wake into the killed process starts B too. A's partial storage is reused by the next attempt, and an invitation a member already honoured is answered as already a member when pasted again. A `stop` during a join cancels it.
 
 ### When Is a Seed Needed?
 

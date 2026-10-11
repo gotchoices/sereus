@@ -211,8 +211,6 @@ async function main() {
 
 	console.log('→ Launching maestro…');
 	const maestroEnv = {
-		PARTY_ID: testData.partyId,
-		BOOTSTRAP_ADDR: testData.droneBootstrapAddr,
 		CADRE_INVITATION: testData.cadreInvitation,
 		STRAND_ID: testData.strandId,
 		SIDECAR_URL,

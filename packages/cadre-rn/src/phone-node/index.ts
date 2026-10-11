@@ -5,6 +5,8 @@
 export {
 	createPhoneNode,
 	DEFAULT_PHONE_NODE_NAMES,
+	type JoinCadreOptions,
+	type JoinCadreResult,
 	type LevelDBNative,
 	type PhoneNode,
 	type PhoneNodeNames,
@@ -17,12 +19,14 @@ export {
 	parseSavedStart,
 	serializeSavedStart,
 	type PhoneNodeOptions,
+	type PhoneNodeOrigin,
 	type SavedStart,
 } from './options.js';
 export {
 	buildPhoneNodeConfig,
 	DEFAULT_OWNER_GENESIS_TIMEOUT_MS,
 	runOwnerGenesis,
+	wireJoinedOwnerKey,
 	type OwnerGenesisResult,
 	type PhoneNodeConfigInputs,
 } from './config.js';

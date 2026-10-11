@@ -7537,9 +7537,9 @@ export class CadreNode implements SAppIdLookup {
     // `wireOwnKeyIfOwner`, which checks the row first, so a joined non-owner never
     // self-anchors. Three callers still wire unconditionally on every start, so a
     // node of theirs started for a party founded elsewhere does: the phone kit's
-    // `runOwnerGenesis` (cadre-rn; its joined-party path is ticket
-    // app-joins-existing-cadre-by-invitation), the web reference app's start
-    // (`cadre-web.ts`) and `cadre start --owner`. Contained while the store does
+    // `runOwnerGenesis` (cadre-rn; only for a party its saved start does not record
+    // as joined, whose starts call `wireOwnKeyIfOwner` instead), the web reference
+    // app's start (`cadre-web.ts`) and `cadre start --owner`. Contained while the store does
     // not replicate and such a node cannot mint: `createCadreInvitation` hands out
     // the anchor as the device's pins, but the `CadreInvite` insert needs a live
     // owner as issuer. If anything hands out the anchor without that check, gate

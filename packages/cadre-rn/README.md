@@ -22,7 +22,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 
 ## Phone node
 
-`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity in the secure store, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, and remembers the last start so the app can start again unattended. Call it once, at module scope; a second call over the same storage names throws while the first is running.
+`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity in the secure store, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, and moves the node to another party's cadre by invitation. Call it once, at module scope; a second call over the same storage names throws while the first is running.
 
 ```ts
 import * as SecureStore from 'expo-secure-store';           // or an adapter over the app's own secure store
@@ -52,16 +52,41 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `start(options)` | Starts the node, or joins the start in flight; a running node is returned as is. A start called during a stop or restart runs after it, so it never builds on databases being closed. A failed start closes everything it opened and leaves `status` `failed`. A successful one saves its options with `autoStart: true`. |
 | `stop()` | The user's disconnect: waits for a start in flight, saves `autoStart: false`, stops the node, and closes every database it opened (rn-leveldb locks each name, so one left open fails the next start). |
 | `restart(options)` | Rebuilds the node with new relays or a new Noise mode, which libp2p reads only when the node is built. Leaves `autoStart` set. |
+| `joinCadre(invitation, options?)` | Joins the cadre a decoded cadre invitation names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result and `formerPartyId`. On a refusal, an expiry while waiting (`invite-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause). |
 | `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`. |
 | `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
-| `status`, `onStatus` | `stopped`, `starting`, `running` (with `owner`: `enrolled`, `failed` or `timed-out`), or `failed` (with the error). |
+| `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the invitation's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), or `failed` (with the error). |
+| `ownerPublicKey()` | The identity's public key for pairing; null unless running, and for a `member`. |
 
 Platform options with defaults:
 
 - **`transports`**: WebSockets and circuit relay. An app with `react-native-webrtc` adds `webRTC({ rtcConfiguration: { iceServers: resolveStunServers(relayAddrs) } })`, as the reference app does.
 - **`allowPrivateDial`**: `true`. Dials loopback, private and plain `ws://` addresses, which libp2p's React Native gater refuses. Without it an emulator cannot reach `10.0.2.2`, and a relay on the home network or without TLS is unreachable.
-- **`ownerGenesisTimeoutMs`**: 60 s.
+- **`ownerGenesisTimeoutMs`**: 60 s. Also bounds wiring the owner key of a joined party.
 - **`configure(config)`**: none. The last word on the generated `CadreNodeConfig`: strand filter, `requireSignedSchemas`, `linkRoundTripMs`.
+
+### Joining another cadre
+
+An app that runs its own one-node cadre joins the user's main cadre with `joinCadre`, which switches the node rather than running a second one beside it: a node serves one party, and a second libp2p host on the same identity would compete for its peer id. The reasons and the full sequence are in [architecture.md → An app joins an existing cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre).
+
+```ts
+import { decodeCadreInvitation } from '@serfab/cadre-core';
+
+const cancel = new AbortController();   // a Cancel button calls cancel.abort()
+const joined = await phone.joinCadre(decodeCadreInvitation(pasted), {
+	signal: cancel.signal,
+	onProgress: (p) => { if (p.state === 'waiting') show(p.reason); },   // 'no-member-answered' | 'member-not-ready'
+});
+```
+
+The saved start records how the app came to its party:
+
+- **`origin`**: `'founded'` (or absent) runs owner genesis on every start; `'joined'`, which `joinCadre` saves, never does, and wires the identity key only when the party lists it as an owner, so the app reports `owner: 'member'` otherwise. A start that names no `origin` takes the saved start's when it is for the same party.
+- **`formerPartyId`**: the party this app founded and left. Its data stays on disk under its own names until its strands are moved and the old cadre is dissolved.
+
+Nothing is saved until a member admits the app, so a kill while waiting relaunches into the party it left. `stop()` cancels a join in progress.
+
+### Helpers
 
 Two helpers for code that uses the node:
 

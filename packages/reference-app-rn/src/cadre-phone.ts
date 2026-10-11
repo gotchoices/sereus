@@ -3,7 +3,8 @@
  *
  * The kit does the bring-up: identity in the secure store, durable node-local records,
  * LevelDB storage per scope, owner genesis, single-flight start, a stop that closes
- * every database, and the saved start for unattended starts. This module supplies what
+ * every database, the saved start for unattended starts, and the switch to another
+ * party's cadre by invitation. This module supplies what
  * is this app's: `expo-secure-store`, rn-leveldb, the WebRTC transport, native Noise,
  * the demo's unsigned schema policy, and the storage names its devices already hold.
  * The functions below keep the module's earlier surface, so `use-cadre.ts` and the
@@ -12,6 +13,7 @@
 
 import { resolveStunServers } from '@serfab/cadre-core';
 import type {
+  CadreInvitation,
   CadreNode,
   ControlNetworkSeed,
   ApplySeedResult,
@@ -29,12 +31,19 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC } from '@libp2p/webrtc';
 import * as SecureStore from 'expo-secure-store';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
-import { createPhoneNode, type PhoneNodeOptions, type SavedStart } from '@serfab/cadre-rn/phone-node';
+import {
+  createPhoneNode,
+  type JoinCadreOptions,
+  type JoinCadreResult,
+  type PhoneNodeOptions,
+  type PhoneNodeStatus,
+  type SavedStart,
+} from '@serfab/cadre-rn/phone-node';
 import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { defaultNoiseCryptoMode } from './noise-crypto-config';
 import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE_PREFIX } from './node-local-names';
 
-export type { PhoneNodeOptions };
+export type { JoinCadreResult, PhoneNodeOptions };
 /** The saved start, under the name this app's code uses for it. */
 export type SavedStartOptions = SavedStart;
 
@@ -117,6 +126,25 @@ export function stopPhoneNode(): Promise<void> {
 }
 
 /**
+ * Join the cadre an invitation names: the kit stops this app's node and starts it in that
+ * party, waiting for one of its always-on machines to admit this phone. On any failure it
+ * goes back to the party it left (or stays stopped when none was running) and rethrows.
+ */
+export function joinCadreByInvitation(invitation: CadreInvitation, options?: JoinCadreOptions): Promise<JoinCadreResult> {
+  return phone.joinCadre(invitation, options);
+}
+
+/** The options the running node was started with; null unless running. */
+export function getRunningOptions(): PhoneNodeOptions | null {
+  return phone.options;
+}
+
+/** The kit's view of the node: stopped, starting, joining, running or failed. */
+export function getPhoneNodeStatus(): PhoneNodeStatus {
+  return phone.status;
+}
+
+/**
  * The Noise crypto mode the running node was built with, for the Settings Node card to
  * show what a device run is measuring. Null unless running.
  */
@@ -125,8 +153,8 @@ export function getNoiseCryptoMode(): NoiseCryptoMode | null {
 }
 
 /**
- * The node's owner public key (base64url) for out-of-band pairing; null unless running.
- * Never private material.
+ * The node's owner public key (base64url) for out-of-band pairing; null unless running,
+ * and for a member of a joined cadre that is not an owner. Never private material.
  */
 export function getOwnerPublicKey(): string | null {
   return phone.ownerPublicKey();
