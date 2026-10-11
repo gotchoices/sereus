@@ -32,7 +32,20 @@ No test was added: the upstream fix carries its own reproductions at the storage
 - The report's second fingerprint, `SyncRetryExhaustedError … commit-not-durable: 0 of 3 cohort member(s) report holding rev 8 … (local-executed)` on `default/app/Data`, was seen once in a full `yarn check` on optimystic 1.11.0 and never reproduced. Upstream left it out of scope with no code site found. It did not appear in the 24 runs above. If it recurs, it needs a fresh report with `optimystic:db-p2p:coordinator-repo*` logs.
 - Upstream did not identify why the replica's held `latest` would not materialize; the fix removed the vote's dependence on it. If it matters again, upstream asks for `optimystic:db-p2p:storage-repo,optimystic:db-p2p:block-storage` in the debug namespaces.
 
-## Reviewer checks
+## Reviewer checks (answered below)
 
 - `REFRESH_MS = 10_000` against a measured maximum of 2.1 s: is that margin right for a loaded full-suite run?
 - The removed `NOTE:` was the only record of why M once ran at 15 s; the history now lives in `complete/4.62-owner-anchor-follows-owner-key-changes` and this ticket.
+
+## Review findings
+
+Read `ticket(implement): fresh-strand-replica-vetoes-writes-while-catching-up` before the handoff. The diff is three small edits in test code plus removal of the known-failure entry.
+
+- **Correctness.** `startPinningMember` forwards `reconcileMs` to `controlNodeConfig`, which already accepts it (`node-fixtures.ts`, mapped to `network.controlCohort.reconcileMs`), with the same conditional-spread idiom as `topology.ts` and `control-trio.ts`. `M_RECONCILE_MS` is used only by M; `REFRESH_MS` only bounds the wait on M's anchor (`owner-anchor-follows-owner-changes.integration.ts:141`). No defects found.
+- **`REFRESH_MS = 10_000` margin.** About 5 times the measured worst case of 2.1 s, and the wait on M's anchor starts only after a separate wait on the replicated row (budget `OP_MS`), so the 10 s covers one 2 s tick plus one refresh pass and none of the replication time. Kept as is; a loaded full-suite run would have to slow a single local refresh pass by more than 8 s to fail it.
+- **Removed `NOTE:`.** Its condition ("once that ticket lands, pass `reconcileMs` and shorten the budget") is exactly what this pass did, so removing it is correct; the history lives in `complete/4.62-owner-anchor-follows-owner-key-changes` and this ticket.
+- **Hygiene (fixed).** The edited header comment had one line run past the file's wrap width; rewrapped.
+- **Docs.** `docs/architecture.md` (owner anchor section) still says replicated changes are followed at the next reconcile, "every 15 s by default" — still true, the scenario only overrides it. `docs/testing.md` lists both scenarios without timing or known-failure notes. No doc change needed. `tickets/.garden-report.md` still lists this ticket as blocked on an upstream release; that file is a generated gardening snapshot and is left for the next garden pass.
+- **Tests.** None added and none cut: the change is test configuration, and the upstream fix carries its own storage-layer reproductions.
+- **Validation (this pass).** 3 copies of each scenario run at once (6 processes): 6 of 6 passed, test time 7.8–9.6 s; no `unmaterializable` or `ValidatorRejection` in any log. `yarn typecheck` in `packages/integration-tests` and `eslint` on both edited files: clean. Full `yarn check` not run, as in the implement pass.
+- **Tripwires / follow-ups.** None filed. The unreproduced `commit-not-durable` fingerprint stays as recorded under Known gaps; it has no code site and no current reproduction, so it does not meet the filing bar.

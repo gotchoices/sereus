@@ -24,9 +24,9 @@
  *
  * M follows a replicated change at its next membership refresh, and on M nothing but the timed
  * control-cohort reconcile runs one (every 15 s by default, 2 s here): a row that arrives by
- * replication raises no local notification. The scenario never drives a refresh, so each step covers the
- * whole path, and each wait on M's anchor follows a wait on the replicated row or tombstone
- * itself, so a timeout names which of the two did not arrive.
+ * replication raises no local notification. The scenario never drives a refresh, so each step
+ * covers the whole path, and each wait on M's anchor follows a wait on the replicated row or
+ * tombstone itself, so a timeout names which of the two did not arrive.
  */
 
 import { describe, it, expect } from 'vitest';
