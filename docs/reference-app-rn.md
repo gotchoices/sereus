@@ -145,6 +145,16 @@ Switching modes is Disconnect → choose → Connect, which builds a new node. T
 
 **The per-peer read deadline is widened for every node too.** Before serving a read whose local copy may be stale, a node asks the other holders of that block which revision is newest, and believes an answer only if it arrives inside a per-peer deadline. Optimystic's own default for that is 1000 ms — a LAN budget, and shorter than one round trip between two phones that reach each other only through a relay, so every holder read as silent and the read was declined and retried. cadre therefore derives it from the declared link on both the control node and every strand node: two link round trips, **7000 ms** at the default declaration (`COHORT_READ_DEADLINE_MS` in [`cluster-size.ts`](../packages/quereus-plugin-sereus/src/cluster-size.ts), whose doc comment carries the derivation, the measurement history and what the wider budget costs). This app sets nothing for it; `network.linkRoundTripMs` moves it with every other link budget if a deployment's link is slower, and `network.cohortQueryTimeoutMs` overrides it on both networks at once.
 
+### Release builds: cleartext WebSocket
+
+Android refuses connections without TLS unless the app opts in, and it counts `ws://` as cleartext by its scheme. React Native's template opts in for debug builds only (`android/app/src/debug/AndroidManifest.xml`), so without an opt-in a debug build dials `/ws` addresses and a release build from the same project dials none of them: no drone, no cadre-host node, no relay (gotchoices/sereus#38). The kit's Expo config plugin opts in for every build. `app.json` lists `"@serfab/cadre-rn"` under `plugins`, and the plugin sets `android:usesCleartextTraffic="true"` on the main manifest's `<application>` element at prebuild. [The kit's README](../packages/cadre-rn/README.md#config-plugin-expo) has the line to add by hand in a bare React Native app.
+
+**Why this is safe.** Every libp2p connection is encrypted and authenticated by the Noise handshake against the peer id in the dialed address, so a party between the phone and the node can neither read the traffic nor pose as the node. TLS underneath would add a dependency on certificate authorities and no security, and Sereus is designed to need no certificate authority. A claim's secret does not cross the wire either: `claimNode` sends an HMAC proof of it ([`claim-proof.ts`](../packages/cadre-core/src/claim-proof.ts)) inside the Noise channel.
+
+**A network security config takes precedence.** If the app sets `android:networkSecurityConfig` and that file forbids cleartext, for its base config or for a domain, Android follows the file over the manifest flag and `/ws` dials stay blocked. Such an app permits cleartext in its own network security config; the plugin does not edit that file.
+
+**iOS is unverified.** This app does not set `NSAllowsArbitraryLoads`, and whether App Transport Security (ATS) applies to React Native's WebSocket on iOS has not been checked. An iPhone release build dialing a public `/dns4/…/ws` address over cellular settles it. If ATS refuses the dial, the same reasoning supports an ATS exception in the kit's plugin.
+
 ### Reachability: configuring a relay
 
 A React Native app cannot open a listener, so on its own the phone node has **no multiaddr at all**. That is fine for almost everything the app does — founding and reading strands, dialling out to a drone or to a cadre-host node it claimed, joining somebody else's invitation — because in all of those the phone is the side that dials. It is not fine for **inviting**: the phone runs the strand it invites to, so the joiner must be able to reach the phone itself, and the app refuses to mint an invitation while the phone has no address (`use-cadre.ts`). `CadreNode.createOpenInvitation` alone would still mint one that names only the party's other machines, which may not run a strand the phone has just founded yet.
@@ -461,7 +471,7 @@ packages/cadre-rn/metro/
 | Package | Source | Purpose |
 |---------|--------|---------|
 | `@serfab/cadre-core` | `workspace:^` | CadreNode, seed bootstrap, strand management |
-| `@serfab/cadre-rn` | `workspace:^` | Hermes polyfills and the development-build boot check (§ Polyfills); Metro configuration (§ Metro Configuration); native Noise crypto (§ Phone (RN app) Configuration) |
+| `@serfab/cadre-rn` | `workspace:^` | Hermes polyfills and the development-build boot check (§ Polyfills); Metro configuration (§ Metro Configuration); native Noise crypto (§ Phone (RN app) Configuration); the Expo config plugin that lets release builds dial `/ws` (§ Release builds: cleartext WebSocket) |
 | `@optimystic/db-p2p` | npm | libp2p node creation (Metro resolves RN entrypoint) |
 | `@optimystic/db-p2p-storage-rn` | npm | LevelDB-backed `IRawStorage` |
 | `@quereus/quereus` | npm | SQL engine for sApp schema |

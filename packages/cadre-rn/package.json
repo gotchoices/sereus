@@ -9,6 +9,7 @@
     "polyfills",
     "shims",
     "metro",
+    "app.plugin.cjs",
     "!dist/test",
     "!**/*.tsbuildinfo",
     "README.md"
@@ -47,6 +48,7 @@
     "./polyfills/native-crypto": "./polyfills/native-crypto.js",
     "./boot-check": "./polyfills/boot-check.js",
     "./metro": "./metro/index.cjs",
+    "./app.plugin.js": "./app.plugin.cjs",
     "./package.json": "./package.json"
   },
   "repository": {

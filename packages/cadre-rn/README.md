@@ -18,6 +18,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()`, for apps that use `@libp2p/webrtc` |
 | `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: a boot-time table of which globals are native, polyfilled, known gaps or missing, and a `[reload] <reason>` log line before any reload started from JavaScript |
 | `@serfab/cadre-rn/metro` | CommonJS, for `metro.config.js`: `withCadreMetro(config, options)` adds the Metro settings a Sereus app needs (Node built-in shims, one copy of each native module, libp2p's browser variants) |
+| `"@serfab/cadre-rn"` in `app.json` `plugins` | The Expo config plugin (subpath `./app.plugin.js`, CommonJS): lets Android release builds dial `/ws` addresses (see [Config plugin (Expo)](#config-plugin-expo)) |
 
 ## Phone node
 
@@ -182,6 +183,29 @@ What it adds, keeping whatever the incoming config already set (lists are append
 It relies on the toolchain's defaults for package exports (both Expo's and React Native's enable them) and leaves condition names to the app. The reference app's [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#metro-configuration) explains each setting; the comments in `metro/index.cjs` have the full reasoning.
 
 The app installs nothing extra for `/metro`. The peers it resolves are the ones the other subpaths already need, and only if something imports them.
+
+## Config plugin (Expo)
+
+An Expo app lists the kit under `plugins` in its `app.json`:
+
+```json
+{ "expo": { "plugins": ["@serfab/cadre-rn"] } }
+```
+
+At prebuild the plugin sets `android:usesCleartextTraffic="true"` on the `<application>` element of `android/app/src/main/AndroidManifest.xml`. Android release builds refuse plain `ws://` connections without it, so the app can dial no `/ws` address; React Native's template opts debug builds in, which hides the problem until the first release build. Dialing without TLS is safe because Noise encrypts and authenticates every libp2p connection against the peer id in the address; the reference app's [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#release-builds-cleartext-websocket) has the reasoning.
+
+- **It overrides `false`.** The plugin sets `true` even where the app's manifest or another plugin (such as `expo-build-properties`' `android.usesCleartextTraffic`) set `false`. When two plugins set the attribute, the one listed **first** in `plugins` wins, because Expo runs manifest changes in reverse order of the list.
+- **A network security config takes precedence.** Android follows an `android:networkSecurityConfig` file over the manifest flag, so an app whose file forbids cleartext must permit it there. The plugin does not edit that file.
+- **iOS is unchanged.** Whether App Transport Security blocks React Native's WebSocket has not been checked; the docs section linked above says what would settle it.
+
+The plugin resolves `expo/config-plugins` from the app's project root when it runs, so the kit installs nothing from Expo. Like any manifest change it takes effect in the next native build.
+
+A bare React Native app, with no prebuild, adds the attribute by hand:
+
+```xml
+<!-- android/app/src/main/AndroidManifest.xml -->
+<application android:usesCleartextTraffic="true" ...>
+```
 
 ## `@serfab/cadre-rn/noise-crypto`
 

@@ -62,7 +62,8 @@
           "cameraPermission": "Sereus uses the camera to scan the code a home machine shows when you add its node to your cadre.",
           "microphonePermission": "Unused: Sereus uses WebRTC data channels only and never requests microphone access."
         }
-      ]
+      ],
+      "@serfab/cadre-rn"
     ],
     "extra": {
       "router": {},
