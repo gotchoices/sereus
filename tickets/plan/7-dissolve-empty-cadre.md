@@ -28,3 +28,7 @@ difficulty: medium
 ## Note from planning `app-joins-existing-cadre-by-invitation`
 
 After a join, the phone kit's saved start record already names the joined party (`origin: 'joined'`) and keeps the left one as `formerPartyId`; the "switch the persisted party id" step is done by the join. Dissolving deletes party B's storage (`controlStorageScope(B)`, the `<record>.<B>` node-local keys, the anchor slot for B) and clears `formerPartyId`. Only one node runs per app, so dissolving never stops a live B node.
+
+## Note from planning `move-strand-between-cadres`
+
+The move leaves B's rows in place (nothing is deleted in B; its node never runs again on the normal path). "Every strand is also present in the target party" is therefore read from the kit, not from B's storage: the phone kit keeps one secure-store record per source party, `cadre/strand-move/<base64url B>`, for as long as anything from B is still to be adopted, and deletes it when the adoption reports nothing left to retry. So B may be dissolved when the saved start names B as `formerPartyId` and no record for B exists; a record still present means the move is pending or partly refused, and dissolving must refuse and name the strands in it (`PhoneNode.pendingStrandMove()`). A strand the move refused permanently (A already participated in it under its own identity) stays in the record's `refused` list, so dissolving over it is the user's explicit choice, not a default.

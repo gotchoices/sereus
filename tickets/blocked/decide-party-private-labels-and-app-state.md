@@ -68,3 +68,4 @@ Yes, by embedding at the storage and network layer rather than inside a column.
   - how the app declares its private schema next to the strand schema.
 - **B. Add only an invitation label now** (option 1, not editable), and leave #6 for later.
 - **C. Leave both for later.** Chat keeps device-local storage keyed by token, as it already plans to in the meantime.
+- **Moving.** When an app moves its strands from the cadre it founded into the user's main cadre (`move-strand-between-cadres`, built on `strand-bundle-export-and-adopt`), the move copies control rows per strand. App tables that land in the control database would have to move too, and only the app knows which of its rows belong to which strand; `adoptStrandBundle`'s pending-join step carries a `NOTE:` naming this as the site.
