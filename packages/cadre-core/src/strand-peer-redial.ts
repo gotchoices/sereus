@@ -106,11 +106,17 @@ export interface StrandRedialDeps {
   /** Names the strand in logs. */
   label: string;
   node: RedialNode;
-  /** The launch seed: multiaddr strings, each naming its peer in a trailing `/p2p/`. */
+  /**
+   * The launch seed: multiaddr strings, each naming its peer in a trailing `/p2p/`.
+   *
+   * NOTE: read once, at runtime build. Addresses a re-formation carries while the strand runs
+   * reach the peerStore (`recordFormationStrandAddrs`) but not this loop until the runtime is
+   * rebuilt; if a re-formed strand is seen not reconnecting until relaunch, read the seed per round.
+   */
   seed: readonly string[];
   /** Peer ids never dialed nor counted as members: the relays the node reserves on. */
   excluded: ReadonlySet<string>;
-  /** The revocation gate's current verdict; absent for an open strand. */
+  /** The revocation gate's current verdict, asked of peers and of this node itself; absent for an open strand. */
   isRevoked?: (peerId: string) => boolean;
   /** Omit for real (unref'd) timers. */
   scheduler?: TimeoutScheduler;
@@ -191,8 +197,15 @@ class StrandPeerRedialLoop implements StrandPeerRedial {
     }, waitMs);
   }
 
-  /** One look, and a round of dials when it finds no member connected but some known. */
+  /**
+   * One look, and a round of dials when it finds no member connected but some known. A node
+   * whose own party was removed dials nobody: the strand keeps running for the session, but a
+   * removed party must not keep dialing the strand's peers (`CadreNode.forgetRevokedJoin`).
+   */
   private async lookAndDial(): Promise<LookOutcome> {
+    if (this.deps.isRevoked?.(this.selfId) === true) {
+      return 'watch';
+    }
     const membership = strandFretMembership(this.deps.node);
     if (this.memberConnected(membership)) {
       return 'watch';

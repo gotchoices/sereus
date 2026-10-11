@@ -106,6 +106,20 @@ describe('superviseStrandPeerRedial', () => {
     expect(node.dial).not.toHaveBeenCalled();
   });
 
+  it('dials nobody once its own party is revoked, though it still knows members', async () => {
+    const [self, member] = await Promise.all([1, 2].map(() => generateKeyPair('Ed25519')));
+    const node = fakeNode(self, [{ ...await fretEntry(member, ['/ip4/127.0.0.1/tcp/4001/ws']), membership: 'member' }],
+      new Set(), async () => {});
+    const scheduler = fakeScheduler();
+
+    start({
+      label: 's', node, seed: [`/ip4/127.0.0.1/tcp/4002/ws/p2p/${idOf(member)}`], excluded: new Set(),
+      isRevoked: (peerId) => peerId === idOf(self), scheduler
+    }, TIMINGS);
+    await vi.waitFor(() => expect(scheduler.waits).toEqual([TIMINGS.checkMs]));
+    expect(node.dial).not.toHaveBeenCalled();
+  });
+
   it('backs off between failed rounds, doubling to the cap, and starts over after a round connects', async () => {
     const [self, sibling] = await Promise.all([1, 2].map(() => generateKeyPair('Ed25519')));
     const connected = new Set<string>();
