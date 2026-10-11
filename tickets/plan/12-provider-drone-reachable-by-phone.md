@@ -21,6 +21,10 @@ Provider-specific parts to work out when picked up:
 - Whether an empty `CADRE_BOOTSTRAP_NODES=` reaches cadre-cli as "no bootstrap nodes" (its env loader treats an all-empty split as unspecified).
 - `provider-seed-accepted.integration.ts` uses a TCP-dialable requester; a phone-shaped variant would mirror the phone-shaped claimant in `cadre-host-join-by-qr.integration.ts`.
 
+## Demand
+
+gotchoices/sereus#40 (kjeib, 2026-10-10): health on a phone has claimed a cadre-cli node and a cadre-host node in the field; the provider is the one always-on option a phone cannot use. They ask for a timeline and offer to contribute the WebSocket listener and the optional `bootstrapNodes`, using cadre-host's change as the template. If `provider-client-and-sign-up` adopts the claim model (see its "Claim model" section), containers also need to start waiting to be claimed (`CADRE_CLAIM_SECRET_FILE` in `buildNodeEnv`); that part belongs here, with the listener, since it is container bring-up.
+
 ## Provenance
 
 Found while planning `phone-adds-cadre-host-node-to-its-cadre` (2026-09-15), by reading the code; not run.

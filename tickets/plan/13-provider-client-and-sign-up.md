@@ -23,6 +23,12 @@ The provider API (`POST /containers` with `pinnedOwnerKeys`, `GET /containers/:i
 - **Subscription state.** The app shows the node's status and the subscription's renewal and lapse dates. When the provider terminates a node for non-payment, the app offers to remove it (`remove-a-device-or-app-from-a-cadre`).
 - **Reference app**: a store screen with a single configured test provider is enough here.
 
+## Claim model (gotchoices/sereus#40, question 2)
+
+Since 1.14 a phone adds a cadre-cli or cadre-host node by claiming it: the node starts with a one-time claim secret, the phone scans a `sereus-join:` node code (peer id, addresses, secret) and calls `CadreNode.claimNode`, which delivers a seed carrying a proof of the secret. kjeib asks whether the provider should do the same: `POST /containers` starts the container waiting to be claimed and returns its node code, and the app claims it. That would replace `pinnedOwnerKeys` + `GET /peer` + `addDrone` + `PUT /seed`, so an app has one way to add a node, whoever runs it.
+
+Recommended: adopt it, and settle it first when this ticket is planned. Reasons: one code path in apps and in cadre-core; the provider never handles owner keys or seeds at all; it composes with "Invitation at create time" above (claim when the phone is the only member, invitation when another member is reachable, exactly as cadre-host offers both). What to check: the claim secret then passes through the provider's API response, so it must be returned once, over TLS, to the authenticated customer only, and never logged; a container nobody claims (app killed) is the "seed never delivered" edge case below in a new form. `docs/architecture.md` → "Enrollment Flow: Phone Adds Provider Drone" and "Provider Flow" describe the seed path and change with it. If the planner finds a reason the seed path must stay (a provider that must know the owner before starting a container, for billing or abuse control), that is a product question for `blocked/`.
+
 ## Edge cases & interactions
 
 - The token expires mid-flow: refresh, or re-run authorization.
