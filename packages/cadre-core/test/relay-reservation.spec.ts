@@ -19,6 +19,7 @@ import {
   findCircuitRelayTransport,
   resolveRelayReservationState,
   superviseRelayReservation,
+  withoutRelayDiscovery,
   type RelayReservationSupervisorOptions
 } from '../src/relay-reservation.js';
 import { blackholeRelayAddr, deadRelayAddr, freePort } from './relay-test-addrs.js';
@@ -1265,6 +1266,56 @@ describe('superviseRelayReservation — the strand-node shapes', () => {
       }
     }, 60_000);
   });
+});
+
+describe('withoutRelayDiscovery', () => {
+  /**
+   * gotchoices/sereus#34 in process. A relay-only strand node has one bare `/p2p-circuit` per
+   * configured relay (A, B), and connects first to a cohort seed that runs the relay server (C;
+   * stock identify on both sides, as a same-strand member shares the strand namespace). With
+   * libp2p's relay discovery on, C takes a slot within milliseconds of identify; A's supervised
+   * request then takes the last one, the store's queue clear drops B's request unsettled, and B's
+   * first attempt waits out its whole deadline.
+   */
+  it('leaves both slots to the supervised relays when another relay is connected first', async () => {
+    const relayA = await startRelay();
+    const relayB = await startRelay();
+    const relayC = await startRelay();
+    const client = await createLibp2p({
+      addresses: { listen: ['/p2p-circuit', '/p2p-circuit'] },
+      transports: withoutRelayDiscovery([tcp(), circuitRelayTransport()]),
+      connectionEncrypters: [noise()],
+      streamMuxers: [yamux()],
+      services: { identify: identify() }
+    });
+    nodes.push(client);
+    const peerC = relayC.peerId.toString();
+
+    await client.dial(relayC.getMultiaddrs()[0]);
+    // The state the supervisors started from in every failing run: C's discovered reservation
+    // already held. With discovery off this wait simply runs out.
+    const settleBy = Date.now() + 1_000;
+    while (circuitAddrsVia(client, peerC).length === 0 && Date.now() < settleBy) {
+      await sleep(25);
+    }
+
+    const timeoutMs = 4_000;
+    const started = Date.now();
+    const supervisorA = superviseRelayReservation(client, [relayA.getMultiaddrs()[0].toString()], { ...FAST_SUPERVISOR, timeoutMs });
+    const supervisorB = superviseRelayReservation(client, [relayB.getMultiaddrs()[0].toString()], { ...FAST_SUPERVISOR, timeoutMs });
+    try {
+      await Promise.all([supervisorA.firstAttempt, supervisorB.firstAttempt]);
+      expect(Date.now() - started).toBeLessThan(timeoutMs / 2);
+      expect(supervisorA.lastError).toBeNull();
+      expect(supervisorB.lastError).toBeNull();
+      expect(circuitAddrsVia(client, relayA.peerId.toString()).length).toBeGreaterThan(0);
+      expect(circuitAddrsVia(client, relayB.peerId.toString()).length).toBeGreaterThan(0);
+      expect(circuitAddrsVia(client, peerC)).toEqual([]);
+    } finally {
+      supervisorA.stop();
+      supervisorB.stop();
+    }
+  }, 30_000);
 });
 
 describe('CadreNode relay reservation against a live relay', () => {

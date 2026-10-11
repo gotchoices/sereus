@@ -143,13 +143,14 @@ export function strandNodeAddrs(network: NetworkConfig | undefined): StrandNodeA
   const kept = relayAddrs.length > 0 ? direct.filter((addr) => !isCircuitListenAddr(addr)) : direct;
   // The search entries are appended AFTER the dedupe on purpose: they are identical
   // strings, and each one must survive as its own listener (see the module doc).
+  // A node given these entries is built with libp2p's relay discovery off whenever it
+  // has a transport list to wrap (`node-transports.ts`), so an empty slot starts no
+  // peer-store scan or random walk; only its supervisor fills it.
   //
-  // NOTE: every bare entry also makes libp2p start its own relay discovery whenever
-  // that listener's slot is empty (launch, and every loss). Measured on a node with
-  // no peer router: one peer-store scan plus a random walk that fails at once
-  // (`NoPeerRoutersError`) per loss event — no dial churn. If strand nodes ever get
-  // a peer router (a DHT), that walk turns into real dials on every relay loss;
-  // cap or disable `circuitRelayTransport`'s discovery then.
+  // NOTE: where discovery stays on (a Node host that passed no `defaultTransports`),
+  // each empty slot still runs one peer-store scan plus a random walk that fails at once
+  // (`NoPeerRoutersError`), measured on a node with no peer router. If strand nodes ever
+  // get a peer router (a DHT), that walk turns into real dials on every relay loss.
   const listenAddrs = [
     ...dedupe(kept.map(ephemeralPortListenAddr)),
     ...relayAddrs.map(() => RELAY_SEARCH_LISTEN_ADDR)

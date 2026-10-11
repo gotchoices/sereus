@@ -47,6 +47,10 @@
     "./push-node": {
       "types": "./dist/push-node.d.ts",
       "import": "./dist/push-node.js"
+    },
+    "./node-default-transports": {
+      "types": "./dist/node-default-transports.d.ts",
+      "import": "./dist/node-default-transports.js"
     }
   },
   "repository": {
@@ -74,13 +78,10 @@
   "devDependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
-    "@libp2p/circuit-relay-v2": "^4.2.13",
     "@libp2p/identify": "4.1.14",
     "@libp2p/logger": "^6.2.13",
     "@libp2p/peer-store": "^12.0.28",
-    "@libp2p/tcp": "^11.0.28",
     "@libp2p/webrtc": "6.0.33",
-    "@libp2p/websockets": "^10.1.21",
     "@optimystic/db-p2p-storage-fs": "^1.12.1",
     "@types/debug": "^4.1.12",
     "@types/node": "^25.0.10",
@@ -92,10 +93,13 @@
     "vitest": "^4.0.17"
   },
   "dependencies": {
+    "@libp2p/circuit-relay-v2": "^4.2.13",
     "@libp2p/crypto": "^5.1.23",
     "@libp2p/interface": "^3.3.0",
     "@libp2p/peer-id": "^6.0.15",
     "@libp2p/peer-record": "^9.0.16",
+    "@libp2p/tcp": "^11.0.28",
+    "@libp2p/websockets": "^10.1.21",
     "@multiformats/multiaddr": "^13.0.3",
     "@noble/hashes": "^2.0.0",
     "@optimystic/db-core": "^1.12.1",

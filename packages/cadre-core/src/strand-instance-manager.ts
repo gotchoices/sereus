@@ -41,6 +41,7 @@ import type {
 } from './types.js';
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
+import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer } from './relay-server.js';
 import { strandCohortTopicOption, type StrandReactivityConfig } from './strand-reactivity.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
@@ -855,7 +856,12 @@ export class StrandInstanceManager {
         // remembered-serving fallback); dropping `persistence` brings back the split
         // restart.
         ...(config.networkState && { persistence: strandNetworkStatePersistence(config.networkState, strandId) }),
-        ...(config.network?.transports && { transports: config.network.transports }),
+        // With relays configured, built with libp2p's relay discovery off (given a transport
+        // list to wrap — `node-transports.ts`), so the supervisors below are the only thing
+        // that fills the bare `/p2p-circuit` slots: otherwise a cohort seed running the relay
+        // server takes one as soon as it connects (`relay-reservation.ts`, "WHY LIBP2P'S
+        // RELAY DISCOVERY IS SWITCHED OFF").
+        ...nodeTransportsOption(config.network, addrOptions, relayDialAddrs.length > 0),
         ...(config.network?.noiseCrypto && { noiseCrypto: config.network.noiseCrypto }),
         // Unconditional, and the same default the control node takes: every node of
         // every party runs the monitor over its connection to a slow phone, so the
@@ -871,13 +877,12 @@ export class StrandInstanceManager {
         ...optimysticDialLimits(config.network?.linkRoundTripMs),
         // Listen entries plus the WebSocket transport switch they imply — a strand node
         // announces nothing the operator configured (`strand-network-config.ts`), and
-        // spreads AFTER `transports` above because the switch is a no-op whenever the
-        // embedder supplied its own factories. The bare `/p2p-circuit` entries (one per
-        // relay) open no connection here; each registers a pending reservation that the
-        // matching supervisor below fills, which is what gives a NAT'd strand node a
-        // reachable relay slot — and works against a party-run relay because the launch
-        // path announced this strand's derived peerId to it first (delegate admission;
-        // see cadre-node.ts).
+        // spreads AFTER `transports` above because the switch is a no-op whenever a
+        // transport list was passed. The bare `/p2p-circuit` entries (one per relay) open
+        // no connection here; each registers a pending reservation that the matching
+        // supervisor below fills. That is what gives a NAT'd strand node a reachable relay
+        // slot — and works against a party-run relay because the launch path announced
+        // this strand's derived peerId to it first (delegate admission; see cadre-node.ts).
         ...addrOptions,
         // The raw configured gater (open strands), or the revocation-composed
         // gater plus the fail-closed per-stream revoked-peer gate (closed
@@ -1292,7 +1297,9 @@ export class StrandInstanceManager {
   /**
    * One {@link superviseRelayReservation} per relay dial addr, each over exactly
    * that relay so "held" is judged per relay (`circuitMultiaddrsVia`) and losing
-   * one relay re-drives only that one. Default retry timings — the control node's (2 s
+   * one relay re-drives only that one. They are the only thing that fills the node's
+   * search slots once the node is built with libp2p's relay discovery off
+   * (`nodeTransportsOption`). Default retry timings — the control node's (2 s
    * doubling to 60 s between failed attempts, a 5 s liveness check while held). Each DRIVE's
    * own deadline is counted in link round trips at this host's declared
    * `network.linkRoundTripMs` (`link-budget.ts`), so the same declaration that lengthens the

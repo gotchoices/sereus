@@ -1436,6 +1436,25 @@ configured `<relay>/p2p-circuit` shape strand nodes used to inherit is no
 longer producible from a `NetworkConfig` at all —
 see "Reservation loss recovers on every node" below for why.
 
+**libp2p's relay discovery is off on every node whose slots cadre supervises.**
+A node with configured relays (`network.relayAddrs` on the control node, any
+relay on a strand node) is built from an explicit transport list whose
+circuit-relay transport has its discovery cleared (`withoutRelayDiscovery`,
+`node-transports.ts`), so only the supervisors fill its bare search slots. The
+reason is that discovery reserves on any connected peer whose identify lists the
+relay-hop protocol, and a storage-profile member running the relay server shares
+the node's identify namespace: it would take a slot meant for a configured
+relay, and libp2p's reservation store then drops that relay's queued request
+without answering it, so its supervisor waits out the whole drive
+(gotchoices/sereus#34). React Native and browser embedders already supply the
+list as `network.transports`. A Node host supplies db-p2p's default list as
+`network.defaultTransports`, from the Node-only
+`@serfab/cadre-core/node-default-transports` subpath (cadre-cli does), because
+that list names `@libp2p/tcp`. A node with no configured relay, such as a
+browser tab that calls `reserveRelays()`, keeps discovery. Without it, a slot
+freed while the relay stays up is refilled at the supervisor's next liveness
+check (5 s) instead of within milliseconds.
+
 **Proven end to end over a standalone relay** (same party, both machines
 relay-only):
 `packages/integration-tests/src/scenarios/strand-circuit-same-party-e2e.integration.ts`
@@ -1782,6 +1801,12 @@ interface CadreNodeConfig {
     // meaningful while `enableRelay` is on.
     unauthorizedRelayReservationCap?: number;
     transports?: Libp2pTransports; // Custom libp2p transports (default: TCP + relay)
+    // db-p2p's default transport list, for a node with configured relays and no `transports`:
+    // such a node is built from an explicit list with libp2p's relay discovery off. A Node host
+    // passes `nodeDefaultTransports` from the Node-only `@serfab/cadre-core/node-default-transports`
+    // (cadre-cli does); unset, that node keeps discovery. See "Reservations are requested
+    // explicitly, not discovered".
+    defaultTransports?: (listen: { wsPort?: number }) => Libp2pTransports;
     // Noise handshake/encryption primitives for the control node and every strand node
     // (default: libp2p-noise's own, which is pure JS under React Native). A phone passes
     // native hashing and ChaCha20-Poly1305 here; the wire protocol is unchanged.

@@ -73,12 +73,33 @@
  * relay's address. So it asks the relay for a slot directly, via the
  * circuit-relay transport's own reservation store.
  *
+ * ⚠️ WHY LIBP2P'S RELAY DISCOVERY IS SWITCHED OFF. Discovery does reach SOME
+ * peers: every connected peer whose identify lists the relay-hop protocol, and a
+ * storage-profile member's strand node runs the relay server in the same
+ * `/optimystic/strand-<id>/…` namespace as this node's strand node (control nodes
+ * share `/optimystic/control-<partyId>/…` the same way). Discovery reserves on such
+ * a peer as soon as it connects, and that takes one of the slots the configured
+ * relays' supervisors were going to fill. Worse, the reservation store runs one
+ * request at a time and, when a request takes the last free slot, clears its queue
+ * with `@libp2p/utils`' `Queue.clear()`, which drops a queued job WITHOUT ever
+ * settling its promise — so a supervisor whose `addRelay` was queued behind it
+ * waits out its whole deadline (gotchoices/sereus#34). A reservation discovery picks is
+ * also unmanaged: no supervisor re-drives it, the status does not count it, and a
+ * member's strand node goes away whenever that member hibernates. So every node
+ * whose bare search entries cadre generated for configured relays is built through
+ * {@link withoutRelayDiscovery} (`node-transports.ts`), and its slots are filled by
+ * the supervisors alone — given a transport list to wrap, which React Native and
+ * browser embedders always pass and a Node host passes as
+ * `network.defaultTransports` (cadre-cli does). A hand-written bare `/p2p-circuit`
+ * with no configured relay keeps discovery, since nothing else would fill that slot.
+ *
  * Status is derived from the node's LIVE multiaddrs on every read rather than
  * cached at drive time: when a relay restarts or the connection drops, libp2p's
  * listener clears its listening addrs and the circuit multiaddr disappears, so a
  * cached snapshot would keep claiming `reserved` for a node nothing can dial.
  *
- * And because discovery is out of reach, nothing would ever ASK again either —
+ * And because discovery is either off or blind to the relay, nothing would ever
+ * ASK again either —
  * so {@link driveRelayReservation} stays a single-shot primitive and
  * {@link superviseRelayReservation} owns the retry cadence on top of it. That
  * loop is what makes a lost reservation recover without a page reload. Single-shot
@@ -87,16 +108,15 @@
  * logs failures that read as real and — through the timers it still holds — keeps
  * the process alive for the rest of its `timeoutMs`.
  *
- * One measured refinement to "out of reach": libp2p 3.1.3's `connection.newStream`
- * records every protocol OUR OWN outbound stream negotiated into the peer store, so
- * the explicit reservation request writes the relay-hop protocol id against the
- * relay itself. From then on, discovery CAN refill a freed slot on its own — but
- * only when the relay answers at that moment (a hangup while the relay stays up;
- * measured at ~25 ms). A relay that is down when the slot frees fails that one
- * discovery attempt, which poisons the store's `relayFilter` against it, and
- * nothing in libp2p tries again: a relay RESTART still needs the supervisor, which
- * un-poisons the filter before every attempt ({@link clearRelayFilterEntry}). Two
- * mechanisms in production, one guarantee; the specs disable discovery's half
+ * What switching discovery off costs: libp2p 3.1.3's `connection.newStream` records
+ * every protocol OUR OWN outbound stream negotiated into the peer store, so the
+ * explicit reservation request writes the relay-hop protocol id against the relay
+ * itself, and with discovery on it refilled a slot freed by a hangup (while the
+ * relay stays up) within ~25 ms, measured. With it off that refill waits for the
+ * supervisor's next liveness check ({@link DEFAULT_RELAY_CHECK_MS}, 5 s while held).
+ * A relay RESTART always needed the supervisor, which un-poisons the store's
+ * `relayFilter` before every attempt ({@link clearRelayFilterEntry}). The specs
+ * that build their own clients keep discovery on and disable its refill
  * (`forgetRelayProtocol` in `relay-reservation.spec.ts`) so they prove the
  * supervisor's.
  */
@@ -105,6 +125,7 @@ import debug from 'debug';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import type { Libp2p, PeerId } from '@libp2p/interface';
+import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { trailingPeerId } from './peer-record.js';
 import { relayReservationBudgetMs } from './link-budget.js';
 
@@ -323,6 +344,59 @@ function isReservationStore(value: unknown): value is RelayReservationStoreLike 
   return typeof store.addRelay === 'function' && typeof store.hasReservation === 'function';
 }
 
+/**
+ * `transports` with libp2p's relay discovery switched off in the circuit-relay transport any of
+ * them builds, for a node whose bare `/p2p-circuit` slots cadre's own supervisors fill (see the
+ * module header, "WHY LIBP2P'S RELAY DISCOVERY IS SWITCHED OFF"). Every other transport is built
+ * untouched.
+ *
+ * Each factory is wrapped rather than the built node patched afterwards: libp2p calls the
+ * factories in its constructor, and `@optimystic/db-p2p` builds with `start: false`, so the
+ * switch lands before anything starts. Patching the running node instead races — db-p2p starts
+ * the node before `createLibp2pNode` returns, and a cohort-seed connection in that window has
+ * already queued a discovered reservation.
+ */
+export function withoutRelayDiscovery(transports: Libp2pTransports): Libp2pTransports {
+  return transports.map((factory) => (components) => switchOffRelayDiscovery(factory(components)));
+}
+
+/** Logged once per process, not per node: every node in it runs the same `@libp2p/circuit-relay-v2`. */
+let reportedDiscoveryFieldMissing = false;
+
+/**
+ * Clear `transport`'s `discovery` when it is the circuit-relay transport — duck-typed by its
+ * reservation store, as {@link findCircuitRelayTransport} finds it.
+ *
+ * `@libp2p/circuit-relay-v2` 4.2.13 has no init option for this, but declares the field optional
+ * and guards every use (`this.discovery?.startDiscovery()`, `start`/`stop` skip a non-startable
+ * value), so `undefined` before `start()` registers no relay-hop topology and never runs a
+ * peer-store scan.
+ */
+function switchOffRelayDiscovery<T>(transport: T): T {
+  if (typeof transport !== 'object' || transport === null) {
+    return transport;
+  }
+  const candidate = transport as { reservationStore?: unknown; discovery?: unknown };
+  if (!isReservationStore(candidate.reservationStore)) {
+    return transport;
+  }
+  if (!Object.prototype.hasOwnProperty.call(candidate, 'discovery')) {
+    // Not thrown: a node with discovery left on still works, it is only exposed to the slot theft
+    // again — which the `withoutRelayDiscovery` spec in `relay-reservation.spec.ts` reproduces.
+    if (!reportedDiscoveryFieldMissing) {
+      reportedDiscoveryFieldMissing = true;
+      console.warn(
+        'cadre: the circuit-relay transport has no `discovery` field to switch off — the ' +
+        '@libp2p/circuit-relay-v2 shape changed. libp2p relay discovery stays on, and it can take a ' +
+        'configured relay\'s reservation slot.'
+      );
+    }
+    return transport;
+  }
+  candidate.discovery = undefined;
+  return transport;
+}
+
 /** Sentinel resolved by the wait arm of {@link requestOneReservation}'s race. */
 const WAIT_OVER = Symbol('relay-reservation-wait-over');
 
@@ -434,10 +508,12 @@ export async function driveRelayReservation(
   const { connected, error: dialError } = await dialRelays(node, addrs, deadline, signal);
   const attempt = await requestReservation(node, connected, deadline, signal);
   // NOTE: a REJECTED reservation still spends the rest of the deadline polling,
-  // because discovery may independently land one (only the no-transport case is
-  // `fatal`). So a misconfigured node reports its now-legible reason a full
-  // `timeoutMs` late. If startup latency on that path ever matters, shorten the
-  // wait once every connected relay has rejected — do not skip it outright.
+  // because on a node that kept libp2p's relay discovery (a hand-written bare
+  // `/p2p-circuit` driven through `reserveRelays`) discovery may independently land
+  // one (only the no-transport case is `fatal`). So a misconfigured node reports its
+  // now-legible reason a full `timeoutMs` late. If startup latency on that path ever
+  // matters, shorten the wait once every connected relay has rejected — do not skip
+  // it outright.
   if (!attempt.fatal && (await waitForCircuitReservation(node, addrs, deadline, pollMs, signal))) {
     return { error: null, cancelled: false };
   }
@@ -542,8 +618,9 @@ function firstDialError(
  * `fatal` means no `/p2p-circuit` address can EVER appear (the node has no
  * circuit-relay transport at all), so the caller must report immediately rather
  * than spend the rest of the deadline polling for something that cannot happen.
- * A rejected request is NOT fatal: discovery may still land a reservation for a
- * relay that does happen to share this node's identify prefix.
+ * A rejected request is NOT fatal: on a node that kept relay discovery, discovery
+ * may still land a reservation for a relay that does happen to share this node's
+ * identify prefix.
  */
 interface ReservationAttempt {
   error: string | null;
@@ -563,9 +640,10 @@ interface ReservationAttempt {
  *
  * Sequential, not concurrent: a bare `/p2p-circuit` listener registers exactly
  * ONE pending reservation, so a second concurrent `addRelay` would be rejected
- * with `HadEnoughRelaysError` — noise, not a failure. Running discovery is not a
- * conflict either; `addRelay` dedupes through its own peer queue, so a relay that
- * genuinely is discoverable still reserves exactly once.
+ * with `HadEnoughRelaysError` — noise, not a failure. Discovery naming the SAME
+ * relay is not a conflict (`addRelay` dedupes through its own peer queue); discovery
+ * naming a DIFFERENT peer is, which is why it is off on every node cadre supervises
+ * (module header).
  */
 async function requestReservation(
   node: Libp2p,
@@ -623,6 +701,17 @@ async function requestReservation(
  * race settling some other way, aborted in the `finally`. Out-racing the deadline
  * timer is not enough: the loser stays pending, and a pending timer is what holds
  * a Node process open past the stop that asked for it.
+ *
+ * NOTE: the reservation store's `Queue.clear()` drops a queued job unsettled whenever
+ * a reservation takes the last pending slot. With relay discovery off, the slots never
+ * outnumber the supervised relays, so a first request cannot be dropped that way. A
+ * REFRESH of a held reservation that is queued at the moment another relay's first
+ * reservation takes the last slot still is, and that reservation then lapses at the
+ * relay unrefreshed. If that is ever observed, or anything besides the supervisors
+ * gains a way to fill these slots, also end this wait on the store's
+ * `relay:found-enough-relays` event while this relay holds no reservation. The real
+ * fix — `#checkReservationCount` aborting queued jobs instead of clearing them —
+ * belongs to js-libp2p.
  */
 async function requestOneReservation(
   store: RelayReservationStoreLike,
@@ -790,8 +879,9 @@ export interface RelayReservationSupervisor {
  * it still is — the thing that makes a lost reservation recover on its own.
  *
  * Needed because nothing else re-drives: libp2p re-fills a search listener's
- * freed slot from relay DISCOVERY, and a cadre node's namespaced identify puts
- * discovery permanently out of reach (see the module header). Without this loop a
+ * freed slot from relay DISCOVERY, which cannot see a stock-identify relay from a
+ * cadre node's namespaced identify, and which is switched off outright on every
+ * node whose slots cadre supervises (see the module header). Without this loop a
  * relay restart left a browser tab undialable until the user reloaded the page.
  *
  * Per tick:
@@ -1078,9 +1168,9 @@ class RelayReservationLoop implements RelayReservationSupervisor {
  * NOBODY IS GOING TO TRY AGAIN. A lost reservation does come back on its own now,
  * as long as a {@link RelayReservationSupervisor} is running — that loop is the
  * only thing that re-drives, since libp2p re-fills a search listener's freed slot
- * from relay DISCOVERY, which a cadre node's namespaced identify puts permanently
- * out of reach (see the module header). So `error` means the supervisor was
- * stopped, was never started, or there is no node at all.
+ * from relay DISCOVERY, which cannot see a stock-identify relay and is switched off
+ * on every node cadre supervises (see the module header). So `error` means the
+ * supervisor was stopped, was never started, or there is no node at all.
  *
  * `retryAtMs` is the supervisor's next scheduled tick (`null` while a drive runs
  * or when there is no supervisor); it both selects `retrying` and is passed

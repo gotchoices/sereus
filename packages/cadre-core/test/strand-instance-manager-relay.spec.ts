@@ -93,7 +93,15 @@ vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   };
 });
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
-vi.mock('../src/relay-reservation.js', () => ({ superviseRelayReservation: mocks.superviseRelayReservation }));
+// The real `withoutRelayDiscovery`: a relay-configured strand node's transports pass through it
+// (`node-transports.ts`), and the fake node never calls the factories.
+vi.mock(import('../src/relay-reservation.js'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    superviseRelayReservation: mocks.superviseRelayReservation as unknown as typeof actual.superviseRelayReservation,
+    withoutRelayDiscovery: actual.withoutRelayDiscovery
+  };
+});
 
 const RELAY_1 = '/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
 const RELAY_2 = '/ip4/5.6.7.8/tcp/4001/p2p/12D3KooWSHj3RRbBjD15g6wekV8y3mdevbrifQRQXMhQdgTrZQqR';

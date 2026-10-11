@@ -1,5 +1,6 @@
 import debug from 'debug';
 import { CadreNode, type CadreNodeConfig, type StorageConfig } from '@serfab/cadre-core';
+import { nodeDefaultTransports } from '@serfab/cadre-core/node-default-transports';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { resolveConfig, type ResolvedConfig } from '../config/index.js';
@@ -68,7 +69,7 @@ export function oneShotNodeConfig(config: ResolvedConfig, partyId: string): Cadr
     profile: config.profile,
     strandFilter: config.strandFilter,
     storage: resolveStorageConfig(config.storage),
-    network: config.network,
+    network: { ...config.network, defaultTransports: nodeDefaultTransports },
     hibernation: config.hibernation,
     strandWatchInterval: config.strandWatchInterval,
   };

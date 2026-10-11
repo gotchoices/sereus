@@ -155,6 +155,7 @@ import {
   type CircuitRelayTarget
 } from './delegate-admission.js';
 import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, RelayReservationFailedError } from './relay-addrs.js';
+import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer, type ResolvedRelayServer } from './relay-server.js';
 import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
 import {
@@ -2096,7 +2097,13 @@ export class CadreNode implements SAppIdLookup {
       }),
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
-      ...(network?.transports && { transports: network.transports }),
+      // With `network.relayAddrs` set, built with libp2p's relay discovery off (given a
+      // transport list to wrap — `node-transports.ts`), so the supervisor
+      // `driveControlRelayReservation` starts is the only thing that fills the search slot:
+      // otherwise a member's control node running the relay server, which this node
+      // identifies (same party namespace), can take it first (`relay-reservation.ts`,
+      // "WHY LIBP2P'S RELAY DISCOVERY IS SWITCHED OFF").
+      ...nodeTransportsOption(network, transportOptions, (network?.relayAddrs ?? []).length > 0),
       ...(network?.noiseCrypto && { noiseCrypto: network.noiseCrypto }),
       // Always present, unlike the conditional spreads around it: an absent
       // `connectionMonitor` would leave libp2p's 5s ping deadline, which drops a peer
@@ -2115,7 +2122,9 @@ export class CadreNode implements SAppIdLookup {
       ...optimysticDialLimits(network?.linkRoundTripMs),
       // `{ wsPort }` when a listen entry names WebSocket, otherwise `{}` — and always
       // `{}` when `network.transports` is set, since the embedder owns transport policy
-      // then. Spread NEXT to `transports` because the two answer the same question.
+      // then. Spread NEXT to `transports` because the two answer the same question, and a
+      // no-op whenever a list is passed there — with `relayAddrs` set that list comes from
+      // `network.defaultTransports` when the embedder gave none, on the same switch.
       ...transportOptions,
       // Configured `listenAddrs`, plus the bare `/p2p-circuit` search listener when
       // `network.relayAddrs` is set — that listener registers the pending reservation
@@ -7383,6 +7392,15 @@ export class CadreNode implements SAppIdLookup {
    *
    * Passing an empty list stops the supervisor and resets the posture to `none`
    * without dialing or waiting.
+   *
+   * NOTE: on a node with no `network.relayAddrs` (a browser tab with a hand-written
+   * bare `/p2p-circuit`), libp2p's relay discovery stays on, because it was the only
+   * thing filling that slot before this call. Such a tab connected to some other
+   * relay-capable peer it identifies (a party member running the relay server) can
+   * lose its one slot to that peer before this supervisor's request runs, the theft
+   * `nodeTransportsOption` prevents on configured nodes (`relay-reservation.ts`). If a
+   * tab is ever seen reserved through a relay it was not asked to use, build that
+   * node through `withoutRelayDiscovery` too, or have the tab configure `relayAddrs`.
    */
   async reserveRelays(
     addrs: string[],

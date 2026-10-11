@@ -20,6 +20,7 @@ import type { CadreInviteSignedFields, RevocableTable } from './control-authoriz
 import type { CadreInvitation } from './cadre-invite-protocol.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
+import type { ListenTransportOptions } from './relay-addrs.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -401,6 +402,20 @@ export interface NetworkConfig {
    * ```
    */
   transports?: Libp2pTransports;
+  /**
+   * Builds `@optimystic/db-p2p`'s default transport list, for the one case where cadre has to
+   * pass a list itself while {@link transports} is unset: a node with configured relays, which
+   * is built with libp2p's relay discovery switched off (`node-transports.ts`). Called with the
+   * switches the node's listen entries imply (`wsPort` when one names WebSocket). Ignored when
+   * {@link transports} is set.
+   *
+   * A Node host passes `nodeDefaultTransports` from the Node-only
+   * `@serfab/cadre-core/node-default-transports` subpath, as `cadre-cli` does. It is injected
+   * rather than built in, because that list names `@libp2p/tcp`, which must stay out of the
+   * graph React Native and browser bundles reach. Left unset, such a node is built from
+   * db-p2p's own list with relay discovery on.
+   */
+  defaultTransports?: (listen: ListenTransportOptions) => Libp2pTransports;
   /**
    * Crypto primitives for the Noise handshake and the encrypted connection that
    * follows, threaded to both the control node and every strand's cohort node — every

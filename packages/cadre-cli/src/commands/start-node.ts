@@ -19,6 +19,7 @@ import {
   type TrustedOwnerStore,
 } from '@serfab/cadre-core';
 import { createPushNotifier } from '@serfab/cadre-core/push-node';
+import { nodeDefaultTransports } from '@serfab/cadre-core/node-default-transports';
 import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
 import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-file';
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
@@ -80,7 +81,10 @@ function buildNodeConfig(config: ResolvedConfig, partyId: string, stores: NodeSt
     strandFilter: config.strandFilter,
     strandReactivity: config.strandReactivity,
     storage: resolveStorageConfig(config.storage),
-    network: config.network,
+    // `defaultTransports` from the Node-only subpath: a node with `relayAddrs` is built from an
+    // explicit transport list (libp2p's relay discovery off), and this keeps that list the one
+    // db-p2p would build. See `NetworkConfig.defaultTransports`.
+    network: { ...config.network, defaultTransports: nodeDefaultTransports },
     hibernation: config.hibernation,
     strandWatchInterval: config.strandWatchInterval,
     // Platform push credentials provisioned by the orchestrator (cadre-host

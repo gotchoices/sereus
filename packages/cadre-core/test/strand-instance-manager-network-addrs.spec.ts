@@ -51,7 +51,15 @@ vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   };
 });
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
-vi.mock('../src/relay-reservation.js', () => ({ superviseRelayReservation: mocks.superviseRelayReservation }));
+// The real `withoutRelayDiscovery`: a relay-configured strand node's transports pass through it
+// (`node-transports.ts`), and the fake node never calls the factories.
+vi.mock(import('../src/relay-reservation.js'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    superviseRelayReservation: mocks.superviseRelayReservation as unknown as typeof actual.superviseRelayReservation,
+    withoutRelayDiscovery: actual.withoutRelayDiscovery
+  };
+});
 
 /**
  * A strand node inherits the machine's one `NetworkConfig`, but NOT the two fields in

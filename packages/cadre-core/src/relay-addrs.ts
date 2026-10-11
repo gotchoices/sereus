@@ -50,7 +50,10 @@
  * only once the relay-hop protocol id is in that peer's peer-store protocol list,
  * and that list is written exclusively by IDENTIFY — which `@optimystic/db-p2p`
  * namespaces per network, so a cadre node and a stock relay never identify each
- * other. See `relay-reservation.ts`'s module doc and `docs/architecture.md`.
+ * other. A node with configured relays is built with that discovery switched off
+ * altogether when it has a transport list to wrap (`node-transports.ts`), because it
+ * CAN reach a relay-capable peer in its own namespace and take the configured relay's
+ * slot. See `relay-reservation.ts`'s module doc and `docs/architecture.md`.
  */
 
 import { multiaddr, type Component } from '@multiformats/multiaddr';
@@ -191,9 +194,11 @@ const WS_TRANSPORT_SWITCH_PORT = 0;
  *
  * - **WebSocket is DERIVED.** It is the one non-TCP transport the shipped configs need
  *   (the React Native reference app's companion drone; `cadre start --ws-port`), and
- *   `@optimystic/db-p2p` already knows how to add it. `cadre-core` grows no dependency
- *   and decides no transport policy — it flips db-p2p's own switch
- *   ({@link WS_TRANSPORT_SWITCH_PORT}).
+ *   `@optimystic/db-p2p` already knows how to add it, so `cadre-core` flips db-p2p's own
+ *   switch ({@link WS_TRANSPORT_SWITCH_PORT}). A node with configured relays is the one
+ *   case where cadre passes the transport list itself (`node-transports.ts`, to switch
+ *   relay discovery off); when the embedder gave none, that list comes from
+ *   `network.defaultTransports`, which reads the same switch.
  * - **Everything else is REFUSED.** Deriving `/quic-v1`, `/webrtc` or `/webtransport`
  *   would mean importing transport packages into every `cadre-core` consumer including
  *   the React Native and browser bundles (against the cross-platform rule in
