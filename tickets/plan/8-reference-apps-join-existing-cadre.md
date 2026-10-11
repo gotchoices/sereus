@@ -25,3 +25,7 @@ difficulty: medium
 - Implement in reference-app-rn and reference-app-web.
 - Update docs/reference-app-rn.md.
 - File a device-run blocked ticket for the RN flow once it lands.
+
+## Note from planning `app-joins-existing-cadre-by-invitation`
+
+Building blocks this ticket uses: `encodeCadreJoinRequest` / `decodeCadreJoinRequest` and the `sereus-invite:1.` invitation prefix (both decoders refuse the other kind by name); `CreateCadreInvitationResult.reach` (`anywhere` / `local-network` / `issuer-only`) for the warning before handing an invitation over; `redeemCadreInvitation(…, { waitForMember, signal, onProgress })` with `waiting` progress (`no-member-answered` → "waiting for an always-on machine", `member-not-ready` → "the cadre is catching up") and a cancel; `CadreNode.wireOwnKeyIfOwner`. On the phone, `PhoneNode.joinCadre` does the party switch and rollback, and the status has a `joining` state. Invitations are capped at 6 member addresses, which with 3 owner keys measured 1,972 characters: it fits a QR code. The web app has no kit: it must follow the same rules itself — one node, switch party by stopping it and building one for party A, never run its owner genesis (`ensureOwnerKey`, `cadre-web.ts`) for a joined party, call `wireOwnKeyIfOwner` instead, and restore party B on failure.

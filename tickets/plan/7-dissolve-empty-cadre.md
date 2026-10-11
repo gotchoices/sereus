@@ -24,3 +24,7 @@ difficulty: medium
 - Implement `dissolveParty` and the party-id switch.
 - Document it in docs/architecture.md.
 - Test: B moves its only strand to A, dissolves, restarts, and comes up as A only.
+
+## Note from planning `app-joins-existing-cadre-by-invitation`
+
+After a join, the phone kit's saved start record already names the joined party (`origin: 'joined'`) and keeps the left one as `formerPartyId`; the "switch the persisted party id" step is done by the join. Dissolving deletes party B's storage (`controlStorageScope(B)`, the `<record>.<B>` node-local keys, the anchor slot for B) and clears `formerPartyId`. Only one node runs per app, so dissolving never stops a live B node.

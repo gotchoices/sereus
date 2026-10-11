@@ -47,3 +47,7 @@ If cadre A inserts the same rows under its own owner signature, the strand still
 - Research the questions above and update this ticket.
 - Implement the move and document it in docs/architecture.md (control tables) and docs/strands.md.
 - Integration test: external party P shares strand S with cadre B; S moves to A; P keeps syncing with S through A's basement node.
+
+## Note from planning `app-joins-existing-cadre-by-invitation`
+
+Settled there: a phone app runs **one node at a time**, and joining switches that node from party B to party A with the **same identity key** (so B's owner key in A is the key that founded B's strands, which `Strand.AuthorizedInsert`'s founder rule needs). There is no moment when one node is live in both cadres: "a node that is an owner in both cadres" means the same identity key is an owner in both, with only party A's node running. B's control storage stays on disk under `controlStorageScope(B)`, its node-local records under the `<record>.<B>` keys and its anchor slot, and the saved start record names B as `formerPartyId`. So the move either reads B's rows from that local storage while A's node runs (B is a one-node cadre, so its local copy is complete), or briefly restarts into B through the kit. Pick one here. A joined app that is a plain member (not an owner) in A cannot move anything; refuse, as the edge cases already say.
