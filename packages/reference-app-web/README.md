@@ -66,6 +66,8 @@ and stored messages.
   chat-strand status, owner state, relay (dialability) status, Restart, and
   the **strand-formation panel**: create an invitation (responder) / join via a
   pasted invitation (initiator), showing the resulting strand id + membership type.
+- `#/cadre` — **Cadre** — cadre membership: **Add a device or app** (see
+  [Adding a device or app](#adding-a-device-or-app)).
 - `#/messages` — compose / list chat messages backed by the strand's
   `App.Participant` / `App.Message` tables (Quereus SQL). The chat sApp is
   append-only — there is no edit/delete (that belonged to the old demo app).
@@ -208,6 +210,34 @@ at commit, demonstrating the gate is live.
 > the formation→convergence e2e tier — see
 > [Automated end-to-end tests](#automated-end-to-end-tests).
 
+## Adding a device or app
+
+The Cadre page's **Add a device or app** card is the owner side of
+[handing an invitation from app to app](../../docs/architecture.md#handing-an-invitation-from-app-to-app),
+with the phone app's flows and wording (`lib/add-device.svelte.ts`, `AddDevice.svelte`):
+
+- **Paste request** — paste the join request the other app shows under *Join my existing
+  cadre* and choose *Use request*. The tab refuses its own request and an app already in the
+  cadre, then asks for approval: the app's name (what it calls itself, unverified), its code
+  (the short peer id, to compare with the one the other app shows) and **Also an owner**.
+  *Add* mints an invitation only that app can redeem
+  (`createCadreInvitation({ peerId, grantsOwner })`). Paste only: no camera scanning.
+- **Copy invitation** — an open, single-use invitation that whoever is given its text first
+  can redeem. With **Also an owner** on, it expires in 15 minutes, and the card warns that
+  its text grants admin rights until then.
+
+The minted invitation shows as a QR code (`lib/QrCode.svelte`) and as text with a copy
+button, with its expiry and, when no other machine of the cadre has an address a device
+could dial, a warning that the new app can join only while this tab is open. It stays on
+the card, in memory only, until *Done*, including across visits to other pages.
+**Outstanding invitations** lists the live ones, latest expiry first, each with *Withdraw*.
+
+Only an owner can mint: a tab that is not one, or whose owner genesis failed, sees one line
+instead. The invitation must carry an address: with no relay reservation and no other
+machine of the cadre holding one, *Make invitation* fails and says the tab has no relay
+address. With a relay and no other machine (the usual solo tab) it succeeds with the
+open-tab warning.
+
 ## Diagnostics (`#/diag`)
 
 Polls every two seconds while the tab is visible. Surfaces:
@@ -283,8 +313,10 @@ ticket rather than papering it over with a shim — the same applies as for
 
 ```
 src/
-  App.svelte             # nav + hash route switcher (Home, Messages, Activity, Diagnostics)
+  App.svelte             # nav + hash route switcher (Home, Cadre, Messages, Activity, Diagnostics)
   Home.svelte            # node status + party/peer/control/strand/relay state + strand-formation panel
+  Cadre.svelte           # /cadre — cadre membership page
+  AddDevice.svelte       # /cadre's "Add a device or app" card
   Messages.svelte        # /messages — chat strand send / list
   Activity.svelte        # /log — CadreNode lifecycle event log
   Diagnostics.svelte     # /diag — cadre + libp2p diagnostic surface
@@ -297,11 +329,14 @@ src/
     chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
     store.svelte.ts          # Svelte 5 runes store: node state + CadreNode event log
     network.svelte.ts        # strand-formation panel state (create / join invitation)
+    add-device.svelte.ts     # "Add a device or app" state: request, approval, mint, list, withdraw
+    cadre-format.ts          # peer-id code + expiry text shared by the Cadre page's cards
     relay-config.ts          # optional circuit-relay multiaddr from a runtime manifest
     messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
-    router.svelte.ts         # tiny hash-based router (#/, #/messages, #/log, #/diag)
+    router.svelte.ts         # tiny hash-based router (#/, #/cadre, #/messages, #/log, #/diag)
     diagnostics.svelte.ts    # tick-driven snapshot store powering /diag
-    Copyable.svelte          # copy-to-clipboard chip used in /diag
+    Copyable.svelte          # copy-to-clipboard chip used in /diag and /cadre
+    QrCode.svelte            # text drawn as an SVG QR code (the `qrcode` package)
   shims/
     empty.ts             # vite alias target for node:os / node:net / node:tls
 ```

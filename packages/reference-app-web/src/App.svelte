@@ -11,6 +11,7 @@
 	import Diagnostics from './Diagnostics.svelte';
 	import Messages from './Messages.svelte';
 	import Activity from './Activity.svelte';
+	import Cadre from './Cadre.svelte';
 
 	const route = routeState();
 	const node = nodeState();
@@ -23,6 +24,7 @@
 
 	const NAV: Array<{ path: string; label: string }> = [
 		{ path: '/', label: 'Home' },
+		{ path: '/cadre', label: 'Cadre' },
 		{ path: '/messages', label: 'Messages' },
 		{ path: '/log', label: 'Activity' },
 		{ path: '/diag', label: 'Diagnostics' },
@@ -36,6 +38,7 @@
 	function testIdFor(path: string): string {
 		switch (path) {
 			case '/': return 'nav-home';
+			case '/cadre': return 'nav-cadre';
 			case '/messages': return 'nav-messages';
 			case '/log': return 'nav-activity';
 			case '/diag': return 'nav-diagnostics';
@@ -63,6 +66,8 @@
 
 	{#if route.path === '/diag'}
 		<Diagnostics />
+	{:else if route.path === '/cadre'}
+		<Cadre />
 	{:else if route.path === '/messages'}
 		<Messages />
 	{:else if route.path === '/log'}

@@ -49,6 +49,9 @@ import type {
 	BootstrapPeerStore,
 	EnrolledMachineStore,
 	RelayReservationState,
+	CreateCadreInvitationOptions,
+	CreateCadreInvitationResult,
+	CadreInviteStatus,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage } from '@optimystic/db-p2p';
@@ -172,6 +175,8 @@ let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
 let ownerState: OwnerState = 'pending';
 let ownerError: string | null = null;
+/** This tab's owner public key (base64url), bridged from its identity by {@link runOwnerGenesis}. */
+let ownerPublicKey: string | null = null;
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
@@ -455,6 +460,7 @@ export async function startCadre(): Promise<CadreNode> {
 async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promise<void> {
 	try {
 		const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(privateKey);
+		ownerPublicKey = publicKeyB64;
 		const controlDb = cadre.getControlDatabase();
 		if (!controlDb) {
 			throw new Error('control database unavailable after start; cannot run owner genesis');
@@ -644,6 +650,57 @@ export async function joinViaInvitation(
 	return formed;
 }
 
+// ── Cadre invitations (adding a device or app) ────────────────────────────────
+
+/**
+ * Whether this tab's owner key is one of the cadre's owner keys: only an owner can mint a
+ * cadre invitation. False when owner genesis never derived the key.
+ */
+export async function isOwner(): Promise<boolean> {
+	if (!node) throw new Error('CadreNode not started');
+	const controlDb = node.getControlDatabase();
+	if (!controlDb) throw new Error('control database unavailable');
+	if (!ownerPublicKey) return false;
+	return (await controlDb.getOwnerKeys()).has(ownerPublicKey);
+}
+
+/**
+ * Whether `peerId` is already a machine of this cadre (a `CadrePeer` row that is not
+ * revoked), so an owner is not offered an invitation for an app the cadre holds.
+ */
+export async function isMemberPeer(peerId: string): Promise<boolean> {
+	if (!node) throw new Error('CadreNode not started');
+	const controlDb = node.getControlDatabase();
+	if (!controlDb) throw new Error('control database unavailable');
+	return (await controlDb.queryCadrePeers()).some((row) => row.peerId === peerId);
+}
+
+/**
+ * Mint an invitation into this cadre, for one app's peer id or for whoever redeems it
+ * first. Thin pass-through to `CadreNode.createCadreInvitation`.
+ */
+export async function createCadreInvitation(
+	options: CreateCadreInvitationOptions,
+): Promise<CreateCadreInvitationResult> {
+	if (!node) throw new Error('CadreNode not started');
+	return node.createCadreInvitation(options);
+}
+
+/** Every cadre invitation the node holds, with its standing. Thin pass-through to `CadreNode.listCadreInvitations`. */
+export async function listCadreInvitations(): Promise<CadreInviteStatus[]> {
+	if (!node) throw new Error('CadreNode not started');
+	return node.listCadreInvitations();
+}
+
+/**
+ * Withdraw a cadre invitation by its key; false when it was already withdrawn or is not
+ * held here. Thin pass-through to `CadreNode.withdrawCadreInvitation`.
+ */
+export async function withdrawCadreInvitation(key: string): Promise<boolean> {
+	if (!node) throw new Error('CadreNode not started');
+	return node.withdrawCadreInvitation(key);
+}
+
 // ── RBAC / authorization gate (observability) ─────────────────────────────────
 
 /**
@@ -776,6 +833,7 @@ export async function stopCadre(): Promise<void> {
 	identityFirstSeenMs = null;
 	ownerState = 'pending';
 	ownerError = null;
+	ownerPublicKey = null;
 	formedStrands.clear();
 	// The slot closures captured `nodeLocalHandle`, now closed by `closeStores()`
 	// above — drop the references so nothing can write through a closed handle.

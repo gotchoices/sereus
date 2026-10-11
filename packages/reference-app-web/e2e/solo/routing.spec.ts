@@ -11,6 +11,10 @@ test.describe('Tier 1 / solo / routing', () => {
 		await page.goto('/');
 		await waitReady(page);
 
+		await page.getByTestId('nav-cadre').click();
+		await expect(page).toHaveURL(/#\/cadre$/);
+		await expect(page.getByRole('heading', { name: 'Cadre', exact: true })).toBeVisible();
+
 		await page.getByTestId('nav-messages').click();
 		await expect(page).toHaveURL(/#\/messages$/);
 		await expect(page.getByRole('heading', { name: 'Messages' })).toBeVisible();

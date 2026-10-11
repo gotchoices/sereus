@@ -572,7 +572,7 @@ One app gives another an invitation in one of two flows, both built from `@serfa
 - **Targeted (request and response)** is the default for owner grants, because the invitation is useless to anyone else. The joining app copies a join request; the managing app pastes it, the user approves (choosing whether the new app is also an owner), and it mints an invitation for the request's peer id (`createCadreInvitation({ peerId: request.peerId, grantsOwner })`) and copies it back; the joining app pastes that and redeems it at whichever member it can reach.
 - **Open (one paste)** skips the request. The managing app copies an untargeted, single-use invitation with a short expiry, and the joining app pastes and redeems it. Whoever redeems first is admitted, so an open owner-granting invitation hands over admin rights until it is used or expires (15 minutes by default).
 
-In the React Native reference app the managing side is Settings → **Add a device or app** and the joining side Settings → **Join my existing cadre**, which takes a response or an open invitation in one field ([reference-app-rn.md → Joining an Existing Cadre](reference-app-rn.md#joining-an-existing-cadre)).
+In the React Native reference app the managing side is Settings → **Add a device or app** and the joining side Settings → **Join my existing cadre**, which takes a response or an open invitation in one field ([reference-app-rn.md → Joining an Existing Cadre](reference-app-rn.md#joining-an-existing-cadre)). In the browser reference app the managing side is the Cadre page (`#/cadre`) → **Add a device or app**, which takes a pasted request only, since a tab has no camera scanner ([reference-app-web README → Adding a device or app](../packages/reference-app-web/README.md#adding-a-device-or-app)).
 
 **The join request** (`cadre-join-request.ts`) is `sereus-join-request:1.` followed by base64url canonical JSON:
 
@@ -2330,7 +2330,7 @@ transport-only demos:
 |-----|----------|---------|----------|
 | `packages/reference-app-rn` | React Native / Hermes (phone) | `LevelDBRawStorage` | control network + open chat strand; seed apply; WebSocket/relay transports; Maestro e2e (drone fixture + sidecar) |
 | `packages/reference-app-ns` | NativeScript / V8 (Android) · JSC (iOS) | SQLite (`db-p2p-storage-ns`) | control network + open chat strand; seed apply; WebSocket/relay transports; **reuses the RN Maestro e2e** (only the app id differs) |
-| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo owner self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; WebSocket/relay/WebRTC transports |
+| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo owner self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; an owner adds a device or app by cadre invitation (Cadre page); WebSocket/relay/WebRTC transports |
 
 The browser app ([reference-app-web/README.md](../packages/reference-app-web/README.md))
 drives the full **consent/invitation formation path** end-to-end — it is the
