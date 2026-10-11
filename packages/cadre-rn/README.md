@@ -117,7 +117,7 @@ try {
 }
 ```
 
-- **Refused before anything stops** with a plain `Error` unless the node runs with a `formerPartyId`, and with `StrandMovePendingError` (`pending`, as `pendingStrandMove()` reports it) while a move from that party waits: call `finishStrandMove()` first, in the party the move names.
+- **Refused before anything stops** with a plain `Error` unless the node runs with a `formerPartyId` other than its own party, and with `StrandMovePendingError` (`pending`, as `pendingStrandMove()` reports it) while a move from that party waits: call `finishStrandMove()` first, in the party the move names.
 - **Refused after the read** with `FormerPartyNotEmptyError`, the running party started again and nothing deleted, when the left party holds a strand the running party does not, or a pending join still open there, or has a machine other than this app's node (`strandIds`, `pendingJoinIds`, `otherMachines`). A strand or join the running party dropped after the move reads the same, so the ids may be passed back as `discard`; other machines may not: remove them in the left party first.
 - **Removed:** the left party's control database (through `leveldb.destroy`, rn-leveldb's `LevelDB.destroyDB`), its node-local records, its trusted-owner anchor, its unpublished joined-strand records and its move record; the saved start drops `formerPartyId`. Strand databases stay: a moved strand's database is the running party's copy.
 - **A crash partway** is finished by the next start, or the next call: a node-local record under `names.dissolveMarkerKey` (`dissolving-party`) names the party from before the first deletion until the last.

@@ -260,10 +260,10 @@ export interface PhoneNode {
 	 * started for that alone, and starts the running party again, without `formerPartyId` once the
 	 * former party is removed; a failure of that last start is the call's error.
 	 *
-	 * Refused before anything stops: with an `Error` unless running with a `formerPartyId`, and
-	 * with `StrandMovePendingError` while a move from it waits. Refused after the read, the running
-	 * party started again and nothing deleted: with `FormerPartyNotEmptyError`, whose strand and
-	 * pending-join ids `options.discard` may give up.
+	 * Refused before anything stops: with an `Error` unless running with a `formerPartyId` other
+	 * than the running party, and with `StrandMovePendingError` while a move from it waits. Refused
+	 * after the read, the running party started again and nothing deleted: with
+	 * `FormerPartyNotEmptyError`, whose strand and pending-join ids `options.discard` may give up.
 	 */
 	dissolveFormerParty(options?: DissolveFormerPartyOptions): Promise<void>;
 	/**
@@ -805,6 +805,10 @@ class PhoneNodeRuntime implements PhoneNode {
 		const formerPartyId = running?.formerPartyId;
 		if (!node?.isRunning || !running || formerPartyId === undefined) {
 			throw new Error('Nothing to dissolve: the phone node is not running with a former party, one this app founded and left');
+		}
+		// Only a hand-built start names its own party; dissolving it would delete the running party's control database.
+		if (formerPartyId === running.partyId) {
+			throw new Error(`Cannot dissolve party ${formerPartyId}: it is the running party, not one this app left`);
 		}
 		return { node, running, formerPartyId };
 	}

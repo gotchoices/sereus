@@ -469,6 +469,31 @@ describe('createPhoneNode — dissolving the party it left', () => {
 		expect(phone.options?.formerPartyId).toBeUndefined();
 		expect(controlDatabaseHoldsData(platform, leveldb, former)).toBe(false);
 	}, LIFECYCLE_MS * 6);
+
+	it('finishes a removal that failed partway at the start that follows, which drops formerPartyId', async () => {
+		const { platform, secureStore, partyId: former } = device();
+		const phone = phoneNode(platform);
+		await phone.start(options(former));
+		await phone.stop();
+		await phone.start({ ...options(`${former}-joined`), formerPartyId: former });
+		const deleteItem = secureStore.deleteItemAsync.bind(secureStore);
+		const fault = new Error('secure store unavailable');
+		let faulted = false;
+		vi.spyOn(secureStore, 'deleteItemAsync').mockImplementation(async (key) => {
+			if (key === anchorSlotKey(former) && !faulted) {
+				faulted = true;
+				throw fault;
+			}
+			return deleteItem(key);
+		});
+
+		await expect(phone.dissolveFormerParty()).rejects.toBe(fault);
+
+		expect(phone.status.state).toBe('running');
+		expect(phone.options?.formerPartyId).toBeUndefined();
+		expect(secureStore.map.has(anchorSlotKey(former))).toBe(false);
+		expect((await phone.loadSavedStart())?.options.formerPartyId).toBeUndefined();
+	}, LIFECYCLE_MS * 6);
 });
 
 describe('createPhoneNode — storage names', () => {
