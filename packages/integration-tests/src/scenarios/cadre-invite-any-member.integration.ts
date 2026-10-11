@@ -3,9 +3,10 @@
  * (`docs/architecture.md` → "Enrollment Flow: Invitation Redeemed at Any Member").
  *
  * Machines:
- * - **A**, the owner: founds the cadre and listens on a loopback WebSocket port. Its control
- *   storage and node-local dial-target store are kept across a stop/start, the two things a
- *   machine carries across a process restart besides its identity key.
+ * - **A**, the owner: phone-shaped (`listenAddrs: []`), founds the cadre. Its control storage
+ *   and node-local dial-target store are kept across a stop/start, the two things a machine
+ *   carries across a process restart besides its identity key; the restarted A reconnects by
+ *   dialing M from that store.
  * - **M**, the only always-on member: `storage` profile, listening on WebSocket, admitted by A
  *   through `addDrone` plus seed delivery (the owner-online path), pinning A's owner key as an
  *   operator would (`--pin-owner-key`).
@@ -14,22 +15,23 @@
  *   after A has stopped.
  * - **Q**, a second device, refused with `invite-spent` once A has withdrawn the invitation.
  *
- * Why this shape. The redemption at the only always-on member while the owner is away is the
- * one the feature exists for. M serves it with a control write offered to M's FRET cohort, and
- * two facts about that cohort decide what the scenario waits for:
- * - The stopped owner must have left it first. A member evicts a stopped peer only after
- *   repeated failed contacts, and a peer with no address cannot be contacted at all, so A is
- *   given a listen address (evicted in about 5 s); an address-less, phone-shaped owner stays in
- *   the cohort and every write waits on it. Ticket `phone-owner-never-leaves-members-cohort`.
+ * Why this shape. A phone owner, one always-on member and a new device redeeming while the
+ * phone is away is the household the feature exists for. M serves the redemption with a control
+ * write offered to M's FRET cohort, and two facts about that cohort decide what the scenario
+ * waits for:
+ * - The stopped owner must have left it first; a member write made while it is still there
+ *   waits on it for the whole commit budget. A's graceful stop sends M a FRET leave notice, which
+ *   removes A at once (about 1 s measured, one poll); a phone that vanishes without one is marked
+ *   dead after three probe ticks in which it could not be contacted, about 5 s. FRET ticket
+ *   `fret-evicts-an-address-less-peer-that-disconnects`.
  * - P joins it the moment P connects to redeem, so M's cohort for every control block is
  *   {M, P}, and a cohort of two commits only when both hold the write. M therefore pushes its
  *   control store to P after the request verifies and before the write (`catchUpDevice` on the
  *   redemption handler), and the admission commits on the first attempt. The scenario pins
  *   that: a second attempt means the push did not reach P before the write.
  *
- * The invitation names A's own address first and then M's; A is stopped when P redeems, so
- * P's first dial fails and it moves on. The scenario waits until M holds the invitation's row
- * before A stops.
+ * A listens nowhere, so the invitation names only M's addresses. The scenario waits until M
+ * holds the invitation's row before A stops.
  *
  * In the withdrawal arm M holds no live invitation, so its connection gate admits Q only
  * provisionally; the redemption exchange is answered, and refused by name, well inside the
@@ -50,7 +52,7 @@ import {
 const STARTUP_MS = 60_000;
 /** One request and its reply, or one row crossing an already-open connection. */
 const OP_MS = 30_000;
-/** How long FRET may take to evict a stopped, addressable peer from a member's cohort (about 5 s measured). */
+/** How long FRET may take to evict a stopped, address-less peer from a member's cohort: its leave notice evicts it in about 1 s, the dead verdict without one in about 5 s; the margin is for a loaded machine. */
 const COHORT_EVICTION_MS = 60_000;
 
 describe('E2E cadre invitation redeemed at a member while the owner is offline', () => {
@@ -65,7 +67,7 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 		function buildA(): CadreNode {
 			return new CadreNode(controlNodeConfig({
 				partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none',
-				storageProvider: captureA.provider, bootstrapPeerStore: aPeerStore,
+				listenAddrs: [], storageProvider: captureA.provider, bootstrapPeerStore: aPeerStore,
 			}));
 		}
 		function buildDevice(key: PrivateKey): CadreNode {
@@ -93,8 +95,8 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			// ── A mints an untargeted owner-granting invitation, M receives its row, A stops ──
 			const { invitation } = await A.createCadreInvitation({ grantsOwner: true });
 			expect(invitation.invite.peerId).toBeNull();
-			expect(invitation.members[0]).toBe(A.getMultiaddrs()[0]);
-			expect(invitation.members.some((addr) => addr.endsWith(`/p2p/${member.peerId}`))).toBe(true);
+			expect(invitation.members.length).toBeGreaterThan(0);
+			expect(invitation.members.every((addr) => addr.endsWith(`/p2p/${member.peerId}`))).toBe(true);
 			expect(invitation.ownerKeys).toEqual([aOwnerKey]);
 			const key = invitation.invite.key;
 			await waitUntil(async () => (await member.node.listCadreInvitations()).some((status) => status.invite.key === key && status.live), {
