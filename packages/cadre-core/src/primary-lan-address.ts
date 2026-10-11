@@ -8,36 +8,40 @@
  * `key-store-file`, so `node:dgram` never reaches a React Native bundle.
  */
 import dgram from 'node:dgram';
+import debug from 'debug';
+
+const log = debug('sereus:cadre:primary-lan-address');
 
 /** Any public IPv4 address works: nothing is sent to it. */
 const ROUTE_PROBE = { host: '1.1.1.1', port: 53 } as const;
 
 /**
  * The machine's primary IPv4 address, or undefined when there is no route (offline) or the
- * probe fails. Callers then fall back to keeping every LAN address.
+ * probe fails. Callers then fall back to keeping every LAN address. `probe` is for tests.
  */
-export async function primaryLanAddress(): Promise<string | undefined> {
+export async function primaryLanAddress(probe: { host: string; port: number } = ROUTE_PROBE): Promise<string | undefined> {
 	return new Promise((resolve) => {
 		const socket = dgram.createSocket('udp4');
+		let settled = false;
 		const finish = (address?: string): void => {
-			try {
-				socket.close();
-			} catch {
-				// already closed
-			}
+			if (settled) return;
+			settled = true;
+			socket.close();
 			resolve(address);
 		};
-		socket.on('error', () => finish());
-		try {
-			socket.connect(ROUTE_PROBE.port, ROUTE_PROBE.host, () => {
-				try {
-					finish(socket.address().address);
-				} catch {
-					finish();
-				}
-			});
-		} catch {
+		socket.on('error', (err) => {
+			log('route probe failed: %s', err.message);
 			finish();
-		}
+		});
+		socket.connect(probe.port, probe.host, (err?: Error) => {
+			// A failed connect reports here, not as 'error', and leaves the socket bound to
+			// 0.0.0.0, so its address() must not be read.
+			if (err) {
+				log('no route to probe: %s', err.message);
+				finish();
+				return;
+			}
+			finish(socket.address().address);
+		});
 	});
 }

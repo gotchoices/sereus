@@ -166,7 +166,7 @@
 			</label>
 		</fieldset>
 		<div>
-			<label for="exact-addrs">Exact addresses (optional, one multiaddr per line; replaces the automatic choice)</label>
+			<label for="exact-addrs">Exact addresses (optional, one multiaddr per line, without /p2p/; replaces the automatic choice for every node)</label>
 			<textarea id="exact-addrs" rows="3" bind:value={exactAddrs} placeholder="/dns4/node.example.org/tcp/443/wss"></textarea>
 		</div>
 		<div class="actions">

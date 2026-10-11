@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { Command } from 'commander';
 import QRCode from 'qrcode';
-import { encodeNodeClaimPayload, selectNodeClaimAddresses } from '@serfab/cadre-core';
+import { encodeNodeClaimPayload, selectNodeClaimAddresses, withClaimDestination } from '@serfab/cadre-core';
 import { primaryLanAddress } from '@serfab/cadre-core/primary-lan-address';
 import { specifiedEnv } from '@serfab/config-check';
 import { loadValidatedConfig } from '../config/loader.js';
@@ -20,7 +20,7 @@ const DNS = /^\/dns/;
 
 /** How `cadre code` chooses addresses: its `--addr`, `--lan` / `--no-lan` and `--all` options. */
 export interface ClaimAddressChoice {
-  /** An exact list (`--addr`, repeatable), used as given apart from appending `/p2p/<peerId>`. */
+  /** An exact list (`--addr`, repeatable), used as given apart from appending `/p2p/<peerId>` where none names the destination. */
   addr?: string[];
   /** `--lan <ip>`: the LAN address to keep; `false` from `--no-lan`: none; otherwise found automatically. */
   lan?: string | boolean;
@@ -40,7 +40,7 @@ export async function claimAddressesFor(
   detectLan: () => Promise<string | undefined> = primaryLanAddress,
 ): Promise<string[]> {
   if (choice.addr && choice.addr.length > 0) {
-    return [...new Set(choice.addr.map((a) => (a.trim().includes('/p2p/') ? a.trim() : `${a.trim()}/p2p/${peerId}`)))];
+    return [...new Set(choice.addr.map((a) => withClaimDestination(a, peerId)))];
   }
   if (choice.all) return selectNodeClaimAddresses(reported, peerId, { includeTcp: true });
   const lan = choice.lan === false ? null : typeof choice.lan === 'string' ? choice.lan : await detectLan();
@@ -98,7 +98,7 @@ export const codeCommand = new Command('code')
   .option('--lan <ip>', 'The LAN address phones at home use (default: the machine\'s primary address); other private addresses, such as Docker bridges and VPNs, are left out')
   .option('--no-lan', 'Leave every LAN address out: phones reach this node by its public name only')
   .option('--addr <multiaddr>', 'Put exactly these addresses in the code, in this order (repeatable); /p2p/<peer id> is appended when missing', (value: string, previous: string[]) => [...previous, value], [] as string[])
-  .option('--all', 'Include every address the node reports: TCP (phones cannot dial it) and every interface')
+  .option('--all', 'Include every address the node reports: TCP (phones cannot dial it) and every interface (raw public IPs still give way to a public name)')
   .option('--qr', 'Also show the code as a QR code in the terminal')
   .option('--png <file>', 'Also write the QR code as a PNG image (mode 600: it carries the secret)')
   .option('--svg <file>', 'Also write the QR code as an SVG image (mode 600)')

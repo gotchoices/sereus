@@ -551,6 +551,8 @@ export {
   encodeNodeClaimPayload,
   decodeNodeClaimPayload,
   selectNodeClaimAddresses,
+  withClaimDestination,
+  destinationPeerIdOf,
   NODE_CLAIM_PAYLOAD_PREFIX,
   type NodeClaimPayload,
   type NodeClaimAddressOptions

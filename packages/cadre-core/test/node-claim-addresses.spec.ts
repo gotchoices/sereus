@@ -58,6 +58,11 @@ describe('selectNodeClaimAddresses', () => {
 		]);
 	});
 
+	it('gives a relay address that ends at its hop the node\'s id, since the relay\'s /p2p/ is not the destination', () => {
+		const hop = `/dns4/relay.example.org/tcp/443/wss/p2p/${RELAY}/p2p-circuit`;
+		expect(selectNodeClaimAddresses([hop], PEER)).toEqual([p2p(hop)]);
+	});
+
 	it('drops loopback, localhost, link-local IPv6 off the LAN choice, and unparsable entries', () => {
 		const reported = ['/dns4/localhost/tcp/1/ws', '/ip6/::1/tcp/1/ws', '/ip6/fe80::1/tcp/1/ws', 'not a multiaddr', '/ip6/2001:db8::5/tcp/1/ws'];
 		expect(selectNodeClaimAddresses(reported, PEER, { lan: '192.168.2.27' })).toEqual([p2p('/ip6/2001:db8::5/tcp/1/ws')]);
@@ -78,5 +83,10 @@ describe('primaryLanAddress', () => {
 	it('returns an IPv4 address, or undefined with no route', async () => {
 		const address = await primaryLanAddress();
 		if (address !== undefined) expect(address).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+		expect(address).not.toBe('0.0.0.0');
+	});
+
+	it('is undefined, not the unbound 0.0.0.0, when the route probe cannot connect', async () => {
+		expect(await primaryLanAddress({ host: 'route-probe.invalid', port: 53 })).toBeUndefined();
 	});
 });

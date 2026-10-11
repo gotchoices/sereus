@@ -228,7 +228,7 @@ The code carries only addresses a phone can use (cadre-core's `selectNodeClaimAd
 
 - `--lan <ip>` names the LAN address instead; `--no-lan` leaves LAN addresses out (a machine reached by its public name only).
 - `--addr <multiaddr>` (repeatable) puts exactly those addresses in the code.
-- `--all` keeps every address the node reports, TCP and every interface included.
+- `--all` keeps every address the node reports, TCP and every interface included (a raw public IP still gives way to a public name).
 
 - `--qr` also draws it as a QR code in the terminal.
 - `--png <file>` / `--svg <file>` write it as an image (mode 600, since it carries the secret), on any platform.

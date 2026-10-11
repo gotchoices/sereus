@@ -15,7 +15,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { dirname } from 'node:path';
 
-import { multiaddr } from '@multiformats/multiaddr';
+import { destinationPeerIdOf } from '@serfab/cadre-core';
 
 export interface UpdatesConfig {
   /** When true, the daily-check timer auto-applies updates. Default false. */
@@ -52,13 +52,14 @@ export interface PushSettings {
 export interface ClaimAddressSettings {
   /**
    * The LAN address a phone at home dials: `'auto'` (the address on the router's subnet, else
-   * the machine's primary one), `'none'` (public addresses only), or an IP address. Other
-   * private addresses (Docker bridges, VPNs) are left out either way.
+   * the machine's primary one; none in public-IP mode), `'none'` (public addresses only), or an
+   * IP address. Other private addresses (Docker bridges, VPNs) are left out either way.
    */
   lan?: string;
   /**
-   * Exact addresses to put in every code instead (each without `/p2p/`; the node's peer id is
-   * appended), for an operator who knows better than the rule, such as one name behind a proxy.
+   * Exact addresses to put in every code instead, for an operator who knows better than the
+   * rule, such as one name behind a proxy. Each names no destination peer (a relay address ends
+   * at its `/p2p-circuit` hop); every node's code appends its own peer id.
    */
   addrs?: string[];
 }
@@ -80,14 +81,26 @@ export function claimAddressSettingsProblem(value: unknown): string | undefined 
       return '"claimAddresses.addrs" must be a list of multiaddr strings';
     }
     for (const addr of o.addrs as string[]) {
-      try {
-        multiaddr(addr.trim());
-      } catch {
-        return `"claimAddresses.addrs" entry "${addr}" is not a valid multiaddr`;
-      }
+      const problem = exactClaimAddressProblem(addr);
+      if (problem) return `"claimAddresses.addrs" entry "${addr}" ${problem}`;
     }
   }
   return undefined;
+}
+
+/**
+ * Why one `claimAddresses.addrs` entry is unacceptable. It must not name its destination peer:
+ * the list is host-wide and each hosted node's code appends its own peer id, so a named one
+ * would be some other node's address in every code but that node's.
+ */
+function exactClaimAddressProblem(addr: string): string | undefined {
+  let destination: string | null;
+  try {
+    destination = destinationPeerIdOf(addr.trim());
+  } catch {
+    return 'is not a valid multiaddr';
+  }
+  return destination === null ? undefined : 'must not end in /p2p/<peer id>: each node\'s own id is appended';
 }
 
 export interface HostConfigFile {
@@ -162,6 +175,8 @@ export function readHostConfig(filePath: string): HostConfigFile {
   if (!isHostConfigShape(obj)) {
     throw new Error(`host.config.json at ${filePath} is missing required fields`);
   }
+  const claimAddressesProblem = obj.claimAddresses === undefined ? undefined : claimAddressSettingsProblem(obj.claimAddresses);
+  if (claimAddressesProblem) throw new Error(`host.config.json at ${filePath}: ${claimAddressesProblem}`);
   return obj;
 }
 

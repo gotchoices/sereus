@@ -174,7 +174,7 @@ The UI's **Connectivity** page shows the same per node, with an "I forwarded the
 "claimAddresses": { "addrs": ["/dns4/node.example.org/tcp/443/wss"] }
 ```
 
-The next code shown uses the change; no restart is needed.
+The next code shown uses the change; no restart is needed. Exact `addrs` apply to every node this host runs, each code appending that node's own peer ID, so leave `/p2p/…` off them and give each node its own address (or run one node).
 
 When your residential IP changes (it will), members can't find you on the old IP. DDNS (a hostname that auto-updates to your current IP) fixes this:
 

@@ -170,6 +170,7 @@ describe('/api/settings routes', () => {
     for (const [payload, message] of [
       [{ claimAddresses: { lan: 'sometimes' } }, /claimAddresses.lan/],
       [{ claimAddresses: { addrs: ['not a multiaddr'] } }, /claimAddresses.addrs/],
+      [{ claimAddresses: { addrs: ['/dns4/a.example/tcp/443/wss/p2p/12D3KooWQ7wMHcR6Z9zr2qmFyKW6pYp1VzJPfgoTHKGdEfMXz2Ve'] } }, /must not end in \/p2p/],
       [{ claimAddresses: { extra: [] } }, /claimAddresses.extra/],
       [{ claimAddresses: 'auto' }, /must be an object/],
     ] as const) {

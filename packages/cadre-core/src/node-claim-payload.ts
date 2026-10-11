@@ -121,6 +121,17 @@ export function selectNodeClaimAddresses(reported: readonly string[], peerId: st
 	return [...new Set([...names, ...(names.length > 0 ? [] : publicIps), ...privates, ...relayed])];
 }
 
+/**
+ * `addr` as a node code carries it: with `/p2p/<peerId>` appended unless it already names a
+ * destination. A relay address that ends at its hop (`…/p2p/<relay>/p2p-circuit`) names none,
+ * so it gains the node's id too. Throws when `addr` does not parse. For callers that take
+ * exact addresses from an operator; {@link selectNodeClaimAddresses} applies it itself.
+ */
+export function withClaimDestination(addr: string, peerId: string): string {
+	const trimmed = addr.trim();
+	return destinationPeerIdOf(trimmed) === null ? `${trimmed}/p2p/${peerId}` : trimmed;
+}
+
 type ClaimAddressKind = 'name' | 'public' | 'private' | 'relay';
 
 /** One address's place in {@link selectNodeClaimAddresses}, or undefined to drop it. */
@@ -131,7 +142,7 @@ function classifyClaimAddress(addr: string, peerId: string, options: NodeClaimAd
 	} catch {
 		return undefined;
 	}
-	const withId = components.some((c) => c.code === CODE_P2P) ? addr : `${addr}/p2p/${peerId}`;
+	const withId = destinationIn(components) === null ? `${addr}/p2p/${peerId}` : addr;
 	if (components.some((c) => c.code === CODE_P2P_CIRCUIT)) return { kind: 'relay', addr: withId };
 	if (!options.includeTcp && !components.some((c) => c.code === CODE_WS || c.code === CODE_WSS)) return undefined;
 	const host = components[0];
@@ -208,10 +219,13 @@ function requireAddressOf(addr: string, peerId: ReturnType<typeof peerIdFromStri
  * The peer an address reaches: its last `/p2p/` component. A relayed address
  * (`…/p2p/<relay>/p2p-circuit/p2p/<destination>`) names its destination after the
  * circuit hop; one that ends at the hop names nobody. Same rule as
- * `groupAddrsByPeerId` in `peer-addr-book.ts`.
+ * `groupAddrsByPeerId` in `peer-addr-book.ts`. Throws when `addr` does not parse.
  */
-function destinationPeerIdOf(addr: string): string | null {
-	const components = multiaddr(addr).getComponents();
+export function destinationPeerIdOf(addr: string): string | null {
+	return destinationIn(multiaddr(addr).getComponents());
+}
+
+function destinationIn(components: ReturnType<ReturnType<typeof multiaddr>['getComponents']>): string | null {
 	for (let i = components.length - 1; i >= 0; i--) {
 		const component = components[i]!;
 		if (component.code === CODE_P2P_CIRCUIT) return null;

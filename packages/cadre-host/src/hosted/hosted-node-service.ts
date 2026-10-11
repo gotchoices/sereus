@@ -7,7 +7,7 @@ import type { Orchestrator, OrchestratorCreateResult } from '@serfab/cadre-provi
 
 import type { HostedSpawnRequest, ManagedNodeInfo, NodeStateListener } from '../orchestrator/types.js';
 import type { ClaimAddressSettings } from '../installer/config.js';
-import { buildClaimDetails, type ClaimDetails, type HostedNodeAddressSource } from './claim-details.js';
+import { buildClaimDetails, claimLanAddress, type ClaimDetails, type HostedNodeAddressSource } from './claim-details.js';
 import type { HostedNodeStore } from './hosted-node-store.js';
 import { HostedNodeWatcher } from './hosted-node-watcher.js';
 import { PLACEHOLDER_PARTY, errorMessage, readNodeStatus, statusUrlFor } from './node-status.js';
@@ -346,15 +346,15 @@ export class HostedNodeService {
     const status = await readNodeStatus(node.statusEndpoint);
     this.recordPeerId(id, status.peerId);
     const settings = this.claimAddressSettings();
-    const needsPrimary = (settings?.lan ?? 'auto') === 'auto' && !settings?.addrs?.length && this.addresses.getStatus().gateway.lanAddress === null;
+    const exactAddrs = settings?.addrs ?? [];
     return buildClaimDetails({
       id,
       secret,
       status,
       ports: this.orchestrator.getNode?.(id)?.ports,
       addresses: this.addresses,
-      settings,
-      primaryLan: needsPrimary ? await this.primaryLan() : undefined,
+      exactAddrs,
+      lan: exactAddrs.length > 0 ? undefined : await claimLanAddress(settings, this.addresses, this.primaryLan),
     });
   }
 

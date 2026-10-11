@@ -3,10 +3,10 @@
  * `HostedNodeService.claimDetails` reads the child's `/status` and hands it here.
  */
 
-import { encodeNodeClaimPayload, selectNodeClaimAddresses } from '@serfab/cadre-core';
+import { encodeNodeClaimPayload, selectNodeClaimAddresses, withClaimDestination } from '@serfab/cadre-core';
 
 import type { ClaimAddressSettings } from '../installer/config.js';
-import type { NodeReachability } from '../nat/types.js';
+import type { NetworkMode, NodeReachability } from '../nat/types.js';
 import type { NodeStatus } from './node-status.js';
 import { HostedNodeError } from './types.js';
 
@@ -25,8 +25,11 @@ export interface ClaimDetails {
 export interface HostedNodeAddressSource {
   /** The node's public multiaddrs (no `/p2p/` suffix), TCP then WebSocket. */
   publicAddressesFor(nodeId: string, ports: { p2p: number; ws?: number }): string[];
-  /** `gateway.lanAddress` is this machine's address on the router's subnet, when a UPnP gateway answered. */
-  getStatus(): { nodes: NodeReachability[]; gateway: { lanAddress: string | null } };
+  /**
+   * `gateway.lanAddress` is this machine's address on the router's subnet, when a UPnP gateway
+   * answered; `network.mode` is whether it sits behind a router (`lan`) or holds a public IPv4.
+   */
+  getStatus(): { nodes: NodeReachability[]; gateway: { lanAddress: string | null }; network: { mode: NetworkMode } };
 }
 
 /** One node's claim details, from its record's secret, its `/status`, and its ports. */
@@ -37,10 +40,10 @@ export interface ClaimDetailsInput {
   /** The orchestrator handle's ports; absent, the code carries LAN addresses only. */
   ports: { p2p: number; ws?: number } | undefined;
   addresses: HostedNodeAddressSource;
-  /** `host.config.json`'s `claimAddresses`; absent ⇒ automatic. */
-  settings?: ClaimAddressSettings;
-  /** The machine's primary address (`primaryLanAddress`), the `lan: 'auto'` fallback when no gateway answered. */
-  primaryLan?: string;
+  /** `host.config.json`'s `claimAddresses.addrs`: exact addresses replacing the automatic choice. */
+  exactAddrs?: readonly string[];
+  /** The LAN address to keep, as {@link claimLanAddress} resolved it. */
+  lan: string | null | undefined;
 }
 
 /**
@@ -62,26 +65,39 @@ export function buildClaimDetails(input: ClaimDetailsInput): ClaimDetails {
 }
 
 /**
+ * The LAN address a node code keeps (`selectNodeClaimAddresses`' `lan`), from `claimAddresses.lan`:
+ * `'none'` is null; an IP is itself; `'auto'` (default) is null in public-IP mode (no phone shares
+ * a LAN with a VPS), else the gateway's `lanAddress`, else the machine's primary address
+ * (`primaryLan`, probed only then), else undefined (keep every private address).
+ */
+export async function claimLanAddress(
+  settings: ClaimAddressSettings | undefined,
+  addresses: HostedNodeAddressSource,
+  primaryLan: () => Promise<string | undefined>,
+): Promise<string | null | undefined> {
+  const lan = settings?.lan ?? 'auto';
+  if (lan === 'none') return null;
+  if (lan !== 'auto') return lan;
+  const { network, gateway } = addresses.getStatus();
+  if (network.mode === 'public') return null;
+  return gateway.lanAddress ?? await primaryLan();
+}
+
+/**
  * The addresses the QR code names, in dial order. A phone dials each in turn on its own
  * timeout, so every address it cannot reach delays a failing claim and enlarges the code.
  *
- * - With `settings.addrs`, exactly those, each given the node's peer id.
+ * - With `exactAddrs`, exactly those, each given the node's peer id.
  * - Otherwise cadre-core's `selectNodeClaimAddresses` over the NAT layer's public addresses
  *   and the node's own (`/status`): WebSocket and relay only (a phone has no TCP), public
- *   names before raw public IPs, and of the private addresses only the LAN one, chosen by
- *   `settings.lan`: `'auto'` (default) is the gateway's `lanAddress`, else the machine's
- *   primary address; `'none'` drops them; an IP keeps that one. Docker bridges, VPNs and
- *   other interfaces a phone cannot reach are left out.
+ *   names before raw public IPs, and of the private addresses only `lan`. Docker bridges,
+ *   VPNs and other interfaces a phone cannot reach are left out.
  */
-function dialAddressesFor({ id, status, ports, addresses, settings, primaryLan }: ClaimDetailsInput): string[] {
-  const withId = (a: string) => (a.includes('/p2p/') ? a : `${a}/p2p/${status.peerId}`);
-  if (settings?.addrs && settings.addrs.length > 0) return [...new Set(settings.addrs.map((a) => withId(a.trim())))];
+function dialAddressesFor({ id, status, ports, addresses, exactAddrs, lan }: ClaimDetailsInput): string[] {
+  // NOTE: `claimAddresses.addrs` is host-wide, so every hosted node's code carries the same
+  // addresses with its own peer id; that reaches each node only if they route per node (one
+  // node, or a port per node). If several nodes behind one proxy is reported, make it per node.
+  if (exactAddrs && exactAddrs.length > 0) return [...new Set(exactAddrs.map((a) => withClaimDestination(a, status.peerId)))];
   const publicAddrs = ports ? addresses.publicAddressesFor(id, ports) : [];
-  const lanSetting = settings?.lan ?? 'auto';
-  const lan = lanSetting === 'none'
-    ? null
-    : lanSetting === 'auto'
-      ? addresses.getStatus().gateway.lanAddress ?? primaryLan
-      : lanSetting;
   return selectNodeClaimAddresses([...publicAddrs, ...status.multiaddrs], status.peerId, { lan });
 }

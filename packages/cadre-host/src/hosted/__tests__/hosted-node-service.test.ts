@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import { decodeNodeClaimPayload } from '@serfab/cadre-core';
 
 import type { ClaimAddressSettings } from '../../installer/config.js';
-import type { NodeReachability } from '../../nat/types.js';
+import type { NetworkMode, NodeReachability } from '../../nat/types.js';
 import type { HostedNodeAddressSource } from '../claim-details.js';
 import { HostedNodeService, HOSTED_NODE_SPAWNING_TTL_MS } from '../hosted-node-service.js';
 import { HostedNodeStore } from '../hosted-node-store.js';
@@ -37,6 +37,8 @@ import { ISSUER_KEY, MEMBER_PEER_ID, encodedTestInvitation } from './test-invita
 
 /** A peer id the child reports; the payload codec checks it parses. */
 const PEER_ID = '12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp';
+/** A relay's peer id, for relay addresses. */
+const OTHER_PEER_ID = '12D3KooWQ7wMHcR6Z9zr2qmFyKW6pYp1VzJPfgoTHKGdEfMXz2Ve';
 /** The owner key `/status.node.claimedBy` reports after a claim. */
 const OWNER_KEY = Buffer.alloc(32, 7).toString('base64url');
 
@@ -52,7 +54,7 @@ const HOME_SERVER_ADDRS = [
 /** A NAT layer with no public address and no verdicts. */
 const NO_ADDRESSES: HostedNodeAddressSource = {
   publicAddressesFor: () => [],
-  getStatus: () => ({ nodes: [], gateway: { lanAddress: null } }),
+  getStatus: () => ({ nodes: [], gateway: { lanAddress: null }, network: { mode: 'lan' } }),
 };
 
 /** A store whose next `put` fails once — the post-spawn write-failure path. */
@@ -264,7 +266,7 @@ describe('HostedNodeService.claimDetails', () => {
           asked.push({ nodeId, ports });
           return ['/ip4/203.0.113.5/tcp/4001', '/ip4/203.0.113.5/tcp/4101/ws'];
         },
-        getStatus: () => ({ nodes: [{ ...reachability, nodeId: asked[0]?.nodeId ?? '' }], gateway: { lanAddress: '192.168.1.20' } }),
+        getStatus: () => ({ nodes: [{ ...reachability, nodeId: asked[0]?.nodeId ?? '' }], gateway: { lanAddress: '192.168.1.20' }, network: { mode: 'lan' } }),
       },
     });
     const view = await svc.join();
@@ -297,12 +299,13 @@ describe('HostedNodeService.claimDetails', () => {
     expect((await svc.claimDetails(view.id)).multiaddrs).toEqual([`/ip4/172.18.0.1/tcp/4101/ws/p2p/${PEER_ID}`]);
   });
 
-  it('follows claimAddresses: a public name replaces public IPs, lan none or an IP, and an exact addrs list', async () => {
+  it('follows claimAddresses: a public name replaces public IPs, lan none or an IP, auto in public mode, and an exact addrs list', async () => {
     let settings: ClaimAddressSettings | undefined = { lan: 'none' };
+    let mode: NetworkMode = 'lan';
     const { svc } = makeHarness({
       addresses: {
         publicAddressesFor: () => ['/dns4/home.example.org/tcp/4101/ws', '/ip4/203.0.113.5/tcp/4101/ws'],
-        getStatus: () => ({ nodes: [], gateway: { lanAddress: '192.168.1.20' } }),
+        getStatus: () => ({ nodes: [], gateway: { lanAddress: '192.168.1.20' }, network: { mode } }),
       },
       claimAddressSettings: () => settings,
     });
@@ -315,8 +318,17 @@ describe('HostedNodeService.claimDetails', () => {
       `/dns4/home.example.org/tcp/4101/ws/p2p/${PEER_ID}`,
       `/ip4/10.9.9.1/tcp/4101/ws/p2p/${PEER_ID}`,
     ]);
-    settings = { addrs: ['/dns4/proxy.example.org/tcp/443/wss'] };
-    expect((await svc.claimDetails(view.id)).multiaddrs).toEqual([`/dns4/proxy.example.org/tcp/443/wss/p2p/${PEER_ID}`]);
+    // A VPS shares no LAN with a phone: automatic keeps no private address there.
+    settings = undefined;
+    mode = 'public';
+    expect((await svc.claimDetails(view.id)).multiaddrs).toEqual([`/dns4/home.example.org/tcp/4101/ws/p2p/${PEER_ID}`]);
+    // A relay address that ends at its hop names no destination, so it gains the node's id too.
+    const relayHop = `/dns4/relay.example.org/tcp/443/wss/p2p/${OTHER_PEER_ID}/p2p-circuit`;
+    settings = { addrs: ['/dns4/proxy.example.org/tcp/443/wss', relayHop] };
+    expect((await svc.claimDetails(view.id)).multiaddrs).toEqual([
+      `/dns4/proxy.example.org/tcp/443/wss/p2p/${PEER_ID}`,
+      `${relayHop}/p2p/${PEER_ID}`,
+    ]);
   });
 
   it('is 503 until the child answers, and 409 once the node is no longer unclaimed', async () => {
