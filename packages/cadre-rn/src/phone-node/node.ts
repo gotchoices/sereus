@@ -10,6 +10,7 @@
 
 import {
 	CadreNode,
+	exportStrandBundle,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
 	PersistentStrandNetworkStateStore,
@@ -22,6 +23,8 @@ import type {
 	CadreNodeEvents,
 	RedeemCadreInvitationOptions,
 	RedeemCadreInvitationResult,
+	StrandBundle,
+	StrandMoveReport,
 } from '@serfab/cadre-core';
 import type { Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import {
@@ -47,6 +50,16 @@ import {
 import type { NoiseCryptoMode } from '../noise-crypto.js';
 import { buildPhoneNodeConfig, runOwnerGenesis, wireJoinedOwnerKey, type OwnerGenesisResult } from './config.js';
 import { parseSavedStart, serializeSavedStart, type PhoneNodeOptions, type SavedStart } from './options.js';
+import {
+	adoptMoveRecord,
+	adoptMovesInto,
+	deferredOutcome,
+	joinMoveRecord,
+	pendingMove,
+	StrandMoveRecords,
+	type PendingStrandMove,
+	type StrandMoveOutcome,
+} from './strand-move.js';
 
 /** `rn-leveldb`, as the app passes it: `{ openFn: (n, c, e) => new LevelDB(n, c, e), WriteBatch: LevelDBWriteBatch }`. */
 export interface LevelDBNative {
@@ -152,6 +165,8 @@ export interface JoinCadreOptions {
 export interface JoinCadreResult extends RedeemCadreInvitationResult {
 	/** The party this app founded and has left, when it founded one; saved as `PhoneNodeOptions.formerPartyId`. */
 	formerPartyId?: string;
+	/** How moving that party's strands into this one settled; absent when there was nothing to move. */
+	strandMove?: StrandMoveOutcome;
 }
 
 export interface PhoneNode {
@@ -195,8 +210,26 @@ export interface PhoneNode {
 	 *
 	 * The start is saved only once admitted, so an app killed while waiting relaunches into the
 	 * party it left. The left party's data stays on disk under its own names.
+	 *
+	 * Leaving a party this app founded moves its strands: they are exported before anything stops
+	 * (from a node started for the export alone when none runs) and kept in the secure store, and
+	 * adopted once the app's key is wired as an owner of the joined party, before the join reports
+	 * `running`; otherwise a later start adopts them (`result.strandMove` says which). Refused
+	 * before anything stops, with `StrandsNeedOwnerJoinError`, when there is something to move and
+	 * the invitation does not grant owner; and with the export's error when it fails.
 	 */
 	joinCadre(invitation: CadreInvitation, options?: JoinCadreOptions): Promise<JoinCadreResult>;
+	/**
+	 * The move from `formerPartyId` (the running start's, else the saved one's) still waiting to be
+	 * adopted, or `undefined` when there is none. A read the secure store refuses throws.
+	 */
+	pendingStrandMove(): Promise<PendingStrandMove | undefined>;
+	/**
+	 * Adopt the waiting move on the running node now, in turn with start, stop and join; `undefined`
+	 * when no move from `formerPartyId` names the running party. Throws what the adoption throws,
+	 * `StrandMoveNotOwnerError` while the app's key is no owner there.
+	 */
+	finishStrandMove(): Promise<StrandMoveReport | undefined>;
 	/**
 	 * The last start, or `undefined` when none is saved or the record is unusable. A read fault
 	 * throws. Called during a stop, it answers after the stop has saved `autoStart: false`.
@@ -250,6 +283,7 @@ export function createPhoneNode(platform: PhoneNodePlatform): PhoneNode {
 
 class PhoneNodeRuntime implements PhoneNode {
 	private readonly keyStore: SecureStoreKeyStore;
+	private readonly moves: StrandMoveRecords;
 	private current: CadreNode | null = null;
 	private runningOptions: PhoneNodeOptions | null = null;
 	private starting: Promise<CadreNode> | null = null;
@@ -272,6 +306,7 @@ class PhoneNodeRuntime implements PhoneNode {
 		private readonly names: PhoneNodeNames,
 	) {
 		this.keyStore = new SecureStoreKeyStore(platform.secureStore, platform.secureStoreOptions);
+		this.moves = new StrandMoveRecords(this.keyStore);
 	}
 
 	get status(): PhoneNodeStatus {
@@ -338,6 +373,29 @@ class PhoneNodeRuntime implements PhoneNode {
 		return this.readSavedStart();
 	}
 
+	async pendingStrandMove(): Promise<PendingStrandMove | undefined> {
+		const formerPartyId = (this.runningOptions ?? (await this.readSavedStart())?.options)?.formerPartyId;
+		if (formerPartyId === undefined) return undefined;
+		const record = await this.moves.load(formerPartyId);
+		return record && pendingMove(record);
+	}
+
+	finishStrandMove(): Promise<StrandMoveReport | undefined> {
+		return this.inTurn(async () => {
+			const node = this.node;
+			const formerPartyId = this.runningOptions?.formerPartyId;
+			if (!node?.isRunning || formerPartyId === undefined) return undefined;
+			const record = await this.moves.load(formerPartyId);
+			if (record?.targetPartyId !== node.partyId) return undefined;
+			const report = await adoptMoveRecord(node, this.moves, record);
+			// The adoption wires the key or throws, so a start that settled as a member is an owner now.
+			if (this.currentStatus.state === 'running' && this.currentStatus.owner !== 'enrolled') {
+				this.setStatus({ state: 'running', node, owner: 'enrolled' });
+			}
+			return report;
+		});
+	}
+
 	on<K extends keyof CadreNodeEvents>(event: K, handler: (data: CadreNodeEvents[K]) => void): () => void {
 		const subscription: Subscription = {
 			attach: (node) => node.on(event, handler),
@@ -396,7 +454,14 @@ class PhoneNodeRuntime implements PhoneNode {
 		this.setStatus({ state: 'starting' });
 		try {
 			const { node, resolved } = await this.bringUp(options);
-			await this.markRunning(node, resolved, await this.settleOwnerKey(node, resolved));
+			const owner = await this.settleOwnerKey(node, resolved);
+			// Finishes a move a join left: the app was killed before adopting, or its key was wired
+			// only now. A move record the secure store refuses to read fails the start.
+			// NOTE: a pending move delays `running` by its control writes, a few per strand. If a
+			// resumed move makes a start noticeably slow, adopt after `markRunning` instead, as a
+			// transition of its own.
+			if (owner === 'enrolled') await adoptMovesInto(node, this.moves);
+			await this.markRunning(node, resolved, owner);
 			return node;
 		} catch (err) {
 			// The start's own error is the one to report; a failure tearing down after it is only logged.
@@ -427,8 +492,16 @@ class PhoneNodeRuntime implements PhoneNode {
 
 	/** Report a node that came up, saving its options only now, so a failed start never replaces the last one that came up. */
 	private async markRunning(node: CadreNode, resolved: PhoneNodeOptions, owner: OwnerGenesisResult): Promise<void> {
+		await this.saveRunningStart(resolved);
+		this.reportRunning(node, resolved, owner);
+	}
+
+	private saveRunningStart(resolved: PhoneNodeOptions): Promise<void> {
+		return this.saveStart({ options: resolved, autoStart: true, writtenBy: this.platform.dataVersion });
+	}
+
+	private reportRunning(node: CadreNode, resolved: PhoneNodeOptions, owner: OwnerGenesisResult): void {
 		this.runningOptions = resolved;
-		await this.saveStart({ options: resolved, autoStart: true, writtenBy: this.platform.dataVersion });
 		this.setStatus({ state: 'running', node, owner });
 	}
 
@@ -504,18 +577,24 @@ class PhoneNodeRuntime implements PhoneNode {
 	): Promise<JoinCadreResult> {
 		const redemption = await node.redeemCadreInvitation(invitation, redeemOptions(options, signal));
 		const owner = await wireJoinedOwnerKey(node, { timeoutMs: this.platform.ownerGenesisTimeoutMs, granted: redemption.grantsOwner });
+		// An owner grant arriving by a second invitation finishes a move an earlier join deferred.
+		const strandMove = await this.settleJoinMove(node, running.formerPartyId, owner);
 		if (owner === 'enrolled') this.setStatus({ state: 'running', node, owner });
-		return withFormerParty(redemption, running.formerPartyId);
+		return joinResult(redemption, running.formerPartyId, strandMove);
 	}
 
 	/**
 	 * Stop the running node, start one in the invitation's party and redeem there; on any
 	 * failure, go back to what ran before. Nothing is saved until a member has admitted this app.
+	 * Leaving a party this app founded, its strands are recorded for the move first, so a refusal
+	 * leaves that party running and unchanged.
 	 */
 	private async switchParty(invitation: CadreInvitation, options: JoinCadreOptions, signal: AbortSignal): Promise<JoinCadreResult> {
 		const restore = this.runningOptions;
 		const leaving = restore ?? (await this.readSavedStart())?.options ?? null;
-		const formerPartyId = formerPartyAfterJoining(invitation.partyId, leaving);
+		const founded = foundedPartyLeft(invitation.partyId, leaving);
+		// The party this app founded, carried through any later join.
+		const formerPartyId = founded?.partyId ?? leaving?.formerPartyId;
 		const joined: PhoneNodeOptions = {
 			partyId: invitation.partyId,
 			// None needed: the redemption retains the member that admits this app as a dial
@@ -527,32 +606,99 @@ class PhoneNodeRuntime implements PhoneNode {
 		const noiseCryptoMode = options.noiseCryptoMode ?? leaving?.noiseCryptoMode;
 		if (noiseCryptoMode !== undefined) joined.noiseCryptoMode = noiseCryptoMode;
 		if (formerPartyId !== undefined) joined.formerPartyId = formerPartyId;
+		const movingFrom = founded ? await this.recordStrandMove(founded, invitation) : undefined;
 		try {
 			await this.shutDown();
-			return withFormerParty(await this.startAndRedeem(joined, invitation, options, signal), formerPartyId);
+			return await this.startAndRedeem(joined, invitation, options, signal);
 		} catch (err) {
-			await this.returnToLeftParty(restore);
+			await this.returnToLeftParty(restore, movingFrom);
 			throw err;
 		}
 	}
 
+	/**
+	 * Export the founded party's strands and keep them in the secure store for the joined party to
+	 * adopt; the party's id when there was anything to move. Throws `StrandsNeedOwnerJoinError`, or
+	 * the export's or the write's error: switching without the record would lose the strands.
+	 */
+	private async recordStrandMove(founded: PhoneNodeOptions, invitation: CadreInvitation): Promise<string | undefined> {
+		const running = this.node;
+		const bundle = running?.isRunning ? await exportStrandBundle(running) : await this.exportStopped(founded);
+		const record = joinMoveRecord(bundle, invitation);
+		if (!record) return undefined;
+		await this.moves.save(record);
+		return founded.partyId;
+	}
+
+	/**
+	 * Start the founded party's node only to export its strands, then stop it. Nothing subscribes
+	 * and nothing is saved: the node never reports running.
+	 */
+	private async exportStopped(founded: PhoneNodeOptions): Promise<StrandBundle> {
+		this.setStatus({ state: 'starting' });
+		try {
+			const node = new CadreNode(await this.buildConfig(await this.resolveOptions(founded)));
+			this.current = node;
+			await node.start();
+			return await exportStrandBundle(node);
+		} finally {
+			// The export's own error, if any, is the one to report.
+			await this.shutDown().catch((err: unknown) => {
+				console.warn('[cadre-rn/phone-node] stopping the node started to export strands failed:', err);
+			});
+		}
+	}
+
+	/**
+	 * Admitted, the start is saved before the strands are adopted, so an app killed mid-adoption
+	 * relaunches into the joined party and finishes the move there; `running` is reported after.
+	 */
 	private async startAndRedeem(
 		joined: PhoneNodeOptions,
 		invitation: CadreInvitation,
 		options: JoinCadreOptions,
 		signal: AbortSignal,
-	): Promise<RedeemCadreInvitationResult> {
+	): Promise<JoinCadreResult> {
 		this.setStatus({ state: 'starting' });
 		const { node, resolved } = await this.bringUp(joined);
 		this.setStatus({ state: 'joining', node });
 		const redemption = await node.redeemCadreInvitation(invitation, redeemOptions(options, signal));
 		const owner = await wireJoinedOwnerKey(node, { timeoutMs: this.platform.ownerGenesisTimeoutMs, granted: redemption.grantsOwner });
-		await this.markRunning(node, resolved, owner);
-		return redemption;
+		await this.saveRunningStart(resolved);
+		const strandMove = await this.settleJoinMove(node, resolved.formerPartyId, owner);
+		this.reportRunning(node, resolved, owner);
+		return joinResult(redemption, resolved.formerPartyId, strandMove);
 	}
 
-	/** After a failed join: stop the joined party's node and start again what ran before, if anything did. */
-	private async returnToLeftParty(restore: PhoneNodeOptions | null): Promise<void> {
+	/**
+	 * The move from `formerPartyId` as an admitted join reports it: adopted with every other move
+	 * naming this party once the app's key is wired as its owner, deferred otherwise. Never throws:
+	 * the app is admitted, and what is not adopted now is adopted by the next start.
+	 */
+	private async settleJoinMove(
+		node: CadreNode,
+		formerPartyId: string | undefined,
+		owner: OwnerGenesisResult,
+	): Promise<StrandMoveOutcome | undefined> {
+		try {
+			if (owner === 'enrolled') {
+				const outcomes = await adoptMovesInto(node, this.moves);
+				return formerPartyId === undefined ? undefined : outcomes.get(formerPartyId);
+			}
+			const record = formerPartyId === undefined ? undefined : await this.moves.load(formerPartyId);
+			return record?.targetPartyId === node.partyId ? { state: 'deferred', reason: 'owner-key-not-wired' } : undefined;
+		} catch (err) {
+			console.warn('[cadre-rn/phone-node] reading the strand move records failed; the next start retries:', err);
+			return formerPartyId === undefined ? undefined : deferredOutcome(err);
+		}
+	}
+
+	/**
+	 * After a failed join: discard the move record it wrote, stop the joined party's node and start
+	 * again what ran before, if anything did.
+	 */
+	private async returnToLeftParty(restore: PhoneNodeOptions | null, movingFrom: string | undefined): Promise<void> {
+		await this.discardStrandMove(movingFrom);
 		try {
 			await this.shutDown();
 			if (restore) await this.buildAndStart(restore);
@@ -560,6 +706,17 @@ class PhoneNodeRuntime implements PhoneNode {
 			// The join's own error is the one its caller gets; this one is only logged.
 			console.warn('[cadre-rn/phone-node] going back to the party a failed join left failed:', err);
 			if (this.currentStatus.state !== 'failed') this.setStatus({ state: 'failed', error: toError(err) });
+		}
+	}
+
+	private async discardStrandMove(fromPartyId: string | undefined): Promise<void> {
+		if (fromPartyId === undefined) return;
+		try {
+			await this.moves.remove(fromPartyId);
+		} catch (err) {
+			// Harmless when left: it names the party the join failed to reach, and the next join from
+			// this party replaces it.
+			console.warn(`[cadre-rn/phone-node] could not discard the strand move record of party ${fromPartyId}:`, err);
 		}
 	}
 
@@ -672,16 +829,24 @@ function redeemOptions(options: JoinCadreOptions, signal: AbortSignal): RedeemCa
 }
 
 /**
- * The party a join leaves behind for clean-up: the one this app founded, carried through any
- * later join. Nothing when it leaves no start, or when it is already in the party it joins.
+ * The start a join to `partyId` leaves, when it is of a party this app founded: the party whose
+ * strands move and which is kept as `formerPartyId` for clean-up. Null when the join leaves no
+ * start, a party this app joined, or the party it joins.
  */
-function formerPartyAfterJoining(partyId: string, leaving: PhoneNodeOptions | null): string | undefined {
-	if (!leaving || leaving.origin === 'joined' || leaving.partyId === partyId) return leaving?.formerPartyId;
-	return leaving.partyId;
+function foundedPartyLeft(partyId: string, leaving: PhoneNodeOptions | null): PhoneNodeOptions | null {
+	return leaving && leaving.origin !== 'joined' && leaving.partyId !== partyId ? leaving : null;
 }
 
-function withFormerParty(redemption: RedeemCadreInvitationResult, formerPartyId: string | undefined): JoinCadreResult {
-	return formerPartyId === undefined ? redemption : { ...redemption, formerPartyId };
+function joinResult(
+	redemption: RedeemCadreInvitationResult,
+	formerPartyId: string | undefined,
+	strandMove: StrandMoveOutcome | undefined,
+): JoinCadreResult {
+	return {
+		...redemption,
+		...(formerPartyId !== undefined && { formerPartyId }),
+		...(strandMove !== undefined && { strandMove }),
+	};
 }
 
 /** WebSockets to dial the party's machines and relays, and circuit relay to be reachable through one. */

@@ -31,3 +31,4 @@ export {
 	type PhoneNodeConfigInputs,
 } from './config.js';
 export { attachStrandWhenWritable, DEFAULT_STRAND_PATIENCE_MS, retryAfterRestart } from './strands.js';
+export { StrandsNeedOwnerJoinError, type PendingStrandMove, type StrandMoveOutcome } from './strand-move.js';

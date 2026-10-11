@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ed25519PublicKeyFromPrivate, type CadreInvitation, type SAppConfig } from '@serfab/cadre-core';
 import { FakeWriteBatch, lockingFakeRNLevelDB } from '../../../../test-harness/fake-rn-leveldb.js';
+import { secureStoreKeySegment } from '../../src/key-store.js';
 import {
 	createPhoneNode,
 	DEFAULT_PHONE_NODE_NAMES,
@@ -49,7 +50,7 @@ function device(overrides: Partial<PhoneNodePlatform> = {}) {
 		configure: (config) => ({ ...config, requireSignedSchemas: false }),
 		...overrides,
 	};
-	return { platform, leveldb, partyId: `phone-node-spec-${sequence}` };
+	return { platform, leveldb, secureStore, partyId: `phone-node-spec-${sequence}` };
 }
 
 function options(partyId: string, relayAddrs: string[] = []) {
@@ -60,7 +61,7 @@ function options(partyId: string, relayAddrs: string[] = []) {
  * A well-formed invitation to another party, signed by a key nobody holds, that expired a
  * minute ago: a waiting redemption refuses it by this device's clock before dialing anyone.
  */
-function expiredInvitation(partyId: string): CadreInvitation {
+function expiredInvitation(partyId: string, grantsOwner = true): CadreInvitation {
 	const ownerKey = ed25519PublicKeyFromPrivate(randomBytes(32).toString('base64url'));
 	const invitePrivateKey = randomBytes(32).toString('base64url');
 	return {
@@ -70,7 +71,7 @@ function expiredInvitation(partyId: string): CadreInvitation {
 		invite: {
 			key: ed25519PublicKeyFromPrivate(invitePrivateKey),
 			peerId: null,
-			grantsOwner: true,
+			grantsOwner,
 			expiresAt: new Date(Date.now() - 60_000).toISOString(),
 			totalUses: 1,
 			stampId: 'phone-node-spec-invite',
@@ -80,6 +81,11 @@ function expiredInvitation(partyId: string): CadreInvitation {
 		ownerKeys: [ownerKey],
 		members: [],
 	};
+}
+
+/** The secure-store key a join keeps the strands of `partyId`, the party it leaves, under: a persistence contract. */
+function moveRecordKey(partyId: string): string {
+	return 'sereus.ks.' + secureStoreKeySegment(`cadre/strand-move/${secureStoreKeySegment(partyId)}`);
 }
 
 const started: PhoneNode[] = [];
@@ -348,6 +354,51 @@ describe('createPhoneNode — joining another party', () => {
 		expect(phone.node).not.toBe(left);
 		expect(phone.options).toEqual(savedBefore?.options);
 		expect(await phone.loadSavedStart()).toEqual(savedBefore);
+	}, LIFECYCLE_MS * 3);
+
+	it('refuses, before anything stops, a member\'s join that would leave its strands behind', async () => {
+		const { platform, secureStore, partyId } = device();
+		const phone = phoneNode(platform);
+		const left = await phone.start(options(partyId));
+		await left.foundStrand({ strandId: `${partyId}-strand`, type: 'o', sAppConfig: NOTES_SAPP });
+
+		await expect(phone.joinCadre(expiredInvitation(`${partyId}-joined`, false)))
+			.rejects.toMatchObject({ name: 'StrandsNeedOwnerJoinError', strandCount: 1 });
+
+		expect(phone.node).toBe(left);
+		expect(left.isRunning).toBe(true);
+		expect(secureStore.setOptionsByKey.has(moveRecordKey(partyId))).toBe(false);
+	}, LIFECYCLE_MS);
+
+	it('discards the strands it recorded for the move when the join fails', async () => {
+		const { platform, secureStore, partyId } = device();
+		const phone = phoneNode(platform);
+		const left = await phone.start(options(partyId));
+		await left.foundStrand({ strandId: `${partyId}-strand`, type: 'o', sAppConfig: NOTES_SAPP });
+
+		await expect(phone.joinCadre(expiredInvitation(`${partyId}-joined`)))
+			.rejects.toMatchObject({ name: 'CadreInviteRejectedError', code: 'invite-spent' });
+
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+		expect(secureStore.setOptionsByKey.has(moveRecordKey(partyId)), 'recorded before the switch').toBe(true);
+		expect(secureStore.map.has(moveRecordKey(partyId)), 'discarded by the rollback').toBe(false);
+	}, LIFECYCLE_MS * 3);
+
+	it('records the strands of a stopped party for the move too, and stays stopped when the join fails', async () => {
+		// With no node running, the strands are read from a node started for the export alone:
+		// a join that skipped them would leave a party that looks moved but still holds them.
+		const { platform, secureStore, partyId } = device();
+		const phone = phoneNode(platform);
+		const left = await phone.start(options(partyId));
+		await left.foundStrand({ strandId: `${partyId}-strand`, type: 'o', sAppConfig: NOTES_SAPP });
+		await phone.stop();
+
+		await expect(phone.joinCadre(expiredInvitation(`${partyId}-joined`)))
+			.rejects.toMatchObject({ name: 'CadreInviteRejectedError', code: 'invite-spent' });
+
+		expect(phone.status).toEqual({ state: 'stopped' });
+		expect(secureStore.setOptionsByKey.has(moveRecordKey(partyId)), 'recorded before the switch').toBe(true);
+		expect(secureStore.map.has(moveRecordKey(partyId)), 'discarded by the rollback').toBe(false);
 	}, LIFECYCLE_MS * 3);
 });
 

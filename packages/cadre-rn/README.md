@@ -52,7 +52,9 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `start(options)` | Starts the node, or joins the start in flight; a running node is returned as is. A start called during a stop or restart runs after it, so it never builds on databases being closed. A failed start closes everything it opened and leaves `status` `failed`. A successful one saves its options with `autoStart: true`. |
 | `stop()` | The user's disconnect: waits for a start in flight, saves `autoStart: false`, stops the node, and closes every database it opened (rn-leveldb locks each name, so one left open fails the next start). |
 | `restart(options)` | Rebuilds the node with new relays or a new Noise mode, which libp2p reads only when the node is built. Leaves `autoStart` set. |
-| `joinCadre(invitation, options?)` | Joins the cadre a decoded cadre invitation names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result and `formerPartyId`. On a refusal, an expiry while waiting (`invite-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause). |
+| `joinCadre(invitation, options?)` | Joins the cadre a decoded cadre invitation names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result, `formerPartyId` and `strandMove` (see [Moving the app's strands](#moving-the-apps-strands)). On a refusal, an expiry while waiting (`invite-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause). |
+| `pendingStrandMove()` | The move from `formerPartyId` still waiting to be adopted: the party it moves to, the strands not seated there yet and those it refused. `undefined` when none waits. |
+| `finishStrandMove()` | Adopts the waiting move on the running node now, in turn with start, stop and join, and returns cadre-core's `StrandMoveReport`; `undefined` when no move names the running party. Throws `StrandMoveNotOwnerError` while the app's key is no owner there. |
 | `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`. |
 | `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
 | `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the invitation's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), or `failed` (with the error). |
@@ -82,9 +84,21 @@ const joined = await phone.joinCadre(decodeCadreInvitation(pasted), {
 The saved start records how the app came to its party:
 
 - **`origin`**: `'founded'` (or absent) runs owner genesis on every start; `'joined'`, which `joinCadre` saves, never does, and wires the identity key only when the party lists it as an owner, so the app reports `owner: 'member'` otherwise. A start that names no `origin` takes the saved start's when it is for the same party.
-- **`formerPartyId`**: the party this app founded and left. Its data stays on disk under its own names until its strands are moved and the old cadre is dissolved.
+- **`formerPartyId`**: the party this app founded and left. Its data stays on disk under its own names until the old cadre is dissolved.
 
 Nothing is saved until a member admits the app, so a kill while waiting relaunches into the party it left. `stop()` cancels a join in progress.
+
+#### Moving the app's strands
+
+Leaving a party it founded, `joinCadre` carries that party's strands, pending joins and invitations into the party it joins, with cadre-core's `exportStrandBundle` and `adoptStrandBundle` ([architecture.md → Moving the app's strands](../../docs/architecture.md#moving-the-apps-strands)). Leaving a party it joined moves nothing: that party's strands are its owners' to move.
+
+- **Before anything stops**, the strands are exported from the running node, or from a node started for the export alone when none runs (status goes `starting` and back to `stopped`). The bundle is kept in the secure store, `cadre/strand-move/<base64url party id>`, one record per party left: it holds read secrets, party keys and bearer invitations.
+- **The join is refused** with `StrandsNeedOwnerJoinError`, the party left running and unchanged, when there is something to move and the invitation does not grant owner: every row a move seats is owner-signed. A failed export or record write is thrown the same way.
+- **Admitted**, the start is saved, then the bundle is adopted if the app's key is wired as an owner, then the join reports `running`. A kill during the adoption relaunches into the joined party, which finishes it.
+- **`result.strandMove`** is `{ state: 'done' | 'partial', report }` (`partial`: `report.failed` lists what is retried), or `{ state: 'deferred', reason: 'owner-key-not-wired' }`, or `{ state: 'deferred', reason: 'adoption-failed', error }`. Absent when there was nothing to move.
+- **A deferred or partial move** is retried by every start whose owner key is wired, before it reports `running`, or at once by `finishStrandMove()`. The record is deleted when an adoption fails nothing; strands the joined party refuses permanently (it participates in them under its own identity) are left out of later retries and listed in each report.
+- **A failed join** deletes the record it wrote, so the next join exports afresh.
+- **The left party's rows stay** in its storage, for dissolving the old cadre. No record for `formerPartyId` means its move finished.
 
 ### Helpers
 
