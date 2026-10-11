@@ -18,9 +18,28 @@ export const TEST_IDS = {
 		disconnectBtn: 'btn-disconnect',
 		seedInput: 'input-seed',
 		applySeedBtn: 'btn-apply-seed',
-		/** A pasted cadre invitation, redeemed by `btn-join-cadre`. */
+		/** Join my existing cadre: the `ShareCode` prefix of this app's join request; see `shareCodeText` and `shareCodeCopyBtn`. */
+		joinRequestShare: 'join-request',
+		/** A pasted response or open invitation (`sereus-invite:1.…`), redeemed by `btn-join-cadre`. */
 		cadreInvitationInput: 'input-cadre-invitation',
+		/** Opens the camera to scan a response or invitation. */
+		scanCadreInvitationBtn: 'btn-scan-cadre-invitation',
 		joinCadreBtn: 'btn-join-cadre',
+		/** The join flow's line and its detail line, shown in place of the inputs from Join on. */
+		joinFlowLine: 'text-join-flow',
+		joinFlowDetail: 'text-join-flow-detail',
+		/** While the join waits for a member: go back to this app's own cadre. */
+		cancelJoinBtn: 'btn-cancel-join',
+		/** After a move that did not finish: Retry moving, or Later (also offered while the old cadre remains). */
+		retryStrandMoveBtn: 'btn-retry-strand-move',
+		joinFlowLaterBtn: 'btn-join-flow-later',
+		/** The old cadre holds what the joined one does not: Delete them with it, or Keep the old cadre. */
+		discardOldCadreItemsBtn: 'btn-discard-old-cadre-items',
+		keepOldCadreBtn: 'btn-keep-old-cadre',
+		/** The old cadre is still on this phone: Remove it now. */
+		removeOldCadreBtn: 'btn-remove-old-cadre',
+		/** Clears a finished flow (done, or the old cadre kept). */
+		joinFlowOkBtn: 'btn-join-flow-ok',
 		addPeerInput: 'input-add-peer',
 		addPeerBtn: 'btn-add-peer',
 		createStrandBtn: 'btn-create-strand',

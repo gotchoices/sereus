@@ -297,8 +297,9 @@ The orchestrator (`scripts/run-e2e.mjs`):
 
 - **"adb reverse" warning**: emulator not running, or wrong device default —
   run `adb devices` to confirm and `emulator -avd <name>` to start one.
-- **The join never finishes** (the flow times out waiting for the `Joined cadre`
-  modal): the phone dials the member address in the drone's invitation, its
+- **The join never finishes** (the flow times out waiting for the join
+  section's OK, with "Waiting for an always-on machine of your cadre to answer"
+  on screen): the phone dials the member address in the drone's invitation, its
   `127.0.0.1:4002` listener, and that dial did not tunnel to the host. Verify
   `adb reverse --list` shows both rules; a device without `adb reverse` cannot
   reach the drone.

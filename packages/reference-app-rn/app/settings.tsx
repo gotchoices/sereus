@@ -1,5 +1,5 @@
 /**
- * Settings screen — connect to cadre, join a cadre, add a device or app, apply seed,
+ * Settings screen — connect to cadre, join an existing cadre, add a device or app, apply seed,
  * create strand, add an always-on node.
  */
 
@@ -13,11 +13,12 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import type { RedeemCadreInvitationResult, RelayReservationStatus } from '@serfab/cadre-core';
+import type { RelayReservationStatus } from '@serfab/cadre-core';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { AddDeviceSection } from '../src/add-device-section';
 import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
+import { JoinCadreSection } from '../src/join-cadre-section';
 import {
   foundingDetail,
   isSlowFounding,
@@ -27,7 +28,6 @@ import {
   type FoundingOutcome,
   type PendingFounding,
 } from '../src/founding-progress';
-import { describeJoinFailure } from '../src/join-failure';
 import { defaultNoiseCryptoMode } from '../src/noise-crypto-config';
 import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '@serfab/cadre-rn/phone-node';
 import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
@@ -57,13 +57,6 @@ const NOISE_CRYPTO_LABEL: Record<NoiseCryptoMode, string> = {
   full: 'Native, including key exchange',
   off: 'Pure JavaScript',
 };
-
-/** The "Joined cadre" alert body: who admitted this phone, and with what standing. */
-function joinedCadreMessage(result: RedeemCadreInvitationResult): string {
-  const member = result.peerId ?? 'a member';
-  const standing = result.grantsOwner ? 'This device is now an owner.' : 'This device is a member, not an owner.';
-  return `Admitted by ${member}. ${standing}`;
-}
 
 /** What the disconnected Node form shows for each field. */
 interface ConnectForm {
@@ -98,9 +91,10 @@ export default function SettingsScreen() {
   const [bootstrapAddr, setBootstrapAddr] = useState(initialForm.bootstrapAddr);
   const [relayAddr, setRelayAddr] = useState(initialForm.relayAddr);
   const [noiseCryptoMode, setNoiseCryptoMode] = useState(initialForm.noiseCryptoMode);
-  // The saved options are read once at launch, and that read can resolve after this
-  // screen mounted; apply them when it does. The hook sets them exactly once, so this
-  // never overwrites an edit made afterwards.
+  // The saved options are read at launch, and that read can resolve after this screen
+  // mounted; apply them when it does. The hook also sets them after a join or a dissolve,
+  // which switch or restart the node. Each happens while the Connect form is hidden, so
+  // this never overwrites an edit.
   const { savedStartOptions } = cadre;
   useEffect(() => {
     if (!savedStartOptions) return;
@@ -111,7 +105,6 @@ export default function SettingsScreen() {
     setNoiseCryptoMode(form.noiseCryptoMode);
   }, [savedStartOptions]);
   const [seedInput, setSeedInput] = useState('');
-  const [cadreInvitationInput, setCadreInvitationInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
   const [inviteInput, setInviteInput] = useState('');
   const [modal, setModal] = useState<{ title: string; message: string; detail?: string } | null>(null);
@@ -173,22 +166,6 @@ export default function SettingsScreen() {
       showAlert('Seed applied', 'Peer cache updated');
     } catch (err) {
       showAlert('Seed failed', String(err));
-    }
-  };
-
-  // ── Join a cadre ──────────────────────────────────────────────────────
-
-  // The field is cleared on success only: a failed join keeps the paste, so the
-  // retry the alert may suggest costs no re-paste.
-  const handleJoinCadre = async () => {
-    const encoded = cadreInvitationInput.trim();
-    if (!encoded) return;
-    try {
-      const result = await cadre.joinCadre(encoded);
-      setCadreInvitationInput('');
-      showAlert('Joined cadre', joinedCadreMessage(result));
-    } catch (err) {
-      showAlert('Join failed', describeJoinFailure(err));
     }
   };
 
@@ -278,6 +255,8 @@ export default function SettingsScreen() {
   // ── Render ─────────────────────────────────────────────────────────────
 
   const connected = cadre.status === 'connected';
+  // A join or the old cadre's removal is stopping and starting the node; the join section says how far it got.
+  const switching = cadre.status === 'connecting' && cadre.joinFlow !== null;
 
   return (
     // `handled`: a tap on a button while the keyboard is up presses it, instead of only
@@ -312,6 +291,8 @@ export default function SettingsScreen() {
             <InfoRow label="Reachable" value={RELAY_STATUS_LABEL[cadre.relayStatus]} color={cadre.relayStatus === 'reserved' ? '#4caf50' : '#ff9800'} />
             <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
           </>
+        ) : switching ? (
+          <InfoRow label="Status" value="Switching cadre…" color="#ff9800" />
         ) : (
           <>
             <InfoRow label="Status" value={cadre.status} color="#ff9800" />
@@ -350,27 +331,15 @@ export default function SettingsScreen() {
           <LabelledInput label="Paste seed" value={seedInput} onChangeText={setSeedInput} placeholder="base64url seed string" multiline testID={TEST_IDS.settings.seedInput} />
           <Text style={controlStyles.hint}>
             A seed only works when this phone already trusts its signer: it founded
-            the cadre, or the signer&apos;s key was pinned. To join someone else&apos;s
-            cadre, paste a cadre invitation below instead.
+            the cadre, or the signer&apos;s key was pinned. To join another cadre, use
+            Join my existing cadre below instead.
           </Text>
           <Btn label="Apply Seed" onPress={handleApplySeed} disabled={!seedInput.trim()} testID={TEST_IDS.settings.applySeedBtn} />
         </Section>
       )}
 
-      {/* Join a cadre (redeem an owner's invitation at one of its members) */}
-      {connected && (
-        <Section title="Join a Cadre">
-          <Text style={controlStyles.hint}>
-            Paste an invitation an owner of the cadre issued. Joining switches this
-            app to that cadre: it pins the owner&apos;s keys and waits until one of
-            the members the invitation names admits this phone. If the join fails,
-            the app goes back to its own cadre. Distinct from the closed-strand
-            &quot;Paste invite&quot; below.
-          </Text>
-          <LabelledInput label="Paste cadre invitation" value={cadreInvitationInput} onChangeText={setCadreInvitationInput} placeholder="sereus-invite:1.…" multiline testID={TEST_IDS.settings.cadreInvitationInput} />
-          <Btn label="Join cadre" onPress={handleJoinCadre} disabled={!cadreInvitationInput.trim()} testID={TEST_IDS.settings.joinCadreBtn} />
-        </Section>
-      )}
+      {/* Join my existing cadre; also while a join and what follows it are on screen, whatever the status */}
+      {(connected || cadre.joinFlow !== null) && <JoinCadreSection showAlert={showAlert} />}
 
       {/* Add a device or app (an owner mints a cadre invitation for another app) */}
       {connected && <AddDeviceSection showAlert={showAlert} />}

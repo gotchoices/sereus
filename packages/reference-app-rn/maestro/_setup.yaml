@@ -2,9 +2,10 @@ appId: ${MAESTRO_APP_ID}
 ---
 # Shared bootstrap for all e2e flows.
 # Launches the phone app, connects with blank fields (founding its own cadre, as
-# a fresh install does), joins the drone's cadre by redeeming its invitation
-# (which switches the app to the drone's party), creates a chat strand, and
-# switches to the Chat tab.
+# a fresh install does), joins the drone's cadre under "Join my existing cadre"
+# by redeeming its invitation (which switches the app to the drone's party and
+# removes the cadre it founded), creates a chat strand, and switches to the Chat
+# tab.
 #
 # Env vars (injected by scripts/run-e2e.mjs):
 #   CADRE_INVITATION         — drone's cadre invitation (pins the drone owner key
@@ -43,7 +44,8 @@ appId: ${MAESTRO_APP_ID}
     timeout: 15000
 
 # ── Join the cadre ────────────────────────────────────────────────────────
-# The Join section sits below Seed Bootstrap, which can put it below the fold.
+# "Join my existing cadre" sits below Seed Bootstrap, and its own request (a QR
+# code) sits above the field, which can put the field below the fold.
 - scrollUntilVisible:
     element:
       id: "input-cadre-invitation"
@@ -52,17 +54,27 @@ appId: ${MAESTRO_APP_ID}
     id: "input-cadre-invitation"
 - inputText: ${CADRE_INVITATION}
 - hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: "btn-join-cadre"
+    direction: DOWN
 - tapOn:
     id: "btn-join-cadre"
 # The join stops the phone's own node, starts one in the drone's party, dials the
-# drone and waits for its answer, then wires the phone's owner key.
-- extendedWaitUntil:
-    visible:
-      id: "modal-title"
-      text: "Joined cadre"
-    timeout: 60000
+# drone and waits for its answer, and wires the phone's owner key; then it
+# removes the cadre the phone founded (it holds no chats, so nothing moves),
+# which restarts the node once more. The connected sections come back above the
+# join section when it is done, which can push the done line below the fold.
+- scrollUntilVisible:
+    element:
+      id: "btn-join-flow-ok"
+    direction: DOWN
+    timeout: 120000
+- assertVisible:
+    id: "text-join-flow"
+    text: "This app is now part of your cadre.*"
 - tapOn:
-    id: "btn-modal-ok"
+    id: "btn-join-flow-ok"
 
 # ── Create strand ─────────────────────────────────────────────────────────
 # The connected sections were hidden while the node switched party, so the

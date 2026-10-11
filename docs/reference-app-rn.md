@@ -258,11 +258,11 @@ Both records are party-scoped, as are the enrolled-machine count and the strand 
 
 What the node last started with — party id, bootstrap addresses, relay addresses, Noise crypto mode, and how the app came to that party (`origin`, `formerPartyId`, below) — plus `autoStart`, whether to start again unattended. One record under the key `start-options` in the same `sereus-node-local` database, deliberately **not** party-scoped: it is what selects the party every record above is filed under. The kit's `parseSavedStart` (`@serfab/cadre-rn/phone-node`) parses it: unparseable JSON, an unknown version or a missing party id counts as no record (logged), while a malformed address list or Noise mode falls back to its default rather than costing the phone its party id. Not the enclave: nothing in it is secret or trust-bearing, and a relay list can outgrow SecureStore's value limit.
 
-- **Written** only by the kit's `PhoneNode` (`cadre-phone.ts` is this app's): after every successful start and after a **Join cadre** a member admitted (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
-- **Read** once at app launch (`use-cadre.ts`). With `autoStart` true the app connects by itself with those options, exactly as a Connect tap would — this is what keeps a solo phone in the same party across relaunches instead of founding a new one. Either way the Settings form prefills from them. The same options are what the background runner's cold start uses after the OS kills the node, and what a push wake into a killed process starts from (`push-wake-native.ts`), again only while `autoStart` is true. A read fault shows "Could not read the saved connection settings" under the Node card and starts nothing.
+- **Written** only by the kit's `PhoneNode` (`cadre-phone.ts` is this app's): after every successful start and after a join a member admitted (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
+- **Read** once at app launch (`use-cadre.ts`). With `autoStart` true the app connects by itself with those options, exactly as a Connect tap would — this is what keeps a solo phone in the same party across relaunches instead of founding a new one. Either way the Settings form prefills from them. The same options are what the background runner's cold start uses after the OS kills the node, and what a push wake into a killed process starts from (`push-wake-native.ts`), again only while `autoStart` is true. A read fault shows "Could not read the saved connection settings" under the Node card and starts nothing. After a join, or the removal of the cadre it left, the form refills from the options the node then runs with, so a later Disconnect → Connect starts the joined party.
 - **Stored values win over build defaults.** Relays and Noise mode are saved as resolved, not as "use the build default", so a later build with a different `EXPO_PUBLIC_RELAY_ADDR` or `EXPO_PUBLIC_NOISE_CRYPTO` does not change a device that has already connected. To pick up a new default: Disconnect, clear the Relay field (empty means the build default) or choose the mode, and Connect.
 - **Switching party** is Disconnect, edit Party ID, Connect. The old party's records stay on disk and are read again if the phone switches back.
-- **Joining another cadre** is Settings → **Join cadre** with a pasted cadre invitation: the kit's `joinCadre` stops this app's node, starts one in the invitation's party, and waits there until a member the invitation names admits the phone ([architecture.md → An app joins an existing cadre](architecture.md#an-app-joins-an-existing-cadre)). Only then is the record saved, with `origin: 'joined'` and `formerPartyId`, the party this app founded and left; a failed join puts the left party's node back and saves nothing. Leaving a party it founded, the join also moves that party's chat strands into the joined one, and is refused up front when the invitation does not make the phone an owner ([kit README → Moving the app's strands](../packages/cadre-rn/README.md#moving-the-apps-strands)).
+- **Joining another cadre** is Settings → **Join my existing cadre** ([Joining an Existing Cadre](#joining-an-existing-cadre)): the kit's `joinCadre` stops this app's node, starts one in the invitation's party, and waits there until a member the invitation names admits the phone ([architecture.md → An app joins an existing cadre](architecture.md#an-app-joins-an-existing-cadre)). Only then is the record saved, with `origin: 'joined'` and `formerPartyId`, the party this app founded and left; a failed join puts the left party's node back and saves nothing. Leaving a party it founded, the join also moves that party's chat strands into the joined one, and is refused up front when the invitation does not make the phone an owner ([kit README → Moving the app's strands](../packages/cadre-rn/README.md#moving-the-apps-strands)).
 - **`origin`** is `'founded'` (or absent) for a party this app started itself, which runs owner genesis on every start, and `'joined'` for one it joined by invitation, which never does: the phone is an owner there only when the party lists its key, and the Node card shows no owner key otherwise. A Connect whose Party ID is the saved party keeps the saved `origin`.
 - **Overlapping starts** — a launch auto-start, a push-wake cold start, the runner's resume and a Connect tap — share one start in flight, so they never build two nodes; the first caller's options win. Disconnect during a start waits for it, then stops the node it produced; a start during a Disconnect runs after it, and a cold start reading the record mid-Disconnect reads `autoStart: false`.
 - **Reinstall.** On iOS the trusted-owner anchor lives in the Keychain, which survives an uninstall; this record does not. A reinstalled phone picks a new party id and the surviving anchor, filed under the old one, is never read again — the same outcome as before start options were saved.
@@ -271,7 +271,7 @@ The Maestro flows launch with `clearState: true`, so they always see a fresh, id
 
 ### Dissolve marker (app-private LevelDB)
 
-The party whose local storage the kit is deleting, while `PhoneNode.dissolveFormerParty` removes the cadre this app founded and left ([architecture.md → Dissolving the party it left](architecture.md#dissolving-the-party-it-left)). One record under the kit's default key `dissolving-party` in the same `sereus-node-local` database, beside the start options and, like them, one per install rather than party-scoped. It is written before the first deletion and deleted after the start options stop naming that party as `formerPartyId`, so a launch after a crash partway finishes the deletion before it starts the node. This app does not offer the dissolve in its UI yet (`reference-apps-join-existing-cadre`); `cadre-phone.ts` passes rn-leveldb's `LevelDB.destroyDB` to the kit for it.
+The party whose local storage the kit is deleting, while `PhoneNode.dissolveFormerParty` removes the cadre this app founded and left ([architecture.md → Dissolving the party it left](architecture.md#dissolving-the-party-it-left)). One record under the kit's default key `dissolving-party` in the same `sereus-node-local` database, beside the start options and, like them, one per install rather than party-scoped. It is written before the first deletion and deleted after the start options stop naming that party as `formerPartyId`, so a launch after a crash partway finishes the deletion before it starts the node. Settings → Join my existing cadre runs the dissolve after a join ([Joining an Existing Cadre](#joining-an-existing-cadre)); `cadre-phone.ts` passes rn-leveldb's `LevelDB.destroyDB` to the kit for it.
 
 ## cadre-core React Native Compatibility
 
@@ -424,7 +424,7 @@ packages/reference-app-rn/
   app/
     _layout.tsx               # Expo Router root layout
     index.tsx                 # Chat screen (message list + input)
-    settings.tsx              # Bootstrap config (drone address, cadre invitation, add a device or app, seed paste, always-on node)
+    settings.tsx              # Bootstrap config (drone address, join an existing cadre, add a device or app, seed paste, always-on node)
   src/
     cadre-phone.ts            # This app's phone node (kit's createPhoneNode): WebRTC, Noise, storage names, seed apply
     node-local-names.ts       # The storage names installed phones' records are filed under, pinned by a Node test
@@ -440,11 +440,13 @@ packages/reference-app-rn/
     noise-crypto-config.ts    # Default Noise crypto mode: EXPO_PUBLIC_NOISE_CRYPTO, else symmetric
     cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
-    use-cadre.ts              # React hook: cadre lifecycle, joining a cadre, seed application
-    join-failure.ts           # Plain words for each way a join can fail (NS carries a copy)
+    use-cadre.ts              # React hook: cadre lifecycle, joining an existing cadre and what follows, seed application
+    join-flow.ts              # The steps after Join (joining, moving chats, removing the old cadre) and their words
+    join-failure.ts           # Plain words for each way a join can fail before admission (NS carries a copy)
     settings-controls.tsx     # Section, button, input and styles shared by Settings and its sections
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
     add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw
+    join-cadre-section.tsx    # Settings → Join my existing cadre: this app's request, paste or scan the answer, the join's steps
     code-scanner.tsx          # Full-screen camera (expo-camera) that reads a QR code of the kind its caller accepts
     share-code.tsx            # Text to hand another app: QR code (react-native-svg), Copy (expo-clipboard), selectable text
     qrcode-core.d.ts          # Types for importing the qrcode package's encoder without its renderers
@@ -670,7 +672,7 @@ If the nodes can't discover each other automatically (e.g., after a restart with
 2. Paste the encoded seed into the **Seed** field on the phone's Settings screen and tap **Apply Seed**
 3. Or apply via the drone's CLI: `--seed <base64url-encoded-seed>`
 
-> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`anchoredTrustPolicy`) trusts only owner keys in the phone's node-local trusted-owner anchor, which is seeded out of band and never from replicated control state. A phone that has not been given the issuing cadre's owner key will therefore **reject** a seed signed by that cadre, no matter what its `OwnerKey` table has synced. A phone that is not the founder joins instead by pasting the cadre invitation an owner issued into **Paste cadre invitation** (the Join a Cadre section) and tapping **Join cadre** (the kit's `PhoneNode.joinCadre`, which redeems with `CadreNode.redeemCadreInvitation`): that switches the app to the invitation's party, pins the invitation's owner keys into the anchor and admits the phone at one of the member machines the invitation names, so later seeds from the same owner are accepted. The seed field is for a phone that already trusts the signer.
+> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`anchoredTrustPolicy`) trusts only owner keys in the phone's node-local trusted-owner anchor, which is seeded out of band and never from replicated control state. A phone that has not been given the issuing cadre's owner key will therefore **reject** a seed signed by that cadre, no matter what its `OwnerKey` table has synced. A phone that is not the founder joins instead by pasting the cadre invitation an owner issued into **Paste response or invitation** (the Join my existing cadre section) and tapping **Join** (the kit's `PhoneNode.joinCadre`, which redeems with `CadreNode.redeemCadreInvitation`): that switches the app to the invitation's party, pins the invitation's owner keys into the anchor and admits the phone at one of the member machines the invitation names, so later seeds from the same owner are accepted. The seed field is for a phone that already trusts the signer.
 
 ### Step 5: Create a Strand
 
@@ -809,7 +811,41 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 
 **When no invitation can be made.** `createCadreInvitation` needs an address a device could dial: this phone's relay address, or another machine of the cadre's. With neither, the alert "Could not make an invitation" carries the core error, and says this phone has no relay address when it holds no relay reservation. A device whose owner key is not wired yet (a joined app whose owner grant has not arrived) is shown the member line.
 
-The device run that covers both apps is filed with ticket `reference-app-rn-joins-existing-cadre`.
+Neither side has had a device run yet; ticket `reference-app-rn-first-launch-asks-before-founding` files one covering both.
+
+
+## Joining an Existing Cadre
+
+**Settings → Join my existing cadre** is the joining side of [architecture.md → Handing an invitation from app to app](architecture.md#handing-an-invitation-from-app-to-app): an app that started a cadre of its own joins the cadre another Sereus app holds, moves its chats into it and removes its own cadre from this phone ([architecture.md → An app joins an existing cadre](architecture.md#an-app-joins-an-existing-cadre)). The section shows while the node is connected, and whenever a join's steps are on screen, whatever the status.
+
+**Request and response** (recommended). The section shows this app's join request (`sereus-join-request:1.…`) as a QR code, **Copy** and text, and under it the peer id shortened as **Code**, which the other app's approval prompt shows for the user to compare. The request carries the app's peer id (`identityPeerId()`, readable with no node running) and `app.json`'s `name`. The other app pastes or scans it under **Add a device or app → Paste request** and makes an invitation for this app alone; that response is pasted, or scanned with **Scan**, into **Paste response or invitation**, then **Join**. A response made for another app's request is refused before anything stops.
+
+**Open invitation.** An invitation from the other app's **Copy invitation** goes into the same field: both are `sereus-invite:1.` text.
+
+**The steps.** From Join on, one line and its buttons replace the inputs. `use-cadre.ts` holds the flow, so it survives a tab switch; the words are `join-flow.ts`'s.
+
+| Step | Line | Buttons |
+| --- | --- | --- |
+| joining | "Joining your cadre…"; while no member is ready, waiting for an always-on machine (or for the cadre to catch up) and the next try's time | Cancel |
+| admitted | admitted as an owner, or as a member | none |
+| moving | moving this app's chats into the cadre | none |
+| removing | removing this app's old cadre from this phone | none |
+| done | part of the cadre, as an owner or a member, and how many chats moved | OK |
+
+Nothing is cancellable once a member admitted the app, since the kit never rolls an admitted join back. While the node stops and starts again (the join, and the removal) the Node card shows "Switching cadre…" in place of the Connect form, the connected sections hide, and the hook holds no node, so nothing writes through a stopped one.
+
+**What each failure leaves.**
+
+- **Before admission** (refused, expired, no member reachable, or **Cancel**): the kit puts the app back in its own cadre unchanged, or leaves it stopped if it was stopped, and an alert says why (`join-failure.ts`).
+- **A member invitation while the app's own cadre holds chats** is refused before anything stops: every row the move seats is owner-signed, so the alert asks for an invitation with **Also an owner** on.
+- **The move did not finish** (the owner grant has not reached the phone, or an adoption failed): the line counts the chats moved and those waiting. **Retry moving** tries again (`finishStrandMove`); **Later** leaves it, and every start retries by itself. The old cadre is not removed while chats wait.
+- **The old cadre holds what the joined one does not** (a moved chat since left in the joined cadre, a dismissed join): the section asks whether to **Delete them** with the old cadre or **Keep old cadre**.
+- **The old cadre has other machines**: it is kept on this phone, and the line says nothing was lost. Removing those machines is done in that cadre.
+- **The removal failed**: the line says the old cadre is still on this phone, with the error; **Remove it now** tries again.
+
+**After a relaunch.** A start (at launch or on Connect) in a party whose saved start still names the old cadre (`formerPartyId`) shows the step the app stopped at: chats still waiting, else the old cadre still on this phone, with **Remove it now** and **Later**. That covers a kill between the steps and a **Later**. An old cadre kept on purpose is still named, so it shows again at each start.
+
+**An app that never connected.** `joinCadreByInvitation` passes the build's relay (`EXPO_PUBLIC_RELAY_ADDR`) when the kit has neither a running nor a saved start to take relays from; the Noise mode falls back to the kit's platform default, which is Connect's default too.
 
 
 ## Build & Development Workflow
@@ -961,8 +997,9 @@ Flows 1–3 share `_setup.yaml` for the connect/join/strand bootstrap. Flow 4 co
 
 The phone joins the drone's cadre the way a fresh install would: `_setup.yaml`
 connects with blank fields, so the phone founds a cadre of its own, then pastes
-the drone's invitation and taps **Join cadre**, which switches the app to the
-drone's party. The fixture enrolls its own owner key (`ensureOwnerKey`) and
+the drone's invitation under **Join my existing cadre** and taps **Join**, which
+switches the app to the drone's party and removes the cadre it founded (it holds
+no chats, so nothing moves). The fixture enrolls its own owner key (`ensureOwnerKey`) and
 mints an owner-granting cadre invitation valid for an hour
 (`createCadreInvitation`) whose member address is the drone's ws listener;
 `start.mjs` writes it as `cadreInvitation`, and the orchestrator threads it in as

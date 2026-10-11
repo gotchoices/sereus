@@ -15,21 +15,24 @@
  *    `startPhoneNode` and re-syncs node/peerId), incl. the runner being recreated
  *    by the `node`-dep change mid-resume without leaving `resuming` stuck;
  *  - a degraded resume propagating out to the status banner;
- *  - launch resuming the last session from the saved start options.
+ *  - launch resuming the last session from the saved start options;
+ *  - a join holding no node while it runs, and refilling the saved options after.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as React from 'react';
-// Type-only: the runtime module is `vi.mock`ed below, and this import is erased.
-import type { RelayReservationState } from '@serfab/cadre-core';
+// `decodeCadreInvitation` is the `vi.fn` the mock below defines.
+import { decodeCadreInvitation, type RelayReservationState } from '@serfab/cadre-core';
 import { create, act, type ReactTestRenderer } from 'react-test-renderer';
 import { useCadreInternal, type UseCadreResult } from '../../src/use-cadre';
 import { connectionBanner } from '../../src/connection-status';
 import {
   createOpenInvitation,
   getRelayState,
+  joinCadreByInvitation,
   loadSavedStartOptions,
   startPhoneNode,
+  type JoinCadreResult,
   type PhoneNodeOptions,
   type SavedStartOptions,
 } from '../../src/cadre-phone';
@@ -145,9 +148,11 @@ const h = vi.hoisted(() => {
     relay: RelayReservationState;
     /** What `loadSavedStartOptions()` resolves to: the record a previous session left. */
     saved: unknown;
+    /** What `getRunningOptions()` reports: the options of the node the kit runs. */
+    runningOptions: unknown;
   } = {
     node: null, appState: new FakeAppState(), startCount: 0, nodeCounter: 0, lastOpts: null,
-    relay: noRelay(), saved: undefined,
+    relay: noRelay(), saved: undefined, runningOptions: null,
   };
 
   return { FakeAppState, MockNode, ctl, noRelay };
@@ -179,6 +184,11 @@ vi.mock('../../src/cadre-phone', () => ({
   // assert the guard read it at the moment of the tap rather than off cached state.
   getRelayState: vi.fn(() => h.ctl.relay),
   loadSavedStartOptions: vi.fn(async () => h.ctl.saved),
+  getRunningOptions: () => h.ctl.runningOptions,
+  getPhoneNodeStatus: () => (h.ctl.node ? { state: 'running' } : { state: 'stopped' }),
+  joinCadreByInvitation: vi.fn(),
+  identityPeerId: vi.fn(),
+  joinRequestText: vi.fn(),
   dialPeer: vi.fn(async () => {}),
   createOpenInvitation: vi.fn(),
   publishFormationInvite: vi.fn(),
@@ -289,6 +299,7 @@ function resetHarness(): void {
   h.ctl.lastOpts = null;
   h.ctl.relay = h.noRelay();
   h.ctl.saved = undefined;
+  h.ctl.runningOptions = null;
   vi.clearAllMocks();
 }
 
@@ -644,6 +655,43 @@ describe('useCadreInternal — resuming the last session at launch', () => {
     expect(startPhoneNode).not.toHaveBeenCalled();
     expect(sink.current!.status).toBe('idle');
     expect(sink.current!.savedStartOptions).toEqual(SAVED_OPTS);
+  });
+});
+
+describe('useCadreInternal — joining an existing cadre', () => {
+  beforeEach(resetHarness);
+
+  it('a join drops the node it stopped and refills the saved options from the joined party', async () => {
+    h.ctl.saved = { options: SAVED_OPTS, autoStart: true } satisfies SavedStartOptions;
+    const sink = await mountLaunched();
+    expect(sink.current!.node).not.toBeNull();
+    vi.mocked(decodeCadreInvitation).mockReturnValueOnce({ partyId: 'party-a', invite: { peerId: null } } as never);
+    let admit!: (result: JoinCadreResult) => void;
+    vi.mocked(joinCadreByInvitation).mockImplementationOnce(() => {
+      // The kit stops the running node as the join begins, and holds none until admitted.
+      h.ctl.node = null;
+      return new Promise((resolve) => {
+        admit = resolve;
+      });
+    });
+
+    let joining!: Promise<void>;
+    await actFlush(() => {
+      joining = sink.current!.joinExistingCadre('sereus-invite:1.test');
+    });
+    // Nothing on screen may write through the node the join stopped.
+    expect(sink.current!.node).toBeNull();
+
+    await act(async () => {
+      h.ctl.node = new h.MockNode(++h.ctl.nodeCounter);
+      h.ctl.runningOptions = { partyId: 'party-a', bootstrapAddrs: [], relayAddrs: [], origin: 'joined' } satisfies PhoneNodeOptions;
+      admit({ peerId: 'member-a', grantsOwner: true, redeemedAt: new Date(0).toISOString() });
+      await joining;
+    });
+
+    // The Connect form shows the joined party: Disconnect → Connect must not restart the one it left.
+    expect(sink.current!.node).toBe(h.ctl.node as unknown as UseCadreResult['node']);
+    expect(sink.current!.savedStartOptions?.partyId).toBe('party-a');
   });
 });
 

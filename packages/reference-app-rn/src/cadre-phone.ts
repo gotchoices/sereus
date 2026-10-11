@@ -11,7 +11,7 @@
  * push-wake path call it as before.
  */
 
-import { resolveStunServers } from '@serfab/cadre-core';
+import { CADRE_JOIN_REQUEST_MAX_APP_NAME, encodeCadreJoinRequest, resolveStunServers } from '@serfab/cadre-core';
 import type {
   CadreInvitation,
   CadreInviteStatus,
@@ -27,17 +27,21 @@ import type {
   FormStrandResult,
   RelayReservationState,
   StrandFormationDisclosure,
+  StrandMoveReport,
 } from '@serfab/cadre-core';
 import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC } from '@libp2p/webrtc';
+import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import {
   createPhoneNode,
+  type DissolveFormerPartyOptions,
   type JoinCadreOptions,
   type JoinCadreResult,
+  type PendingStrandMove,
   type PhoneNodeOptions,
   type PhoneNodeStatus,
   type SavedStart,
@@ -45,8 +49,13 @@ import {
 import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { defaultNoiseCryptoMode } from './noise-crypto-config';
 import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE_PREFIX } from './node-local-names';
+import { resolveRelayAddrs } from './relay-config';
 
-export type { JoinCadreResult, PhoneNodeOptions };
+export type { JoinCadreResult, PhoneJoinProgress, PhoneNodeOptions, StrandMoveOutcome } from '@serfab/cadre-rn/phone-node';
+// The errors `use-cadre.ts` tells apart after a join, re-exported so the hook reaches the kit only
+// through this module, which its tests mock.
+export { FormerPartyNotEmptyError, StrandMovePendingError } from '@serfab/cadre-rn/phone-node';
+export { StrandMoveNotOwnerError } from '@serfab/cadre-core';
 /** The saved start, under the name this app's code uses for it. */
 export type SavedStartOptions = SavedStart;
 
@@ -137,8 +146,53 @@ export function stopPhoneNode(): Promise<void> {
  * party, waiting for one of its always-on machines to admit this phone. On any failure it
  * goes back to the party it left (or stays stopped when none was running) and rethrows.
  */
-export function joinCadreByInvitation(invitation: CadreInvitation, options?: JoinCadreOptions): Promise<JoinCadreResult> {
-  return phone.joinCadre(invitation, options);
+export async function joinCadreByInvitation(invitation: CadreInvitation, options: JoinCadreOptions = {}): Promise<JoinCadreResult> {
+  return phone.joinCadre(invitation, { ...await firstLaunchJoinDefaults(), ...options });
+}
+
+/**
+ * The relays a join reserves on when the kit has no start to take them from (an app that never
+ * connected): the build default a Connect tap would use. The Noise mode needs nothing here: the
+ * kit falls back to `noiseCrypto.defaultMode` above, which is the Connect default too.
+ */
+async function firstLaunchJoinDefaults(): Promise<Pick<JoinCadreOptions, 'relayAddrs'>> {
+  if (phone.options || await phone.loadSavedStart()) return {};
+  return { relayAddrs: resolveRelayAddrs() };
+}
+
+/** This app's peer id, the same in every party; read from the secure store when no node runs. */
+export function identityPeerId(): Promise<string> {
+  return phone.identityPeerId();
+}
+
+/**
+ * The join request this app shows under "Join my existing cadre": its peer id and the name
+ * the owner's approval prompt shows, `app.json`'s `name` cut to the request's limit.
+ */
+export async function joinRequestText(): Promise<string> {
+  const appName = (Constants.expoConfig?.name?.trim() || 'Sereus reference app').slice(0, CADRE_JOIN_REQUEST_MAX_APP_NAME);
+  return encodeCadreJoinRequest({ v: 1, peerId: await phone.identityPeerId(), appName });
+}
+
+/** The strand move a join left waiting, or `undefined`. Thin pass-through to the kit's `pendingStrandMove`. */
+export function pendingStrandMove(): Promise<PendingStrandMove | undefined> {
+  return phone.pendingStrandMove();
+}
+
+/**
+ * Adopt the waiting strand move on the running node now; `undefined` when none waits. Throws
+ * `StrandMoveNotOwnerError` while this app's key is no owner of the running party.
+ */
+export function finishStrandMove(): Promise<StrandMoveReport | undefined> {
+  return phone.finishStrandMove();
+}
+
+/**
+ * Delete the local storage of the party this app founded and left. Stops and restarts the
+ * running node. Refuses with `StrandMovePendingError` or `FormerPartyNotEmptyError`.
+ */
+export function dissolveFormerParty(options?: DissolveFormerPartyOptions): Promise<void> {
+  return phone.dissolveFormerParty(options);
 }
 
 /** The options the running node was started with; null unless running. */

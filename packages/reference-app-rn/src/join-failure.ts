@@ -1,9 +1,11 @@
 /**
- * join-failure.ts — the plain words the "Join cadre" alert shows for each way
- * `CadreNode.redeemCadreInvitation` can fail.
+ * join-failure.ts — the plain words the alert shows for each way a join can fail before a
+ * member admits the app: `CadreNode.redeemCadreInvitation`'s errors, and the kit's refusals
+ * before it switches party.
  *
- * reference-app-ns carries a hand-copied twin (`src/join-failure.ts` there); the two
- * apps share no code by design (docs/reference-app-ns.md).
+ * reference-app-ns carries a hand-copied twin (`src/join-failure.ts` there) without the kit's
+ * refusals, since it has no party to leave; the two apps share no code by design
+ * (docs/reference-app-ns.md).
  */
 
 import {
@@ -11,6 +13,8 @@ import {
   CadreInviteReplyInvalidError,
   CadreInviteUnreachableError,
 } from '@serfab/cadre-core';
+import { StrandsNeedOwnerJoinError } from '@serfab/cadre-rn/phone-node';
+import { chats, JoinCancelledError } from './join-flow';
 
 const TRY_AGAIN = 'The member could not complete the join right now; try again';
 
@@ -34,5 +38,16 @@ export function describeJoinFailure(err: unknown): string {
   if (err instanceof CadreInviteRejectedError) return REJECTION_TEXT[err.code];
   if (err instanceof CadreInviteUnreachableError) return 'No member named in the invitation could be reached';
   if (err instanceof CadreInviteReplyInvalidError) return 'A member answered, but its answer did not verify';
+  if (err instanceof StrandsNeedOwnerJoinError) {
+    // No strands means pending joins or invitations only.
+    const held = err.strandCount > 0 ? `this app's ${chats(err.strandCount)}` : 'what this app\'s own cadre holds';
+    return `This invitation makes the app a member, and only an owner can bring ${held} along. Ask for one with “Also an owner” on.`;
+  }
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The alert for a join that did not happen: the user cancelled it, or it failed. */
+export function joinFailureAlert(err: unknown): { title: string; message: string } {
+  if (err instanceof JoinCancelledError) return { title: 'Join cancelled', message: 'This app is back in its own cadre.' };
+  return { title: 'Join failed', message: describeJoinFailure(err) };
 }
