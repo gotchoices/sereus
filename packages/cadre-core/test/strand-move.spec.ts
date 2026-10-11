@@ -4,7 +4,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { PERSISTED_STATE_VERSION, type PersistedNetworkState } from '@optimystic/db-p2p';
 import type { CadreNode } from '../src/cadre-node.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
-import { adoptStrandBundle, exportStrandBundle, type StrandBundle, type StrandBundleEntry } from '../src/strand-move.js';
+import { adoptStrandBundle, exportStrandBundle, type FormationInviteEntry, type StrandBundle, type StrandBundleEntry } from '../src/strand-move.js';
 import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
@@ -124,5 +124,20 @@ describe('adoptStrandBundle', () => {
 		expect(await db.queryStrandPartyKey(own.row.Id)).toBe(existingKey);
 		expect(await db.queryStrand(own.row.Id)).toBeNull();
 		expect(await db.queryJoinedStrand(joined.row.Id)).toMatchObject(joined.row);
+	}, 60_000);
+
+	it('drops an invitation bound to a strand this party does not seat, and moves an unbound one', async () => {
+		({ node } = await startSelfOwnerNode('strand-move-'));
+		const db = node.getControlDatabase()!;
+		const invite = (strandId: string | null): FormationInviteEntry =>
+			({ token: 'token-' + rand(), sAppId: 'sapp', expiresAtMs: null, usesLeft: 1, validationUrl: null, strandId });
+		const orphan = invite('unpublished-in-b-' + rand());
+		const unbound = invite(null);
+
+		const report = await adoptStrandBundle(node, { ...bundleOf(), formationInvites: [orphan, unbound] });
+
+		expect(report).toMatchObject({ invitationsMoved: 1, invitationsDropped: 1, failed: [] });
+		expect(await db.queryFormationInvite(orphan.token)).toBeNull();
+		expect(await db.queryFormationInvite(unbound.token)).toMatchObject({ sAppId: 'sapp', totalUses: 1, strandId: null });
 	}, 60_000);
 });

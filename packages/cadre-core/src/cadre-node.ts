@@ -1809,7 +1809,7 @@ export class CadreNode implements SAppIdLookup {
    * one, and a list naming none records nothing.
    */
   recordCarriedStrandAddrs(strandId: string, addrs: readonly string[]): Promise<void> {
-    return this.recordFormationStrandAddrs(strandId, addrs);
+    return this.recordFormationStrandAddrs(strandId, addrs, 'recordCarriedStrandAddrs');
   }
 
   /**
@@ -8995,7 +8995,7 @@ export class CadreNode implements SAppIdLookup {
       disclosure,
       this.controlNode
     );
-    await this.recordFormationStrandAddrs(result.strandId, result.strandAddrs);
+    await this.recordFormationStrandAddrs(result.strandId, result.strandAddrs, 'formStrand');
     // A closed host strand's approval carries the joiner's own membership invitation —
     // persist this party's identity key and stage the invitation for bring-up to redeem.
     // Runs AFTER the addr recording so a persistence failure (which throws — see the
@@ -9464,16 +9464,16 @@ export class CadreNode implements SAppIdLookup {
    * Nothing else would deliver them: the seed is read only at launch and resume, and the
    * refresh pass skips a peer FRET already holds a record for — the stale one, here.
    */
-  private async recordFormationStrandAddrs(strandId: string, strandAddrs: readonly string[]): Promise<void> {
+  private async recordFormationStrandAddrs(strandId: string, strandAddrs: readonly string[], caller: string): Promise<void> {
     const attributed = [...groupAddrsByPeerId([...strandAddrs]).values()]
       .flatMap((peerAddrs) => peerAddrs.map((addr) => addr.toString()));
     if (attributed.length === 0) {
-      log('formStrand: responder disclosed no usable strand addrs for %s (%d carried) — cross-party seed unchanged',
-        strandId, strandAddrs.length);
+      log('%s: no usable strand addrs for %s (%d carried) — cross-party seed unchanged',
+        caller, strandId, strandAddrs.length);
       return;
     }
     this.formationStrandAddrs.set(strandId, attributed);
-    log('formStrand: kept %d of %d cross-party strand addr(s) for %s', attributed.length, strandAddrs.length, strandId);
+    log('%s: kept %d of %d cross-party strand addr(s) for %s', caller, attributed.length, strandAddrs.length, strandId);
     const runningNode = this.strandManager.getInstance(strandId)?.libp2pNode;
     if (runningNode) {
       await this.mergeStrandPeerAddrs(runningNode, attributed, strandId);

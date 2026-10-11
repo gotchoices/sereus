@@ -215,13 +215,13 @@ async function exportFormationInvites(database: ControlDatabase, now: number): P
  * @throws when the node is not started, beside the two typed refusals.
  */
 export async function adoptStrandBundle(node: CadreNode, bundle: StrandBundle): Promise<StrandMoveReport> {
+	const database = requireControlDatabase(node, 'adopt');
 	if (bundle.partyId === node.partyId) {
 		throw new StrandMoveSamePartyError(node.partyId);
 	}
 	if (!(await node.wireOwnKeyIfOwner())) {
 		throw new StrandMoveNotOwnerError(node.partyId);
 	}
-	const database = requireControlDatabase(node, 'adopt');
 	const owner = node.getIdentityOwnerKey();
 	const signer: OwnerSigner = { ownerKey: owner.publicKeyB64, signMessage: signMessageWith(owner.privateKeyB64) };
 	const report: StrandMoveReport = {
@@ -257,13 +257,13 @@ interface OwnerSigner {
 
 /** The strands an adoption has decided on, by outcome, for the invitations bound to them. */
 interface SettledStrands {
-	refused: Set<string>;
+	moved: Set<string>;
 	failed: Set<string>;
 }
 
 function settledStrands(report: StrandMoveReport): SettledStrands {
 	return {
-		refused: new Set(report.refused.map((entry) => entry.strandId)),
+		moved: new Set(report.moved),
 		failed: new Set(report.failed.filter((entry) => entry.kind === 'strand').map((entry) => entry.id))
 	};
 }
@@ -401,10 +401,11 @@ async function seatJoinedStrand(
  * whose peer id and relay address do not change with the party, so the row here is what keeps
  * an envelope already handed out redeemable. Dropped and counted: an invitation with a
  * `ValidationUrl` (its sign-offs verify against a `ValidationKey` row, and which keys may
- * validate here is this party's owners' decision) and one bound to a strand refused above (a
- * redeemer must never consent into a strand this party does not host). Dropped silently: one
- * that expired since the export. One bound to a strand that failed this time is left for the
- * retry that seats the strand.
+ * validate here is this party's owners' decision) and one bound to a strand not seated here,
+ * whether refused above or no longer held by the exporting party (`unpublishStrand` leaves a
+ * bound row behind): the formation recorder would refuse every redemption as a missing host.
+ * Dropped silently: one that expired since the export. One bound to a strand that failed this
+ * time is left for the retry that seats the strand.
  */
 async function adoptFormationInvite(
 	node: CadreNode,
@@ -414,12 +415,15 @@ async function adoptFormationInvite(
 	report: StrandMoveReport,
 	now: number
 ): Promise<void> {
-	const bound = invite.strandId !== null;
-	if (invite.validationUrl !== null || (bound && settled.refused.has(invite.strandId!))) {
+	if (invite.strandId !== null && settled.failed.has(invite.strandId)) {
+		return;
+	}
+	const hostMissing = invite.strandId !== null && !settled.moved.has(invite.strandId);
+	if (invite.validationUrl !== null || hostMissing) {
 		report.invitationsDropped += 1;
 		return;
 	}
-	if (isExpired(invite.expiresAtMs, now) || (bound && settled.failed.has(invite.strandId!))) {
+	if (isExpired(invite.expiresAtMs, now)) {
 		return;
 	}
 	try {
@@ -448,7 +452,9 @@ async function adoptFormationInvite(
  * adoption seated it or the user asked for the same invitation from here. Its outcome is written
  * only when the live request is still pending and is this bundle's own (every request column
  * equal), which closes the crash window between the request insert and its outcome insert
- * without touching a request this party made on its own.
+ * without touching a request this party made on its own. A `joined` outcome whose strand was
+ * refused above moves too: its invitation is staged like any other, and the reconciler, finding
+ * the party's member row already seated, burns it unspent or drops it dead.
  *
  * NOTE: if party-private app tables land in the control database
  * (tickets/blocked/decide-party-private-labels-and-app-state.md), they must move with the
