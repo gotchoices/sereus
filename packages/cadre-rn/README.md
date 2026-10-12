@@ -343,6 +343,13 @@ At prebuild the plugin sets `android:usesCleartextTraffic="true"` on the `<appli
 
 The plugin resolves `expo/config-plugins` from the app's project root when it runs, so the kit installs nothing from Expo. Like any manifest change it takes effect in the next native build.
 
+A bare React Native app, with no prebuild, adds the attribute by hand:
+
+```xml
+<!-- android/app/src/main/AndroidManifest.xml -->
+<application android:usesCleartextTraffic="true" ...>
+```
+
 ### `appLinks`: links between Sereus apps
 
 The native settings [App links](#app-links-serfabcadre-rnapp-link) needs. Without the option, the plugin does only the above.
@@ -359,13 +366,6 @@ The native settings [App links](#app-links-serfabcadre-rnapp-link) needs. Withou
 - **A misspelt option fails the prebuild**, as does an extra app without a name or with a scheme that is not a lowercase URL scheme, rather than leaving the app without links.
 
 A bare React Native app adds the intent filter and the `<queries>` entry to `AndroidManifest.xml`, and the schemes to `Info.plist`, by hand.
-
-A bare React Native app, with no prebuild, adds the attribute by hand:
-
-```xml
-<!-- android/app/src/main/AndroidManifest.xml -->
-<application android:usesCleartextTraffic="true" ...>
-```
 
 ## `@serfab/cadre-rn/noise-crypto`
 

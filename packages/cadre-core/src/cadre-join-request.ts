@@ -43,7 +43,11 @@ const REFUSED_REPLY_SCHEMES: ReadonlySet<string> = new Set([
 	'javascript', 'about', 'intent', 'mailto', 'tel', 'sms',
 ]);
 
-/** The form of a reply's scheme: lowercase, as an app's custom URL scheme is declared. */
+/**
+ * The form of a reply's scheme: lowercase, as an app's custom URL scheme is declared.
+ * NOTE: `@serfab/cadre-rn`'s CommonJS config plugin keeps a copy (`APP_SCHEME`) to check extra
+ * apps' schemes; change it with this one.
+ */
 const CADRE_JOIN_REPLY_SCHEME = /^[a-z][a-z0-9+.-]{0,63}$/;
 
 /** The form of a reply's nonce: base64url, long enough that it cannot be guessed. */

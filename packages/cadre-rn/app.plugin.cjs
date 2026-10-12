@@ -72,7 +72,11 @@ const JOIN_REQUEST_SCHEME = 'sereus-join-request';
 /** iOS reads at most this many LSApplicationQueriesSchemes entries. */
 const IOS_MAX_QUERIED_SCHEMES = 50;
 
-/** The form of an app's own URL scheme, as `@serfab/cadre-core` checks a join request's reply scheme. */
+/**
+ * The form of an app's own URL scheme, as `@serfab/cadre-core` checks a join request's reply scheme.
+ * NOTE: a copy of cadre-core's `CADRE_JOIN_REPLY_SCHEME`, with no test keeping the two equal; if
+ * cadre-core's form changes, change this one with it.
+ */
 const APP_SCHEME = /^[a-z][a-z0-9+.-]{0,63}$/;
 
 const VIEW_ACTION = 'android.intent.action.VIEW';
