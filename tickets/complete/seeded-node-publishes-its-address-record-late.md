@@ -48,3 +48,33 @@ Log lines now read `reconcileControlCohort: first self-record publish: <outcome>
 - **Removed node that never saw its own row live.** Such a node does not learn it was removed, and pays one `CadrePeer` read on every connected pass. It is in the method's docstring.
 - **Incidental trigger.** Applying a seed fires the node's `self:peer:update` republish, because the seed carries the node's own addresses. It is harmless and now written down in the provider scenario; it is not relied on.
 - **Ticket's "normal parallel suite load".** The integration suite runs files sequentially (`fileParallelism: false`), so batches ran sequentially. Load was tested by 6-way parallel runs of `control-delete-while-alone-convergence`.
+
+## Review findings
+
+Reviewed the diff of `ticket(implement): seeded-node-publishes-its-address-record-late` before the handoff text.
+
+**Checked, no change needed:**
+
+- **Stop conditions of `publishFirstSelfRecord`.** `lastSelfRecordPublishAt` is reset per session in `stop()`, so a restarted node retries again; `removal` stays set once learned, which is correct (a removed node has nothing to publish). The connected-only gate uses `getControlConnectionCount()`, the same proxy the reap step and `committedAlone()` use, so it counts a relay connection too; that is consistent with the rest of the pass and is that method's documented approximation, not a new gap.
+- **`publishSelfRecord` reorder.** The read now precedes `collectSelfAddrs`; the `!existing && ownerService` branch is only a type narrowing (the earlier return already guarantees `ownerService` there). Both publishing paths still stamp `noteSelfRecordPublished`; a `skipped` publish still does not.
+- **Repeated cost.** A node whose owner key is configured but not enrolled will see `insertSelfPeerRecord` throw on every connected pass until enrolled (one read, an address collection, a debug log line per 15 s). Rare (an owner device whose `OwnerKey` row has not arrived) and cheap; not worth a guard.
+- **Concurrency.** The reconcile-pass publish goes through `registerSelf`'s single-flight guard, so it cannot race the boot one-shot, the heartbeat or an address-change republish into a duplicate insert.
+- **Docs.** Read `docs/architecture.md` Cadre Node item 4, the Phone Adds Provider Drone bullet and the claim paragraph, and `docs/testing.md`'s new section and provider bullet: all match the code. No remaining reference to the old method name outside this ticket. The "Fifth trigger" section in `tickets/blocked/forked-control-collection-sync-livelocks.md` records the one-shot's remaining write-while-alone accurately.
+- **Tests.** No unit test added or cut: the change is one boolean guard plus a rename, and the provider scenario's step 5 is the reproduction. The `control-delete-while-alone-convergence` wait is a test-side fix for a real background write, and `docs/testing.md` explains the rule it follows.
+
+**Fixed inline (minor):**
+
+- `node-claim-by-phone.integration.ts` header claimed the reconcile pass was "most of step 3's running time" and that step 3 times out without it. In this review's run step 3 took 2.3 s, so an earlier publish landed first. Reworded: the reconcile pass is the publish step 3 can count on; earlier ones often land first but not every time.
+- `provider-drone-phone-requester.integration.ts`: the residual race the handoff described (the requester's 2 s pass dialling between `addDrone` and `applySeed`, letting step 5 pass on the seed's republish) existed only in the ticket. Parked as a `NOTE:` tripwire on `SEED_AFTER_RUNNING_S`, with what to do if the check must become exact.
+
+**Major / tickets filed:** none. The background-write-torn-by-stop hazard the handoff found belongs to the class already tracked in `tickets/blocked/forked-control-collection-sync-livelocks` (recorded there as the fifth trigger).
+
+**Tripwires:** one, the provider-scenario residual race above (`NOTE:` on `SEED_AFTER_RUNNING_S`).
+
+**Pre-existing failures:** the two cadre-core spec failures the handoff reported were fixed by the triage commit (`tess: triage pre-existing test failure`); the two integration failures (`control-write-degraded-cohort-member`, `joiner-first-commit-over-slow-relay` arm 5) are tracked in `tickets/.pre-existing-known.md` and the board. Nothing new written to `.pre-existing-error.md`.
+
+**Validation run in this review:**
+
+- `yarn lint`: clean. `@serfab/cadre-core` and `@serfab/integration-tests` typecheck: clean.
+- `@serfab/cadre-core` unit tests: 167 files, 2454 passed, 1 skipped.
+- Integration: `provider-drone-phone-requester` (step 5 in 10.6 s), `cadre-invite-any-member`, `control-delete-while-alone-convergence`, `node-claim-by-phone`: 4 files, 15 tests, all green. The full integration suite was not re-run; the implement stage ran all 71 files.

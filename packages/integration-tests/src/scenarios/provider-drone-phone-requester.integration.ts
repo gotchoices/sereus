@@ -84,6 +84,11 @@ const PUBLIC_HOST = 'localhost';
  * row replicate in first. The seed then publishes the record by accident — it carries the node's
  * own addresses, and merging them into its own peer store fires the node's `self:peer:update`
  * republish — and step 5 would pass without the reconcile-pass publish it exists to check.
+ *
+ * NOTE: the requester's 2 s pass can still dial in the moment between `addDrone` and
+ * `applySeed`, and step 5 can then pass on the seed's republish instead. It cannot fail because of
+ * that, only stop proving the reconcile-pass publish for one run; if this check ever has to be
+ * exact, have the node report which trigger published (e.g. on `/status`) and assert on it.
  */
 const SEED_AFTER_RUNNING_S = 5;
 

@@ -46,10 +46,11 @@
  * the same workdir starts from that record.
  *
  * Step 3's node-to-claimant half rests on the claimed node publishing its own address record
- * once the row its owner wrote after the claim reaches it by replication. Every node does that
- * on its next control-cohort reconcile pass until its first publish lands
- * (`publishFirstSelfRecord` in cadre-core), every 15 s by default, which is most of step 3's
- * running time. Without that method step 3 times out here, the record waiting for the
+ * once the row its owner wrote after the claim reaches it by replication. The publish step 3
+ * can count on is the node's control-cohort reconcile pass, every 15 s by default, which tries
+ * until its first publish lands (`publishFirstSelfRecord` in cadre-core). An earlier publish
+ * often lands first when the row is already there (step 3 has taken about 2 s), but none of
+ * those finds it every time; without the reconcile-pass publish the record can wait for the
  * 7.5-minute heartbeat.
  *
  * Out of scope: reachability beyond loopback (`cadre-host-node-reachability`), strand
