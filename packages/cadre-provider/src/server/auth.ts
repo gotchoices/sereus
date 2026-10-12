@@ -71,10 +71,13 @@ export function hashApiKey(key: string): string {
 
 /**
  * The routes that need no bearer: health, and what a browser or an app reaches before it has
- * a token (the descriptor and the sign-in endpoints). Matched by exact path.
+ * a token (the descriptor, the plan list it names, and the sign-in endpoints). Matched by
+ * exact path.
  */
 function publicPaths(basePath: string): ReadonlySet<string> {
-  return new Set(['/status', '/health', '/descriptor', '/oauth/authorize', '/oauth/token'].map((route) => `${basePath}${route}`));
+  return new Set(
+    ['/status', '/health', '/descriptor', '/billing/plans', '/oauth/authorize', '/oauth/token'].map((route) => `${basePath}${route}`),
+  );
 }
 
 /** The credential in an `Authorization` header, with or without the `Bearer` scheme. */
@@ -124,16 +127,28 @@ async function oauthIdentity(ctx: AuthContext, token: string): Promise<CustomerI
 }
 
 /**
- * Refuse at start a configuration under which `GET /oauth/authorize` could never resolve a
- * customer: the built-in endpoints are on, but there is neither an `authorizeCustomer` hook
- * nor the dev consent page. Every sign-in would fail at request time otherwise.
+ * Refuse at start a configuration under which the built-in endpoints have no single way to
+ * resolve a customer at `GET /oauth/authorize`. Neither an `authorizeCustomer` hook nor the
+ * dev consent page: every sign-in would fail at request time. Both: the page's `POST` would
+ * still issue a code to anyone for any customer id beside the hook, a sign-in the operator's
+ * account system never sees, so a dev flag left on in production fails loudly here instead.
  */
-function assertCustomerResolvable(config: AuthConfig, hooks: AuthHooks | undefined): void {
-  if (config.mode === 'oauth' && config.oauth && !hooks?.authorizeCustomer && !config.oauth.devConsentPage) {
+function assertOneCustomerResolver(config: AuthConfig, hooks: AuthHooks | undefined): void {
+  if (config.mode !== 'oauth' || !config.oauth) return;
+  const hook = hooks?.authorizeCustomer !== undefined;
+  const page = config.oauth.devConsentPage === true;
+  if (!hook && !page) {
     throw new Error(
       'auth.oauth is configured but nothing can resolve a customer at GET /oauth/authorize: ' +
         'pass an authorizeCustomer hook to createProviderServer, or set auth.oauth.devConsentPage: true ' +
         '(with auth.allowInsecureNoAuth: true) for development.'
+    );
+  }
+  if (hook && page) {
+    throw new Error(
+      'auth.oauth.devConsentPage is true and an authorizeCustomer hook is installed: the page would ' +
+        'sign anyone in as any customer beside the hook. Unset auth.oauth.devConsentPage ' +
+        '(or PROVIDER_OAUTH_DEV_CONSENT_PAGE) for a provider with an account system.'
     );
   }
 }
@@ -145,7 +160,7 @@ export function registerAuth(app: FastifyInstance, ctx: AuthContext): void {
   // Defense in depth: programmatic construction that bypasses loadConfig must
   // not silently go fully open in 'none' mode without an explicit opt-in.
   validateAuthConfig(config);
-  assertCustomerResolvable(config, ctx.hooks);
+  assertOneCustomerResolver(config, ctx.hooks);
 
   const open = publicPaths(basePath);
 

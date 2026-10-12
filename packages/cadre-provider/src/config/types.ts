@@ -80,7 +80,8 @@ export interface OAuthConfig {
   /**
    * Serve the built-in consent form in place of an `authorizeCustomer` hook: anyone who
    * opens the authorize URL may type a customer id and get a token for it. Requires
-   * `allowInsecureNoAuth: true`, the same acknowledgement mode `none` needs.
+   * `allowInsecureNoAuth: true`, the same acknowledgement mode `none` needs, and refuses to
+   * start beside a hook, which the form would bypass.
    */
   devConsentPage?: boolean;
 }

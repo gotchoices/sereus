@@ -145,8 +145,20 @@ interface RedirectedFault {
   description: string;
 }
 
-/** The scopes to grant, or the fault to redirect with, once the client and redirect URI are known. */
-function checkAuthorizeRequest(client: OAuthClientConfig, params: AuthorizeParams): { scopes: string[] } | RedirectedFault {
+/** The data every issued code is minted from. */
+interface Grant {
+  client: OAuthClientConfig;
+  redirectUri: string;
+  scopes: string[];
+  codeChallenge: string;
+  state: string;
+}
+
+/** What the request itself contributes to the grant, or the fault to redirect with, once the client and redirect URI are known. */
+function checkAuthorizeRequest(
+  client: OAuthClientConfig,
+  params: AuthorizeParams,
+): Pick<Grant, 'scopes' | 'codeChallenge' | 'state'> | RedirectedFault {
   if (params.responseType !== 'code') {
     return { error: 'unsupported_response_type', description: 'response_type must be code' };
   }
@@ -167,7 +179,19 @@ function checkAuthorizeRequest(client: OAuthClientConfig, params: AuthorizeParam
   if (refused !== undefined) {
     return { error: 'invalid_scope', description: `scope ${refused} is unknown or not allowed for this client` };
   }
-  return { scopes: [...new Set(scopes)] };
+  return { scopes: [...new Set(scopes)], codeChallenge: params.codeChallenge, state: params.state };
+}
+
+/** How an authorize request is refused: on a page (the client or redirect URI is wrong) or by redirect. */
+type AuthorizeRefusal = { problem: string } | { redirectUri: string; fault: RedirectedFault; state?: string };
+
+/** The grant an authorize request (the `GET` query or the consent form's `POST`) asks for, or how to refuse it. */
+function resolveGrant(clients: OAuthClientConfig[], params: AuthorizeParams): { grant: Grant } | AuthorizeRefusal {
+  const target = resolveClient(clients, params);
+  if ('problem' in target) return target;
+  const checked = checkAuthorizeRequest(target.client, params);
+  if ('error' in checked) return { redirectUri: target.redirectUri, fault: checked, state: params.state };
+  return { grant: { ...target, ...checked } };
 }
 
 /** `uri` with `params` added to its query; a custom scheme (`app://cb`) is appended to like any other. */
@@ -188,23 +212,20 @@ function redirectWithFault(reply: FastifyReply, redirectUri: string, fault: Redi
   return reply.redirect(withQuery(redirectUri, { error: fault.error, error_description: fault.description, state }), 302);
 }
 
+function refuse(reply: FastifyReply, refusal: AuthorizeRefusal): FastifyReply {
+  return 'problem' in refusal
+    ? sendErrorPage(reply, 400, refusal.problem)
+    : redirectWithFault(reply, refusal.redirectUri, refusal.fault, refusal.state);
+}
+
 /** 32 random bytes as base64url: a code, an access token or a refresh token. */
 function randomToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
-/** The data every issued code is minted from. */
-interface Grant {
-  client: OAuthClientConfig;
-  redirectUri: string;
-  scopes: string[];
-  codeChallenge: string;
-  state: string;
-}
-
 /**
  * Mint a code for `customerId`, record it hashed, and send the browser back to the app with
- * it. A customer with no billing record gets one here, so `GET /billing/status` answers for
+ * it. A customer with no billing record gets one first, so `GET /billing/status` answers for
  * every signed-in customer and `canCreateContainer` applies the chosen plan from the first
  * create.
  */
@@ -215,6 +236,9 @@ async function issueCode(
   customerId: string,
   planId: string | undefined,
 ): Promise<FastifyReply> {
+  if (!(await ctx.billingService.getCustomerBilling(customerId))) {
+    await ctx.billingService.initializeCustomer(customerId, planId);
+  }
   const code = randomToken();
   await ctx.store.saveAuthorizationCode({
     codeHash: hashApiKey(code),
@@ -225,9 +249,6 @@ async function issueCode(
     redirectUri: grant.redirectUri,
     expiresAt: new Date(Date.now() + AUTHORIZATION_CODE_TTL_MS),
   });
-  if (!(await ctx.billingService.getCustomerBilling(customerId))) {
-    await ctx.billingService.initializeCustomer(customerId, planId);
-  }
   log('Issued code to client %s for customer %s', grant.client.clientId, customerId);
   return reply.redirect(withQuery(grant.redirectUri, { code, state: grant.state }), 302);
 }
@@ -340,15 +361,13 @@ export function registerOAuthRoutes(app: FastifyInstance, ctx: OAuthRouteContext
   app.get(authorizePath, async (request, reply) => {
     const query = recordOf(request.query);
     const params = readAuthorizeParams(query);
-    const target = resolveClient(oauth.clients, params);
-    if ('problem' in target) return sendErrorPage(reply, 400, target.problem);
-    const checked = checkAuthorizeRequest(target.client, params);
-    if ('error' in checked) return redirectWithFault(reply, target.redirectUri, checked, params.state);
-    const grant: Grant = { ...target, scopes: checked.scopes, codeChallenge: params.codeChallenge!, state: params.state! };
+    const resolved = resolveGrant(oauth.clients, params);
+    if (!('grant' in resolved)) return refuse(reply, resolved);
+    const { grant } = resolved;
 
     if (hooks?.authorizeCustomer) {
       const decision = await hooks.authorizeCustomer({
-        clientId: target.client.clientId,
+        clientId: grant.client.clientId,
         scopes: grant.scopes,
         headers: request.headers,
         query: stringEntries(query),
@@ -358,7 +377,7 @@ export function registerOAuthRoutes(app: FastifyInstance, ctx: OAuthRouteContext
     if (oauth.devConsentPage) {
       return reply.type('text/html; charset=utf-8').send(renderConsentPage({
         action: authorizePath,
-        clientId: target.client.clientId,
+        clientId: grant.client.clientId,
         scopes: grant.scopes,
         plans: ctx.billingService.listPlans(),
         params: wireParams(params),
@@ -374,12 +393,9 @@ export function registerOAuthRoutes(app: FastifyInstance, ctx: OAuthRouteContext
   if (oauth.devConsentPage) {
     app.post(authorizePath, async (request, reply) => {
       const body = recordOf(request.body);
-      const params = readAuthorizeParams(body);
-      const target = resolveClient(oauth.clients, params);
-      if ('problem' in target) return sendErrorPage(reply, 400, target.problem);
-      const checked = checkAuthorizeRequest(target.client, params);
-      if ('error' in checked) return redirectWithFault(reply, target.redirectUri, checked, params.state);
-      const grant: Grant = { ...target, scopes: checked.scopes, codeChallenge: params.codeChallenge!, state: params.state! };
+      const resolved = resolveGrant(oauth.clients, readAuthorizeParams(body));
+      if (!('grant' in resolved)) return refuse(reply, resolved);
+      const { grant } = resolved;
 
       if (stringParam(body, 'decision') !== 'approve') {
         return applyDecision(ctx, reply, grant, { deny: 'The user denied the request' });

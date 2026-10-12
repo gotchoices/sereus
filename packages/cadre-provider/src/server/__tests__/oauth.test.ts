@@ -311,8 +311,12 @@ describe('OAuth 2 authorization code with PKCE', () => {
     await server.stop();
   });
 
-  it('refuses to start with auth.oauth but no way to resolve a customer', async () => {
+  // One resolver, not none and not both: with both, the page's POST would sign anyone in beside the hook.
+  it('refuses to start with auth.oauth and no way to resolve a customer, or two', async () => {
     await expect(makeServer({ hooks: undefined })).rejects.toThrow(/authorizeCustomer/);
+    await expect(makeServer({
+      auth: { mode: 'oauth', allowInsecureNoAuth: true, oauth: { clients: [CLIENT], devConsentPage: true } },
+    })).rejects.toThrow(/devConsentPage is true and an authorizeCustomer hook/);
   });
 });
 
@@ -336,6 +340,10 @@ describe('GET /descriptor', () => {
       termsUrl: 'https://acme.example/terms',
       regions: ['eu-west'],
     });
+
+    // The store screen reads the plan list before the customer has signed in.
+    const plans = await server.app.inject({ method: 'GET', url: '/api/v1/billing/plans' });
+    expect(plans.statusCode).toBe(200);
 
     await server.stop();
   });

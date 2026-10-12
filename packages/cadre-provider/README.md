@@ -284,8 +284,9 @@ same authorize URL afterwards. `{ deny }` sends the app `error=access_denied` wi
 With no hook and `devConsentPage: true` the provider serves a form instead: whoever opens the
 authorize URL types a customer id, picks a plan and approves. Anyone can sign in as any
 customer, so it requires `allowInsecureNoAuth: true`, the acknowledgement `mode: none` needs;
-without it `start` and `check` refuse. With neither a hook nor the page the provider refuses to
-start, since no sign-in could ever succeed. For local development only.
+without it `start` and `check` refuse. The provider refuses to start with neither a hook nor the
+page, since no sign-in could ever succeed, and with both, since the page's form would sign anyone
+in beside the hook. For local development only.
 
 ### Endpoints
 
