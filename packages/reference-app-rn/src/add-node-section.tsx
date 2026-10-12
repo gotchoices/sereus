@@ -17,7 +17,7 @@ import type { NodeClaimPayload } from '@serfab/cadre-core';
 import { useCadre } from './cadre-context';
 import { CodeScanner } from './code-scanner';
 import { describeClaimFailure, NODE_CODE_SCHEME, nodeReach, ownerFingerprint, readNodeCode, type NodeReach } from './node-claim';
-import { Btn, controlStyles, Fact, LabelledInput, Section, shortPeerId } from './settings-controls';
+import { Btn, controlStyles, Fact, LabelledInput, Section, shortPeerId, useLaterThan } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 /**
@@ -198,18 +198,6 @@ function ApprovalPrompt({ payload, partyId, ownerPublicKey, onApprove, onCancel 
 
 function isNodeCode(text: string): boolean {
 	return text.trim().startsWith(NODE_CODE_SCHEME);
-}
-
-/** True once `active` has stayed true for `ms`; false again as soon as it is not. */
-function useLaterThan(active: boolean, ms: number): boolean {
-	const [late, setLate] = useState(false);
-	useEffect(() => {
-		setLate(false);
-		if (!active) return;
-		const timer = setTimeout(() => setLate(true), ms);
-		return () => clearTimeout(timer);
-	}, [active, ms]);
-	return late;
 }
 
 const styles = StyleSheet.create({

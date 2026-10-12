@@ -202,6 +202,8 @@ vi.mock('../../src/cadre-phone', () => ({
   createOpenInvitation: vi.fn(),
   publishFormationInvite: vi.fn(),
   formStrand: vi.fn(),
+  // The rental record store; nothing here rents, so it is never read.
+  rentals: { list: vi.fn(), add: vi.fn(), update: vi.fn(), remove: vi.fn() },
 }));
 
 vi.mock('../../src/push-wake-native', () => ({
@@ -223,6 +225,8 @@ vi.mock('../../src/chat-strand', () => ({
 
 vi.mock('@serfab/cadre-core', () => ({
   decodeCadreInvitation: vi.fn(),
+  rentNode: vi.fn(),
+  finishRental: vi.fn(),
 }));
 
 // ── Harness ───────────────────────────────────────────────────────────────────

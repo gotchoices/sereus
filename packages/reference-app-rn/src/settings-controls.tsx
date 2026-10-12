@@ -3,8 +3,12 @@
  * share. Here rather than in `app/settings.tsx` because every file under `app/` is a route.
  */
 
+import { useEffect, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { TEST_IDS } from './test-ids';
+
+// Defined in `machines.ts`, which has no React import, so the Node-run modules can shorten a peer id too.
+export { shortPeerId } from './machines';
 
 const OWNER_SWITCH_LINE = 'An owner can add and remove devices and apps and approve everything in this cadre. Turn this off for an app that should only take part.';
 
@@ -64,20 +68,57 @@ export function OwnerSwitch({ value, onChange, testID, explained = true }: { val
 	);
 }
 
-/** The confirmation before a cadre invitation is withdrawn; the system back button cancels. */
-export function WithdrawPrompt({ open, onConfirm, onCancel }: { open: boolean; onConfirm: () => void; onCancel: () => void }) {
+/** A yes-or-no confirmation before something that cannot be undone; the system back button cancels. */
+export function ConfirmPrompt({ open, title, text, confirmLabel, onConfirm, onCancel, confirmTestID, cancelTestID }: {
+	open: boolean;
+	title: string;
+	text: string;
+	confirmLabel: string;
+	onConfirm: () => void;
+	onCancel: () => void;
+	confirmTestID: string;
+	cancelTestID: string;
+}) {
 	return (
 		<Modal visible={open} transparent animationType="fade" onRequestClose={onCancel}>
 			<View style={controlStyles.modalOverlay}>
 				<View style={controlStyles.modalBox}>
-					<Text style={controlStyles.modalTitle}>Withdraw this invitation?</Text>
-					<Text style={controlStyles.promptText}>Nobody can join with it afterwards.</Text>
-					<Btn label="Withdraw" onPress={onConfirm} color="#f44336" testID={TEST_IDS.settings.confirmWithdrawBtn} />
-					<Btn label="Cancel" onPress={onCancel} color="#444" testID={TEST_IDS.settings.cancelWithdrawBtn} />
+					<Text style={controlStyles.modalTitle}>{title}</Text>
+					<Text style={controlStyles.promptText}>{text}</Text>
+					<Btn label={confirmLabel} onPress={onConfirm} color="#f44336" testID={confirmTestID} />
+					<Btn label="Cancel" onPress={onCancel} color="#444" testID={cancelTestID} />
 				</View>
 			</View>
 		</Modal>
 	);
+}
+
+/** The confirmation before a cadre invitation is withdrawn. */
+export function WithdrawPrompt({ open, onConfirm, onCancel }: { open: boolean; onConfirm: () => void; onCancel: () => void }) {
+	return (
+		<ConfirmPrompt
+			open={open}
+			title="Withdraw this invitation?"
+			text="Nobody can join with it afterwards."
+			confirmLabel="Withdraw"
+			onConfirm={onConfirm}
+			onCancel={onCancel}
+			confirmTestID={TEST_IDS.settings.confirmWithdrawBtn}
+			cancelTestID={TEST_IDS.settings.cancelWithdrawBtn}
+		/>
+	);
+}
+
+/** True once `active` has stayed true for `ms`; false again as soon as it is not. For a slow hint under a progress line. */
+export function useLaterThan(active: boolean, ms: number): boolean {
+	const [late, setLate] = useState(false);
+	useEffect(() => {
+		setLate(false);
+		if (!active) return;
+		const timer = setTimeout(() => setLate(true), ms);
+		return () => clearTimeout(timer);
+	}, [active, ms]);
+	return late;
 }
 
 /** What an alert shows for a caught error. */
@@ -92,11 +133,6 @@ export function validUntilText(expiresAtMs: number | null): string {
 	const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 	if (at.toDateString() === new Date().toDateString()) return `Valid until ${time}`;
 	return `Valid until ${at.toLocaleDateString([], { weekday: 'short' })} ${time}`;
-}
-
-/** A peer id short enough for one line: its first 12 and last 6 characters. */
-export function shortPeerId(peerId: string): string {
-	return `${peerId.slice(0, 12)}…${peerId.slice(-6)}`;
 }
 
 export const controlStyles = StyleSheet.create({

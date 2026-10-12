@@ -4,7 +4,8 @@
  * the cold-start bootstrap-peer store (`PersistentBootstrapPeerStore`), the
  * enrolled-machine count (`PersistentEnrolledMachineStore`) and the strand network
  * state (`PersistentStrandNetworkStateStore`), all from `@serfab/cadre-core` — and the
- * key each record is filed under. The app chooses the databases and opens the
+ * key each record is filed under, plus the key of the kit's own provider-rental record
+ * ({@link rentalsKvKey}). The app chooses the databases and opens the
  * stores; `createPhoneNode` (`./phone-node`) does both for an app that uses it.
  *
  * The anchor gets a DIFFERENT backend from the rest, deliberately — it has
@@ -105,6 +106,17 @@ export function enrolledMachinesKvKey(partyId: string): string {
  */
 export function strandNetworkKvKey(partyId: string): string {
 	return `strand-network.${partyId}`;
+}
+
+/**
+ * `LevelDBKVStore` key for a party's provider rentals: the containers an app rented from a
+ * hosting provider for that party (`rentalStore` in `@serfab/cadre-rn/provider`). Same
+ * database and shape as {@link bootstrapPeersKvKey}, its own key. Not trust-bearing: the
+ * record only says which container to ask the provider about, and the provider's answer,
+ * not the record, is what the app shows.
+ */
+export function rentalsKvKey(partyId: string): string {
+	return `rentals.${partyId}`;
 }
 
 /**

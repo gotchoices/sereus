@@ -8,6 +8,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 |---|---|
 | `@serfab/cadre-rn/phone-node` | `createPhoneNode(platform)`: builds, starts, stops and rebuilds the phone's `CadreNode` the prescribed way, plus `attachStrandWhenWritable` and `retryAfterRestart` |
 | `@serfab/cadre-rn/app-link` | The links two Sereus apps on one phone open each other with to hand over a join request and its answer: link building and parsing, the response codec, the installed-app lookup and `LinkRequestStore` (see [App links](#app-links-serfabcadre-rnapp-link)) |
+| `@serfab/cadre-rn/provider` | Renting a node from a hosting provider: `signInWithProvider` through the system browser, `providerTokensSlot` for the tokens in the secure store, and `rentalStore`, the app's record of its rentals (see [Provider](#provider-serfabcadre-rnprovider)) |
 | `@serfab/cadre-rn/lifecycle` | `createBackgroundRunner`: hibernates the node's strands when the app goes to the background and resumes, bounded, when it returns; `phoneNodeLifecycle(phone)` connects it to a phone node |
 | `@serfab/cadre-rn/key-store` | `SecureStoreKeyStore`: cadre-core's `KeyStore` over the platform secure store, so the node identity lives in the iOS Keychain / Android Keystore rather than plaintext storage |
 | `@serfab/cadre-rn/node-local` | `secureStoreSlot`, `kvStoreSlot` and the record keys: the `DurableSlot`s cadre-core's node-local stores (trusted owners, bootstrap peers, enrolled machines, strand network state) persist through |
@@ -286,6 +287,43 @@ Every Sereus app needs a URL scheme of its own, `expo.scheme`, which Expo regist
 ### What the app must install
 
 `@serfab/cadre-core`, for the request codec. Natively, the config plugin's [`appLinks` option](#applinks-links-between-sereus-apps), which takes effect in the next native build.
+
+## Provider (`@serfab/cadre-rn/provider`)
+
+cadre-core's `provider/` has everything an app needs to rent a node from a hosting provider except the three platform pieces: opening the system browser for the sign-in, keeping the tokens, and remembering which containers the app rented ([docs/architecture.md → Renting a node from an app](../../docs/architecture.md#renting-a-node-from-an-app)). This subpath is those three. It imports nothing from React Native or Expo: the app passes `expo-web-browser`'s `openAuthSessionAsync` and its secure store in, so it runs under a Node test.
+
+```ts
+import * as SecureStore from 'expo-secure-store';
+import * as WebBrowser from 'expo-web-browser';
+import { createProviderClient, createTokenSource, fetchProviderDescriptor, rentNode } from '@serfab/cadre-core';
+import { providerTokensSlot, rentalStore, signInWithProvider } from '@serfab/cadre-rn/provider';
+
+const descriptor = await fetchProviderDescriptor('https://nodes.acme.example/api/v1/descriptor');
+const slot = providerTokensSlot(SecureStore, descriptor.id);
+const rentals = rentalStore(phone.nodeLocalRecords());   // one per app
+
+let tokens = await slot.load();
+if (!tokens) {
+	const signedIn = await signInWithProvider({ descriptor, clientId: 'my-app', redirectUri: 'my-app://provider-auth', openAuthSession: WebBrowser.openAuthSessionAsync });
+	if (signedIn === 'cancelled') return;              // the user closed the browser: nothing was created
+	tokens = signedIn;
+	await slot.save(tokens);
+}
+const client = createProviderClient({
+	apiBaseUrl: descriptor.apiBaseUrl,
+	tokens: createTokenSource({ descriptor, clientId: 'my-app', tokens, persist: (next) => slot.save(next) }),
+});
+const result = await rentNode(node, client);        // the app records the container id for `finishRental` (below)
+```
+
+- **`signInWithProvider({ descriptor, clientId, redirectUri, openAuthSession, scopes?, fetch? })`** runs the OAuth 2 + PKCE handshake cadre-core's `provider/oauth.ts` defines: it mints the verifier and the state, opens `authorizationUrl` through `openAuthSession(url, redirectUri)`, reads the redirect and exchanges the code, returning `ProviderTokens`. `'cancelled'` when the browser closed without a redirect. A redirect carrying the provider's refusal (`access_denied`, `invalid_scope`), one whose state is not this sign-in's, and a refused exchange throw `ProviderAuthError` with the code. `openAuthSession` has the signature of `openAuthSessionAsync`; a bare React Native app passes an adapter over its own in-app browser that resolves `{ type: 'success', url }` on the redirect and anything else on a close. The redirect URI must be one the app registered with the provider, spelled exactly as registered; the app's `+native-intent` (Expo Router) should rewrite that path to a plain screen, since the browser session owns the URL and the single-use code must not stay in navigation state.
+- **`providerTokensSlot(secureStore, providerId, options?)`** keeps one provider's pair in the secure store under `sereus.provider-tokens.<base64url provider id>`: `load()` (`undefined` when none is stored or the record is unreadable as one, logged; a denied read throws), `save(tokens)` (the sign-in's pair, and each one `createTokenSource`'s `persist` rotates to) and `clear()` for sign-out. The tokens are credentials for the customer's account, so they sit where the identity key does; the slot must be ungated, as `secureStoreSlot` must.
+- **`rentalStore(kv)`** over `PhoneNode.nodeLocalRecords()` is the app's record of its rentals, by party, under `rentalsKvKey(partyId)` (`/node-local`): `Rental = { providerId, providerName, containerId, join, peerId?, createdAt, finished }`, with `list(partyId)`, `add(partyId, rental)`, `update(partyId, containerId, { peerId?, finished? })` and `remove(partyId, containerId)`, run one at a time. cadre-core's `rentNode` persists nothing, so an app records the container when the provider creates it (`finished: false`), marks it finished when `rentNode` or `finishRental` returns, and on its next launch offers to finish any record still unfinished. A record that cannot be read reads as no rentals, logged: the containers still exist on the provider's own pages.
+- **`PhoneNode.nodeLocalRecords()`** (`/phone-node`) is the node-local database as a key-value store, for this and any other record an app keeps beside the saved start; it works with no node running.
+
+### What the app must install
+
+`@serfab/cadre-core`, and `expo-web-browser` (or the bare app's own in-app browser) for the sign-in; the secure store is the one the key store uses.
 
 ## Key store and node-local records
 

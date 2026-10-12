@@ -5337,6 +5337,7 @@ __metadata:
     expo-secure-store: "npm:~14.2.4"
     expo-status-bar: "npm:~2.2.0"
     expo-task-manager: "npm:~13.1.6"
+    expo-web-browser: "npm:~14.2.0"
     qrcode: "npm:^1.5.4"
     react: "npm:19.0.0"
     react-native: "npm:0.79.6"
@@ -9554,6 +9555,16 @@ __metadata:
   peerDependencies:
     expo: "*"
   checksum: 10c0/ba63925e4a9e029bf5b2cbd79351d922723de7f481e3221ccb984dcad98acf93362840d9421667ddbf9e3312c37538a24f18d0c0cc85a165adaf234a145674bb
+  languageName: node
+  linkType: hard
+
+"expo-web-browser@npm:~14.2.0":
+  version: 14.2.0
+  resolution: "expo-web-browser@npm:14.2.0"
+  peerDependencies:
+    expo: "*"
+    react-native: "*"
+  checksum: 10c0/82cc8ff11dd680adca3e6a39da89320ef6cb11029a2d0a941419121f83255871a9455f92401531de6c018b1a081f37d0fe52b1eb2a55fbd3854f656c4b313341
   languageName: node
   linkType: hard
 

@@ -135,6 +135,22 @@ export const TEST_IDS = {
 		/** The removal prompt's buttons: Remove, and Cancel (Close when the removal is refused). */
 		confirmRemoveMachineBtn: 'btn-confirm-remove-machine',
 		cancelRemoveMachineBtn: 'btn-cancel-remove-machine',
+		/** Rent an always-on node: Subscribe and add node, the approval prompt's buttons, and the progress line while renting runs. */
+		rentNodeBtn: 'btn-rent-node',
+		approveRentNodeBtn: 'btn-approve-rent-node',
+		cancelRentNodeBtn: 'btn-cancel-rent-node',
+		rentNodeProgress: 'text-rent-node-progress',
+		/** Fetches the provider's descriptor again after a failed read. */
+		retryProviderBtn: 'btn-retry-provider',
+		/** Sign in to the provider (offered while signed out with rentals listed), and Sign out. */
+		providerSignInBtn: 'btn-provider-sign-in',
+		providerSignOutBtn: 'btn-provider-sign-out',
+		/** One rented node; pass the container id. Its buttons: pass the action (`finish`, `cancel`, `retry`, `remove`, `forget`) and the container id. */
+		rentalRow: (containerId: string) => `row-rental-${containerId}`,
+		rentalActionBtn: (action: string, containerId: string) => `btn-rental-${action}-${containerId}`,
+		/** The confirmation before a rented node is cancelled (deleted at the provider). */
+		confirmCancelRentalBtn: 'btn-confirm-cancel-rental',
+		cancelCancelRentalBtn: 'btn-cancel-cancel-rental',
 		/** On the Node card after an owner removed this app: the notice, Go back to your own cadre, Join a cadre, OK. */
 		removedNotice: 'text-removed-from-cadre',
 		returnToOwnCadreBtn: 'btn-return-to-own-cadre',

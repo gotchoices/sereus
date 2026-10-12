@@ -53,6 +53,7 @@ import {
 } from '@serfab/cadre-rn/phone-node';
 import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { AppRecommendationStore, LinkRequestStore, type SereusApp } from '@serfab/cadre-rn/app-link';
+import { providerTokensSlot, rentalStore, type ProviderTokensSlot } from '@serfab/cadre-rn/provider';
 import { defaultNoiseCryptoMode } from './noise-crypto-config';
 import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE_PREFIX } from './node-local-names';
 import { resolveRelayAddrs } from './relay-config';
@@ -244,6 +245,21 @@ export const linkRequests = new LinkRequestStore(phone.linkRequestSlot());
  * the party it was allowed in. One per app, as the kit requires.
  */
 export const recommendations = new AppRecommendationStore(phone.recommendationSlot());
+
+/**
+ * The nodes this app rented from hosting providers, by party, saved in the node-local database so a
+ * rental this app was killed in the middle of is found on the next launch; the kit's `rentalStore`.
+ * One per app, as the kit requires.
+ */
+export const rentals = rentalStore(phone.nodeLocalRecords());
+
+/**
+ * Where this app keeps its tokens for the provider `providerId`: the secure store, ungated, with the
+ * default accessibility (the tokens are used only while the app is in front, unlike the identity).
+ */
+export function providerTokens(providerId: string): ProviderTokensSlot {
+  return providerTokensSlot(SecureStore, providerId);
+}
 
 /** The strand move a join left waiting, or `undefined`. Thin pass-through to the kit's `pendingStrandMove`. */
 export function pendingStrandMove(): Promise<PendingStrandMove | undefined> {

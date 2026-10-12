@@ -1,10 +1,37 @@
 /**
  * machines.ts — what Settings → "Devices and nodes" (`machines-section.tsx`) shows from
- * `CadreNode.listMachines`, `listCadreInvitations` and `planMachineRemoval`. No React and no
- * native imports, so `test/machines.spec.ts` runs these in Node.
+ * `CadreNode.listMachines`, `listCadreInvitations`, `planMachineRemoval` and the app's rental
+ * records, and how a machine is named in a prompt or an alert. No React and no native imports,
+ * so `test/machines.spec.ts` runs these in Node.
  */
 
 import type { CadreInviteStatus, CadreMachine, MachineRemovalPlan, RemoveMachineOptions } from '@serfab/cadre-core';
+import type { Rental } from '@serfab/cadre-rn/provider';
+import { ownerFingerprint } from './node-claim';
+
+/** A peer id short enough for one line: its first 12 and last 6 characters. */
+export function shortPeerId(peerId: string): string {
+	return `${peerId.slice(0, 12)}…${peerId.slice(-6)}`;
+}
+
+/** The key fingerprint cadre-host shows for an owner, else the shortened peer id. */
+export function machineCode(machine: CadreMachine): string {
+	return machine.publicKey !== null ? ownerFingerprint(machine.publicKey) : shortPeerId(machine.peerId);
+}
+
+/** "The always-on node 1a2b3c4d", for an alert. */
+export function machineName(machine: CadreMachine): string {
+	return `The ${machineKind(machine).toLowerCase()} ${machineCode(machine)}`;
+}
+
+/**
+ * "Rented from Acme Cadre Nodes" for a machine whose peer id one of this app's rental records
+ * names, else null. The record is this phone's own, so the fact shows only on the phone that rented the node.
+ */
+export function rentedFromText(machine: CadreMachine, rentals: readonly Rental[]): string | null {
+	const rental = rentals.find((entry) => entry.peerId === machine.peerId);
+	return rental ? `Rented from ${rental.providerName}` : null;
+}
 
 /** What a listed machine is, from the node profile it published; `Machine` until it publishes one. */
 export function machineKind(machine: CadreMachine): string {

@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import type { CadreNode } from '@serfab/cadre-core';
+import { finishRental, rentNode, type CadreNode } from '@serfab/cadre-core';
 import type {
   StrandInstance,
   CadreNodeEvents,
@@ -20,9 +20,16 @@ import type {
   CreateCadreInvitationResult,
   MachineRemovalPlan,
   MachineRemovalResult,
+  ProviderClient,
   RemoveMachineOptions,
+  RentalFailed,
+  RentNodeResult,
+  RentNodeStep,
 } from '@serfab/cadre-core';
+import type { Rental } from '@serfab/cadre-rn/provider';
+import { recordingClient } from './rentals';
 import {
+  rentals,
   startPhoneNode,
   stopPhoneNode,
   getPhoneNode,
@@ -118,6 +125,13 @@ export interface RemovedFrom {
   signerKey: string | null;
   /** The cadre this app founded and left, which {@link UseCadreResult.returnToOwnCadre} starts. */
   formerPartyId?: string;
+}
+
+export interface RentProviderNodeOptions {
+  /** Each `rentNode` step, for a progress line. */
+  onProgress?: (step: RentNodeStep) => void;
+  /** The container the provider created, as soon as its record is written and before the join goes on. */
+  onCreated?: (containerId: string) => void;
 }
 
 export interface UseCadreResult extends JoinFlowActions {
@@ -258,6 +272,28 @@ export interface UseCadreResult extends JoinFlowActions {
    * Throws `MachineRemovalRefusedError` on a refusal; all false when it was already removed.
    */
   removeMachine: (peerId: string, options: RemoveMachineOptions) => Promise<MachineRemovalResult>;
+  /**
+   * Rent a node from the provider `client` talks to and add it to this cadre (cadre-core's
+   * `rentNode`, by claim or by invitation as the cadre's reach decides). The rental is recorded for
+   * this party as soon as the provider creates the container, `finished: false`, and marked finished
+   * when `rentNode` returns, so a kill in between leaves a record {@link finishProviderRental} resumes;
+   * `onCreated` tells the caller the container id at the same moment, so a step retried after the
+   * provider refused the token resumes that container rather than renting a second one. Throws
+   * `rentNode`'s errors (`describeRentalFailure` puts them into words), or a plain `Error` when the
+   * node is not running or another node is being added. Callers check {@link isOwnerDevice} first.
+   */
+  rentProviderNode: (provider: { id: string; name: string }, client: ProviderClient, options?: RentProviderNodeOptions) => Promise<RentNodeResult>;
+  /**
+   * Resume a rental this app did not finish (cadre-core's `finishRental`): the record is marked
+   * finished when it returns done; a failed invitation join comes back as `RentalFailed` and the record stays.
+   */
+  finishProviderRental: (client: ProviderClient, containerId: string, onProgress?: (step: RentNodeStep) => void) => Promise<RentNodeResult | RentalFailed>;
+  /** This party's rental records, oldest first. */
+  listRentals: () => Promise<Rental[]>;
+  /** Note a rented node's peer id once a status read reports it, for Devices and nodes. */
+  noteRentalPeer: (containerId: string, peerId: string) => Promise<void>;
+  /** Drop a rental record; the container, if it still exists, is untouched. */
+  forgetRental: (containerId: string) => Promise<void>;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -809,6 +845,67 @@ export function useCadreInternal(): UseCadreResult {
     return await removeMachineImpl(peerId, options);
   }, []);
 
+  // ── Renting a node from a hosting provider ─────────────────────────────
+
+  /** The running node, for a rental step; `claimingRef` is shared with `claimHostNode`, since both may claim. */
+  const beginAddingNode = (): CadreNode => {
+    const current = nodeRef.current;
+    if (!current) throw new Error('Node not started');
+    if (claimingRef.current) throw new Error('A node is already being added');
+    claimingRef.current = true;
+    return current;
+  };
+
+  // The claimed-without-a-row window the accepted tradeoff above names applies to a provider
+  // claim too: `finishRental` then judges the container by its claim's party and writes no row
+  // (its `judgeClaimed` NOTE); the remedy is Cancel and rent again.
+  const rentProviderNode = useCallback(async (provider: { id: string; name: string }, client: ProviderClient, options: RentProviderNodeOptions = {}) => {
+    const current = beginAddingNode();
+    try {
+      const recording = recordingClient(client, async (container, join) => {
+        await rentals.add(current.partyId, {
+          providerId: provider.id, providerName: provider.name, containerId: container.id, join, createdAt: Date.now(), finished: false,
+        });
+        options.onCreated?.(container.id);
+      });
+      const result = await rentNode(current, recording, { onProgress: options.onProgress });
+      await rentals.update(current.partyId, result.containerId, { finished: true, ...(result.peerId ? { peerId: result.peerId } : {}) });
+      return result;
+    } finally {
+      claimingRef.current = false;
+    }
+  }, []);
+
+  const finishProviderRental = useCallback(async (client: ProviderClient, containerId: string, onProgress?: (step: RentNodeStep) => void) => {
+    const current = beginAddingNode();
+    try {
+      const result = await finishRental(current, client, containerId, { onProgress });
+      if ('outcome' in result) return result;
+      await rentals.update(current.partyId, containerId, { finished: true, ...(result.peerId ? { peerId: result.peerId } : {}) });
+      return result;
+    } finally {
+      claimingRef.current = false;
+    }
+  }, []);
+
+  const listRentals = useCallback(async () => {
+    const current = nodeRef.current;
+    if (!current) throw new Error('Node not started');
+    return await rentals.list(current.partyId);
+  }, []);
+
+  const noteRentalPeer = useCallback(async (containerId: string, peerId: string) => {
+    const current = nodeRef.current;
+    if (!current) throw new Error('Node not started');
+    await rentals.update(current.partyId, containerId, { peerId });
+  }, []);
+
+  const forgetRental = useCallback(async (containerId: string) => {
+    const current = nodeRef.current;
+    if (!current) throw new Error('Node not started');
+    await rentals.remove(current.partyId, containerId);
+  }, []);
+
   return {
     status, node, peerId, ownerPublicKey, noiseCryptoMode, strands,
     selectedStrandId, activeStrand, selectStrand,
@@ -819,6 +916,7 @@ export function useCadreInternal(): UseCadreResult {
     createClosedStrandWithInvite, joinViaInvite, isOwnerDevice, claimHostNode,
     isMemberPeer, createCadreInvitation, listCadreInvitations, withdrawCadreInvitation,
     listMachines, planMachineRemoval, removeMachine,
+    rentProviderNode, finishProviderRental, listRentals, noteRentalPeer, forgetRental,
   };
 }
 

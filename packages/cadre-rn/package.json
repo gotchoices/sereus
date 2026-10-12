@@ -35,6 +35,10 @@
       "types": "./dist/app-link/index.d.ts",
       "import": "./dist/app-link/index.js"
     },
+    "./provider": {
+      "types": "./dist/provider/index.d.ts",
+      "import": "./dist/provider/index.js"
+    },
     "./noise-crypto": {
       "types": "./dist/noise-crypto.d.ts",
       "import": "./dist/noise-crypto.js"

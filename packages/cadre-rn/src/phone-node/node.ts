@@ -48,6 +48,7 @@ import {
 	kvStoreSlot,
 	secureStoreSlot,
 	strandNetworkKvKey,
+	type KvStoreApi,
 } from '../node-local.js';
 // Type-only: the noise-crypto module loads react-native-quick-crypto at runtime.
 import type { NoiseCryptoMode } from '../noise-crypto.js';
@@ -328,6 +329,14 @@ export interface PhoneNode {
 	 */
 	recommendationSlot(): DurableSlot;
 	/**
+	 * The node-local database as a key-value store, for records the app keeps beside the saved
+	 * start under keys of its own: `rentalStore` (`@serfab/cadre-rn/provider`) files the provider
+	 * rentals here, under `rentalsKvKey(partyId)`. Works with no node running, as
+	 * `linkRequestSlot` does; a read fault throws. Keys of the form `<record>.<partyId>` are the
+	 * kit's; an app's own records take a dot-free key.
+	 */
+	nodeLocalRecords(): KvStoreApi;
+	/**
 	 * Subscribe to a node event for the life of this phone node, not of one `CadreNode`: the
 	 * handler is re-applied to every node a start or restart builds, before it starts. Register the
 	 * `strand:discovered` handler that attaches strands here, before `start` — strands joined from
@@ -470,26 +479,26 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	linkRequestSlot(): DurableSlot {
-		return this.appLinkSlot(this.names.linkRequestKey);
+		return kvStoreSlot(this.nodeLocalRecords(), this.names.linkRequestKey);
 	}
 
 	recommendationSlot(): DurableSlot {
-		return this.appLinkSlot(this.names.recommendationsKey);
+		return kvStoreSlot(this.nodeLocalRecords(), this.names.recommendationsKey);
 	}
 
-	/** A node-local slot for a store the app keeps across stops and starts. */
-	private appLinkSlot(key: string): DurableSlot {
-		// Each load and save looks the database up again: a stop closes the handle, and the store outlives the stop.
-		const slot = async (): Promise<DurableSlot> => {
+	/** The node-local database for a store the app keeps across stops and starts. */
+	nodeLocalRecords(): KvStoreApi {
+		// Each get and set looks the database up again: a stop closes the handle, and the store outlives the stop.
+		const kv = async (): Promise<LevelDBKVStore> => {
 			// Opening it while a stop is closing it would take a second lock on the same name.
 			// NOTE: a restart, join or dissolve closes it too, with no `stopping` to wait on, so a
-			// load in that short window can fail on the lock. If that is ever seen, track each shutdown as `stopping` is tracked.
+			// read in that short window can fail on the lock. If that is ever seen, track each shutdown as `stopping` is tracked.
 			await this.stopping?.catch(() => undefined);
-			return this.nodeLocalSlot(key);
+			return this.nodeLocalKv();
 		};
 		return {
-			load: async () => (await slot()).load(),
-			save: async (text) => (await slot()).save(text),
+			get: async (key) => (await kv()).get(key),
+			set: async (key, value) => (await kv()).set(key, value),
 		};
 	}
 

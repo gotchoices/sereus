@@ -289,6 +289,14 @@ The Sereus apps the user allowed to join before they asked, under [Recommend an 
 - **Trust-bearing.** An entry lets this app make an invitation without a prompt, so logs name only the app.
 - **Cleared** by Withdraw, by the request it answers, and by expiry. Allow and a use also drop every other party's entries as they write.
 
+### Provider tokens (secure enclave)
+
+The access and refresh tokens this app holds for a hosting provider's account, after the user signed in under [Renting a Provider Node](#renting-a-provider-node): `{ accessToken, refreshToken, expiresAt, scopes }`, one `expo-secure-store` entry per provider under `sereus.provider-tokens.<base64url provider id>` (the kit's `providerTokensSlot` in `@serfab/cadre-rn/provider`), ungated, with the default accessibility since the tokens are used only while the app is in front. They are credentials for the customer's account at the provider, which is why they sit with the identity key rather than in LevelDB, and why nothing logs them. Every refresh rotates the pair and overwrites the entry (`createTokenSource`'s `persist`); Sign out deletes it; a refresh the provider refuses deletes it too, and the rows say to sign in. One per install, not per party: the account is the user's, whatever cadre the app is in.
+
+### Provider rentals (app-private LevelDB)
+
+The nodes this app rented from a hosting provider, by party: a list of `{ providerId, providerName, containerId, join, peerId?, createdAt, finished }` under the kit's `rentals.<partyId>` key in the same `sereus-node-local` database (the kit's `rentalStore` in `@serfab/cadre-rn/provider`, over `PhoneNode.nodeLocalRecords()`). cadre-core's `rentNode` persists nothing, so this record is what lets the app find a rental it was killed in the middle of (`finished: false`) and offer Finish adding, poll the provider for each node's standing, and mark a rented node in Devices and nodes. Not trust-bearing: it names a container to ask the provider about, and the provider's answer, not the record, is what the app shows; a record that cannot be read reads as no rentals, logged, since the containers still exist on the provider's own pages. Written when the provider creates the container, updated when `rentNode` or `finishRental` returns and when a status read first reports the node's peer id, and dropped by Cancel, Forget and Remove from cadre.
+
 ## cadre-core React Native Compatibility
 
 ### Validated (2026-02-23)
@@ -465,11 +473,17 @@ packages/reference-app-rn/
     use-recommending-app.ts   # Settings' part of joining that app: which app the first-launch question names, and the prompt while this app has a cadre
     join-flow.ts              # The steps after Join (joining, moving chats, removing the old cadre) and their words
     join-failure.ts           # Plain words for each way a join can fail before admission (NS carries a copy)
-    settings-controls.tsx     # Section, button, input and styles shared by Settings and its sections
+    settings-controls.tsx     # Section, button, input, confirmation prompt and styles shared by Settings and its sections
+    owner-standing.ts         # Whether this app is an owner of its cadre, for the sections with owner-only actions
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
     add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw open ones
-    machines-section.tsx      # Settings → Devices and nodes: the cadre's machines and the devices invited; an owner removes one, keeping the devices it added
-    machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, the removal prompt's Keep switches
+    machines-section.tsx      # Settings → Devices and nodes: the cadre's machines and the devices invited; an owner removes one
+    machine-removal.tsx       # Removing a machine: the plan, the confirmation with its Keep switches, removeMachine; shared with the provider section
+    machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, the removal prompt's Keep switches, a rented node's provider
+    provider-store-section.tsx # Settings → Rent an always-on node: the provider, sign-in in the browser, rent, the rows for rented nodes
+    provider-session.ts       # One provider's descriptor, tokens and client; sign-in again, once, when the provider refuses the tokens
+    providers.ts              # The configured provider (EXPO_PUBLIC_PROVIDER_DESCRIPTOR_URL), the redirect URI, the plan list
+    rentals.ts                # What a rented node's row shows and offers; the words for each way renting fails
     recommend-app-section.tsx # Settings → Add a device or app → Recommend an app: allow another app to join, then get or open it
     join-cadre-section.tsx    # Settings → Join my existing cadre: choose the app holding the cadre, this app's request, paste or scan the answer, the join's steps
     code-scanner.tsx          # Full-screen camera (expo-camera) that reads a QR code of the kind its caller accepts
@@ -813,6 +827,54 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 ### Not covered here
 
 - Strands on the node. A cadre-host node launches no strand of its own; whether it should is ticket `always-on-nodes-host-strands-of-apps-they-do-not-run`.
+
+
+## Renting a Provider Node
+
+The third way to get an always-on node is to rent one from a hosting provider running `@serfab/cadre-provider` ([architecture.md → Renting a node from an app](architecture.md#renting-a-node-from-an-app)). **Settings → Rent an always-on node** (`src/provider-store-section.tsx`) shows one configured provider, its plans and terms, and **Subscribe and add node**; the user signs in and pays on the provider's own pages in the system browser, the app rents a container and adds it to the cadre, and afterwards the section shows the node's standing and the subscription's dates. Where a list of providers would come from, and whether paying on the provider's page is acceptable under the app stores' rules, is `tickets/blocked/decide-provider-directory.md`; until then one provider is configured per build. The section has not had a device run yet: blocked ticket `rn-device-run-rent-provider-node`.
+
+**The configured provider.** `src/providers.ts` reads `EXPO_PUBLIC_PROVIDER_DESCRIPTOR_URL`, the provider's descriptor URL (`http://192.168.1.20:3000/api/v1/descriptor` for a cadre-provider on the dev machine, as the phone reaches it), and `EXPO_PUBLIC_PROVIDER_CLIENT_ID`, the client id this app registered with it, `sereus-chat` by default for both installs. Unset, the section does not show. The redirect URI is `<own scheme>://provider-auth`, so `sereus-chat://provider-auth` for the main install and `sereus-chat-second://provider-auth` for the second; the provider compares it with the registered one by exact string equality, which is why it is built from the scheme rather than `Linking.createURL`. The descriptor is fetched when the section opens and parsed with cadre-core's `parseProviderDescriptor`; a fetch that fails (the dev machine is off) shows the error and **Retry**, and nothing else in Settings is affected. The plans come from the descriptor's `plansUrl` (name and price per hour).
+
+**Sign-in.** The first Subscribe and add node, and any action after Sign out, opens the provider's authorize page in the system browser (`expo-web-browser`'s `openAuthSessionAsync`, through the kit's `signInWithProvider` in `@serfab/cadre-rn/provider`, which mints the PKCE pair and the state, reads the redirect and exchanges the code). The browser comes back to `<own scheme>://provider-auth?code=…&state=…`; the session that opened it takes that URL, and `app/+native-intent.tsx` rewrites the same link, which the OS also delivers to the app, to `/settings` with no query, so the single-use code never sits in navigation state. Closing the browser is a cancel: nothing is created and nothing is stored. The tokens go in the secure store ([Provider tokens](#provider-tokens-secure-enclave)); a token the provider refuses to refresh is dropped, the user signs in again, and the step they asked for runs once more, never in a loop. "Signed in to ‹name›. Sign out" under the section clears the tokens; the rentals stay, their rows read "Sign in to see its status", and **Sign in to ‹name›** is offered.
+
+**The approval.** Only an owner can rent (the node is claimed or invited under this device's owner key); a member sees one line saying so. Subscribe and add node opens "Rent a node from ‹name›?", naming the cadre (the full Party ID) and the provider, and nothing is created until **Subscribe and add node** in the prompt. The approval, then sign-in, then `useCadre`'s `rentProviderNode`, which is cadre-core's `rentNode` with the rental recorded ([Provider rentals](#provider-rentals-app-private-leveldb)) as soon as the provider creates the container and marked finished when `rentNode` returns.
+
+**The two join paths**, chosen by cadre-core from `CadreNode.invitationReach()`:
+
+- **Claim**, when this phone is the cadre's only member or its other machines are reachable only on their LAN: the provider creates the container, the phone polls for its node code (up to 120 s, since an image pull can precede the provider's 60 s enrolment window) and claims the node as it would a cadre-host node. The progress line reads "Asking ‹name› for a node…", "Waiting for the node to start…", then "Reaching the node and adding it to this cadre…", which after 20 seconds adds that some addresses are not answering. The alert is "Node added" with the peer id, and the node restarts once under the cadre.
+- **Invitation**, once the cadre has a member with a relayed or public address, a first rented node included: the phone mints a single-use member invitation, hands it to the provider with the create, and returns at once ("Node requested"); the container redeems it at a member by itself, and the row shows "Joining through a machine of this cadre" until it reads "Joined through ‹member›". A second rental from a phone whose first rented node is running therefore takes this path.
+
+**The rows.** One per rental, re-read from the provider every 5 seconds while the section is on screen (`getContainer`, plus `getBillingStatus` once): the node's standing (Starting, Starting its node, Running, Running, not healthy, Stopping, Stopped, Failed), the join in words ("Waiting for this phone to claim it", "Joining through a machine of this cadre", "Joined", "Joined through ‹member›", "Could not join: ‹error›"), the peer id's short form, and under the list the subscription: "Renews ‹date›", "Unpaid, stops ‹date›" or "Subscription lapsed". What a row offers depends on its state (`src/rentals.ts`, pinned by `test/rentals.spec.ts`):
+
+| State | Row | Buttons |
+|---|---|---|
+| A claim this phone did not finish (killed mid-flow, or the node code did not arrive in time) | "Waiting for this phone to claim it" | **Finish adding** (`finishRental`: the code, then the claim; a node already claimed into this cadre is reported done without a second claim) and **Cancel** (deletes the container at the provider, drops the record) |
+| An invitation node whose join failed | "Could not join: ‹error›" | **Try again** (Cancel, then rent again, by whichever path fits now) and **Cancel** |
+| Stopped for non-payment | "‹name› stopped this node for non-payment." | **Remove from cadre** (the Devices and nodes confirmation, then `removeMachine`, which works with the node unreachable; the record goes on success) while the node is still a member, and **Forget** (drops the record only) |
+| Stopped from the provider's site, or a container the provider no longer knows | "This node was stopped from ‹name›'s site." / "‹name› no longer knows this node." | **Remove from cadre** while still a member, and **Forget** |
+| Running and joined | its standing and join | nothing: a subscription ends on the provider's own site, which the card links to |
+
+Cancel asks once ("Cancel this node?"), since the provider deletes the node and whatever it holds. Devices and nodes shows "Rented from ‹name›" on a machine whose peer id a rental names, and nothing else changes there.
+
+**What a failure says.** Every failure opens the usual alert, with the underlying error under the title. A lapsed subscription or a plan at its node limit is the provider's `403 QUOTA_EXCEEDED`: "‹name› refused: the subscription has lapsed or the plan's node limit is reached." A node that did not start in time: "The node has not started yet … its row offers Finish adding." A node another cadre's owner claimed: "This node was claimed into another cadre. Cancel it and rent again." A refused sign-in names the provider's error code. Killed after the node accepted the claim but before `claimNode` wrote the row, Finish adding reports done without a row, because the provider withholds the code once the claim is folded (the accepted-tradeoff NOTE in `use-cadre.ts` about this window for cadre-host claims, and cadre-core's `judgeClaimed`); the remedy is Cancel and rent again.
+
+**Dev setup.** Run cadre-provider on the dev machine with Docker available, `docker.publicHost` set to the address the phone reaches the machine at (the container's WebSocket address is built from it, and a claim dials it), `auth.mode: oauth` with `devConsentPage: true` and `allowInsecureNoAuth: true` (the built-in consent form, for development only), a `provider` block (`id`, `name`, `publicUrl: http://<dev machine>:3000`, which the descriptor's URLs are built from; plain `http` is accepted at a loopback host only, so put the provider behind `https` or use loopback with `adb reverse`), and one registered client:
+
+```yaml
+auth:
+  mode: oauth
+  allowInsecureNoAuth: true
+  oauth:
+    devConsentPage: true
+    clients:
+      - clientId: sereus-chat
+        redirectUris: ["sereus-chat://provider-auth", "sereus-chat-second://provider-auth"]
+        scopes: ["containers:*", "billing:read"]
+```
+
+Then start the dev client with `EXPO_PUBLIC_PROVIDER_DESCRIPTOR_URL=<publicUrl>/api/v1/descriptor`. On the consent page, type any customer id and pick a plan; the provider's `GET /billing/status` answers for that customer from the first code. To see the non-payment row, lapse the subscription on the provider's side ([cadre-provider README → Subscription state and termination for non-payment](../packages/cadre-provider/README.md#subscription-state-and-termination-for-non-payment)) and wait for the next poll.
+
+The section shows only while the node is connected. Switching tabs does not stop a rental in flight (the tab navigator keeps Settings mounted); Disconnect stops the node, and a claim in flight fails, leaving the record for Finish adding.
 
 
 ## Adding a Device or App

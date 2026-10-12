@@ -1,7 +1,8 @@
 /**
  * Settings screen — connect to cadre, join an existing cadre (the app that recommended this one
  * among them), add a device or app, list and remove the cadre's devices and nodes, apply seed,
- * create strand, add an always-on node; and what this app shows after an owner removed it.
+ * create strand, add an always-on node, rent one from a hosting provider; and what this app shows
+ * after an owner removed it.
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -22,6 +23,7 @@ import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
 import { MachinesSection } from '../src/machines-section';
 import { ownerFingerprint } from '../src/node-claim';
+import { PROVIDERS, ProviderStoreSection } from '../src/provider-store-section';
 import type { RemovedFrom } from '../src/use-cadre';
 import { askOwnerAppOrAlert, JoinCadreSection } from '../src/join-cadre-section';
 import { answerJoinRequest, isAnswerable, joinResponseAlert } from '../src/join-link';
@@ -141,7 +143,8 @@ export default function SettingsScreen() {
   useEffect(() => {
     setJoinAfterRemoval(false);
   }, [removedFrom]);
-  // Bumped by Add a device or app so Devices and nodes reads the invitations made for one app.
+  // Bumped by Add a device or app so Devices and nodes reads the invitations made for one app, and
+  // by Rent an always-on node so it reads which nodes are rented.
   const [machinesRead, setMachinesRead] = useState(0);
 
   const showAlert = useCallback((title: string, message: string, detail?: string) => {
@@ -476,6 +479,16 @@ export default function SettingsScreen() {
           onLinkedCodeTaken={() => setLinkedNodeCode(null)}
         />
       )}
+
+      {/* Rent an always-on node from the configured hosting provider, when the build names one */}
+      {connected && PROVIDERS.map((provider) => (
+        <ProviderStoreSection
+          key={provider.descriptorUrl}
+          provider={provider}
+          showAlert={showAlert}
+          onRentalsChanged={() => setMachinesRead((n) => n + 1)}
+        />
+      ))}
 
       {/* Closed strand (trust model) */}
       {connected && (
