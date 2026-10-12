@@ -96,6 +96,19 @@ export type SubscriptionPatch = Partial<Omit<Subscription, 'status'>> & {
   status?: Exclude<SubscriptionStatus, 'lapsed'>;
 };
 
+/**
+ * `patch` written over `current`. A field the patch leaves `undefined` keeps its value (a spread
+ * would write the `undefined` over it); `lapsesAt` is cleared unless the result is `past-due`.
+ */
+function mergeSubscription(current: Subscription, patch: SubscriptionPatch): Subscription {
+  const status = patch.status ?? current.status;
+  return {
+    status,
+    renewsAt: patch.renewsAt === undefined ? current.renewsAt : patch.renewsAt,
+    lapsesAt: status !== 'past-due' ? null : patch.lapsesAt === undefined ? current.lapsesAt : patch.lapsesAt,
+  };
+}
+
 /** Whether the record is `past-due` with a lapse date at or before `nowMs`. */
 function isOverdue(billing: CustomerBilling, nowMs: number): boolean {
   const { status, lapsesAt } = billing.subscription;
@@ -220,13 +233,13 @@ export class BillingService {
     const billing = await this.store.getCustomerBilling(customerId);
     if (!billing) return { allowed: true }; // No billing record = free tier or new customer
 
-    const plan = this.plans.get(billing.planId);
-    if (!plan) return { allowed: true };
-
     // `past-due` still creates: the grace period is the operator's call.
     if (billing.subscription.status === 'lapsed') {
       return { allowed: false, reason: 'Subscription lapsed' };
     }
+
+    const plan = this.plans.get(billing.planId);
+    if (!plan) return { allowed: true };
 
     const containers = await this.store.listContainers(customerId);
     const activeContainers = containers.filter(c => QUOTA_CONSUMING_STATUSES.has(c.status));
@@ -289,8 +302,11 @@ export class BillingService {
       throw new Error('A subscription lapses through lapseSubscription, which also stops its containers');
     }
     const billing = await this.requireBilling(customerId);
-    const next: Subscription = { ...billing.subscription, ...patch };
-    if (next.status !== 'past-due') next.lapsesAt = null;
+    // NOTE: a lapsed record patched to `past-due` comes back with a fresh grace period and can
+    // create again until the tick lapses it. Harmless while processors stop reporting failed
+    // payments once a subscription is cancelled; if one does not, keep `lapsed` unless the
+    // patch is `active`.
+    const next = mergeSubscription(billing.subscription, patch);
     billing.subscription = next;
     await this.store.saveCustomerBilling(billing);
     log('Subscription for %s is now %s', customerId, next.status);
@@ -304,8 +320,9 @@ export class BillingService {
    *
    * NOTE: the record is marked before the containers are stopped, so a lapsed customer
    * cannot create one mid-lapse; a provider that dies partway leaves the rest running for a
-   * lapsed customer, and nothing retries. If that is ever seen, have the tick also stop the
-   * live containers of lapsed customers.
+   * lapsed customer, and nothing retries; so does a create that passed `canCreateContainer`
+   * just before the mark and saved its record after the stop listed the containers. If either
+   * is ever seen, have the tick also stop the live containers of lapsed customers.
    *
    * @throws when the customer has no billing record.
    */

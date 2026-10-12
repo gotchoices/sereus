@@ -339,6 +339,9 @@ export class ContainerService {
     } catch (error) {
       log('Container %s provisioning error: %O', container.id, error);
       const updated = await this.store.getContainer(container.id);
+      // NOTE: this also writes `error` over a record a terminate stopped while the orchestrator's
+      // create was failing; the record keeps its `stopReason`. If an app ever misreads that, skip
+      // the write when the record is already `stopped`.
       if (updated) {
         updated.status = 'error';
         updated.error = error instanceof Error ? error.message : String(error);
