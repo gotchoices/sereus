@@ -104,11 +104,12 @@
  * A connection that is already gone by then costs no question. One peer may hold
  * several provisional connections; each deadline re-asks on its own.
  *
- * NOTE: the gate does not stop a provisionally admitted stranger from being
- * counted into this node's FRET ring and control-database cohort by opening or
- * advertising the party's protocols — FRET and Optimystic decide that from the
- * protocols libp2p records the peer as serving. Ticket
- * `stranger-joins-the-control-cohort-by-advertising-protocols` (blocked).
+ * The gate does not decide which peers this node sends control writes to. A
+ * provisionally admitted stranger can open or advertise the party's protocols;
+ * what keeps it out of the control-database cohort is the control node's
+ * membership predicate (`CadreNode.isControlNetworkMember`, wired as Optimystic's
+ * `isNetworkMember`). FRET's ring still counts it: `docs/architecture.md` →
+ * "Per-stream protocol guard" → "What it does not cover".
  *
  * ## The relay-reservation seam
  *

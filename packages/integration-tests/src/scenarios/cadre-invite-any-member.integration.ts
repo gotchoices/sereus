@@ -24,9 +24,9 @@
  *   marks A dead at once (about 1 s measured, one poll); a phone that vanishes without one is marked
  *   dead after three probe ticks in which it could not be contacted, about 5 s. FRET ticket
  *   `fret-evicts-an-address-less-peer-that-disconnects`.
- * - P joins it the moment P connects to redeem, so M's cohort for every control block is
+ * - M counts P in it once P's redemption verifies, so M's cohort for every control block is
  *   {M, P}, and a cohort of two commits only when both hold the write. M therefore pushes its
- *   control store to P after the request verifies and before the write (`catchUpDevice` on the
+ *   control store to P after the request verifies and before the write (`admitDevice` on the
  *   redemption handler), and the admission commits on the first attempt. The scenario pins
  *   that: a second attempt means the push did not reach P before the write.
  *

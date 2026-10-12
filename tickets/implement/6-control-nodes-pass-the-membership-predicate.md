@@ -2,6 +2,13 @@ description: A machine that is not a cadre member but is connected to one can cu
 architecture: docs/architecture.md#per-stream-protocol-guard
 files: packages/cadre-core/src/cadre-node.ts (authorizeInboundControlStream ~2552, buildControlNodeOptions ~2140, authorizedControlPeers ~605, refreshMembershipGate ~8361), packages/integration-tests/src/scenarios/control-stream-authz.integration.ts (step 5 and its NOTE ~288, file header), packages/integration-tests/src/harness/control-cohort.ts (readCohort), docs/architecture.md (Per-stream protocol guard → "What it does not cover", "Proof"; the connection-gate "What provisional admission costs" paragraph ~901), tickets/blocked/stranger-joins-the-control-cohort-by-advertising-protocols.md, ../optimystic/packages/db-p2p/src/network-membership-gate.ts (read-only), ../optimystic/docs/internals.md § Network Membership Predicate (read-only)
 ----
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-10-12T08:35:31.906Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\6-control-nodes-pass-the-membership-predicate.implement.2026-10-12T08-35-31-905Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 # Control nodes pass the membership predicate
 
 ## Background

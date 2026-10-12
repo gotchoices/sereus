@@ -12,10 +12,10 @@
  * - **P**, a phone-shaped device with no pinned key.
  *
  * What it pins. M holds no `CadreInvite` row for the invitation, so the first write of the
- * exchange is M seating the row from the bundle. P joins M's control cohort when it connects,
- * so that seat is offered to {M, P}, and P can hold it only once M has pushed it the control
- * store. M therefore pushes before the seat, judging the invitation live on the bundle's copy
- * (`CadreInviteHandler.catchUpDeviceIfLive`). The scenario expects the redemption to succeed on
+ * exchange is M seating the row from the bundle. M counts P in its control cohort once P's
+ * redemption verifies, so that seat is offered to {M, P}, and P can hold it only once M has
+ * pushed it the control store. M therefore pushes before the seat, judging the invitation live
+ * on the bundle's copy (`CadreInviteHandler.admitDeviceIfLive`). The scenario expects the redemption to succeed on
  * the first attempt. With the seat ahead of the push, the first attempt was refused retryably
  * (`internal`, about 20 s in) and P joined on the second.
  *

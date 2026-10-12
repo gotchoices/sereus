@@ -434,8 +434,9 @@ export class CadreNode implements SAppIdLookup {
   private controlBackfill: PeerJoinBackfill | null = null;
   /**
    * Devices whose invitation redemption this member has verified and is admitting right now,
-   * each with its count of overlapping redemptions. The control backfill's gate admits them
-   * as it admits a member, for that window only ({@link catchUpRedeemingDevice}).
+   * each with its count of overlapping redemptions. The control backfill's gate and the
+   * control cohort choice (Optimystic's `isNetworkMember`) count them as members, for that
+   * window only ({@link admitRedeemingDevice}); the per-stream gate never does.
    */
   private readonly admittingDevices = new Map<string, number>();
   private strandWatcher: StrandWatcher | null = null;
@@ -602,13 +603,15 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Materialized in-memory snapshot of the AUTHORIZED member peer ids (the
-   * {@link listAuthorizedMembers} result), consulted by the per-stream
-   * control-DB gate ({@link authorizeInboundControlStream}). That predicate
-   * runs on EVERY inbound Optimystic control-DB stream and must never await a
-   * control-DB read: those reads pull blocks over the very protocols the
-   * predicate gates, which closes a circular wait that ends in mutual denial
-   * (the upstream gate is fail-closed on timeout, unlike the fail-open
-   * connection gater). So the set is refreshed OUT OF BAND instead — after
+   * {@link listAuthorizedMembers} result), consulted through
+   * {@link isControlNetworkMember} by the per-stream control-DB gate
+   * ({@link authorizeInboundControlStream}) and by Optimystic's cohort choice
+   * (`isNetworkMember`). The stream gate runs on EVERY inbound Optimystic
+   * control-DB stream and must never await a control-DB read: those reads pull
+   * blocks over the very protocols the predicate gates, which closes a circular
+   * wait that ends in mutual denial (the upstream gate is fail-closed on
+   * timeout, unlike the fail-open connection gater). Optimystic's predicate is
+   * synchronous by contract. So the set is refreshed OUT OF BAND instead — after
    * start, on every {@link reconcileControlCohort} pass (15s cadence), and
    * immediately after every LOCAL membership mutation so a just-vouched peer
    * is admitted without waiting for the timer. That last refresh is AUTOMATIC:
@@ -617,7 +620,11 @@ export class CadreNode implements SAppIdLookup {
    * writer has to remember. A change that arrives by REPLICATION is picked up
    * on the next timed refresh — bounded staleness, acceptable because this gate
    * is defense in depth: rows an unadmitted peer manages to write are still
-   * disbelieved at read time by the voucher-anchored predicate.
+   * disbelieved at read time by the voucher-anchored predicate. For cohort
+   * choice the same window means a member whose row arrived by replication is
+   * left out of this node's control-block cohorts until that refresh.
+   * Optimystic reads the predicate live on every lookup, so replacing this set
+   * is the whole re-evaluation; there is no per-peer reclassify call to make.
    */
   private authorizedControlPeers: Set<string> = new Set();
 
@@ -1361,7 +1368,7 @@ export class CadreNode implements SAppIdLookup {
       this.cadreInviteHandler = new CadreInviteHandler({
         partyId: this.config.controlNetwork.partyId,
         store: this.controlDatabase,
-        catchUpDevice: (peerId) => this.catchUpRedeemingDevice(peerId),
+        admitDevice: (peerId) => this.admitRedeemingDevice(peerId),
       });
       await this.cadreInviteHandler.register(this.controlNode);
 
@@ -1675,7 +1682,7 @@ export class CadreNode implements SAppIdLookup {
    * {@link start} has built the anchor.
    *
    * While true the node admits strangers' CONNECTIONS (the claim seed has to ride one)
-   * and refuses their control-database streams ({@link authorizeInboundControlStream})
+   * and refuses them control-database streams and cohort places ({@link isControlNetworkMember})
    * and relay reservations ({@link admitControlRelayReservation}): an unclaimed node has
    * no siblings to replicate from and must not become a public relay while it waits.
    * cadre-cli reports this on `/status`; `claim:accepted` is the event form.
@@ -1956,7 +1963,7 @@ export class CadreNode implements SAppIdLookup {
    * connect-then-authorize — on every committed membership change via
    * {@link refreshAuthorizedControlPeers}'s `scheduleConnectedPeers()` call.
    * The one non-member the gate admits is a device whose invitation
-   * redemption this member is admitting ({@link catchUpRedeemingDevice}).
+   * redemption this member is admitting ({@link admitRedeemingDevice}).
    *
    * No-ops (logged) when the embedder configured no control storage or the
    * node exposes no key network — the backfill would have nothing to read or
@@ -2015,36 +2022,52 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Push this member's control store to a device whose invitation redemption has verified,
-   * and wait for the push, before the redemption seats the invitation's row and writes the
-   * device's rows (the handler's `catchUpDevice`; `CadreInviteHandler.catchUpDeviceIfLive`
-   * says why those writes need it).
-   * The device is admitted at the backfill's gate for the length of the push only.
+   * Admit a device whose invitation redemption has verified to this member's control
+   * replication until the returned release is called (the handler's `admitDevice`;
+   * `CadreInviteHandler.admitDeviceIfLive` says why the redemption's writes need it): push it
+   * this member's control store and wait for the push, with the device counted as a member by
+   * the backfill's gate and by the control cohort choice ({@link admittingDevices}), so the
+   * seat and the admission that follow are written to the device too. A failed push releases
+   * at once and rethrows: in the cohort without the store, the device would refuse the
+   * commits and tear the writes. With no backfill on this node nothing is admitted.
    *
    * Through {@link PeerJoinBackfill.forceCatchUpPeer}, not `catchUpPeer`: the device's own
    * `peer:identify` scheduled a run a moment earlier, which was denied if it passed the gate
    * before the device was added here, and `catchUpPeer` would answer that run's in-flight
    * status with an empty result.
    */
-  private async catchUpRedeemingDevice(peerId: string): Promise<void> {
+  private async admitRedeemingDevice(peerId: string): Promise<() => void> {
     const backfill = this.controlBackfill;
     if (!backfill) {
-      log('No control backfill on this node; device %s is not caught up before its admission', peerId);
-      return;
+      log('No control backfill on this node; device %s is neither caught up nor admitted before its admission', peerId);
+      return () => undefined;
     }
-    this.admittingDevices.set(peerId, (this.admittingDevices.get(peerId) ?? 0) + 1);
+    const release = this.countAdmittingDevice(peerId);
     try {
       const result = await backfill.forceCatchUpPeer(peerIdFromString(peerId));
       log('Device %s caught up before its admission: offered=%d accepted=%d rejected=%d',
         peerId, result.offered, result.accepted, result.rejected.length);
-    } finally {
+      return release;
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  /** Count one more redemption admitting `peerId`; the returned release undoes it, once. */
+  private countAdmittingDevice(peerId: string): () => void {
+    this.admittingDevices.set(peerId, (this.admittingDevices.get(peerId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
       const remaining = (this.admittingDevices.get(peerId) ?? 1) - 1;
       if (remaining > 0) {
         this.admittingDevices.set(peerId, remaining);
       } else {
         this.admittingDevices.delete(peerId);
       }
-    }
+    };
   }
 
   /**
@@ -2258,7 +2281,14 @@ export class CadreNode implements SAppIdLookup {
       // first; Optimystic's own check is kept because it is a working, supported
       // upstream defence, not a second policy.
       authorizeInboundStream: (remotePeerId, protocol) =>
-        this.authorizeInboundControlStream(remotePeerId, protocol)
+        this.authorizeInboundControlStream(remotePeerId, protocol),
+      // Who this node SENDS control writes to (cohort and coordinator choice), where
+      // `authorizeInboundStream` is who may send to it. Without it Optimystic picks cohort
+      // members from the protocols a peer's peer-store record lists, which any connected
+      // peer can fill. The stream gate's rule, unlogged (Optimystic asks several times per
+      // peer per cohort assembly and counts refusals on its own debug line), plus a device
+      // whose verified redemption is being written, which must hold the rows that admit it.
+      isNetworkMember: (peerId) => this.isControlNetworkMember(peerId) || this.admittingDevices.has(peerId)
     };
 
     return nodeOptions;
@@ -2499,13 +2529,17 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Per-stream authorization for the protocol guard's `members-snapshot` class
-   * (`control-protocol-guard.ts`): the four Optimystic control-DB protocols
-   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), FRET's
-   * five, and any protocol nobody classed. Also wired as Optimystic's
-   * `authorizeInboundStream` in {@link createControlNode} for the four DB
-   * protocols. The fail-closed layer behind the fail-open connection gater.
-   * Control node ONLY: strand cohort nodes legitimately serve cross-party peers.
+   * The membership rule this control node applies to a remote peer, without logging. Two
+   * consumers: the per-stream gate ({@link authorizeInboundControlStream}, who may SEND to
+   * this node on a members-only protocol) and Optimystic's `isNetworkMember` (who this node
+   * sends control writes TO — which peers can be a control block's cohort member or
+   * coordinator), which adds only a device whose verified invitation redemption is being
+   * written ({@link admittingDevices}). One rule for both keeps the outbound choice as
+   * permissive as the inbound acceptance: a joining node's cohort must include the inviter
+   * its empty anchor or empty snapshot lets replicate to it, or it would see a self-only
+   * cohort, rule an existing collection absent and found a second copy. Sereus builds the
+   * control node with `bootstrapNodes: []`, so Optimystic's refused-bootstrap-peer guard
+   * does not cover that.
    *
    * The STRICT SUBSET of {@link admitInboundControlConnection}: the same
    * "no basis to judge" admissions (shared via
@@ -2514,59 +2548,76 @@ export class CadreNode implements SAppIdLookup {
    * grant). The first two exist so a stranger can reach `/sereus/formation/1.0.0`
    * and `/sereus/cadre-invite/1.0.0` — neither is gated here, and admitting a
    * stranger to `repo` while an invitation is live is exactly the hole this
-   * gate closes. A DELEGATE-admitted connection (a member's strand node
+   * rule closes. A DELEGATE-admitted connection (a member's strand node
    * holding a circuit-relay reservation, see `delegate-admission.ts`) is
-   * likewise exactly a case this gate must still refuse: the delegate gets
-   * the connection and never the control DB.
+   * likewise refused: the delegate gets the connection and never the control DB.
    *
    * Refuses everyone, ahead of every admission below, while this node is waiting to be
    * claimed ({@link isAwaitingClaim}). The empty-anchor and empty-snapshot admissions
    * exist so a brand-new node can take replication from the siblings that will
    * authorize it; an unclaimed node has no siblings yet, and the rows that will
    * authorize anyone arrive only after the claim, over the owner's streams that the
-   * same two admissions then let in. Configured bootstrap infra is refused too: a
-   * relay opens no control-database stream.
+   * same two admissions then let in. Its cohort is itself alone meanwhile, which costs
+   * nothing: it built its control database with zero connections. Configured bootstrap
+   * infra is refused too: a relay opens no control-database stream.
    *
    * Otherwise admits when ANY of:
    *  1. a shared-baseline check admits (not running / no DB, empty anchor,
-   *     configured bootstrap infra);
+   *     configured bootstrap infra — which Optimystic still classifies `foreign`,
+   *     since a relay serves none of the party's database protocols);
    *  2. the materialized authorized set is empty — cold start, before the
    *     rows that would authorize anyone have replicated in;
    *  3. the peer IS in the materialized authorized set.
    *
    * Deliberately SYNCHRONOUS and pure in-memory — see
    * {@link authorizedControlPeers} for why a control-DB read here would
-   * deadlock into mutual denial. With a sync predicate the upstream deadline
-   * (`authorizeInboundStreamTimeoutMs`) never trips, so it stays at its
-   * default.
+   * deadlock into mutual denial.
    *
    * NOTE: the snapshot keys on PEER ID, so a node with no persistent identity
    * key never lands a `CadrePeer` row ({@link registerSelf} skips) and its
-   * siblings deny its control-DB streams once their own snapshot is non-empty —
-   * owner status is a KEY, not a peer id, so being the owner does not exempt it.
-   * Harmless today (a real deployment persists its identity; the ephemeral-owner
-   * case appears only in tests, which configure the owner as bootstrap infra —
-   * `push-wake-e2e.integration.ts` design note 3). If an ephemeral-identity node
-   * ever becomes a supported deployment, this gate needs a key-based admission.
+   * siblings deny its control-DB streams, and leave it out of their cohorts, once
+   * their own snapshot is non-empty — owner status is a KEY, not a peer id, so
+   * being the owner does not exempt it. Harmless today (a real deployment persists
+   * its identity; the ephemeral-owner case appears only in tests, which configure
+   * the owner as bootstrap infra — `push-wake-e2e.integration.ts` design note 3).
+   * If an ephemeral-identity node ever becomes a supported deployment, this rule
+   * needs a key-based admission.
    */
-  private authorizeInboundControlStream(remotePeerId: string, protocol: string): boolean {
+  private isControlNetworkMember(remotePeerId: string): boolean {
     if (this.isAwaitingClaim()) {
-      log('authorizeInboundControlStream: DENYING %s on %s — this node is unclaimed and replicates with nobody until it is',
-        remotePeerId, protocol);
       return false;
     }
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
       return true;
     }
-    if (this.authorizedControlPeers.size === 0) {
-      return true;
-    }
-    if (this.authorizedControlPeers.has(remotePeerId)) {
+    return this.authorizedControlPeers.size === 0 || this.authorizedControlPeers.has(remotePeerId);
+  }
+
+  /**
+   * Per-stream authorization for the protocol guard's `members-snapshot` class
+   * (`control-protocol-guard.ts`): the four Optimystic control-DB protocols
+   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), FRET's
+   * five, and any protocol nobody classed. Also wired as Optimystic's
+   * `authorizeInboundStream` in {@link createControlNode} for the four DB
+   * protocols. The fail-closed layer behind the fail-open connection gater.
+   * Control node ONLY: strand cohort nodes legitimately serve cross-party peers.
+   *
+   * Admits exactly the peers {@link isControlNetworkMember} does, and logs why it
+   * refused one. With a sync predicate the upstream deadline
+   * (`authorizeInboundStreamTimeoutMs`) never trips, so it stays at its default.
+   */
+  private authorizeInboundControlStream(remotePeerId: string, protocol: string): boolean {
+    if (this.isControlNetworkMember(remotePeerId)) {
       return true;
     }
     // Upstream logs its own denial line; this one carries the WHY.
-    log('authorizeInboundControlStream: DENYING %s on %s — not in the materialized authorized set (%d member(s))',
-      remotePeerId, protocol, this.authorizedControlPeers.size);
+    if (this.isAwaitingClaim()) {
+      log('authorizeInboundControlStream: DENYING %s on %s — this node is unclaimed and replicates with nobody until it is',
+        remotePeerId, protocol);
+    } else {
+      log('authorizeInboundControlStream: DENYING %s on %s — not in the materialized authorized set (%d member(s))',
+        remotePeerId, protocol, this.authorizedControlPeers.size);
+    }
     return false;
   }
 

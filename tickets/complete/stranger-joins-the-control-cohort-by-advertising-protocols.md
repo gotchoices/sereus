@@ -3,7 +3,11 @@ architecture: docs/architecture.md#per-stream-protocol-guard
 files: ../optimystic/packages/db-p2p/src/libp2p-key-network.ts (`servesThisNetwork`, `membershipOf`, the `findCluster` membership filter; read-only sibling), ../Fret/packages/fret/src/service/fret-service.ts (`classifyByProtocols`, the `peer:identify` and `peer:update` listeners; read-only sibling), libp2p 3.3.11 `dist/src/connection.js` (`onIncomingStream`, the `peerStore.merge` before `getHandler`), packages/cadre-core/src/cadre-node.ts (`authorizeInboundControlStream`, `buildControlNodeOptions`, `refreshMembershipGate`), packages/cadre-core/src/control-protocol-guard.ts, packages/integration-tests/src/scenarios/control-stream-authz.integration.ts (the NOTE in step 5)
 repro: verified
 ----
-**Blocked: dependency outside this repo.** Unblocks when Optimystic (and FRET, through it) accepts a membership predicate for the control network's ring and cohort, or a human chooses the Sereus-side workaround below instead.
+**Resolved by `control-nodes-pass-the-membership-predicate`.** Optimystic added `NodeOptions.isNetworkMember`, and the control node now passes it the same rule as its stream gate (`CadreNode.isControlNetworkMember`), so a stranger is never chosen as a control cohort member or coordinator, whatever protocols its peer-store record lists. No reclassify hook was needed: Optimystic reads the predicate on every lookup. `control-stream-authz` step 5 asserts it, including the cluster request this ticket had not observed (6 reached the outsider without the predicate, 0 with it).
+
+**Still upstream:** FRET's ring keeps counting such a stranger a `member` (Optimystic backlog `feat-fret-honours-the-network-membership-predicate`); recorded in `docs/architecture.md` → "Per-stream protocol guard" → "What it does not cover".
+
+The original report follows.
 
 ## What happens
 

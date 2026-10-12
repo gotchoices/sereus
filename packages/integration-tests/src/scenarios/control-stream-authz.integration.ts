@@ -30,7 +30,11 @@
  *      stranger-open or libp2p plumbing (read off its live protocol list, so a
  *      members-only protocol added later is probed without editing this file), a
  *      stream from the outsider is reset with zero response bytes, and the delegate
- *      it announced was not granted.
+ *      it announced was not granted. Those probes, and the outsider advertising the
+ *      owner's cluster protocol, put the party's protocols in the owner's peer-store
+ *      record of the outsider; the owner's control cohort still holds the member and
+ *      not the outsider, and a control write made afterwards sends the outsider no
+ *      cluster request.
  *
  * Redirect robustness: `responsibilityK` defaults to 1 and the party's only
  * repo-serving cluster here is {owner, member}, so the owner is always in the
@@ -41,10 +45,11 @@
  *
  * The outsider deliberately belongs to a DIFFERENT party: making it a second
  * owner of the SAME party would fork the control collection's history and
- * prove nothing about stream authorization. Party membership also keeps it
- * out of the owner's cluster cohort (network-membership scoping in
- * `libp2p-key-network.ts` drops peers that don't serve the party's
- * protocols), so it never participates in consensus either.
+ * prove nothing about stream authorization. What keeps it out of the owner's
+ * cluster cohort is the control node's membership predicate (Optimystic's
+ * `isNetworkMember`, the same rule as the stream gate), not the protocols it
+ * appears to serve: any connected peer can put the party's protocols into the
+ * owner's peer store, and step 5 does.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -58,7 +63,7 @@ import { peerIdFromString as repoPeerIdFromString } from '@optimystic/db-core';
 import type { IPeerNetwork, IBlock } from '@optimystic/db-core';
 import { CadreNode, collectStrandAddrs, controlProtocolClasses, relayedRequestBudgetMs } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
-import { controlNodeConfig, makeOwnOwner, sleep, waitForControlConnection, waitUntil } from '../harness/index.js';
+import { controlNodeConfig, makeOwnOwner, readCohort, sleep, waitForCohortOn, waitForControlConnection, waitUntil } from '../harness/index.js';
 import type { ControlNodeOpts } from '../harness/index.js';
 
 /** Every node here runs control-only (`strandFilter: 'none'`); nothing else differs. */
@@ -86,6 +91,25 @@ const A_LINK_ROUND_TRIP_MS = 100;
 
 /** How long one probe stream may take to be refused before the probe counts it as answered by silence. */
 const PROBE_TIMEOUT_MS = 10_000;
+
+/** How long the control write after the probes may take before the scenario reports it as stalled. */
+const WRITE_BOUND_MS = 30_000;
+
+/** How the control write `work` settled within `ms`, as a label an assertion can print. */
+async function settleWithin(work: Promise<unknown>, ms: number): Promise<string> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timedOut = new Promise<string>((resolve) => {
+		timer = setTimeout(() => resolve(`no end within ${ms}ms`), ms);
+	});
+	try {
+		return await Promise.race([
+			work.then(() => 'written', (error: unknown) => `failed: ${String(error)}`),
+			timedOut,
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 /** How a probe stream ended: refused by the remote (at open or after), closed cleanly, or never settled. */
 type ProbeEnd = 'reset' | 'eof' | 'timeout';
@@ -256,6 +280,17 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			).toBe(true);
 
 			// ── 5. Stranger probe: every members-only protocol A serves ──────────
+			// O also serves A's cluster protocol, counting what reaches it: registering the
+			// handler makes O advertise the protocol through identify, so A's peer store hears
+			// O claim it both ways — advertised here, and recorded from the probes below. O's
+			// own protocol guard finds the id unclassified for O's party (one console.warn) and
+			// admits A, since O has no trusted-owner anchor.
+			const clusterProtocol = `${protocolPrefix}/cluster/1.0.0`;
+			let clusterRequestsAtO = 0;
+			await O.getControlNode()!.handle(clusterProtocol, (stream) => {
+				clusterRequestsAtO++;
+				stream.abort(new Error('outsider refuses cluster requests'));
+			});
 			// Read off A's live protocol list. A protocol with no class is guarded as
 			// members-only too, so it is probed rather than skipped.
 			const classes = controlProtocolClasses(partyId);
@@ -285,12 +320,24 @@ describe('E2E per-stream control-DB stream authorization', () => {
 
 			// The address request's delegate announce did not land.
 			expect(A.hasDelegateAdmission(announcedDelegate)).toBe(false);
-			// NOTE: not asserted: that A's FRET ring and control-database cohort exclude O. They
-			// do not. libp2p records every protocol a peer opens a stream on as one that peer
-			// serves, before any handler runs, and FRET and Optimystic count a peer serving the
-			// party's protocols as a ring and cohort member, so after this probe O is in the
-			// cohort for A's control blocks. Ticket
-			// `stranger-joins-the-control-cohort-by-advertising-protocols`.
+
+			// A's peer store now lists O as serving the party's protocols, yet A's control
+			// cohort holds M and not O: the membership predicate (`isNetworkMember`) overrules
+			// the protocol list. M's presence shows the cohort read is populated.
+			const aNode = A.getControlNode()!;
+			await waitForCohortOn(aNode, 2, { label: 'owner A' });
+			const cohort = await readCohort(aNode, 'owner A');
+			expect(cohort).toContain(mPeerId);
+			expect(cohort).not.toContain(oPeerId);
+			// And a control write after the probes sends O nothing. Bounded rather than
+			// awaited outright: a cohort that included O would stall it on O's refusals.
+			const writeOutcome = await settleWithin(
+				A.authorizePeer(peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString()), WRITE_BOUND_MS
+			);
+			expect({ writeOutcome, clusterRequestsAtO }).toEqual({ writeOutcome: 'written', clusterRequestsAtO: 0 });
+			// NOTE: FRET's own ring still marks O a `member` (upstream Optimystic backlog
+			// `feat-fret-honours-the-network-membership-predicate`); harmless while parties are far
+			// smaller than CONTROL_REPLICATION_BREADTH. Not asserted.
 		} finally {
 			await Promise.allSettled([O?.stop(), M?.stop(), A?.stop()]);
 		}
