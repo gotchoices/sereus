@@ -165,6 +165,23 @@ Each phone runs its own CadreNode. To chat between two phones:
 > party invites an invitee (a different party) into one strand without merging
 > control networks.
 
+## A second install on one phone
+
+Settings → Join my existing cadre → **Choose the app that holds your cadre** opens another Sereus app on the same phone, so trying it needs two. `APP_VARIANT=second` builds this app as a second, separate app (`app.config.ts`): "Sereus P2P Chat (second)", URL scheme `sereus-chat-second`, package and bundle id ending in `.second`, with its own identity and storage.
+
+```bash
+# Cloud build, as for the main dev client (eas.json profile development-second)
+npx eas build --profile development-second --platform android   # or ios
+
+# Or locally. Prebuild rewrites android/ for the variant: run it again without APP_VARIANT before building the main app.
+APP_VARIANT=second npx expo prebuild --clean --platform android
+APP_VARIANT=second npx expo run:android
+```
+
+On Windows PowerShell, set the variable with `$env:APP_VARIANT = "second"` instead.
+
+A development build takes its name, scheme and `extra` from the dev server, not from the build, so the second install needs a dev server of its own started with the same variable: `APP_VARIANT=second yarn start --port 8082` (and `adb reverse tcp:8082 tcp:8082` on Android). Served by the main app's dev server, it would call itself by the main app's name and scheme, and answers meant for it would go to the main app, which refuses them. Both installs share the slug and so the dev client's `exp+sereus-p2p-chat` scheme: open the second one from its own icon, or with `sereus-chat-second://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8082`.
+
 ## Trust model / closed strands
 
 The quick-start uses **open** strands (`Type:'o'`): any connected node can join.
@@ -322,7 +339,8 @@ reference-app-rn/
 │   └── chat-operations.ts  #   SQL helpers (insert/query participants & messages)
 ├── drone.cadre.yaml        # Drone server config for local development
 ├── metro.config.js         # Bundler config: @serfab/cadre-rn/metro plus this repo's linked roots
-└── app.json                # Expo app manifest
+├── app.json                # Expo app manifest
+└── app.config.ts           # Adds the kit plugin and the second install (APP_VARIANT=second)
 ```
 
 ## Key Concepts

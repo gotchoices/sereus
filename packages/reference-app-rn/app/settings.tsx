@@ -19,7 +19,8 @@ import { AddDeviceSection } from '../src/add-device-section';
 import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
 import { JoinCadreSection } from '../src/join-cadre-section';
-import { answerJoinRequest, isAnswerable, OWN_REQUEST_LINE } from '../src/join-link';
+import { answerJoinRequest, isAnswerable, joinResponseAlert } from '../src/join-link';
+import type { JoinResponseOutcome } from '../src/use-link-request';
 import {
   foundingDetail,
   isSlowFounding,
@@ -269,7 +270,10 @@ export default function SettingsScreen() {
   const asking = noCadreYet && (cadre.status === 'idle' || cadre.status === 'error') && cadre.joinFlow === null;
   const firstLaunchJoin = asking && firstLaunchAnswer === 'join';
   // Called after `asking`, which it reads: a request that arrives while this app has no cadre is answered at once.
-  const [linkedRequest, clearLinkedRequest] = useLinkedJoinRequest(showAlert, cadre.identityPeerId, asking);
+  const [linkedRequest, clearLinkedRequest] = useLinkedJoinRequest(showAlert, cadre.identityPeerId, asking, cadre.linkRequestCameBack);
+  // Not while the launch read or a start runs: the join would stop a node the hook has not finished showing.
+  const startSettled = cadre.savedStartRead !== 'reading' && !(cadre.status === 'connecting' && cadre.joinFlow === null);
+  useLinkedJoinResponse(showAlert, cadre.takeJoinResponse, startSettled);
   const nodeCodeHint = linkedNodeCode !== null && (
     <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.waitingNodeCode}>
       {cadre.status === 'connecting'
@@ -564,13 +568,15 @@ function useLinkedNodeCode(): [string | null, (code: string | null) => void] {
  * read, as `useLinkedNodeCode` does.
  *
  * Two cases are settled here, since that section is not mounted in either: this app's own
- * request, and any request while this app has no cadre (`noCadre`), answered `no-cadre` when it
+ * request (`onOwnRequest`: the user picked this app in Android's chooser, or it is the only app
+ * there), and any request while this app has no cadre (`noCadre`), answered `no-cadre` when it
  * says where to. A request that does not decode gets no answer: its reply cannot be trusted.
  */
 function useLinkedJoinRequest(
   showAlert: ShowAlert,
   identityPeerId: () => Promise<string>,
   noCadre: boolean,
+  onOwnRequest: () => void,
 ): [CadreJoinRequest | null, () => void] {
   const { joinRequest } = useLocalSearchParams<{ joinRequest?: string }>();
   const router = useRouter();
@@ -585,7 +591,7 @@ function useLinkedJoinRequest(
       return;
     }
     if (await isOwnRequest(decoded, identityPeerId)) {
-      showAlert('Cannot use this request', OWN_REQUEST_LINE);
+      onOwnRequest();
       return;
     }
     setRequest(decoded);
@@ -608,6 +614,38 @@ function useLinkedJoinRequest(
   }, [request, noCadre]);
 
   return [request, () => setRequest(null)];
+}
+
+/**
+ * The answer to this app's own join request, which an owner app on this phone opened this one
+ * with (`app/+native-intent.tsx` routes it here as the `joinResponse` parameter). The parameter is
+ * cleared as soon as it is read, as `useLinkedNodeCode` does, so the invitation it may carry does
+ * not stay in navigation state. Held until `ready`, then taken; the outcome's alert shows from
+ * here, since Join my existing cadre may not be mounted.
+ */
+function useLinkedJoinResponse(
+  showAlert: ShowAlert,
+  takeJoinResponse: (text: string) => Promise<JoinResponseOutcome>,
+  ready: boolean,
+): void {
+  const { joinResponse } = useLocalSearchParams<{ joinResponse?: string }>();
+  const router = useRouter();
+  const [response, setResponse] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof joinResponse !== 'string' || !joinResponse) return;
+    router.setParams({ joinResponse: undefined });
+    setResponse(joinResponse);
+  }, [joinResponse, router]);
+
+  useEffect(() => {
+    if (response === null || !ready) return;
+    setResponse(null);
+    void takeJoinResponse(response).then((outcome) => {
+      const alert = joinResponseAlert(outcome);
+      if (alert) showAlert(alert.title, alert.message, alert.detail);
+    });
+  }, [response, ready, takeJoinResponse, showAlert]);
 }
 
 /** Whether this app made `request`. False when the identity cannot be read; Add a device or app checks again against the running node. */

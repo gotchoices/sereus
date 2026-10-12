@@ -2,7 +2,8 @@
  * use-join-flow.ts — the part of `useCadreInternal` behind Settings → "Join my existing cadre":
  * the join and the steps after it (moving this app's chats, removing the cadre it left), held as
  * a `JoinFlow` (`join-flow.ts`; docs/reference-app-rn.md → "Joining an Existing Cadre"). The
- * node it switches is `use-cadre.ts`'s, reached through the {@link JoinFlowHost} callbacks.
+ * node it switches is `use-cadre.ts`'s, reached through the {@link JoinFlowHost} callbacks. Asking
+ * an owner app on this phone by link, whose answer joins through this flow, is `use-link-request.ts`.
  */
 
 import { useCallback, useRef, useState } from 'react';
@@ -25,6 +26,7 @@ import {
 } from './cadre-phone';
 import { flowForProgress, JoinCancelledError, type JoinFlow } from './join-flow';
 import { acquireAndRegisterDeviceToken } from './push-wake-native';
+import { useLinkRequest, type LinkRequestActions } from './use-link-request';
 
 const RESPONSE_FOR_ANOTHER_APP = 'This response was made for another app. Copy this app\'s request again and ask for a new one.';
 
@@ -42,7 +44,7 @@ export interface JoinFlowHost {
   setError: (error: string | null) => void;
 }
 
-export interface JoinFlowActions {
+export interface JoinFlowActions extends LinkRequestActions {
   /**
    * Where "Join my existing cadre" is (`join-flow.ts`): set by {@link joinExistingCadre}, and
    * after a launch or Connect into a party whose join an earlier session left unfinished.
@@ -303,8 +305,10 @@ export function useJoinFlow({ holdNoNode, adoptRunningNode, setSavedStartOptions
     setJoinFlow(null);
   }, [setJoinFlow]);
 
+  const linkRequestActions = useLinkRequest(joinFlowRef, joinExistingCadre);
+
   return {
     joinFlow, joinExistingCadre, cancelJoin, retryStrandMove, removeOldCadre, keepOldCadre, dismissJoinFlow,
-    resumeUnfinishedJoin,
+    resumeUnfinishedJoin, ...linkRequestActions,
   };
 }

@@ -14,6 +14,7 @@
 import { CADRE_JOIN_REQUEST_MAX_APP_NAME, encodeCadreJoinRequest, resolveStunServers } from '@serfab/cadre-core';
 import type {
   CadreInvitation,
+  CadreJoinReply,
   CadreInviteStatus,
   CadreNode,
   CreateCadreInvitationOptions,
@@ -47,6 +48,7 @@ import {
   type SavedStart,
 } from '@serfab/cadre-rn/phone-node';
 import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
+import { LinkRequestStore, type SereusApp } from '@serfab/cadre-rn/app-link';
 import { defaultNoiseCryptoMode } from './noise-crypto-config';
 import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE_PREFIX } from './node-local-names';
 import { resolveRelayAddrs } from './relay-config';
@@ -56,6 +58,7 @@ export type { JoinCadreResult, PhoneJoinProgress, PhoneNodeOptions, StrandMoveOu
 // through this module, which its tests mock.
 export { FormerPartyNotEmptyError, StrandMovePendingError } from '@serfab/cadre-rn/phone-node';
 export { StrandMoveNotOwnerError } from '@serfab/cadre-core';
+export { UnsolicitedJoinResponseError } from '@serfab/cadre-rn/app-link';
 /** The saved start, under the name this app's code uses for it. */
 export type SavedStartOptions = SavedStart;
 
@@ -167,16 +170,57 @@ export function identityPeerId(): Promise<string> {
 
 /**
  * The name this app gives itself to another Sereus app, in a join request and in the answer to
- * one: `app.json`'s `name`, cut to the request's limit (the answer's is the same).
+ * one: the app config's `name` (the second install's differs, `app.config.ts`), cut to the
+ * request's limit (the answer's is the same).
  */
 export function ownAppName(): string {
   return (Constants.expoConfig?.name?.trim() || 'Sereus reference app').slice(0, CADRE_JOIN_REQUEST_MAX_APP_NAME);
 }
 
-/** The join request this app shows under "Join my existing cadre": its peer id and {@link ownAppName}. */
-export async function joinRequestText(): Promise<string> {
-  return encodeCadreJoinRequest({ v: 1, peerId: await phone.identityPeerId(), appName: ownAppName() });
+/**
+ * This build's own URL scheme (`scheme` in the app config), at which an owner app on this phone
+ * opens the answer to this app's join request. Throws when the build names none or several, since
+ * a request names one.
+ */
+export function ownScheme(): string {
+  const scheme = Constants.expoConfig?.scheme;
+  if (typeof scheme !== 'string') throw new Error('This build names no single URL scheme, so no other app could answer it');
+  return scheme;
 }
+
+/**
+ * The Sereus apps this build knows beyond the kit's `KNOWN_SEREUS_APPS`: `extra.sereusApps`, which
+ * `app.config.ts` fills from the same list it gives the kit's config plugin. A malformed list
+ * reads as none, logged, leaving the kit's list.
+ */
+export function extraSereusApps(): SereusApp[] {
+  const apps: unknown = Constants.expoConfig?.extra?.sereusApps;
+  if (apps === undefined) return [];
+  if (Array.isArray(apps) && apps.every(isSereusApp)) return apps;
+  console.warn('[cadre-phone] extra.sereusApps is not a list of { name, scheme }; reading it as none:', apps);
+  return [];
+}
+
+function isSereusApp(value: unknown): value is SereusApp {
+  if (typeof value !== 'object' || value === null) return false;
+  const { name, scheme } = value as Record<string, unknown>;
+  return typeof name === 'string' && name.trim() !== '' && typeof scheme === 'string' && scheme !== '';
+}
+
+/**
+ * The join request this app shows under "Join my existing cadre": its peer id and {@link ownAppName}.
+ * A request opened as a link also carries `reply`, where and with which nonce the owner app answers.
+ */
+export async function joinRequestText(reply?: CadreJoinReply): Promise<string> {
+  return encodeCadreJoinRequest({ v: 1, peerId: await phone.identityPeerId(), appName: ownAppName(), reply });
+}
+
+/**
+ * The join request this app opened as a link to an owner app, saved in the node-local database so
+ * the answer is taken even after the OS killed this app meanwhile; the kit's `LinkRequestStore`
+ * takes only the answer to it, once. One per app, as the kit requires.
+ */
+export const linkRequests = new LinkRequestStore(phone.linkRequestSlot());
 
 /** The strand move a join left waiting, or `undefined`. Thin pass-through to the kit's `pendingStrandMove`. */
 export function pendingStrandMove(): Promise<PendingStrandMove | undefined> {

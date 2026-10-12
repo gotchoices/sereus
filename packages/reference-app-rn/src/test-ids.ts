@@ -23,6 +23,18 @@ export const TEST_IDS = {
 		disconnectBtn: 'btn-disconnect',
 		seedInput: 'input-seed',
 		applySeedBtn: 'btn-apply-seed',
+		/** Join my existing cadre: opens the app holding the cadre with this app's request (Android's chooser, or the iOS list below). */
+		chooseOwnerAppBtn: 'btn-choose-owner-app',
+		/** iOS: one installed Sereus app in the list; pass its scheme. */
+		ownerAppOption: (scheme: string) => `btn-owner-app-${scheme}`,
+		/** iOS: the list's line when no other Sereus app is installed, and its Close button. */
+		ownerAppListEmpty: 'text-owner-app-list-empty',
+		ownerAppListCloseBtn: 'btn-owner-app-list-close',
+		/** "Waiting for ‹app› to answer…" while a request opened as a link is open, and its Cancel. */
+		linkRequestWaiting: 'text-link-request-waiting',
+		cancelLinkRequestBtn: 'btn-cancel-link-request',
+		/** This app's own request opened this app again (picked in Android's chooser). */
+		linkRequestReturned: 'text-link-request-returned',
 		/** Join my existing cadre: the `ShareCode` prefix of this app's join request; see `shareCodeText` and `shareCodeCopyBtn`. */
 		joinRequestShare: 'join-request',
 		/** A pasted response or open invitation (`sereus-invite:1.…`), redeemed by `btn-join-cadre`. */

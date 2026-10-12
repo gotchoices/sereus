@@ -13,7 +13,7 @@ import { defineConfig } from 'vitest/config';
  *    (effect lifecycle, cold-start re-sync, state propagation), and `useChat` to
  *    exercise its poll's single-flight guard. The native modules the hooks would
  *    otherwise pull (`cadre-phone`, `app-state`, `push-wake-native`, `chat-strand`,
- *    `chat-operations`, `@serfab/cadre-core`) are `vi.mock`ed in the specs, so
+ *    `chat-operations`, `join-link`, `@serfab/cadre-core`) are `vi.mock`ed in the specs, so
  *    react-native is never loaded here either — node environment is enough for
  *    `react-test-renderer`.
  *

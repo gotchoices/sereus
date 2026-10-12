@@ -7,7 +7,7 @@
  * Strategy: mount the real hook with `react-test-renderer` (node env — no DOM)
  * while mocking the modules that would otherwise pull react-native / expo /
  * libp2p (`cadre-phone`, `app-state`, `push-wake-native`, `chat-strand`,
- * `@serfab/cadre-core`). The runner itself is the REAL one — we drive it through
+ * `join-link`, `@serfab/cadre-core`). The runner itself is the REAL one — we drive it through
  * a fake `AppState` + a mock node singleton and assert the observable wiring:
  *
  *  - runner created when the node starts, torn down on unmount;
@@ -189,6 +189,8 @@ vi.mock('../../src/cadre-phone', () => ({
   joinCadreByInvitation: vi.fn(),
   identityPeerId: vi.fn(),
   joinRequestText: vi.fn(),
+  // Read once at mount for the waiting line; no request is open.
+  linkRequests: { current: vi.fn(async () => null) },
   dialPeer: vi.fn(async () => {}),
   createOpenInvitation: vi.fn(),
   publishFormationInvite: vi.fn(),
@@ -198,6 +200,10 @@ vi.mock('../../src/cadre-phone', () => ({
 vi.mock('../../src/push-wake-native', () => ({
   acquireAndRegisterDeviceToken: vi.fn(async () => {}),
   clearDeviceTokenRegistration: vi.fn(async () => {}),
+}));
+
+vi.mock('../../src/join-link', () => ({
+  openOwnerApp: vi.fn(),
 }));
 
 vi.mock('../../src/chat-strand', () => ({

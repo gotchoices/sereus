@@ -4,19 +4,23 @@
  * (docs/reference-app-rn.md → "Joining an existing cadre"). The other side is the owner app's
  * "Add a device or app" (`add-device-section.tsx`).
  *
- * The request comes from the hook (`joinRequestText`) and a pasted or scanned response enters
- * through the hook's `joinExistingCadre`, which also refuses a response made for another app, so
- * a second way in (a link from another app on this phone) needs no logic of its own here. From
- * Join on, the flow the hook holds replaces the inputs.
+ * "Choose the app that holds your cadre" opens an owner app on this phone with this app's request
+ * (the hook's `askOwnerApp`); its answer comes back as a link Settings takes, since this section
+ * may not be mounted then. The request and the paste field below it are the way in from another
+ * device, and the fallback. A pasted or scanned response enters through the hook's
+ * `joinExistingCadre`, which also refuses a response made for another app. From Join on, the flow
+ * the hook holds replaces the inputs.
  */
 
 import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import { CADRE_INVITATION_PREFIX } from '@serfab/cadre-core';
+import type { SereusApp } from '@serfab/cadre-rn/app-link';
 import { useCadre } from './cadre-context';
 import { CodeScanner } from './code-scanner';
 import { joinFailureAlert } from './join-failure';
 import { joinFlowText, type JoinFlow } from './join-flow';
+import { COPY_REQUEST_LINE, installedOwnerApps } from './join-link';
 import { Btn, controlStyles, Fact, LabelledInput, Section, shortPeerId } from './settings-controls';
 import { ShareCode } from './share-code';
 import { TEST_IDS } from './test-ids';
@@ -26,6 +30,9 @@ const FIRST_LAUNCH_LINE = 'If another Sereus app already holds your cadre, this 
 
 const SCAN_HINT = 'Point the camera at the invitation the app holding your cadre shows.';
 const SCAN_OTHER_CODE_HINT = 'That is not an invitation. Point the camera at the invitation the app holding your cadre shows under Add a device or app.';
+
+const NO_OTHER_APP_LINE = `No other Sereus app is installed on this phone. ${COPY_REQUEST_LINE}`;
+const CAME_BACK_LINE = 'That opened this app again. Choose the app that holds your cadre, or copy this app\'s request into it.';
 
 type ShowAlert = (title: string, message: string, detail?: string) => void;
 
@@ -70,6 +77,7 @@ export function JoinCadreSection({ showAlert, firstLaunch = false }: {
 				<JoinFlowView flow={cadre.joinFlow} />
 			) : (
 				<>
+					<AskOwnerApp showAlert={showAlert} />
 					<RequestView />
 					<LabelledInput label="Paste response or invitation" value={invitationText} onChangeText={setInvitationText} placeholder="sereus-invite:1.…" multiline testID={TEST_IDS.settings.cadreInvitationInput} />
 					<Btn label="Scan" onPress={() => setScannerOpen(true)} color="#444" testID={TEST_IDS.settings.scanCadreInvitationBtn} />
@@ -86,6 +94,85 @@ export function JoinCadreSection({ showAlert, firstLaunch = false }: {
 			/>
 		</Section>
 	);
+}
+
+/**
+ * Opens the app holding the cadre with this app's request: on Android through the system chooser,
+ * on iOS from a list of the other Sereus apps installed here. Then the waiting line, with Cancel.
+ */
+function AskOwnerApp({ showAlert }: { showAlert: ShowAlert }) {
+	const cadre = useCadre();
+	// iOS: the installed apps to choose from, while the list is open.
+	const [apps, setApps] = useState<SereusApp[] | 'reading' | null>(null);
+
+	const ask = async (app: SereusApp | null) => {
+		setApps(null);
+		try {
+			if (await cadre.askOwnerApp(app)) return;
+			showAlert(`Could not open ${app?.name ?? 'an app that holds your cadre'}`, COPY_REQUEST_LINE);
+		} catch (err) {
+			console.warn('[settings] could not ask the app holding the cadre:', err);
+			showAlert('Could not ask the app that holds your cadre', COPY_REQUEST_LINE, err instanceof Error ? err.message : String(err));
+		}
+	};
+
+	const choose = async () => {
+		if (Platform.OS !== 'ios') {
+			await ask(null);
+			return;
+		}
+		setApps('reading');
+		try {
+			setApps(await installedOwnerApps());
+		} catch (err) {
+			console.warn('[settings] could not list the Sereus apps on this phone:', err);
+			setApps(null);
+			showAlert('Could not list the apps on this phone', COPY_REQUEST_LINE, err instanceof Error ? err.message : String(err));
+		}
+	};
+
+	return (
+		<View>
+			<Btn label="Choose the app that holds your cadre" onPress={() => void choose()} disabled={apps === 'reading'} testID={TEST_IDS.settings.chooseOwnerAppBtn} />
+			{Array.isArray(apps) ? <OwnerAppList apps={apps} onPick={(app) => void ask(app)} onClose={() => setApps(null)} /> : null}
+			<LinkRequestStatus />
+		</View>
+	);
+}
+
+function OwnerAppList({ apps, onPick, onClose }: { apps: SereusApp[]; onPick: (app: SereusApp) => void; onClose: () => void }) {
+	return (
+		<View style={styles.appList}>
+			{apps.length === 0 ? (
+				<Text style={controlStyles.hint} testID={TEST_IDS.settings.ownerAppListEmpty}>{NO_OTHER_APP_LINE}</Text>
+			) : (
+				<>
+					<Text style={controlStyles.label}>Which app holds your cadre?</Text>
+					{apps.map((app) => (
+						<Btn key={app.scheme} label={app.name} onPress={() => onPick(app)} color="#2a2a3e" testID={TEST_IDS.settings.ownerAppOption(app.scheme)} />
+					))}
+				</>
+			)}
+			<Btn label="Close" onPress={onClose} color="#444" testID={TEST_IDS.settings.ownerAppListCloseBtn} />
+		</View>
+	);
+}
+
+/** The open request's waiting line and Cancel, or the line saying this app's own request opened it. */
+function LinkRequestStatus() {
+	const { linkRequest, linkRequestReturned, cancelLinkRequest } = useCadre();
+	if (linkRequest) {
+		return (
+			<>
+				<Text style={controlStyles.slowHint} testID={TEST_IDS.settings.linkRequestWaiting}>
+					Waiting for {linkRequest.ownerAppName ?? 'the app you chose'} to answer…
+				</Text>
+				<Btn label="Cancel" onPress={() => void cancelLinkRequest()} color="#444" testID={TEST_IDS.settings.cancelLinkRequestBtn} />
+			</>
+		);
+	}
+	if (linkRequestReturned) return <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.linkRequestReturned}>{CAME_BACK_LINE}</Text>;
+	return null;
 }
 
 function RequestView() {
@@ -189,4 +276,5 @@ function isInvitation(text: string): boolean {
 
 const styles = StyleSheet.create({
 	line: { color: '#fff', fontSize: 14, lineHeight: 20, marginBottom: 8 },
+	appList: { marginTop: 8, marginBottom: 4 },
 });

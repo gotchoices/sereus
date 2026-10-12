@@ -147,7 +147,7 @@ Switching modes is Disconnect → choose → Connect, which builds a new node. T
 
 ### Release builds: cleartext WebSocket
 
-Android refuses connections without TLS unless the app opts in, and it counts `ws://` as cleartext by its scheme. React Native's template opts in for debug builds only (`android/app/src/debug/AndroidManifest.xml`), so without an opt-in a debug build dials `/ws` addresses and a release build from the same project dials none of them: no drone, no cadre-host node, no relay (gotchoices/sereus#38). The kit's Expo config plugin opts in for every build. `app.json` lists `"@serfab/cadre-rn"` under `plugins`, and the plugin sets `android:usesCleartextTraffic="true"` on the main manifest's `<application>` element at prebuild. [The kit's README](../packages/cadre-rn/README.md#config-plugin-expo) has the line to add by hand in a bare React Native app.
+Android refuses connections without TLS unless the app opts in, and it counts `ws://` as cleartext by its scheme. React Native's template opts in for debug builds only (`android/app/src/debug/AndroidManifest.xml`), so without an opt-in a debug build dials `/ws` addresses and a release build from the same project dials none of them: no drone, no cadre-host node, no relay (gotchoices/sereus#38). The kit's Expo config plugin opts in for every build. `app.config.ts` adds `"@serfab/cadre-rn"` to `app.json`'s `plugins`, and the plugin sets `android:usesCleartextTraffic="true"` on the main manifest's `<application>` element at prebuild. [The kit's README](../packages/cadre-rn/README.md#config-plugin-expo) has the line to add by hand in a bare React Native app.
 
 **Why this is safe.** Every libp2p connection is encrypted and authenticated by the Noise handshake against the peer id in the dialed address, so a party between the phone and the node can neither read the traffic nor pose as the node. TLS underneath would add a dependency on certificate authorities and no security, and Sereus is designed to need no certificate authority. A claim's secret does not cross the wire either: `claimNode` sends an HMAC proof of it ([`claim-proof.ts`](../packages/cadre-core/src/claim-proof.ts)) inside the Noise channel.
 
@@ -272,6 +272,10 @@ The Maestro flows launch with `clearState: true`, so they always see a fresh, id
 ### Dissolve marker (app-private LevelDB)
 
 The party whose local storage the kit is deleting, while `PhoneNode.dissolveFormerParty` removes the cadre this app founded and left ([architecture.md → Dissolving the party it left](architecture.md#dissolving-the-party-it-left)). One record under the kit's default key `dissolving-party` in the same `sereus-node-local` database, beside the start options and, like them, one per install rather than party-scoped. It is written before the first deletion and deleted after the start options stop naming that party as `formerPartyId`, so a launch after a crash partway finishes the deletion before it starts the node. Settings → Join my existing cadre runs the dissolve after a join ([Joining an Existing Cadre](#joining-an-existing-cadre)); `cadre-phone.ts` passes rn-leveldb's `LevelDB.destroyDB` to the kit for it.
+
+### Open link request (app-private LevelDB)
+
+The join request this app opened as a link to an owner app on this phone and has not taken an answer to: `{ nonce, ownerAppName, startedAtMs }` (the kit's `LinkRequestStore` in `@serfab/cadre-rn/app-link`, over `PhoneNode.linkRequestSlot()`). One record under the kit's default key `link-join-request` in the same `sereus-node-local` database, one per install. It is saved before the owner app opens, so an answer that cold-starts this app after the OS killed it is still taken; it is cleared by Cancel, by the answer it takes, and when this app's own request opens it. A record older than 30 minutes reads as none. The nonce is what an answer must carry, so the record is kept out of logs; nothing in it is trust-bearing beyond that. Read at launch for the waiting line ([Joining an Existing Cadre](#joining-an-existing-cadre)) and again by each answer.
 
 ## cadre-core React Native Compatibility
 
@@ -417,10 +421,11 @@ The app lives at `packages/reference-app-rn` as a workspace member. Yarn's works
 packages/reference-app-rn/
   index.js                    # Custom entry: @serfab/cadre-rn polyfills + boot check, then expo-router/entry
   app.json                    # Expo config (SDK 53, custom dev client)
+  app.config.ts               # app.json plus the kit plugin with its appLinks extras, and the APP_VARIANT=second install
   package.json                # workspace:^ deps on cadre-core, db-p2p, etc.
   tsconfig.json
   metro.config.js             # withCadreMetro(...) with this repo's linked roots
-  eas.json                    # EAS Build profiles (development, preview)
+  eas.json                    # EAS Build profiles (development, development-second, preview)
   app/
     _layout.tsx               # Expo Router root layout
     index.tsx                 # Chat screen (message list + input)
@@ -442,12 +447,14 @@ packages/reference-app-rn/
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, seed application, strands, invitations
     use-join-flow.ts          # Its part behind Join my existing cadre: the join, moving chats, removing the old cadre
+    use-link-request.ts       # Its part behind Choose the app that holds your cadre: the request opened as a link, the answer taken
+    join-link.ts              # The links to and from another Sereus app on this phone, and the words for an answer
     join-flow.ts              # The steps after Join (joining, moving chats, removing the old cadre) and their words
     join-failure.ts           # Plain words for each way a join can fail before admission (NS carries a copy)
     settings-controls.tsx     # Section, button, input and styles shared by Settings and its sections
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
     add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw
-    join-cadre-section.tsx    # Settings → Join my existing cadre: this app's request, paste or scan the answer, the join's steps
+    join-cadre-section.tsx    # Settings → Join my existing cadre: choose the app holding the cadre, this app's request, paste or scan the answer, the join's steps
     code-scanner.tsx          # Full-screen camera (expo-camera) that reads a QR code of the kind its caller accepts
     share-code.tsx            # Text to hand another app: QR code (react-native-svg), Copy (expo-clipboard), selectable text
     qrcode-core.d.ts          # Types for importing the qrcode package's encoder without its renderers
@@ -782,7 +789,7 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 - **Before the node is connected:** the code waits. While auto-start is still connecting, the prompt opens once it connects; otherwise the Node card says a code is waiting and asks for Connect.
 - **During a claim or with a prompt already open:** the new code is ignored, with a note in the section. One claim at a time.
 - **The intent filter is native configuration:** a dev client built before it does not offer the app to the camera; rebuild it (§ When Native Rebuild Is Needed).
-- **Join requests open the app too:** on Android the kit's config plugin (`appLinks` on `@serfab/cadre-rn` in `app.json`) registers the `sereus-join-request` scheme, so a join request's QR code read by the camera opens the app chooser, and the request goes to Add a device or app ([Opened from another app on this phone](#adding-a-device-or-app)).
+- **Join requests open the app too:** on Android the kit's config plugin (`appLinks` on `@serfab/cadre-rn` in `app.config.ts`) registers the `sereus-join-request` scheme, so a join request's QR code read by the camera opens the app chooser, and the request goes to Add a device or app ([Opened from another app on this phone](#adding-a-device-or-app)).
 - **iOS is left out on purpose:** when two iOS apps register the same custom scheme, which one opens is undefined, so a code could open a Sereus app whose cadre the user did not mean. `sereus-join` is therefore not in `expo.scheme`, and iOS users scan inside the app.
 
 ### Not covered here
@@ -824,9 +831,9 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 - **One at a time:** a request arriving while a prompt is open or an invitation is being made is ignored with a note in the section, and gets no answer.
 - **When the asking app cannot be opened** (uninstalled meanwhile, or the answer would be too long for a link), the invitation shows for copying as for a pasted request, under "Could not open ‹app›; copy this invitation into it". An unused invitation expires, or can be withdrawn.
 - **A request without a reply** (a request QR code read by the Android system camera, or a plain link) is handled exactly as a pasted one: the usual prompt, and the invitation shows for copying.
-- **This app's own request** coming back is refused with the own-request alert.
+- **This app's own request** coming back means the user picked this app in Android's chooser: Join my existing cadre cancels its open request and says so ([Joining an Existing Cadre](#joining-an-existing-cadre)).
 
-Neither side has had a device run yet; `tickets/blocked/rn-device-run-join-existing-cadre.md` covers both.
+Neither side has had a device run yet: `tickets/blocked/rn-device-run-join-existing-cadre.md` covers copy and paste, and `tickets/blocked/rn-device-run-same-phone-join-by-link.md` the links between two apps on one phone.
 
 
 ## Joining an Existing Cadre
@@ -835,7 +842,17 @@ Neither side has had a device run yet; `tickets/blocked/rn-device-run-join-exist
 
 **First launch.** While the app has no cadre, the Node card asks "Do you already use Sereus apps?" in place of the Connect form, so the app never founds a cadre it would then have to leave. It asks when the launch read of the saved start (`savedStartRead` in `use-cadre.ts`) found none, no node is running or starting (status `idle`, or `error` after a start that failed) and no join is on screen. **Yes, join my cadre** shows the join section with no node running (nothing moves and nothing is removed), and **Back** returns to the question; **No, start fresh** shows the Connect form. The answer is screen state: until a start is saved (by Connect or by a join), the question comes back at the next launch. A launch read that failed does not ask; its error line explains, and the Connect form is the recovery.
 
-**Request and response** (recommended). The section shows this app's join request (`sereus-join-request:1.…`) as a QR code, **Copy** and text, and under it the peer id shortened as **Code**, which the other app's approval prompt shows for the user to compare. The request carries the app's peer id (`identityPeerId()`, readable with no node running) and `app.json`'s `name`. The other app pastes or scans it under **Add a device or app → Paste request** and makes an invitation for this app alone; that response is pasted, or scanned with **Scan**, into **Paste response or invitation**, then **Join**. A response made for another app's request is refused before anything stops.
+**Choose the app that holds your cadre** (recommended on one phone). The button at the top of the section opens the owner app on this phone with this app's request, and the owner app opens this one back with its answer, so the user confirms once there and copies nothing ([architecture.md → Between apps on one phone](architecture.md#between-apps-on-one-phone)). The hook's `askOwnerApp` (`use-link-request.ts`) saves the open request first ([Open link request](#open-link-request-app-private-leveldb)), then opens the other app with a request carrying `reply`: this build's own scheme and the request's nonce.
+
+- **Android** opens the request text itself, and Android's app chooser lists every installed app that answers join requests, this one included. Once the user ticks **Always** for one app, later requests go to it with no chooser; the default is cleared under that app's "Open by default" in Android's app settings.
+- **iOS** lists the Sereus apps `canOpenURL` reports installed, this app left out: the kit's `KNOWN_SEREUS_APPS` and this build's `extra.sereusApps` ([A second install for one phone](#device-test-runs)). With none, the list says no other Sereus app is installed and to copy this app's request instead.
+- **Waiting.** While the request is open the section says "Waiting for ‹app› to answer…" ("…for the app you chose…" on Android) with **Cancel**, and the paste field stays below. A relaunch reads the open request and shows the same line, which covers coming back by the app switcher. When the other app cannot be opened, the request is cancelled and an alert says so, with the copy-and-paste way in.
+- **The answer** is a link `app/+native-intent.tsx` routes to Settings (`joinResponse`), which takes it once no launch read or start is running, whether or not this section is on screen, and shows the alerts itself (`joinResponseAlert` in `join-link.ts`). An invitation runs the join exactly as a pasted response does, so the steps and failures below apply. A refusal shows "Not joined" with the reason: the other app did not allow it (`denied`), has no cadre yet (`no-cadre`), is a member and not an owner (`not-owner`), or already holds this app (`already-member`); all but the last add that this app's request can still be copied into it.
+- **Answers not taken.** The request takes one answer within 30 minutes. One that arrives when none is open (after Cancel, expiry, or an earlier answer) or that answers another request is refused with "This answer was not for a request this app has open"; one that does not decode, or a saved request that cannot be read, with "This app could not take this answer" and the error. While a join is on screen the answer is not used ("A join is already under way") and the request stays open. An invitation the owner app made for a request cancelled here stays outstanding there until it expires or is withdrawn; it is targeted at this app, so nobody else can use it.
+- **Killed meanwhile.** The open request is saved, so an app the OS killed while the owner app's prompt was open starts from the answer link and joins. On a phone with a saved start, the join waits for the launch's start to finish; on a first launch it starts with nothing running, and the join section shows while it runs.
+- **This app's own request.** Picked in Android's chooser, or the only app there, this app receives its own request. It cancels the open request and says "That opened this app again. Choose the app that holds your cadre, or copy this app's request into it." until the next **Choose**.
+
+**Request and response** (from another device, and the fallback on one phone). The section shows this app's join request (`sereus-join-request:1.…`) as a QR code, **Copy** and text, and under it the peer id shortened as **Code**, which the other app's approval prompt shows for the user to compare. The request carries the app's peer id (`identityPeerId()`, readable with no node running) and the app config's `name`. The other app pastes or scans it under **Add a device or app → Paste request** and makes an invitation for this app alone; that response is pasted, or scanned with **Scan**, into **Paste response or invitation**, then **Join**. A response made for another app's request is refused before anything stops.
 
 **Open invitation.** An invitation from the other app's **Copy invitation** goes into the same field: both are `sereus-invite:1.` text.
 
@@ -898,6 +915,8 @@ Ticket, doc and commit writes never need to pause. On `yarn start`, the writes t
 
 One reload does not come from a write. If the app's connection to Metro drops (Wi-Fi, a lost `adb reverse`, Metro restarted), the next time the app loads a module bundled lazily (a dynamic `import()` fetched from Metro, such as optimystic's `import('p2p-fret')`), it reloads with `Bundle Splitting – Metro disconnected`.
 
+**A second install for one phone.** Joining by link ([Joining an Existing Cadre](#joining-an-existing-cadre), "Choose the app that holds your cadre") needs two Sereus apps on one device. `APP_VARIANT=second` builds this app as a separate one (`app.config.ts`): name "Sereus P2P Chat (second)", scheme `sereus-chat-second`, package and bundle id ending in `.second`, so it has its own identity, storage and links. `app.config.ts` keeps the one list of such extra apps and gives it to the kit plugin (`appLinks.extraApps`, the iOS schemes it may query) and to the app (`extra.sereusApps`, read by `extraSereusApps` in `cadre-phone.ts`; a malformed list reads as none, logged). Build it with `eas build --profile development-second`, or locally as the [README](../packages/reference-app-rn/README.md#a-second-install-on-one-phone) shows. A development build takes its name, scheme and `extra` from the dev server's manifest rather than from the build (expo-constants prefers the dev launcher's manifest), so the second install needs its own dev server started with the same variable, on another port: served by the main app's, it would name the main app's scheme in its request, and its answer would go to the main app, which refuses it.
+
 **Frozen dev server.** `yarn workspace @serfab/reference-app-rn start:frozen` runs `expo start --dev-client` with `CI=1`, which turns Metro's file watching off. No write anywhere reaches the phone, so other work does not need to pause. Differences from `yarn start`:
 
 - A reload (from the dev menu or a red box) serves each module as Metro first read it, not as it is on disk now. To put a rebuilt dependency on the phone, restart Metro.
@@ -945,7 +964,7 @@ The observer's block and the phone's `[reload]` line appear at the same moment. 
 
 ### When Native Rebuild Is Needed
 
-Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. So are `expo-clipboard` and `react-native-svg` (an invitation's Copy button and QR code): a dev client built before them fails when Settings loads, because Settings imports the section that shows invitations. A change to `app.json`'s native configuration, such as the Android intent filter for `sereus-join` codes or the kit plugin's `appLinks` option (the `sereus-join-request` scheme on Android, the other Sereus apps' schemes iOS may query), is one too: it takes effect only in a dev client built after it. Otherwise, JS-only iteration via the dev client.
+Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. So are `expo-clipboard` and `react-native-svg` (an invitation's Copy button and QR code): a dev client built before them fails when Settings loads, because Settings imports the section that shows invitations. A change to the native configuration in `app.json` or `app.config.ts`, such as the Android intent filter for `sereus-join` codes or the kit plugin's `appLinks` option (the `sereus-join-request` scheme on Android, the other Sereus apps' schemes iOS may query, the second install among them), is one too: it takes effect only in a dev client built after it. Otherwise, JS-only iteration via the dev client.
 
 ### Tracing a strand founding
 
