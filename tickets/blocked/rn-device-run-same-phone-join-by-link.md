@@ -1,16 +1,18 @@
 description: Someone with an Android phone and an iPhone (or emulator and simulator), each with two copies of the phone app installed, needs to try joining one app's cadre from the other app on the same phone by tapping a button instead of copying and pasting, because both halves were written and checked without a phone.
 architecture: docs/architecture.md#between-apps-on-one-phone
-files: packages/reference-app-rn/src/use-link-request.ts, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/join-link.ts, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/app.config.ts, packages/reference-app-rn/README.md, docs/reference-app-rn.md, docs/architecture.md
+files: packages/reference-app-rn/src/use-link-request.ts, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/join-link.ts, packages/reference-app-rn/src/recommend-app-section.tsx, packages/reference-app-rn/src/recommended-by.ts, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/app.config.ts, packages/reference-app-rn/README.md, docs/reference-app-rn.md, docs/architecture.md
 repro: none
 ----
 
 # Joining by link between two apps on one phone: nobody has tried it on a device
 
-**Blocked on hardware and a person outside this repository:** an Android device or emulator and an iOS device or simulator, each with both installs of `reference-app-rn` (the main one and the `APP_VARIANT=second` one), plus a cadre-host node or the e2e drone as the cadre's always-on machine. Unblock by running the table below and recording what it shows.
+**Blocked on hardware and a person outside this repository:** an Android device or emulator and an iOS device or simulator, each with both installs of `reference-app-rn` (the main one and the `APP_VARIANT=second` one), plus a cadre-host node or the e2e drone as the cadre's always-on machine. Unblock by running the tables below and recording what they show.
+
+**One case needs more than that: the Play install referrer.** It needs the second app published on a Google Play testing track, with an `androidPackage` in its known-apps entry, and is to be run once a Sereus app is on a track. Every other case runs with development or preview builds.
 
 ## Why this needs a person
 
-Three tickets landed with no device: `phone-kit-same-phone-join-links` (the kit's link formats, the open-request record and the config plugin's `appLinks`), `reference-app-rn-answers-join-requests-by-link` (the owner app's Allow / Deny prompt and its answer by link) and `reference-app-rn-asks-owner-app-by-link` (the asking app's **Choose the app that holds your cadre**, the waiting line, taking the answer, and the second install). Their codecs and the open-request check have Node tests; nothing has delivered a link between two installed apps, shown Android's chooser, or cold-started an app from a link.
+Five tickets landed with no device: `phone-kit-same-phone-join-links` (the kit's link formats, the open-request record and the config plugin's `appLinks`), `reference-app-rn-answers-join-requests-by-link` (the owner app's Allow / Deny prompt and its answer by link), `reference-app-rn-asks-owner-app-by-link` (the asking app's **Choose the app that holds your cadre**, the waiting line, taking the answer, and the second install), `reference-app-rn-recommends-an-app` (the owner app's **Recommend an app** and its answer without a prompt) and `reference-app-rn-joins-the-app-that-recommended-it` (the recommended app's named first-launch question and its prompt). Their codecs and the open-request check have Node tests; nothing has delivered a link between two installed apps, shown Android's chooser, or cold-started an app from a link.
 
 ## Setup
 
@@ -36,6 +38,19 @@ Follow `docs/reference-app-rn.md` → "Joining an Existing Cadre" and "Adding a 
 | Response link length | After an Allow, read the length of the answer link from a temporary log line (the length only, never the link) | Recorded against the kit's estimate of about 4 KB (`CADRE_LINK_MAX_LENGTH` is 32 KB) |
 
 Also note whether `app/+native-intent.tsx` receives the full URL for the iOS `<scheme>://cadre-join-request/…` and `…/cadre-join-response/…` forms, how long the hand-over takes each way, and whether the wording fits the screen.
+
+### Recommending an app
+
+Here A recommends B from **Add a device or app → Recommend an app**. In this repo the list shows only the second install, as **Open ‹app›** when it is installed, since no known-apps entry has a store id yet.
+
+| Case | How | Expected |
+|---|---|---|
+| B fresh, recommended | B installed and never connected. A (main install) → Recommend an app → **Open** the second install → **Allow and open** | B opens with "‹A› suggested this app. Join the cadre it holds?" → **Join through ‹A›** → B joins with no prompt in A. A shows "Sent an invitation to ‹B›, which you allowed when you recommended it" |
+| B already holds a cadre | The same, with B connected to a cadre of its own | B shows "‹A› suggests joining the cadre it holds" → **Join through ‹A›** → B joins, its chats move and its old cadre is removed |
+| Withdrawn | As in the first case, but before tapping **Join through ‹A›** in B, switch to A and **Withdraw** B in Allowed to join | A shows its ordinary Allow / Deny prompt |
+| After the hour | As in the first case, but before tapping **Join through ‹A›** in B, set the phone clock forward more than an hour | A shows its ordinary Allow / Deny prompt |
+| iOS fresh install | iOS: Recommend and Allow in A, then in a fresh B: **Yes, join my cadre** → Choose → A | A answers without a prompt |
+| Play install referrer (needs a Play testing track; see the opening lines) | B published on a testing track with its `androidPackage` listed; uninstall B; A → Recommend an app → **Get** → install from Play → open B | B opens with the named question within 2 seconds of the Settings screen showing |
 
 ## If the run finds bugs
 

@@ -5315,6 +5315,7 @@ __metadata:
     "@types/react": "npm:~19.0.10"
     "@types/react-test-renderer": "npm:^19.0.0"
     expo: "npm:~53.0.0"
+    expo-application: "npm:~6.1.5"
     expo-camera: "npm:~16.1.11"
     expo-clipboard: "npm:~7.1.5"
     expo-constants: "npm:~17.1.8"

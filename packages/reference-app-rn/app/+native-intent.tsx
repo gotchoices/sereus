@@ -7,6 +7,8 @@
  * - A join request another Sereus app opened this one with (`@serfab/cadre-rn/app-link`'s
  *   links) becomes `/settings?joinRequest=…`, which Add a device or app answers, and the
  *   answer to this app's own request becomes `/settings?joinResponse=…`.
+ * - The link an owner app opens to recommend this one names that app's scheme, and becomes
+ *   `/settings?recommendedBy=…`, where Settings offers to join through that app.
  *
  * A node code carries the node's claim secret and an answer can carry an invitation: never log
  * the path.
@@ -22,7 +24,6 @@ export function redirectSystemPath({ path }: { path: string; initial: boolean })
 	switch (link.kind) {
 		case 'join-request': return `/settings?joinRequest=${encodeURIComponent(link.text)}`;
 		case 'join-response': return `/settings?joinResponse=${encodeURIComponent(link.text)}`;
-		// Routed by `reference-app-rn-joins-the-app-that-recommended-it`; until then it opens the app as any other link.
-		case 'recommended-by': return path;
+		case 'recommended-by': return `/settings?recommendedBy=${encodeURIComponent(link.text)}`;
 	}
 }

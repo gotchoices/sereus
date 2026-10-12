@@ -20,6 +20,12 @@ export const TEST_IDS = {
 		firstLaunchFreshBtn: 'btn-first-launch-fresh',
 		/** After Yes: back to the question. */
 		firstLaunchBackBtn: 'btn-first-launch-back',
+		/** The question when another Sereus app recommended this one: Join through ‹app›, or Other choices for the plain question. */
+		firstLaunchRecommendedJoinBtn: 'btn-first-launch-recommended-join',
+		firstLaunchOtherChoicesBtn: 'btn-first-launch-other-choices',
+		/** The prompt when an app that recommended this one opens it while it has a cadre: Join through ‹app›, or Not now. */
+		recommendedJoinBtn: 'btn-recommended-join',
+		recommendedNotNowBtn: 'btn-recommended-not-now',
 		disconnectBtn: 'btn-disconnect',
 		seedInput: 'input-seed',
 		applySeedBtn: 'btn-apply-seed',

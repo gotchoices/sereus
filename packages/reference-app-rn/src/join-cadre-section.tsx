@@ -109,13 +109,7 @@ function AskOwnerApp({ showAlert }: { showAlert: ShowAlert }) {
 
 	const ask = async (app: SereusApp | null) => {
 		setApps(null);
-		try {
-			if (await cadre.askOwnerApp(app)) return;
-			showAlert(`Could not open ${app?.name ?? 'an app that holds your cadre'}`, COPY_REQUEST_LINE);
-		} catch (err) {
-			console.warn('[settings] could not ask the app holding the cadre:', err);
-			showAlert('Could not ask the app that holds your cadre', COPY_REQUEST_LINE, err instanceof Error ? err.message : String(err));
-		}
+		await askOwnerAppOrAlert(cadre.askOwnerApp, app, showAlert);
 	};
 
 	const choose = async () => {
@@ -140,6 +134,26 @@ function AskOwnerApp({ showAlert }: { showAlert: ShowAlert }) {
 			<LinkRequestStatus />
 		</View>
 	);
+}
+
+/**
+ * Open the app holding the cadre with this app's request through the hook's `askOwnerApp`: `app` by
+ * its scheme, or Android's chooser for null. On Android, an app that would not open by its scheme is
+ * looked for in the chooser. An alert says when nothing opened, with the copy-and-paste way in.
+ */
+export async function askOwnerAppOrAlert(
+	askOwnerApp: (app: SereusApp | null) => Promise<boolean>,
+	app: SereusApp | null,
+	showAlert: ShowAlert,
+): Promise<void> {
+	try {
+		if (await askOwnerApp(app)) return;
+		if (app && Platform.OS === 'android' && await askOwnerApp(null)) return;
+		showAlert(`Could not open ${app?.name ?? 'an app that holds your cadre'}`, COPY_REQUEST_LINE);
+	} catch (err) {
+		console.warn('[settings] could not ask the app holding the cadre:', err);
+		showAlert('Could not ask the app that holds your cadre', COPY_REQUEST_LINE, err instanceof Error ? err.message : String(err));
+	}
 }
 
 function OwnerAppList({ apps, onPick, onClose }: { apps: SereusApp[]; onPick: (app: SereusApp) => void; onClose: () => void }) {

@@ -1,11 +1,12 @@
 /**
- * Settings screen — connect to cadre, join an existing cadre, add a device or app, apply seed,
- * create strand, add an always-on node.
+ * Settings screen — connect to cadre, join an existing cadre (the app that recommended this one
+ * among them), add a device or app, apply seed, create strand, add an always-on node.
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,11 +15,12 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { decodeCadreJoinRequest, type CadreJoinRequest, type RelayReservationStatus } from '@serfab/cadre-core';
+import type { SereusApp } from '@serfab/cadre-rn/app-link';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { AddDeviceSection } from '../src/add-device-section';
 import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
-import { JoinCadreSection } from '../src/join-cadre-section';
+import { askOwnerAppOrAlert, JoinCadreSection } from '../src/join-cadre-section';
 import { answerJoinRequest, isAnswerable, joinResponseAlert } from '../src/join-link';
 import type { JoinResponseOutcome } from '../src/use-link-request';
 import {
@@ -32,6 +34,7 @@ import {
 } from '../src/founding-progress';
 import { defaultNoiseCryptoMode } from '../src/noise-crypto-config';
 import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '@serfab/cadre-rn/phone-node';
+import { appFromInstallReferrer, recommendingApp } from '../src/recommended-by';
 import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
 import { Btn, controlStyles, LabelledInput, Section } from '../src/settings-controls';
 import { TEST_IDS } from '../src/test-ids';
@@ -274,6 +277,10 @@ export default function SettingsScreen() {
   // Not while the launch read or a start runs: the join would stop a node the hook has not finished showing.
   const startSettled = cadre.savedStartRead !== 'reading' && !(cadre.status === 'connecting' && cadre.joinFlow === null);
   useLinkedJoinResponse(showAlert, cadre.takeJoinResponse, startSettled);
+  // A request to join already open, or a join on screen, wins over the app that recommended this one.
+  const joinUnderWay = cadre.linkRequest !== null || cadre.joinFlow !== null;
+  const recommending = useRecommendingApp(asking, startSettled, joinUnderWay, () => setFirstLaunchAnswer(null));
+  const joinThrough = (app: SereusApp) => void askOwnerAppOrAlert(cadre.askOwnerApp, app, showAlert);
   const nodeCodeHint = linkedNodeCode !== null && (
     <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.waitingNodeCode}>
       {cadre.status === 'connecting'
@@ -332,7 +339,20 @@ export default function SettingsScreen() {
           <InfoRow label="Status" value={cadre.status} color="#ff9800" />
         ) : asking && firstLaunchAnswer === null ? (
           <>
-            <FirstLaunchQuestion onAnswer={setFirstLaunchAnswer} />
+            {recommending.reading ? (
+              <InfoRow label="Status" value={cadre.status} color="#ff9800" />
+            ) : recommending.named ? (
+              <RecommendedFirstLaunchQuestion
+                app={recommending.named}
+                onJoin={(app) => {
+                  setFirstLaunchAnswer('join');
+                  joinThrough(app);
+                }}
+                onOtherChoices={recommending.dropNamed}
+              />
+            ) : (
+              <FirstLaunchQuestion onAnswer={setFirstLaunchAnswer} />
+            )}
             {waitingHints}
           </>
         ) : firstLaunchJoin ? (
@@ -434,6 +454,15 @@ export default function SettingsScreen() {
 
       {cadre.error && <Text style={styles.error}>{cadre.error}</Text>}
 
+      <RecommendedJoinPrompt
+        app={recommending.suggested}
+        onJoin={(app) => {
+          recommending.dropSuggested();
+          joinThrough(app);
+        }}
+        onNotNow={recommending.dropSuggested}
+      />
+
       {/* Selectable-text alert modal */}
       <Modal visible={modal !== null} transparent animationType="fade" onRequestClose={() => setModal(null)}>
         <View style={controlStyles.modalOverlay}>
@@ -469,6 +498,42 @@ function FirstLaunchQuestion({ onAnswer }: { onAnswer: (answer: FirstLaunchAnswe
       <Btn label="Yes, join my cadre" onPress={() => onAnswer('join')} testID={TEST_IDS.settings.firstLaunchJoinBtn} />
       <Btn label="No, start fresh" onPress={() => onAnswer('fresh')} color="#444" testID={TEST_IDS.settings.firstLaunchFreshBtn} />
     </View>
+  );
+}
+
+/** The first-launch question when another Sereus app recommended this one: join through it, or the plain question. */
+function RecommendedFirstLaunchQuestion({ app, onJoin, onOtherChoices }: {
+  app: SereusApp;
+  onJoin: (app: SereusApp) => void;
+  onOtherChoices: () => void;
+}) {
+  return (
+    <View>
+      <Text style={styles.question}>{`${app.name} suggested this app. Join the cadre it holds?`}</Text>
+      <Text style={controlStyles.hint}>{`This app opens ${app.name} with its request to join, and joins when ${app.name} answers.`}</Text>
+      <Btn label={`Join through ${app.name}`} onPress={() => onJoin(app)} testID={TEST_IDS.settings.firstLaunchRecommendedJoinBtn} />
+      <Btn label="Other choices" onPress={onOtherChoices} color="#444" testID={TEST_IDS.settings.firstLaunchOtherChoicesBtn} />
+    </View>
+  );
+}
+
+/** Offered when an app that recommended this one opens it while it has a cadre; the system back button is Not now. */
+function RecommendedJoinPrompt({ app, onJoin, onNotNow }: {
+  app: SereusApp | null;
+  onJoin: (app: SereusApp) => void;
+  onNotNow: () => void;
+}) {
+  return (
+    <Modal visible={app !== null} transparent animationType="fade" onRequestClose={onNotNow}>
+      <View style={controlStyles.modalOverlay}>
+        <View style={controlStyles.modalBox}>
+          <Text style={controlStyles.modalTitle}>{`${app?.name ?? ''} suggests joining the cadre it holds`}</Text>
+          <Text style={controlStyles.promptText}>This app&apos;s chats move into that cadre, and its own cadre is then removed from this phone.</Text>
+          <Btn label={`Join through ${app?.name ?? ''}`} onPress={() => app && onJoin(app)} testID={TEST_IDS.settings.recommendedJoinBtn} />
+          <Btn label="Not now" onPress={onNotNow} color="#444" testID={TEST_IDS.settings.recommendedNotNowBtn} />
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -646,6 +711,79 @@ function useLinkedJoinResponse(
       if (alert) showAlert(alert.title, alert.message, alert.detail);
     });
   }, [response, ready, takeJoinResponse, showAlert]);
+}
+
+/** The Sereus app that recommended this one, as the Node card and {@link RecommendedJoinPrompt} use it. */
+interface RecommendingApp {
+  /** The app the first-launch question names; null for the plain question. */
+  named: SereusApp | null;
+  /** The install referrer is still being read and no link named an app, so the first-launch question waits. */
+  reading: boolean;
+  /** Other choices: the plain question, until another link names an app. */
+  dropNamed: () => void;
+  /** The app a link named while this app has a cadre, for the prompt; null while none is offered. */
+  suggested: SereusApp | null;
+  dropSuggested: () => void;
+}
+
+type ReferrerRead = 'pending' | SereusApp | null;
+
+/**
+ * Which Sereus app recommended this one (`src/recommended-by.ts`), from two hints.
+ *
+ * The Android install referrer is read once per mount, the first time `asking` is true, and names
+ * the app in the first-launch question, which waits for it at most `REFERRER_WAIT_MS`.
+ *
+ * A `cadre-recommended-by` link (`app/+native-intent.tsx` routes it here as the `recommendedBy`
+ * parameter, cleared as soon as it is read, as `useLinkedNodeCode` does) wins over the referrer, as
+ * the user's latest action. While `asking` it names the app in the question, which shows again from
+ * the top (`onNamed`). Otherwise it waits until `settled`, then opens the prompt, unless
+ * `joinUnderWay`: the request or join already on screen wins, and the link is dropped.
+ */
+function useRecommendingApp(asking: boolean, settled: boolean, joinUnderWay: boolean, onNamed: () => void): RecommendingApp {
+  const { recommendedBy } = useLocalSearchParams<{ recommendedBy?: string }>();
+  const router = useRouter();
+  const [referrer, setReferrer] = useState<ReferrerRead>(Platform.OS === 'android' ? 'pending' : null);
+  const referrerAsked = useRef(false);
+  const [linked, setLinked] = useState<SereusApp | null>(null);
+  const [linkNamed, setLinkNamed] = useState<SereusApp | null>(null);
+  const [dropped, setDropped] = useState(false);
+  const [suggested, setSuggested] = useState<SereusApp | null>(null);
+
+  useEffect(() => {
+    if (!asking || referrerAsked.current || Platform.OS !== 'android') return;
+    referrerAsked.current = true;
+    void appFromInstallReferrer().then(setReferrer);
+  }, [asking]);
+
+  useEffect(() => {
+    if (typeof recommendedBy !== 'string' || !recommendedBy) return;
+    router.setParams({ recommendedBy: undefined });
+    setLinked(recommendingApp(recommendedBy, 'a recommended-by link'));
+  }, [recommendedBy, router]);
+
+  useEffect(() => {
+    if (!linked || !settled) return;
+    setLinked(null);
+    if (asking) {
+      setLinkNamed(linked);
+      setDropped(false);
+      onNamed();
+    } else if (joinUnderWay) {
+      console.info(`[settings] ${linked.name} suggested joining the cadre it holds while a request to join or a join is under way; ignored`);
+    } else {
+      setSuggested(linked);
+    }
+  }, [linked, settled, asking, joinUnderWay]);
+
+  const fromReferrer = referrer === 'pending' ? null : referrer;
+  return {
+    named: dropped ? null : linkNamed ?? fromReferrer,
+    reading: !dropped && linkNamed === null && referrer === 'pending',
+    dropNamed: () => setDropped(true),
+    suggested,
+    dropSuggested: () => setSuggested(null),
+  };
 }
 
 /** Whether this app made `request`. False when the identity cannot be read; Add a device or app checks again against the running node. */
