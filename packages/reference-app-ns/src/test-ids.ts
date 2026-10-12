@@ -33,5 +33,7 @@ export const TEST_IDS = {
 		messageList: 'message-list',
 		/** Per-row id; pass the message Id. */
 		messageRow: (id: number | string): string => `message-row-${id}`,
+		/** "Not yet delivered" label on a row whose commit no other member holds yet; pass the message Id. */
+		undeliveredMark: (id: string): string => `message-undelivered-${id}`,
 	},
 } as const;

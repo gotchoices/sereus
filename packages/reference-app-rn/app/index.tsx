@@ -28,6 +28,7 @@ export default function ChatScreen() {
   const [sendError, setSendError] = useState<string | null>(null);
 
   const chat = useChat({
+    node: cadre.node,
     strand: activeStrand,
     participantId: cadre.peerId,
     participantName: cadre.peerId ? participantDisplayName(cadre.peerId) : undefined,
@@ -123,11 +124,14 @@ export default function ChatScreen() {
         ref={listRef}
         testID={TEST_IDS.chat.messageList}
         data={chat.messages}
+        // FlatList re-renders rows only when `data` or `extraData` changes, and a mark clearing leaves `data` as it was.
+        extraData={chat.undelivered}
         keyExtractor={(m) => String(m.Id)}
         renderItem={({ item }) => (
           <MessageBubble
             msg={item}
             isOwn={item.ParticipantId === cadre.peerId}
+            undelivered={chat.undelivered.has(item.Id)}
           />
         )}
         contentContainerStyle={styles.list}
@@ -212,7 +216,7 @@ function StrandPicker({
   );
 }
 
-function MessageBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
+function MessageBubble({ msg, isOwn, undelivered }: { msg: ChatMessage; isOwn: boolean; undelivered: boolean }) {
   return (
     <View testID={TEST_IDS.chat.messageRow(msg.Id)} style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}>
       {!isOwn && (
@@ -222,6 +226,11 @@ function MessageBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
       <Text style={styles.time}>
         {parseStoredDatetime(msg.Timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </Text>
+      {undelivered && (
+        <Text testID={TEST_IDS.chat.undeliveredMark(msg.Id)} style={styles.undelivered}>
+          Not yet delivered
+        </Text>
+      )}
     </View>
   );
 }
@@ -247,6 +256,7 @@ const styles = StyleSheet.create({
   sender: { color: '#aaa', fontSize: 11, marginBottom: 2 },
   msgText: { color: '#fff', fontSize: 15 },
   time: { color: 'rgba(255,255,255,0.5)', fontSize: 10, marginTop: 4, textAlign: 'right' },
+  undelivered: { color: '#ffd54f', fontSize: 10, marginTop: 2, textAlign: 'right' },
   composer: { flexDirection: 'row', padding: 8, borderTopWidth: 1, borderTopColor: '#333', backgroundColor: '#1a1a2e' },
   input: { flex: 1, backgroundColor: '#2a2a3e', color: '#fff', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, fontSize: 15 },
   sendBtn: { marginLeft: 8, backgroundColor: '#6c63ff', borderRadius: 20, paddingHorizontal: 16, justifyContent: 'center' },

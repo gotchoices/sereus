@@ -61,7 +61,7 @@ function classify(sql: string): StatementKind | undefined {
 interface Script {
 	/** Awaited before the statement reaches the database; a rejection means it never does. */
 	before?: () => Promise<void>;
-	/** Run once an `exec` has been applied; a throw is an outcome lost after the write. */
+	/** Run once an `exec` or `get` has been applied; a throw is an outcome lost after the write. */
 	after?: () => void;
 }
 
@@ -170,6 +170,18 @@ class ScriptedDatabase {
 		script?.after?.();
 	}
 
+	async get(sql: string, params?: SqlParameters | SqlValue[]): Promise<Record<string, SqlValue> | undefined> {
+		const script = await this.admit(sql);
+		let row: Record<string, SqlValue> | undefined;
+		try {
+			row = await this.real.get(sql, params);
+		} finally {
+			this.active -= 1;
+		}
+		script?.after?.();
+		return row;
+	}
+
 	async *eval(sql: string, params?: SqlParameters | SqlValue[]): AsyncIterableIterator<Record<string, SqlValue>> {
 		await this.admit(sql);
 		try {
@@ -217,10 +229,15 @@ afterEach(() => {
 	expect(unrecognised, 'statements the scripted database could not classify').toEqual([]);
 });
 
-/** A fresh in-memory database holding the app's chat schema, as a strand would. */
+/**
+ * A fresh in-memory database holding the app's chat schema, as a strand would, and the
+ * `StampId()` the Optimystic plugin registers on a strand database, which the message insert
+ * returns.
+ */
 async function chatDatabase(): Promise<Database> {
 	const { getChatSAppConfig } = await vi.importActual<typeof import('../src/chat-strand')>('../src/chat-strand');
 	const db = new Database();
+	db.createScalarFunction('StampId', { numArgs: 0 }, () => crypto.randomUUID());
 	await db.exec(`declare schema App { ${getChatSAppConfig().schema} }`);
 	await db.exec('apply schema App;');
 	return db;

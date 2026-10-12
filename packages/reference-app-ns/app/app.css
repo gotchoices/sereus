@@ -158,6 +158,12 @@ Page {
 	margin-top: 2;
 }
 
+.undelivered {
+	color: #ffd54f;
+	font-size: 10;
+	margin-top: 2;
+}
+
 .composer {
 	background-color: #1a1a2e;
 	padding: 8;

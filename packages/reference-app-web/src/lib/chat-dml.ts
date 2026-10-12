@@ -57,21 +57,30 @@ export function newChatMessageId(): string {
  * The key is a parameter rather than something this function invents so that two attempts at
  * one composed message carry one key and the primary key can refuse the duplicate. See
  * {@link newChatMessageId}.
+ *
+ * The `Message` insert is one statement that returns its commit's id: it holds the database for
+ * its whole run, so a durability read with that id is this write's, not that of a cadre-core
+ * write to the same strand database that ran while this one waited (docs/strands.md, "A
+ * commit's durability").
+ *
+ * @returns The `StampId()` of the commit that stored the message, or null when the database
+ *          reports none.
  */
 export async function insertChatMessage(
 	database: Database,
 	id: string,
 	participantName: string,
 	content: string,
-): Promise<void> {
+): Promise<string | null> {
 	await database.exec('insert or ignore into App.Participant (Id, Name) values (?, ?)', [
 		participantName,
 		participantName,
 	]);
-	await database.exec(
-		'insert into App.Message (Id, ParticipantId, Content, Timestamp) values (?, ?, ?, ?)',
+	const stored = await database.get(
+		'insert into App.Message (Id, ParticipantId, Content, Timestamp) values (?, ?, ?, ?) returning StampId() as Tx',
 		[id, participantName, content, quereusTimestamp()],
 	);
+	return typeof stored?.Tx === 'string' ? stored.Tx : null;
 }
 
 /**

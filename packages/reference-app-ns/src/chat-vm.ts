@@ -20,7 +20,7 @@ import {
 	queryParticipants,
 	type ChatMessage,
 } from './chat-operations';
-import { getCadreVm, type CadreViewModel } from './cadre-vm';
+import { CadreViewModel, getCadreVm, type CommitHeldEventData } from './cadre-vm';
 import { TEST_IDS } from './test-ids';
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
@@ -47,6 +47,21 @@ export interface ChatRow {
 	senderVisibility: 'visible' | 'collapse';
 	/** automationText for the row: `message-row-<id>`. */
 	rowId: string;
+	/** 'visible' while no other member holds the commit that stored this message — see {@link UndeliveredMark}. */
+	undeliveredVisibility: 'visible' | 'collapse';
+	/** automationText for the "Not yet delivered" label: `message-undelivered-<id>`. */
+	undeliveredId: string;
+}
+
+/**
+ * A message this device sent whose commit no other member held when the insert returned. Kept
+ * per strand, so re-attaching to a strand still shows it, and a `strand:commit-held` for one
+ * strand cannot clear a mark on another.
+ */
+interface UndeliveredMark {
+	strandId: string;
+	transactionId: string;
+	messageId: string;
 }
 
 function errMessage(err: unknown): string {
@@ -91,6 +106,11 @@ export class ChatViewModel extends Observable {
 	private timer: ReturnType<typeof setInterval> | undefined;
 	/** Strands with a read still running — see `refresh()`. */
 	private readonly readsInFlight = new Set<StrandInstance>();
+	/**
+	 * In memory only: a message read from storage carries no mark, and a mark whose commit
+	 * nothing follows stays until the app restarts (docs/strands.md, "A commit's durability").
+	 */
+	private readonly undelivered: UndeliveredMark[] = [];
 
 	constructor(pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS) {
 		super();
@@ -101,6 +121,7 @@ export class ChatViewModel extends Observable {
 			this.notifyPropertyChange('statusText', this.statusText);
 			this.notifySendState();
 		});
+		this.cadre.on(CadreViewModel.commitHeldEvent, (args) => this.markDelivered(args as CommitHeldEventData));
 	}
 
 	// ── Observable props ────────────────────────────────────────────────────
@@ -323,7 +344,10 @@ export class ChatViewModel extends Observable {
 				return;
 			}
 
-			const message = await insertMessage(strand, draft.id, participantId, text);
+			const { message, undeliveredCommit } = await insertMessage(strand, draft.id, participantId, text);
+			if (undeliveredCommit) {
+				this.undelivered.push({ strandId: strand.strandId, transactionId: undeliveredCommit, messageId: message.Id });
+			}
 			this.pendingDraft = null;
 			this.draft = '';
 			// The draft's outcome is settled whichever strand is attached now; the row belongs to
@@ -365,6 +389,23 @@ export class ChatViewModel extends Observable {
 		if (this._draft.trim() === pending.text) this.draft = '';
 	}
 
+	/** Clear the mark of the message whose commit another member now holds, on the row too if shown. */
+	private markDelivered({ strandId, transactionId }: CommitHeldEventData): void {
+		const index = this.undelivered.findIndex((m) => m.strandId === strandId && m.transactionId === transactionId);
+		if (index < 0) return;
+		const [{ messageId }] = this.undelivered.splice(index, 1);
+		if (strandId !== this.strand?.strandId) return;
+		const rowIndex = this._messages.findIndex((row) => row.id === messageId);
+		if (rowIndex >= 0) {
+			this._messages.setItem(rowIndex, { ...this._messages.getItem(rowIndex), undeliveredVisibility: 'collapse' });
+		}
+	}
+
+	private isUndelivered(messageId: string): boolean {
+		const strandId = this.strand?.strandId;
+		return this.undelivered.some((m) => m.strandId === strandId && m.messageId === messageId);
+	}
+
 	private toRow(message: ChatMessage, ownId: string | null): ChatRow {
 		const isOwn = message.ParticipantId === ownId;
 		return {
@@ -375,6 +416,8 @@ export class ChatViewModel extends Observable {
 			isOwn,
 			senderVisibility: isOwn ? 'collapse' : 'visible',
 			rowId: TEST_IDS.chat.messageRow(message.Id),
+			undeliveredVisibility: this.isUndelivered(message.Id) ? 'visible' : 'collapse',
+			undeliveredId: TEST_IDS.chat.undeliveredMark(message.Id),
 		};
 	}
 

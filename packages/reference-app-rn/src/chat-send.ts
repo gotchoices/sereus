@@ -20,6 +20,7 @@ import {
   messageExists,
   newChatMessageId,
   type ChatMessage,
+  type StoredMessage,
 } from './chat-operations';
 
 /** A draft the user has submitted at least once, and the message id minted for it. */
@@ -30,7 +31,7 @@ export interface PendingDraft {
 
 export interface SendResult {
   /** The row this attempt stored, or null when an earlier attempt had already stored it. */
-  message: ChatMessage | null;
+  stored: StoredMessage | null;
   /** True when the pre-write read found the message already stored, so nothing was written. */
   alreadyStored: boolean;
 }
@@ -114,11 +115,11 @@ export class ChatSender {
     // more tap and still cannot store a duplicate. Not worth retry machinery in a reference app.
     if (resend && (await messageExists(strand, draft.id))) {
       this.pending = null;
-      return { message: null, alreadyStored: true };
+      return { stored: null, alreadyStored: true };
     }
 
-    const message = await insertMessage(strand, draft.id, participantId, text);
+    const stored = await insertMessage(strand, draft.id, participantId, text);
     this.pending = null;
-    return { message, alreadyStored: false };
+    return { stored, alreadyStored: false };
   }
 }

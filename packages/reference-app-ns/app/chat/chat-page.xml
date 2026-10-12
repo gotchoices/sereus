@@ -32,6 +32,8 @@
 					<Label text="{{ sender }}" class="sender" visibility="{{ senderVisibility }}" />
 					<Label text="{{ content }}" class="msg-text" textWrap="true" />
 					<Label text="{{ time }}" class="time" textAlignment="right" />
+					<Label text="Not yet delivered" class="undelivered" textAlignment="right"
+						visibility="{{ undeliveredVisibility }}" automationText="{{ undeliveredId }}" />
 				</StackLayout>
 			</ListView.itemTemplate>
 		</ListView>

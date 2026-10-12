@@ -224,6 +224,10 @@ stops matching it (see [testing.md](testing.md) → "Lint coverage"); `composeSt
 
 No signature verification, no invite flow, no authorization constraints. This keeps the reference app focused on the P2P plumbing rather than application-level crypto.
 
+## Messages Not Yet Delivered
+
+A message this phone sends is stored even when no other member is connected to take a copy, and is then lost if the phone is lost before it reconnects. The chat shows such a message as "Not yet delivered" ([`strands.md` → A commit's durability](strands.md#a-commits-durability)): `insertMessage` ([`chat-operations.ts`](../packages/reference-app-rn/src/chat-operations.ts)) inserts with `returning StampId() as Tx` and reads that commit's durability, and [`use-chat.ts`](../packages/reference-app-rn/src/use-chat.ts) clears the mark when `strand:commit-held` names the commit. The NativeScript (`chat-vm.ts`) and web (`messages.svelte.ts`) reference apps do the same. A founder alone in its strand sees every message marked until a member joins and takes the copies. The marks are held in memory: a message read from storage carries none, and a mark whose commit nothing follows (or whose follow a hibernation forgot) stays until the app restarts: it means "not confirmed delivered", not "lost".
+
 ## Node-Local Persistence
 
 What the phone node keeps *locally* — never replicated, never derivable from the network — and where each lives.
@@ -452,7 +456,7 @@ packages/reference-app-rn/
     relay-config.ts           # Relay multiaddr(s): Settings field, else EXPO_PUBLIC_RELAY_ADDR
     noise-crypto-config.ts    # Default Noise crypto mode: EXPO_PUBLIC_NOISE_CRYPTO, else symmetric
     cadre-context.tsx         # React context provider for the node
-    use-chat.ts               # React hook: message list, send, connection status
+    use-chat.ts               # React hook: message list, send, "not yet delivered" marks
     use-cadre.ts              # React hook: cadre lifecycle, seed application, strands, invitations
     use-join-flow.ts          # Its part behind Join my existing cadre: the join, moving chats, removing the old cadre
     use-link-request.ts       # Its part behind Choose the app that holds your cadre: the request opened as a link, the answer taken

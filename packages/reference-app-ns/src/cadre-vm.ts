@@ -8,7 +8,7 @@
  * mirroring RN's `cadre-context` (one node, one VM, shared across screens).
  */
 
-import { Observable } from '@nativescript/core';
+import { Observable, type EventData } from '@nativescript/core';
 import { decodeCadreInvitation } from '@serfab/cadre-core';
 import type {
 	CadreInvitation,
@@ -16,6 +16,7 @@ import type {
 	CadreNodeEvents,
 	ControlNetworkSeed,
 	RedeemCadreInvitationResult,
+	StrandCommitHeld,
 	StrandInstance,
 } from '@serfab/cadre-core';
 import {
@@ -38,11 +39,17 @@ export interface StrandItem {
 	status: string;
 }
 
+/** The node's `strand:commit-held`, re-sent by {@link CadreViewModel} for the chat screen's marks. */
+export interface CommitHeldEventData extends EventData, StrandCommitHeld {}
+
 function errMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
 export class CadreViewModel extends Observable {
+	/** Event name of {@link CommitHeldEventData}. */
+	static readonly commitHeldEvent = 'commitHeld';
+
 	private _status: CadreStatus = 'idle';
 	private _node: CadreNode | null = null;
 	private _peerId = '';
@@ -58,6 +65,9 @@ export class CadreViewModel extends Observable {
 	private readonly onStrandError = ({ strandId, error }: CadreNodeEvents['strand:error']): void => {
 		console.warn(`[cadre-vm] strand ${strandId} error:`, error);
 		this.refreshStrands();
+	};
+	private readonly onCommitHeld = (held: CadreNodeEvents['strand:commit-held']): void => {
+		this.notify<CommitHeldEventData>({ eventName: CadreViewModel.commitHeldEvent, object: this, ...held });
 	};
 
 	constructor() {
@@ -184,6 +194,7 @@ export class CadreViewModel extends Observable {
 		node.on('strand:stopped', this.onStrandStopped);
 		node.on('strand:writable', this.onStrandWritable);
 		node.on('strand:error', this.onStrandError);
+		node.on('strand:commit-held', this.onCommitHeld);
 	}
 
 	private unbindEvents(node: CadreNode): void {
@@ -191,6 +202,7 @@ export class CadreViewModel extends Observable {
 		node.off('strand:stopped', this.onStrandStopped);
 		node.off('strand:writable', this.onStrandWritable);
 		node.off('strand:error', this.onStrandError);
+		node.off('strand:commit-held', this.onCommitHeld);
 	}
 
 	private refreshStrands(): void {

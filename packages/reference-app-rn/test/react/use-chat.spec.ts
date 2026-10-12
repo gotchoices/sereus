@@ -57,7 +57,7 @@ interface Sink {
 }
 
 function ChatHarness({ strand, sink }: { strand: StrandInstance; sink: Sink }): React.ReactElement | null {
-  sink.current = useChat({ strand, participantId: 'me', pollIntervalMs: POLL_MS });
+  sink.current = useChat({ node: null, strand, participantId: 'me', pollIntervalMs: POLL_MS });
   return null;
 }
 

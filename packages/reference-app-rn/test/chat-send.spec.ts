@@ -37,8 +37,8 @@ class UncertainDatabase {
     this.failuresLeft = uncertainInserts;
   }
 
-  async exec(sql: string, params: unknown[] = []): Promise<void> {
-    if (!/^\s*insert into App\.Message\b/.test(sql)) {
+  async get(sql: string, params: unknown[] = []): Promise<Record<string, unknown>> {
+    if (!/^\s*insert into App\.Message\b[^;]*\breturning StampId\(\) as Tx\s*$/.test(sql)) {
       throw new Error(`UncertainDatabase got an unexpected statement: ${sql}`);
     }
     const [id, participantId, content, timestamp] = params as [string, string, string, string];
@@ -51,6 +51,7 @@ class UncertainDatabase {
       // Stored, and then the outcome never came back. This is the whole point of the fixture.
       throw new Error('TornActionError: commit outcome unknown');
     }
+    return { Tx: `tx-${id}` };
   }
 
   async *eval(sql: string, params: unknown[] = []): AsyncIterableIterator<Record<string, unknown>> {
@@ -62,8 +63,9 @@ class UncertainDatabase {
   }
 }
 
+/** A strand that reports no commit's durability, so no send here is marked undelivered. */
 function fakeStrand(db: UncertainDatabase): StrandInstance {
-  return { strandId: 's', database: { getDatabase: () => db } } as unknown as StrandInstance;
+  return { strandId: 's', database: { getDatabase: () => db, commitDurability: () => undefined } } as unknown as StrandInstance;
 }
 
 function contents(db: UncertainDatabase): string[] {
@@ -87,7 +89,7 @@ describe('ChatSender', () => {
     const result = await sender.send(fakeStrand(db), 'me', 'hello');
 
     expect(result.alreadyStored).toBe(true);
-    expect(result.message).toBeNull();
+    expect(result.stored).toBeNull();
     expect(contents(db)).toEqual(['hello']);
   });
 

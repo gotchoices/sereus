@@ -12,7 +12,7 @@
  */
 
 import { getCadreNode, getChatStrandId } from './cadre-web.js';
-import type { StrandInstance } from '@serfab/cadre-core';
+import type { StrandCommitHeld, StrandInstance } from '@serfab/cadre-core';
 import { chatMessageExists, insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
 import { pushError } from './diagnostics.svelte.js';
 
@@ -27,12 +27,27 @@ export interface ChatMessage {
 	ParticipantName?: string;
 }
 
+/**
+ * A message this device sent whose commit no other member held when the insert returned. Kept
+ * per strand, so a `strand:commit-held` for one strand cannot clear a mark on another.
+ */
+interface UndeliveredMark {
+	strandId: string;
+	transactionId: string;
+	messageId: string;
+}
+
 interface MessagesState {
 	ready: boolean;
 	loading: boolean;
 	error: string | null;
 	messages: ChatMessage[];
 	updatedMs: number | null;
+	/**
+	 * In memory only: a message read from storage carries no mark, and a mark whose commit
+	 * nothing follows stays until the page reloads (docs/strands.md, "A commit's durability").
+	 */
+	undelivered: UndeliveredMark[];
 }
 
 const state = $state<MessagesState>({
@@ -41,6 +56,7 @@ const state = $state<MessagesState>({
 	error: null,
 	messages: [],
 	updatedMs: null,
+	undelivered: [],
 });
 
 let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -206,7 +222,8 @@ export async function sendMessage(author: string, content: string): Promise<void
 		// and still cannot store a duplicate. Not worth retry machinery in a reference app.
 		const alreadyStored = resend !== null && (await chatMessageExists(db(strand), draft.id));
 		if (!alreadyStored) {
-			await insertChatMessage(db(strand), draft.id, author, content);
+			const transactionId = await insertChatMessage(db(strand), draft.id, author, content);
+			if (transactionId) markIfHeldOnlyHere(strand, transactionId, draft.id);
 		}
 		pendingDraft = null;
 		await refresh();
@@ -217,6 +234,26 @@ export async function sendMessage(author: string, content: string): Promise<void
 	} finally {
 		state.loading = false;
 	}
+}
+
+/** Record the message as not yet delivered when the strand reports its commit held by no other member. */
+function markIfHeldOnlyHere(strand: StrandInstance, transactionId: string, messageId: string): void {
+	const durability = strand.database?.commitDurability(transactionId);
+	if (durability && !durability.heldElsewhere) {
+		state.undelivered.push({ strandId: strand.strandId, transactionId, messageId });
+	}
+}
+
+/** `strand:commit-held`: another member now holds the commit, so clear its message's mark. */
+export function markDelivered({ strandId, transactionId }: StrandCommitHeld): void {
+	const index = state.undelivered.findIndex((m) => m.strandId === strandId && m.transactionId === transactionId);
+	if (index >= 0) state.undelivered.splice(index, 1);
+}
+
+/** Whether the chat strand's message `messageId` was sent here and no other member holds it yet. */
+export function isUndelivered(messageId: string): boolean {
+	const strandId = getChatStrandId();
+	return state.undelivered.some((m) => m.strandId === strandId && m.messageId === messageId);
 }
 
 /**

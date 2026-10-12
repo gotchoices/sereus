@@ -5,8 +5,8 @@
  * polls the strand's Quereus database on a configurable interval.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
-import type { StrandInstance } from '@serfab/cadre-core';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import type { CadreNode, CadreNodeEvents, StrandInstance } from '@serfab/cadre-core';
 import {
   insertParticipant,
   queryMessages,
@@ -19,6 +19,8 @@ import { ChatSender } from './chat-send';
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface UseChatOptions {
+  /** The running node, whose `strand:commit-held` clears a "not yet delivered" mark */
+  node: CadreNode | null;
   /** The active strand instance (null if not yet created/joined) */
   strand: StrandInstance | null;
   /** Local participant ID (e.g. peerId) */
@@ -37,6 +39,8 @@ export interface UseChatOptions {
 export interface UseChatResult {
   /** Chat messages, oldest first */
   messages: ChatMessage[];
+  /** Ids of the shown strand's messages this device sent that no other member holds yet */
+  undelivered: ReadonlySet<string>;
   /** Known participants */
   participants: ChatParticipant[];
   /** Whether the initial load is in progress */
@@ -51,12 +55,26 @@ export interface UseChatResult {
   refresh: () => Promise<void>;
 }
 
+/**
+ * A message this device sent whose commit no other member held when the insert returned. Kept
+ * per strand, so a switch away and back still shows it, and a `strand:commit-held` for one
+ * strand cannot clear a mark on another.
+ */
+interface UndeliveredMark {
+  strandId: string;
+  transactionId: string;
+  messageId: string;
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useChat(opts: UseChatOptions): UseChatResult {
-  const { strand, participantId, participantName, pollIntervalMs = 2000 } = opts;
+  const { node, strand, participantId, participantName, pollIntervalMs = 2000 } = opts;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // In memory only: a message read from storage carries no mark, and a mark whose commit
+  // nothing follows stays until the app restarts (docs/strands.md, "A commit's durability").
+  const [marks, setMarks] = useState<readonly UndeliveredMark[]>([]);
   const [participants, setParticipants] = useState<ChatParticipant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -173,6 +191,26 @@ export function useChat(opts: UseChatOptions): UseChatResult {
     return () => clearInterval(timer);
   }, [strand, strand?.database, pollIntervalMs, refresh]);
 
+  // ── "Not yet delivered" marks ──────────────────────────────────────────
+
+  useEffect(() => {
+    if (!node) return;
+    const onHeld = ({ strandId, transactionId }: CadreNodeEvents['strand:commit-held']) => {
+      setMarks((prev) => {
+        const kept = prev.filter((m) => m.strandId !== strandId || m.transactionId !== transactionId);
+        return kept.length === prev.length ? prev : kept;
+      });
+    };
+    node.on('strand:commit-held', onHeld);
+    return () => node.off('strand:commit-held', onHeld);
+  }, [node]);
+
+  const shownStrandId = strand?.strandId;
+  const undelivered = useMemo(
+    () => new Set(marks.filter((m) => m.strandId === shownStrandId).map((m) => m.messageId)),
+    [marks, shownStrandId],
+  );
+
   // ── Send ───────────────────────────────────────────────────────────────
 
   const send = useCallback(async (content: string) => {
@@ -181,13 +219,17 @@ export function useChat(opts: UseChatOptions): UseChatResult {
     if (!s) throw new Error('No strand attached');
     if (!pid) throw new Error('No participant ID');
 
-    const { message } = await sender.send(s, pid, content);
+    const { stored } = await sender.send(s, pid, content);
+    const transactionId = stored?.undeliveredCommit;
+    if (stored && transactionId) {
+      setMarks((prev) => [...prev, { strandId: s.strandId, transactionId, messageId: stored.message.Id }]);
+    }
     // A switch may have landed while the insert ran; the row belongs to the strand it was
     // stored in, not to the list now showing another one.
     if (strandRef.current !== s) return;
-    if (message) {
+    if (stored) {
       // Optimistic update — append immediately, next poll will reconcile
-      setMessages(prev => [...prev, message]);
+      setMessages(prev => [...prev, stored.message]);
     } else {
       // A resend that found the row already stored wrote nothing, and that row belongs to an
       // earlier attempt, not this one — re-read the list rather than inventing it.
@@ -198,6 +240,6 @@ export function useChat(opts: UseChatOptions): UseChatResult {
 
   const composerChanged = useCallback((text: string) => sender.composerChanged(text), [sender]);
 
-  return { messages, participants, loading, error, send, composerChanged, refresh };
+  return { messages, undelivered, participants, loading, error, send, composerChanged, refresh };
 }
 

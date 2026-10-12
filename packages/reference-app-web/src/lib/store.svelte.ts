@@ -49,6 +49,7 @@ import {
 import type { StrandMoveOutcome } from './web-strand-move.js';
 import type { CadreNode, CadreRemoval, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
+import { markDelivered } from './messages.svelte.js';
 import { resetAddDeviceCard } from './add-device.svelte.js';
 import { resetMachinesCard } from './machines.svelte.js';
 import { ownerFingerprint } from './cadre-format.js';
@@ -164,6 +165,7 @@ function subscribe(node: CadreNode): void {
 		record('strand:writable', strandId);
 		syncStrand();
 	});
+	node.on('strand:commit-held', markDelivered);
 	node.on('strand:idle', ({ strandId }) => record('strand:idle', strandId));
 	node.on('strand:hibernating', ({ strandId }) => record('strand:hibernating', strandId));
 	node.on('strand:waking', ({ strandId }) => record('strand:waking', strandId));

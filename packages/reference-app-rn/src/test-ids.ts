@@ -162,5 +162,7 @@ export const TEST_IDS = {
 		strandRow: (id: string) => `chat-strand-${id}`,
 		/** Per-row id; pass the message Id. */
 		messageRow: (id: number | string) => `message-row-${id}`,
+		/** "Not yet delivered" label on a row whose commit no other member holds yet; pass the message Id. */
+		undeliveredMark: (id: string) => `message-undelivered-${id}`,
 	},
 } as const;

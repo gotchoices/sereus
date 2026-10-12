@@ -7,7 +7,7 @@
  */
 
 import type { StrandInstance } from '@serfab/cadre-core';
-import type { Database } from '@quereus/quereus';
+import type { Database, SqlValue } from '@quereus/quereus';
 import { uuid } from './uuid';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -29,6 +29,19 @@ export interface ChatMessage {
  * creator; everyone else is a `member`.
  */
 export type ChatRole = 'owner' | 'member';
+
+/** A message this device stored, and whether another member held it yet. */
+export interface StoredMessage {
+  message: ChatMessage;
+  /**
+   * The `StampId()` of the commit that stored the message, when no other member held that
+   * commit as the insert returned: the message is lost if this device stops for good before one
+   * does, so show it as not yet delivered until `strand:commit-held` names this id. Null when
+   * another member already held it, or the strand made no report. See docs/strands.md, "A
+   * commit's durability".
+   */
+  undeliveredCommit: string | null;
+}
 
 export interface ChatParticipant {
   Id: string;
@@ -65,6 +78,13 @@ function getDb(strand: StrandInstance): Database {
     throw new Error(`Strand ${strand.strandId} database not available (status: ${strand.status})`);
   }
   return strand.database.getDatabase();
+}
+
+/** `transactionId` when the strand reports that commit held by no other member yet, else null. */
+function undeliveredCommit(strand: StrandInstance, transactionId: SqlValue | undefined): string | null {
+  if (typeof transactionId !== 'string') return null;
+  const durability = strand.database?.commitDurability(transactionId);
+  return durability && !durability.heldElsewhere ? transactionId : null;
 }
 
 // ── Participant operations ───────────────────────────────────────────────────
@@ -143,33 +163,41 @@ export function newChatMessageId(): string {
  * at one composed message carry one key and the primary key can refuse the duplicate.
  * See {@link newChatMessageId}.
  *
+ * One statement returns the commit's id: it holds the database for its whole run, so the
+ * durability read after it is this write's, not that of a cadre-core write to the same strand
+ * database that ran while this one waited.
+ *
  * @param strand         Active strand instance
  * @param id             The message's primary key, minted by the caller
  * @param participantId  The sending participant's Id
  * @param content        Message text
- * @returns              The inserted message
+ * @returns              The inserted message, and its commit's id if no other member holds it yet
  */
 export async function insertMessage(
   strand: StrandInstance,
   id: string,
   participantId: string,
   content: string,
-): Promise<ChatMessage> {
+): Promise<StoredMessage> {
   const db = getDb(strand);
   // Quereus datetime columns store T-separated ISO form; any valid input coerces on read.
   const now = new Date().toISOString();
 
-  await db.exec(
+  const stored = await db.get(
     `insert into App.Message (Id, ParticipantId, Content, Timestamp)
-     values (?, ?, ?, ?)`,
+     values (?, ?, ?, ?)
+     returning StampId() as Tx`,
     [id, participantId, content, now],
   );
 
   return {
-    Id: id,
-    ParticipantId: participantId,
-    Content: content,
-    Timestamp: now,
+    message: {
+      Id: id,
+      ParticipantId: participantId,
+      Content: content,
+      Timestamp: now,
+    },
+    undeliveredCommit: undeliveredCommit(strand, stored?.Tx),
   };
 }
 

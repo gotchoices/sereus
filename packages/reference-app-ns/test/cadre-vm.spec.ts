@@ -115,7 +115,7 @@ describe('the constructor', () => {
 		// What the Chat VM reads — `null` rather than `''` when there is no node.
 		expect(vm.getPeerId()).toBe('peer-abc');
 		expect(vm.strandCount).toBe(1);
-		expect(H.calls).toEqual(['getStrands', 'on:strand:started', 'on:strand:stopped', 'on:strand:writable', 'on:strand:error']);
+		expect(H.calls).toEqual(['getStrands', 'on:strand:started', 'on:strand:stopped', 'on:strand:writable', 'on:strand:error', 'on:strand:commit-held']);
 	});
 
 	it('adopts nothing when no node is running', async () => {
@@ -316,7 +316,7 @@ describe('stop', () => {
 
 		await vm.stop();
 
-		expect(H.calls).toEqual(['off:strand:started', 'off:strand:stopped', 'off:strand:writable', 'off:strand:error', 'stopPhoneNode']);
+		expect(H.calls).toEqual(['off:strand:started', 'off:strand:stopped', 'off:strand:writable', 'off:strand:error', 'off:strand:commit-held', 'stopPhoneNode']);
 		expect(H.state.node.boundHandlerCount()).toBe(0);
 	});
 

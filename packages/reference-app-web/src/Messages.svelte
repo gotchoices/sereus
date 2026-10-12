@@ -5,6 +5,7 @@
 		ensureReady,
 		sendMessage,
 		composerChanged,
+		isUndelivered,
 		onDraftSettled,
 		refresh,
 		startPolling,
@@ -140,6 +141,9 @@
 							<span class="ts">{formatWhen(msg.Timestamp)}</span>
 						</div>
 						<p class="body" data-testid="message-body">{msg.Content}</p>
+						{#if isUndelivered(msg.Id)}
+							<span class="undelivered" data-testid="message-undelivered">Not yet delivered</span>
+						{/if}
 						<code class="id">#{msg.Id}</code>
 					</li>
 				{/each}
@@ -269,6 +273,12 @@
 		font-size: 0.9375rem;
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+
+	.undelivered {
+		justify-self: end;
+		color: #9a6700;
+		font-size: 0.75rem;
 	}
 
 	.id {

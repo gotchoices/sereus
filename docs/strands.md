@@ -259,7 +259,7 @@ Limits:
 
 What apps do with it:
 
-- A chat marks a message sent while alone as "not yet delivered" and clears the mark on `strand:commit-held`.
+- A chat marks a message sent while alone as "not yet delivered" and clears the mark on `strand:commit-held`, as the reference apps do ([reference-app-rn.md → Messages Not Yet Delivered](reference-app-rn.md#messages-not-yet-delivered)).
 - A two-party app's "take your seat" keeps the phone awake, or warns before leaving, until `heldElsewhere` is true.
 
 `joiner-first-commit-over-slow-relay.integration.ts` runs the chain end to end ("tells the writer a commit made while the other member was stopped is held only here, then held once it returns").

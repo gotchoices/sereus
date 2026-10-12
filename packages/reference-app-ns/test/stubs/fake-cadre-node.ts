@@ -98,9 +98,11 @@ export const ENCODED_INVITATION = encodeCadreInvitation(invitation());
  * view models, so the cast is deliberate and lives at this ONE site.
  *
  * `database` is the Quereus `Database` the chat operations run against; it is
- * wrapped as the one `StrandDatabase` method they call, `getDatabase()`. A test
- * modelling a `'syncing'` joiner saves the wrapped `strand.database`, sets it to
- * `undefined`, and puts it back when the strand becomes writable.
+ * wrapped as the two `StrandDatabase` methods they call: `getDatabase()`, and
+ * `commitDurability()`, which reports no commit, so no send is marked as not yet
+ * delivered. A test modelling a `'syncing'` joiner saves the wrapped
+ * `strand.database`, sets it to `undefined`, and puts it back when the strand
+ * becomes writable.
  */
 export function fakeStrand(
 	status: StrandStatus = 'active',
@@ -109,7 +111,7 @@ export function fakeStrand(
 	return {
 		strandId,
 		status,
-		...(database ? { database: { getDatabase: () => database } } : {}),
+		...(database ? { database: { getDatabase: () => database, commitDurability: () => undefined } } : {}),
 	} as unknown as StrandInstance;
 }
 
