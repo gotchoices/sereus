@@ -69,7 +69,10 @@ Environment variable PROVIDER_AUTH_MODE: auth.mode must be one of 'none', 'api-k
 A block with no children (`server:` on its own) counts as absent. `storage.type: file` needs
 `storage.path`. `docker.defaultResources.memoryLimit` must be a size the orchestrator can read
 (`512M`, `2G`) and `cpuLimit` a quoted number (`"0.5"`); a create request's own `resources` are
-held to the same rule. `docker.portRange.end` must not be below `start`. Values under `push` and
+held to the same rule. `docker.portRange.end` must not be below `start`; each container takes four
+ports from the range (health, metrics, libp2p TCP, libp2p WebSocket), so the default 10000–20000
+serves 2,500 containers. `docker.publicHost` must be a DNS name or IP address with no whitespace
+([Phones dial containers at the public host](#phones-dial-containers-at-the-public-host)). Values under `push` and
 `billing` are never echoed into an error, and `check` prints the loaded config with every secret
 shown as `[redacted]`.
 
@@ -129,6 +132,7 @@ counts as unset. Unknown `PROVIDER_*` names are ignored, since other software ma
 | `PROVIDER_DOCKER_SOCKET` | `docker.socketPath` | Docker socket path |
 | `PROVIDER_DOCKER_IMAGE` | `docker.image` | Container image |
 | `PROVIDER_DOCKER_NETWORK` | `docker.network` | Docker network for tenant containers |
+| `PROVIDER_DOCKER_PUBLIC_HOST` | `docker.publicHost` | DNS name or IP address at which the published container ports are reachable from outside; containers announce it, and `bootstrapNodes` becomes optional. Read when a container is created, so existing containers keep the host they were created under until recreated |
 | `PROVIDER_BILLING_ENABLED` | `billing.enabled` | Enable billing (`true`/`false`) |
 | `STRIPE_SECRET_KEY` | `billing.stripeSecretKey` | Stripe API key |
 | `STRIPE_WEBHOOK_SECRET` | `billing.stripeWebhookSecret` | Stripe webhook signing secret |
@@ -281,7 +285,14 @@ find the tenant's cadre. It is forwarded verbatim into the container as
 `CADRE_BOOTSTRAP_NODES`, so a typo is invisible to the caller unless the create call
 rejects it. The container opens the first connection, so the node these addresses name
 must be reachable from it; [docs/architecture.md → Which Side Dials](../../docs/architecture.md#which-side-dials-the-add-a-node-flows-compared)
-compares this with the other ways to add a machine to a cadre. Each entry must:
+compares this with the other ways to add a machine to a cadre.
+
+The field may be left out, or be `[]`, only when `docker.publicHost` is set: the
+container then has no bootstrap peers and waits for the requester to dial it
+([Phones dial containers at the public host](#phones-dial-containers-at-the-public-host)).
+Without `publicHost` nothing outside the provider's machine can reach a container, so
+an absent or empty list is `400 INVALID_REQUEST` (`bootstrapNodes is required: …
+docker.publicHost is unset …`). Each entry must:
 
 - be a string that parses as a multiaddr,
 - carry a `/p2p/<peerId>` component whose peer id decodes,
@@ -308,6 +319,41 @@ string (it is stored trimmed), `profile` must be `storage` or `transaction`,
 `strandFilter` a string, `resources` an object with string `memoryLimit`/`cpuLimit`
 and a numeric `storageQuotaBytes`, and `tags` an object of strings. Limit *formats*
 (`"512M"`, `"0.5"`) are still the orchestrator's to parse.
+
+### Phones dial containers at the public host
+
+Every container listens for libp2p on TCP (port 4001 inside the container) and on
+WebSocket (4002), and the provider publishes both on host ports from
+`docker.portRange`, on all interfaces. A phone has no TCP transport and listens on
+nothing, so it reaches a container only by dialing that WebSocket port, at an address
+someone gave it.
+
+`docker.publicHost` supplies the address: the DNS name or IP address at which this
+machine's published ports are reachable from outside. When it is set, each container
+announces `/dns4/<publicHost>/tcp/<TCP host port>` and
+`/dns4/<publicHost>/tcp/<WebSocket host port>/ws` (`/ip4` or `/ip6` for an IP address)
+besides its in-container addresses, and `GET /containers/:id/peer` returns all of them,
+each ending in `/p2p/<peerId>`. A phone then rents a node like this:
+
+1. `POST /containers` with `pinnedOwnerKeys` and no `bootstrapNodes`.
+2. `GET /containers/:id/peer`, and `CadreNode.addDrone` with those addresses.
+3. `PUT /containers/:id/seed`.
+4. The phone dials the container (`reconcileControlCohort()`).
+
+[docs/architecture.md → Enrollment Flow: Phone Adds Provider Drone](../../docs/architecture.md#enrollment-flow-phone-adds-provider-drone)
+describes the flow.
+
+- **In-container addresses are still returned**, so containers on one Docker network
+  reach each other directly. A phone's dial to them fails and libp2p tries the next.
+- **The host is fixed when a container is created.** It is part of the container's
+  environment, so a changed `publicHost` reaches only containers created afterwards.
+- **Until the phone's rows arrive, the container admits any peer.** A node with no
+  authorized members admits every connection and stream (cadre-core's cold-start rule),
+  and a container with no bootstrap peers stays that way until the phone dials, usually
+  right after step 3.
+- **No TLS proxy.** A provider that fronts containers with `/wss` on 443 would announce
+  the proxy's address instead and needs a per-container path or port there; the
+  provider does not do this.
 
 ### Kubernetes
 

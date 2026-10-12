@@ -14,16 +14,15 @@
  * by having been through here; adding a field to `CreateContainerRequest` without
  * validating it stops compiling rather than silently shipping.
  *
- * The two field rules with real substance live in their own modules, because each
- * is duplicated in another package and needs to be read next to the comment saying
- * so: `owner-key-validation.ts` (the Ed25519 rule, a copy of cadre-core's) and
- * `bootstrap-node-validation.ts` (the multiaddr rule, a copy of cadre-host's). The
- * rest — plain type and enum checks — are here.
+ * The two field rules with real substance live in their own modules, each with the
+ * reasoning behind it: `owner-key-validation.ts` (the Ed25519 rule, a copy of
+ * cadre-core's) and `bootstrap-node-validation.ts` (the multiaddr rule, and when the
+ * list may be empty). The rest — plain type and enum checks — are here.
  */
 
 import type { ContainerResources, CreateContainerRequest } from '../types.js';
 import { parseCpuLimit, parseMemoryLimit } from '../service/resource-limits.js';
-import { validateBootstrapNodes } from './bootstrap-node-validation.js';
+import { type BootstrapNodesOptions, validateBootstrapNodes } from './bootstrap-node-validation.js';
 import { validatePinnedOwnerKeys } from './owner-key-validation.js';
 
 /** `partyId` becomes `CADRE_PARTY_ID`, so a non-string would be stringified into it. */
@@ -109,11 +108,15 @@ function validateTags(value: unknown): { tags?: Record<string, string> } | { err
  * do not describe the container, are shared with other routes, and never reach the
  * spawned child.
  *
+ * `bootstrapNodes` is the one field whose rule depends on the provider rather than
+ * the body: see {@link BootstrapNodesOptions}.
+ *
  * @returns the typed create request, or the message to answer `INVALID_REQUEST` with.
  */
 export function validateCreateContainerRequest(
   body: unknown,
   customerId: string,
+  bootstrapNodesOptions: BootstrapNodesOptions,
 ): { request: CreateContainerRequest } | { error: string } {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     return { error: 'request body must be a JSON object' };
@@ -123,7 +126,7 @@ export function validateCreateContainerRequest(
   const partyId = validatePartyId(fields.partyId);
   if ('error' in partyId) return partyId;
 
-  const bootstrap = validateBootstrapNodes(fields.bootstrapNodes);
+  const bootstrap = validateBootstrapNodes(fields.bootstrapNodes, bootstrapNodesOptions);
   if ('error' in bootstrap) return bootstrap;
 
   // Optional, but create is the last point where the caller can still supply it —

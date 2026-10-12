@@ -34,6 +34,7 @@ import debug from 'debug';
 import {
 	buildNodeEnv,
 	type ContainerRunState,
+	type NodeEnvPorts,
 	type OrchestratorCreateRequest,
 	type OrchestratorCreateResult,
 	type OrchestratorStats,
@@ -61,7 +62,7 @@ export interface ProviderProcessHandle {
 	dockerId: string;
 	containerId: string;
 	volumeDir: string;
-	ports: { health: number; metrics: number; p2p: number };
+	ports: NodeEnvPorts;
 	child: ChildProcess;
 	/** Stamped by the child's own `exit` event; absent while it is still up. */
 	exitedAt?: Date;
@@ -107,10 +108,11 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 			await this.runEnrollCreate(volumeDir);
 		}
 
-		const ports = {
+		const ports: NodeEnvPorts = {
 			health: await allocFreePort(),
 			metrics: await allocFreePort(),
 			p2p: await allocFreePort(),
+			ws: await allocFreePort(),
 		};
 
 		// Per-container secret gating the node's POST /seed — same mint as the
@@ -269,7 +271,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	private buildChildEnv(
 		request: OrchestratorCreateRequest,
 		seedToken: string,
-		ports: { health: number; metrics: number; p2p: number },
+		ports: NodeEnvPorts,
 		volumeDir: string,
 		keyFile: string,
 	): NodeJS.ProcessEnv {
@@ -281,7 +283,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 			CADRE_PROFILE: 'storage',
 			CADRE_STORAGE_TYPE: 'file',
 			CADRE_STORAGE_PATH: join(volumeDir, 'storage'),
-			CADRE_LISTEN_ADDRS: '/ip4/0.0.0.0/tcp/4001',
+			CADRE_LISTEN_ADDRS: '/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws',
 			CADRE_HEALTH_PORT: '8080',
 			CADRE_METRICS_PORT: '9090',
 			CADRE_HIBERNATION_ENABLED: 'true',
@@ -311,14 +313,17 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	 * (CADRE_STRAND_WATCH_INTERVAL, CADRE_LATENCY_HINT), but neither the image
 	 * ENV nor the provider sets them — in a real container they come from the
 	 * entrypoint's own `${…:-default}` fallbacks — so they are written here with
-	 * those defaults and nothing else. (`hibernation.enabled` is required once
-	 * a hibernation block exists; the image env's CADRE_HIBERNATION_ENABLED
-	 * overrides it regardless.)
+	 * those defaults. (`hibernation.enabled` is required once a hibernation
+	 * block exists; the image env's CADRE_HIBERNATION_ENABLED overrides it
+	 * regardless.) `controlNetwork.bootstrapNodes: []` is the entrypoint's
+	 * output for an empty list, which the provider sends by omitting
+	 * CADRE_BOOTSTRAP_NODES; a non-empty list overrides it from the env.
 	 */
 	private ensureConfigFile(volumeDir: string): string {
 		const configPath = join(volumeDir, CONFIG_FILE);
 		if (!existsSync(configPath)) {
 			const config: CliConfigFile = {
+				controlNetwork: { bootstrapNodes: [] },
 				strandWatchInterval: 5000,
 				hibernation: { enabled: true, defaultLatencyHint: 'interactive' },
 			};

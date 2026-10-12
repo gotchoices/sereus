@@ -109,8 +109,10 @@ RUN mkdir -p /data && chown -R cadre:cadre /data
 # Volumes for persistent data
 VOLUME ["/data"]
 
-# Default ports: libp2p (4001), health check (8080), metrics (9090)
-EXPOSE 4001/tcp 8080/tcp 9090/tcp
+# Default ports: libp2p TCP (4001), libp2p WebSocket (4002, the one phones dial),
+# health check (8080), metrics (9090). cadre-provider's CONTAINER_PORTS
+# (packages/cadre-provider/src/service/container-env.ts) names the same set.
+EXPOSE 4001/tcp 4002/tcp 8080/tcp 9090/tcp
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
@@ -124,7 +126,7 @@ ENV DATA_DIR=/data \
     CADRE_PROFILE=storage \
     CADRE_STORAGE_TYPE=file \
     CADRE_STORAGE_PATH=/data/storage \
-    CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001 \
+    CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws \
     CADRE_HEALTH_PORT=8080 \
     CADRE_METRICS_PORT=9090 \
     CADRE_HIBERNATION_ENABLED=true

@@ -169,6 +169,8 @@ export async function createProviderServer(
     containerService,
     billingService,
     requestShutdown,
+    // A container can be dialed only at the public host it announces.
+    bootstrapNodesOptional: config.docker.publicHost !== undefined,
   });
 
   log('Server configured at %s', basePath);

@@ -2,16 +2,9 @@
  * The provider's `bootstrapNodes` rule — the control-network addresses a created
  * container is started with — exercised directly, and through `POST /containers`.
  *
- * The first suite is one half of a **manual tripwire**: cadre-host carries an
- * identical copy of this rule's per-entry half (`packages/cadre-host/src/server/routes/bootstrap-node-validation.ts`)
- * and the per-entry rows below are the same rows
- * `packages/cadre-host/src/server/__tests__/bootstrap-node-validation.test.ts`
- * pins that copy to. The empty-list row differs on purpose: cadre-host accepts an
- * empty list (a phone requester dials its lent node instead), this package still
- * requires one. Neither suite can observe the other package — nothing here
- * imports cadre-host — so this does not detect a change made over there; what it
- * does is fail if *this* copy is changed, which is how an editor is landed on the
- * comment pointing at the other one.
+ * The first suite pins the rule to a per-entry accept/reject table, plus the
+ * list-level rule on both of its branches: an absent or empty list is accepted
+ * only when the provider's containers announce a public address.
  *
  * The second suite is the route contract the whole thing exists for: a bad address
  * is a 400 naming the offending entry, with nothing provisioned — rather than a
@@ -36,29 +29,43 @@ const GOOD = `/ip4/127.0.0.1/tcp/4001/p2p/${PEER}`;
 /** A second, distinct dialable address, for "which entry was bad" assertions. */
 const GOOD_2 = `/dns4/bootstrap.example/tcp/443/wss/p2p/${PEER}`;
 
-describe('validateBootstrapNodes (the provider copy of the address rule)', () => {
-  function errorOf(value: unknown): string {
-    const result = validateBootstrapNodes(value);
+/** A provider without `docker.publicHost`. The per-entry rows hold on either branch. */
+const REQUIRED = { optional: false };
+const OPTIONAL = { optional: true };
+
+describe('validateBootstrapNodes', () => {
+  function errorOf(value: unknown, options = REQUIRED): string {
+    const result = validateBootstrapNodes(value, options);
     if (!('error' in result)) throw new Error(`expected a rejection, got ${JSON.stringify(result)}`);
     return result.error;
   }
 
   it('accepts a dialable address and returns it trimmed', () => {
-    expect(validateBootstrapNodes([`  ${GOOD}\n`])).toEqual({ nodes: [GOOD] });
+    expect(validateBootstrapNodes([`  ${GOOD}\n`], REQUIRED)).toEqual({ nodes: [GOOD] });
   });
 
   it('accepts several dialable addresses across transports', () => {
-    expect(validateBootstrapNodes([GOOD, GOOD_2])).toEqual({ nodes: [GOOD, GOOD_2] });
+    expect(validateBootstrapNodes([GOOD, GOOD_2], REQUIRED)).toEqual({ nodes: [GOOD, GOOD_2] });
   });
 
   it('accepts a relayed address whose relay and target peer ids both decode', () => {
     const relayed = `/ip4/1.2.3.4/tcp/4001/p2p/${PEER}/p2p-circuit/p2p/${PEER}`;
-    expect(validateBootstrapNodes([relayed])).toEqual({ nodes: [relayed] });
+    expect(validateBootstrapNodes([relayed], REQUIRED)).toEqual({ nodes: [relayed] });
   });
 
-  it('treats an absent field and an empty list alike: the field is required', () => {
-    expect(errorOf(undefined)).toBe('bootstrapNodes is required');
-    expect(errorOf([])).toBe('bootstrapNodes is required');
+  it('refuses an absent field and an empty list alike when containers announce no public address', () => {
+    for (const value of [undefined, []]) {
+      expect(errorOf(value)).toMatch(/^bootstrapNodes is required: .*docker\.publicHost is unset/);
+    }
+  });
+
+  it('accepts an absent field and an empty list alike as no bootstrap peers when optional', () => {
+    expect(validateBootstrapNodes(undefined, OPTIONAL)).toEqual({ nodes: [] });
+    expect(validateBootstrapNodes([], OPTIONAL)).toEqual({ nodes: [] });
+  });
+
+  it('still applies the per-entry rule when optional', () => {
+    expect(errorOf(['/ip4/127.0.0.1/tcp/4001'], OPTIONAL)).toMatch(/must include a \/p2p\/<peerId> component/);
   });
 
   it('rejects a non-array, and an array with a non-string element', () => {
@@ -123,7 +130,7 @@ describe('validateBootstrapNodes (the provider copy of the address rule)', () =>
   // a boundary error.
   it('accepts an address with a location but no transport, leaving that to the child', () => {
     const partial = `/ip4/1.2.3.4/p2p/${PEER}`;
-    expect(validateBootstrapNodes([partial])).toEqual({ nodes: [partial] });
+    expect(validateBootstrapNodes([partial], REQUIRED)).toEqual({ nodes: [partial] });
   });
 
   it('names the offending entry when only one address in a batch is bad', () => {

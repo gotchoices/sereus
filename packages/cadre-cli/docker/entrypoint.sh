@@ -30,6 +30,21 @@ error() {
   exit 1
 }
 
+# The controlNetwork.bootstrapNodes entry. An empty or unset CADRE_BOOTSTRAP_NODES
+# writes `[]`, a node with no one to dial that waits to be dialed (a cadre's
+# founding node, or a provider container a phone dials); a bare `bootstrapNodes:`
+# would be YAML null, which the CLI refuses.
+bootstrap_nodes_yaml() {
+  if [ -z "$CADRE_BOOTSTRAP_NODES" ]; then
+    echo "  bootstrapNodes: []"
+    return
+  fi
+  echo "  bootstrapNodes:"
+  echo "$CADRE_BOOTSTRAP_NODES" | tr ',' '\n' | while read -r node; do
+    [ -n "$node" ] && echo "    - \"$node\""
+  done
+}
+
 # Generate configuration file from environment variables if it doesn't exist
 generate_config() {
   log "Generating configuration from environment variables..."
@@ -37,9 +52,6 @@ generate_config() {
   # Validate required variables
   if [ -z "$CADRE_PARTY_ID" ]; then
     error "CADRE_PARTY_ID is required"
-  fi
-  if [ -z "$CADRE_BOOTSTRAP_NODES" ]; then
-    error "CADRE_BOOTSTRAP_NODES is required"
   fi
 
   # Create YAML configuration
@@ -49,10 +61,7 @@ generate_config() {
 
 controlNetwork:
   partyId: "${CADRE_PARTY_ID}"
-  bootstrapNodes:
-$(echo "$CADRE_BOOTSTRAP_NODES" | tr ',' '\n' | while read -r node; do
-  [ -n "$node" ] && echo "    - \"$node\""
-done)
+$(bootstrap_nodes_yaml)
 
 profile: ${CADRE_PROFILE:-storage}
 

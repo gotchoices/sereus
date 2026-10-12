@@ -47,10 +47,15 @@ docker:
     cpuLimit: "0.5"
     storageQuotaBytes: 10737418240  # 10 GB
   
-  # Port range for container allocation
+  # Port range for container allocation (four host ports per container)
   portRange:
     start: 10000
     end: 20000
+
+  # DNS name or IP address at which the published container ports are reachable
+  # from outside. Set it so phones can dial containers; bootstrapNodes then
+  # becomes optional on POST /containers.
+  # publicHost: provider.example.com
 
 # Billing Configuration
 billing:

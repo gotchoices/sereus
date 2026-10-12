@@ -44,6 +44,7 @@ const ENV_MAPPINGS = {
   PROVIDER_DOCKER_SOCKET: { path: 'docker.socketPath', kind: 'string' },
   PROVIDER_DOCKER_IMAGE: { path: 'docker.image', kind: 'string' },
   PROVIDER_DOCKER_NETWORK: { path: 'docker.network', kind: 'string' },
+  PROVIDER_DOCKER_PUBLIC_HOST: { path: 'docker.publicHost', kind: 'string' },
   PROVIDER_BILLING_ENABLED: { path: 'billing.enabled', kind: 'boolean' },
   STRIPE_SECRET_KEY: { path: 'billing.stripeSecretKey', kind: 'string' },
   STRIPE_WEBHOOK_SECRET: { path: 'billing.stripeWebhookSecret', kind: 'string' },

@@ -14,7 +14,7 @@ const base: OrchestratorCreateRequest = {
 };
 
 describe('buildNodeEnv', () => {
-  it('emits exactly the seven always-present vars for a minimal request, no empty entries', () => {
+  it('emits exactly the seven vars of a minimal request with bootstrap nodes, no empty entries', () => {
     const env = buildNodeEnv({ request: base, seedToken: 'tok' });
 
     expect(env).toEqual([
@@ -23,7 +23,7 @@ describe('buildNodeEnv', () => {
       'CADRE_PROFILE=storage',
       'CADRE_HEALTH_PORT=8080',
       'CADRE_METRICS_PORT=9090',
-      'CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001',
+      'CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws',
       'CADRE_SEED_TOKEN=tok',
     ]);
   });
@@ -47,12 +47,12 @@ describe('buildNodeEnv', () => {
     const env = buildNodeEnv({
       request: base,
       seedToken: 'tok',
-      ports: { health: 18080, metrics: 19090, p2p: 14001 },
+      ports: { health: 18080, metrics: 19090, p2p: 14001, ws: 14002 },
     });
 
     expect(env).toContain('CADRE_HEALTH_PORT=18080');
     expect(env).toContain('CADRE_METRICS_PORT=19090');
-    expect(env).toContain('CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/14001');
+    expect(env).toContain('CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/14001,/ip4/0.0.0.0/tcp/14002/ws');
   });
 });
 

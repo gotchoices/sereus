@@ -96,6 +96,7 @@ export {
   type NodeEnvSpec,
   CONTAINER_PORTS,
   buildNodeEnv,
+  publicNodeAddrs,
 } from './service/container-env.js';
 
 export {

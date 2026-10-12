@@ -18,11 +18,22 @@ export interface DockerConfig {
     cpuLimit?: string;
     storageQuotaBytes?: number;
   };
-  /** Port range for container allocation */
+  /**
+   * Port range for container allocation. Each container takes four host ports
+   * (health, metrics, libp2p TCP, libp2p WebSocket).
+   */
   portRange?: {
     start: number;
     end: number;
   };
+  /**
+   * DNS name or IP address at which this machine's published container ports are
+   * reachable from outside. When set, every container announces its TCP and
+   * WebSocket addresses at this host, and a create request may omit `bootstrapNodes`
+   * (a phone dials the container instead). Unset: containers announce only their
+   * in-container addresses, and `bootstrapNodes` is required.
+   */
+  publicHost?: string;
 }
 
 /** API server configuration */

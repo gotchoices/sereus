@@ -7,9 +7,13 @@
  * testing and changing on its own, without a routing file around it. Same
  * arrangement, and same reasons, as `owner-key-validation.ts`.
  *
- * At least one address is required: a provider container has no dial-in path
- * yet, so an empty list is a container that comes up alone. Giving the provider
- * that shape is `provider-drone-reachable-by-phone`.
+ * Whether the list may be empty depends on whether the container can be dialed.
+ * With `docker.publicHost` set, every container announces a public TCP and
+ * WebSocket address, so a requester that cannot listen (a phone) leaves the list
+ * out and dials the container from `GET /containers/:id/peer` instead. Without it,
+ * a container's only addresses are inside Docker, nothing outside can open the
+ * first connection, and an empty list is a container that comes up alone — so the
+ * list is required, and a create call never answers 201 for such a container.
  *
  * ## The rule, and why each clause is there
  *
@@ -149,9 +153,19 @@ function validateBootstrapNode(value: string): { node: string } | { error: strin
   return { node: trimmed };
 }
 
+/** The refusal of an absent or empty list on a provider whose containers cannot be dialed. */
+const BOOTSTRAP_NODES_REQUIRED =
+  'bootstrapNodes is required: this provider announces no public address for its containers (docker.publicHost is unset), so a container with no bootstrap peers could never be reached';
+
+export interface BootstrapNodesOptions {
+  /** Whether an absent field or `[]` is accepted — true when the provider's containers can be dialed. */
+  optional: boolean;
+}
+
 /**
- * Validate the required `bootstrapNodes` field of a create request: a non-empty
- * array of dialable control-network addresses (see {@link validateBootstrapNode}).
+ * Validate the `bootstrapNodes` field of a create request: an array of dialable
+ * control-network addresses (see {@link validateBootstrapNode}), which may be absent
+ * or empty only when `options.optional` (see the module comment).
  *
  * Create is the last point at which the caller can still fix a typo, so the shape
  * is checked here: without it a bad address is answered 201 and then produces a
@@ -164,9 +178,12 @@ function validateBootstrapNode(value: string): { node: string } | { error: strin
  *
  * @returns the trimmed addresses, so the create request carries exactly what was validated.
  */
-export function validateBootstrapNodes(value: unknown): { nodes: string[] } | { error: string } {
+export function validateBootstrapNodes(
+  value: unknown,
+  options: BootstrapNodesOptions,
+): { nodes: string[] } | { error: string } {
   if (value === undefined || (Array.isArray(value) && value.length === 0)) {
-    return { error: 'bootstrapNodes is required' };
+    return options.optional ? { nodes: [] } : { error: BOOTSTRAP_NODES_REQUIRED };
   }
   if (!Array.isArray(value) || !value.every((entry): entry is string => typeof entry === 'string')) {
     return { error: 'bootstrapNodes must be an array of strings' };

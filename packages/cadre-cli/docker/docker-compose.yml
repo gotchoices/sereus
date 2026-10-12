@@ -21,7 +21,8 @@ services:
     environment:
       # Core identity (set via .env or override here)
       - CADRE_PARTY_ID=${CADRE_PARTY_ID:?CADRE_PARTY_ID is required}
-      - CADRE_BOOTSTRAP_NODES=${CADRE_BOOTSTRAP_NODES:?CADRE_BOOTSTRAP_NODES is required}
+      # Optional: empty starts a node with no one to dial, which waits to be dialed.
+      - CADRE_BOOTSTRAP_NODES=${CADRE_BOOTSTRAP_NODES:-}
       
       # Node configuration
       - CADRE_PROFILE=${CADRE_PROFILE:-storage}
@@ -31,7 +32,7 @@ services:
       - CADRE_STORAGE_QUOTA=${CADRE_STORAGE_QUOTA:-}
       
       # Network
-      - CADRE_LISTEN_ADDRS=${CADRE_LISTEN_ADDRS:-/ip4/0.0.0.0/tcp/4001}
+      - CADRE_LISTEN_ADDRS=${CADRE_LISTEN_ADDRS:-/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws}
       - CADRE_ANNOUNCE_ADDRS=${CADRE_ANNOUNCE_ADDRS:-}
       - CADRE_APPEND_ANNOUNCE_ADDRS=${CADRE_APPEND_ANNOUNCE_ADDRS:-}
       - CADRE_RELAY_ADDRS=${CADRE_RELAY_ADDRS:-}
@@ -63,8 +64,10 @@ services:
       - CADRE_OWNER_KEYS=${CADRE_OWNER_KEYS:-}
 
     ports:
-      # libp2p network port — the only port that needs to reach the public internet.
+      # libp2p TCP and WebSocket ports — the only ports that need to reach the public
+      # internet. Phones dial the WebSocket one; they have no TCP transport.
       - "${HOST_P2P_PORT:-4001}:4001/tcp"
+      - "${HOST_WS_PORT:-4002}:4002/tcp"
       # Health/probe endpoint. Bound to loopback by default: serves read-only
       # /health, /ready, /status. POST /seed is NOT served unless CADRE_SEED_TOKEN
       # is set (above), and even then requires Authorization: Bearer <token>.

@@ -13,7 +13,7 @@ import type {
   OrchestratorStats,
   RecoverableOrchestrator,
 } from './orchestrator.js';
-import { CONTAINER_PORTS, buildNodeEnv } from './container-env.js';
+import { CONTAINER_PORTS, buildNodeEnv, publicNodeAddrs } from './container-env.js';
 import { PortAllocator, allocatePortSet, releasePortSet, reservePortSet } from './port-allocator.js';
 import { parseCpuLimit, parseMemoryLimit } from './resource-limits.js';
 
@@ -56,8 +56,17 @@ function parseDockerFinishedAt(finishedAt: string | undefined): Date | undefined
  * A container's host ports, allocated in this order. Reordering changes which
  * host port each key gets from a fresh range, so a key added later goes on the end.
  */
-const CONTAINER_PORT_KEYS = ['health', 'metrics', 'p2p'] as const;
+const CONTAINER_PORT_KEYS = ['health', 'metrics', 'p2p', 'ws'] as const;
 type ContainerHostPorts = Record<(typeof CONTAINER_PORT_KEYS)[number], number>;
+
+/**
+ * Every in-container port, declared exposed on create. The Engine API, unlike
+ * `docker run -p`, does not add a bound port to the exposed set, so without this
+ * publishing would depend on the operator's image declaring `EXPOSE`.
+ */
+const EXPOSED_PORTS: Docker.ContainerCreateOptions['ExposedPorts'] = Object.fromEntries(
+  CONTAINER_PORT_KEYS.map(key => [`${CONTAINER_PORTS[key]}/tcp`, {}]),
+);
 
 /**
  * The host ports `createContainer` bound, read back from an inspect's
@@ -228,6 +237,11 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
     }
   }
 
+  /** The public addresses a container announces: none unless `docker.publicHost` is set. */
+  private announceAddrsFor(ports: ContainerHostPorts): string[] {
+    return this.config.publicHost === undefined ? [] : publicNodeAddrs(this.config.publicHost, ports);
+  }
+
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
     log('Creating container for %s', request.containerId);
 
@@ -268,18 +282,23 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
       container = await this.docker.createContainer({
         name: `cadre-${request.containerId}`,
         Image: this.config.image,
-        Env: buildNodeEnv({ request, seedToken, resources }),
+        // NOTE: `Env` is fixed at create, so a container keeps announcing the
+        // `publicHost` it was created under until it is recreated; changing the
+        // config between provider restarts does not reach existing containers.
+        Env: buildNodeEnv({ request, seedToken, resources, appendAnnounceAddrs: this.announceAddrsFor(ports) }),
+        ExposedPorts: EXPOSED_PORTS,
         HostConfig: {
           // Health (which also serves the authenticated `POST /seed`) and metrics
           // are bound to the host's loopback only: the provider reaches them via
           // `http://localhost:<port>` and nothing off-box should touch the seed
           // surface. A bare `HostPort` would bind `0.0.0.0` and expose the seed
-          // route to the network. The p2p port (4001) intentionally stays on all
-          // interfaces — libp2p peers must reach it remotely.
+          // route to the network. The libp2p TCP (4001) and WebSocket (4002)
+          // ports intentionally stay on all interfaces — peers must reach them remotely.
           PortBindings: {
             [`${CONTAINER_PORTS.health}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ports.health) }],
             [`${CONTAINER_PORTS.metrics}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ports.metrics) }],
             [`${CONTAINER_PORTS.p2p}/tcp`]: [{ HostPort: String(ports.p2p) }],
+            [`${CONTAINER_PORTS.ws}/tcp`]: [{ HostPort: String(ports.ws) }],
           },
           // Durable per-tenant state (identity key, generated config,
           // bootstrap-peer store, trusted-owner anchor, storage) all live under

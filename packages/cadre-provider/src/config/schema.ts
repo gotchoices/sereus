@@ -45,8 +45,11 @@ import type {
   PushCredentials,
   StorageConfig,
 } from './types.js';
+import { isIP } from 'node:net';
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { envVarsFor } from './env.js';
 import { parseCpuLimit, parseMemoryLimit } from '../service/resource-limits.js';
+import { hostComponent } from '../service/container-env.js';
 
 type Block<K extends keyof ProviderConfigFile> = NonNullable<ProviderConfigFile[K]>;
 
@@ -84,6 +87,39 @@ const memoryLimit: Checker<string> = (value, keyPath, ctx) =>
   typeof value === 'string' && parseMemoryLimit(value) !== undefined
     ? value
     : ctx.fail(keyPath, `${keyPath} must be a size like 512M or 2G, got ${ctx.describe(keyPath, value)}`);
+
+/**
+ * Why `host` cannot be the host part of the addresses `publicNodeAddrs` announces, or
+ * `undefined` when it can: it must parse as exactly one multiaddr component. A DNS name must
+ * also come back unchanged (`ab/` parses as `/dns4/ab`); an IP address may come back in
+ * canonical form, since `isIP` already chose its protocol. Whitespace is refused on its own
+ * because the `dns4` codec takes any text.
+ */
+function publicHostProblem(host: string): string | undefined {
+  if (host === '' || /\s/.test(host)) return 'contains whitespace or is empty';
+  const component = hostComponent(host);
+  let address: Multiaddr;
+  try {
+    address = multiaddr(component);
+  } catch (error) {
+    return `is not a multiaddr host (${error instanceof Error ? error.message : String(error)})`;
+  }
+  const [first, ...rest] = address.getComponents();
+  return rest.length === 0 && (isIP(host) !== 0 || first?.value === host)
+    ? undefined
+    : `does not parse as the single component ${component}`;
+}
+
+/** A DNS name or IP address the containers' public addresses can be built from. */
+const publicHost: Checker<string> = (value, keyPath, ctx) => {
+  if (typeof value !== 'string') {
+    return ctx.fail(keyPath, `${keyPath} must be a DNS name or IP address, got ${ctx.describe(keyPath, value)}`);
+  }
+  const problem = publicHostProblem(value);
+  return problem === undefined
+    ? value
+    : ctx.fail(keyPath, `${keyPath} must be a DNS name or IP address, got ${ctx.describe(keyPath, value)}, which ${problem}`);
+};
 
 /** Text `parseCpuLimit` can read. YAML reads an unquoted `0.5` as a number, so say to quote it. */
 const cpuLimit: Checker<string> = (value, keyPath, ctx) => {
@@ -146,6 +182,7 @@ const docker = objectOf<Block<'docker'>>({
         ? ctx.fail(keyPath, `${keyPath}.end must be at least ${keyPath}.start, got ${value.end} and ${value.start}`)
         : value,
   ),
+  publicHost,
 });
 
 const billing = objectOf<Block<'billing'>>({

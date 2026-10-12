@@ -1,9 +1,9 @@
 /**
  * The environment a provider-hosted node is started with — the entire
  * contract between the provider and the node it spawns: party id, bootstrap
- * peers, profile, listen address, health/metrics ports, the per-container
- * seed token gating `POST /seed`, and the pinned owner keys a fresh node
- * needs to accept its first delivered seed.
+ * peers, profile, listen and announced addresses, health/metrics ports, the
+ * per-container seed token gating `POST /seed`, and the pinned owner keys a
+ * fresh node needs to accept its first delivered seed.
  *
  * Pulled out of `DockerOrchestrator.createContainer` so a non-Docker
  * consumer (e.g. a test starting a real `@serfab/cadre-cli` child) can
@@ -11,6 +11,7 @@
  * parallel copy that can drift from it.
  */
 
+import { isIP } from 'node:net';
 import type { ContainerResources } from '../types.js';
 import type { OrchestratorCreateRequest } from './orchestrator.js';
 
@@ -18,7 +19,10 @@ import type { OrchestratorCreateRequest } from './orchestrator.js';
 export interface NodeEnvPorts {
   health: number;
   metrics: number;
+  /** libp2p TCP listener. */
   p2p: number;
+  /** libp2p WebSocket listener — the only transport a phone can dial. */
+  ws: number;
 }
 
 /**
@@ -26,7 +30,29 @@ export interface NodeEnvPorts {
  * and the same set `DockerOrchestrator` publishes host ports against, so the
  * env vars and the `PortBindings` keys cannot drift apart.
  */
-export const CONTAINER_PORTS: NodeEnvPorts = { health: 8080, metrics: 9090, p2p: 4001 };
+export const CONTAINER_PORTS: NodeEnvPorts = { health: 8080, metrics: 9090, p2p: 4001, ws: 4002 };
+
+/**
+ * The multiaddr host component for a DNS name or IP address: `/ip4/…` or
+ * `/ip6/…` for an address, `/dns4/…` for a name (every published-address example
+ * in this repo and the phone apps uses `/dns4`). Not validated here: config
+ * validation parses the result once at provider start.
+ */
+export function hostComponent(host: string): string {
+  const family = isIP(host);
+  const proto = family === 4 ? 'ip4' : family === 6 ? 'ip6' : 'dns4';
+  return `/${proto}/${host}`;
+}
+
+/**
+ * The addresses at which a container is reachable from off this machine: the
+ * provider's public host with the container's published TCP and WebSocket host
+ * ports. libp2p appends `/p2p/<peerId>` itself when it announces them.
+ */
+export function publicNodeAddrs(publicHost: string, hostPorts: { p2p: number; ws: number }): string[] {
+  const host = hostComponent(publicHost);
+  return [`${host}/tcp/${hostPorts.p2p}`, `${host}/tcp/${hostPorts.ws}/ws`];
+}
 
 export interface NodeEnvSpec {
   request: OrchestratorCreateRequest;
@@ -36,6 +62,12 @@ export interface NodeEnvSpec {
   ports?: NodeEnvPorts;
   /** Effective resources (request.resources merged with the config default). */
   resources?: ContainerResources;
+  /**
+   * Addresses the node announces besides the ones it binds — `publicNodeAddrs`
+   * when the provider knows its public host. Absent or empty: the node announces
+   * only its in-container addresses.
+   */
+  appendAnnounceAddrs?: readonly string[];
 }
 
 /** `KEY=value` entries, empty ones already dropped — Docker `Env` order preserved. */
@@ -43,20 +75,23 @@ export function buildNodeEnv(spec: NodeEnvSpec): string[] {
   const { request, seedToken } = spec;
   const ports = spec.ports ?? CONTAINER_PORTS;
   const resources = spec.resources ?? {};
+  const announce = spec.appendAnnounceAddrs ?? [];
 
   return [
     `CADRE_PARTY_ID=${request.partyId}`,
-    `CADRE_BOOTSTRAP_NODES=${request.bootstrapNodes.join(',')}`,
+    // Omitted when empty, like CADRE_OWNER_KEYS: the image's entrypoint then writes
+    // `bootstrapNodes: []`, a node that waits to be dialed.
+    request.bootstrapNodes.length ? `CADRE_BOOTSTRAP_NODES=${request.bootstrapNodes.join(',')}` : '',
     `CADRE_PROFILE=${request.profile}`,
     `CADRE_HEALTH_PORT=${ports.health}`,
     `CADRE_METRICS_PORT=${ports.metrics}`,
-    `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/${ports.p2p}`,
-    // NOTE: this list is closed, so a tenant node advertises only the address it binds
-    // inside its container — there is no `CADRE_APPEND_ANNOUNCE_ADDRS` here. Fine while
-    // tenants are reached at the provider's published host port or through a relay; if a
-    // deployment ever fronts tenant nodes with a proxy or DNS name, add the var (and
-    // decide whether the provider derives it from the published port or the tenant
-    // supplies it — the provider is the side that knows the port mapping).
+    `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/${ports.p2p},/ip4/0.0.0.0/tcp/${ports.ws}/ws`,
+    // The append form, not CADRE_ANNOUNCE_ADDRS: the in-container addresses stay
+    // advertised, so containers on one Docker network still reach each other directly.
+    // NOTE: a provider that fronts tenants with a TLS proxy (`/wss` on 443) would announce
+    // the proxy's address here instead of the published ports, and would need a
+    // per-container path or port on that proxy to tell tenants apart.
+    announce.length ? `CADRE_APPEND_ANNOUNCE_ADDRS=${announce.join(',')}` : '',
     // NOTE: emitted unconditionally — the provider always mints a token. A
     // caller passing '' would ship a present-but-empty var, which cadre-cli
     // reads as "seed endpoint disabled"; guard it here if a consumer ever

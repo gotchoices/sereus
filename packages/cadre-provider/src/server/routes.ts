@@ -19,6 +19,12 @@ export interface RouteContext {
   billingService: BillingService;
   basePath: string;
   /**
+   * Whether `POST /containers` accepts an absent or empty `bootstrapNodes` — true
+   * when the provider announces a public address for its containers
+   * (`docker.publicHost`), so a requester can dial the container instead.
+   */
+  bootstrapNodesOptional: boolean;
+  /**
    * Trigger a graceful shutdown of the provider process.
    * Routes call this after a successful response when the caller passes
    * `shutdownAfter: true`. Idempotent and asynchronous (fire-and-forget).
@@ -80,7 +86,7 @@ function requireScope(reply: FastifyReply, customer: CustomerIdentity, scope: st
 
 /** Register all routes */
 export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
-  const { basePath, containerService, billingService, requestShutdown } = ctx;
+  const { basePath, containerService, billingService, requestShutdown, bootstrapNodesOptional } = ctx;
 
   // GET /status - Health check
   app.get(`${basePath}/status`, async (_request, reply) => {
@@ -101,7 +107,9 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     // One validator owns the whole body — see `create-request-validation.ts` for
     // why no per-field check lives here. Nothing is provisioned on a rejection:
     // this runs before the quota check and before the service is touched.
-    const validated = validateCreateContainerRequest(request.body, customer.customerId);
+    const validated = validateCreateContainerRequest(request.body, customer.customerId, {
+      optional: bootstrapNodesOptional,
+    });
     if ('error' in validated) {
       return errorResponse(reply, 'INVALID_REQUEST', validated.error);
     }

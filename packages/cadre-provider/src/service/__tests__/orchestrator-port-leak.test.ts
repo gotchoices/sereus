@@ -41,12 +41,12 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
       ...daemonStubs(),
     } as unknown as Docker;
 
-    // Exactly 3 ports: a leak from the first attempt would exhaust the range.
-    const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
+    // Exactly 4 ports: a leak from the first attempt would exhaust the range.
+    const orch = new DockerOrchestrator(config(10000, 10003), fakeDocker);
 
     await expect(orch.createContainer(request)).rejects.toThrow('docker create failed');
 
-    // Ports were freed — a second (non-failing) create still finds 3 ports.
+    // Ports were freed — a second (non-failing) create still finds 4 ports.
     fail = false;
     const result = await orch.createContainer(request);
     expect(result.dockerId).toBe('cid-ok');
@@ -67,7 +67,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
       ...daemonStubs(),
     } as unknown as Docker;
 
-    const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
+    const orch = new DockerOrchestrator(config(10000, 10003), fakeDocker);
 
     await expect(orch.createContainer(request)).rejects.toThrow('start failed');
     // The created-but-unstarted container's reserved name + labels are freed.
@@ -83,7 +83,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     const createSpy = vi.fn();
     const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...daemonStubs() } as unknown as Docker;
 
-    // Only 2 ports available, but createContainer needs 3.
+    // Only 2 ports available, but createContainer needs 4.
     const orch = new DockerOrchestrator(config(10000, 10001), fakeDocker);
 
     await expect(orch.createContainer(request)).rejects.toThrow('No available ports in range');
@@ -108,7 +108,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
       ...daemonStubs(),
     } as unknown as Docker;
 
-    const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
+    const orch = new DockerOrchestrator(config(10000, 10003), fakeDocker);
 
     const result = await orch.createContainer(request);
     expect(result.dockerId).toBe('cid-1');
@@ -116,7 +116,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     expect(result.seedEndpoint).toMatch(/\/seed$/);
     expect(removeSpy).not.toHaveBeenCalled();
 
-    // The 3 ports are now held/recorded — the range is exhausted on the next create.
+    // The 4 ports are now held/recorded — the range is exhausted on the next create.
     await expect(orch.createContainer(request)).rejects.toThrow('No available ports in range');
   });
 
@@ -128,7 +128,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     }));
     const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...daemonStubs() } as unknown as Docker;
 
-    const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
+    const orch = new DockerOrchestrator(config(10000, 10003), fakeDocker);
     const result = await orch.createContainer(request);
 
     // A non-empty, high-entropy token comes back for applySeed to present.
@@ -142,14 +142,18 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
 
     const bindings = opts.HostConfig.PortBindings;
     // Health (which also serves the authenticated seed route) and metrics are
-    // loopback-only; the p2p port stays reachable on all interfaces for libp2p.
+    // loopback-only; the libp2p TCP and WebSocket ports stay reachable on all interfaces.
     expect(bindings['8080/tcp']![0]!.HostIp).toBe('127.0.0.1');
     expect(bindings['9090/tcp']![0]!.HostIp).toBe('127.0.0.1');
     expect(bindings['4001/tcp']![0]!.HostIp).toBeUndefined();
+    expect(bindings['4002/tcp']![0]!.HostIp).toBeUndefined();
   });
 });
 
-/** A container an earlier provider process created; running or stopped, it holds 10000–10002. */
+/**
+ * A container an earlier provider process created before containers had a WebSocket
+ * port; running or stopped, it holds 10000–10002 and keeps no fourth binding.
+ */
 const survivorInfo = {
   Id: 'old-1',
   Config: { Labels: { 'sereus.container-id': 'ctr_old' } },
@@ -177,7 +181,7 @@ function restartedOver(survivor: { inspect: unknown }) {
     ...daemonStubs(),
     listContainers,
   } as unknown as Docker;
-  const orch = new DockerOrchestrator(config(10000, 10005), fakeDocker);
+  const orch = new DockerOrchestrator(config(10000, 10006), fakeDocker);
   const { portAllocator } = orch as unknown as OrchestratorInternal;
   const survivorPortsHeld = () => [10000, 10001, 10002].map(port => portAllocator.has(port));
   return { orch, createSpy, listContainers, survivorPortsHeld };
@@ -191,8 +195,8 @@ describe('DockerOrchestrator port bookkeeping after a provider restart', () => {
     await orch.createContainer(request);
 
     const bindings = createSpy.mock.calls[0]![0].HostConfig.PortBindings;
-    expect(['8080/tcp', '9090/tcp', '4001/tcp'].map(port => bindings[port]![0]!.HostPort))
-      .toEqual(['10003', '10004', '10005']);
+    expect(['8080/tcp', '9090/tcp', '4001/tcp', '4002/tcp'].map(port => bindings[port]![0]!.HostPort))
+      .toEqual(['10003', '10004', '10005', '10006']);
     // `all: true` — a stopped container gets its bindings back when Docker restarts it.
     expect(listContainers).toHaveBeenCalledWith({ all: true, filters: { label: ['sereus.container-id'] } });
 

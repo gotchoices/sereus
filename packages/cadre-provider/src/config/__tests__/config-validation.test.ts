@@ -101,6 +101,20 @@ describe('provider config validation', () => {
     expect(message).toContain('docker.portRange.end must be at least docker.portRange.start, got 10000 and 20000');
   });
 
+  // The host is written unescaped into every container's announced multiaddrs, and the `dns4`
+  // codec takes any text, so a value that is not one clean host component must stop the
+  // provider here rather than ship an address no one can dial. IPv6 comes back canonicalized.
+  it('accepts a DNS name or IP address as docker.publicHost and refuses anything else', () => {
+    for (const host of ['provider.example.com', '203.0.113.7', '2001:DB8::1']) {
+      expect(loadConfig({ env: { PROVIDER_DOCKER_PUBLIC_HOST: host } }).docker.publicHost).toBe(host);
+    }
+    for (const host of ['a/b', 'provider.example.com/', 'provider example.com', ' provider.example.com']) {
+      expect(rejection(() => loadConfig({ env: { PROVIDER_DOCKER_PUBLIC_HOST: host } }))).toContain(
+        'Environment variable PROVIDER_DOCKER_PUBLIC_HOST: docker.publicHost must be a DNS name or IP address',
+      );
+    }
+  });
+
   it('accepts the shipped example config', () => {
     const config = loadConfig({ configFile: EXAMPLE_CONFIG, env: {} });
 
