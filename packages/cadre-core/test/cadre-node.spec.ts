@@ -158,6 +158,18 @@ describe('CadreNode', () => {
 
       expect(node.isRunning).toBe(false);
     }, 30000);
+
+    it('a stop() called while another is in flight joins it, tearing down once', async () => {
+      const node = new CadreNode(createConfig());
+      let disconnects = 0;
+      node.on('control:disconnected', () => { disconnects++; });
+
+      await node.start();
+      await Promise.all([node.stop(), node.stop()]);
+
+      expect(disconnects).toBe(1);
+      expect(node.isRunning).toBe(false);
+    }, 30000);
   });
 
   describe('strand management', () => {

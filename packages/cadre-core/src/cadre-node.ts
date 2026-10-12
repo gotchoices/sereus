@@ -485,6 +485,8 @@ export class CadreNode implements SAppIdLookup {
   private pushFanoutService: PushFanoutService | null = null;
   /** Backing field for the {@link running} / {@link isRunning} getters. */
   private _running = false;
+  /** The {@link stop} in progress, or null; a concurrent `stop()` awaits it. */
+  private stopInFlight: Promise<void> | null = null;
   /**
    * The control database's own raw storage (cache-wrapped), resolved once per
    * `start()` and released in {@link cleanup}. Owning it is what keeps the
@@ -1457,11 +1459,26 @@ export class CadreNode implements SAppIdLookup {
    * Stop the cadre node
    */
   async stop(): Promise<void> {
+    // A second call while one is in flight joins it rather than running cleanup() twice
+    // concurrently: `_running` stays true until cleanup() ends, and an event raised by a
+    // refresh still in flight (`cadre:removed`, whose embedder stops the node) can reach a
+    // handler that calls stop() mid-teardown.
+    if (this.stopInFlight) {
+      return this.stopInFlight;
+    }
     if (!this._running) {
       log('CadreNode not running');
       return;
     }
+    this.stopInFlight = this.stopRunning();
+    try {
+      await this.stopInFlight;
+    } finally {
+      this.stopInFlight = null;
+    }
+  }
 
+  private async stopRunning(): Promise<void> {
     log('Stopping CadreNode');
     await this.cleanup();
     this.emit('control:disconnected', undefined);
@@ -2569,8 +2586,8 @@ export class CadreNode implements SAppIdLookup {
    * The trusted-owner anchor sync ({@link syncOwnerAnchor}) runs FIRST, so the snapshot
    * built here judges `CadrePeer` rows against the anchor as the `OwnerKey` table now
    * has it. The invitation chain both reads may need, and the tombstone list the sync and
-   * the hang-up of removed peers ({@link hangUpRevokedControlPeers}, which runs LAST) both
-   * read, are each loaded at most once per refresh.
+   * the two end-of-refresh checks ({@link hangUpRevokedControlPeers}, then
+   * {@link noteOwnRemoval}) read, are each loaded at most once per refresh.
    */
   private async refreshAuthorizedControlPeers(reason: string): Promise<void> {
     if (!this._running || !this.controlDatabase) {

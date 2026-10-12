@@ -3159,8 +3159,8 @@ export class ControlDatabase {
    *   a retired stamp, and which a revoked drone cannot produce at all. The trade is
    *   recurring failure noise every cycle against removing the one stale row nobody else
    *   reads from this node (every other node already filters it by tombstone). A revoked
-   *   node therefore keeps its own copy of its own row; "a node that learns it has been
-   *   revoked should shut itself down" is a distinct behaviour and its own ticket.
+   *   node therefore keeps its own copy of its own row; learning that it was removed is a
+   *   separate behaviour (`CadreNode.removedFromCadre`, the `cadre:removed` event).
    *   `ValidationKey`, `JoinedStrand` and `JoinRequest` have no self notion and are not
    *   special-cased.
    *
