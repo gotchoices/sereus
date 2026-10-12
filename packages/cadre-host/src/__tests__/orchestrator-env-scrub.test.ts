@@ -123,13 +123,11 @@ describe('HostProcessOrchestrator child env scrub', () => {
     await orch.createContainer({
       containerId: 'child-1',
       partyId: 'party-1',
-      bootstrapNodes: [],
       profile: 'storage',
     });
     await orch.createContainer({
       containerId: 'child-2',
       partyId: 'party-2',
-      bootstrapNodes: [],
       profile: 'storage',
     });
 
@@ -152,7 +150,6 @@ describe('HostProcessOrchestrator child env scrub', () => {
     await orch.createContainer({
       containerId: 'child-1',
       partyId: 'party-1',
-      bootstrapNodes: [],
       profile: 'storage',
     });
 

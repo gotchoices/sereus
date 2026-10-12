@@ -171,14 +171,11 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 			ws: await allocFreePort(),
 		};
 
-		// Per-container secret gating the node's POST /seed — same mint as the
-		// real DockerOrchestrator (which the provider hands back on the result).
-		const seedToken = randomBytes(32).toString('base64url');
 		const admin = this.adminChannel
 			? { port: await allocFreePort(), token: randomBytes(16).toString('hex') }
 			: undefined;
 
-		const env = this.buildChildEnv(request, seedToken, ports, volumeDir, keyFile, admin);
+		const env = this.buildChildEnv(request, ports, volumeDir, keyFile, admin);
 		const configPath = this.ensureConfigFile(volumeDir);
 		const child = this.spawnNode(request.containerId, volumeDir, configPath, env);
 
@@ -200,8 +197,6 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 			dockerId,
 			healthEndpoint: `http://127.0.0.1:${ports.health}/health`,
 			metricsEndpoint: `http://127.0.0.1:${ports.metrics}/metrics`,
-			seedEndpoint: `http://127.0.0.1:${ports.health}/seed`,
-			seedToken,
 			p2pPort: ports.p2p,
 		};
 	}
@@ -251,7 +246,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		log('restarted %s pid=%d', dockerId, handle.child.pid);
 	}
 
-	/** Never consulted on the seed path — zeros keep the interface honest. */
+	/** Never consulted by the scenarios — zeros keep the interface honest. */
 	async getStats(_dockerId: string): Promise<OrchestratorStats> {
 		return { cpuPercent: 0, memoryBytes: 0, networkRxBytes: 0, networkTxBytes: 0 };
 	}
@@ -366,7 +361,6 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 
 	private buildChildEnv(
 		request: OrchestratorCreateRequest,
-		seedToken: string,
 		ports: NodeEnvPorts,
 		volumeDir: string,
 		keyFile: string,
@@ -393,7 +387,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		// port mapping here, so the allocated host ports go in as the container
 		// ports the provider writes into the env.
 		const appendAnnounceAddrs = this.publicHost === undefined ? [] : publicNodeAddrs(this.publicHost, ports);
-		for (const entry of buildNodeEnv({ request, seedToken, ports, appendAnnounceAddrs })) {
+		for (const entry of buildNodeEnv({ request, ports, appendAnnounceAddrs })) {
 			const eq = entry.indexOf('=');
 			env[entry.slice(0, eq)] = entry.slice(eq + 1);
 		}
@@ -419,8 +413,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	 * those defaults. (`hibernation.enabled` is required once a hibernation
 	 * block exists; the image env's CADRE_HIBERNATION_ENABLED overrides it
 	 * regardless.) `controlNetwork.bootstrapNodes: []` is the entrypoint's
-	 * output for an empty list, which the provider sends by omitting
-	 * CADRE_BOOTSTRAP_NODES; a non-empty list overrides it from the env.
+	 * output when CADRE_BOOTSTRAP_NODES is unset, which the provider never sets.
 	 */
 	private ensureConfigFile(volumeDir: string): string {
 		const configPath = join(volumeDir, CONFIG_FILE);

@@ -175,6 +175,11 @@ export class FileStore implements ProviderStore {
       for (const c of data) {
         c.createdAt = new Date(c.createdAt);
         c.updatedAt = new Date(c.updatedAt);
+        // An earlier provider's seed-path record also holds these three. Dropped so the record
+        // carries only `Container`'s fields: the API's redaction no longer knows `seedToken`.
+        delete c.seedToken;
+        delete c.seedEndpoint;
+        delete c.pinnedOwnerKeys;
         this.cache.containers.set(c.id, c);
       }
     }

@@ -5,7 +5,7 @@
  * hop; an address that ends at the hop (`…/p2p/<relay>/p2p-circuit`) names nobody, and so
  * does one with no `/p2p/` at all. Same rule as cadre-core's `destinationPeerIdOf`
  * (`node-claim-payload.ts`), restated here because the provider does not depend on
- * cadre-core (`server/owner-key-validation.ts` says why). Shared by the invitation
+ * cadre-core (`server/invitation-validation.ts` says why). Shared by the invitation
  * validator (every member address must name the member) and the node code (each address
  * gains the node's own id when it names none).
  */

@@ -13,7 +13,6 @@ describe('hasPermission', () => {
     expect(hasPermission(['containers:*'], Scope.ContainersRead)).toBe(true);
     expect(hasPermission(['containers:*'], Scope.ContainersCreate)).toBe(true);
     expect(hasPermission(['containers:*'], Scope.ContainersDelete)).toBe(true);
-    expect(hasPermission(['containers:*'], Scope.ContainersSeed)).toBe(true);
     // …but not a different resource.
     expect(hasPermission(['containers:*'], Scope.BillingRead)).toBe(false);
   });

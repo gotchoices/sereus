@@ -151,15 +151,13 @@ const SUPER_MAJORITY_REJECTED =
  * The shortfall exactly as a THREE-node party raises it — the shape that makes a third
  * node's join fragile. A control transaction there needs 2 of 2 remaining peers to answer,
  * so ONE flaky peer response is fatal where a two-node party would have tolerated it.
- * Transcribed from the failing `provider-seed-accepted` run recorded in
- * `tickets/implement/29.3-third-node-join-ddl-init.md`.
+ * Transcribed from a failing run of the since-deleted `provider-seed-accepted` scenario,
+ * recorded in `tickets/implement/29.3-third-node-join-ddl-init.md`.
  *
  * A RECONSTRUCTION, and knowingly a partial one: the transcription kept this inner sentence
  * but elided the surrounding transactor aggregate, which is where the `[block:`/`[blocks:`
- * token that decides retriability lives (see the two aggregate forms below). Twelve runs of
- * `provider-seed-accepted.integration.ts` on 2026-08-02/03 failed to re-capture the failure —
- * every DDL death in those runs was `Missing block` instead — so the elided segment is still
- * unrecorded.
+ * token that decides retriability lives (see the two aggregate forms below). Attempts to
+ * re-capture it saw only `Missing block` deaths, so the elided segment is still unrecorded.
  */
 const SUPER_MAJORITY_THIRD_NODE_JOIN =
 	'Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
@@ -419,9 +417,8 @@ describe('isRetriableControlWriteFailure', () => {
  * self-coordination grace refusal, and nothing else.
  *
  * Message literals again, and here the load-bearing one is CAPTURED rather than reconstructed: the
- * refusal text comes from a real node-B startup death. The end-to-end proof
- * (`provider-seed-accepted.integration.ts`) reproduces the fingerprint on roughly 1 run in 3, so
- * these cases — not that scenario — are what actually pins the behaviour.
+ * refusal text comes from a real node-B startup death. The scenario that captured it reproduced
+ * the fingerprint on roughly 1 run in 3, so these cases are what pins the behaviour.
  */
 describe('isRetriableSchemaInitFailure', () => {
 	it('retries the self-coordination grace refusal the default classifier refuses', () => {

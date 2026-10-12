@@ -28,16 +28,14 @@ function pendingContainer(overrides: Partial<Container> = {}): Container {
 const provisionRequest: CreateContainerRequest = {
   customerId: 'cust-1',
   partyId: 'party-1',
-  bootstrapNodes: [],
   profile: 'transaction',
+  join: { kind: 'invitation', invitation: 'sereus-invite:1.x' },
 };
 
 const createResult: OrchestratorCreateResult = {
   dockerId: 'docker-xyz',
   healthEndpoint: 'http://localhost:18080/health',
   metricsEndpoint: 'http://localhost:19090/metrics',
-  seedEndpoint: 'http://localhost:18080/seed',
-  seedToken: 'seed-token-xyz',
   p2pPort: 14001,
 };
 

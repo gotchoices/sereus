@@ -4,7 +4,6 @@
 
 import Docker from 'dockerode';
 import debug from 'debug';
-import { randomBytes } from 'node:crypto';
 import type { DockerConfig } from '../config/types.js';
 import type {
   ContainerRunState,
@@ -259,13 +258,6 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
 
     const resources = request.resources ?? this.config.defaultResources ?? {};
 
-    // Per-container secret gating the node's `POST /seed` route. The container
-    // refuses seed delivery unless the caller presents this as a bearer token
-    // (and the route is unregistered entirely when the env var is empty), so we
-    // mint a fresh high-entropy value per container and hand it back on the
-    // result for `ContainerService.applySeed` to send.
-    const seedToken = randomBytes(32).toString('base64url');
-
     // Anything that throws between allocation and the successful record below
     // must release the ports, best-effort remove a partially-created container,
     // and drop a volume this attempt created — otherwise the bounded host-port
@@ -285,15 +277,14 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
         // NOTE: `Env` is fixed at create, so a container keeps announcing the
         // `publicHost` it was created under until it is recreated; changing the
         // config between provider restarts does not reach existing containers.
-        Env: buildNodeEnv({ request, seedToken, resources, appendAnnounceAddrs: this.announceAddrsFor(ports) }),
+        Env: buildNodeEnv({ request, resources, appendAnnounceAddrs: this.announceAddrsFor(ports) }),
         ExposedPorts: EXPOSED_PORTS,
         HostConfig: {
-          // Health (which also serves the authenticated `POST /seed`) and metrics
-          // are bound to the host's loopback only: the provider reaches them via
-          // `http://localhost:<port>` and nothing off-box should touch the seed
-          // surface. A bare `HostPort` would bind `0.0.0.0` and expose the seed
-          // route to the network. The libp2p TCP (4001) and WebSocket (4002)
-          // ports intentionally stay on all interfaces — peers must reach them remotely.
+          // Health and metrics are bound to the host's loopback only: the provider,
+          // which reads them via `http://localhost:<port>`, is their only reader, and a
+          // bare `HostPort` would bind `0.0.0.0` and publish them to the network. The
+          // libp2p TCP (4001) and WebSocket (4002) ports intentionally stay on all
+          // interfaces — peers must reach them remotely.
           PortBindings: {
             [`${CONTAINER_PORTS.health}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ports.health) }],
             [`${CONTAINER_PORTS.metrics}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(ports.metrics) }],
@@ -350,9 +341,6 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
       dockerId,
       healthEndpoint: `http://localhost:${ports.health}/health`,
       metricsEndpoint: `http://localhost:${ports.metrics}/metrics`,
-      // The node's seed API (`POST /seed`) is bound to the same server/port as `/health`.
-      seedEndpoint: `http://localhost:${ports.health}/seed`,
-      seedToken,
       p2pPort: ports.p2p,
     };
   }

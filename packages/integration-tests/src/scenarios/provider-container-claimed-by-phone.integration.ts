@@ -8,14 +8,16 @@
  * - **Provider** — the real `@serfab/cadre-provider` HTTP API: `createProviderServer` over a
  *   `MemoryStore` and a `ProviderProcessOrchestrator`, driven in-process through Fastify's
  *   `inject` (no port is bound) in auth mode `none`, so the scenario is the API's one customer.
- *   The routes, their validator and their redaction are the production ones; underneath them
- *   the same `ContainerService` enrollment loop `provider-drone-phone-requester` drives directly.
+ *   The routes, their validator and their redaction are the production ones, and underneath
+ *   them the production `ContainerService` enrollment loop.
  * - **Provider node** — the real `cadre-cli` child the orchestrator spawns from the provider's
  *   own `buildNodeEnv` output: `CADRE_CLAIM_SECRET` from the join the service minted, the
  *   placeholder party `unclaimed`, no bootstrap peers, and `CADRE_APPEND_ANNOUNCE_ADDRS` from
  *   `publicNodeAddrs('localhost', …)`, as a Docker container with `docker.publicHost` gets. The
- *   host is a name on purpose: a `/dns4/localhost` address appears only by being announced
- *   (`provider-drone-phone-requester` says why).
+ *   host is a name on purpose: the child binds `0.0.0.0`, which already lists `127.0.0.1`, so a
+ *   public host of `127.0.0.1` would announce addresses the node reports anyway, and step 3
+ *   would pass with `CADRE_APPEND_ANNOUNCE_ADDRS` never reaching the node. A `/dns4/localhost`
+ *   address appears only by being announced.
  * - **Phone-shaped requester** — `buildPhoneOwner`: an in-process `CadreNode` with
  *   `listenAddrs: []`, WebSocket and circuit-relay transports only, `profile: 'transaction'`,
  *   owner genesis run on itself. It can reach the node only at a `/ws` address.

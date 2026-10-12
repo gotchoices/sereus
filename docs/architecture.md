@@ -338,7 +338,7 @@ Ticket: `cold-start-control-redial`.
 
 #### Node-local state and where it persists
 
-The [cold-start retry](#cold-start-retry) set has to survive a restart. Nothing else on disk records that a seed was ever applied (`applySeed` writes no control row, and a `CadrePeer` row fills in only *after* a connection succeeds), so with an in-memory-only set a restart erases the only addresses the node has and strands it permanently — reachable by nothing more exotic than a container or phone-app relaunch, and *not* covered by `cadre-cli start --seed` for the two paths that receive a seed at runtime (the `/sereus/seed/1.0.0` protocol, which a claim uses, and cadre-provider forwarding a tenant's seed to the container's `POST /seed` route; neither gets a `--seed` argument on the next start).
+The [cold-start retry](#cold-start-retry) set has to survive a restart. Nothing else on disk records that a seed was ever applied (`applySeed` writes no control row, and a `CadrePeer` row fills in only *after* a connection succeeds), so with an in-memory-only set a restart erases the only addresses the node has and strands it permanently — reachable by nothing more exotic than a container or phone-app relaunch, and *not* covered by `cadre-cli start --seed` for the two paths that receive a seed at runtime (the `/sereus/seed/1.0.0` protocol, which a claim uses, and the node's `POST /seed` route, for an operator who runs the container image by hand; neither gets a `--seed` argument on the next start).
 
 **The store and its Node backend.** `BootstrapPeerStore` is therefore the same shape as the trusted-owner anchor: cross-platform interface, ephemeral in-memory default, and a Node-only `FileBootstrapPeerStore` (atomic JSON snapshot per party under the node's **state directory** — `ResolvedConfig.nodeStateDir`, behind the subpath `@serfab/cadre-core/bootstrap-peer-store-file`) that `cadre-cli start` injects unconditionally — so any node the CLI runs keeps retrying across restarts, however its identity key file is supplied (`identity.keyFile`, `CADRE_KEY_FILE`, or `--identity-file` — one config key, one file format: the libp2p protobuf private key both `cadre enroll create` and cadre-host (for each node it runs) write).
 
@@ -415,7 +415,7 @@ The node doesn't need to know who will dial whom — it tries everything and acc
 
 ### Enrollment Flow: Phone Adds Provider Drone
 
-The most common case: a user on a NAT'd phone rents a provider-hosted node. The container joins the phone's cadre the same two ways a cadre-host node does ([Which Side Dials](#which-side-dials-the-add-a-node-flows-compared), rows 5 and 6): the phone **claims** it with a one-time code, or the container **redeems an invitation** at a member that is already online. The provider handles no owner key and no seed for such a container ([cadre-provider README → Joining a cadre: claim or invitation](../packages/cadre-provider/README.md#joining-a-cadre-claim-or-invitation)). The seed flow at the end of this section is the original path, which `provider-retires-the-seed-path` removes.
+The most common case: a user on a NAT'd phone rents a provider-hosted node. The container joins the phone's cadre the same two ways a cadre-host node does ([Which Side Dials](#which-side-dials-the-add-a-node-flows-compared), rows 5 and 6): the phone **claims** it with a one-time code, or the container **redeems an invitation** at a member that is already online. The provider handles no owner key and no seed ([cadre-provider README → Joining a cadre: claim or invitation](../packages/cadre-provider/README.md#joining-a-cadre-claim-or-invitation)).
 
 **By claim.** The cadre's only member is the phone, so there is no member online for the container to join through; the phone dials the container and claims it:
 
@@ -458,6 +458,7 @@ sequenceDiagram
 
 Key points of the two join paths:
 - A claim container's record says `partyId: unclaimed` until a `/status` read folds the claim, so an app that picks its containers out of `GET /containers` by party misses it; it finds them by `joinState` instead.
+- Each container listens on TCP and on WebSocket (the only transport a phone has), both published on host ports, and with `docker.publicHost` set announces them at that host; `GET /containers/:id/peer` returns every address the node reports, those included ([cadre-provider README → Phones dial containers at the public host](../packages/cadre-provider/README.md#phones-dial-containers-at-the-public-host)).
 - The code carries only the WebSocket address at `docker.publicHost`, ending in `/p2p/<peerId>`: a phone has no TCP transport and cannot reach an in-container address, so a claim requires `publicHost` and `POST /containers` refuses one without it.
 - The claim secret leaves the provider only in `GET /containers/:id/code`, to the container's authenticated owner; every response shows `join: { kind }`, and an invitation's bundle is never returned.
 - The provider reads a container's `/status` in one place (`ContainerService.readStatus`) and every read folds the join state the node reports, so `GET /containers` carries each container's party and join state without a live read per row and the provider runs no poller; `GET /containers/:id` always reads live.
@@ -466,40 +467,8 @@ Key points of the two join paths:
 - An invitation spent or expired before the node redeemed it reports `joinState: failed` with `invite-spent` and `retryable: false`; the remedy is to delete the container and rent again, and there is no retry route.
 - An invitation container needs no `publicHost`: it dials the member; without one a phone cannot dial it directly later.
 - An unclaimed container is never reaped; it is billed until the customer deletes it.
-- While it waits to be claimed, the container admits a connection and nothing else, the one un-enrolled state the connection gate treats so (the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol)); once claimed, the cold-start admission window the seed bullets below describe applies until the phone's rows reach it.
+- While it waits to be claimed, the container admits a connection and nothing else, the one un-enrolled state the connection gate treats so (the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol)). Once claimed it has no authorized members until the phone's rows reach it over the connection the claim opened, and in that window it admits any peer's connection and control-database streams: the replication cold start of the connection gate and [Per-stream protocol guard](#per-stream-protocol-guard) → "The snapshot".
 - `provider-container-claimed-by-phone.integration.ts` and `provider-container-joins-by-invitation.integration.ts` run the two flows end to end against the provider's HTTP API and a real `cadre-cli` child started from the provider's environment: the phone claims the container from its node code (a wrong secret and a second owner refused, the code withdrawn once claimed, the container still claimed after a restart on its volume), and the container redeems an invitation at an always-on member (a spent invitation ending `failed`, `invite-spent`, `retryable: false`). The node is announced at `localhost`, a name, so the only address in the code is one the provider announced.
-
-**By seed (being retired).** The original flow, which `provider-retires-the-seed-path` removes together with `pinnedOwnerKeys`, `GET /containers/:id/peer` and `PUT /containers/:id/seed`:
-
-```mermaid
-sequenceDiagram
-    participant Ph as Phone (Owner, NAT'd)
-    participant P as Provider API
-    participant D as Drone (New)
-    Ph->>P: 1. createContainer (plan, payment)
-    P->>D: 2. Spawn container
-    D->>P: createCadrePeer() → PeerId + multiaddr
-    P->>Ph: 3. Return PeerId + multiaddr
-    Note over Ph: 4. addDrone(drone) — sign & insert CadrePeer, retain drone addrs as a dial target
-    Note over Ph: 5. createSeed({peers:[{phone, addrs:[]}]}) — NAT'd, no addrs
-    Ph->>P: 6. initializeNode(containerId, seed)
-    P->>D: 7. Forward seed
-    Note over D: 8. applySeed() → cache phone ✓, no dial hints → wait
-    Ph->>D: 9. reconcileControlCohort() dials drone from the retained addrs (outbound, NAT-safe)
-    Note over D: 10. Validate: phone in cache? ✓ → accept
-    Ph<<->>D: Control Network Sync
-    Note over D: 11. select * from CadrePeer → authoritative cache refresh
-```
-
-Key points of the seed path:
-- Phone is NAT'd → seed has no multiaddrs for phone → drone waits
-- Phone dials drone (outbound from phone's perspective) → NAT-safe
-- The drone's row is unsigned until the drone self-publishes, so the phone dials from the addresses `CadreNode.addDrone` retained in its bootstrap-peer store — on this launch and after a relaunch. The caller triggers step 9 with `reconcileControlCohort()` once the seed is delivered; otherwise the next timed pass does it
-- Drone validates phone against seed cache → connection accepted
-- Normal sync populates authoritative state
-- The drone is reachable because the provider publishes it. Each `@serfab/cadre-provider` container listens on TCP and on WebSocket (the only transport a phone has), both published on host ports, and announces them at the provider's `docker.publicHost`; step 3's multiaddrs are what `GET /containers/:id/peer` returns, those public addresses included. With `publicHost` set, step 1 may omit `bootstrapNodes`, since the phone dials instead ([cadre-provider README → Phones dial containers at the public host](../packages/cadre-provider/README.md#phones-dial-containers-at-the-public-host))
-- Until the phone's rows reach it, the drone has no authorized members, so it admits any peer's connection and control-database streams: the replication cold start of the connection gate and [Per-stream protocol guard](#per-stream-protocol-guard) → "The snapshot". A container with a public port always had this window; one created with no bootstrap peers stays in it until the phone dials, normally right after delivering the seed
-- `provider-drone-phone-requester.integration.ts` runs this flow end to end against a real `cadre-cli` child started from the provider's environment: an empty `bootstrapNodes`, the announced public pair in step 3's multiaddrs, the phone dialing in over `/ws`, the phone's row reaching the drone, and the drone's own record reaching the phone. The seed is delivered several seconds after the drone starts, as a phone's would be, so the drone publishes from its reconcile pass
 
 ### Enrollment Flow: Server Adds Phone
 
@@ -507,29 +476,25 @@ A server no longer adds a phone by having it dial in while the owner signs at th
 
 ### Enrollment Flow: Server Adds Drone
 
-When a server adds another provider-hosted node:
+When an always-on owner node adds a machine run by hand, from the CLI ([cadre-cli README → Add a Machine to the Cadre](../packages/cadre-cli/README.md#add-a-machine-to-the-cadre)):
 
 ```mermaid
 sequenceDiagram
     participant S as Server (Owner)
-    participant P as Provider API
+    participant O as Operator
     participant D as Drone (New)
-    S->>P: 1. createContainer
-    P->>D: 2. Spawn container
-    D->>P: createCadrePeer() → PeerId
-    P->>S: Return PeerId + multiaddr
+    O->>D: 1. cadre enroll create → PeerId
+    O->>S: 2. cadre enroll add <peerId> (POST /admin/add-drone)
     Note over S: 3. authorizePeer(drone)<br/>4. createSeed({peers:[{server, addrs:[serverAddr]}]})
-    S->>P: 5. initializeNode(seed)
-    P->>D: 6. Forward seed
+    S->>O: 5. Encoded seed
+    O->>D: 6. cadre start --seed <seed> --pin-owner-key <owner key>
     Note over D: 7. applySeed() → cache server, has dial hints
     D->>S: 8. Drone dials server
     Note over S: 9. Validate: drone in DB ✓ → Accept
     S<<->>D: Control Network Sync
 ```
 
-Seed includes `bootstrapAddrs` because server IS dialable. Drone initiates connection to server.
-
-From the CLI, this flow is `cadre enroll add <peerId>` on the owner machine, which drives the owner node's `POST /admin/add-drone`, followed by `cadre start --seed <seed> --pin-owner-key <owner key>` on the new machine (see [`packages/cadre-cli/README.md`](../packages/cadre-cli/README.md#add-a-machine-to-the-cadre)).
+Seed includes `bootstrapAddrs` because server IS dialable. Drone initiates connection to server. A server that rents a provider-hosted node instead is the always-on member the container redeems an invitation at ([Enrollment Flow: Phone Adds Provider Drone](#enrollment-flow-phone-adds-provider-drone), "By invitation").
 
 ### Enrollment Flow: Invitation Redeemed at Any Member
 
@@ -836,7 +801,7 @@ Proof: `cadre-node-remove-machine.spec.ts` (one database) and the `machine-remov
 
 | Instigator | Adding | Seed Needed? | Who Dials Whom? |
 |------------|--------|--------------|-----------------|
-| Phone (NAT) | Drone (public) | **Yes** — drone needs phone's CadrePeer in cache | Phone → Drone |
+| Phone (NAT) | Drone (public) | **A claim** — a seed with a proof of the drone's claim secret, delivered by the phone over libp2p; a provider carries none | Phone → Drone |
 | Phone (NAT) | Phone (NAT) | **Yes** — both need each other; use relay addrs | Both → Relay |
 | Any owner | Any device, by cadre invitation | **No** — the bundle names member addresses; the device dials one and the member writes its rows | Device → a named member |
 | Server (public) | Drone (public) | **Yes** — includes `multiaddrs` so drone can dial | Drone → Server |
@@ -858,7 +823,7 @@ A node never joins when neither side holds an address at which it can reach the 
 | 1 | Reference app: a phone plus a `cadre-cli` drone ([reference-app-rn.md → Two-Node Startup Sequence](reference-app-rn.md#two-node-startup-sequence)) | the phone dials the drone's `/ws` bootstrap address | the drone: same LAN, or a public address |
 | 2 | `cadre enroll add` without `--addr` ([cadre-cli README → Add a Machine to the Cadre](../packages/cadre-cli/README.md#add-a-machine-to-the-cadre)) | the new machine dials the owner addresses in the seed | the owner: its listen addresses on a LAN, `network.appendAnnounceAddrs`, or a relay |
 | 3 | `cadre enroll add --addr <new machine's multiaddr>` (same page) | both: the owner also dials the new machine | either one |
-| 4 | A cadre-provider container ([Provider Integration](#provider-integration), [Enrollment Flow: Phone Adds Provider Drone](#enrollment-flow-phone-adds-provider-drone)), rented by an app through cadre-core's `rentNode`, which picks between the first two ways from `CadreNode.invitationReach()` ([Renting a node from an app](#renting-a-node-from-an-app)), three ways in: by claim (`join.kind: 'claim'`, row 6's flow), by invitation (`join.kind: 'invitation'`, row 5's flow), or by seed (no `join`; being retired) | by claim: the phone dials the container's WebSocket address from the node code (`GET /containers/:id/code`); by invitation: the container dials the members the bundle names; by seed: the container dials the requester's `bootstrapNodes`, or a phone gives none and dials the container's address from `GET /containers/:id/peer` | by claim: the container, at the provider's `docker.publicHost`, which a claim requires; by invitation: any named member, and the container need not be reachable; by seed: the requester when it gives `bootstrapNodes`, otherwise the container at `publicHost` (a provider without one requires `bootstrapNodes`) |
+| 4 | A cadre-provider container ([Provider Integration](#provider-integration), [Enrollment Flow: Phone Adds Provider Drone](#enrollment-flow-phone-adds-provider-drone)), rented by an app through cadre-core's `rentNode`, which picks between the first two ways from `CadreNode.invitationReach()` ([Renting a node from an app](#renting-a-node-from-an-app)), two ways in: by claim (`join.kind: 'claim'`, row 6's flow) or by invitation (`join.kind: 'invitation'`, row 5's flow) | by claim: the phone dials the container's WebSocket address from the node code (`GET /containers/:id/code`); by invitation: the container dials the members the bundle names | by claim: the container, at the provider's `docker.publicHost`, which a claim requires; by invitation: any named member, and the container need not be reachable |
 | 5 | A device redeems a cadre invitation at any member (`cadre enroll invite` / `cadre start --invitation`, the reference apps' **Join my existing cadre** and **Join a Cadre**, `cadre-host join --invitation` ([cadre-host.md → Join by invitation](cadre-host.md#join-by-invitation)), `CadreNode.createCadreInvitation` / `redeemCadreInvitation`; [Enrollment Flow: Invitation Redeemed at Any Member](#enrollment-flow-invitation-redeemed-at-any-member)) | the device dials the members the invitation names, in order: the minting owner's addresses first, then other members', six addresses at most | any one named member; the owner that minted it may be offline |
 | 6 | A phone claims a node started with a claim secret (`CADRE_CLAIM_SECRET` or `claim.secretFile` on `cadre start`, `CadreNodeConfig.claim`; `CadreNode.claimNode`; the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol)); the `cadre-host join` flow ([cadre-host.md → Join by QR code](cadre-host.md#join-by-qr-code)), a provider container created with `join.kind: 'claim'` (row 4), and the React Native reference app's **Add an always-on node** ([reference-app-rn.md → Adding a Home Machine's Node](reference-app-rn.md#adding-a-home-machines-node-cadre-host)) | the phone dials the node's addresses from the QR code it scanned, and `claimNode` retains them as a dial target | the node: over the LAN when the phone is at home; from outside, only through ports the router maps or the user forwards, which the host's reachability verdict for the node reports ([cadre-host.md → Reachability from outside](cadre-host.md#reachability-from-outside)) |
 
@@ -911,7 +876,7 @@ The protocol id is not versioned for `claimProof`: there is no backwards compati
 - New node verifies `signature` using `signerKey` (ed25519)
 - `signerKey` must clear a **trust anchor that does not come from the seed body** — a signature only proves the seed is internally consistent, and both `signerKey` and the seed's own `isOwner` peer flags are attacker-supplied, so a forged self-asserting seed must not be able to vouch for itself. The receiver evaluates a `SeedTrustPolicy` against its *own* node-local trusted-owner anchor (`TrustedOwnerStore`, below) — **not** the replicated `CadreControl.OwnerKey` table — in priority order:
   - **Anchored** (default, `anchoredTrustPolicy`): the signer is trusted iff its key is in the receiver's node-local anchor (established out of band: genesis, an invitation's pin, operator pin).
-  - **Pinned out-of-band**: owner keys delivered outside the seed — pinned by operator config (`--pin-owner-key`, `CADRE_OWNER_KEYS`, which cadre-provider sets for each tenant container) — let a not-yet-anchored node accept its first seed. A key accepted this way is persisted into the anchor, so later seeds from that owner need no pin. A device that joins by cadre invitation needs no seed at all: `redeemCadreInvitation` pins the bundle's `ownerKeys` before dialing a member.
+  - **Pinned out-of-band**: owner keys delivered outside the seed — pinned by operator config (`--pin-owner-key`, `CADRE_OWNER_KEYS`) — let a not-yet-anchored node accept its first seed. A key accepted this way is persisted into the anchor, so later seeds from that owner need no pin. A device that joins by cadre invitation needs no seed at all: `redeemCadreInvitation` pins the bundle's `ownerKeys` before dialing a member.
   - **Claim secret** (`claimSecretTrustPolicy`, `claim-proof.ts`): a node that belongs to nobody yet — a cadre-host child before its owner scans the QR code — accepts its first seed from whoever proves they hold its one-time **claim secret**, 32 random bytes the host mints and shows beside the node's addresses. The proof rides beside the seed as `SeedMessage.claimProof`; the sub-paragraphs below give its construction, the commit point, and what a claimed node does with later proofs.
 
     **Construction.** `claimProof = base64url(HMAC-SHA256(secret, utf8(canonicalJson({ purpose: 'sereus-node-claim', v: 1, nodePeerId, signerKey, seedDigest }))))`, where `seedDigest` is the same `digest([canonicalSeedPayload(seed)], 'sha256', 'base64url')` the seed signature covers; a phone implements the owner side from this line alone. The three bound fields are the guarantee: `nodePeerId` (the receiver checks against its **own** peer id, never one the message supplies) means a captured proof claims no other node, `signerKey` means it anchors no other owner, and `seedDigest` means it attaches to no other seed. The receiver compares in constant time.
@@ -934,7 +899,7 @@ The protocol id is not versioned for `claimProof`: there is no backwards compati
 
   **Shape check on entry.** Every key entering the anchor is shape-checked first (`requireEd25519PublicKeyB64` — base64url, 32 bytes; curve membership is *not* checked, an off-curve value still fails later at signature verification), and a batch lands all-or-nothing: one malformed entry in a config pin list or an invite's `ownerKeys` rejects the whole call before any key is anchored, matching the persisted record's discard-all policy for a partly-unreadable snapshot. A typo therefore fails loudly at its entry point instead of sitting in the anchor matching no signer.
 
-  **The provider path.** `cadre-provider`'s `POST /containers`, where the caller supplies the pin, applies the same rule so a typo is a `400` naming the bad key rather than a node that fails to start after the request was reported successful. It restates the check locally (`validateOwnerKey` in `server/owner-key-validation.ts`): that package deliberately takes no workspace dependency on `@serfab/cadre-core`, so the rule is duplicated over `uint8arrays`, and the two copies are kept in step **by hand**. Each side's suite pins its own copy to the same accept/reject table, which fails an unintended edit and lands the editor on the comment pointing at the other copy, but neither suite can observe the other package. cadre-host supplies no pin: a hosted node's owner key reaches its anchor through the claim or through the invitation bundle, each checked by cadre-core on the node.
+  **Hosted and rented nodes.** Neither cadre-host nor cadre-provider supplies a pin: a hosted node's or a rented container's owner key reaches its anchor through the claim or through the invitation bundle, each checked by cadre-core on the node.
 
   **Where it persists.** File-backed in the node's state directory on Node hosts (`ResolvedConfig.nodeStateDir` — `@serfab/cadre-core/trusted-owner-store-file`, same `node:fs` isolation as `key-store-file`), in-memory elsewhere; persistence rides the same injectable `DurableSlot` seam as the bootstrap-peer store ([Node-local state and where it persists](#node-local-state-and-where-it-persists)), with one intentional difference in policy — an anchor record that cannot be read *in full* is discarded entirely (trusting a subset of the keys a record claims would be a silent downgrade), where the peer store drops the bad entry and keeps the rest. That directory must be writable by the node's user: it defaults to the directory holding the config file, which some deployments mount read-only (the shipped systemd unit sets `CADRE_NODE_STATE_DIR=/var/lib/cadre` for exactly that reason).
 
@@ -976,21 +941,11 @@ The protocol id is not versioned for `claimProof`: there is no backwards compati
 | Mechanism | When Used | Notes |
 |-----------|-----------|-------|
 | Direct protocol | New node is dialable | Instigator dials, sends seed directly |
-| Provider API | Provider-hosted node | `PUT /containers/:id/seed` via HTTPS — delivery only; the container must also have been *created* with its tenant's owner key pinned (below) |
 | QR code / deep link | Mobile onboarding | Seed encoded in URL, opened by app |
 | Start-up flag | Node start | `cadre start --seed <encoded>` applies a base64url-encoded seed before the node joins |
+| Node HTTP route | A container image run by hand | `POST /seed` on the node's health port, registered only when `CADRE_SEED_TOKEN` is set and accepted only with that bearer ([cadre-cli README](../packages/cadre-cli/README.md)) |
 
 All mechanisms deliver the same `SeedMessage` payload; only the transport differs.
-
-**Delivery and trust are separate gates**, and a hosted node makes the split explicit. On the provider path the per-container bearer token (`CADRE_SEED_TOKEN`) decides whether `POST /seed` is *accepted for processing*; whether its contents are *honoured* is decided by the node's own `SeedTrustPolicy` against its node-local anchor — which is empty on a fresh container and which nothing replicated can fill.
-
-**The pin is supplied at create time.** A container-hosted node must therefore be told at **create** time whose seeds to trust: `POST /containers` takes `pinnedOwnerKeys` (the tenant's own base64url owner key(s)), and the orchestrator passes them to the node as comma-separated `CADRE_OWNER_KEYS` — the same operator-pin path as cadre-cli's `--pin-owner-key`. The pin flows strictly from one tenant's create request into that tenant's own container: there is deliberately **no provider-level default owner key**, since a provider-wide pin would let one tenant's owner seed another tenant's node. Each supplied key is shape-checked by the create route (base64url, 32 bytes — see "Shape check on entry" under the trusted-owner anchor item above), so a typo comes back as a `400` naming the bad value rather than as a container that provisions and then fails to boot.
-
-**Validation of the whole create request.** The rest of the create body goes through the same boundary for the same reason — the whole of `POST /containers` is validated by one function that yields the typed create request (`cadre-provider/src/server/create-request-validation.ts`), so a field can only reach the spawned container by having been checked. The rule with real substance beyond the owner keys is `bootstrapNodes`: each entry must parse as a multiaddr carrying a `/p2p/<peerId>` component whose peer id decodes, and must name somewhere to reach that peer, because an unparsable address kills the child at boot, an address with no `/p2p/` is silently dropped by `@libp2p/bootstrap` and leaves the node up but permanently alone, a truncated peer id throws inside the child, and an address of nothing but peer ids leaves the node holding a bootstrap peer no transport can dial — none of which the tenant would otherwise see. The list itself may be absent or empty only on a provider with `docker.publicHost` set, whose containers a requester can dial; elsewhere such a container could never be reached, so the request is refused.
-
-**After the first seed, and with no pin.** The first accepted seed anchors the key (`anchorAs`) into the node's trusted-owner store on the durable `/data` volume, so later seeds from the same owner need no pin and survive a restart. A container created with no pinned keys is provisioned normally (and the omission is logged) but will refuse every seed — recreate it with keys rather than trying to deliver one.
-
-**Proof.** That both gates fail *independently* is proven against real `cadre-cli` children by `packages/integration-tests/src/scenarios/provider-seed-accepted.integration.ts`: a wrong bearer on the seed endpoint gets 401 before the trust policy is consulted at all, while a correctly-delivered seed signed by a key the node was not pinned to gets 400 from the policy — and a node restarted from its volume with no pin still accepts a second seed, which is the durable anchor doing its job.
 
 #### Per-stream protocol guard
 
@@ -1046,10 +1001,7 @@ const seed = await cadreNode.createSeed();
 // Option A: Direct protocol (if new node is dialable)
 await cadreNode.deliverSeed(newNodeMultiaddr, seed);
 
-// Option B: Via provider API
-await provider.initializeNode(containerId, seed);
-
-// Option C: Encode for out-of-band delivery
+// Option B: Encode for out-of-band delivery
 const encodedSeed = cadreNode.encodeSeed(seed);  // base64
 // Share via QR, link, etc.
 
@@ -1089,22 +1041,16 @@ await cadreNode.start();
 
 The Seed Bootstrap API includes helper functions for common enrollment patterns:
 
-**Server/Phone adds Drone (via provider API)**:
+**Server adds Drone (seed from the CLI)** — what `cadre enroll add` runs on the owner node:
 ```typescript
-// Owner receives drone info from provider API
-const droneInfo = await provider.createContainer(plan);
-
+// The new machine's peer id (from `cadre enroll create` on it) and, optionally, its addresses.
 // One call: authorize + create seed
-const { seed, encodedSeed } = await cadreNode.addDrone({
-  dronePeerId: droneInfo.peerId,
-  droneMultiaddrs: droneInfo.multiaddrs
-});
+const { seed, encodedSeed } = await cadreNode.addDrone({ dronePeerId, droneMultiaddrs });
 
-// Send seed to provider for drone initialization
-await provider.initializeNode(droneInfo.containerId, encodedSeed);
+// The new machine starts with it: `cadre start --seed <encodedSeed> --pin-owner-key <owner key>`
 ```
 
-A cadre-host node is added without `addDrone` or a provider round trip: the phone calls `CadreNode.claimNode`, which mints the seed, proves the node's claim secret over it and delivers it to the node directly (the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol); [cadre-host.md → Join by QR code](cadre-host.md#join-by-qr-code)).
+A provider container is rented through `rentNode` ([Renting a node from an app](#renting-a-node-from-an-app)), which claims it or has it redeem an invitation. A cadre-host node is added without `addDrone`: the phone calls `CadreNode.claimNode`, which mints the seed, proves the node's claim secret over it and delivers it to the node directly (the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol); [cadre-host.md → Join by QR code](cadre-host.md#join-by-qr-code)).
 
 **Server invites Phone (QR/link flow)** — the mint/redeem pair below; the server is one of the members the invitation names, and need not be online when the phone redeems it elsewhere.
 
@@ -1561,13 +1507,13 @@ No cross-network communication. Each network has its own connection pool, gossip
 
 ## Provider Integration
 
-Cloud providers can host cadre nodes on behalf of users. The provider never has access to user keys—nodes generate their own libp2p identity and are authorized via signed messages.
+Cloud providers can host cadre nodes on behalf of users. The provider never has an owner's signing key and never handles a seed: nodes generate their own libp2p identity and join by a claim or an invitation that the owner's device signs.
 
 > **`@serfab/cadre-host` is a second node host, with a different way of being asked.** Where a cloud provider hosts nodes in Docker containers, [`@serfab/cadre-host`](cadre-host.md) hosts them as OS-managed child processes on a home machine and implements the same `Orchestrator` interface. It does not use the provider API below: no one requests a node from it. The admin starts a node, and the node joins a cadre by claim (the owner's phone scans the node's QR code and claims it) or by invitation (the node redeems an owner-minted invitation at a member) ([cadre-host.md → Join a cadre](cadre-host.md#join-a-cadre)), the same two ways a provider container joins. In both, the owner's device is the authority and the host never holds owner keys.
 
 ### Provider Flow
 
-A container joins the user's cadre by claim or by invitation (`POST /containers` `join`); the seed flow is the original path, being retired. [Enrollment Flow: Phone Adds Provider Drone](#enrollment-flow-phone-adds-provider-drone) gives each in full.
+A container joins the user's cadre by claim or by invitation (`POST /containers` `join`, which is required). [Enrollment Flow: Phone Adds Provider Drone](#enrollment-flow-phone-adds-provider-drone) gives each in full.
 
 **By claim** (the cadre's only member is the phone):
 
@@ -1604,27 +1550,9 @@ sequenceDiagram
     U->>P: 4. GET /containers/:id → joinState accepted
 ```
 
-**By seed (being retired):**
+Provider only sees: container ID, network traffic, the node's `/status` report of its join (awaiting, claimed by which owner key into which party; invitation pending, accepted, failed). Provider never has: owner signing keys, seeds, strand data. The claim secret and the invitation bundle it holds are the node's credentials, not the owner's: the secret proves nothing without the owner's signature, and the bundle admits one device as a non-owner.
 
-```mermaid
-sequenceDiagram
-    participant U as User (Phone)
-    participant P as Provider API
-    participant C as Provider Container
-    U->>P: 1. Request container (payment + pinnedOwnerKeys)
-    P->>C: 2. Spawn container
-    C->>P: createCadrePeer() → PeerId
-    P->>U: 3. Return PeerId + multiaddr
-    Note over U: 4. authorizePeer (add to local control DB)<br/>5. createSeed()
-    U->>P: 6. PUT /containers/:id/seed
-    P->>C: Forward seed
-    Note over C: applySeed() (populate cache)
-    U->>C: 7. Dial container (outbound, NAT-safe)
-    U<<->>C: Control Network Sync
-    Note over C: Watch Strand table
-```
-
-Provider only sees: container ID, network traffic, the node's `/status` report of its join (awaiting, claimed by which owner key into which party; invitation pending, accepted, failed), and, on the seed path, an opaque seed. Provider never has: owner keys, strand data. The claim secret and the invitation bundle it holds are the node's credentials, not the owner's: the secret proves nothing without the owner's signature, and the bundle admits one device as a non-owner.
+**The create request is validated whole.** `POST /containers` goes through one function that yields the typed create request (`cadre-provider/src/server/create-request-validation.ts`), so a field reaches the spawned container only by having been checked: `join` is required, a claim is refused on a provider without `docker.publicHost`, and an invitation bundle is checked for shape without being echoed (`invitation-validation.ts`). A malformed request is answered `400` rather than becoming a container that provisions and then fails to boot.
 
 When the customer's subscription lapses unpaid, the provider stops the customer's containers and marks each record `stopReason: 'non-payment'`, which an app reads from `GET /containers/:id` to tell the user and offer to remove the node from the cadre ([cadre-provider README → Subscription state and termination for non-payment](../packages/cadre-provider/README.md#subscription-state-and-termination-for-non-payment)).
 
@@ -2654,12 +2582,12 @@ Maestro Studio, with Appium as the documented fallback.
 
 - Docker image based on node:22-alpine with entrypoint script
 - Health check endpoints (`/health`, `/ready`, `/status`)
-- Provider integration: enrollment token, status reporting, metrics, seed delivery
+- Provider integration: enrollment token, status reporting (the claim and invitation join state included), metrics; seed delivery (`POST /seed`, gated by `CADRE_SEED_TOKEN`) for an operator who runs the image by hand
 - Docker Compose template with volume and network configuration
 
 ### `@serfab/cadre-provider` (Complete)
 
-- Provider API: container CRUD, billing plans/status, seed delivery, peer info
+- Provider API: container CRUD with a claim or invitation join, the node code, peer info, billing plans/status
 - Billing integration: usage metering, Stripe-ready hooks, quota enforcement
 - Orchestration: Docker orchestrator, mock orchestrator, pluggable interface
 - **Enrollment liveness**: while polling a new container's `/status` for health, an unhealthy poll also asks the orchestrator how the container's own process is doing (`RecoverableOrchestrator.inspectRunState` — an optional extension of `Orchestrator`, so an implementation that cannot answer keeps the older wait-it-out behaviour). A process proven gone fails the provision straight away: `error` on the record with the exit recorded, and the orchestrator resources reclaimed — rather than stranding the record on `enrolling`, which holds a plan slot forever while never being metered.

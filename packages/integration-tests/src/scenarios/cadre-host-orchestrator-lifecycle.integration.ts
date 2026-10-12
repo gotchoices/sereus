@@ -40,7 +40,6 @@ describe('cadre-host orchestrator lifecycle', () => {
 		const created = await host.orchestrator.createContainer({
 			containerId: id,
 			partyId: `party-${id}`,
-			bootstrapNodes: [],
 			profile: 'storage',
 		});
 		return { dockerId: created.dockerId };

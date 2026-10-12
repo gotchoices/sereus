@@ -7,7 +7,6 @@ export const Scope = {
   ContainersRead: 'containers:read',
   ContainersCreate: 'containers:create',
   ContainersDelete: 'containers:delete',
-  ContainersSeed: 'containers:seed',
   BillingRead: 'billing:read',
 } as const;
 export type Scope = typeof Scope[keyof typeof Scope];

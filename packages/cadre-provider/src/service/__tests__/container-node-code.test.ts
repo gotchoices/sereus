@@ -115,7 +115,7 @@ describe('ContainerService.nodeCode', () => {
   });
 
   it.each([
-    ['not-claimable', claimContainer({ join: undefined, partyId: 'party-1', pinnedOwnerKeys: ['k'] })],
+    ['not-claimable', claimContainer({ join: undefined, partyId: 'party-1' })],
     ['not-claimable', claimContainer({ join: { kind: 'invitation', invitation: 'sereus-invite:1.x' } })],
     ['gone', claimContainer({ status: 'stopped' })],
     ['gone', claimContainer({ status: 'error', error: 'boom' })],

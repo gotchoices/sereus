@@ -20,11 +20,11 @@ export interface RouteContext {
   billingService: BillingService;
   basePath: string;
   /**
-   * Whether `POST /containers` accepts an absent or empty `bootstrapNodes` — true
-   * when the provider announces a public address for its containers
-   * (`docker.publicHost`), so a requester can dial the container instead.
+   * Whether `POST /containers` accepts `join.kind: 'claim'` — true when the provider
+   * announces a public address for its containers (`docker.publicHost`), since a
+   * container is claimed by being dialed.
    */
-  bootstrapNodesOptional: boolean;
+  claimable: boolean;
   /**
    * Trigger a graceful shutdown of the provider process.
    * Routes call this after a successful response when the caller passes
@@ -34,16 +34,13 @@ export interface RouteContext {
 }
 
 /**
- * Strip secrets from a Container before it crosses the API boundary. The
- * per-container `seedToken` gates the node's `POST /seed` route — the provider
- * presents it on the customer's behalf, so it must never appear in a response
- * (the customer never needs it, and it is a credential). The `join` keeps its kind
- * only: the claim secret is handed out by `GET /containers/:id/code` alone, and the
- * invitation bundle carries the invitation's private key. All other fields,
+ * Strip secrets from a Container before it crosses the API boundary. The `join` keeps
+ * its kind only: the claim secret is handed out by `GET /containers/:id/code` alone, and
+ * the invitation bundle carries the invitation's private key. All other fields,
  * including the loopback-only endpoint URLs and `joinState`, are unchanged.
  */
 function redactContainer(container: Container): RedactedContainer {
-  const { seedToken: _seedToken, join, ...rest } = container;
+  const { join, ...rest } = container;
   return join ? { ...rest, join: { kind: join.kind } } : rest;
 }
 
@@ -101,7 +98,7 @@ function requireScope(reply: FastifyReply, customer: CustomerIdentity, scope: st
 
 /** Register all routes */
 export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
-  const { basePath, containerService, billingService, requestShutdown, bootstrapNodesOptional } = ctx;
+  const { basePath, containerService, billingService, requestShutdown, claimable } = ctx;
 
   // GET /status - Health check
   app.get(`${basePath}/status`, async (_request, reply) => {
@@ -122,9 +119,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     // One validator owns the whole body — see `create-request-validation.ts` for
     // why no per-field check lives here. Nothing is provisioned on a rejection:
     // this runs before the quota check and before the service is touched.
-    const validated = validateCreateContainerRequest(request.body, customer.customerId, {
-      optional: bootstrapNodesOptional,
-    });
+    const validated = validateCreateContainerRequest(request.body, customer.customerId, { claimable });
     if ('error' in validated) {
       return errorResponse(reply, 'INVALID_REQUEST', validated.error);
     }
@@ -311,44 +306,6 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     }
 
     return reply.send({ ok: true, data: result });
-  });
-
-  // PUT /containers/:id/seed - Apply a seed to a container
-  app.put(`${basePath}/containers/:id/seed`, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    log('PUT %s/containers/%s/seed', basePath, id);
-
-    const customer = request.customer;
-    if (!customer) {
-      return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
-    }
-    if (!requireScope(reply, customer, Scope.ContainersSeed)) return reply;
-
-    const container = await containerService.getContainer(id);
-    if (!container) {
-      return errorResponse(reply, 'NOT_FOUND', 'Container not found', 404);
-    }
-
-    // Verify ownership
-    if (container.customerId !== customer.customerId) {
-      return errorResponse(reply, 'FORBIDDEN', 'Access denied', 403);
-    }
-
-    const body = request.body as { seed?: string };
-    if (!body.seed) {
-      return errorResponse(reply, 'INVALID_REQUEST', 'seed is required');
-    }
-
-    const result = await containerService.applySeed(id, body.seed);
-
-    if (result.success) {
-      return reply.send({
-        ok: true,
-        data: { peersAdded: result.peersAdded },
-      });
-    } else {
-      return errorResponse(reply, 'SEED_FAILED', result.error ?? 'Failed to apply seed');
-    }
   });
 
   // GET /billing/plans - List available plans

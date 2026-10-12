@@ -5,7 +5,6 @@
  *
  * Its own module rather than part of `create-request-validation.ts`: the rule is a
  * restatement of cadre-core's, so it is worth reading, testing and changing on its own.
- * Same arrangement, and same reasons, as `owner-key-validation.ts`.
  *
  * ## The rule
  *
@@ -19,8 +18,12 @@
  *
  * **This deliberately restates `isWellFormedCadreInvitation`
  * (`packages/cadre-core/src/cadre-invite-protocol.ts`) rather than importing
- * `decodeCadreInvitation`**, for the reason `owner-key-validation.ts` gives: the provider
- * does not depend on cadre-core. The node does the full decode and refuses anything a member
+ * `decodeCadreInvitation`.** cadre-provider declares no `workspace:` dependencies:
+ * depending on `@serfab/cadre-core` would pull libp2p, Quereus and Optimystic into a thin
+ * Docker-host service's install closure, and would invalidate the note in
+ * `vitest.config.ts` that this package needs no stale-build guard. The provider's other
+ * restatements of cadre-core rules (`service/node-code.ts`, `service/multiaddr-destination.ts`)
+ * point here for that reason. The node does the full decode and refuses anything a member
  * would, so this is the create-time check that lets a typo be answered 400 rather than
  * surfacing as a container that dies at boot. It differs from cadre-core's copy in three
  * places, each on purpose:

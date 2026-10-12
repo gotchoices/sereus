@@ -10,8 +10,7 @@ import { DEFAULT_CONFIG } from '../../config/types.js';
 import { MemoryStore } from '../../service/store.js';
 import { MockOrchestrator } from '../../service/orchestrator.js';
 import { createProviderServer, type ProviderServer } from '../server.js';
-
-const PEER = '12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp';
+import { encodedTestInvitation } from './test-invitation.js';
 
 async function makeServer(): Promise<ProviderServer> {
   const config: ProviderConfig = {
@@ -41,7 +40,7 @@ async function createContainer(server: ProviderServer, payload: Record<string, u
 
 describe('GET /containers/:id/code', () => {
   it.each([
-    ['a seed-path container', { partyId: 'party-1', bootstrapNodes: [`/ip4/127.0.0.1/tcp/4001/p2p/${PEER}`] }, 409, 'NOT_CLAIMABLE'],
+    ['an invitation container', { join: { kind: 'invitation', invitation: encodedTestInvitation() } }, 409, 'NOT_CLAIMABLE'],
     // The mock orchestrator runs no node, so a claim container never answers /status.
     ['a claim container whose node is not up', { join: { kind: 'claim' } }, 503, 'NOT_AVAILABLE'],
   ])('answers %s with %i %s', async (_what, payload, status, code) => {

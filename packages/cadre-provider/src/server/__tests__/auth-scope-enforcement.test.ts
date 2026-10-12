@@ -6,6 +6,7 @@ import { MockOrchestrator } from '../../service/orchestrator.js';
 import { createProviderServer, type ProviderServer } from '../server.js';
 import { loadConfig } from '../../config/loader.js';
 import type { AuthHooks } from '../auth.js';
+import { encodedTestInvitation } from './test-invitation.js';
 
 /** Base config for in-process testing: random port, mock docker, memory store. */
 function baseConfig(auth: ProviderConfig['auth']): ProviderConfig {
@@ -41,10 +42,7 @@ function makeScopedServer(permissions: string[]): Promise<ProviderServer> {
 
 const AUTH = { authorization: 'Bearer test-key' };
 
-const VALID_CREATE = {
-  partyId: 'party-1',
-  bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
-};
+const VALID_CREATE = { join: { kind: 'invitation', invitation: encodedTestInvitation() } };
 
 describe('closed-by-default auth', () => {
   it('api-key mode with no keys rejects an unmatched credential with 401', async () => {
@@ -123,7 +121,7 @@ describe('closed-by-default auth', () => {
 });
 
 describe('permission scope enforcement', () => {
-  it("['containers:read'] permits GET /containers but blocks write/seed scopes", async () => {
+  it("['containers:read'] permits GET /containers but blocks write scopes", async () => {
     const server = await makeScopedServer(['containers:read']);
 
     const list = await server.app.inject({ method: 'GET', url: '/api/v1/containers', headers: AUTH });
@@ -139,12 +137,6 @@ describe('permission scope enforcement', () => {
     const del = await server.app.inject({ method: 'DELETE', url: '/api/v1/containers/ctr_x', headers: AUTH });
     expect(del.statusCode).toBe(403);
     expect((del.json() as { error: { code: string } }).error.code).toBe('INSUFFICIENT_SCOPE');
-
-    const seed = await server.app.inject({
-      method: 'PUT', url: '/api/v1/containers/ctr_x/seed', headers: AUTH, payload: { seed: 'abc' },
-    });
-    expect(seed.statusCode).toBe(403);
-    expect((seed.json() as { error: { code: string } }).error.code).toBe('INSUFFICIENT_SCOPE');
 
     await server.stop();
   });

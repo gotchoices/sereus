@@ -95,7 +95,6 @@ describe('HostProcessOrchestrator node identity', () => {
     await orch.createContainer({
       containerId: 'hosted-1',
       partyId: 'party-P',
-      bootstrapNodes: [],
       profile: 'storage',
     });
 
@@ -114,7 +113,6 @@ describe('HostProcessOrchestrator node identity', () => {
     const first = await orch.createContainer({
       containerId: 'hosted-2',
       partyId: 'party-P',
-      bootstrapNodes: [],
       profile: 'storage',
     });
     const workdir = join(rootDir, 'hosted-2');
@@ -127,7 +125,6 @@ describe('HostProcessOrchestrator node identity', () => {
     await orch.createContainer({
       containerId: 'hosted-2',
       partyId: 'party-P',
-      bootstrapNodes: [],
       profile: 'storage',
     });
 
@@ -143,7 +140,6 @@ describe('HostProcessOrchestrator node identity', () => {
     const created = await orch.createContainer({
       containerId: 'hosted-3',
       partyId: 'party-P',
-      bootstrapNodes: [],
       profile: 'storage',
     });
     const identityPath = join(rootDir, 'hosted-3', 'identity.key');
@@ -170,7 +166,6 @@ describe('HostProcessOrchestrator node identity', () => {
 
     const request = {
       partyId: 'party-P',
-      bootstrapNodes: [],
       profile: 'storage' as const,
     };
     await expect(orch.createContainer({ ...request, containerId: 'hosted-bad' })).rejects.toThrow();

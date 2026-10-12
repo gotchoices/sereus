@@ -472,12 +472,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     mkdirSync(join(workdir, 'storage'), { recursive: true });
 
     const token = randomBytes(16).toString('hex');
-    // Per-container secret gating the node's `POST /seed` route. The node
-    // refuses seed delivery unless the caller presents this as a bearer token
-    // (and unregisters the route entirely when the env var is empty), so we
-    // mint a fresh high-entropy value per child and hand it back on the result
-    // for `ContainerService.applySeed` to send.
-    const seedToken = randomBytes(32).toString('base64url');
     const tokenPath = join(workdir, STARTUP_TOKEN_FILE);
     // Ensure stale token from a previous container with the same id is cleared.
     if (existsSync(tokenPath)) {
@@ -497,7 +491,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       // stripped so a var set on the manager can't silently reconfigure every
       // child (see scrubbedParentEnv). Caller-supplied extras come next — the
       // fixed per-child vars below always win so extraEnv can never clobber
-      // the seed/startup tokens or port wiring.
+      // the startup token or port wiring.
       ...scrubbedParentEnv(),
       ...opts.extraEnv,
       CADRE_STARTUP_TOKEN: token,
@@ -514,7 +508,6 @@ export class HostProcessOrchestrator implements Orchestrator {
       // strand nodes are reached through observed addresses only, since no
       // `CADRE_RELAY_ADDRS` is set here and a child therefore holds no relay reservation.
       ...(announcedAddrs.length > 0 ? { CADRE_APPEND_ANNOUNCE_ADDRS: announcedAddrs.join(',') } : {}),
-      CADRE_SEED_TOKEN: seedToken,
       // Pin each child's node-local state (trusted-owner anchor, retained
       // cold-start dial targets) to its OWN workdir. This is the same value the
       // cli would derive by default (the config file lives here too), but stated
@@ -616,9 +609,6 @@ export class HostProcessOrchestrator implements Orchestrator {
       dockerId,
       healthEndpoint: `http://localhost:${ports.health}/health`,
       metricsEndpoint: `http://localhost:${ports.metrics}/metrics`,
-      // The node's seed API (`POST /seed`) is bound to the same server/port as `/health`.
-      seedEndpoint: `http://localhost:${ports.health}/seed`,
-      seedToken,
       p2pPort: ports.p2p,
     };
   }
@@ -631,9 +621,9 @@ export class HostProcessOrchestrator implements Orchestrator {
    *
    * Why it exists: the drop hands the old handle's ports back and the launch takes
    * those same ports (`reusedNodePorts`), so a child started over a live one dies
-   * on a port clash — but only after `launchChild` has returned success with a
-   * fresh seed token. The caller then records a dead child, and the live one
-   * refuses the new token.
+   * on a port clash — but only after `launchChild` has returned success. The
+   * caller then records a dead child, and the live one keeps running with no
+   * handle naming it.
    *
    * - A handle this process spawned is checked exactly ({@link isHandleLive}); a
    *   live one refuses outright.
@@ -898,7 +888,8 @@ export class HostProcessOrchestrator implements Orchestrator {
     const cfg: CliConfig = {
       controlNetwork: {
         partyId: req.partyId,
-        bootstrapNodes: req.bootstrapNodes,
+        // A hosted node is dialed (a claim) or dials the members its invitation names.
+        bootstrapNodes: [],
       },
       profile: req.profile,
       // The request carries the filter as text (the provider hands the same text to

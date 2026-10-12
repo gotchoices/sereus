@@ -1,10 +1,8 @@
 /**
  * A real `cadre-cli` child that owns its own cadre (`cadre start --owner`), driven through its
- * loopback admin channel. Scenarios use it as the requester's authority when a party asks
- * another machine for a node and then seeds it (`provider-seed-accepted`): its key is the pin,
- * its addresses the bootstrap, and `addDrone` mints the seed. It is also the always-on member a
- * node joins through when the owner invites it (`provider-container-joins-by-invitation`):
- * `createInvitation` mints the bundle, and its member set says who the redemption admitted.
+ * loopback admin channel. Scenarios use it as the always-on member a node joins through when
+ * the owner invites it (`provider-container-joins-by-invitation`): `createInvitation` mints the
+ * bundle, and its member set says who the redemption admitted.
  *
  * Spawned directly because no product code runs an owner node as a child: owner keys stay on
  * devices people hold (docs/cadre-host.md → Control-plane separation).
@@ -15,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { CreateCadreInvitationOptions, CreateCadreInvitationResult, DroneInitResult } from '@serfab/cadre-core';
+import type { CreateCadreInvitationOptions, CreateCadreInvitationResult } from '@serfab/cadre-core';
 import type { CliConfigFile } from '@serfab/cadre-cli';
 
 import { allocFreePort, isChildUp, readLogTail, resolveCadreCliBin, scrubbedParentEnv, stopChildProcess } from './child-node-fixtures.js';
@@ -64,11 +62,6 @@ export interface OwnerCliNode {
 	/** The node's dialable control-network addresses. */
 	getMultiaddrs(): Promise<string[]>;
 	/**
-	 * Mint a seed admitting `dronePeerId` to this node's cadre, signed by the node itself; only the
-	 * public `encodedSeed` leaves it.
-	 */
-	addDrone(options: { dronePeerId: string; droneMultiaddrs: string[] }): Promise<DroneInitResult>;
-	/**
 	 * Mint a cadre invitation naming this node's addresses as the members to redeem at; `encoded`
 	 * is the bundle a device or a provider container is started with.
 	 */
@@ -95,7 +88,6 @@ export async function startOwnerCliNode(opts: OwnerCliNodeOptions): Promise<Owne
 	const node: OwnerCliNode = {
 		getPeerId: async () => (await admin<{ peerId: string | null }>('GET', '/admin/identity')).peerId ?? '',
 		getMultiaddrs: async () => (await admin<{ multiaddrs: string[] }>('GET', '/admin/multiaddrs')).multiaddrs,
-		addDrone: (options) => admin<DroneInitResult>('POST', '/admin/add-drone', options),
 		createInvitation: (options) => admin<CreateCadreInvitationResult>('POST', '/admin/invites', options),
 		isAuthorizedMember: async (peerId) =>
 			(await admin<{ member: boolean }>('GET', `/admin/authorized-members/${encodeURIComponent(peerId)}`)).member,

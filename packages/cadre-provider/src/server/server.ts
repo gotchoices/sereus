@@ -180,8 +180,8 @@ export async function createProviderServer(
     containerService,
     billingService,
     requestShutdown,
-    // A container can be dialed only at the public host it announces.
-    bootstrapNodesOptional: config.docker.publicHost !== undefined,
+    // A container can be dialed, and so claimed, only at the public host it announces.
+    claimable: config.docker.publicHost !== undefined,
   });
 
   // The built-in sign-in endpoints, when the provider runs its own (`auth.oauth`), and the

@@ -17,16 +17,14 @@ import type { ContainerHealthStatus } from './container-health.js';
 /**
  * 32 random bytes, base64url: exactly what cadre-core's `parseClaimSecret` accepts and what
  * cadre-host mints. The one minting site, in the service, so both orchestrators only
- * inject what they are handed; the seed token is still minted in the orchestrators until
- * the seed path is retired.
+ * inject what they are handed.
  */
 function mintClaimSecret(): string {
   return randomBytes(32).toString('base64url');
 }
 
 /** The join a record carries for a request: the claim gets its secret here, the invitation is kept as submitted. */
-export function joinFor(request: ContainerJoinRequest | undefined): ContainerJoin | undefined {
-  if (!request) return undefined;
+export function joinFor(request: ContainerJoinRequest): ContainerJoin {
   return request.kind === 'claim'
     ? { kind: 'claim', secret: mintClaimSecret() }
     : { kind: 'invitation', invitation: request.invitation };
@@ -34,8 +32,8 @@ export function joinFor(request: ContainerJoinRequest | undefined): ContainerJoi
 
 /**
  * The join state a `/status` payload reports for a container, or undefined when it
- * reports none: a seed-path container, or a node that is not answering with the join
- * fields yet.
+ * reports none: a record with no join (an earlier provider's seed-path container), or a
+ * node that is not answering with the join fields yet.
  *
  * A claim is `claimed` only once the node also reports the claimed party. `claim` flips
  * the moment the node writes its record, but the node then restarts in-process into that
@@ -83,7 +81,7 @@ export function sameJoinState(a: ContainerJoinState | undefined, b: ContainerJoi
 
 /** Why `ContainerService.nodeCode` has no code to give; the route maps each to a status. */
 export type NodeCodeRefusal =
-  /** A seed-path or invitation container: nothing to claim. */
+  /** An invitation container, or a record with no join: nothing to claim. */
   | 'not-claimable'
   /** A live read says the node has an owner. */
   | 'already-claimed'

@@ -12,8 +12,6 @@ export interface OrchestratorCreateRequest {
   containerId: string;
   /** Party ID for control network */
   partyId: string;
-  /** Bootstrap nodes */
-  bootstrapNodes: string[];
   /** Node profile */
   profile: 'storage' | 'transaction';
   /** Resource limits */
@@ -28,28 +26,12 @@ export interface OrchestratorCreateRequest {
    */
   push?: PushCredentials;
   /**
-   * Base64url owner public key(s) to pin as cold-start seed-trust anchors on the
-   * spawned node (repeatable `--pin-owner-key` / `CADRE_OWNER_KEYS`). The pins are
-   * the ONLY way trust reaches such a node: seed trust anchors on the node-local
-   * trusted-owner store, which nothing in the replicated control state can seed —
-   * so a node meant to accept a seed signed by a *foreign* cadre owner (the
-   * node-donation flow in cadre-host) MUST be started with that owner's key(s)
-   * pinned, or `POST /seed` is refused forever.
-   *
-   * Both implementations thread the list into the spawned node as the
-   * comma-separated `CADRE_OWNER_KEYS`: cadre-host's `HostProcessOrchestrator`
-   * into the child process's env, cadre-provider's `DockerOrchestrator` into the
-   * container's env. Each caller passes exactly the keys of the one tenant /
-   * requester the node is being launched for; no orchestrator supplies a default,
-   * because a shared pin would let one tenant's owner seed another tenant's node.
-   */
-  pinnedOwnerKeys?: string[];
-  /**
    * How the node gets into its cadre, credential included: the claim secret the service
    * minted (`CADRE_CLAIM_SECRET`) or the invitation bundle the caller submitted
-   * (`CADRE_INVITATION`). Like `push` and `pinnedOwnerKeys`, the orchestrator injects
-   * exactly what it is handed (`buildNodeEnv`) and mints nothing itself. Absent on the
-   * seed path. Cannot be combined with `pinnedOwnerKeys`: `buildNodeEnv` throws.
+   * (`CADRE_INVITATION`). Like `push`, the orchestrator injects exactly what it is handed
+   * (`buildNodeEnv`) and mints nothing itself. Optional because cadre-host's
+   * `HostProcessOrchestrator` implements this request and carries its join in fields of
+   * its own; every container the provider creates has one.
    */
   join?: ContainerJoin;
 }
@@ -62,14 +44,6 @@ export interface OrchestratorCreateResult {
   healthEndpoint: string;
   /** Metrics endpoint URL */
   metricsEndpoint: string;
-  /** The URL of the node's seed API (`POST /seed`), served on the health server's port */
-  seedEndpoint: string;
-  /**
-   * Per-container secret injected as `CADRE_SEED_TOKEN`. The container gates
-   * `POST /seed` behind `Authorization: Bearer <seedToken>`, so the provider must
-   * present this token when delivering a seed (see `ContainerService.applySeed`).
-   */
-  seedToken: string;
   /** P2P listening port */
   p2pPort: number;
 }
@@ -178,8 +152,6 @@ export class MockOrchestrator implements RecoverableOrchestrator {
       dockerId,
       healthEndpoint: `http://localhost:${8080 + this.idCounter}/health`,
       metricsEndpoint: `http://localhost:${9090 + this.idCounter}/metrics`,
-      seedEndpoint: `http://localhost:${8080 + this.idCounter}/seed`,
-      seedToken: `mock-seed-token-${this.idCounter}`,
       p2pPort: 4000 + this.idCounter,
     };
   }

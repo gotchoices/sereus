@@ -31,7 +31,6 @@ function captureDocker(): { docker: Docker; lastEnv: () => string[] } {
 const base: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
   partyId: 'party-1',
-  bootstrapNodes: [],
   profile: 'storage',
 };
 
@@ -57,43 +56,5 @@ describe('DockerOrchestrator CADRE_PUSH injection', () => {
     await orch.createContainer(base);
 
     expect(lastEnv().some((e) => e.startsWith('CADRE_PUSH='))).toBe(false);
-  });
-});
-
-describe('DockerOrchestrator CADRE_OWNER_KEYS injection', () => {
-  it('joins the pinned owner keys into one comma-separated env var', async () => {
-    const { docker, lastEnv } = captureDocker();
-    const orch = new DockerOrchestrator(config(), docker);
-
-    await orch.createContainer({ ...base, pinnedOwnerKeys: ['key-a', 'key-b'] });
-
-    expect(lastEnv()).toContain('CADRE_OWNER_KEYS=key-a,key-b');
-  });
-
-  it('injects a single key without a trailing separator', async () => {
-    const { docker, lastEnv } = captureDocker();
-    const orch = new DockerOrchestrator(config(), docker);
-
-    await orch.createContainer({ ...base, pinnedOwnerKeys: ['only-key'] });
-
-    expect(lastEnv()).toContain('CADRE_OWNER_KEYS=only-key');
-  });
-
-  it('omits CADRE_OWNER_KEYS when the request carries no pinned keys', async () => {
-    const { docker, lastEnv } = captureDocker();
-    const orch = new DockerOrchestrator(config(), docker);
-
-    await orch.createContainer(base);
-
-    expect(lastEnv().some((e) => e.startsWith('CADRE_OWNER_KEYS='))).toBe(false);
-  });
-
-  it('omits CADRE_OWNER_KEYS for an empty pinned-key array (never a bare var)', async () => {
-    const { docker, lastEnv } = captureDocker();
-    const orch = new DockerOrchestrator(config(), docker);
-
-    await orch.createContainer({ ...base, pinnedOwnerKeys: [] });
-
-    expect(lastEnv().some((e) => e.startsWith('CADRE_OWNER_KEYS='))).toBe(false);
   });
 });

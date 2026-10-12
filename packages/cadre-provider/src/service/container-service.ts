@@ -148,23 +148,6 @@ export function resolveTenantPush(
   return push.tenants?.[customerId] ?? push.default;
 }
 
-/**
- * Normalize the tenant-supplied seed-trust anchors to exactly what the node will
- * end up honouring: trimmed, empties dropped, deduped — the same reduction
- * `cadre-cli`'s `collectPinnedOwnerKeys` applies to `CADRE_OWNER_KEYS`. Returns a
- * fresh array, so a later mutation of the caller's array cannot rewrite what the
- * record says the node was told to trust.
- *
- * A request that arrived through `POST /containers` never reaches here with a blank
- * or malformed entry — `validatePinnedOwnerKeys` (`server/owner-key-validation.ts`) answers 400
- * first, including for `[""]`, which a caller only sends by mistake (trusting nobody
- * is spelled by omitting the field). This filter therefore stands as the guard for
- * *direct* `ContainerService` callers, which have no route in front of them.
- */
-function normalizePinnedOwnerKeys(keys: string[] | undefined): string[] {
-  return [...new Set((keys ?? []).map(key => key.trim()).filter(key => key.length > 0))];
-}
-
 /** Container service options */
 export interface ContainerServiceOptions {
   /** Store for persisting container state */
@@ -233,7 +216,6 @@ export class ContainerService {
 
     log('Creating container %s for customer %s', id, request.customerId);
 
-    const pinnedOwnerKeys = normalizePinnedOwnerKeys(request.pinnedOwnerKeys);
     // The credential is on the record from the start, so a provider restart reproduces
     // the container's environment and `nodeCode` has the secret to hand out.
     const join = joinFor(request.join);
@@ -241,16 +223,15 @@ export class ContainerService {
       id,
       customerId: request.customerId,
       // A claim names the party; until it does the record and the node carry the
-      // placeholder, whatever a direct caller passed (the route already refuses one).
-      partyId: join?.kind === 'claim' ? UNCLAIMED_PARTY_ID : request.partyId,
+      // placeholder, whatever a direct caller passed (the route derives it from the join).
+      partyId: join.kind === 'claim' ? UNCLAIMED_PARTY_ID : request.partyId,
       profile: request.profile,
       status: 'pending',
       resources: request.resources ?? {},
       tags: request.tags ?? {},
       createdAt: now,
       updatedAt: now,
-      ...(pinnedOwnerKeys.length ? { pinnedOwnerKeys } : {}),
-      ...(join ? { join } : {}),
+      join,
     };
 
     // Save initial state
@@ -281,34 +262,15 @@ export class ContainerService {
       // Resolve push strictly by the OWNING tenant's id — never another tenant's.
       const push = resolveTenantPush(this.push, container.customerId);
 
-      // Seed-trust anchors come from THIS tenant's own create request and nowhere
-      // else — same one-tenant-in, one-tenant-out discipline as push above, but
-      // with no default tier at all: a provider-wide pin would let one tenant's
-      // owner seed another tenant's node. Read off the record (normalized at
-      // create time), so the stored field is the single authority on what the
-      // node was told to trust and a future re-provision from the record alone
-      // reproduces the same pins.
-      const pinnedOwnerKeys = container.pinnedOwnerKeys ?? [];
-      if (pinnedOwnerKeys.length === 0 && !container.join) {
-        // Not an error — a seed-path container may legitimately be created before its
-        // owner key is known. But it will refuse every seed until recreated, so make the
-        // eventual refusal traceable to the create call that caused it. A container that
-        // joins by claim or invitation takes its owner from the join and pins nothing.
-        log('Container %s created with no pinned owner keys; it will reject any seed delivered to it', container.id);
-      }
-
-      // Create the container via orchestrator. The join, like the pins and the party, is
-      // read off the record: it holds the minted secret, and a re-provision must hand the
-      // node the same one.
+      // Create the container via orchestrator. The join, like the party, is read off the
+      // record: it holds the minted secret, and a re-provision must hand the node the same one.
       const result = await this.orchestrator.createContainer({
         containerId: container.id,
         partyId: container.partyId,
-        bootstrapNodes: request.bootstrapNodes,
         profile: request.profile,
         resources: request.resources,
         strandFilter: request.strandFilter,
         ...(push ? { push } : {}),
-        ...(pinnedOwnerKeys.length ? { pinnedOwnerKeys } : {}),
         ...(container.join ? { join: container.join } : {}),
       });
       dockerId = result.dockerId;
@@ -317,8 +279,6 @@ export class ContainerService {
         dockerId: result.dockerId,
         healthEndpoint: result.healthEndpoint,
         metricsEndpoint: result.metricsEndpoint,
-        seedEndpoint: result.seedEndpoint,
-        seedToken: result.seedToken,
       });
       if (!enrolling) {
         // The record vanished, or a terminate stopped it while the orchestrator was creating
@@ -420,7 +380,8 @@ export class ContainerService {
 
     // The timeout leaves the record on 'enrolling' — deliberately, for a container
     // whose process is alive and simply not healthy yet (a dead child fails
-    // above), because 'enrolling' stays seedable (`applySeed` accepts it) so a
+    // above), because an 'enrolling' node can still be claimed (`nodeCode` refuses
+    // only a stopped or failed container) or redeem its invitation, so a
     // merely-slow node still works. `reapStuckContainers` picks the record up
     // from here once CONTAINER_ENROLLMENT_TTL_MS has passed: it enrols a node
     // that came good late, and terminalizes one whose child is gone.
@@ -848,8 +809,8 @@ export class ContainerService {
    * provider restart. Otherwise ask whether the child is even alive: gone →
    * `error` + reclaim; alive-but-unhealthy, or an orchestrator that cannot say →
    * leave it alone. An alive container is genuinely consuming its resources, the
-   * record honestly reflects that, and `enrolling` is still seedable — a tenant's
-   * merely-slow node must not be terminalized.
+   * record honestly reflects that, and an `enrolling` node can still be claimed or
+   * redeem its invitation — a tenant's merely-slow node must not be terminalized.
    */
   private async reapStuckEnrolling(container: Container): Promise<boolean> {
     if (await this.enrollIfHealthy(container)) {
@@ -899,62 +860,6 @@ export class ContainerService {
     if (!dockerId) return true;
     await this.safeStop(dockerId);
     return this.safeReclaim(dockerId);
-  }
-
-  /**
-   * Apply a seed to a container.
-   * The seed is forwarded to the container's seed endpoint.
-   *
-   * @param id - Container ID
-   * @param encodedSeed - Base64url-encoded seed
-   * @returns Result of seed application
-   */
-  async applySeed(id: string, encodedSeed: string): Promise<{ success: boolean; peersAdded?: number; error?: string }> {
-    const container = await this.store.getContainer(id);
-    if (!container) {
-      return { success: false, error: 'Container not found' };
-    }
-
-    if (container.status !== 'running' && container.status !== 'enrolling') {
-      return { success: false, error: `Container is not running (status: ${container.status})` };
-    }
-
-    if (!container.seedEndpoint) {
-      return { success: false, error: 'Container does not have a seed endpoint' };
-    }
-
-    // The container gates `POST /seed` behind `Authorization: Bearer <token>`; a
-    // record with an endpoint but no token (e.g. a legacy container provisioned
-    // before token injection) can never authenticate, so fail loudly here rather
-    // than letting the node reject the request with an opaque 401.
-    if (!container.seedToken) {
-      return { success: false, error: 'Container does not have a seed token' };
-    }
-
-    log('Applying seed to container %s', id);
-
-    try {
-      const response = await fetch(container.seedEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${container.seedToken}`,
-        },
-        body: JSON.stringify({ seed: encodedSeed }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        return { success: false, error: `Seed endpoint returned ${response.status}: ${errorText}` };
-      }
-
-      const result = await response.json() as { success: boolean; peersAdded?: number; error?: string };
-      log('Seed applied to container %s: %O', id, result);
-      return result;
-    } catch (error) {
-      log('Failed to apply seed to container %s: %O', id, error);
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
   }
 
   /**

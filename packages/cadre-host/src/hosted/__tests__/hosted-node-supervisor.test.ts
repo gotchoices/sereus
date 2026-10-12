@@ -160,7 +160,7 @@ describe('HostedNodeSupervisor.reconcile', () => {
     h.advance(HOSTED_NODE_RESPAWN_HEALTHY_MS);
 
     await expect(h.supervisor.reconcile()).resolves.toEqual([view.id]);
-    expect(h.orch.createCalls[2]).toEqual({ containerId: view.id, partyId: 'party-P', bootstrapNodes: [], profile: 'storage' });
+    expect(h.orch.createCalls[2]).toEqual({ containerId: view.id, partyId: 'party-P', profile: 'storage' });
   });
 
   it('leaves a running node alone', async () => {

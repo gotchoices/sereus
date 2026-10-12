@@ -141,25 +141,20 @@ await node.deliverSeed(newDeviceMultiaddr, seed);
 const result = await newNode.applySeed(seed);
 ```
 
-For provider-hosted drones, use the helper:
+For a machine whose peer id and addresses you already have, use the helper (`cadre enroll add` runs it on the owner node):
 
 ```typescript
-// Get drone info from provider API
-const droneInfo = await provider.createContainer(plan);
-
 // One call: authorize + create seed
-const { seed, encodedSeed } = await node.addDrone({
-  dronePeerId: droneInfo.peerId,
-  droneMultiaddrs: droneInfo.multiaddrs
-});
+const { seed, encodedSeed } = await node.addDrone({ dronePeerId, droneMultiaddrs });
 
-// Send to provider for drone initialization
-await provider.initializeNode(droneInfo.containerId, encodedSeed);
+// The new machine starts with it: `cadre start --seed <encodedSeed> --pin-owner-key <owner key>`
 
 // Dial the drone now from the addresses addDrone kept (a drone cannot dial a
 // phone); otherwise the next reconcile pass, about every 15 s, does it
 await node.reconcileControlCohort();
 ```
+
+A provider-hosted node is added with `rentNode` instead (below).
 
 ### Renting a provider node
 

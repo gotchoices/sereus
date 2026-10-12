@@ -17,8 +17,6 @@ const createResult: OrchestratorCreateResult = {
   dockerId: 'docker-xyz',
   healthEndpoint: 'http://localhost:18080/health',
   metricsEndpoint: 'http://localhost:19090/metrics',
-  seedEndpoint: 'http://localhost:18080/seed',
-  seedToken: 'seed-token',
   p2pPort: 14001,
 };
 
@@ -51,7 +49,7 @@ function container(customerId: string): Container {
 }
 
 function request(customerId: string): CreateContainerRequest {
-  return { customerId, partyId: `party-${customerId}`, bootstrapNodes: [], profile: 'storage' };
+  return { customerId, partyId: `party-${customerId}`, profile: 'storage', join: { kind: 'invitation', invitation: 'sereus-invite:1.x' } };
 }
 
 const pushConfig: ProviderPushConfig = {

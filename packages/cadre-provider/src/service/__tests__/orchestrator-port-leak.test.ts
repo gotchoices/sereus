@@ -9,7 +9,6 @@ import { daemonStubs } from './fake-docker.js';
 const request: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
   partyId: 'party-1',
-  bootstrapNodes: [],
   profile: 'transaction',
 };
 
@@ -113,14 +112,13 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     const result = await orch.createContainer(request);
     expect(result.dockerId).toBe('cid-1');
     expect(result.healthEndpoint).toMatch(/^http:\/\/localhost:\d+\/health$/);
-    expect(result.seedEndpoint).toMatch(/\/seed$/);
     expect(removeSpy).not.toHaveBeenCalled();
 
     // The 4 ports are now held/recorded — the range is exhausted on the next create.
     await expect(orch.createContainer(request)).rejects.toThrow('No available ports in range');
   });
 
-  it('injects a per-container seed token and confines the seed/metrics ports to loopback', async () => {
+  it('confines the health and metrics ports to loopback', async () => {
     const createSpy = vi.fn(async (_opts: CreateOpts) => ({
       id: 'cid-secure',
       start: vi.fn(async () => {}),
@@ -129,20 +127,11 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...daemonStubs() } as unknown as Docker;
 
     const orch = new DockerOrchestrator(config(10000, 10003), fakeDocker);
-    const result = await orch.createContainer(request);
+    await orch.createContainer(request);
 
-    // A non-empty, high-entropy token comes back for applySeed to present.
-    expect(result.seedToken).toEqual(expect.any(String));
-    expect(result.seedToken.length).toBeGreaterThan(20);
-
-    const opts = createSpy.mock.calls[0]![0];
-
-    // The same token is injected as CADRE_SEED_TOKEN so the container can gate POST /seed.
-    expect(opts.Env).toContain(`CADRE_SEED_TOKEN=${result.seedToken}`);
-
-    const bindings = opts.HostConfig.PortBindings;
-    // Health (which also serves the authenticated seed route) and metrics are
-    // loopback-only; the libp2p TCP and WebSocket ports stay reachable on all interfaces.
+    const bindings = createSpy.mock.calls[0]![0].HostConfig.PortBindings;
+    // Health and metrics are loopback-only; the libp2p TCP and WebSocket ports stay
+    // reachable on all interfaces.
     expect(bindings['8080/tcp']![0]!.HostIp).toBe('127.0.0.1');
     expect(bindings['9090/tcp']![0]!.HostIp).toBe('127.0.0.1');
     expect(bindings['4001/tcp']![0]!.HostIp).toBeUndefined();

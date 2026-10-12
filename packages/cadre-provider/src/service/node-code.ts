@@ -8,7 +8,7 @@
  * code a cadre-host shows as a QR code and `cadre code` prints.
  *
  * NOTE: mirrors cadre-core's `encodeNodeClaimPayload` (`node-claim-payload.ts`) because
- * the provider does not depend on cadre-core (`server/owner-key-validation.ts` says why).
+ * the provider does not depend on cadre-core (`server/invitation-validation.ts` says why).
  * The keys are written in the order cadre-core's canonical JSON emits them (sorted), so
  * the two encoders produce the same text for the same payload; `decodeNodeClaimPayload`
  * on the phone is the contract, and `__tests__/container-node-code.test.ts` decodes what

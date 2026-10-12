@@ -119,7 +119,6 @@ function makeRequest(containerId: string, opts: { profile?: 'storage' | 'transac
   return {
     containerId,
     partyId: 'party-' + containerId,
-    bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
     profile: opts.profile ?? 'transaction' as 'storage' | 'transaction',
   };
 }
@@ -911,7 +910,6 @@ describe('child survives orchestrator exit', () => {
       const request = {
         containerId: 'cross1',
         partyId: 'party-cross1',
-        bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
         profile: 'transaction',
       };
       const payload = {

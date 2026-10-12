@@ -93,7 +93,6 @@ describe('HostProcessOrchestrator claim secret', () => {
     await orch.createContainer({
       containerId: 'hn_claim',
       partyId: 'unclaimed',
-      bootstrapNodes: [],
       profile: 'storage',
       claimSecret: SECRET,
     });
@@ -105,7 +104,7 @@ describe('HostProcessOrchestrator claim secret', () => {
 
     // No secret, no variable: `cadre-cli start` treats a set-but-empty value as unset,
     // but the child must not even see the name.
-    await orch.createContainer({ containerId: 'hn_plain', partyId: 'p', bootstrapNodes: [], profile: 'storage' });
+    await orch.createContainer({ containerId: 'hn_plain', partyId: 'p', profile: 'storage' });
     const plain = JSON.parse(await waitForFile(join(rootDir, 'hn_plain', 'spawn-seen.json'))) as { secret: string | null };
     expect(plain.secret).toBeNull();
   });

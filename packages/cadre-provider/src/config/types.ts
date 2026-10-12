@@ -29,9 +29,9 @@ export interface DockerConfig {
   /**
    * DNS name or IP address at which this machine's published container ports are
    * reachable from outside. When set, every container announces its TCP and
-   * WebSocket addresses at this host, and a create request may omit `bootstrapNodes`
-   * (a phone dials the container instead). Unset: containers announce only their
-   * in-container addresses, and `bootstrapNodes` is required.
+   * WebSocket addresses at this host, and a create request may ask for a container
+   * that is claimed (a phone dials it with its node code). Unset: containers announce
+   * only their in-container addresses, and join by invitation only.
    */
   publicHost?: string;
 }

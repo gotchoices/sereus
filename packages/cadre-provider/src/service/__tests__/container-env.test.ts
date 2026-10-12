@@ -10,44 +10,25 @@ import { daemonStubs } from './fake-docker.js';
 const base: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
   partyId: 'party-1',
-  bootstrapNodes: ['/ip4/1.2.3.4/tcp/4001/p2p/peer1'],
   profile: 'storage',
 };
 
 describe('buildNodeEnv', () => {
-  it('emits exactly the seven vars of a minimal request with bootstrap nodes, no empty entries', () => {
-    const env = buildNodeEnv({ request: base, seedToken: 'tok' });
+  it('emits exactly the five vars of a minimal request, no empty entries', () => {
+    const env = buildNodeEnv({ request: base });
 
     expect(env).toEqual([
       'CADRE_PARTY_ID=party-1',
-      'CADRE_BOOTSTRAP_NODES=/ip4/1.2.3.4/tcp/4001/p2p/peer1',
       'CADRE_PROFILE=storage',
       'CADRE_HEALTH_PORT=8080',
       'CADRE_METRICS_PORT=9090',
       'CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws',
-      'CADRE_SEED_TOKEN=tok',
     ]);
-  });
-
-  it('includes CADRE_OWNER_KEYS joined when pinnedOwnerKeys is non-empty', () => {
-    const env = buildNodeEnv({ request: { ...base, pinnedOwnerKeys: ['a', 'b'] }, seedToken: 'tok' });
-    expect(env).toContain('CADRE_OWNER_KEYS=a,b');
-  });
-
-  it('omits CADRE_OWNER_KEYS entirely for an empty array', () => {
-    const env = buildNodeEnv({ request: { ...base, pinnedOwnerKeys: [] }, seedToken: 'tok' });
-    expect(env.some(e => e.startsWith('CADRE_OWNER_KEYS='))).toBe(false);
-  });
-
-  it('omits CADRE_OWNER_KEYS entirely when undefined', () => {
-    const env = buildNodeEnv({ request: base, seedToken: 'tok' });
-    expect(env.some(e => e.startsWith('CADRE_OWNER_KEYS='))).toBe(false);
   });
 
   it('substitutes custom ports into CADRE_HEALTH_PORT / CADRE_METRICS_PORT / CADRE_LISTEN_ADDRS', () => {
     const env = buildNodeEnv({
       request: base,
-      seedToken: 'tok',
       ports: { health: 18080, metrics: 19090, p2p: 14001, ws: 14002 },
     });
 
@@ -58,33 +39,24 @@ describe('buildNodeEnv', () => {
 });
 
 describe('buildNodeEnv join', () => {
-  it('a claim emits CADRE_CLAIM_SECRET and the placeholder party, and no owner keys or bootstrap nodes', () => {
+  it('a claim emits CADRE_CLAIM_SECRET and the placeholder party', () => {
     const env = buildNodeEnv({
-      request: { ...base, partyId: UNCLAIMED_PARTY_ID, bootstrapNodes: [], join: { kind: 'claim', secret: 's3cret' } },
-      seedToken: 'tok',
+      request: { ...base, partyId: UNCLAIMED_PARTY_ID, join: { kind: 'claim', secret: 's3cret' } },
     });
 
     expect(env).toContain('CADRE_CLAIM_SECRET=s3cret');
     expect(env).toContain(`CADRE_PARTY_ID=${UNCLAIMED_PARTY_ID}`);
-    expect(env.some(e => e.startsWith('CADRE_OWNER_KEYS=') || e.startsWith('CADRE_BOOTSTRAP_NODES=') || e.startsWith('CADRE_INVITATION='))).toBe(false);
+    expect(env.some(e => e.startsWith('CADRE_INVITATION='))).toBe(false);
   });
 
   it('an invitation emits CADRE_INVITATION with the bundle verbatim and the bundle\'s party', () => {
     const env = buildNodeEnv({
-      request: { ...base, partyId: 'party-invited', bootstrapNodes: [], join: { kind: 'invitation', invitation: 'sereus-invite:1.abc' } },
-      seedToken: 'tok',
+      request: { ...base, partyId: 'party-invited', join: { kind: 'invitation', invitation: 'sereus-invite:1.abc' } },
     });
 
     expect(env).toContain('CADRE_INVITATION=sereus-invite:1.abc');
     expect(env).toContain('CADRE_PARTY_ID=party-invited');
     expect(env.some(e => e.startsWith('CADRE_CLAIM_SECRET='))).toBe(false);
-  });
-
-  it('throws on pinned owner keys beside a join, naming the conflict', () => {
-    expect(() => buildNodeEnv({
-      request: { ...base, pinnedOwnerKeys: ['a'], join: { kind: 'claim', secret: 's' } },
-      seedToken: 'tok',
-    })).toThrow(/cannot pin owner keys/);
   });
 });
 
@@ -92,7 +64,7 @@ describe('buildNodeEnv join', () => {
 async function captureOrchestratorEnv(
   request: OrchestratorCreateRequest,
   config: DockerConfig
-): Promise<{ env: string[]; seedToken: string }> {
+): Promise<string[]> {
   let env: string[] = [];
   const fakeDocker = {
     createContainer: vi.fn(async (opts: { Env: string[] }) => {
@@ -103,8 +75,8 @@ async function captureOrchestratorEnv(
     ...daemonStubs(),
   } as unknown as Docker;
 
-  const result = await new DockerOrchestrator(config, fakeDocker).createContainer(request);
-  return { env, seedToken: result.seedToken };
+  await new DockerOrchestrator(config, fakeDocker).createContainer(request);
+  return env;
 }
 
 const dockerConfig: DockerConfig = { image: 'test-image', portRange: { start: 15000, end: 15099 } };
@@ -116,28 +88,28 @@ describe('buildNodeEnv matches what DockerOrchestrator actually sends', () => {
       strandFilter: 'strand-a',
       resources: { storageQuotaBytes: 1024 },
       push: { fcm: { projectId: 'p', clientEmail: 'e', privateKey: 'k' }, cooldownMs: 10 },
-      pinnedOwnerKeys: ['owner-a'],
+      join: { kind: 'claim', secret: 's3cret' },
     };
 
-    const { env, seedToken } = await captureOrchestratorEnv(request, dockerConfig);
+    const env = await captureOrchestratorEnv(request, dockerConfig);
 
-    expect(env).toEqual(buildNodeEnv({ request, seedToken, resources: request.resources }));
+    expect(env).toEqual(buildNodeEnv({ request, resources: request.resources }));
   });
 
   it('carries the config default resources when the request omits its own', async () => {
     const config: DockerConfig = { ...dockerConfig, defaultResources: { storageQuotaBytes: 4096 } };
 
-    const { env, seedToken } = await captureOrchestratorEnv(base, config);
+    const env = await captureOrchestratorEnv(base, config);
 
     expect(env).toContain('CADRE_STORAGE_QUOTA=4096');
-    expect(env).toEqual(buildNodeEnv({ request: base, seedToken, resources: config.defaultResources }));
+    expect(env).toEqual(buildNodeEnv({ request: base, resources: config.defaultResources }));
   });
 
   it('lets the request resources override the config default', async () => {
     const config: DockerConfig = { ...dockerConfig, defaultResources: { storageQuotaBytes: 4096 } };
     const request: OrchestratorCreateRequest = { ...base, resources: { storageQuotaBytes: 1024 } };
 
-    const { env } = await captureOrchestratorEnv(request, config);
+    const env = await captureOrchestratorEnv(request, config);
 
     expect(env).toContain('CADRE_STORAGE_QUOTA=1024');
     expect(env.some(e => e === 'CADRE_STORAGE_QUOTA=4096')).toBe(false);

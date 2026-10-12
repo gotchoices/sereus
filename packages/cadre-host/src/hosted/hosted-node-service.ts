@@ -787,14 +787,13 @@ function spawnRequestFor(node: HostedNode): HostedSpawnRequest {
   const base: HostedSpawnRequest = {
     containerId: node.id,
     partyId: node.partyId,
-    bootstrapNodes: [],
     profile: node.profile,
   };
   if (node.join.kind === 'claim') return { ...base, claimSecret: node.join.secret };
   return node.status === 'joined' ? base : { ...base, invitation: node.join.encoded };
 }
 
-/** The record fields a spawn result lands. `seedToken` and `seedEndpoint` are the provider's shape; cadre-host ignores both. */
+/** The record fields a spawn result lands. */
 function handlesOf(result: OrchestratorCreateResult): SpawnedHandles {
   return { dockerId: result.dockerId, statusEndpoint: statusUrlFor(result.healthEndpoint) };
 }

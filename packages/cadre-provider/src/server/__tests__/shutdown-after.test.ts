@@ -4,6 +4,9 @@ import { DEFAULT_CONFIG } from '../../config/types.js';
 import { MemoryStore } from '../../service/store.js';
 import { MockOrchestrator } from '../../service/orchestrator.js';
 import { createProviderServer, type ProviderServer } from '../server.js';
+import { encodedTestInvitation } from './test-invitation.js';
+
+const VALID_CREATE = { join: { kind: 'invitation', invitation: encodedTestInvitation() } };
 
 /** Build a server preconfigured for in-process testing */
 async function makeServer(overrides?: {
@@ -44,8 +47,7 @@ describe('shutdownAfter flag', () => {
       method: 'POST',
       url: '/api/v1/containers',
       payload: {
-        partyId: 'party-1',
-        bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
+        ...VALID_CREATE,
         shutdownAfter: true,
       },
     });
@@ -66,8 +68,7 @@ describe('shutdownAfter flag', () => {
       method: 'POST',
       url: '/api/v1/containers',
       payload: {
-        partyId: 'party-1',
-        bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'],
+        ...VALID_CREATE,
       },
     });
     expect(res.statusCode).toBe(201);
@@ -85,7 +86,7 @@ describe('shutdownAfter flag', () => {
     const res = await server.app.inject({
       method: 'POST',
       url: '/api/v1/containers',
-      payload: { shutdownAfter: true }, // missing partyId
+      payload: { shutdownAfter: true }, // missing join
     });
     expect(res.statusCode).toBe(400);
     const body = res.json() as { ok: boolean; error?: unknown };
@@ -103,7 +104,7 @@ describe('shutdownAfter flag', () => {
     const create = await server.app.inject({
       method: 'POST',
       url: '/api/v1/containers',
-      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'] },
+      payload: VALID_CREATE,
     });
     const created = (create.json() as { data: { container: { id: string } } }).data.container;
 
@@ -128,7 +129,7 @@ describe('shutdownAfter flag', () => {
     const create = await server.app.inject({
       method: 'POST',
       url: '/api/v1/containers',
-      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'] },
+      payload: VALID_CREATE,
     });
     const created = (create.json() as { data: { container: { id: string } } }).data.container;
 
@@ -149,7 +150,7 @@ describe('shutdownAfter flag', () => {
     const create = await server.app.inject({
       method: 'POST',
       url: '/api/v1/containers',
-      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'] },
+      payload: VALID_CREATE,
     });
     const created = (create.json() as { data: { container: { id: string } } }).data.container;
 
@@ -173,7 +174,7 @@ describe('shutdownAfter flag', () => {
     const create = await server.app.inject({
       method: 'POST',
       url: '/api/v1/containers',
-      payload: { partyId: 'party-1', bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWA9hbnKrRnPRSPTRkzXqTHzGE8YpJ3JHZmQ5tGwLRTMmp'] },
+      payload: VALID_CREATE,
     });
     const created = (create.json() as { data: { container: { id: string } } }).data.container;
 

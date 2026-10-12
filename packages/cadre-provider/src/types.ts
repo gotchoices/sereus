@@ -32,8 +32,7 @@ export type ContainerJoin =
   | { kind: 'invitation'; invitation: string }; // CADRE_INVITATION, the bundle as submitted
 
 /**
- * The join as the node last reported it on `/status`; absent on a seed-path container and
- * before the first read. Self-contained, so a reader of this field alone knows the owner
+ * The join as the node last reported it on `/status`; absent before the first read. Self-contained, so a reader of this field alone knows the owner
  * and party a claim named; the record's own `partyId` and `ownerKey` carry the same two
  * values so a list row names the real cadre without the node's report.
  */
@@ -71,10 +70,11 @@ export interface ContainerResources {
 export interface CreateContainerRequest {
   /** Customer/user ID who owns this container */
   customerId: string;
-  /** Party ID for the control network */
+  /**
+   * The party the join names: {@link UNCLAIMED_PARTY_ID} for a claim, the bundle's for an
+   * invitation. Derived from `join` by the create validator, never taken from the body.
+   */
   partyId: string;
-  /** Bootstrap nodes for the control network */
-  bootstrapNodes: string[];
   /** Node profile: storage or transaction */
   profile: 'storage' | 'transaction';
   /** Resource specifications */
@@ -84,30 +84,12 @@ export interface CreateContainerRequest {
   /** Optional tags for the container */
   tags?: Record<string, string>;
   /**
-   * Base64url owner public key(s) this tenant's node should trust as seed
-   * signers. A fresh node's node-local trusted-owner store is empty and nothing
-   * replicated can fill it, so without at least one key here the node refuses
-   * every seed the provider later delivers (`PUT /containers/:id/seed`).
-   *
-   * Supplied per create request by the tenant that owns the container — there is
-   * deliberately no provider-level default, since a shared pin would let one
-   * tenant's owner seed another tenant's node. Key *encoding* is not validated: a
-   * malformed key simply never matches a real seed signer and the node refuses
-   * the seed with the trust policy's reason. Entries are trimmed, blanks dropped
-   * and duplicates collapsed before the container record is written, so a list of
-   * only blanks is equivalent to omitting the field.
-   */
-  pinnedOwnerKeys?: string[];
-  /**
    * How the container gets into its cadre without the provider ever holding an owner key
    * or a seed: it waits to be claimed with a one-time code (`claim`), or it redeems an
-   * owner-minted cadre invitation at a member that is online (`invitation`). With `claim`,
-   * `partyId` is {@link UNCLAIMED_PARTY_ID} and `bootstrapNodes` is empty; with
-   * `invitation`, `partyId` is the bundle's. Neither takes `pinnedOwnerKeys`: the claim
-   * names the owner, and the bundle carries the owner keys the node pins itself. Absent:
-   * the seed path (`pinnedOwnerKeys` + `PUT /containers/:id/seed`).
+   * owner-minted cadre invitation at a member that is online (`invitation`). The claim
+   * names the owner, and the bundle carries the owner keys the node pins itself.
    */
-  join?: ContainerJoinRequest;
+  join: ContainerJoinRequest;
 }
 
 /** Container record in the provider database */
@@ -138,14 +120,6 @@ export interface Container {
   healthEndpoint?: string;
   /** Metrics endpoint URL */
   metricsEndpoint?: string;
-  /** Seed API endpoint URL (for applying seeds) */
-  seedEndpoint?: string;
-  /**
-   * Bearer token gating the container's `POST /seed` route (injected as
-   * `CADRE_SEED_TOKEN` at provision time). `applySeed` presents it as
-   * `Authorization: Bearer <seedToken>`; without it the container rejects the seed.
-   */
-  seedToken?: string;
   /**
    * libp2p peer id the node reported when it first came up healthy. Durable
    * across restarts (the node keeps one identity for the life of its volume),
@@ -155,23 +129,9 @@ export interface Container {
    */
   peerId?: string;
   /**
-   * Owner key(s) the node was started with pinned as seed-trust anchors — the
-   * normalized create-request list, and the authority `provisionContainer` reads
-   * when it hands pins to the orchestrator (so a re-provision from the record
-   * alone reproduces them, and an operator debugging a refused seed sees exactly
-   * what the node was told to trust). Absent means the node accepts no seed at
-   * all. Not a secret — these are public keys — so it is not redacted on the API
-   * boundary.
-   *
-   * NOTE: pins are settable only at create time; a tenant that needs different
-   * anchors recreates the container. If owner-key rotation without a recreate is
-   * ever required, this field needs an update path *and* a way to push the new
-   * pin into the already-running node (the env var is read once at start).
-   */
-  pinnedOwnerKeys?: string[];
-  /**
    * How the container gets into its cadre, with the credential its environment carries.
-   * Absent on a seed-path container. Redacted on the wire; see {@link ContainerJoin}.
+   * Absent only on a record an earlier provider wrote for a seed-path container. Redacted
+   * on the wire; see {@link ContainerJoin}.
    */
   join?: ContainerJoin;
   /** The join as the node last reported it; see {@link ContainerJoinState}. */
@@ -190,8 +150,8 @@ export interface Container {
   stopReason?: StopReason;
 }
 
-/** A container as the API returns it: no seed token, and the join reduced to its kind. */
-export type RedactedContainer = Omit<Container, 'seedToken' | 'join'> & { join?: { kind: ContainerJoin['kind'] } };
+/** A container as the API returns it: the join reduced to its kind. */
+export type RedactedContainer = Omit<Container, 'join'> & { join?: { kind: ContainerJoin['kind'] } };
 
 /** Container status response */
 export interface ContainerStatusResponse {

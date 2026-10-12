@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ContainerService } from '../container-service.js';
 import { MemoryStore } from '../store.js';
 import type { Orchestrator, OrchestratorCreateResult } from '../orchestrator.js';
-import type { Container, CreateContainerRequest } from '../../types.js';
+import { UNCLAIMED_PARTY_ID, type Container, type CreateContainerRequest } from '../../types.js';
 
 type ProvisionInternal = {
   provisionContainer(container: Container, request: CreateContainerRequest): Promise<void>;
@@ -27,16 +27,14 @@ function pendingContainer(overrides: Partial<Container> = {}): Container {
 const provisionRequest: CreateContainerRequest = {
   customerId: 'cust-1',
   partyId: 'party-1',
-  bootstrapNodes: [],
   profile: 'transaction',
+  join: { kind: 'invitation', invitation: 'sereus-invite:1.x' },
 };
 
 const createResult: OrchestratorCreateResult = {
   dockerId: 'docker-xyz',
   healthEndpoint: 'http://localhost:18080/health',
   metricsEndpoint: 'http://localhost:19090/metrics',
-  seedEndpoint: 'http://localhost:18080/seed',
-  seedToken: 'seed-token-xyz',
   p2pPort: 14001,
 };
 
@@ -126,9 +124,9 @@ describe('ContainerService.provisionContainer peerId recording', () => {
   });
 
   // The orchestrator's endpoints land on the record before the poll loop starts, so a
-  // provision that reaches `running` must carry the whole set — a missing seedEndpoint
-  // or seedToken silently breaks seed delivery long after provisioning "succeeded".
-  it('records the orchestrator endpoints and seed token alongside the peerId', async () => {
+  // provision that reaches `running` must carry the whole set — a missing healthEndpoint
+  // leaves every later `/status` read, and so the join state, unanswered.
+  it('records the orchestrator endpoints alongside the peerId', async () => {
     const { store, provision } = await provisionable();
     stubStatus({ status: 'healthy', peerId: '12D3KooWabc' });
 
@@ -139,8 +137,24 @@ describe('ContainerService.provisionContainer peerId recording', () => {
       dockerId: createResult.dockerId,
       healthEndpoint: createResult.healthEndpoint,
       metricsEndpoint: createResult.metricsEndpoint,
-      seedEndpoint: createResult.seedEndpoint,
-      seedToken: createResult.seedToken,
     });
+  });
+});
+
+describe('ContainerService claim join party', () => {
+  // The route derives the party from the join; the service holds the same line for a
+  // direct caller, so the record and the node both carry the placeholder the claim replaces.
+  it('records the placeholder party and hands it to the orchestrator, whatever party the caller passed', async () => {
+    const store = new MemoryStore();
+    const { orchestrator, createContainer } = stubOrchestrator();
+    const service = new ContainerService({ store, orchestrator });
+    stubStatus({ status: 'healthy', peerId: '12D3KooWabc' });
+
+    const created = await service.createContainer({ ...provisionRequest, join: { kind: 'claim' } });
+    await vi.waitFor(() => expect(createContainer).toHaveBeenCalled());
+
+    expect(created.partyId).toBe(UNCLAIMED_PARTY_ID);
+    expect((await store.getContainer(created.id))?.partyId).toBe(UNCLAIMED_PARTY_ID);
+    expect(createContainer).toHaveBeenCalledWith(expect.objectContaining({ partyId: UNCLAIMED_PARTY_ID }));
   });
 });

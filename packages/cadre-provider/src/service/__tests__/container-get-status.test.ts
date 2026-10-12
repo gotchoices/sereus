@@ -196,7 +196,7 @@ describe('ContainerService.readStatus folds the join state into the record', () 
     expect((await store.getContainer('ctr_1'))?.joinState).toEqual({ kind: 'claim', state: 'awaiting' });
   });
 
-  it('writes nothing for a seed-path container, whatever /status says about claims', async () => {
+  it('writes nothing for a record with no join (an earlier provider\'s seed-path container), whatever /status says', async () => {
     const { service, store } = await makeService(runningContainer());
     globalThis.fetch = vi.fn(async () => jsonResponse(statusWith({ claim: 'none' }))) as typeof globalThis.fetch;
     const save = vi.spyOn(store, 'saveContainer');

@@ -132,8 +132,6 @@ export class FakeOrchestrator implements Orchestrator {
       dockerId,
       healthEndpoint: `http://127.0.0.1:${ports.health}/health`,
       metricsEndpoint: `http://127.0.0.1:${ports.metrics}/metrics`,
-      seedEndpoint: `http://127.0.0.1:${ports.health}/seed`,
-      seedToken: `seed-token-${n}`,
       p2pPort: ports.p2p,
     };
   }

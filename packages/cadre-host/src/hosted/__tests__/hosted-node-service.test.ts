@@ -190,7 +190,6 @@ describe('HostedNodeService.join', () => {
     expect(orch.createCalls).toEqual([{
       containerId: view.id,
       partyId: 'unclaimed',
-      bootstrapNodes: [],
       profile: 'storage',
       claimSecret: secretOf(stored),
     }]);
@@ -458,7 +457,7 @@ describe('HostedNodeService join by invitation', () => {
     // The invitation's party from the start; the bundle reaches the child and nothing else.
     expect(view).toMatchObject({ status: 'joining', partyId: 'party-P', join: { kind: 'invitation' } });
     expect(JSON.stringify(view)).not.toContain(invitation);
-    expect(orch.createCalls).toEqual([{ containerId: view.id, partyId: 'party-P', bootstrapNodes: [], profile: 'storage', invitation }]);
+    expect(orch.createCalls).toEqual([{ containerId: view.id, partyId: 'party-P', profile: 'storage', invitation }]);
 
     stubStatusFetch({ partyId: 'party-P', invitation: { state: 'pending' } });
     await svc.pollStatuses();
@@ -508,7 +507,7 @@ describe('HostedNodeService.respawn', () => {
     // The claimed party now, and the same secret: cadre-cli honours claim.json and
     // answers a rival `already-claimed` with the secret still set.
     expect(orch.createCalls[1]).toEqual({
-      containerId: view.id, partyId: 'party-P', bootstrapNodes: [], profile: 'storage', claimSecret: secret,
+      containerId: view.id, partyId: 'party-P', profile: 'storage', claimSecret: secret,
     });
     expect(orch.getNode(view.id)!.ports).toEqual(portsBefore);
 
@@ -650,7 +649,7 @@ describe('HostedNodeService.remove', () => {
 
   it('removes a handle no record names, so a lost hosted-nodes.json cannot strand a child', async () => {
     const { orch, svc, changes } = makeHarness();
-    const spawn = await orch.createContainer({ containerId: 'hn_orphan', partyId: 'party-P', bootstrapNodes: [], profile: 'storage' });
+    const spawn = await orch.createContainer({ containerId: 'hn_orphan', partyId: 'party-P', profile: 'storage' });
 
     await svc.remove('hn_orphan');
 
@@ -689,7 +688,7 @@ describe('HostedNodeService.reapStuckSpawning', () => {
     const { orch, store, svc, changes } = makeHarness({ now: () => clock });
     // One whose child was spawned before the host died (the orchestrator knows it
     // by dockerId), one that never got that far.
-    const spawn = await orch.createContainer({ containerId: 'hn_spawned', partyId: 'unclaimed', bootstrapNodes: [], profile: 'storage' });
+    const spawn = await orch.createContainer({ containerId: 'hn_spawned', partyId: 'unclaimed', profile: 'storage' });
     store.put(stuckRecord('hn_spawned', clock.toISOString()));
     store.put(stuckRecord('hn_never', clock.toISOString()));
     clock = new Date(clock.getTime() + HOSTED_NODE_SPAWNING_TTL_MS + 60_000);

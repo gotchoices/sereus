@@ -55,8 +55,7 @@ await server.start();
 | GET | `/api/v1/containers` | List customer's containers, each with its `partyId` and `joinState` |
 | GET | `/api/v1/containers/:id` | Get container status (reads the node live and folds its join state into the record) |
 | GET | `/api/v1/containers/:id/code` | The node code a phone claims the container with (claim containers only) |
-| GET | `/api/v1/containers/:id/peer` | The container's peer id and addresses (seed path) |
-| PUT | `/api/v1/containers/:id/seed` | Deliver a seed to the container (seed path) |
+| GET | `/api/v1/containers/:id/peer` | The container's peer id and every address it reports, read live |
 | DELETE | `/api/v1/containers/:id` | Terminate container |
 | GET | `/api/v1/billing/plans` | List billing plans |
 | GET | `/api/v1/billing/status` | Get customer billing status, with the subscription's standing and dates ([Subscription state](#subscription-state-and-termination-for-non-payment)) |
@@ -147,7 +146,7 @@ counts as unset. Unknown `PROVIDER_*` names are ignored, since other software ma
 | `PROVIDER_DOCKER_SOCKET` | `docker.socketPath` | Docker socket path |
 | `PROVIDER_DOCKER_IMAGE` | `docker.image` | Container image |
 | `PROVIDER_DOCKER_NETWORK` | `docker.network` | Docker network for tenant containers |
-| `PROVIDER_DOCKER_PUBLIC_HOST` | `docker.publicHost` | DNS name or IP address at which the published container ports are reachable from outside; containers announce it, and `bootstrapNodes` becomes optional. Read when a container is created, so existing containers keep the host they were created under until recreated |
+| `PROVIDER_DOCKER_PUBLIC_HOST` | `docker.publicHost` | DNS name or IP address at which the published container ports are reachable from outside; containers announce it, and `join.kind: "claim"` is accepted. Read when a container is created, so existing containers keep the host they were created under until recreated |
 | `PROVIDER_BILLING_ENABLED` | `billing.enabled` | Enable billing (`true`/`false`) |
 | `STRIPE_SECRET_KEY` | `billing.stripeSecretKey` | Stripe API key |
 | `STRIPE_WEBHOOK_SECRET` | `billing.stripeWebhookSecret` | Stripe webhook signing secret |
@@ -193,8 +192,8 @@ that resource. Static `apiKeyHashes` admin keys and `none`-mode callers carry
 | `GET /containers` | `containers:read` |
 | `GET /containers/:id` | `containers:read` |
 | `GET /containers/:id/peer` | `containers:read` |
+| `GET /containers/:id/code` | `containers:read` |
 | `DELETE /containers/:id` | `containers:delete` |
-| `PUT /containers/:id/seed` | `containers:seed` |
 | `GET /billing/status` | `billing:read` |
 | `GET /billing/plans` | none (public listing) |
 | `GET /status` | none (skipped by auth) |
@@ -471,23 +470,26 @@ and `tags`:
 { "join": { "kind": "invitation", "invitation": "sereus-invite:1.…" } }
 ```
 
-Without `join` the request is the seed path below (`partyId`, `bootstrapNodes`,
-`pinnedOwnerKeys`, then `PUT /containers/:id/seed`), which stays until the two join paths are
-proven on the wire and is then retired.
+`join` is required, and the body carries no party, addresses or owner keys: a claim names the
+party and the owner, and an invitation bundle names the party, the members to dial and the
+owner keys the node pins itself. The rest of the body is checked at the same boundary:
+`profile` must be `storage` or `transaction`, `strandFilter` a string, `resources` an object
+with `memoryLimit`/`cpuLimit` the orchestrator can read and a numeric `storageQuotaBytes`, and
+`tags` an object of strings. A request that fails any of it is `400 INVALID_REQUEST` naming the
+field, with nothing provisioned.
 
 **Claim** — for a cadre whose only member is the phone, which nothing can dial. The container
 starts waiting to be claimed (`CADRE_CLAIM_SECRET`, a secret the provider mints per container),
-with the placeholder party `unclaimed`. `partyId`, a non-empty `bootstrapNodes` and
-`pinnedOwnerKeys` are each refused by name: a container that is claimed takes its party and
-owner from the claim. A claim needs `docker.publicHost`, since the phone dials the container;
-without it the create is `400 INVALID_REQUEST` naming `docker.publicHost`. The app then:
+with the placeholder party `unclaimed`. A claim needs `docker.publicHost`, since the phone
+dials the container; without it the create is `400 INVALID_REQUEST` naming
+`docker.publicHost`. The app then:
 
 1. Polls `GET /containers/:id/code`: `503 NOT_AVAILABLE` until the node reports its peer id
    and an announced WebSocket address, then `200 { code, peerId, multiaddrs }`. The code is
    `sereus-join:1.…` (cadre-core's node claim payload, the same code a cadre-host shows as a
    QR code): the node's peer id, its claim secret, and only its `/ws` address at `publicHost`,
    ending in `/p2p/<peerId>`, since a phone can dial neither TCP nor an in-container address.
-   `409 NOT_CLAIMABLE` for a seed-path or invitation container, `409 ALREADY_CLAIMED` once a
+   `409 NOT_CLAIMABLE` for an invitation container, `409 ALREADY_CLAIMED` once a
    live read says the node has an owner, `409 CONTAINER_GONE` for a stopped or failed one.
 2. Hands the code to `CadreNode.claimNode` (after `decodeNodeClaimPayload`). The node verifies
    the proof, records the claim, and restarts in-process into the phone's cadre; `/status` is
@@ -502,9 +504,8 @@ close as soon as the create returns. The bundle is the text the owner's app enco
 JSON, version 1, a party, the invitation key, the signed row, at least one owner key, and at
 least one member address naming the member it reaches; a `sereus-join-request:1.` text is
 refused as "a join request, not an invitation"). The error never echoes the bundle, which
-carries the invitation's private key. `partyId` comes from the bundle and a body `partyId`
-that disagrees is refused; `bootstrapNodes` and `pinnedOwnerKeys` are refused, since the
-bundle names the members to dial and carries the owner keys the node pins itself.
+carries the invitation's private key. The party comes from the bundle, which also names the
+members to dial and carries the owner keys the node pins itself.
 `docker.publicHost` is not required: the container dials out and holds its connections (a
 phone cannot dial it directly later without one). `GET /containers/:id` reads
 `joinState: { kind: 'invitation', state: 'pending' }`, then `accepted` with the `memberPeerId`
@@ -524,87 +525,15 @@ containers out of the list by party misses it; find it by `joinState` instead. A
 billed like any other running container until the customer deletes it.
 
 **On the host.** The record holds the secret or the bundle (the file store's `containers.json`
-with `storage.type: file`), as it holds the seed token, so a provider restart reproduces the
-container's environment; and `docker inspect` on the host shows `CADRE_CLAIM_SECRET` or
-`CADRE_INVITATION` in the container's environment, as it shows `CADRE_SEED_TOKEN` today. A
-container restarted by Docker (`unless-stopped`) replays the same environment: a claimed node
-starts from its `claim.json` and, with the secret still set, answers a rival claimant
-`already-claimed`.
+with `storage.type: file`), so a provider restart reproduces the container's environment; and
+`docker inspect` on the host shows `CADRE_CLAIM_SECRET` or `CADRE_INVITATION` in the
+container's environment. A container restarted by Docker (`unless-stopped`) replays the same
+environment: a claimed node starts from its `claim.json` and, with the secret still set,
+answers a rival claimant `already-claimed`.
 
-### Seed trust: pin the tenant's owner key at create time
-
-Delivering a seed (`PUT /containers/:id/seed`) is authenticated by a per-container
-bearer token, but whether the node *honours* the seed is a separate decision made
-against its own trusted-owner anchor — empty on a fresh container, and not fillable
-from replicated state. So `POST /containers` accepts `pinnedOwnerKeys`: the base64url
-ed25519 owner public key(s) of the tenant's own cadre, which the orchestrator passes
-to the node as `CADRE_OWNER_KEYS`.
-
-```bash
-curl -X POST $URL/api/v1/containers \
-  -H 'Authorization: Bearer ...' \
-  -d '{"partyId":"...","bootstrapNodes":["..."],"pinnedOwnerKeys":["<owner-b64url>"]}'
-```
-
-The keys flow only from a tenant's own create request into that tenant's own
-container; there is **no provider-level default**, because a provider-wide pin would
-let one tenant's owner seed another tenant's node.
-
-Each entry is validated on the way in: it must be base64url and decode to exactly 32
-bytes — the same rule the node applies to `CADRE_OWNER_KEYS` — so anything accepted
-here is something the container can start with. A malformed entry (including a blank
-one) is answered `400 INVALID_REQUEST` with a message naming the offending value, and
-nothing is provisioned; previously such a request got a `201` and the container then
-failed to boot, which the caller could only discover from container status. Curve
-membership is deliberately *not* checked: a well-formed key naming the wrong signer
-fails at seed time like any other wrong key. Omitting the field entirely stays valid
-— that is how a caller says "trust no seed signer" — and the created container simply
-refuses every seed (the omission is logged). Accepted values are stored trimmed and
-deduplicated, so the container record shows exactly the pins the node got. The first
-accepted seed anchors the key in `/data`, so later seeds from the same owner need no
-pin and survive restarts.
-
-### Bootstrap addresses are checked at create time
-
-`bootstrapNodes` is the list of control-network addresses the new container dials to
-find the tenant's cadre. It is forwarded verbatim into the container as
-`CADRE_BOOTSTRAP_NODES`, so a typo is invisible to the caller unless the create call
-rejects it. The container opens the first connection, so the node these addresses name
-must be reachable from it; [docs/architecture.md → Which Side Dials](../../docs/architecture.md#which-side-dials-the-add-a-node-flows-compared)
-compares this with the other ways to add a machine to a cadre.
-
-The field may be left out, or be `[]`, only when `docker.publicHost` is set: the
-container then has no bootstrap peers and waits for the requester to dial it
-([Phones dial containers at the public host](#phones-dial-containers-at-the-public-host)).
-Without `publicHost` nothing outside the provider's machine can reach a container, so
-an absent or empty list is `400 INVALID_REQUEST` (`bootstrapNodes is required: …
-docker.publicHost is unset …`). Each entry must:
-
-- be a string that parses as a multiaddr,
-- carry a `/p2p/<peerId>` component whose peer id decodes,
-- and name where that peer is — an address of nothing but peer ids
-  (`/p2p/<peerId>`) is refused.
-
-```bash
-curl -X POST $URL/api/v1/containers   -H 'Authorization: Bearer ...'   -d '{"partyId":"party-1",
-       "bootstrapNodes":["/dns4/cadre.example/tcp/443/wss/p2p/12D3KooW..."],
-       "pinnedOwnerKeys":["<owner-b64url>"]}'
-```
-
-Anything else is `400 INVALID_REQUEST` naming the offending entry, with nothing
-provisioned. Each clause is a different failure the tenant would otherwise only meet
-as a broken container: an unparsable address makes libp2p construction throw and the
-node never starts; an address with no `/p2p/` is dropped by `@libp2p/bootstrap`, so
-the node comes up healthy-looking with **zero** bootstrap peers and never joins; a
-truncated peer id throws inside the child; and an address with no location leaves the
-node holding a peer it can never dial. Reachability is *not* checked — a good address
-for a peer that is down looks the same from here.
-
-The rest of the body is checked at the same boundary: `partyId` must be a non-blank
-string (it is stored trimmed), `profile` must be `storage` or `transaction`,
-`strandFilter` a string, `resources` an object with string `memoryLimit`/`cpuLimit`
-and a numeric `storageQuotaBytes`, and `tags` an object of strings. Limit *formats*
-(`"512M"`, `"0.5"`) are still the orchestrator's to parse.
+**Upgrading from the seed path.** A container an earlier provider created with `pinnedOwnerKeys`
+and a delivered seed keeps running with no `join` and no `joinState`: `GET /containers/:id`
+shows it, `DELETE` stops it, and `GET /containers/:id/code` answers `409 NOT_CLAIMABLE`.
 
 ### Phones dial containers at the public host
 
@@ -619,12 +548,13 @@ machine's published ports are reachable from outside. When it is set, each conta
 announces `/dns4/<publicHost>/tcp/<TCP host port>` and
 `/dns4/<publicHost>/tcp/<WebSocket host port>/ws` (`/ip4` or `/ip6` for an IP address)
 besides its in-container addresses, and `GET /containers/:id/peer` returns all of them,
-each ending in `/p2p/<peerId>`. A phone then rents a node like this:
+each ending in `/p2p/<peerId>`. The node code carries only the WebSocket one, the address a
+phone can dial. A phone whose cadre has no other member online rents a node like this:
 
-1. `POST /containers` with `pinnedOwnerKeys` and no `bootstrapNodes`.
-2. `GET /containers/:id/peer`, and `CadreNode.addDrone` with those addresses.
-3. `PUT /containers/:id/seed`.
-4. The phone dials the container (`reconcileControlCohort()`).
+1. `POST /containers` with `{ "join": { "kind": "claim" } }`.
+2. `GET /containers/:id/code` until it answers `200`.
+3. `CadreNode.claimNode` with the decoded code: the phone dials the container's WebSocket
+   address and claims it, and the container takes the phone's party and owner from the claim.
 
 [docs/architecture.md → Enrollment Flow: Phone Adds Provider Drone](../../docs/architecture.md#enrollment-flow-phone-adds-provider-drone)
 describes the flow.
@@ -633,10 +563,10 @@ describes the flow.
   reach each other directly. A phone's dial to them fails and libp2p tries the next.
 - **The host is fixed when a container is created.** It is part of the container's
   environment, so a changed `publicHost` reaches only containers created afterwards.
-- **Until the phone's rows arrive, the container admits any peer.** A node with no
-  authorized members admits every connection and stream (cadre-core's cold-start rule),
-  and a container with no bootstrap peers stays that way until the phone dials, usually
-  right after step 3.
+- **Until the claim, the container admits a connection and nothing else.** A node waiting
+  to be claimed refuses every control-database stream and relay reservation; once claimed,
+  it admits any peer (cadre-core's cold-start rule) until the phone's rows reach it over
+  the connection the claim opened.
 - **No TLS proxy.** A provider that fronts containers with `/wss` on 443 would announce
   the proxy's address instead and needs a per-container path or port there; the
   provider does not do this.
@@ -667,7 +597,7 @@ all return their normal error response and the process stays up.
 # Provision then exit
 curl -X POST $URL/api/v1/containers \
   -H 'Authorization: Bearer ...' \
-  -d '{"partyId":"...","bootstrapNodes":["..."],"shutdownAfter":true}'
+  -d '{"join":{"kind":"invitation","invitation":"sereus-invite:1.…"},"shutdownAfter":true}'
 
 # Terminate then exit (body form)
 curl -X DELETE $URL/api/v1/containers/$ID \

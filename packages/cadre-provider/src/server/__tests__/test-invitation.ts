@@ -3,7 +3,7 @@
  * `validateInvitation`, which checks shape only. Nothing here verifies signatures; the
  * node and a member do, and the integration scenarios cover that. Built by hand rather
  * than with cadre-core's `encodeCadreInvitation`, since this package does not depend on
- * cadre-core (see `owner-key-validation.ts`).
+ * cadre-core (see `invitation-validation.ts`).
  */
 
 /** A decodable peer id, the member the bundle names. */
