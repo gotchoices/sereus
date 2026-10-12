@@ -35,7 +35,7 @@ import { recommendations } from './cadre-phone';
 import { CodeScanner } from './code-scanner';
 import { answerJoinRequest, isAnswerable, OWN_REQUEST_LINE, type AnswerableJoinRequest } from './join-link';
 import { RecommendAppSection } from './recommend-app-section';
-import { Btn, controlStyles, Fact, LabelledInput, OwnerSwitch, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
+import { Btn, controlStyles, errorMessage, Fact, LabelledInput, OwnerSwitch, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
 import { ShareCode } from './share-code';
 import { TEST_IDS } from './test-ids';
 
@@ -555,8 +555,4 @@ function isJoinRequest(text: string): boolean {
 function outstanding(statuses: CadreInviteStatus[]): CadreInviteStatus[] {
 	const expiry = (status: CadreInviteStatus) => parseNullableStoredDatetimeMs(status.invite.expiresAt) ?? Number.MAX_SAFE_INTEGER;
 	return statuses.filter((status) => status.live && status.invite.peerId === null).sort((a, b) => expiry(b) - expiry(a));
-}
-
-function errorMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
 }

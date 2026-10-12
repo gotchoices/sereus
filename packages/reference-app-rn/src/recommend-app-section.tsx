@@ -12,7 +12,7 @@ import { Modal, ScrollView, Text, View } from 'react-native';
 import { RECOMMENDATION_TTL_MS, type AppRecommendation } from '@serfab/cadre-rn/app-link';
 import { recommendations } from './cadre-phone';
 import { openRecommendedApp, recommendableApps, type RecommendableApp } from './join-link';
-import { Btn, controlStyles, OwnerSwitch, validUntilText } from './settings-controls';
+import { Btn, controlStyles, errorMessage, OwnerSwitch, validUntilText } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 // The kit's RECOMMENDATION_TTL_MS in words: change the two together.
@@ -190,8 +190,4 @@ function RecommendPrompt({ target, grantsOwner, onGrantsOwnerChange, onAllow, on
 			</View>
 		</Modal>
 	);
-}
-
-function errorMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
 }

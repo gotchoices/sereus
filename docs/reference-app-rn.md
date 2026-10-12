@@ -916,6 +916,8 @@ The status reads idle, not an error. Connected sections, a prompt open in them, 
 
 It is best-effort, as the report is: a phone removed while the app was not running is not told, and keeps that cadre's data while the cadre's machines refuse it.
 
+The card is screen state, since the kit keeps no record of the removal: after a restart the app shows the Connect form filled from the saved start, or the first-launch question, without saying why.
+
 
 ## Joining an Existing Cadre
 

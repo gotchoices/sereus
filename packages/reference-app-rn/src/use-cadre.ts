@@ -634,6 +634,10 @@ export function useCadreInternal(): UseCadreResult {
     );
   }, [showNode, dismissJoinFlow]);
 
+  // NOTE: a removal the kit fails to act on (its saved-start write throws) reports `failed` after
+  // it has stopped the node, and this follows only `removed`, so the screen keeps showing the
+  // stopped node as connected until Disconnect. If that failure is seen, treat `failed` with no
+  // kit node as a stop here.
   useEffect(() => {
     const follow = (kit: PhoneNodeStatus) => {
       if (kit.state === 'removed') forgetRemovedParty(kit);

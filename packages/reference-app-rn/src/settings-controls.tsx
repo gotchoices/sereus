@@ -80,6 +80,11 @@ export function WithdrawPrompt({ open, onConfirm, onCancel }: { open: boolean; o
 	);
 }
 
+/** What an alert shows for a caught error. */
+export function errorMessage(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
 /** "Valid until 14:32", with the weekday when that is not today, in the phone's own time zone. */
 export function validUntilText(expiresAtMs: number | null): string {
 	if (expiresAtMs === null) return 'No expiry';

@@ -20,7 +20,7 @@ import {
 import { useCadre } from './cadre-context';
 import { dependentsOf, lastSeenText, machineKind, pendingDeviceInvitations, revouchFor, type Dependent } from './machines';
 import { ownerFingerprint } from './node-claim';
-import { Btn, controlStyles, Fact, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
+import { Btn, controlStyles, errorMessage, Fact, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 const NOT_OWNER_LINE = 'Only an owner of this cadre can remove machines. This app is a member.';
@@ -363,8 +363,4 @@ function dependentName({ id, machine, peerId, ownerKey }: Dependent): string {
 	if (machine) return `${machineKind(machine)} ${machineCode(machine)}${owner}`;
 	if (peerId !== null) return `Machine ${shortPeerId(peerId)}${owner}`;
 	return `Owner key ${ownerFingerprint(id)}`;
-}
-
-function errorMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
 }
