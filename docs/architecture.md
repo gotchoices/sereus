@@ -415,7 +415,7 @@ The node doesn't need to know who will dial whom — it tries everything and acc
 
 ### Enrollment Flow: Phone Adds Provider Drone
 
-The most common case: a user on a NAT'd phone rents a provider-hosted node. The container joins the phone's cadre the same two ways a cadre-host node does ([Which Side Dials](#which-side-dials-the-add-a-node-flows-compared), rows 5 and 6): the phone **claims** it with a one-time code, or the container **redeems an invitation** at a member that is already online. The provider handles no owner key and no seed for such a container ([cadre-provider README → Joining a cadre: claim or invitation](../packages/cadre-provider/README.md#joining-a-cadre-claim-or-invitation)). The seed flow at the end of this section is the original path, kept until the two are proven on the wire.
+The most common case: a user on a NAT'd phone rents a provider-hosted node. The container joins the phone's cadre the same two ways a cadre-host node does ([Which Side Dials](#which-side-dials-the-add-a-node-flows-compared), rows 5 and 6): the phone **claims** it with a one-time code, or the container **redeems an invitation** at a member that is already online. The provider handles no owner key and no seed for such a container ([cadre-provider README → Joining a cadre: claim or invitation](../packages/cadre-provider/README.md#joining-a-cadre-claim-or-invitation)). The seed flow at the end of this section is the original path, which `provider-retires-the-seed-path` removes.
 
 **By claim.** The cadre's only member is the phone, so there is no member online for the container to join through; the phone dials the container and claims it:
 
@@ -467,6 +467,7 @@ Key points of the two join paths:
 - An invitation container needs no `publicHost`: it dials the member; without one a phone cannot dial it directly later.
 - An unclaimed container is never reaped; it is billed until the customer deletes it.
 - While it waits to be claimed, the container admits a connection and nothing else, the one un-enrolled state the connection gate treats so (the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol)); once claimed, the cold-start admission window the seed bullets below describe applies until the phone's rows reach it.
+- `provider-container-claimed-by-phone.integration.ts` and `provider-container-joins-by-invitation.integration.ts` run the two flows end to end against the provider's HTTP API and a real `cadre-cli` child started from the provider's environment: the phone claims the container from its node code (a wrong secret and a second owner refused, the code withdrawn once claimed, the container still claimed after a restart on its volume), and the container redeems an invitation at an always-on member (a spent invitation ending `failed`, `invite-spent`, `retryable: false`). The node is announced at `localhost`, a name, so the only address in the code is one the provider announced.
 
 **By seed (being retired).** The original flow, which `provider-retires-the-seed-path` removes together with `pinnedOwnerKeys`, `GET /containers/:id/peer` and `PUT /containers/:id/seed`:
 

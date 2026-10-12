@@ -2,7 +2,9 @@
  * A real `cadre-cli` child that owns its own cadre (`cadre start --owner`), driven through its
  * loopback admin channel. Scenarios use it as the requester's authority when a party asks
  * another machine for a node and then seeds it (`provider-seed-accepted`): its key is the pin,
- * its addresses the bootstrap, and `addDrone` mints the seed.
+ * its addresses the bootstrap, and `addDrone` mints the seed. It is also the always-on member a
+ * node joins through when the owner invites it (`provider-container-joins-by-invitation`):
+ * `createInvitation` mints the bundle, and its member set says who the redemption admitted.
  *
  * Spawned directly because no product code runs an owner node as a child: owner keys stay on
  * devices people hold (docs/cadre-host.md → Control-plane separation).
@@ -13,7 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { DroneInitResult } from '@serfab/cadre-core';
+import type { CreateCadreInvitationOptions, CreateCadreInvitationResult, DroneInitResult } from '@serfab/cadre-core';
 import type { CliConfigFile } from '@serfab/cadre-cli';
 
 import { allocFreePort, isChildUp, readLogTail, resolveCadreCliBin, scrubbedParentEnv, stopChildProcess } from './child-node-fixtures.js';
@@ -33,6 +35,28 @@ export interface OwnerCliNodeOptions {
 	partyId: string;
 	/** Budget for the child to start and answer on its admin channel. */
 	startupMs: number;
+	/**
+	 * Listen addresses, OS-assigned ports so the admin channel reports the bound ones. Defaults to
+	 * one loopback TCP port; add a `/ws` listener when a machine with only the WebSocket transport
+	 * (a phone) must be able to dial this node.
+	 */
+	listenAddrs?: string[];
+}
+
+/** One `CadrePeer` row as the node's admin channel answers it. */
+export interface OwnerCliMemberRow {
+	peerId: string;
+	multiaddr: string | null;
+	/**
+	 * The row subject's own signature over its record: present once the subject has published
+	 * its record itself, null while only another member has written the row for it (an
+	 * invitation redemption, `addDrone`).
+	 *
+	 * NOTE: on the wire because `CadreNode.listMembers` hands back the control database's whole
+	 * rows, past the `{ peerId, multiaddr }` the admin route documents. If that ever narrows,
+	 * read the signature another way (an admin route over `resolvePeerAddrs`, say).
+	 */
+	sig: string | null;
 }
 
 export interface OwnerCliNode {
@@ -44,10 +68,21 @@ export interface OwnerCliNode {
 	 * public `encodedSeed` leaves it.
 	 */
 	addDrone(options: { dronePeerId: string; droneMultiaddrs: string[] }): Promise<DroneInitResult>;
+	/**
+	 * Mint a cadre invitation naming this node's addresses as the members to redeem at; `encoded`
+	 * is the bundle a device or a provider container is started with.
+	 */
+	createInvitation(options: CreateCadreInvitationOptions): Promise<CreateCadreInvitationResult>;
+	/** Is `peerId` in this node's AUTHORIZED member set (the trust-facing set, this node excluded). */
+	isAuthorizedMember(peerId: string): Promise<boolean>;
+	/** Every `CadrePeer` row this node holds, this node's own included. */
+	listMembers(): Promise<OwnerCliMemberRow[]>;
 	/** The last lines of the child's log, for a failure message. Never throws. */
 	logTail(): string;
 	stop(): Promise<void>;
 }
+
+const DEFAULT_LISTEN_ADDRS = ['/ip4/127.0.0.1/tcp/0'];
 
 /** Start the owner child and wait until its admin channel answers as `opts.peerId`. */
 export async function startOwnerCliNode(opts: OwnerCliNodeOptions): Promise<OwnerCliNode> {
@@ -61,6 +96,10 @@ export async function startOwnerCliNode(opts: OwnerCliNodeOptions): Promise<Owne
 		getPeerId: async () => (await admin<{ peerId: string | null }>('GET', '/admin/identity')).peerId ?? '',
 		getMultiaddrs: async () => (await admin<{ multiaddrs: string[] }>('GET', '/admin/multiaddrs')).multiaddrs,
 		addDrone: (options) => admin<DroneInitResult>('POST', '/admin/add-drone', options),
+		createInvitation: (options) => admin<CreateCadreInvitationResult>('POST', '/admin/invites', options),
+		isAuthorizedMember: async (peerId) =>
+			(await admin<{ member: boolean }>('GET', `/admin/authorized-members/${encodeURIComponent(peerId)}`)).member,
+		listMembers: async () => (await admin<{ members: OwnerCliMemberRow[] }>('GET', '/admin/members')).members,
 		logTail,
 		stop: () => stopChildProcess(child, STOP_TIMEOUT_MS),
 	};
@@ -87,8 +126,7 @@ function launchOwnerChild(
 		controlNetwork: { partyId: opts.partyId, bootstrapNodes: [] },
 		profile: 'storage',
 		storage: { type: 'file', path: join(opts.workdir, 'storage') },
-		// An OS-assigned port, so the addresses the admin channel reports are the bound ones.
-		network: { listenAddrs: ['/ip4/127.0.0.1/tcp/0'] },
+		network: { listenAddrs: opts.listenAddrs ?? DEFAULT_LISTEN_ADDRS },
 	};
 	writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
 	const args = [

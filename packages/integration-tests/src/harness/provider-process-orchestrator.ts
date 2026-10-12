@@ -30,6 +30,9 @@
  * volume either — the faithful behaviour is that only the suite's tmp-root
  * cleanup removes it), so a re-`createContainer` under the same containerId
  * comes back as the same node (same identity key, same node-local stores).
+ * `restartContainer` is `docker restart` in miniature: the same child
+ * environment, ports and dockerId again, so the provider's record stays valid
+ * across it and a phone that retained the node's addresses dials the same node.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -87,6 +90,23 @@ export interface ProviderChildAdmin {
 	token: string;
 }
 
+/** What a child was launched with, kept so `restartContainer` launches it again unchanged. */
+interface ChildLaunch {
+	configPath: string;
+	env: NodeJS.ProcessEnv;
+}
+
+/** Stamp the handle when its current child exits; a later child installs its own watch. */
+function watchExit(handle: ProviderProcessHandle): void {
+	const { child } = handle;
+	// The child carries its exit code but not WHEN it exited, and a caller
+	// asking "did this die during enrollment?" needs the latter. Stamped here
+	// rather than derived, because nothing else observes the transition.
+	child.once('exit', () => {
+		if (handle.child === child) handle.exitedAt = new Date();
+	});
+}
+
 export interface ProviderProcessOrchestratorOptions {
 	/** Root under which each container gets its own durable "volume" dir. */
 	rootDir: string;
@@ -110,6 +130,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	private readonly adminChannel: boolean;
 	private readonly cliBin: string;
 	private readonly handles = new Map<string, ProviderProcessHandle>();
+	private readonly launches = new Map<string, ChildLaunch>();
 	private spawnCounter = 0;
 
 	constructor(options: ProviderProcessOrchestratorOptions) {
@@ -159,23 +180,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 
 		const env = this.buildChildEnv(request, seedToken, ports, volumeDir, keyFile, admin);
 		const configPath = this.ensureConfigFile(volumeDir);
-
-		// Append (not truncate): across a restart of the same container the log
-		// keeps the first run's lines, which is what a failing step 5 needs.
-		const logFd = openSync(join(volumeDir, LOG_FILE), 'a');
-		let child: ChildProcess;
-		try {
-			child = spawn(process.execPath, [this.cliBin, 'start', '-c', configPath], {
-				cwd: volumeDir,
-				stdio: ['ignore', logFd, logFd],
-				env,
-			});
-		} finally {
-			closeSync(logFd);
-		}
-		if (!child.pid) {
-			throw new Error(`Failed to spawn cadre-cli child for container ${request.containerId}`);
-		}
+		const child = this.spawnNode(request.containerId, volumeDir, configPath, env);
 
 		const dockerId = `proc_${request.containerId}_${++this.spawnCounter}`;
 		const handle: ProviderProcessHandle = {
@@ -186,11 +191,9 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 			...(admin ? { admin } : {}),
 			child,
 		};
-		// The child carries its exit code but not WHEN it exited, and a caller
-		// asking "did this die during enrollment?" needs the latter. Stamped here
-		// rather than derived, because nothing else observes the transition.
-		child.once('exit', () => { handle.exitedAt = new Date(); });
+		watchExit(handle);
 		this.handles.set(dockerId, handle);
+		this.launches.set(dockerId, { configPath, env });
 		log('spawned %s pid=%d ports=%j volume=%s', dockerId, child.pid, ports, volumeDir);
 
 		return {
@@ -222,6 +225,30 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		if (!handle) return;
 		await this.stopContainer(dockerId);
 		this.handles.delete(dockerId);
+		this.launches.delete(dockerId);
+	}
+
+	/**
+	 * Stop the child and start it again with the SAME environment, ports and dockerId —
+	 * `docker restart`, or a restart policy replaying a container after a host reboot. The
+	 * volume is reused (same identity, same `claim.json`), the provider's record keeps
+	 * pointing at live endpoints, and the announced addresses are unchanged, so a phone that
+	 * retained them dials the same node back. Not a respawn by this orchestrator:
+	 * `restartCount` stays 0, as Docker's own counter ignores a `docker restart`.
+	 *
+	 * NOTE: the ports were the child's, and another process can take one in the gap; the
+	 * restarted child then fails to bind and its log says so. Not seen so far; if it is,
+	 * hold the ports with a listener of our own between stop and spawn.
+	 */
+	async restartContainer(dockerId: string): Promise<void> {
+		const handle = this.requireHandle(dockerId);
+		const launch = this.launches.get(dockerId);
+		if (!launch) throw new Error(`Container ${dockerId} has no recorded launch to restart from`);
+		await this.stopContainer(dockerId);
+		handle.child = this.spawnNode(handle.containerId, handle.volumeDir, launch.configPath, launch.env);
+		delete handle.exitedAt;
+		watchExit(handle);
+		log('restarted %s pid=%d', dockerId, handle.child.pid);
 	}
 
 	/** Never consulted on the seed path — zeros keep the interface honest. */
@@ -292,6 +319,27 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	 */
 	logTail(containerId: string, tail = 200): string {
 		return readLogTail(join(this.volumeDirFor(containerId), LOG_FILE), tail);
+	}
+
+	/** `cadre start -c <config>` as a child, its output appended to the volume's log. */
+	private spawnNode(containerId: string, volumeDir: string, configPath: string, env: NodeJS.ProcessEnv): ChildProcess {
+		// Append (not truncate): across a restart of the same container the log
+		// keeps the earlier run's lines, which a failing restart step needs.
+		const logFd = openSync(join(volumeDir, LOG_FILE), 'a');
+		let child: ChildProcess;
+		try {
+			child = spawn(process.execPath, [this.cliBin, 'start', '-c', configPath], {
+				cwd: volumeDir,
+				stdio: ['ignore', logFd, logFd],
+				env,
+			});
+		} finally {
+			closeSync(logFd);
+		}
+		if (!child.pid) {
+			throw new Error(`Failed to spawn cadre-cli child for container ${containerId}`);
+		}
+		return child;
 	}
 
 	/** entrypoint.sh's create_identity: `cadre enroll create` as a child, awaited. */
