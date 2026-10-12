@@ -16,7 +16,8 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { encodeFileSafeComponent, isNotFound, writeFileAtomically } from './fs-atomic.js';
+import { isNotFound, writeFileAtomically } from './fs-atomic.js';
+import { encodeFileSafeComponent } from './file-safe-name.js';
 import type { DurableSlot } from './node-local-snapshot.js';
 
 export class FileDurableSlot implements DurableSlot {

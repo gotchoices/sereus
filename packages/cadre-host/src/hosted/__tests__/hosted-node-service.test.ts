@@ -5,8 +5,8 @@
  * the child's `/status`.
  *
  * Covers: join → unclaimed (claim secret threaded to the child, persisted,
- * redacted), the claim details, the status watcher (claim → joined, liveness, and
- * a row removed mid-poll), a join by invitation through a failure, Retry and the
+ * redacted), the claim details, the status watcher (claim → joined, liveness, a
+ * row removed mid-poll, and a node an owner removed from its cadre), a join by invitation through a failure, Retry and the
  * member's acceptance, respawn (same party, same secret, same ports), remove,
  * reset, and the stuck-spawning reap.
  *
@@ -91,6 +91,7 @@ interface StatusAnswer {
   claimedBy?: string;
   connections?: number;
   invitation?: { state: 'pending' | 'accepted' | 'failed'; memberPeerId?: string; error?: string; retryable?: boolean };
+  removed?: { stampId: string; signerKey: string | null; at: number };
 }
 
 function statusBody(answer: StatusAnswer): unknown {
@@ -109,6 +110,7 @@ function statusBody(answer: StatusAnswer): unknown {
       claim: answer.claim ?? 'awaiting',
       ...(answer.claimedBy ? { claimedBy: answer.claimedBy } : {}),
       ...(answer.invitation ? { invitation: answer.invitation } : {}),
+      removed: answer.removed ?? null,
     },
   };
 }
@@ -392,6 +394,30 @@ describe('HostedNodeService status watcher', () => {
     expect(store.get(view.id)).toBeUndefined();
     expect(orch.removed).toEqual(['dock_1']);
     expect(changes).toEqual([{ kind: 'removed', id: view.id }]);
+  });
+
+  it('writes error, not retryable, for a joined node an owner removed, and stops its child', async () => {
+    let clock = Date.parse('2026-10-01T00:00:00Z');
+    const { orch, store, svc, changes } = makeHarness({ now: () => new Date(clock) });
+    const view = await svc.join();
+    stubStatusFetch({ claim: 'claimed', claimedBy: OWNER_KEY, partyId: 'party-P', connections: 1 });
+    await svc.pollStatuses();
+    changes.length = 0;
+
+    // The child has stopped its node, so it reports the removal and no peer identity.
+    stubStatusFetch({
+      peerId: null, multiaddrs: [], claim: 'claimed', claimedBy: OWNER_KEY, partyId: 'party-P',
+      removed: { stampId: 'stamp-1', signerKey: OWNER_KEY, at: clock },
+    });
+    clock += 15_000;
+    await svc.pollStatuses();
+
+    expect(requireNode(store, view.id)).toMatchObject({
+      status: 'error', error: 'Removed from its cadre by an owner', retryable: false, removedByOwner: true, partyId: 'party-P',
+    });
+    expect(orch.stopped).toEqual(['dock_1']);
+    expect(orch.removed).toEqual([]);
+    expect(changes).toEqual([{ kind: 'changed', id: view.id }]);
   });
 
   it('retries a node that does not answer on the next pass', async () => {

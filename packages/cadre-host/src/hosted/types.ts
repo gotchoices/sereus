@@ -18,11 +18,13 @@
  *   unclaimed  → (claim) the child is up with a claim secret, waiting for a phone to claim it.
  *   joining    → (invitation) the child is up, its redemption of the invitation not yet settled.
  *   joined     → in its cadre: claimed, or the invitation accepted by a member.
- *   error      → the supervisor gave up on it, the stuck-`spawning` reap found it, or the
- *                invitation was refused or no member could be reached (`retryable` says which).
+ *   error      → the supervisor gave up on it, the stuck-`spawning` reap found it, the
+ *                invitation was refused or no member could be reached (`retryable` says which),
+ *                or an owner removed it from its cadre (`removedByOwner`).
  *
- * Removal deletes the row; there is no terminal "removed" status. An `error` record keeps
- * its working directory (its identity key) until it is removed or reset.
+ * Removal deletes the row; there is no terminal "removed" status, and a node an owner removed
+ * from its cadre is, to the host, a node that failed and waits for the admin. An `error`
+ * record keeps its working directory (its identity key) until it is removed or reset.
  */
 export type HostedNodeStatus = 'spawning' | 'unclaimed' | 'joining' | 'joined' | 'error';
 
@@ -97,9 +99,14 @@ export interface HostedNode {
   /**
    * Set with `error` when an invitation failed: whether Retry may start the node again with
    * the same invitation (no member could be reached), or the invitation itself was refused.
-   * Absent on every other `error`.
+   * False on a node an owner removed; absent on every other `error`.
    */
   retryable?: boolean;
+  /**
+   * Set with `error` when the node reported that an owner removed it from its cadre, so the
+   * UI words it as a removal rather than a failure to join or to stay up.
+   */
+  removedByOwner?: true;
 }
 
 /** `join` without its secret: what `list`, `get`, the routes and the events carry. */

@@ -1,6 +1,7 @@
 /**
- * Node-only filesystem helpers: atomic file write, filename-safe encoding, and
- * the ENOENT check, shared by `key-store-file.ts` and `file-durable-slot.ts`.
+ * Node-only filesystem helpers: atomic file write and the ENOENT check, shared
+ * by `key-store-file.ts` and `file-durable-slot.ts`. The filename-safe encoding
+ * they also use is cross-platform and lives in `file-safe-name.ts`.
  *
  * This module imports `node:fs/promises`, so — like its consumers — it is kept
  * OUT of the package's cross-platform default entry and is not itself an
@@ -15,32 +16,6 @@ const log = debug('sereus:cadre:fs-atomic');
 /** Best-effort POSIX permissions (ignored on Windows / unsupported FSes). */
 export const DIR_MODE = 0o700;
 export const FILE_MODE = 0o600;
-
-/**
- * Percent-encode a string into a filesystem-safe filename component. Beyond
- * `encodeURIComponent` (which already escapes `/`, spaces, and unicode), this
- * also escapes the unreserved characters `encodeURIComponent` leaves intact but
- * that are unsafe in filenames on some platforms (notably `*` on Windows) — and
- * `.`, so a file suffix appended by the caller is the only literal dot, making
- * suffix-stripping unambiguous — and every uppercase letter, because Windows
- * (NTFS) and macOS (APFS/HFS+ by default) ignore case in file names. Reversed by
- * `decodeURIComponent`.
- *
- * The result contains only `a-z0-9-_` and `%XX` escapes (uppercase hex). Since a
- * literal `%` is itself escaped, every `%` starts an escape, so ignoring case
- * can change only escape hex digits — which decode case-insensitively — and two
- * different inputs never yield names equal ignoring case. The escapes keep
- * `encodeURIComponent`'s uppercase hex so a name built from an id with no
- * capital letters (the identity slot `cadre%2Fidentity.key`, a lowercase party
- * id) is the same as before uppercase letters were escaped.
- */
-export function encodeFileSafeComponent(component: string): string {
-	// NOTE: a file left from before uppercase letters were escaped (`trusted-owners.Alice.json`) has, ignoring case, the new name of the all-lowercase id (`alice`), so on Windows/macOS a lookup for that id opens it; the per-party records' envelope party-id check rejects it (cold start), and `FileKeyStore` needs two parties in one key directory whose ids fold to the same lowercase string. The release note says to delete old files; if a store ever reads another id's old file in practice, rename or remove old-format files when the store opens.
-	return encodeURIComponent(component).replace(
-		/(%[0-9A-F]{2})|[!'()*~.A-Z]/g,
-		(c, escape: string | undefined) => escape ?? `%${c.charCodeAt(0).toString(16).toUpperCase()}`
-	);
-}
 
 /** Whether an unknown error is a Node "file/dir not found" (ENOENT). */
 export function isNotFound(error: unknown): boolean {

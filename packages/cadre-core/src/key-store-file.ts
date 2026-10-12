@@ -19,7 +19,8 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { KeyId, KeyStore } from './key-store.js';
 import { KeyStoreAccessError } from './key-store.js';
-import { encodeFileSafeComponent, isNotFound, writeFileAtomically } from './fs-atomic.js';
+import { isNotFound, writeFileAtomically } from './fs-atomic.js';
+import { encodeFileSafeComponent } from './file-safe-name.js';
 
 const log = debug('sereus:cadre:key-store-file');
 

@@ -1,8 +1,8 @@
 /**
  * Reading a hosted child's `/status` — the one window the host has onto a node it
- * runs: its peer id and addresses before the claim, and the claim itself, the party
- * and the owner key after it. Shared by `HostedNodeService.claimDetails` and the
- * status watcher.
+ * runs: its peer id and addresses before the claim, the claim itself, the party
+ * and the owner key after it, and its removal by an owner. Shared by
+ * `HostedNodeService.claimDetails` and the status watcher.
  */
 
 // The child's `/status` is typed against the CLI's own answer, so a field the CLI
@@ -25,11 +25,35 @@ export function statusUrlFor(healthEndpoint: string): string {
 export type NodeStatus = HealthStatus & { peerId: string };
 
 /**
+ * A `/status` answer from a child an owner removed from its cadre. The child stopped its node
+ * and stays up only to report this, so it has no peer identity.
+ */
+export type RemovedNodeStatus = HealthStatus & { node: { removed: NonNullable<HealthStatus['node']['removed']> } };
+
+/**
  * The child's `/status`, fresh every call. Throws `node_unavailable` while the child
  * does not answer, answers with an error, or has no peer identity yet — every one of
  * which a caller retries.
  */
 export async function readNodeStatus(statusEndpoint: string): Promise<NodeStatus> {
+  return requirePeerIdentity(await fetchNodeStatus(statusEndpoint));
+}
+
+/**
+ * {@link readNodeStatus} for the watcher, which also has to hear a removal: a child reporting
+ * one is answered as it is rather than refused for having no peer identity.
+ */
+export async function readWatchedNodeStatus(statusEndpoint: string): Promise<NodeStatus | RemovedNodeStatus> {
+  const status = await fetchNodeStatus(statusEndpoint);
+  return reportsRemoval(status) ? status : requirePeerIdentity(status);
+}
+
+/** Whether the child reports that an owner removed it from its cadre. */
+export function reportsRemoval(status: HealthStatus): status is RemovedNodeStatus {
+  return Boolean(status.node.removed);
+}
+
+async function fetchNodeStatus(statusEndpoint: string): Promise<HealthStatus> {
   let res: Response;
   try {
     res = await fetch(statusEndpoint);
@@ -39,12 +63,14 @@ export async function readNodeStatus(statusEndpoint: string): Promise<NodeStatus
   if (!res.ok) {
     throw new HostedNodeError('node_unavailable', `Hosted node /status returned ${res.status}`);
   }
-  let status: HealthStatus;
   try {
-    status = (await res.json()) as HealthStatus;
+    return (await res.json()) as HealthStatus;
   } catch (err) {
     throw new HostedNodeError('node_unavailable', `Hosted node /status is not JSON: ${errorMessage(err)}`);
   }
+}
+
+function requirePeerIdentity(status: HealthStatus): NodeStatus {
   if (!status.peerId || !status.multiaddrs?.length) {
     throw new HostedNodeError('node_unavailable', 'Hosted node has no peer identity yet');
   }

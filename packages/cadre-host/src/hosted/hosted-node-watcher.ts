@@ -4,7 +4,7 @@ import { decodeCadreInvitation } from '@serfab/cadre-core';
 
 import type { NodeStateListener } from '../orchestrator/types.js';
 import type { HostedNodeStore } from './hosted-node-store.js';
-import { errorMessage, readNodeStatus, reportsClaim, type NodeStatus } from './node-status.js';
+import { errorMessage, readWatchedNodeStatus, reportsClaim, reportsRemoval, type NodeStatus, type RemovedNodeStatus } from './node-status.js';
 import type { HostedNode, HostedNodeChange, HostedNodeStatus } from './types.js';
 
 const log = debug('cadre:host:hosted-node-watcher');
@@ -15,9 +15,12 @@ export const HOSTED_NODE_CLAIM_POLL_MS = 2_000;
 /** How often a joined node's `/status` is read for its connection count. */
 export const HOSTED_NODE_CONNECTED_POLL_MS = 15_000;
 
+/** The `error` a node an owner removed from its cadre is recorded with. */
+const REMOVED_BY_OWNER_ERROR = 'Removed from its cadre by an owner';
+
 /**
  * The orchestrator surface the watcher needs: the exit/start signal, when the orchestrator
- * has one, and the stop of a node whose invitation failed.
+ * has one, and the stop of a node whose invitation failed or that an owner removed.
  */
 export interface WatchedOrchestrator {
   onStateChange?(listener: NodeStateListener): () => void;
@@ -38,9 +41,11 @@ export interface HostedNodeWatcherOptions {
 /**
  * Follows each hosted node's `/status`: an `unclaimed` record becomes `joined` when
  * the node reports a finished claim; a `joining` record becomes `joined` when a member
- * accepted its invitation, or `error` when the redemption failed; and a `joined`
- * record's `connected` follows the node's control-connection count. Best-effort: a poll
- * that fails is retried on the next tick, and nothing here throws out of the timer.
+ * accepted its invitation, or `error` when the redemption failed; a `joined`
+ * record's `connected` follows the node's control-connection count; and any of them
+ * becomes `error` when the node reports that an owner removed it from its cadre.
+ * Best-effort: a poll that fails is retried on the next tick, and nothing here throws
+ * out of the timer.
  *
  * One timer at the claim cadence drives all three: every tick polls every unclaimed and
  * joining node, and each joined node every {@link HOSTED_NODE_CONNECTED_POLL_MS}, or at once when it
@@ -134,9 +139,9 @@ export class HostedNodeWatcher {
 
   private async pollOne(record: HostedNode): Promise<void> {
     if (!record.statusEndpoint) return;
-    let status: NodeStatus;
+    let status: NodeStatus | RemovedNodeStatus;
     try {
-      status = await readNodeStatus(record.statusEndpoint);
+      status = await readWatchedNodeStatus(record.statusEndpoint);
     } catch (err) {
       log('hosted node %s did not answer /status (retried next tick): %s', record.id, errorMessage(err));
       return;
@@ -150,7 +155,9 @@ export class HostedNodeWatcher {
     // write is atomic against the event loop as long as no `await` sneaks in.
     const current = this.store.get(record.id);
     if (!current || current.status !== record.status) return;
-    if (current.status === 'unclaimed') {
+    if (reportsRemoval(status)) {
+      await this.applyRemoved(current);
+    } else if (current.status === 'unclaimed') {
       this.applyUnclaimed(current, status);
     } else if (current.status === 'joining') {
       await this.applyJoining(current, status);
@@ -211,11 +218,36 @@ export class HostedNodeWatcher {
     });
     log('hosted node %s could not join cadre %s (%s): %s', current.id, current.partyId, invitation.retryable ? 'retryable' : 'final', error);
     this.emit({ kind: 'changed', id: current.id });
+    await this.stopChild(current, 'its invitation failed');
+  }
+
+  /**
+   * A node that reports an owner removed it from its cadre: `error`, not retryable, its child
+   * stopped after the write as a failed invitation's is, and its workdir kept for Remove (or a
+   * claim node's Reset). The child had already stopped its node, and stays up only to report
+   * the removal, so stopping it loses nothing.
+   */
+  private async applyRemoved(current: HostedNode): Promise<void> {
+    this.store.put({
+      ...current,
+      status: 'error',
+      error: REMOVED_BY_OWNER_ERROR,
+      retryable: false,
+      removedByOwner: true,
+      updatedAt: this.now().toISOString(),
+    });
+    log('hosted node %s was removed from cadre %s by an owner', current.id, current.partyId);
+    this.emit({ kind: 'changed', id: current.id });
+    await this.stopChild(current, 'an owner removed it');
+  }
+
+  /** Stop a node's child after its record went `error`; a failed stop is logged, the record stands. */
+  private async stopChild(current: HostedNode, why: string): Promise<void> {
     if (!current.dockerId) return;
     try {
       await this.orchestrator.stopContainer(current.dockerId);
     } catch (err) {
-      log('failed to stop hosted node %s after its invitation failed: %s', current.id, errorMessage(err));
+      log('failed to stop hosted node %s after %s: %s', current.id, why, errorMessage(err));
     }
   }
 

@@ -48,7 +48,7 @@ export function connectedText(node: Pick<HostedNodeView, 'status' | 'connected'>
 
 /** Where the node is in its lifecycle, in words: the Join page's live line and the node page's status. */
 export function stateLine(
-	node: Pick<HostedNodeView, 'join' | 'status' | 'partyId' | 'ownerKey' | 'memberPeerId' | 'connected' | 'error'>,
+	node: Pick<HostedNodeView, 'join' | 'status' | 'partyId' | 'ownerKey' | 'memberPeerId' | 'connected' | 'error' | 'removedByOwner'>,
 ): string {
 	switch (node.status) {
 		case 'spawning':
@@ -63,6 +63,7 @@ export function stateLine(
 				? `Joined cadre ${node.partyId} at member ${node.memberPeerId ?? '(unnamed)'}`
 				: `Claimed by owner ${ownerFingerprint(node.ownerKey)} into cadre ${node.partyId}`;
 		case 'error':
+			if (node.removedByOwner) return `Removed from cadre ${node.partyId} by an owner; Remove deletes it from this machine`;
 			return node.join.kind === 'invitation' && node.error
 				? `Could not join: ${node.error}`
 				: `Stopped after a failure: ${node.error ?? 'no detail recorded'}`;

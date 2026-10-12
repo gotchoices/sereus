@@ -200,6 +200,12 @@ The claim names the cadre. A node waiting to be claimed cannot know which party 
 
 A claim secret, and a claim on record, cannot be combined with `--owner`, `--seed`, `--invitation` (or `CADRE_INVITATION`), `--pin-owner-key` or `CADRE_OWNER_KEYS`: each is another way to choose the node's owner, and `cadre start` refuses the combination, naming every conflicting option. The secret comes from `CADRE_CLAIM_SECRET` or from a file the config names, `claim.secretFile` (what `cadre init` writes; `CADRE_CLAIM_SECRET_FILE` sets it from the environment), never from a flag, because a flag value shows in the process list. Setting both is refused. A secret file must hold the secret and nothing else; `cadre start` and `cadre code` warn when other accounts can read it. The secret is never logged; only `cadre code` prints it, inside the code.
 
+### Removed from the cadre
+
+An owner can remove this machine from its cadre (Remove in the reference app, `CadreNode.removeMachine`). When the running node learns of it (best-effort: the removal has to reach the node before the cadre cuts it off, see [docs/architecture.md → Removing a machine](../../docs/architecture.md#removing-a-machine)), `cadre start` writes `removed.<partyId>.json` into the node-state directory (the cadre, the retired stamp, the owner key that signed the removal when this node trusts that key, and when), stops the node and its strands, and prints `⚠ This node was removed from cadre <id> by owner <key> and has stopped …`. The process and its health server keep running, so a supervisor (systemd, cadre-host) does not read an exit as a crash and respawn the node: `/status` reports `node.removed` (`{ stampId, signerKey, at }`, `null` on a node not removed) with `running: false`, no peer id and `status: unhealthy`, and `cadre status` prints a `Removed:` line. Every later `cadre start` for that party finds the file and does the same without starting the node, because cadre-core reports a removal only to the process that saw it, and a restarted node would otherwise run against a cadre that refuses it. A file that is present but malformed refuses the start.
+
+`cadre start` deletes nothing: the node-state directory holds the claim and the node-local stores (and, on cadre-host, the identity key), and what to keep is the operator's call. To start fresh, delete the node-state directory (`state/` in a folder `cadre init` wrote; the node then waits to be claimed again). To run in the same cadre once an owner has added the machine back, delete only `removed.<partyId>.json`. On cadre-host, the admin's **Remove** deletes the node and its identity.
+
 ### Run it as a service
 
 `cadre service` prints a service definition that runs this node folder's `cadre start` at boot and restarts it when it exits, then (on stderr) the commands that install it. It writes nothing itself. All paths are absolute (this `node`, this package's `cadre.js`, the config), and the node needs no environment, since `cadre init` keeps the claim secret in the file the config names.
@@ -328,7 +334,7 @@ says so rather than starting without it.
 | `CADRE_LATENCY_HINT` | `hibernation.defaultLatencyHint` | Default latency hint: `realtime`, `interactive`, `background` or `archive` |
 | `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher polling interval in milliseconds |
 | `CADRE_CLAIM_SECRET_FILE` | `claim.secretFile` | File holding the claim secret, the file form of `CADRE_CLAIM_SECRET` ([Waiting to be claimed](#waiting-to-be-claimed)); `cadre init` writes it. Setting both is refused |
-| `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets, the claim record `claim.json`). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
+| `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets, the claim record `claim.json`, the removal marker `removed.<partyId>.json`). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
 | `CADRE_HEALTH_PORT` | _(env only)_ | Health server port for `cadre start`, and the port `cadre status` queries; the env value wins over `--health-port` |
 | `CADRE_METRICS_PORT` | _(env only)_ | Metrics server port for `cadre start`; the env value wins over `--metrics-port` |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
@@ -432,7 +438,9 @@ and the retained cold-start dial targets (`bootstrap-peers.<partyId>.json`) —
 non-replicated, per-party, and required for the node to keep its out-of-band
 trust and its way back into the party across restarts. It also holds each
 strand's saved routing table (`strand-network.<partyId>.json`), which a
-restarted node uses to reach the strand's other members again. It must be
+restarted node uses to reach the strand's other members again, and, once an
+owner has removed the node from a cadre, the marker that keeps it stopped
+(`removed.<partyId>.json`, see [Removed from the cadre](#removed-from-the-cadre)). It must be
 writable by the node's user, and it belongs in backups alongside the identity key.
 
 ### Installation Steps

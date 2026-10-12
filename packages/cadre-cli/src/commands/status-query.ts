@@ -42,6 +42,8 @@ export interface RuntimeLive {
   multiaddrs: string[];
   strands: HealthStatus['node']['strands'];
   uptime: number;
+  /** Null unless an owner removed the node from its cadre (`partyId`); it then runs no node. */
+  removed: HealthStatus['node']['removed'];
 }
 
 export interface RuntimeUnreachable {
@@ -130,6 +132,7 @@ export function buildStatusReport(
         multiaddrs: s.multiaddrs,
         strands: s.node.strands,
         uptime: s.uptime,
+        removed: s.node.removed ?? null,
       },
     };
   }
@@ -183,8 +186,15 @@ function formatRuntimeSection(runtime: RuntimeLive | RuntimeUnreachable): string
     `  Party ID:        ${runtime.partyId}`,
     `  Profile:         ${runtime.profile}`,
     `  Strands:         total=${s.total} syncing=${s.syncing} active=${s.active} idle=${s.idle} hibernating=${s.hibernating}`,
+    ...formatRemoval(runtime),
     ...formatMultiaddrs(runtime.multiaddrs),
   ];
+}
+
+function formatRemoval({ removed, partyId }: RuntimeLive): string[] {
+  if (!removed) return [];
+  const by = removed.signerKey ? `owner ${removed.signerKey.slice(0, 8)}` : 'an owner';
+  return [`  Removed:         from cadre ${partyId} by ${by} at ${new Date(removed.at).toISOString()}; the node has stopped`];
 }
 
 function formatMultiaddrs(multiaddrs: string[]): string[] {

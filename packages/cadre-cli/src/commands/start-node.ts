@@ -12,6 +12,7 @@ import {
   CadreNode,
   type BootstrapPeerStore,
   type CadreNodeConfig,
+  type CadreRemoval,
   type EnrolledMachineStore,
   type NodeClaimRecord,
   type SeedTrustPolicy,
@@ -27,6 +28,7 @@ import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-s
 import type { ResolvedConfig } from '../config/index.js';
 import { resolveStorageConfig } from './node-session.js';
 import { writeClaimRecord, type ClaimRecord } from './claim-record.js';
+import { removalMarkerPath, writeRemovalMarker } from './removal-marker.js';
 
 const log = debug('cadre:cli:start');
 
@@ -235,6 +237,54 @@ function wireNodeEvents(node: CadreNode): void {
   node.on('seed:error', ({ partyId, error }) => {
     console.error(`✗ Seed error (${partyId}): ${error}`);
   });
+}
+
+/**
+ * Stop `node` for good once an owner removes it from its cadre: write the removal marker
+ * (`removal-marker.ts`), report the removal through `onRemoved`, warn, and stop the node. The
+ * process and its servers stay up: `/status` goes on reporting the removal, and a supervisor
+ * that read an exit as a crash would respawn the node. Checks `removedFromCadre()` as well as
+ * subscribing, so a removal detected before this call is acted on too; acts once.
+ */
+export function stopWhenRemoved(node: CadreNode, nodeStateDir: string, onRemoved: (removal: CadreRemoval) => void): void {
+  let acted = false;
+  const act = (removal: CadreRemoval): void => {
+    if (acted) return;
+    acted = true;
+    node.off('cadre:removed', act);
+    recordRemoval(nodeStateDir, removal);
+    onRemoved(removal);
+    warnRemoved(removal, nodeStateDir);
+    node.stop().then(
+      () => { console.log('• Removed node stopped'); },
+      (err: unknown) => { console.error('✗ Failed to stop the removed node:', err instanceof Error ? err.message : err); },
+    );
+  };
+  node.on('cadre:removed', act);
+  const removal = node.removedFromCadre();
+  if (removal) act(removal);
+}
+
+/**
+ * Write the marker, or say it could not be written: the node is stopped either way, but without
+ * the marker the next start runs it against a cadre that refuses it.
+ */
+function recordRemoval(nodeStateDir: string, removal: CadreRemoval): void {
+  try {
+    const path = writeRemovalMarker(nodeStateDir, removal);
+    log('Wrote removal marker %s', path);
+  } catch (err) {
+    console.error(`✗ Failed to record the removal in ${removalMarkerPath(nodeStateDir, removal.partyId)}; the next start will run the node again:`,
+      err instanceof Error ? err.message : err);
+  }
+}
+
+/** The one line a removed node prints, when it learns of the removal and on every later start. */
+export function warnRemoved(removal: CadreRemoval, nodeStateDir: string): void {
+  const by = removal.signerKey ? `owner ${removal.signerKey.slice(0, 8)}` : 'an owner';
+  console.warn(`⚠ This node was removed from cadre ${removal.partyId} by ${by} and has stopped. It stays stopped for that cadre `
+    + `while ${removalMarkerPath(nodeStateDir, removal.partyId)} exists. To use this machine again, delete the node-state directory `
+    + `(${nodeStateDir}) to start fresh, or delete only that file once an owner has added the machine back.`);
 }
 
 /**

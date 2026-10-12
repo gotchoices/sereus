@@ -1,7 +1,7 @@
 import http from 'node:http';
 import debug from 'debug';
 import { emptyConnectionPathSummary } from '@serfab/cadre-core';
-import type { CadreNode, ConnectionPathSummary, StrandInstance } from '@serfab/cadre-core';
+import type { CadreNode, CadreRemoval, ConnectionPathSummary, StrandInstance } from '@serfab/cadre-core';
 import { bearerRefusal, type BearerRefusal } from './bearer.js';
 
 const log = debug('cadre:cli:health');
@@ -52,6 +52,12 @@ function claimState(claim: ClaimFacts): ClaimState {
   return claim.secretConfigured ? 'awaiting' : 'none';
 }
 
+/** `unhealthy` once removed: the process stays up to report the removal, but its node is stopped. */
+function healthState(isRunning: boolean, removal: CadreRemoval | undefined): HealthStatus['status'] {
+  if (removal) return 'unhealthy';
+  return isRunning ? 'healthy' : 'starting';
+}
+
 /** Maximum seed request body size (256 KiB) — seeds are small. Mirrors AdminServer. */
 const MAX_SEED_BODY_BYTES = 256 * 1024;
 
@@ -92,6 +98,12 @@ export interface HealthServerOptions {
    * answering undefined: the node was started without one, and `node.invitation` is omitted.
    */
   invitation?: () => InvitationStatus | undefined;
+  /**
+   * The owner's removal of this node from its cadre, read on every `/status`: from the marker at
+   * start, or from `cadre:removed` in this process (`stopWhenRemoved`). Absent, or answering
+   * undefined: not removed, and `node.removed` is null.
+   */
+  removal?: () => CadreRemoval | undefined;
 }
 
 /**
@@ -131,6 +143,9 @@ export interface InvitationStatus {
   retryable?: boolean;
 }
 
+/** `/status`'s `node.removed`: the removal as cadre-core reported it, less the party `node.partyId` already names. */
+export type RemovalStatus = Pick<CadreRemoval, 'stampId' | 'signerKey' | 'at'>;
+
 export interface HealthStatus {
   status: 'healthy' | 'unhealthy' | 'starting';
   timestamp: string;
@@ -164,6 +179,12 @@ export interface HealthStatus {
     claimedBy?: string;
     /** Present only when the node was started with an invitation. */
     invitation?: InvitationStatus;
+    /**
+     * Null unless an owner removed this node from its cadre. The removed node is stopped: it
+     * reports no peer id or addresses, `running` false and `status` `unhealthy`, and `partyId`
+     * names the cadre it was removed from. cadre-host's watcher reads it.
+     */
+    removed: RemovalStatus | null;
   };
 }
 
@@ -210,6 +231,7 @@ export class HealthServer {
       seedToken: options.seedToken ?? '',
       claim: options.claim ?? (() => ({ secretConfigured: false })),
       invitation: options.invitation ?? (() => undefined),
+      removal: options.removal ?? (() => undefined),
     };
   }
 
@@ -262,9 +284,10 @@ export class HealthServer {
       this.node?.getConnectionPaths() ?? emptyConnectionPathSummary();
     const claim = this.options.claim();
     const invitation = this.options.invitation();
+    const removal = this.options.removal();
 
     return {
-      status: isRunning ? 'healthy' : 'starting',
+      status: healthState(isRunning, removal),
       timestamp: new Date().toISOString(),
       uptime: (Date.now() - this.startTime.getTime()) / 1000,
       peerId,
@@ -272,13 +295,15 @@ export class HealthServer {
       node: {
         running: isRunning,
         peerId,
-        partyId: this.node?.partyId ?? '',
+        // No node is attached to a node started removed; the marker names the party.
+        partyId: this.node?.partyId ?? removal?.partyId ?? '',
         profile: this.options.profile,
         strands: { total: strands.size, syncing, active, idle, hibernating },
         connectionPaths,
         claim: claimState(claim),
         ...(claim.claimedBy !== undefined ? { claimedBy: claim.claimedBy } : {}),
         ...(invitation ? { invitation } : {}),
+        removed: removal ? { stampId: removal.stampId, signerKey: removal.signerKey, at: removal.at } : null,
       },
     };
   }

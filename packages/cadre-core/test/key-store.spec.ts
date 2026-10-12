@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryKeyStore, KeyStoreAccessError, DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../src/key-store.js';
 import { FileKeyStore } from '../src/key-store-file.js';
-import { encodeFileSafeComponent } from '../src/fs-atomic.js';
+import { encodeFileSafeComponent } from '../src/file-safe-name.js';
 
 // Mock node:fs/promises so the atomic-write tests can force a `rename` failure.
 // Everything else delegates to the real implementation, so the shared contract

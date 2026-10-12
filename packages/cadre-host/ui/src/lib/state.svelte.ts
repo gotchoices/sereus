@@ -118,6 +118,8 @@ export interface HostedNodeView {
 	error?: string;
 	/** Set with `error` when an invitation failed: true when no member could be reached and Retry may help. */
 	retryable?: boolean;
+	/** Set with `error` when an owner removed the node from its cadre. */
+	removedByOwner?: true;
 	createdAt: string;
 	updatedAt: string;
 }

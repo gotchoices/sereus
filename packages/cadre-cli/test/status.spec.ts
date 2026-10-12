@@ -40,6 +40,7 @@ const HEALTH: HealthStatus = {
       },
     },
     claim: 'none',
+    removed: null,
   },
 };
 

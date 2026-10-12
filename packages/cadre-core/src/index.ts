@@ -67,6 +67,10 @@ export {
   type KeyId
 } from './key-store.js';
 
+// The filename-safe form of an id that every Node-only per-party file store names its file
+// with (`<name>.<encoded party>.json`), for an embedder keeping its own file beside theirs.
+export { encodeFileSafeComponent } from './file-safe-name.js';
+
 // The KeyStore-backed identity rule, shared with embedding apps that need the
 // node key BEFORE `CadreNode` exists.
 export { loadOrCreateIdentityKey } from './identity-key.js';

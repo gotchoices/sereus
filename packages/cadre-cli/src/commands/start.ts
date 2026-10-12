@@ -5,6 +5,8 @@ import {
   ed25519KeyPairFromLibp2p,
   pinnedKeyTrustPolicy,
   requireEd25519PublicKeyB64,
+  type CadreNode,
+  type CadreRemoval,
   type ControlNetworkSeed,
   type NodeClaimRecord,
   type SeedTrustPolicy,
@@ -16,7 +18,8 @@ import { resolveConfig, type ResolvedConfig } from '../config/index.js';
 import { commandEnv } from '../config/env.js';
 import { claimRecordPath, partyOnRecord, type ClaimRecord } from './claim-record.js';
 import { resolveClaimSecret } from './claim-secret.js';
-import { afterClaimSeedSettles, buildClaimedNode, buildConfiguredNode, claimConfigFor } from './start-node.js';
+import { afterClaimSeedSettles, buildClaimedNode, buildConfiguredNode, claimConfigFor, stopWhenRemoved, warnRemoved } from './start-node.js';
+import { readRemovalMarker } from './removal-marker.js';
 import {
   decodeInvitationFor,
   redeemStartupInvitation,
@@ -24,7 +27,7 @@ import {
   startupInvitation,
   type StartupInvitation,
 } from './start-invitation.js';
-import { HealthServer, type InvitationStatus } from '../server/health.js';
+import { HealthServer, type HealthServerOptions, type InvitationStatus } from '../server/health.js';
 import { AdminServer } from '../server/admin-server.js';
 
 const log = debug('cadre:cli:start');
@@ -165,6 +168,60 @@ function reportClaimOnRecord(claim: ClaimRecord, configuredPartyId: string): voi
   console.log(`• Claimed by owner ${claim.ownerKey.slice(0, 8)} into party ${claim.partyId}${placeholder}`);
 }
 
+/** The `cadre start` options the health server is built from. */
+interface HealthServerFlags {
+  healthServer?: boolean;
+  healthPort: string;
+  metricsPort: string;
+}
+
+/**
+ * Start the health and metrics servers, unless `--no-health-server`, attached to `node` when there
+ * is one, with `facts` behind `/status`. Prints the ports actually bound, so port 0 can be asked for.
+ */
+async function startHealthServer(
+  flags: HealthServerFlags,
+  profile: string,
+  node: CadreNode | undefined,
+  facts: Pick<HealthServerOptions, 'claim' | 'invitation' | 'removal'>,
+): Promise<HealthServer | null> {
+  if (flags.healthServer === false) return null;
+  const healthPort = parseInt(commandEnv('CADRE_HEALTH_PORT') ?? flags.healthPort, 10);
+  const metricsPort = parseInt(commandEnv('CADRE_METRICS_PORT') ?? flags.metricsPort, 10);
+
+  // POST /seed is registered only when CADRE_SEED_TOKEN is set; otherwise
+  // the health port serves read-only liveness/readiness probes. Keep this
+  // distinct from CADRE_STARTUP_TOKEN (PID-verify / admin-channel bearer).
+  const seedToken = commandEnv('CADRE_SEED_TOKEN') ?? '';
+
+  const healthServer = new HealthServer({ healthPort, metricsPort, profile, seedToken, ...facts });
+  if (node) healthServer.attach(node);
+  await healthServer.start();
+  console.log(`✓ Health server on port ${healthServer.healthBoundPort}, metrics on port ${healthServer.metricsBoundPort}`);
+  if (seedToken.length > 0) {
+    console.log('✓ Seed endpoint authenticated (POST /seed requires bearer token)');
+  } else {
+    log('Seed endpoint disabled (set CADRE_SEED_TOKEN to enable authenticated POST /seed)');
+  }
+  return healthServer;
+}
+
+/**
+ * The start of a node an owner removed from its cadre (`removal-marker.ts`): no node is built,
+ * the health server reports the removal, and the process waits for a signal. An exit would read
+ * as a crash to a supervisor, which would only start the process again into this same state.
+ */
+async function serveRemoved(removal: CadreRemoval, nodeStateDir: string, healthServer: HealthServer | null): Promise<never> {
+  warnRemoved(removal, nodeStateDir);
+  const shutdown = async () => {
+    await healthServer?.stop();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  return await new Promise<never>(() => {});
+}
+
 export const startCommand = new Command('start')
   .description('Start the cadre node with the specified configuration')
   .option('-c, --config <path>', 'Path to config file (YAML or JSON)', 'cadre.yaml')
@@ -266,40 +323,31 @@ export const startCommand = new Command('start')
       let claimRecord = claimOnRecord;
       const claimConfig = claimConfigFor(claimSecret, config.nodeStateDir, (record) => { claimRecord = record; });
 
+      // The removal on record for this node's party, or the one the node reports in this process.
+      // A node an owner removed is not started again (`removal-marker.ts` says why).
+      let removal = readRemovalMarker(config.nodeStateDir, partyId);
+      const statusFacts = {
+        claim: () => ({ secretConfigured: claimSecret !== undefined, claimedBy: claimRecord?.ownerKey }),
+        invitation: () => invitationStatus,
+        removal: () => removal,
+      };
+      if (removal) {
+        const healthServer = await startHealthServer(options, config.profile, undefined, statusFacts);
+        return await serveRemoved(removal, config.nodeStateDir, healthServer);
+      }
+      const noteRemoval = (reported: CadreRemoval): void => { removal = reported; };
+
       // The current node. Reassigned once, by the restart into the claimed party below; the
       // servers and the shutdown handler go through this variable so they follow it.
       let node = claimOnRecord
         ? await buildClaimedNode(config, claimOnRecord, claimConfig)
         : await buildConfiguredNode(config, pinnedKeys, seedTrustPolicy, claimConfig);
+      // NOTE: a removal noticed before the steps after `node.start()` below finish stops the node
+      // under them, and one that throws exits 1; the marker is already written, so the respawn
+      // starts removed. If that exit is ever seen, skip those steps once `removal` is set.
+      stopWhenRemoved(node, config.nodeStateDir, noteRemoval);
 
-      // Start health/metrics servers if enabled
-      let healthServer: HealthServer | null = null;
-      if (options.healthServer !== false) {
-        const healthPort = parseInt(commandEnv('CADRE_HEALTH_PORT') ?? options.healthPort, 10);
-        const metricsPort = parseInt(commandEnv('CADRE_METRICS_PORT') ?? options.metricsPort, 10);
-
-        // POST /seed is registered only when CADRE_SEED_TOKEN is set; otherwise
-        // the health port serves read-only liveness/readiness probes. Keep this
-        // distinct from CADRE_STARTUP_TOKEN (PID-verify / admin-channel bearer).
-        const seedToken = commandEnv('CADRE_SEED_TOKEN') ?? '';
-
-        healthServer = new HealthServer({
-          healthPort,
-          metricsPort,
-          profile: config.profile,
-          seedToken,
-          claim: () => ({ secretConfigured: claimSecret !== undefined, claimedBy: claimRecord?.ownerKey }),
-          invitation: () => invitationStatus,
-        });
-        healthServer.attach(node);
-        await healthServer.start();
-        console.log(`✓ Health server on port ${healthPort}, metrics on port ${metricsPort}`);
-        if (seedToken.length > 0) {
-          console.log('✓ Seed endpoint authenticated (POST /seed requires bearer token)');
-        } else {
-          log('Seed endpoint disabled (set CADRE_SEED_TOKEN to enable authenticated POST /seed)');
-        }
-      }
+      const healthServer = await startHealthServer(options, config.profile, node, statusFacts);
 
       // The admin channel is created after owner init below; declared here
       // so graceful shutdown can close it.
@@ -334,6 +382,7 @@ export const startCommand = new Command('start')
         console.log(`• Restarting into party ${accepted.partyId}`);
         await node.stop();
         node = await buildClaimedNode(config, accepted, claimConfig);
+        stopWhenRemoved(node, config.nodeStateDir, noteRemoval);
         healthServer?.attach(node);
         adminServer?.attach(node);
         await node.start();
