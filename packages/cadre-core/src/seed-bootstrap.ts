@@ -32,7 +32,7 @@ import type {
   RevocationRow,
   RevocationLedgerOpenResult
 } from './types.js';
-import type { ControlDatabase } from './control-database.js';
+import type { ControlDatabase, MachineRemovalWrites } from './control-database.js';
 import { generateStampId } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { deviceTokenAddDigest } from './peer-authorization.js';
@@ -698,6 +698,41 @@ export class SeedBootstrapService {
     }
     return await this.controlDatabase.deleteOwnerKey(
       ownerPublicKey, ownerKey, message => this.signMessageBytes(message),
+    );
+  }
+
+  /**
+   * Re-vouch another owner's row under this service's owner key, so it stands on a remaining
+   * owner's signature before the owner that added it is removed
+   * ({@link ControlDatabase.revouchOwnerKey}; for `CadreNode.removeMachine` only). What stays
+   * here is the owner-key precondition, checked before any read (see {@link removePeer}).
+   *
+   * @returns `true` when the row was re-vouched, `false` when the key is not a live owner here.
+   */
+  async revouchOwner(ownerPublicKey: string): Promise<boolean> {
+    const ownerKey = this.requireOwnerPublicKey();
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    return await this.controlDatabase.revouchOwnerKey(
+      ownerPublicKey, ownerKey, message => this.signMessageBytes(message),
+    );
+  }
+
+  /**
+   * Remove a machine completely, signed by this service's owner key: its `CadrePeer` row, its
+   * `OwnerKey` row when `target.ownerKey` names one, its `DeviceToken` row, and the
+   * withdrawal of every invitation in `target.inviteKeys`, all in one transaction
+   * ({@link ControlDatabase.removeMachine}). What stays here is the owner-key precondition,
+   * checked before any read (see {@link removePeer}).
+   */
+  async removeMachine(target: Parameters<ControlDatabase['removeMachine']>[0]): Promise<MachineRemovalWrites> {
+    const ownerKey = this.requireOwnerPublicKey();
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    return await this.controlDatabase.removeMachine(
+      target, ownerKey, message => this.signMessageBytes(message),
     );
   }
 

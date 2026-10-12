@@ -115,7 +115,7 @@ Anyone who scans the code claims the node: the secret is the only check, so show
 
 - **Remove.** `cadre-host node remove <id>` (`DELETE /api/hosted-nodes/:id`) deletes the record first, then stops the child and deletes its working directory, identity key and node-local stores included. The cadre keeps the node's row until its owner removes it there.
 - **Reset.** `cadre-host node reset <id>` (`POST /api/hosted-nodes/:id/reset`) removes the node and starts a fresh one waiting to be claimed, with a new id and a new code: for a node someone else claimed, or one that failed. Reset on an invitation node also starts a node waiting to be claimed, since the invitation may be spent; the UI offers Remove there instead, after which the admin joins again with a fresh invitation or the code.
-- **A host lost for good.** A dead disk or a replaced machine takes the nodes' identity keys with it, and nothing on another machine can come back as those peers. The owner removes the old node from the cadre (`CadreNode.removePeer`; no reference app offers this yet, `remove-a-device-or-app-from-a-cadre`) and joins a node on the replacement machine.
+- **A host lost for good.** A dead disk or a replaced machine takes the nodes' identity keys with it, and nothing on another machine can come back as those peers. The owner removes the old node from the cadre with Remove in the reference app (`CadreNode.removeMachine`, [Removing a machine](architecture.md#removing-a-machine)), then claims a node on the replacement machine (Join by QR code).
 
 ### Where the credentials go
 

@@ -195,14 +195,15 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     const priv = node as unknown as {
       _running: boolean;
       controlDatabase: unknown;
-      collectAuthorizedMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>>;
       refreshAuthorizedControlPeers(reason: string): Promise<void>;
     };
     priv._running = true;
     // No anchor on an unstarted node, so the trusted-owner sync at the head of the refresh
-    // returns before touching the database; the membership read is what is stubbed.
-    priv.controlDatabase = {};
-    priv.collectAuthorizedMembers = async () => [{ peerId: 'joiner', multiaddr: null }];
+    // returns before touching the database; the membership scan is what is stubbed (its one
+    // row is not authorizable without an anchor, which is beside the point here: the
+    // re-arm follows the refresh, not the member count). The fake control node holds no
+    // connections, so the hang-up of removed peers at the tail reads nothing.
+    priv.controlDatabase = { queryCadrePeers: async () => [{ peerId: 'joiner', multiaddr: null, stampId: null, vouchOwner: null, vouchSig: null, vouchUsage: null }] };
 
     await priv.refreshAuthorizedControlPeers('test');
 
@@ -217,12 +218,10 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     const priv = node as unknown as {
       _running: boolean;
       controlDatabase: unknown;
-      collectAuthorizedMembers(): Promise<unknown>;
       refreshAuthorizedControlPeers(reason: string): Promise<void>;
     };
     priv._running = true;
-    priv.controlDatabase = {};
-    priv.collectAuthorizedMembers = async () => { throw new Error('control DB unavailable'); };
+    priv.controlDatabase = { queryCadrePeers: async () => { throw new Error('control DB unavailable'); } };
 
     await expect(priv.refreshAuthorizedControlPeers('test')).resolves.toBeUndefined();
 

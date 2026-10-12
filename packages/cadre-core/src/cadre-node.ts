@@ -34,8 +34,14 @@ import type {
   DeviceTokenRecord,
   CadrePeerVoucherFields,
   CadrePeerRow,
+  OwnerKeyRow,
+  RevocationRow,
   InvitationChain,
   CadreInviteStatus,
+  CadreMachine,
+  MachineRemovalPlan,
+  MachineRemovalResult,
+  RemoveMachineOptions,
   CreateCadreInvitationOptions,
   CreateCadreInvitationResult,
   RedeemCadreInvitationOptions,
@@ -77,6 +83,7 @@ import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './pee
 import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
+import { describeMachines, planMachineRemoval, revouchWithinPlan, MachineRemovalRefusedError } from './machine-removal.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
   signPeerRecord,
@@ -272,6 +279,13 @@ function unionAddrs(primary: readonly string[], extra: readonly string[]): strin
  * rows), each of which calls it only when some row it judges is invitation-admitted.
  */
 type InvitationChainSource = () => Promise<InvitationChain>;
+
+/**
+ * One membership refresh's `Revocation` tombstones, loaded at most once and shared by the
+ * anchor sync (`OwnerKey` stamps and signers) and the hang-up of removed peers (`CadrePeer`
+ * row keys), each of which calls it only when it has something to judge.
+ */
+type RevocationSource = () => Promise<RevocationRow[]>;
 
 /** Whether a `CadrePeer` or `OwnerKey` row's proof is an invitation admission rather than an owner voucher (`types.ts` → `CadrePeerRow`, `OwnerKeyRow`). */
 function isInvitationAdmitted(row: { vouchSig: string | null; vouchUsage: string | null }): boolean {
@@ -2531,7 +2545,9 @@ export class CadreNode implements SAppIdLookup {
    *
    * The trusted-owner anchor sync ({@link syncOwnerAnchor}) runs FIRST, so the snapshot
    * built here judges `CadrePeer` rows against the anchor as the `OwnerKey` table now
-   * has it. The invitation chain both reads may need is loaded at most once per refresh.
+   * has it. The invitation chain both reads may need, and the tombstone list the sync and
+   * the hang-up of removed peers ({@link hangUpRevokedControlPeers}, which runs LAST) both
+   * read, are each loaded at most once per refresh.
    */
   private async refreshAuthorizedControlPeers(reason: string): Promise<void> {
     if (!this._running || !this.controlDatabase) {
@@ -2539,8 +2555,10 @@ export class CadreNode implements SAppIdLookup {
     }
     try {
       const loadChain = this.invitationChainSource(this.controlDatabase, false);
-      await this.syncOwnerAnchor(reason, false, loadChain);
-      const members = await this.collectAuthorizedMembers(this.controlDatabase, false, loadChain);
+      const loadTombstones = this.revocationSource(this.controlDatabase, false);
+      await this.syncOwnerAnchor(reason, false, loadChain, loadTombstones);
+      const rows = await this.controlDatabase.queryCadrePeers(false);
+      const members = this.authorizedAmong(rows, await this.chainFor(rows, loadChain));
       this.authorizedControlPeers = new Set(members.map((m) => m.peerId));
       log('refreshAuthorizedControlPeers(%s): %d authorized peer(s)', reason, this.authorizedControlPeers.size);
       // Remember the party's size for the NEXT launch's control-node repair yardstick
@@ -2607,8 +2625,68 @@ export class CadreNode implements SAppIdLookup {
       // re-arming peers whose last pass was denied under the SAME membership
       // snapshot instead of re-arming unconditionally.
       void this.controlBackfill?.scheduleConnectedPeers();
+      await this.hangUpRevokedControlPeers(rows, loadTombstones);
     } catch (error) {
       log('refreshAuthorizedControlPeers(%s) failed — keeping previous snapshot: %o', reason, error);
+    }
+  }
+
+  /**
+   * Hang up this node's control connections to every peer that a `CadrePeer` tombstone names
+   * and that has no live `CadrePeer` row: a machine removed from the cadre, whose streams the
+   * protocol guard already refuses but whose open connection would otherwise stay up until it
+   * dropped on its own. Runs at the end of every membership refresh: on the remover from the
+   * removal's own membership notification, so the connection is closed before
+   * {@link removeMachine} returns; on every other machine from the refresh that follows the
+   * replicated tombstone.
+   *
+   * Denies only on evidence held, the strand enforcer's rule (`strand-revocation-enforcer.ts`):
+   * a peer that merely dropped out of the authorized snapshot (an anchor read that failed, a
+   * voucher whose owner is gone) keeps its connection, self is never hung up, and a peer with a
+   * tombstone AND a live row under a fresh stamp was re-admitted and keeps its connection too.
+   * The tombstones are the refresh's own read (`loadTombstones`, shared with
+   * {@link syncOwnerAnchor}), taken only when some connected peer has no live row, so a cadre
+   * with every connection accounted for costs nothing here. A failed `hangUp` is logged and
+   * retried by the next refresh. Never rejects.
+   */
+  private async hangUpRevokedControlPeers(rows: readonly CadrePeerRow[], loadTombstones: RevocationSource): Promise<void> {
+    const node = this.controlNode;
+    if (!node) {
+      return;
+    }
+    const selfPeerId = node.peerId.toString();
+    const live = new Set(rows.map((row) => row.peerId));
+    const rowless = new Map<string, PeerId>();
+    for (const connection of node.getConnections()) {
+      const remote = connection.remotePeer.toString();
+      if (remote !== selfPeerId && !live.has(remote)) {
+        rowless.set(remote, connection.remotePeer);
+      }
+    }
+    if (rowless.size === 0) {
+      return;
+    }
+    // NOTE: on a node whose anchor is empty the anchor sync skips its tombstone read, so a
+    // connection to a peer with no row (a configured relay or bootstrap peer) makes this the
+    // refresh's one `Revocation` read; bounded at one per refresh. If an un-enrolled node's
+    // refresh ever shows up in the consult budget, skip this read while the anchor is empty.
+    let revoked: Set<string>;
+    try {
+      revoked = new Set((await loadTombstones()).filter((tombstone) => tombstone.tableName === 'CadrePeer').map((tombstone) => tombstone.rowKey));
+    } catch (error) {
+      log('membership refresh: tombstone read for the hang-up of removed peers failed; next refresh retries: %o', error);
+      return;
+    }
+    for (const [remote, peer] of rowless) {
+      if (!revoked.has(remote)) {
+        continue;
+      }
+      try {
+        await node.hangUp(peer);
+        log('membership refresh: hung up %s (its CadrePeer row is tombstoned and no live row replaced it)', remote);
+      } catch (error) {
+        log('membership refresh: hangUp of removed peer %s failed; next refresh retries: %o', remote, error);
+      }
     }
   }
 
@@ -2744,12 +2822,23 @@ export class CadreNode implements SAppIdLookup {
    * founded the party passes the first test and not the second (`runOwnerGenesis` in the
    * reference apps), and a write it signed would only be refused.
    */
-  private async enrolledOwnerSigningKey(): Promise<{ privateKeyB64: string; publicKeyB64: string } | null> {
-    const signingKey = this.seedBootstrapService?.canAuthorize() ? this.getSelfSigningKey() : null;
+  private async enrolledOwnerSigningKey(): Promise<Ed25519KeyPair | null> {
+    const signingKey = this.ownerSigningKeyCandidate();
     if (!signingKey || !this.controlDatabase) {
       return null;
     }
     return (await this.controlDatabase.getOwnerKeys()).has(signingKey.publicKeyB64) ? signingKey : null;
+  }
+
+  /** {@link enrolledOwnerSigningKey} judged against an owner set the caller has already read. */
+  private ownerSigningKeyEnrolledIn(ownerKeys: ReadonlySet<string>): Ed25519KeyPair | null {
+    const signingKey = this.ownerSigningKeyCandidate();
+    return signingKey !== null && ownerKeys.has(signingKey.publicKeyB64) ? signingKey : null;
+  }
+
+  /** This machine's identity key as an owner signing key, when its seed bootstrap is wired to sign; enrollment not yet checked. */
+  private ownerSigningKeyCandidate(): Ed25519KeyPair | null {
+    return this.seedBootstrapService?.canAuthorize() ? this.getSelfSigningKey() : null;
   }
 
   /**
@@ -7774,9 +7863,22 @@ export class CadreNode implements SAppIdLookup {
     retry: boolean,
     loadChain: InvitationChainSource,
   ): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
-    const selfPeerId = this.peerId?.toString();
     const rows = await controlDatabase.queryCadrePeers(retry);
-    const chain = rows.some(isInvitationAdmitted) ? await loadChain() : null;
+    return this.authorizedAmong(rows, await this.chainFor(rows, loadChain));
+  }
+
+  /** The invitation chain, loaded only when some row in `rows` is invitation-admitted. */
+  private async chainFor(rows: readonly CadrePeerRow[], loadChain: InvitationChainSource): Promise<InvitationChain | null> {
+    return rows.some(isInvitationAdmitted) ? await loadChain() : null;
+  }
+
+  /**
+   * The authorized members among `rows`, already read: checks 1 to 4 of
+   * {@link listAuthorizedMembers}' predicate (check 5 is `queryCadrePeers`'s), so the membership
+   * refresh can judge the rows it has to read anyway for the hang-up of removed peers.
+   */
+  private authorizedAmong(rows: readonly CadrePeerRow[], chain: InvitationChain | null): Array<{ peerId: string; multiaddr: string | null }> {
+    const selfPeerId = this.peerId?.toString();
     const authorized = rows
       .filter(row => row.peerId !== selfPeerId && this.hasAnchoredProof(row, chain))
       .map(({ peerId, multiaddr }) => ({ peerId, multiaddr }));
@@ -7839,7 +7941,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * NOTE: cost per membership refresh is one `OwnerKey` read and one `Revocation` read (the
    * tombstone list, whose `OwnerKey` stamps are handed to `queryOwnerKeyRows` so it does not
-   * read the retired set again), plus the invitation chain when some owner row is
+   * read the retired set again, and which the hang-up of removed peers shares through
+   * `loadTombstones`), plus the invitation chain when some owner row is
    * invitation-admitted — shared with the membership read through `loadChain`; the memo
    * suggestion on {@link loadInvitationChain} covers that part. Before the Revocation ledger
    * marker is filed that one read is a cohort consult per refresh, which
@@ -7847,8 +7950,9 @@ export class CadreNode implements SAppIdLookup {
    *
    * @param retry - forwarded to every read; `false` on the refresh path, for the reason on
    *   {@link refreshAuthorizedControlPeers}.
+   * @param loadTombstones - the refresh's shared tombstone read ({@link revocationSource}).
    */
-  private async syncOwnerAnchor(reason: string, retry: boolean, loadChain: InvitationChainSource): Promise<void> {
+  private async syncOwnerAnchor(reason: string, retry: boolean, loadChain: InvitationChainSource, loadTombstones: RevocationSource): Promise<void> {
     const store = this.trustedOwnerStore;
     const controlDatabase = this.controlDatabase;
     if (!store || !controlDatabase) {
@@ -7860,7 +7964,7 @@ export class CadreNode implements SAppIdLookup {
     }
     let target: ReadonlySet<string>;
     try {
-      const tombstones = await controlDatabase.queryRevocations(retry);
+      const tombstones = await loadTombstones();
       const retired = new Set(tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey').map(tombstone => tombstone.stampId));
       const rows = await controlDatabase.queryOwnerKeyRows(retry, retired);
       const chain = rows.some(isInvitationAdmitted) ? await loadChain() : null;
@@ -7917,6 +8021,12 @@ export class CadreNode implements SAppIdLookup {
   private invitationChainSource(controlDatabase: ControlDatabase, retry: boolean): InvitationChainSource {
     let loading: Promise<InvitationChain> | null = null;
     return () => (loading ??= this.loadInvitationChain(controlDatabase, retry));
+  }
+
+  /** A per-refresh {@link RevocationSource}: one `queryRevocations` read, shared by every caller in the pass. */
+  private revocationSource(controlDatabase: ControlDatabase, retry: boolean): RevocationSource {
+    let loading: Promise<RevocationRow[]> | null = null;
+    return () => (loading ??= controlDatabase.queryRevocations(retry));
   }
 
   /**
@@ -8245,6 +8355,10 @@ export class CadreNode implements SAppIdLookup {
    * Remove a previously-authorized peer from the cadre.
    * Signs the peer ID with the owner key and deletes the CadrePeer row.
    *
+   * Removes the `CadrePeer` row only. The call that removes a machine completely (its owner
+   * key, its push token and the invitations it could come back through, in one transaction)
+   * is {@link removeMachine}.
+   *
    * @param peerId - The peer ID to remove
    */
   async removePeer(peerId: string): Promise<void> {
@@ -8296,6 +8410,9 @@ export class CadreNode implements SAppIdLookup {
    * tombstone rides the committed-delete seam ({@link noteGuardedDelete}), so one committed
    * while alone is re-issued on cohort growth like every other removal.
    *
+   * Removes the `OwnerKey` row only. The call that removes a machine completely, its owner key
+   * included, is {@link removeMachine}.
+   *
    * @param ownerPublicKeyB64 - the owner's ed25519 public key (base64url).
    * @returns `true` when the row was removed, `false` when the key is not a live owner here.
    */
@@ -8305,6 +8422,167 @@ export class CadreNode implements SAppIdLookup {
     }
     const key = requireEd25519PublicKeyB64(ownerPublicKeyB64, 'owner key');
     return await this.seedBootstrapService.removeOwner(key);
+  }
+
+  /**
+   * The cadre's machines as an app lists them ({@link CadreMachine}): one entry per live
+   * `CadrePeer` row, judged by this node's membership predicate, plus one per live `OwnerKey`
+   * whose key names a machine with no row (`describeMachines` in `machine-removal.ts`).
+   * Unlocked reads with the default retry.
+   */
+  async listMachines(): Promise<CadreMachine[]> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before listing machines');
+    }
+    return (await this.readMachines(this.controlDatabase)).machines;
+  }
+
+  /**
+   * What {@link removeMachine} would do for `peerId`, read without writing, for an app's
+   * confirmation step ({@link MachineRemovalPlan}): whether this node may remove it, whether its
+   * owner key goes with it, which rows that key vouched (so the app can offer to keep them by
+   * re-vouching), which invitations it could come back through, and whether this node's own
+   * rows depend on it (`planMachineRemoval` in `machine-removal.ts`).
+   */
+  async planMachineRemoval(peerId: string): Promise<MachineRemovalPlan> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before planning a machine removal');
+    }
+    return (await this.planMachineRemovalWith(this.controlDatabase, peerId)).plan;
+  }
+
+  /**
+   * Remove a machine from the cadre completely, signed by this node's owner key: its
+   * `CadrePeer` row, its `OwnerKey` row when its key is an owner, its `DeviceToken` row (a
+   * removed phone must not be push-woken) and a withdrawal of every live invitation it could
+   * redeem to come back, in ONE transaction ({@link ControlDatabase.removeMachine}), with a
+   * `Revocation` tombstone per row so the removal holds on every machine
+   * ("Deletes made while alone" in docs/architecture.md).
+   *
+   * Steps: re-plan ({@link planMachineRemoval}) and throw {@link MachineRemovalRefusedError} on a
+   * refusal; check `options.revouch` against the plan's dependents and throw before any write
+   * when it names anything else; **re-vouch first**, under this node's key, the dependents the
+   * caller chose to keep (`ControlDatabase.revouchOwnerKey`, `reauthorizePeer`), so they are
+   * never untrusted in between, and stop before the removal if one fails (re-vouches already
+   * made stay, harmlessly); then the removal transaction. Afterwards this node forgets the
+   * machine as a dial target, and the refresh the write notifies hangs up its control
+   * connection ({@link hangUpRevokedControlPeers}) before this resolves.
+   *
+   * Not undone by this call: the machine keeps every row and strand block it already synced
+   * and the party's strand member keys (`tickets/blocked/decide-removed-machine-strand-access`).
+   * A fresh invitation re-admits it later under fresh stamps.
+   *
+   * @returns what was written ({@link MachineRemovalResult}); all false when no live row names
+   *   the machine here (already removed elsewhere).
+   * @throws {MachineRemovalRefusedError} `'not-an-owner'`, `'self'` or `'last-owner'`.
+   */
+  async removeMachine(peerId: string, options: RemoveMachineOptions = {}): Promise<MachineRemovalResult> {
+    const service = this.seedBootstrapService;
+    if (!service || !this.controlDatabase) {
+      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
+    }
+    const { plan, rows } = await this.planMachineRemovalWith(this.controlDatabase, peerId);
+    if (plan.refusal !== null) {
+      throw new MachineRemovalRefusedError(peerId, plan.refusal);
+    }
+    const revouch = revouchWithinPlan(plan, options.revouch);
+    if (plan.machine === null) {
+      log('removeMachine(%s): no live row names it here; nothing to remove', peerId);
+      return { removedPeer: false, removedOwnerKey: false, removedDeviceToken: false, withdrawnInvitations: [], revouched: { owners: [], peers: [] } };
+    }
+    await this.revouchDependents(service, revouch, rows);
+    const writes = await service.removeMachine({
+      peerId,
+      ownerKey: plan.removesOwnerKey ? plan.machine.publicKey : null,
+      inviteKeys: plan.invitations,
+    });
+    if (writes.removedPeer) {
+      // Track + loudly flag a delete that committed local-only (security-relevant).
+      this.noteControlWrite(peerId, 'remove');
+    }
+    // As removePeer: a removed machine is no longer a dial target, however this node learned
+    // its address. A persist failure only lets the entry reappear after a restart.
+    void this.bootstrapPeerStore?.forget(peerId).catch((error: unknown) => {
+      log('removeMachine: persisting the removal of dial target %s failed (forgotten in memory): %o', peerId, error);
+    });
+    log('removeMachine(%s): peer=%s ownerKey=%s deviceToken=%s invitations=%d revouched owners=%d peers=%d', peerId,
+      writes.removedPeer, writes.removedOwnerKey, writes.removedDeviceToken, writes.withdrawnInvitations.length,
+      revouch.owners.length, revouch.peers.length);
+    return { ...writes, revouched: revouch };
+  }
+
+  /**
+   * The reads behind {@link listMachines}: the live `CadrePeer` and `OwnerKey` rows and the
+   * machines projected from them, with this node's membership predicate as the `trusted` test.
+   */
+  private async readMachines(controlDatabase: ControlDatabase): Promise<{ machines: CadreMachine[]; rows: CadrePeerRow[]; owners: OwnerKeyRow[] }> {
+    const [rows, owners] = await Promise.all([controlDatabase.queryCadrePeers(), controlDatabase.queryOwnerKeyRows()]);
+    const chain = await this.chainFor(rows, this.invitationChainSource(controlDatabase, true));
+    const selfPeerId = this.peerId?.toString() ?? null;
+    const machines = describeMachines({
+      partyId: this.partyId,
+      selfPeerId,
+      rows,
+      owners,
+      trusted: (row) => row.peerId !== selfPeerId && this.hasAnchoredProof(row, chain),
+    });
+    return { machines, rows, owners };
+  }
+
+  /** {@link planMachineRemoval} with the rows it was judged from, which {@link removeMachine} re-vouches dependents by. */
+  private async planMachineRemovalWith(controlDatabase: ControlDatabase, peerId: string): Promise<{ plan: MachineRemovalPlan; rows: CadrePeerRow[] }> {
+    const { machines, rows, owners } = await this.readMachines(controlDatabase);
+    const [invites, usages] = await Promise.all([controlDatabase.listCadreInviteStatuses(), controlDatabase.queryCadreInviteUsages()]);
+    const plan = planMachineRemoval({
+      peerId,
+      machines,
+      rows,
+      owners,
+      selfPeerId: this.peerId?.toString() ?? null,
+      selfOwnerKey: this.ownerSigningKeyEnrolledIn(new Set(owners.map((owner) => owner.key)))?.publicKeyB64 ?? null,
+      invites,
+      usages,
+    });
+    return { plan, rows };
+  }
+
+  /**
+   * The re-vouch step of {@link removeMachine}: every chosen dependent row is rebound to this
+   * node's key BEFORE the removal, so no reader ever judges it against an owner that is gone.
+   * Owners through `ControlDatabase.revouchOwnerKey` (a delete-and-re-add under a fresh stamp,
+   * the only rebinding `OwnerKey.NoUpdate` allows); peers through the owner re-touch
+   * (`reauthorizePeer`), which rewrites `VouchOwner`/`VouchSig` and clears `VouchUsage`.
+   *
+   * The peer re-touch keeps the row's `UpdatedAt` where it is. The owner branch of
+   * `CadrePeer.AuthorizedUpdate` does not require a bump, and bumping a self-published row
+   * would leave its `Sig` unverifiable, so unresolvable and unlisted as self-published, until
+   * the machine's next heartbeat (the NOTE on that constraint); the write-while-alone drain
+   * bumps because it re-issues an otherwise unchanged row, whereas here the voucher itself
+   * changes. A row never self-published carries no stamp to keep and gets the clock.
+   *
+   * A failure rethrows and stops the call before the removal; re-vouches already made stay
+   * (the row is only re-signed by a current owner) and the caller retries. An owner re-vouch
+   * committed alone is not re-issued on growth (the add half has no re-issue path,
+   * `tickets/backlog/debt-owner-key-add-while-alone-has-no-reissue`), so it is logged as
+   * {@link addOwner} logs it; the peer re-touches are re-issued by the existing drain.
+   */
+  private async revouchDependents(
+    service: SeedBootstrapService,
+    revouch: MachineRemovalPlan['dependents'],
+    rows: readonly CadrePeerRow[],
+  ): Promise<void> {
+    for (const key of revouch.owners) {
+      await service.revouchOwner(key);
+      if (this.committedAlone()) {
+        log('removeMachine: re-vouch of owner %s committed while ALONE (0 control connections): the re-added ' +
+          'owner row is local-only and is not re-issued on cohort growth, so other machines may never see it.', key);
+      }
+    }
+    for (const dependent of revouch.peers) {
+      const row = rows.find((candidate) => candidate.peerId === dependent);
+      const updatedAt = row !== undefined && row.updatedAt > 0 ? row.updatedAt : Date.now();
+      await service.reauthorizePeer(dependent, updatedAt);
+    }
   }
 
   /**

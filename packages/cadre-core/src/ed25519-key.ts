@@ -1,6 +1,7 @@
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { peerIdFromString } from '@libp2p/peer-id';
+import { peerIdFromPublicKey, peerIdFromString } from '@libp2p/peer-id';
+import { publicKeyFromRaw } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 
 /**
@@ -90,6 +91,24 @@ export function ed25519PublicKeyB64FromPeerId(peerId: string): string | null {
       return null;
     }
     return uint8ArrayToString(parsed.publicKey.raw, 'base64url');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The inverse of {@link ed25519PublicKeyB64FromPeerId}: the libp2p peer id whose identity
+ * is this ed25519 public key (base64url), or null when the value does not decode to a
+ * 32-byte key. How an `OwnerKey` row is matched to the machine it names
+ * (`machine-removal.ts`), since a machine's owner key is the key behind its peer id.
+ */
+export function peerIdFromEd25519PublicKeyB64(publicKeyB64: string): string | null {
+  try {
+    const raw = uint8ArrayFromString(publicKeyB64, 'base64url');
+    if (raw.length !== 32) {
+      return null;
+    }
+    return peerIdFromPublicKey(publicKeyFromRaw(raw)).toString();
   } catch {
     return null;
   }

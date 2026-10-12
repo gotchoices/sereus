@@ -77,7 +77,8 @@ function bareRow(peerId: string, multiaddr: string | null = null): PeerRow {
 function inject(node: CadreNode, opts: { selfPeerId: string; members: PeerRow[]; anchor?: TrustedOwnerStore; revoked?: Set<string> }): void {
   const revoked = opts.revoked ?? new Set<string>();
   (node as unknown as { controlNode: unknown }).controlNode = {
-    peerId: { toString: () => opts.selfPeerId }
+    peerId: { toString: () => opts.selfPeerId },
+    getConnections: () => []
   };
   (node as unknown as { controlDatabase: unknown }).controlDatabase = {
     // The real ControlDatabase.queryCadrePeers drops any row whose StampId is retired

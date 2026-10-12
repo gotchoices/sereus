@@ -788,7 +788,11 @@ describe('projectSeedPeers — owner identity from the OwnerKey table', () => {
 	function rows(cadrePeers: Array<{ PeerId: string; Multiaddr: string | null }>): CadrePeerRow[] {
 		return cadrePeers.map((p) => ({
 			peerId: p.PeerId,
+			publicKey: null,
 			multiaddr: p.Multiaddr,
+			updatedAt: 0,
+			profile: null,
+			sig: null,
 			stampId: null,
 			vouchOwner: null,
 			vouchSig: null,

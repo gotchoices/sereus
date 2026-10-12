@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer } from './types.js';
+import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer, MachineRemovalResult } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
@@ -848,6 +848,9 @@ export type MembershipChangeListener = (reason: string) => Promise<void>;
  */
 export type RevokedRowRef = Pick<RevocationRow, 'tableName' | 'rowKey' | 'stampId'>;
 
+/** What {@link ControlDatabase.removeMachine} wrote: `CadreNode.removeMachine`'s result, less the re-vouches it made first. */
+export type MachineRemovalWrites = Pick<MachineRemovalResult, 'removedPeer' | 'removedOwnerKey' | 'removedDeviceToken' | 'withdrawnInvitations'>;
+
 /**
  * Notified after a guarded-table delete — and the `CadreControl.Revocation`
  * tombstone it writes in the same transaction — has COMMITTED.
@@ -1570,14 +1573,22 @@ export class ControlDatabase {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer', retry);
     const rows: CadrePeerRow[] = [];
-    for (const row of await this.readRows('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.CadrePeer', undefined, 'cadre-peers', retry)) {
+    // The proof columns lead and the record columns follow, so this scan keeps a prefix no
+    // other `CadrePeer` statement shares (`queryPeerRecord` starts `PeerId, PublicKey`): the
+    // read-retry spec rigs the membership scan by that prefix.
+    const sql = 'select PeerId, Multiaddr, StampId, VouchOwner, VouchSig, VouchUsage, PublicKey, UpdatedAt, Profile, Sig from CadreControl.CadrePeer';
+    for (const row of await this.readRows(sql, undefined, 'cadre-peers', retry)) {
       const stampId = (row.StampId as string | null) ?? null;
       if (stampId !== null && revoked.has(stampId)) {
         continue;
       }
       rows.push({
         peerId: row.PeerId as string,
+        publicKey: (row.PublicKey as string | null) ?? null,
         multiaddr: (row.Multiaddr as string | null) ?? null,
+        updatedAt: (row.UpdatedAt as number | null) ?? 0,
+        profile: (row.Profile as NodeProfile | null) ?? null,
+        sig: (row.Sig as string | null) ?? null,
         stampId,
         vouchOwner: (row.VouchOwner as string | null) ?? null,
         vouchSig: (row.VouchSig as string | null) ?? null,
@@ -2081,6 +2092,155 @@ export class ControlDatabase {
       }
       return await this.deleteGuardedRow('OwnerKey', key, ownerKey, signMessage);
     });
+  }
+
+  /**
+   * Re-vouch a live `OwnerKey` row under this owner's signature: in ONE transaction, the
+   * current row's guarded delete plus tombstone ({@link deleteOwnerKey}'s body) and an insert
+   * of the same key under a fresh stamp, signed by `ownerKey` ({@link insertOwnerKeyVouched}'s
+   * body), as {@link rewritePendingJoin} re-seats a request. `OwnerKey` has `NoUpdate`, so
+   * this is the only way to rebind a row's voucher; the anchor derivation lets the re-add
+   * under a fresh stamp beat the older tombstone (`deriveOwnerAnchor`). For
+   * {@link removeMachine}: the owners a machine being removed had added keep their anchor
+   * place everywhere once their row stands on a remaining owner's signature.
+   *
+   * Through {@link mutateCadrePeer}, the membership hub. The stamp read runs inside the locked
+   * body; a row whose stamp is already retired (held without its delete) is reported as absent
+   * rather than tombstoned twice.
+   *
+   * @returns `true` when the row was re-vouched, `false` when `key` is not a live owner here.
+   * @throws when `key` is `ownerKey` (an owner cannot sign its own row's removal).
+   */
+  async revouchOwnerKey(
+    key: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<boolean> {
+    if (key === ownerKey) {
+      throw new Error(`Cannot re-vouch owner key ${key}: an owner cannot re-vouch itself`);
+    }
+    return await this.mutateCadrePeer('owner-key-revouch', async () => {
+      // retry: false on both reads — inside the locked write body (see queryStampId's NOTE).
+      const stampId = await this.queryStampId('OwnerKey', key, false);
+      if (stampId === null || (await this.queryRevokedStamps('OwnerKey', false)).has(stampId)) {
+        log('revouchOwnerKey: %s is not a live owner here (nothing to re-vouch)', key);
+        return false;
+      }
+      const removal = signGuardedRemoval(this.config.partyId, 'OwnerKey', key, stampId, signMessage);
+      const freshStampId = generateStampId(this.config.libp2pNode.peerId.toString());
+      const signature = signMessage(ownerKeyAddMessage(this.config.partyId, key, freshStampId));
+      await this.inTransaction('revouch OwnerKey', async () => {
+        await this.execGuardedRemoval(removal, ownerKey);
+        await this.db!.exec(`
+          insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
+            with context OwnerKey = ?, Signature = ?
+            values (?, ?, ?, ?)
+        `, [ownerKey, signature, key, freshStampId, ownerKey, signature]);
+      });
+      log('Owner key %s re-vouched by %s (stamp %s retired)', key, ownerKey, stampId);
+      this.notifyGuardedDelete(removal.ref);
+      return true;
+    });
+  }
+
+  /**
+   * Remove one machine completely, in ONE transaction: its `CadrePeer` row, its `OwnerKey`
+   * row when `target.ownerKey` names one, its `DeviceToken` row when it has one, each with
+   * the `Revocation` tombstone retiring its stamp ({@link deleteGuardedRow}'s statement pair,
+   * composed bare as {@link deleteStrandAndPartyKey} composes it), plus a withdrawal tombstone
+   * for every `CadreInvite` in `target.inviteKeys` that is still live here
+   * ({@link withdrawCadreInvite}'s body). One transaction so no reader sees the machine half
+   * removed: a row gone but its push token resolvable, or its owner key gone but an invitation
+   * it could redeem again still open.
+   *
+   * Through {@link mutateCadrePeer}, the membership hub. Every stamp is read inside the locked
+   * body, and a row whose stamp is already retired (held without its delete) is skipped rather
+   * than tombstoned twice. The by-name owner refusals of {@link deleteOwnerKey} apply to the
+   * owner-key arm. Nothing to remove writes nothing and returns all false.
+   *
+   * The caller decides WHAT to remove, which owner key is the machine's and which invitations
+   * it could use, from its plan (`CadreNode.planMachineRemoval`); this method only refuses to
+   * write an inconsistent set.
+   *
+   * @throws when `target.ownerKey` is `ownerKey`, or is the only live owner here.
+   */
+  async removeMachine(
+    target: { peerId: string; ownerKey: string | null; inviteKeys: readonly string[] },
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<MachineRemovalWrites> {
+    if (target.ownerKey === ownerKey) {
+      throw new Error(`Cannot remove owner key ${ownerKey}: an owner cannot remove itself`);
+    }
+    return await this.mutateCadrePeer('machine-remove', async () => {
+      const removals = await this.signMachineRemovals(target, signMessage);
+      const withdrawals = await this.signCadreInviteWithdrawals(target.inviteKeys, signMessage);
+      if (removals.length === 0 && withdrawals.length === 0) {
+        log('removeMachine: nothing live names %s here (already removed)', target.peerId);
+        return { removedPeer: false, removedOwnerKey: false, removedDeviceToken: false, withdrawnInvitations: [] };
+      }
+      await this.inTransaction('remove machine', async () => {
+        for (const removal of removals) {
+          await this.execGuardedRemoval(removal, ownerKey);
+        }
+        for (const withdrawal of withdrawals) {
+          await this.execTombstone(withdrawal.ref, withdrawal.signature, ownerKey);
+        }
+      });
+      const removed = new Set<RemovableTable>(removals.map((removal) => removal.ref.tableName));
+      log('Machine %s removed: %s; %d invitation(s) withdrawn', target.peerId, [...removed].join(', ') || 'no row', withdrawals.length);
+      for (const removal of removals) {
+        this.notifyGuardedDelete(removal.ref);
+      }
+      for (const withdrawal of withdrawals) {
+        this.notifyGuardedDelete(withdrawal.ref);
+      }
+      return {
+        removedPeer: removed.has('CadrePeer'),
+        removedOwnerKey: removed.has('OwnerKey'),
+        removedDeviceToken: removed.has('DeviceToken'),
+        withdrawnInvitations: withdrawals.map((withdrawal) => withdrawal.ref.rowKey),
+      };
+    });
+  }
+
+  /**
+   * The guarded removals {@link removeMachine} runs, signed over each row's current stamp:
+   * the `CadrePeer` row, the `OwnerKey` row when named, the `DeviceToken` row when present.
+   * Inside the locked body (every read `retry: false`); one `Revocation` scan serves the
+   * retired-stamp check for all three tables and the last-owner refusal.
+   */
+  private async signMachineRemovals(
+    target: { peerId: string; ownerKey: string | null },
+    signMessage: (message: Uint8Array) => string
+  ): Promise<GuardedRemoval[]> {
+    const tombstones = await this.queryRevocations(false);
+    const retired = (table: RevocableTable): Set<string> =>
+      new Set(tombstones.filter((row) => row.tableName === table).map((row) => row.stampId));
+    const liveStamp = async (table: RemovableTable, keyValue: string): Promise<string | null> => {
+      const stampId = await this.queryStampId(table, keyValue, false);
+      return stampId !== null && !retired(table).has(stampId) ? stampId : null;
+    };
+    const removals: GuardedRemoval[] = [];
+    const peerStamp = await liveStamp('CadrePeer', target.peerId);
+    if (peerStamp !== null) {
+      removals.push(signGuardedRemoval(this.config.partyId, 'CadrePeer', target.peerId, peerStamp, signMessage));
+    }
+    if (target.ownerKey !== null) {
+      const ownerStamp = await liveStamp('OwnerKey', target.ownerKey);
+      if (ownerStamp !== null) {
+        const owners = await this.queryOwnerKeyRows(false, retired('OwnerKey'));
+        if (owners.length <= 1) {
+          throw new Error(`Cannot remove owner key ${target.ownerKey}: cannot remove the last owner`);
+        }
+        removals.push(signGuardedRemoval(this.config.partyId, 'OwnerKey', target.ownerKey, ownerStamp, signMessage));
+      }
+    }
+    const tokenStamp = await liveStamp('DeviceToken', target.peerId);
+    if (tokenStamp !== null) {
+      removals.push(signGuardedRemoval(this.config.partyId, 'DeviceToken', target.peerId, tokenStamp, signMessage));
+    }
+    return removals;
   }
 
   /**
@@ -4287,19 +4447,12 @@ export class ControlDatabase {
   ): Promise<boolean> {
     this.ensureInitialized();
     const filed = await this.lockedWithRetry(async (): Promise<RevokedRowRef | null> => {
-      // retry: false on both reads — inside the locked write body (see queryStampId's NOTE).
-      const stampId = await this.queryStampId('CadreInvite', key, false);
-      if (stampId === null) {
-        log('withdrawCadreInvite: no CadreInvite row for %s (nothing to withdraw)', key);
+      const [withdrawal] = await this.signCadreInviteWithdrawals([key], signMessage);
+      if (withdrawal === undefined) {
         return null;
       }
-      if ((await this.queryRevokedStamps('CadreInvite', false)).has(stampId)) {
-        log('withdrawCadreInvite: %s already withdrawn (stamp %s retired)', key, stampId);
-        return null;
-      }
-      const ref: RevokedRowRef = { tableName: 'CadreInvite', rowKey: key, stampId };
-      await this.execTombstone(ref, signMessage(revocationTombstoneMessage(this.config.partyId, ref)), ownerKey);
-      return ref;
+      await this.execTombstone(withdrawal.ref, withdrawal.signature, ownerKey);
+      return withdrawal.ref;
     }, {}, 'cadre-invite-withdraw');
     if (filed === null) {
       return false;
@@ -4307,6 +4460,38 @@ export class ControlDatabase {
     log('Cadre invitation withdrawn: %s (stamp %s retired, row kept)', key, filed.stampId);
     this.notifyGuardedDelete(filed);
     return true;
+  }
+
+  /**
+   * The withdrawal tombstones for the `CadreInvite` rows among `keys` that are held here and
+   * not yet withdrawn, signed and ready for {@link execTombstone}: the body
+   * {@link withdrawCadreInvite} files one of and {@link removeMachine} files several of in one
+   * transaction. Inside the locked body (every read `retry: false`); an absent or already
+   * withdrawn key is logged and left out.
+   */
+  private async signCadreInviteWithdrawals(
+    keys: readonly string[],
+    signMessage: (message: Uint8Array) => string
+  ): Promise<Array<{ ref: RevokedRowRef; signature: string }>> {
+    if (keys.length === 0) {
+      return [];
+    }
+    const withdrawn = await this.queryRevokedStamps('CadreInvite', false);
+    const withdrawals: Array<{ ref: RevokedRowRef; signature: string }> = [];
+    for (const key of keys) {
+      const stampId = await this.queryStampId('CadreInvite', key, false);
+      if (stampId === null) {
+        log('withdrawCadreInvite: no CadreInvite row for %s (nothing to withdraw)', key);
+        continue;
+      }
+      if (withdrawn.has(stampId)) {
+        log('withdrawCadreInvite: %s already withdrawn (stamp %s retired)', key, stampId);
+        continue;
+      }
+      const ref: RevokedRowRef = { tableName: 'CadreInvite', rowKey: key, stampId };
+      withdrawals.push({ ref, signature: signMessage(revocationTombstoneMessage(this.config.partyId, ref)) });
+    }
+    return withdrawals;
   }
 
   /**

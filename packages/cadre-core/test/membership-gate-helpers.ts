@@ -163,7 +163,9 @@ export function inject(node: CadreNode, opts: {
 }): void {
   (node as unknown as { _running: boolean })._running = opts.running ?? true;
   (node as unknown as { controlNode: unknown }).controlNode = {
-    peerId: { toString: () => opts.selfPeerId ?? 'self-peer' }
+    peerId: { toString: () => opts.selfPeerId ?? 'self-peer' },
+    // The refresh hangs up connections to tombstoned peers; no connections here.
+    getConnections: () => []
   };
   if (opts.members) {
     const db = buildFakeDb(opts.members, opts.revoked ?? new Set<string>(), opts.liveInvite ?? false);
