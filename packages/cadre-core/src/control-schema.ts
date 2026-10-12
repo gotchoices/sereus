@@ -424,7 +424,12 @@ declare schema CadreControl {
         -- peer-record.ts); everything else is immutable and UpdatedAt must increase. Or an owner
         -- re-vouches the row over its current stamp, which also clears VouchUsage: the row then
         -- stands on the signature and its invitation is no longer consulted for it. The owner
-        -- branch keeps Profile: it is the machine's own claim, not the owner's. StampId never
+        -- branch keeps what the machine itself declares (PublicKey, Multiaddr, Sig, Profile): the
+        -- row's stored VouchSig is a valid re-vouch signature, so any machine holding the row can
+        -- take this branch. NOTE: it may still bump UpdatedAt (reauthorizeCadrePeer's re-broadcast
+        -- needs it), which on a self-published row leaves Sig unverifiable until the machine's
+        -- next heartbeat re-signs past it; if that window ever matters, pin UpdatedAt here when
+        -- old.Sig is not null. StampId never
         -- changes on update: an update that rotated it would leave the old stamp free and
         -- untombstoned, so retiring a stamp is delete plus tombstone. The proof columns are
         -- compared null-safe: VouchSig and VouchUsage are null on one of the two row kinds, and a
@@ -448,6 +453,9 @@ declare schema CadreControl {
                     and coalesce(new.VouchOwner, '') = context.OwnerKey
                     and coalesce(new.VouchSig, '') = context.Signature
                     and new.VouchUsage is null
+                    and coalesce(new.PublicKey, '') = coalesce(old.PublicKey, '')
+                    and coalesce(new.Multiaddr, '') = coalesce(old.Multiaddr, '')
+                    and coalesce(new.Sig, '') = coalesce(old.Sig, '')
                     and coalesce(new.Profile, '') = coalesce(old.Profile, '')
                 )
         )

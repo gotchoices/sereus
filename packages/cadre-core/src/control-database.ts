@@ -2629,7 +2629,7 @@ export class ControlDatabase {
    * re-issuing this monotonic bump. It is an UPDATE (not the original INSERT) because the row
    * already exists locally; a re-INSERT would hit the `PeerId` PK. Only the freshness stamp
    * and voucher change — `PublicKey` / `Multiaddr` / `Sig` / `Profile` are left intact (the
-   * owner branch requires `Profile` kept: it is the machine's own claim) — so it is safe
+   * owner branch requires them kept: they are the machine's own claim) — so it is safe
    * over a row whose peer has not self-published (`Sig` null); the caller must skip a row
    * that already carries a self-`Sig` (that row is the owning peer's to refresh, and bumping
    * `UpdatedAt` without re-signing would invalidate its self-signature).

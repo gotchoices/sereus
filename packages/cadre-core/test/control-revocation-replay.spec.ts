@@ -623,7 +623,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await db.queryCadrePeerStampId(peerId)).toBe(stamp);
   }, 60_000);
 
-  it('CadrePeer: an owner re-vouch keeps the profile the machine self-published, and may not rewrite it', async () => {
+  it('CadrePeer: an owner re-vouch (replayable from the stored VouchSig) may not rewrite what the machine itself published', async () => {
     const peerId = '12D3KooWProfileKeepTarget';
     const machine = freshKeyPair();
     expect(await db.insertCadrePeer(
@@ -639,20 +639,24 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const stamp = (await db.queryCadrePeerStampId(peerId))!;
     const revouchSig = signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, stamp));
 
-    // rawRevouchCadrePeer's write plus one assignment, so only the Profile clause can refuse it.
-    await expectConstraintFailure(
-      rawDb.exec(
-        `update CadreControl.CadrePeer
-           with context OwnerKey = ?, Signature = ?
-           set VouchOwner = ?, VouchSig = ?, Profile = 'transaction'
-           where PeerId = ?`,
-        [founder.publicKey, revouchSig, founder.publicKey, revouchSig, peerId],
-      ),
-      'AuthorizedUpdate',
-    );
+    const published = await db.queryPeerRecord(peerId);
+
+    // rawRevouchCadrePeer's write plus one assignment, so only that column's clause can refuse it.
+    for (const assignment of [`Profile = 'transaction'`, `Multiaddr = '/ip4/6.6.6.6/tcp/4001'`, `Sig = 'forged'`, `PublicKey = '${freshKeyPair().publicKey}'`]) {
+      await expectConstraintFailure(
+        rawDb.exec(
+          `update CadreControl.CadrePeer
+             with context OwnerKey = ?, Signature = ?
+             set VouchOwner = ?, VouchSig = ?, ${assignment}
+             where PeerId = ?`,
+          [founder.publicKey, revouchSig, founder.publicKey, revouchSig, peerId],
+        ),
+        'AuthorizedUpdate',
+      );
+    }
 
     await rawRevouchCadrePeer(founder.publicKey, revouchSig, peerId, null);
-    expect((await db.queryPeerRecord(peerId))?.profile).toBe('storage');
+    expect(await db.queryPeerRecord(peerId)).toEqual(published);
   }, 60_000);
 
   // ── Removal is stamp-retirement, not an identity ban ───────────────────────
