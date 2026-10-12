@@ -12,7 +12,7 @@
 
 import { generatePrivateKey, getPublicKey, sign } from '@optimystic/quereus-plugin-crypto';
 import type { CadreNode } from '../src/cadre-node.js';
-import type { CadreNodeConfig } from '../src/types.js';
+import type { CadreNodeConfig, RevocationRow } from '../src/types.js';
 import { cadrePeerVoucherDigest } from '../src/peer-authorization.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore } from '../src/trusted-owner-store.js';
 
@@ -80,9 +80,9 @@ export type Outstanding = boolean | 'throws' | 'hangs';
 /**
  * The subset of `ControlDatabase` the gate paths touch, as {@link inject} fakes it:
  * the two reads the snapshot is built from, the two the trusted-owner anchor sync at the
- * head of every refresh reads (`CadreNode.syncOwnerAnchor`; empty here, so the sync finds
- * nothing to derive and leaves the injected anchor alone), plus the `CadrePeer` membership
- * hub the node attaches its automatic gate refresh to.
+ * head of every refresh reads (`CadreNode.syncOwnerAnchor`; no `OwnerKey` rows or tombstones
+ * here, so the sync finds nothing to derive and leaves the injected anchor alone), plus the
+ * `CadrePeer` membership hub the node attaches its automatic gate refresh to.
  *
  * `queryCadrePeers` is a field (not a method) so a test can swap in a throwing read;
  * `peerQueries` counts calls, which is how the coalescing assertions prove that N
@@ -92,7 +92,7 @@ export interface FakeControlDatabase {
   queryCadrePeers: () => Promise<PeerRow[]>;
   queryRevokedStamps: () => Promise<Set<string>>;
   queryOwnerKeyRows: () => Promise<never[]>;
-  queryRevocations: () => Promise<never[]>;
+  queryRevocations: () => Promise<RevocationRow[]>;
   /**
    * The cadre-invitation exemption's sole input ("does this node hold a live
    * `CadreInvite` row?"); a field so a test can flip it between calls.
@@ -116,7 +116,7 @@ export function fakeDb(node: CadreNode): FakeControlDatabase {
  * listener exactly as `ControlDatabase.mutateCadrePeer` does after a commit — so a
  * throwing body notifies nothing.
  */
-function buildFakeDb(members: PeerRow[], revoked: Set<string>, liveInvite: Outstanding): FakeControlDatabase {
+function buildFakeDb(members: PeerRow[], revoked: Set<string>, tombstones: RevocationRow[], liveInvite: Outstanding): FakeControlDatabase {
   const db: FakeControlDatabase = {
     peerQueries: 0,
     listener: null,
@@ -139,7 +139,7 @@ function buildFakeDb(members: PeerRow[], revoked: Set<string>, liveInvite: Outst
     },
     queryRevokedStamps: async () => revoked,
     queryOwnerKeyRows: async () => [],
-    queryRevocations: async () => [],
+    queryRevocations: async () => tombstones,
     setMembershipChangeListener: (listener) => { db.listener = listener; },
     mutateCadrePeer: async (reason, body) => {
       const result = await body();
@@ -160,6 +160,8 @@ export function inject(node: CadreNode, opts: {
   /** How the fake control DB answers `hasLiveCadreInvite`; default none live. */
   liveInvite?: Outstanding;
   revoked?: Set<string>;
+  /** What `queryRevocations` returns. Read live, so a test can push a tombstone between refreshes; it does not retire the stamp in `revoked`. */
+  tombstones?: RevocationRow[];
 }): void {
   (node as unknown as { _running: boolean })._running = opts.running ?? true;
   (node as unknown as { controlNode: unknown }).controlNode = {
@@ -168,7 +170,7 @@ export function inject(node: CadreNode, opts: {
     getConnections: () => []
   };
   if (opts.members) {
-    const db = buildFakeDb(opts.members, opts.revoked ?? new Set<string>(), opts.liveInvite ?? false);
+    const db = buildFakeDb(opts.members, opts.revoked ?? new Set<string>(), opts.tombstones ?? [], opts.liveInvite ?? false);
     (node as unknown as { controlDatabase: unknown }).controlDatabase = db;
     // Same wiring `CadreNode.start()` performs right after the control DB comes up:
     // every committed `CadrePeer` write re-materializes the gate snapshot itself.

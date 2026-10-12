@@ -42,6 +42,7 @@ import type {
   MachineRemovalPlan,
   MachineRemovalResult,
   RemoveMachineOptions,
+  CadreRemoval,
   CreateCadreInvitationOptions,
   CreateCadreInvitationResult,
   RedeemCadreInvitationOptions,
@@ -81,7 +82,7 @@ import {
 } from './joined-strand-store.js';
 import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { strandFretPeerAddrs } from './strand-fret-addrs.js';
-import { verifyCadrePeerVoucher, verifyInvitationAdmission } from './peer-authorization.js';
+import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSigner } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
 import { describeMachines, planMachineRemoval, revouchWithinPlan, MachineRemovalRefusedError } from './machine-removal.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
@@ -627,6 +628,18 @@ export class CadreNode implements SAppIdLookup {
   private membershipGateDirty = false;
   private membershipGateDrain: Promise<void> | null = null;
   private membershipGateDeferDepth = 0;
+
+  /**
+   * This node's own `CadrePeer` row as a membership refresh last read it live, or null until
+   * one has. Reporting a removal needs it ({@link noteOwnRemoval}). Kept across
+   * stop()→start(), like {@link removal}.
+   */
+  private ownLiveRow: CadrePeerRow | null = null;
+  /**
+   * The removal this node learned of ({@link removedFromCadre}), or null. Set once and never
+   * cleared, so `cadre:removed` fires once per node object.
+   */
+  private removal: CadreRemoval | null = null;
 
   /**
    * In-memory delegate admission grants (see `delegate-admission.ts`): the
@@ -1653,6 +1666,16 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * The removal from the cadre this node has learned of, or null: the query form of
+   * `cadre:removed`, for an embedder that subscribed after it fired. Kept once set, across
+   * stop()→start() and a later re-admission, because the embedder acts on it once (stops this
+   * node, deletes the cadre's data); a re-added machine joins again from a fresh node.
+   */
+  removedFromCadre(): CadreRemoval | null {
+    return this.removal;
+  }
+
+  /**
    * Construct (or adopt) the node-local cold-start bootstrap-peer store (see
    * {@link bootstrapPeerStore}). Synchronous: an injected store has already
    * loaded its persisted targets by the time it is handed in (its `open` is the
@@ -2626,6 +2649,7 @@ export class CadreNode implements SAppIdLookup {
       // snapshot instead of re-arming unconditionally.
       void this.controlBackfill?.scheduleConnectedPeers();
       await this.hangUpRevokedControlPeers(rows, loadTombstones);
+      await this.noteOwnRemoval(rows, loadTombstones);
     } catch (error) {
       log('refreshAuthorizedControlPeers(%s) failed — keeping previous snapshot: %o', reason, error);
     }
@@ -2692,6 +2716,66 @@ export class CadreNode implements SAppIdLookup {
         log('membership refresh: hangUp of removed peer %s failed; next refresh retries: %o', remote, error);
       }
     }
+  }
+
+  /**
+   * Learn that an owner removed this node from the cadre, at the end of every membership
+   * refresh: a `CadrePeer` tombstone names this node's peer id, `rows` (the refresh's own
+   * retired-stamp-filtered read) has no live row for it, and an earlier refresh of this process
+   * saw one ({@link ownLiveRow}). Then it records {@link removal} and emits `cadre:removed`,
+   * once. Nothing is stopped here: stopping and deleting are the embedder's, whose storage,
+   * saved starts and process lifetime they are.
+   *
+   * The "seen live" condition keeps a machine joining again, whose fresh store can sync the old
+   * tombstone before its new row, from reporting itself removed. A re-admission under a fresh
+   * stamp is a live row, so a tombstone plus a live row is never a removal. The tombstones are
+   * the refresh's shared read, taken only once the own row is missing. Never rejects.
+   */
+  private async noteOwnRemoval(rows: readonly CadrePeerRow[], loadTombstones: RevocationSource): Promise<void> {
+    const selfPeerId = this.controlNode?.peerId.toString();
+    if (selfPeerId === undefined || this.removal !== null) {
+      return;
+    }
+    const own = rows.find((row) => row.peerId === selfPeerId);
+    if (own) {
+      this.ownLiveRow = own;
+      return;
+    }
+    // NOTE: a machine that synced its tombstone and restarted before its embedder acted never
+    // reports, since the new process never saw its row live. The embedders persist what they
+    // did (a marker, a deleted party), so the window is a crash between this event and that
+    // action; if it is ever hit, persist the removal here.
+    const lastLive = this.ownLiveRow;
+    if (lastLive === null) {
+      return;
+    }
+    let tombstones: RevocationRow[];
+    try {
+      tombstones = (await loadTombstones()).filter((tombstone) => tombstone.tableName === 'CadrePeer' && tombstone.rowKey === selfPeerId);
+    } catch (error) {
+      log('membership refresh: tombstone read for this node\'s own removal failed; next refresh retries: %o', error);
+      return;
+    }
+    if (tombstones.length === 0 || !this._running || !this.controlDatabase) {
+      return;
+    }
+    const tombstone = tombstones.find((candidate) => candidate.stampId === lastLive.stampId) ?? tombstones[0];
+    this.removal = { partyId: this.partyId, stampId: tombstone.stampId, signerKey: this.anchoredRevocationSigner(tombstone), at: Date.now() };
+    log('membership refresh: this node was removed from cadre %s (tombstone %s, signer %s)', this.partyId, tombstone.stampId, tombstone.signerKey);
+    this.emit('cadre:removed', this.removal);
+  }
+
+  /**
+   * The tombstone's signer when its signature verifies and the key is in this node's
+   * trusted-owner anchor, else null. A tombstone that fails this is still a removal (every
+   * other machine honours it, and this node's own row is gone), so it is logged, not refused.
+   */
+  private anchoredRevocationSigner(tombstone: RevocationRow): string | null {
+    if (verifyRevocationSigner(this.partyId, tombstone) && this.trustedOwnerStore?.has(tombstone.signerKey)) {
+      return tombstone.signerKey;
+    }
+    log('membership refresh: the tombstone removing this node (%s) is not signed by an owner anchored here (signer %s)', tombstone.stampId, tombstone.signerKey);
+    return null;
   }
 
   /**
@@ -4433,7 +4517,10 @@ export class CadreNode implements SAppIdLookup {
    */
   private async drainPendingRevocations(): Promise<void> {
     const sweep = !this.reissuedHeldRevocations;
-    if (!sweep && this.pendingRevocations.size === 0) {
+    // A removed machine's owner key went with its row (`removeMachine`), so the schema's
+    // live-owner clause refuses every re-issue it could sign; reconstructAuthoredMembership
+    // and drainPendingPeerWrites stop on the same test.
+    if (this.removal !== null || (!sweep && this.pendingRevocations.size === 0)) {
       return;
     }
     if (!this._running || !this.controlNode || !this.controlDatabase) {
@@ -4459,12 +4546,10 @@ export class CadreNode implements SAppIdLookup {
         this.pendingRevocations.delete(row.stampId);
       }
     } catch (error) {
-      // NOTE: a device whose owner key has been removed keeps running this drain (and the
-      // membership re-touches of reissuePendingPeerWrites / reissueAuthoredMembershipRows)
-      // on every growth edge, and once its own tombstone has reached it every attempt
-      // fails the schema's live-owner clause and lands here. Noise, not harm; a node that
-      // learns it has been revoked shutting itself down belongs to the device-removal plan
-      // ticket (remove-a-device-or-app-from-a-cadre).
+      // NOTE: an owner whose key alone was removed (`removeOwner`, its machine still a member,
+      // so not a removal this node reports) keeps running these drains, and every attempt
+      // fails the schema's live-owner clause and lands here on each growth edge. Noise, not
+      // harm; if it shows up, gate the drains on this node's key being a live owner.
       log('drain: revocation re-issue failed; leaving queued for next growth: %o', error);
     }
   }
@@ -4487,7 +4572,7 @@ export class CadreNode implements SAppIdLookup {
    * `CadrePeer` trace, but its tombstone is re-issuable).
    */
   private async reconstructAuthoredMembership(): Promise<void> {
-    if (!this.controlDatabase || !this.controlNode) {
+    if (!this.controlDatabase || !this.controlNode || this.removal !== null) {
       return;
     }
     if (!this.seedBootstrapService?.canAuthorize()) {
@@ -4549,7 +4634,7 @@ export class CadreNode implements SAppIdLookup {
    * here.
    */
   private async drainPendingPeerWrites(): Promise<void> {
-    if (this.pendingPeerWrites.size === 0) {
+    if (this.pendingPeerWrites.size === 0 || this.removal !== null) {
       return;
     }
     if (!this.seedBootstrapService?.canAuthorize()) {

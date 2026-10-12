@@ -1791,6 +1791,18 @@ export interface CadreNodeEvents {
    * matching predicate for a reader that subscribed too late to see the event.
    */
   'claim:accepted': NodeClaimRecord;
+  /**
+   * Emitted once per node object when this node learns that an owner removed it from the
+   * cadre: a `CadrePeer` tombstone names its peer id, it has no live `CadrePeer` row, and a
+   * membership refresh of this process had seen its live row before. `CadreNode.removedFromCadre`
+   * is the matching query for a reader that subscribed too late.
+   *
+   * BEST-EFFORT: it fires only if the tombstone reached this node before the other machines
+   * cut it off, so a machine that was offline at removal time usually never sees it. Nothing
+   * is stopped or deleted for you; the node only stops its owner re-issue drains, which can no
+   * longer succeed. Stopping the node and deleting the cadre's data are the embedder's.
+   */
+  'cadre:removed': CadreRemoval;
 }
 
 // ============================================================================
@@ -2031,6 +2043,22 @@ export interface MachineRemovalResult {
     owners: string[];
     peers: string[];
   };
+}
+
+/**
+ * This node's own removal from its cadre, as it learned it: the `CadrePeer` tombstone naming
+ * its peer id, read after it had seen its own live row (`CadreNode.removedFromCadre`, the
+ * `cadre:removed` event; "Removing a machine" in docs/architecture.md).
+ */
+export interface CadreRemoval {
+  /** The cadre this node was removed from (`CadreNode.partyId`). */
+  partyId: string;
+  /** The `StampId` the tombstone retired. */
+  stampId: string;
+  /** The owner key that filed the tombstone, when its signature verifies and the key is in this node's trusted-owner anchor; null otherwise. */
+  signerKey: string | null;
+  /** When this node learned of the removal (epoch ms). */
+  at: number;
 }
 
 /**
