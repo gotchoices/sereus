@@ -15,7 +15,10 @@ import { openRecommendedApp, recommendableApps, type RecommendableApp } from './
 import { Btn, controlStyles, OwnerSwitch, validUntilText } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
-const INTRO_LINE = 'Allow another Sereus app to join this cadre, then get it or open it. When it asks to join within the hour, it is let in with nothing to copy.';
+// The kit's RECOMMENDATION_TTL_MS in words: change the two together.
+const TTL_WORDS = 'the next hour';
+
+const INTRO_LINE = `Allow another Sereus app to join this cadre, then get it or open it. When it asks to join within ${TTL_WORDS}, it is let in with nothing to copy.`;
 
 type ShowAlert = (title: string, message: string, detail?: string) => void;
 
@@ -79,13 +82,13 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 			showAlert(`Could not allow ${app.name} to join`, errorMessage(err));
 			return;
 		}
-		console.info(`[settings] allowed ${app.name} to join as ${owner ? 'an owner' : 'a member'} for the next hour`);
+		console.info(`[settings] allowed ${app.name} to join as ${owner ? 'an owner' : 'a member'} for ${TTL_WORDS}`);
 		void readAllowed();
 		if (!await openRecommendedApp(target)) {
 			const yourself = target.installed ? 'Open it yourself' : 'Install it and open it yourself';
 			showAlert(
 				target.installed ? `Could not open ${app.name}` : `Could not open the store page of ${app.name}`,
-				`${app.name} is still allowed to join for the next hour. ${yourself}, or withdraw it under Allowed to join.`,
+				`${app.name} is still allowed to join for ${TTL_WORDS}. ${yourself}, or withdraw it under Allowed to join.`,
 			);
 		}
 	};
@@ -178,8 +181,7 @@ function RecommendPrompt({ target, grantsOwner, onGrantsOwnerChange, onAllow, on
 				<View style={controlStyles.modalBox}>
 					<Text style={controlStyles.modalTitle}>{`Let ${name} join your cadre?`}</Text>
 					<ScrollView>
-						{/* "The next hour" is the kit's RECOMMENDATION_TTL_MS. */}
-						<Text style={controlStyles.promptText}>{`If ${name} asks to join within the next hour, this app lets it in without asking again.`}</Text>
+						<Text style={controlStyles.promptText}>{`If ${name} asks to join within ${TTL_WORDS}, this app lets it in without asking again.`}</Text>
 						<OwnerSwitch value={grantsOwner} onChange={onGrantsOwnerChange} testID={TEST_IDS.settings.recommendOwnerSwitch} />
 					</ScrollView>
 					<Btn label={`Allow and ${target?.installed ? 'open' : 'get'} ${name}`} onPress={onAllow} testID={TEST_IDS.settings.allowRecommendedAppBtn} />

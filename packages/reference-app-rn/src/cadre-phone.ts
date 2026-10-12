@@ -203,6 +203,8 @@ export function extraSereusApps(): SereusApp[] {
 
 // The forms the kit's config plugin requires of the same fields, so a store link built from them
 // stays on the store's own page.
+// NOTE: copied from `app.plugin.cjs`, and nothing keeps the two equal; if a third copy is needed,
+// export them from `@serfab/cadre-rn/app-link` with a spec pinning the plugin's copy to them.
 const ANDROID_PACKAGE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 const IOS_APP_STORE_ID = /^[0-9]{1,12}$/;
 
