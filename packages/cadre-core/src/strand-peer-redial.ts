@@ -237,6 +237,14 @@ class StrandPeerRedialLoop implements StrandPeerRedial {
    * out their budget. In `joiner-first-commit-over-slow-relay`'s third arm that first wait is what
    * leaves the joiner writable with no member connected. If reconnecting within seconds of a cut
    * ever matters, retry a round that failed that fast after a short delay instead.
+   *
+   * NOTE: one such fast failure is `ConnectionClosedError: The connection muxer is "closed"`. A
+   * relay that aborts its connection to this node cannot tell it so (`@libp2p/websockets`'
+   * listener resets with close code 1006, which the `ws` package refuses to send;
+   * `blocked/report-libp2p-websockets-buffered-amount`, second arm), so this node keeps a dead
+   * relay connection until its own monitor drops it, up to 65 s, and every relayed dial reuses
+   * it. If rounds keep failing that way, close a relay connection whose muxer is closed before
+   * the next round instead of waiting it out.
    */
   private nextBackoff(): number {
     const waitMs = this.backoffMs;

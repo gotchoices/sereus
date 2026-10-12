@@ -294,6 +294,12 @@ export interface StrandFirstSyncGateDeps {
  * Holds one launch's `StrandDatabase` until {@link strandFirstSyncComplete}. Probes are
  * sequential (the next is scheduled only after the previous read settles), so a slow
  * network read never stacks probes.
+ *
+ * NOTE: a probe's reads dial the founder, through the relay when that is the only route, even
+ * while the founder is unreachable: one run of `joiner-first-commit-over-slow-relay` logged 17
+ * `hop connect denied` at the relay in about 10 s, each a few frames on the joiner's relay
+ * connection. If that connection ever shows saturated while no strand member is connected, hold
+ * the probe while the strand member redial (`strand-peer-redial.ts`) reports none connected.
  */
 export class StrandFirstSyncGate {
   private readonly scheduler: TimeoutScheduler;

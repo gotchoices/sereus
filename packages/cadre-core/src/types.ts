@@ -641,6 +641,16 @@ export interface NetworkConfig {
  * kept it (the same pair aborted at a 200ms stall only when the deadline was 300ms). An
  * interval strictly above the deadline is what makes the 30 seconds real.
  *
+ * WHY THE OTHER END'S PING HANDLER CAPS IT TOO. The node being pinged echoes through
+ * `@libp2p/ping`'s inbound handler, which aborts the ping stream when its own timer fires; the
+ * pinging node's monitor sees the reset and aborts the connection exactly as it would on its
+ * own timeout. So this deadline is only real up to the handler timeout of the node being
+ * pinged, which has to stay above it. The deployed relay sets its handler to 60 s for that
+ * reason (`ops/docker/libp2p-infra/src/main.ts`). Every cadre node's handler is Optimystic's
+ * bare `ping()`, `@libp2p/ping`'s 10 s, and nothing here can move it
+ * (`tickets/blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline.md`): between
+ * two cadre nodes, a ping whose echo takes longer than 10 s still drops the connection.
+ *
  * WHAT THE LINK NEEDS OF IT. One ping opens a fresh stream and echoes over it: a protocol
  * negotiation plus the echo, two link round trips by `link-budget.ts`'s counts (a `newStream`
  * over a relayed circuit measured 3016 ms at 1500 ms one-way). At the slowest link sereus

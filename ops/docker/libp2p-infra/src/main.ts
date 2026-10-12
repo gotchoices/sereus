@@ -94,7 +94,16 @@ const RELAY_MAX_RESERVATIONS = parsePositiveIntEnv('RELAY_MAX_RESERVATIONS', 500
 
 const services: Record<string, any> = {
   identify: identify(),
-  ping: ping(),
+  // The handler that answers OTHER nodes' pings, kept strictly above the monitor deadline below.
+  // `@libp2p/ping` aborts an inbound ping stream when its own timer fires (10 s unless set), and
+  // the pinging node's monitor treats that reset as a failed ping and aborts the connection,
+  // whatever deadline it was given. So this timer, not the client's 30 s deadline, would decide
+  // when a slow client's connection to this relay dies, and every circuit over it with it
+  // (measured on cadre nodes, whose handler has the same default:
+  // `tickets/blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline.md`). The timer
+  // only frees a stream whose dialer went silent, and that dialer's own deadline already resets
+  // it, so twice the deadline costs nothing.
+  ping: ping({ timeout: 60_000 }),
   relay: circuitRelayServer({
     reservations: {
       applyDefaultLimit: RELAY_APPLY_DEFAULT_LIMIT,
@@ -149,6 +158,9 @@ const node = await createLibp2p({
   // A dead peer is still reclaimed, now 30 to 65 s after it stops answering (the
   // deadline, plus up to one interval of waiting for the ping that will fail) rather
   // than the 30-40 s measured at the stock interval.
+  //
+  // The deadline is the pinging side's. The side being pinged has its own timer, the ping
+  // handler's (`services.ping` above), and it has to stay above this deadline or it fires first.
   connectionMonitor: {
     pingInterval: 35_000,
     pingTimeout: {

@@ -24,12 +24,20 @@
  *   cadre node (namespaced identify) can never speak; scenarios must not depend
  *   on identify between a cadre node and this relay working.
  * - WebSocket listener — what phones (and this suite's control nodes) dial.
+ * - The connection monitor (a ping every 35 s, each given 30 s) and the 17.5 s dial and
+ *   inbound-upgrade limits. A relay's monitor decides whether every circuit through it lives:
+ *   aborting its connection to either end cuts the circuit for both. libp2p's stock 5 s
+ *   deadline cut circuits on a slow link (`slow-relay-joiner-strand-connection-keeps-dropping`).
+ * - The ping service, with the ops relay's handler timeout ({@link PING_HANDLER_TIMEOUT_MS}).
+ *   The handler aborts an inbound ping stream when its timer fires, and the pinging node's
+ *   monitor then aborts the connection whatever deadline it was given, so the handler timeout
+ *   has to stay above every pinging node's deadline. Without the service a cadre node's ping
+ *   is refused as an unsupported protocol, which its monitor counts as an answer, so the
+ *   fixture would hide a handler timeout the deployed relay has.
  *
  * Deliberate divergences from the container, none load-bearing for relaying:
- * no raw-TCP listener (every harness node dials WebSockets), no `ping()` service
- * (keepalive diagnostics; not part of the reservation or hop path, and not a
- * workspace dependency), no on-disk identity key (`restart()` keeps the key in
- * memory instead).
+ * no raw-TCP listener (every harness node dials WebSockets), no on-disk identity key
+ * (`restart()` keeps the key in memory instead).
  */
 
 import { createLibp2p, type Libp2p } from 'libp2p';
@@ -37,15 +45,18 @@ import { webSockets } from '@libp2p/websockets';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { identify } from '@libp2p/identify';
+import { ping } from '@libp2p/ping';
 import { circuitRelayServer, type CircuitRelayService } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { prefixLogger } from '@libp2p/logger';
 import type { PrivateKey } from '@libp2p/interface';
 import type { Identify } from '@libp2p/identify';
+import type { Ping } from '@libp2p/ping';
 
 /** The relay node's service map, so `services.relay` needs no cast to reach. */
 interface RelayServices extends Record<string, unknown> {
   identify: Identify;
+  ping: Ping;
   relay: CircuitRelayService;
 }
 
@@ -57,6 +68,9 @@ type RelayNode = Libp2p<RelayServices>;
  * near a hundred nodes and libp2p's own default of 15 is what we must clear.
  */
 const DEFAULT_MAX_RESERVATIONS = 100;
+
+/** The ops container's ping handler timeout: twice the 30 s monitor deadline (the reason is beside it there). */
+const PING_HANDLER_TIMEOUT_MS = 60_000;
 
 export interface DedicatedRelayOptions {
   /** Concurrent reservation cap (default {@link DEFAULT_MAX_RESERVATIONS}). */
@@ -98,14 +112,14 @@ async function createRelayNode(
 ): Promise<RelayNode> {
   return await createLibp2p<RelayServices>({
     privateKey,
+    // So `DEBUG='relay:libp2p:*'` picks this node's lines out of the cadre nodes' in the same process.
     logger: prefixLogger('relay'),
     addresses: { listen: [listenAddr] },
     transports: [webSockets()],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     // The deployed relay's liveness and connection limits, from `ops/docker/libp2p-infra/src/main.ts`
-    // (the numbers and their measurement live there). libp2p's stock 5 s ping deadline aborted every
-    // circuit through this relay on a slow link (`slow-relay-joiner-strand-connection-keeps-dropping`).
+    // (the numbers and their measurement live there).
     connectionMonitor: {
       pingInterval: 35_000,
       pingTimeout: { minTimeout: 30_000, maxTimeout: 30_000 }
@@ -116,6 +130,7 @@ async function createRelayNode(
     },
     services: {
       identify: identify(),
+      ping: ping({ timeout: PING_HANDLER_TIMEOUT_MS }),
       relay: circuitRelayServer({
         reservations: {
           applyDefaultLimit: false,

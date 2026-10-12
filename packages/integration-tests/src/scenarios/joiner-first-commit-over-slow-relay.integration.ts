@@ -38,17 +38,22 @@
  * stopped, they never do. It logs how long each step took and every node's peer id, so a run's
  * `DEBUG=optimystic:db-p2p:*` log can be read against them.
  *
- * Why the joiner has no strand peer in the third arm: its strand node connects to the founder's
- * through the relay and the founder's peer-join backfill delivers every block, but about 2 s later
- * the relay's libp2p connection monitor aborts its connections to both strand nodes on a late ping,
- * cutting the circuit and failing the joiner's in-flight schema read (`cohort-unreachable`). This
- * harness relay runs libp2p's stock monitor, not the ops relay's 30 s ping deadline
- * (`backlog/debt-libp2p-nodes-built-outside-cadre-core-miss-the-ping-defaults`). The launch keeps
- * its runtime and retries the database build 5 s later (`strand-deferred-join-keeps-its-runtime`),
- * and that build succeeds from the delivered blocks. Both strand nodes' member redial
- * (`strand-peer-redial.ts`) dials the moment the circuit drops, but that dial fails within
- * milliseconds ("the connection muxer is closed") and the next round waits out the 21.5 s backoff,
- * so the joiner is writable, with only the relay connected, about 8 s after the cut.
+ * Why the joiner has no strand peer in the third arm: on this link an outbound frame waits 10 to
+ * 20 s in its socket's queue, so a liveness ping's echo routinely takes longer than the 10 s that
+ * `@libp2p/ping`'s handler allows on every cadre node. The handler resets the ping stream, and the
+ * pinging node's monitor aborts the connection whatever its own 30 s deadline
+ * (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). Between the two strand
+ * nodes that drops their circuit; from the relay, whose monitor pings each strand node, it drops
+ * that node's relay connection and every circuit on it. So the strand nodes lose each other about
+ * 40 s after each reconnect, the member redial (`strand-peer-redial.ts`) reconnects them after its
+ * 21.5 s backoff, a database build that found the founder unreachable is retried 5 s later
+ * (`strand-deferred-join-keeps-its-runtime`), and the joiner's first sync completes across several
+ * of those windows. When it does, the joiner can be between windows, with only the relay
+ * connected. The harness relay carries the deployed relay's monitor, limits and ping handler
+ * (`harness/dedicated-relay.ts`), so it no longer cuts circuits on a deadline of its own. With the
+ * relay answering pings the joiner became writable after 385 s, against 85 s with the relay not
+ * answering them (one run each); why the relay's ping handler costs that much is
+ * `fix/slow-link-joiner-first-sync-slower-when-relay-answers-pings`.
  *
  * The fourth arm is the restart the phones also tried: the third arm's solo commit, then the
  * joiner stops, is rebuilt over the storage it kept (raw stores, saved strand network state,
@@ -60,7 +65,8 @@
  * force. There FRET's maintenance pings cannot reconnect the two strand nodes -- each is allowed
  * 2 s, dial included, and a relayed dial on that link takes longer -- so what reconnects them is
  * the strand member redial, which dials with the relayed-dial budget the declared link gives
- * (`strand-peer-redial.ts`). The rows reached the founder about 45 s after the restart began.
+ * (`strand-peer-redial.ts`). The rows reached the founder 48 s and 211 s after the restart began,
+ * in two runs.
  *
  * The sixth arm checks what the app is told about a write made alone (docs/strands.md, "A commit's
  * durability"), on an undelayed link: with the joiner stopped, the founder writes one row, and its

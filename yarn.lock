@@ -3164,6 +3164,20 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@libp2p/ping@npm:3.1.13":
+  version: 3.1.13
+  resolution: "@libp2p/ping@npm:3.1.13"
+  dependencies:
+    "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/interface-internal": "npm:^3.1.13"
+    p-event: "npm:^7.0.0"
+    race-signal: "npm:^2.0.0"
+    uint8arraylist: "npm:^3.0.2"
+    uint8arrays: "npm:^6.1.1"
+  checksum: 10c0/0bb49c8e80b5f90fc4be95bae64cd30319efc773d1e62cf6db30200eeb00a0346f5e73697ba5914616d152a05198b89c5ffc4a2392d7d722906880e807ac5c8c
+  languageName: node
+  linkType: hard
+
 "@libp2p/tcp@npm:^11.0.28":
   version: 11.0.28
   resolution: "@libp2p/tcp@npm:11.0.28"
@@ -5208,7 +5222,9 @@ __metadata:
     "@libp2p/crypto": "npm:^5.1.23"
     "@libp2p/identify": "npm:4.1.14"
     "@libp2p/interface": "npm:^3.3.0"
+    "@libp2p/logger": "npm:^6.2.13"
     "@libp2p/peer-id": "npm:^6.0.15"
+    "@libp2p/ping": "npm:3.1.13"
     "@libp2p/tcp": "npm:^11.0.28"
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"

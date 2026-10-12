@@ -14,7 +14,7 @@
  * process and a scenario's own request is logged and ignored, so a measurement run can sweep
  * a scenario across delays without editing it.
  *
- * Three things decide what a measured number here means:
+ * Four things decide what a measured number here means:
  *
  * - **Outbound only.** Only frames leaving a *dialing* node are held. A round trip over
  *   a relay pays the delay on the client→relay legs and not on the relay→client ones,
@@ -27,6 +27,13 @@
  *   without its mode says nothing. Quote `worst observed send wait` from the summary line
  *   alongside it — that is the delay a run actually experienced, which in `serial` mode is
  *   far above the configured one.
+ * - **A frame is not a message.** `@libp2p/websockets` sends each entry of the list it is
+ *   handed as its own frame (`websocket-to-conn.js`, `sendData`), and Noise hands it every
+ *   encrypted packet as at least two entries: the 2-byte length prefix and the ciphertext
+ *   (`@chainsafe/libp2p-noise`'s `encrypt`). So a `serial` cap of `delayMs` per frame costs at
+ *   least twice that per message. The summary line's byte total and frame-size counts show the
+ *   split for a run: in `joiner-first-commit-over-slow-relay`'s slow-link arms about 90% of the
+ *   frames were 64 bytes or smaller.
  *
  * Environment overrides, every one off by default:
  *
