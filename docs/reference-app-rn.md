@@ -881,7 +881,7 @@ Below **Copy invitation**, the owner can recommend another Sereus app, so that i
 - **Title**: what the machine is, from the node profile it published: "App" (an app on a phone or in a browser), "Always-on node", or "Machine" until it has published one; "(this device)" on this phone's own row.
 - **Facts**: "Owner" when its key is an owner key; "Last seen" from its last self-signed record (just now, or minutes, hours or days ago; "never" when this phone holds none it can verify); and "Key", the first 8 characters of its public key, which is the fingerprint cadre-host shows for an owner. A running machine re-stamps its record every 7.5 minutes, so "Last seen 3 minutes ago" means it is running, and over about 15 minutes means it is stopped or cannot reach the cadre.
 - **Not trusted here** (warning colour): its row no longer passes this phone's membership check, as for a device an owner added, when that owner was removed and the device was not kept.
-- **Owner key, no machine joined**: an owner key whose machine has no row in the cadre, such as one seated for a machine not admitted yet.
+- **Owner key, no machine joined**: an owner key whose machine has no row in the cadre, such as one seated for a machine not admitted yet. On this phone's own row (a founder that has not published one) the fact reads "Owner" instead.
 
 Below the machines, each live invitation made for one app that has not joined is a row "Invited, not joined yet", with the app's shortened peer id, owner or member, and expiry, and **Withdraw** (asks once). Open invitations stay under Add a device or app.
 

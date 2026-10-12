@@ -233,9 +233,11 @@ function MachineRow({ machine, nowMs, onRemove, selfLine, busy }: {
 	selfLine: boolean;
 	busy: boolean;
 }) {
+	// A founder that has not published its own row is listed by its owner key alone; on this
+	// device's own row that key is this device, so it is not "no machine joined".
 	const facts = machine.isMember
 		? [machine.isOwner ? 'Owner' : null, `Last seen ${lastSeenText(machine.lastPublishedAt, nowMs)}`, `Key ${machineCode(machine)}`]
-		: ['Owner key, no machine joined', `Key ${machineCode(machine)}`];
+		: [machine.isSelf ? 'Owner' : 'Owner key, no machine joined', `Key ${machineCode(machine)}`];
 	return (
 		<View testID={TEST_IDS.settings.machineRow(machine.peerId)}>
 			<View style={controlStyles.listRow}>

@@ -295,12 +295,18 @@ async function inTransition<T>(change: () => Promise<T>): Promise<T> {
 	}
 }
 
-/** `cadre:removed` from a node the store attached: acted on now, or after the transition in progress. */
+/**
+ * `cadre:removed` from a node the store attached: acted on once the node's emit has returned (as
+ * the kit's queue does, so its `stop` is not entered from inside its own event), or after the
+ * transition in progress.
+ */
 function onRemoved(removal: CadreRemoval): void {
 	const by = removal.signerKey ? ` by ${ownerFingerprint(removal.signerKey)}` : '';
 	record('cadre:removed', `${removal.partyId}${by}`);
 	removalReported = removal;
-	if (transitions === 0) actOnReportedRemoval();
+	queueMicrotask(() => {
+		if (transitions === 0) actOnReportedRemoval();
+	});
 }
 
 /**

@@ -41,10 +41,12 @@
 		return machine.isSelf ? `${machineKind(machine)} (this tab)` : machineKind(machine);
 	}
 
+	// A founder that has not published its own row is listed by its owner key alone; on this tab's
+	// own row that key is this tab, so it is not "no machine joined".
 	function machineFacts(machine: CadreMachine): string {
 		const facts = machine.isMember
 			? [machine.isOwner ? 'Owner' : null, `Last seen ${lastSeenText(machine.lastPublishedAt, list.readAtMs)}`, `Key ${machineCode(machine)}`]
-			: ['Owner key, no machine joined', `Key ${machineCode(machine)}`];
+			: [machine.isSelf ? 'Owner' : 'Owner key, no machine joined', `Key ${machineCode(machine)}`];
 		return facts.filter((fact) => fact !== null).join(' · ');
 	}
 

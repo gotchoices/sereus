@@ -272,7 +272,8 @@ with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
   running machine re-stamps it every 7.5 minutes); and "Key", the first 8 characters of its
   public key, which is the fingerprint cadre-host shows for an owner. A row that no longer
   passes this tab's membership check says **Not trusted here**; an owner key with no machine
-  row reads "Owner key, no machine joined".
+  row reads "Owner key, no machine joined", except on the tab's own row (a founder that has not
+  published one), which reads "Owner".
 - **Invited, not joined yet**: each live invitation made for one app whose peer has not
   joined, with its code, owner or member, and expiry, and *Withdraw* (asks once).
 - **When it is read**: when the node reaches `running` and its owner step settles, after each
