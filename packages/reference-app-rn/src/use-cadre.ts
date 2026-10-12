@@ -743,10 +743,8 @@ export function useCadreInternal(): UseCadreResult {
   // ── Adding a cadre-host node (claim by its code) ───────────────────────
 
   const isOwnerDevice = useCallback(async () => {
-    const controlDb = nodeRef.current?.getControlDatabase();
-    const ownerKey = getOwnerPublicKey();
-    if (!controlDb || !ownerKey) return false;
-    return (await controlDb.getOwnerKeys()).has(ownerKey);
+    const current = nodeRef.current;
+    return current ? await current.isOwner() : false;
   }, []);
 
   // Stopping the node during a claim needs no cleanup here: `claimNode` writes nothing

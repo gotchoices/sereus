@@ -161,6 +161,26 @@ await provider.initializeNode(droneInfo.containerId, encodedSeed);
 await node.reconcileControlCohort();
 ```
 
+### Renting a provider node
+
+An app rents an always-on node from a hosting provider with `rentNode`, which adds the container to this node's cadre by invitation when a member is reachable from anywhere and by claim otherwise ([architecture.md → Renting a node from an app](../../docs/architecture.md#renting-a-node-from-an-app)). Everything it needs loads on React Native and in the browser:
+
+```typescript
+import { createProviderClient, createTokenSource, fetchProviderDescriptor, rentNode } from '@serfab/cadre-core';
+
+const descriptor = await fetchProviderDescriptor('https://nodes.acme.example/api/v1/descriptor');
+// `stored` comes from the PKCE sign-in (createPkce, authorizationUrl, readAuthorizationRedirect,
+// exchangeAuthorizationCode) or from the app's own store; `save` writes each refreshed pair back
+const tokens = createTokenSource({ descriptor, clientId: 'my-app', tokens: stored, persist: save });
+const client = createProviderClient({ apiBaseUrl: descriptor.apiBaseUrl, tokens });
+
+const rental = await rentNode(node, client, { onProgress: (step) => console.log(step) });
+// rental.join: 'invitation' (the container joins by itself; watch client.getContainer(id).join)
+// or 'claim' (the node is in the cadre when rentNode returns, rental.peerId names it).
+// Keep rental.containerId: finishRental(node, client, containerId) resumes a rental the app
+// was killed in the middle of, and the container is what the provider bills.
+```
+
 ## API Reference
 
 ### CadreNode
@@ -179,6 +199,8 @@ The main entry point for cadre participation.
 | `publishStrand(id, type?, memberKey?)` | Owner-signed `Strand` row insert — makes the strand visible cadre-wide. Idempotent: a live row with the same `(Type, MemberPrivateKey)` is returned unwritten; different content on the same id throws. Prefer `foundStrand` when creating a strand |
 | `unpublishStrand(id)` | Owner-signed party-wide removal — deletes this party's `Strand` row; every node stops the strand. Destroys a closed strand's `MemberPrivateKey` |
 | `getEnrollmentService()` | Access peer enrollment API |
+| `isOwner()` | Whether this node can act as an owner of its cadre: its identity key is wired for signing and enrolled in `OwnerKey`. The gate the owner-only flows (`createCadreInvitation`, `claimNode`, `rentNode`) share with the apps |
+| `invitationReach()` | Where a device could redeem an invitation minted now from, judged on the other members' addresses (`anywhere`, `local-network`, `issuer-only`), without minting one; `rentNode` chooses its join path by it |
 
 ### Events
 

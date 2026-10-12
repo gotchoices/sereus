@@ -58,8 +58,13 @@ describe('CadreNode.createCadreInvitation', () => {
   });
 
   it('names this machine first, carries the anchored owner keys, and round-trips through its encoding', async () => {
-    const { invitation, encoded } = await owner.node.createCadreInvitation({ grantsOwner: false });
+    expect(await owner.node.isOwner()).toBe(true);
+    const { invitation, encoded, reach } = await owner.node.createCadreInvitation({ grantsOwner: false });
     expect(invitation.partyId).toBe(owner.node.partyId);
+    // Alone in its party: no other machine could answer once this one is gone, and the
+    // read-only judgement agrees with the one minted.
+    expect(reach).toBe('issuer-only');
+    expect(await owner.node.invitationReach()).toBe(reach);
     expect(invitation.ownerKeys).toEqual([owner.ownerKey.publicKeyB64]);
     // Alone in its party, the invitation names only this machine's own addresses, at most four.
     expect(invitation.members.length).toBeGreaterThan(0);

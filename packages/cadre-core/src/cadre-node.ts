@@ -43,6 +43,7 @@ import type {
   MachineRemovalResult,
   RemoveMachineOptions,
   CadreRemoval,
+  CadreInvitationReach,
   CreateCadreInvitationOptions,
   CreateCadreInvitationResult,
   RedeemCadreInvitationOptions,
@@ -2986,6 +2987,17 @@ export class CadreNode implements SAppIdLookup {
       return null;
     }
     return (await this.controlDatabase.getOwnerKeys()).has(signingKey.publicKeyB64) ? signingKey : null;
+  }
+
+  /**
+   * Whether this node can act as an owner of its cadre: its identity key is wired as its
+   * owner signing key ({@link initializeSeedBootstrap}) and enrolled in the live `OwnerKey`
+   * set ({@link enrolledOwnerSigningKey}). What the owner-only flows (`createCadreInvitation`,
+   * `claimNode`, `rentNode`) need; false before `start()`, and on a machine that joined as a
+   * member. The reference apps' "is this device an owner" check.
+   */
+  async isOwner(): Promise<boolean> {
+    return (await this.enrolledOwnerSigningKey()) !== null;
   }
 
   /** {@link enrolledOwnerSigningKey} judged against an owner set the caller has already read. */
@@ -9014,6 +9026,31 @@ export class CadreNode implements SAppIdLookup {
   // ============================================================================
 
   /**
+   * Where a device could redeem a cadre invitation minted now from, once this machine is gone
+   * ({@link CadreInvitationReach}): the same member selection {@link createCadreInvitation}
+   * makes, judged without minting anything. `rentNode` reads it to choose between inviting a
+   * provider's container and claiming it; `local-network` counts as not reachable there, since
+   * the container is never on a member's LAN. Requires a started node.
+   */
+  async invitationReach(): Promise<CadreInvitationReach> {
+    if (!this.controlNode) {
+      throw new Error('CadreNode must be started before judging invitation reach');
+    }
+    return (await this.selectInvitationMembers()).reach;
+  }
+
+  /**
+   * The `members` a cadre invitation minted now would name, and how far they reach: one
+   * selection behind both {@link createCadreInvitation} and {@link invitationReach}, so the
+   * two cannot disagree.
+   */
+  private async selectInvitationMembers(): Promise<{ members: string[]; reach: CadreInvitationReach }> {
+    const { siblings, connected } = await this.resolveInvitationSiblings();
+    const members = selectCadreInvitationMembers(await this.resolveInviteAddresses(), siblings, connected);
+    return { members, reach: cadreInvitationReach(members, this.controlNode!.peerId.toString()) };
+  }
+
+  /**
    * Mint an owner-signed cadre invitation that a device can redeem at ANY member machine of
    * this party, the owner offline included ({@link redeemCadreInvitation}). Requires the
    * owner key ({@link initializeSeedBootstrap}).
@@ -9060,8 +9097,7 @@ export class CadreNode implements SAppIdLookup {
     if (!Number.isInteger(uses) || uses < 1) {
       throw new Error(`createCadreInvitation: uses must be a positive integer (received ${String(options.uses)})`);
     }
-    const { siblings, connected } = await this.resolveInvitationSiblings();
-    const members = selectCadreInvitationMembers(await this.resolveInviteAddresses(), siblings, connected);
+    const { members, reach } = await this.selectInvitationMembers();
     if (members.length === 0) {
       throw new Error('createCadreInvitation: neither this machine nor any other machine of the party has an address a device could dial');
     }
@@ -9083,7 +9119,6 @@ export class CadreNode implements SAppIdLookup {
       ownerKeys,
       members,
     };
-    const reach = cadreInvitationReach(members, this.controlNode!.peerId.toString());
     log('Cadre invitation minted: %s (peer=%s owner=%s uses=%d, %d member address(es), reach=%s)',
       row.key, row.peerId ?? 'any', row.grantsOwner, uses, members.length, reach);
     return { invitation, encoded: encodeCadreInvitation(invitation), reach };

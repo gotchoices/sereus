@@ -36,7 +36,6 @@
 
 import {
 	CadreNode,
-	ed25519KeyPairFromLibp2p,
 	generateStrandMemberKey,
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
@@ -212,8 +211,6 @@ let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
 let ownerState: OwnerState = 'pending';
 let ownerError: string | null = null;
-/** This tab's owner public key (base64url), bridged from its identity by {@link bringUp}. */
-let ownerPublicKey: string | null = null;
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
@@ -418,9 +415,6 @@ export async function bringUp(start?: PartyStart, purpose: BringUpPurpose = 'run
 	const { partyId } = resolved;
 	identityFirstSeenMs = await trackIdentityFirstSeen(nodeLocalHandle, DEFAULT_PEER_KEY_NAME);
 	const privateKey = await loadOrCreateBrowserPeerKey(nodeLocalHandle);
-	// The identity-derived owner key, whichever party runs: `isOwner()` asks the party's
-	// `OwnerKey` rows for it, and `wireOwnKeyIfOwner` / genesis wire it for signing.
-	ownerPublicKey = ed25519KeyPairFromLibp2p(privateKey).publicKeyB64;
 
 	// Now the party id is known, pre-open the party-scoped control block store — the key
 	// cadre-core's synchronous provider will ask for during `node.start()` below.
@@ -843,15 +837,12 @@ export async function joinViaInvitation(
 // ── Cadre invitations (adding a device or app) ────────────────────────────────
 
 /**
- * Whether this tab's owner key is one of the cadre's owner keys: only an owner can mint a
- * cadre invitation. False when owner genesis never derived the key.
+ * Whether this tab can act as an owner of its cadre (`CadreNode.isOwner`: its identity key
+ * wired for signing and enrolled in `OwnerKey`): only an owner can mint a cadre invitation.
  */
 export async function isOwner(): Promise<boolean> {
 	if (!node) throw new Error('CadreNode not started');
-	const controlDb = node.getControlDatabase();
-	if (!controlDb) throw new Error('control database unavailable');
-	if (!ownerPublicKey) return false;
-	return (await controlDb.getOwnerKeys()).has(ownerPublicKey);
+	return await node.isOwner();
 }
 
 /**
@@ -1033,7 +1024,6 @@ export async function stopCadre(): Promise<void> {
 		identityFirstSeenMs = null;
 		ownerState = 'pending';
 		ownerError = null;
-		ownerPublicKey = null;
 		unfinishedRemoval = null;
 		formedStrands.clear();
 		// The slot closures captured `nodeLocalHandle`, now closed by `closeStores()`

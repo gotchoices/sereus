@@ -6,6 +6,7 @@ import {
 } from 'uint8arrays';
 import { sign, verify } from '@optimystic/quereus-plugin-crypto';
 import { formationVouchMessage } from './control-database.js';
+import { resolveFetch as resolveFetchImpl } from './fetch-impl.js';
 
 const log = debug('sereus:cadre:formation-approval');
 
@@ -237,23 +238,16 @@ function parseHookUrl(validationUrl: string): URL {
   return url;
 }
 
-/**
- * The `fetch` this approver will call: the injected one, else the global.
- *
- * Bound to `globalThis` because an unbound global `fetch` is an illegal invocation in browsers
- * (and in any runtime whose `fetch` is a branded method rather than a plain function).
- */
+/** The `fetch` this approver will call (`fetch-impl.ts`); none at all is a misconfiguration. */
 function resolveFetch(fetchImpl?: typeof fetch): typeof fetch {
-  if (fetchImpl) {
-    return fetchImpl;
-  }
-  if (typeof globalThis.fetch !== 'function') {
+  const resolved = resolveFetchImpl(fetchImpl);
+  if (!resolved) {
     throw new FormationApprovalError(
       'misconfigured',
       'No fetch implementation: globalThis.fetch is missing and no fetchImpl was supplied'
     );
   }
-  return globalThis.fetch.bind(globalThis);
+  return resolved;
 }
 
 /**
