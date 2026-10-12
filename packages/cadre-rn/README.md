@@ -7,6 +7,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | Import | What it provides |
 |---|---|
 | `@serfab/cadre-rn/phone-node` | `createPhoneNode(platform)`: builds, starts, stops and rebuilds the phone's `CadreNode` the prescribed way, plus `attachStrandWhenWritable` and `retryAfterRestart` |
+| `@serfab/cadre-rn/app-link` | The links two Sereus apps on one phone open each other with to hand over a join request and its answer: link building and parsing, the response codec, the installed-app lookup and `LinkRequestStore` (see [App links](#app-links-serfabcadre-rnapp-link)) |
 | `@serfab/cadre-rn/lifecycle` | `createBackgroundRunner`: hibernates the node's strands when the app goes to the background and resumes, bounded, when it returns; `phoneNodeLifecycle(phone)` connects it to a phone node |
 | `@serfab/cadre-rn/key-store` | `SecureStoreKeyStore`: cadre-core's `KeyStore` over the platform secure store, so the node identity lives in the iOS Keychain / Android Keystore rather than plaintext storage |
 | `@serfab/cadre-rn/node-local` | `secureStoreSlot`, `kvStoreSlot` and the record keys: the `DurableSlot`s cadre-core's node-local stores (trusted owners, bootstrap peers, enrolled machines, strand network state) persist through |
@@ -18,7 +19,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 | `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()`, for apps that use `@libp2p/webrtc` |
 | `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: a boot-time table of which globals are native, polyfilled, known gaps or missing, and a `[reload] <reason>` log line before any reload started from JavaScript |
 | `@serfab/cadre-rn/metro` | CommonJS, for `metro.config.js`: `withCadreMetro(config, options)` adds the Metro settings a Sereus app needs (Node built-in shims, one copy of each native module, libp2p's browser variants) |
-| `"@serfab/cadre-rn"` in `app.json` `plugins` | The Expo config plugin (subpath `./app.plugin.js`, CommonJS): lets Android release builds dial `/ws` addresses (see [Config plugin (Expo)](#config-plugin-expo)) |
+| `"@serfab/cadre-rn"` in `app.json` `plugins` | The Expo config plugin (subpath `./app.plugin.js`, CommonJS): lets Android release builds dial `/ws` addresses, and with `appLinks` registers the app links (see [Config plugin (Expo)](#config-plugin-expo)) |
 
 ## Phone node
 
@@ -160,6 +161,80 @@ runner.start();   // once the node is running; runner.stop() on logout
 
 The runner never imports `react-native`: `AppState` is assignable to its `AppStateLike`, and tests pass a fake. A push wake (FCM/APNs) is the app's own; the reference app's `push-wake*.ts` is the worked example.
 
+## App links (`@serfab/cadre-rn/app-link`)
+
+Two Sereus apps on one phone hand a join request and its answer to each other by opening each other with a link, so the user confirms once in the owner app instead of copying a request one way and an invitation back. [docs/architecture.md → Between apps on one phone](../../docs/architecture.md#between-apps-on-one-phone) has the flow, the link formats, the decisions and the security reasoning; this section is the API. The module imports nothing from React Native or Expo: the app passes `Linking.canOpenURL` in.
+
+The asking app, which wants to join:
+
+```ts
+import { Linking, Platform } from 'react-native';
+import { decodeCadreInvitation, encodeCadreJoinRequest } from '@serfab/cadre-core';
+import { installedSereusApps, joinRequestLink, KNOWN_SEREUS_APPS, LinkRequestStore, parseCadreLink } from '@serfab/cadre-rn/app-link';
+
+const store = new LinkRequestStore(phone.linkRequestSlot());   // one per app
+
+// iOS: the user picks one of the installed owner apps. Android: null, and the system chooser lists them.
+const owners = await installedSereusApps(KNOWN_SEREUS_APPS, ownScheme, (url) => Linking.canOpenURL(url));
+const ownerApp = Platform.OS === 'ios' ? pickedFrom(owners) : null;
+
+const { nonce } = await store.begin(ownerApp?.name ?? null);
+const request = encodeCadreJoinRequest({ v: 1, peerId: await phone.identityPeerId(), appName, reply: { scheme: ownScheme, nonce } });
+await Linking.openURL(joinRequestLink(request, ownerApp));
+
+// When the answer's link arrives, at launch or as a `url` event:
+const link = parseCadreLink(url);
+if (link?.kind === 'join-response') {
+	const response = await store.take(link.text);   // UnsolicitedJoinResponseError unless it answers the open request
+	if ('invitation' in response) await phone.joinCadre(decodeCadreInvitation(response.invitation));
+}
+```
+
+The owner app, which answers:
+
+```ts
+import { decodeCadreJoinRequest, encodeCadreInvitation } from '@serfab/cadre-core';
+import { joinResponseLink, parseCadreLink } from '@serfab/cadre-rn/app-link';
+
+const link = parseCadreLink(url);
+if (link?.kind === 'join-request') {
+	const request = decodeCadreJoinRequest(link.text);
+	// …the user confirms, and the app mints `invitation` targeted at request.peerId. A request
+	// without a reply (scanned or pasted) gets the invitation shown for copying instead.
+	if (request.reply) {
+		const answer = { v: 1, nonce: request.reply.nonce, appName: ownName, invitation: encodeCadreInvitation(invitation) } as const;
+		await Linking.openURL(joinResponseLink(request.reply, answer));
+	}
+}
+```
+
+- **`parseCadreLink(url)`** says whether a URL is a join request or a join response, and returns its text undecoded. Anything else, a node code (`sereus-join:1.…`) or an invitation included, is `null`, so the app's other link routing is untouched.
+- **`joinRequestLink(text, ownerApp)`** is the request text itself on Android (`ownerApp` `null`), which every opted-in app handles, so the system chooser lists the owner apps. On iOS, which has no chooser, it is `<ownerApp.scheme>://cadre-join-request/<text>`.
+- **`joinResponseLink(reply, response)`** is `<reply.scheme>://cadre-join-response/<response text>` on both platforms. It checks the reply again with cadre-core's `requireCadreJoinReply`, so a web or system scheme throws. Past `CADRE_LINK_MAX_LENGTH` (32 KB) it throws `CadreLinkTooLongError`, and the owner app shows the invitation for copying instead.
+- **`encodeCadreJoinResponse` / `decodeCadreJoinResponse`** are the answer's codec (`sereus-join-response:1.`, encoded as the request is): the request's nonce, the answering app's unverified name, and exactly one of an `invitation` text and a `refused` reason (`denied`, `no-cadre`, `not-owner`, `already-member`).
+- **`installedSereusApps(apps, ownScheme, canOpenURL)`** is for iOS: the apps whose scheme `canOpenURL` reports installed, the app's own excluded. React Native's `canOpenURL` rejects for a scheme missing from `LSApplicationQueriesSchemes`; that app counts as not installed, with a warning naming the scheme.
+- **`LinkRequestStore`** holds the asking app's open request; see [below](#the-open-request).
+- **`PhoneNode.linkRequestSlot()`** is where the store keeps the request: the node-local database, under `PhoneNodeNames.linkRequestKey` (default `link-join-request`), so an asking app the OS killed while the owner app was in front takes the answer when the link starts it. It works with no node running.
+
+### The open request
+
+`LinkRequestStore` is the asking app's guard against answers it did not ask for.
+
+- **`begin(ownerAppName)`** opens a request, or returns the open one with its nonce unchanged, so an answer to an earlier tap still lands.
+- **`take(text)`** returns the decoded answer only when its nonce is the open request's, once, within `LINK_REQUEST_TTL_MS` (30 minutes), and otherwise throws `UnsolicitedJoinResponseError`. A malformed answer throws the codec's error and leaves the request open.
+- **`current()` and `cancel()`** read and close the open request. A slot read that fails throws from `current` and `take` rather than reading as no request.
+- **One per app.** Its calls run one at a time, so two deliveries of the same link cannot both take the answer; a second store over the same slot would not share that.
+
+### Adding an app to the known list
+
+`KNOWN_SEREUS_APPS` has one entry per published Sereus app, `{ name, scheme }`. A new app is added to it in `src/app-link/known-apps.ts` and to the copy in `app.plugin.cjs` (the plugin is CommonJS and cannot load the ESM build; a test keeps the two equal), then the kit is released. Until then the app passes itself as an extra, both in the plugin's `appLinks.extraApps` and in the `apps` argument of `installedSereusApps`.
+
+Every Sereus app needs a URL scheme of its own, `expo.scheme`, which Expo registers: the answer comes back at it, and on iOS which of two apps sharing a scheme opens a link is undefined.
+
+### What the app must install
+
+`@serfab/cadre-core`, for the request codec. Natively, the config plugin's [`appLinks` option](#applinks-links-between-sereus-apps), which takes effect in the next native build.
+
 ## Key store and node-local records
 
 cadre-core asks its host for durable storage: a `KeyStore` for the node identity (`keyStore` in `CadreNodeConfig`, never `privateKey` on a phone) and a `DurableSlot` behind each node-local store (`trustedOwners`, `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`). Left out, each falls back to memory, and a phone that restarts before it reconnects loses its dial hints and its trusted owners. These two subpaths are the phone's answer.
@@ -267,6 +342,23 @@ At prebuild the plugin sets `android:usesCleartextTraffic="true"` on the `<appli
 - **iOS is unchanged.** Whether App Transport Security blocks React Native's WebSocket has not been checked; the docs section linked above says what would settle it.
 
 The plugin resolves `expo/config-plugins` from the app's project root when it runs, so the kit installs nothing from Expo. Like any manifest change it takes effect in the next native build.
+
+### `appLinks`: links between Sereus apps
+
+The native settings [App links](#app-links-serfabcadre-rnapp-link) needs. Without the option, the plugin does only the above.
+
+```json
+{ "expo": { "scheme": "my-sereus-app", "plugins": [["@serfab/cadre-rn", { "appLinks": true }]] } }
+```
+
+`"appLinks": { "extraApps": [{ "name": "My Other App", "scheme": "my-other-app" }] }` adds Sereus apps not yet in the kit's known list.
+
+- **Android.** The main activity gets a `VIEW` intent filter (`DEFAULT`, `BROWSABLE`) for the scheme `sereus-join-request`, so opening a join request lists the app in the system chooser. The manifest gets a `<queries>` entry for the same intent, so the opening app's `resolveActivity` sees the other handlers on Android 11 and later. Each is skipped when already present.
+- **iOS.** The schemes of `KNOWN_SEREUS_APPS` and of `extraApps` are added to `LSApplicationQueriesSchemes`, keeping the entries already there, so `canOpenURL` can report which apps are installed. The prebuild fails when the list passes 50 schemes, the most iOS reads.
+- **The app's own scheme** is `expo.scheme`, which Expo registers as usual.
+- **A misspelt option fails the prebuild**, as does an extra app without a name or with a scheme that is not a lowercase URL scheme, rather than leaving the app without links.
+
+A bare React Native app adds the intent filter and the `<queries>` entry to `AndroidManifest.xml`, and the schemes to `Info.plist`, by hand.
 
 A bare React Native app, with no prebuild, adds the attribute by hand:
 

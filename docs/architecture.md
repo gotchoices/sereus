@@ -581,10 +581,11 @@ interface CadreJoinRequest {
   v: 1;
   peerId: string;   // the requesting node's peer id; Ed25519, since the invitation targets that key
   appName: string;  // for the owner's approval prompt; unverified, trimmed, 1–64 characters
+  reply?: { scheme: string; nonce: string };  // only on a request opened as a link: where and how the owner app answers
 }
 ```
 
-`encodeCadreJoinRequest` refuses what `decodeCadreJoinRequest` would, and the decoder names each refusal: a missing or other-version prefix, an invitation pasted where a request belongs (`decodeCadreInvitation` names the reverse), a body of another shape, a peer id that does not parse or is not Ed25519, and an empty or over-long name. Nothing in a request is secret; the safety is that only the key behind its peer id can redeem the invitation minted from it.
+`encodeCadreJoinRequest` refuses what `decodeCadreJoinRequest` would, and the decoder names each refusal: a missing or other-version prefix, an invitation pasted where a request belongs (`decodeCadreInvitation` names the reverse), a body of another shape, a peer id that does not parse or is not Ed25519, an empty or over-long name, and a `reply` that `requireCadreJoinReply` refuses ([Between apps on one phone](#between-apps-on-one-phone)). `reply` is encoded only when present. Nothing in a request is secret; the safety is that only the key behind its peer id can redeem the invitation minted from it.
 
 **Whether anyone else could redeem it.** `createCadreInvitation` returns `reach` (`CadreInvitationReach`, from `cadreInvitationReach` in `invitation-bootstrap.ts`), judged on the addresses of the machines other than the one that minted it: in the app flows the minting app is closed or in the background when the other redeems, and two apps on one phone cannot reach each other (a phone accepts no connections, and iOS does not run two apps at once). The address classes are `node-claim-payload.ts`'s `classifyDialAddress`.
 
@@ -606,6 +607,54 @@ A minting machine that is itself always on (cadre-cli, cadre-host) can read `iss
 - **What still ends it at once.** A final refusal or an invalid reply ends the call as it ends one pass, and a stopped node ends the wait.
 
 One pass is the default and what `cadre start --invitation` uses; it leaves expiry to the member's clock. `app-joins-cadre-by-invitation.integration.ts` runs both flows, the targeted one through a pass on which the only always-on member was down.
+
+##### Between apps on one phone
+
+Two Sereus apps on one phone hand the request and the response to each other by opening each other with a link, so the user confirms once in the owner app and copies nothing. Below, **B** is the app asking to join and **A** the owner app that holds the cadre. The kit side is `@serfab/cadre-rn/app-link` and the config plugin's `appLinks` option ([kit README → App links](../packages/cadre-rn/README.md#app-links-serfabcadre-rnapp-link)).
+
+1. B opens a request with `LinkRequestStore.begin`, which saves `{ nonce, ownerAppName, startedAtMs }` in B's node-local database, and encodes a join request carrying `reply: { scheme, nonce }`, where `scheme` is B's own URL scheme.
+2. B opens A with the request link.
+3. A decodes the request, and the user confirms it as a pasted one.
+4. A mints the targeted invitation, or settles on a refusal, and opens the response link it builds from `reply.scheme`.
+5. B recognizes the response link (`parseCadreLink`), takes it with `LinkRequestStore.take`, and joins with the invitation.
+
+| Link | Android | iOS |
+| --- | --- | --- |
+| Request | the request text itself, `sereus-join-request:1.…` | `<A's scheme>://cadre-join-request/<request text>` |
+| Response | `<reply.scheme>://cadre-join-response/<response text>` | the same |
+
+The response text is `sereus-join-response:1.` followed by base64url canonical JSON, with exactly one of `invitation` and `refused`. `nonce` is the request's `reply.nonce`; `appName` is what A calls itself, unverified, for B's messages only.
+
+```typescript
+type CadreJoinResponse =
+  | { v: 1; nonce: string; appName: string; invitation: string }   // an encoded sereus-invite:1. text
+  | { v: 1; nonce: string; appName: string; refused: 'denied' | 'no-cadre' | 'not-owner' | 'already-member' };
+```
+
+**Links in both directions, not an Android activity result.** Answering with `setResult` needs a native module to receive a custom intent, which the kit does not ship, and the result is lost when Android kills B while A is in front. A response link reaches a cold-started B like any other link, which is why B saves its open request before it opens A.
+
+- **What that gives up.** A cannot learn B's package name, which Android reports only to an activity started for a result. The confirmation never relied on it.
+
+**How B finds an owner app.**
+
+- **Android: the system app chooser.** Every opted-in Sereus app registers the `sereus-join-request` scheme, so opening the request lists every installed owner app.
+  - **B is listed too** when it also answers requests. Picked, it receives its own request (its own peer id), which it must recognize rather than answer.
+  - **"Always" removes the chooser.** Once the user picks Always for one app, Android opens that app directly until the default is cleared in Android's app settings.
+  - **The system camera.** A request QR code read by the system camera opens the chooser too. That request carries no reply, so A shows the invitation for copying, as for a pasted request.
+- **iOS: the known apps' schemes.** iOS has no chooser, and which app opens a scheme that two apps register is undefined, so B opens one owner app at that app's own scheme. B lists the apps in `KNOWN_SEREUS_APPS`, plus its own extras, that `canOpenURL` reports installed, itself excluded. Each queried scheme must be listed in `LSApplicationQueriesSchemes`, of which iOS reads 50.
+  - **Getting on the list.** A new Sereus app is added to `KNOWN_SEREUS_APPS` by a pull request to the kit and a kit release, and until then passes itself as an extra (`appLinks.extraApps` in the plugin, and the `apps` argument of `installedSereusApps`).
+  - **Universal links were rejected.** Each app would need a web domain serving an `apple-app-site-association` file, and B would still need a list of the domains; no Sereus app has a domain. They are the upgrade path (the accepted tradeoff below).
+
+**The reply is a custom scheme, never a web URL.** A builds the response link itself from `reply.scheme` and never opens a URL a request supplied. `requireCadreJoinReply`, run by the request codec in both directions and again by `joinResponseLink`, refuses a scheme not matching `^[a-z][a-z0-9+.-]{0,63}$`, the web and system schemes (`http`, `https`, `ws`, `wss`, `ftp`, `file`, `content`, `data`, `blob`, `javascript`, `about`, `intent`, `mailto`, `tel`, `sms`), and a nonce that is not 16 to 64 base64url characters. A request therefore cannot send an invitation, which names the cadre's machine addresses, to a web server.
+
+**Link length.** An invitation names at most six machine addresses (`CADRE_INVITATION_MAX_ADDRS`), which puts a response link at about 4 KB by its shape; this has not been measured. `joinResponseLink` throws `CadreLinkTooLongError` past 32 KB (`CADRE_LINK_MAX_LENGTH`), and A then shows the invitation for copying.
+
+**Security.**
+
+- **A link is a request, never a grant.** The confirmation in A authorizes. A opens a reply only for a request that arrived as a link, never for a pasted one.
+- **An invitation that reaches the wrong app is useless.** It is targeted at B's peer id, so a hijacked reply scheme leaks the cadre's machine addresses, as any invitation does, and grants no access.
+- **B takes only the answer to its open request, once.** `LinkRequestStore.take` accepts a response only when its nonce is the open request's, within 30 minutes (`LINK_REQUEST_TTL_MS`), and closes the request as it does; it refuses with `UnsolicitedJoinResponseError` an answer when no request is open, to another request, a second answer, and a late one. An unsolicited link cannot inject an invitation. A second tap of B's button reuses the open request's nonce, so the answer to the first tap still lands.
+- **Accepted tradeoff: an impostor owner app.** An installed app that registers `sereus-join-request` (Android) or a known app's scheme (iOS) can answer B with an invitation to a cadre of its own, and B would join it and move its chats there. Pasting from the wrong app carries the same risk, and custom schemes give no way to verify the answering app. Revisit when Sereus apps have web domains: Android App Links and iOS universal links bind a link to the app's signing identity.
 
 #### An app joins an existing cadre
 

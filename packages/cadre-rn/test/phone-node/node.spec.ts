@@ -514,6 +514,7 @@ describe('createPhoneNode — storage names', () => {
 			nodeLocalKvPrefix: 'sereus:node-local:',
 			savedStartKey: 'start-options',
 			dissolveMarkerKey: 'dissolving-party',
+			linkRequestKey: 'link-join-request',
 		});
 	});
 });

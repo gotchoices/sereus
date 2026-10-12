@@ -587,9 +587,11 @@ export {
 export {
   encodeCadreJoinRequest,
   decodeCadreJoinRequest,
+  requireCadreJoinReply,
   CADRE_JOIN_REQUEST_PREFIX,
   CADRE_INVITATION_PREFIX,
   CADRE_JOIN_REQUEST_MAX_APP_NAME,
+  type CadreJoinReply,
   type CadreJoinRequest
 } from './cadre-join-request.js';
 

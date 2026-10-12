@@ -31,6 +31,10 @@
       "types": "./dist/lifecycle/index.d.ts",
       "import": "./dist/lifecycle/index.js"
     },
+    "./app-link": {
+      "types": "./dist/app-link/index.d.ts",
+      "import": "./dist/app-link/index.js"
+    },
     "./noise-crypto": {
       "types": "./dist/noise-crypto.d.ts",
       "import": "./dist/noise-crypto.js"

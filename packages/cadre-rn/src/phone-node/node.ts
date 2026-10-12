@@ -156,6 +156,12 @@ export interface PhoneNodeNames {
 	 * has begun. Dot-free and one per app, as {@link PhoneNodeNames.savedStartKey} is.
 	 */
 	dissolveMarkerKey: string;
+	/**
+	 * Key, inside {@link PhoneNodeNames.nodeLocalDb}, of the join request this app opened as a link
+	 * (`LinkRequestStore` in `@serfab/cadre-rn/app-link`). Dot-free and one per app, as
+	 * {@link PhoneNodeNames.savedStartKey} is.
+	 */
+	linkRequestKey: string;
 }
 
 export const DEFAULT_PHONE_NODE_NAMES: PhoneNodeNames = {
@@ -164,6 +170,7 @@ export const DEFAULT_PHONE_NODE_NAMES: PhoneNodeNames = {
 	nodeLocalKvPrefix: 'sereus:node-local:',
 	savedStartKey: 'start-options',
 	dissolveMarkerKey: 'dissolving-party',
+	linkRequestKey: 'link-join-request',
 };
 
 export type PhoneNodeStatus =
@@ -292,6 +299,12 @@ export interface PhoneNode {
 	 * throws. Called during a stop, it answers after the stop has saved `autoStart: false`.
 	 */
 	loadSavedStart(): Promise<SavedStart | undefined>;
+	/**
+	 * The slot `LinkRequestStore` (`@serfab/cadre-rn/app-link`) keeps the open link join request in,
+	 * beside the saved start in the node-local database. Works with no node running, as
+	 * `loadSavedStart` does; a read fault throws.
+	 */
+	linkRequestSlot(): DurableSlot;
 	/**
 	 * Subscribe to a node event for the life of this phone node, not of one `CadreNode`: the
 	 * handler is re-applied to every node a start or restart builds, before it starts. Register the
@@ -440,6 +453,21 @@ class PhoneNodeRuntime implements PhoneNode {
 		// not act on the value the stop is replacing. Its failure is its caller's.
 		await this.stopping?.catch(() => undefined);
 		return this.readSavedStart();
+	}
+
+	linkRequestSlot(): DurableSlot {
+		// Each load and save looks the database up again: a stop closes the handle, and the store outlives the stop.
+		const slot = async (): Promise<DurableSlot> => {
+			// Opening it while a stop is closing it would take a second lock on the same name.
+			// NOTE: a restart, join or dissolve closes it too, with no `stopping` to wait on, so a
+			// load in that short window can fail on the lock. If that is ever seen, track each shutdown as `stopping` is tracked.
+			await this.stopping?.catch(() => undefined);
+			return this.nodeLocalSlot(this.names.linkRequestKey);
+		};
+		return {
+			load: async () => (await slot()).load(),
+			save: async (text) => (await slot()).save(text),
+		};
 	}
 
 	async pendingStrandMove(): Promise<PendingStrandMove | undefined> {

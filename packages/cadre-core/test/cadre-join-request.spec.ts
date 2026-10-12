@@ -35,4 +35,18 @@ describe('cadre join request', () => {
 		// The encoder refuses what the decoder would, so an app cannot copy a request the owner's app rejects.
 		expect(() => encodeCadreJoinRequest({ v: 1, peerId, appName: '   ' })).toThrow(/must name the requesting app/);
 	});
+
+	it('carries a reply to an app\'s own scheme, and refuses a web scheme or a guessable nonce both ways', async () => {
+		const peerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+		const linked = { v: 1 as const, peerId, appName: 'Chat', reply: { scheme: 'sereus-chat', nonce: 'AbCdEfGhIjKlMnOp_-12' } };
+		expect(decodeCadreJoinRequest(encodeCadreJoinRequest(linked))).toEqual(linked);
+
+		// An owner app opens the reply itself, so a request must not be able to aim the invitation at a web server.
+		const web = { ...linked, reply: { ...linked.reply, scheme: 'https' } };
+		expect(() => encodeCadreJoinRequest(web)).toThrow(/an app's own scheme, not "https"/);
+		expect(() => decodeCadreJoinRequest(handEncoded(web))).toThrow(/an app's own scheme, not "https"/);
+		const guessable = { ...linked, reply: { ...linked.reply, nonce: 'short' } };
+		expect(() => encodeCadreJoinRequest(guessable)).toThrow(/nonce must be 16 to 64/);
+		expect(() => decodeCadreJoinRequest(handEncoded(guessable))).toThrow(/nonce must be 16 to 64/);
+	});
 });
