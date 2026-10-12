@@ -22,6 +22,7 @@ export interface AppRecommendation {
 	appName: string;
 	/** The party the owner app was in when the user allowed it. */
 	partyId: string;
+	/** Whether the user also made the app an owner: the grant of the invitation minted for it. */
 	grantsOwner: boolean;
 	approvedAtMs: number;
 }
@@ -91,6 +92,9 @@ export class AppRecommendationStore {
 		const text = await this.slot.load();
 		if (text === undefined) return [];
 		const now = this.now();
+		// NOTE: an entry dated ahead of `now` (the clock set back after approving) stays live until the
+		// clock passes its date plus the hour, longer than the hour the user agreed to. If clock changes
+		// ever matter here, treat an entry more than a minute in the future as expired.
 		return parseRecommendations(text).filter((entry) => now - entry.approvedAtMs <= RECOMMENDATION_TTL_MS);
 	}
 
