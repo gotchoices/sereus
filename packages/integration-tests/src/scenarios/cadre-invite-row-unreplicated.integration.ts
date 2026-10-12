@@ -35,7 +35,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, ed25519KeyPairFromLibp2p, type CadreInviteRow } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectionsTo, waitUntil, readCohort, peerDialGate, captureRawStorage, awaitBlockCoverage,
 	startPinningMember, admitMember, redeemWaitingForMember, type InviteMember,
@@ -135,7 +135,12 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			expect((await member.node.getControlDatabase()!.getOwnerKeys()).has(ed25519KeyPairFromLibp2p(pKey).publicKeyB64)).toBe(true);
 			// P holds M's control tables: the push before the seat landed, and the rows that make M
 			// a member in P's eyes (A's vouch, judged against the key P pinned) read there.
-			expect(await P.getControlDatabase()!.queryCadreInvite(key)).toEqual(invitation.invite);
+			// The row is waited for, not read once: P's storage holds the seat before the
+			// redemption answers, but P starts its own post-join write (its address record) at
+			// once, and a control read made while one runs is answered from the table's last
+			// refreshed state (`ControlDatabase.readRowsOnce`), which can predate the seat.
+			const pRow = await waitForRowAtP(P, member, key);
+			expect(pRow).toEqual(invitation.invite);
 			await waitUntil(async () => (await P!.listAuthorizedMembers()).some((row) => row.peerId === member.peerId), {
 				timeoutMs: STARTUP_MS, intervalMs: 500, description: 'P lists M as authorized',
 			});
@@ -144,3 +149,24 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 		}
 	}, 8 * STARTUP_MS);
 });
+
+/**
+ * P's `CadreInvite` row for `key`, waited for (see the call site). A pass that had to wait
+ * logs the delay; a timeout reports both machines' views, since whether M holds the row is
+ * what tells a seat P never received apart from a read that has not caught up.
+ */
+async function waitForRowAtP(P: CadreNode, member: InviteMember, key: string): Promise<CadreInviteRow> {
+	const startedAt = Date.now();
+	let row = await P.getControlDatabase()!.queryCadreInvite(key);
+	if (row) return row;
+	try {
+		await waitUntil(async () => (row = await P.getControlDatabase()!.queryCadreInvite(key)) !== null, {
+			timeoutMs: OP_MS, intervalMs: 100, description: 'P reads the seated invitation row',
+		});
+	} catch (error) {
+		const atM = await member.node.getControlDatabase()!.queryCadreInvite(key);
+		throw new Error(`P read no CadreInvite row ${key} for ${Date.now() - startedAt} ms; M ${atM ? 'holds it' : 'holds none'}`, { cause: error });
+	}
+	console.log('[row-unreplicated] P read the seated row after %d ms', Date.now() - startedAt);
+	return row!;
+}
