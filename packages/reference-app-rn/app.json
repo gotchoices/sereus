@@ -63,7 +63,12 @@
           "microphonePermission": "Unused: Sereus uses WebRTC data channels only and never requests microphone access."
         }
       ],
-      "@serfab/cadre-rn"
+      [
+        "@serfab/cadre-rn",
+        {
+          "appLinks": true
+        }
+      ]
     ],
     "extra": {
       "router": {},

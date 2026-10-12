@@ -13,12 +13,13 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import type { RelayReservationStatus } from '@serfab/cadre-core';
+import { decodeCadreJoinRequest, type CadreJoinRequest, type RelayReservationStatus } from '@serfab/cadre-core';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { AddDeviceSection } from '../src/add-device-section';
 import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
 import { JoinCadreSection } from '../src/join-cadre-section';
+import { answerJoinRequest, isAnswerable, OWN_REQUEST_LINE } from '../src/join-link';
 import {
   foundingDetail,
   isSlowFounding,
@@ -57,6 +58,8 @@ const NOISE_CRYPTO_LABEL: Record<NoiseCryptoMode, string> = {
   full: 'Native, including key exchange',
   off: 'Pure JavaScript',
 };
+
+type ShowAlert = (title: string, message: string, detail?: string) => void;
 
 /** What the disconnected Node form shows for each field. */
 interface ConnectForm {
@@ -265,6 +268,8 @@ export default function SettingsScreen() {
   // `error` too: a first-launch join whose start failed keeps the Yes state and its paste, not the Connect form.
   const asking = noCadreYet && (cadre.status === 'idle' || cadre.status === 'error') && cadre.joinFlow === null;
   const firstLaunchJoin = asking && firstLaunchAnswer === 'join';
+  // Called after `asking`, which it reads: a request that arrives while this app has no cadre is answered at once.
+  const [linkedRequest, clearLinkedRequest] = useLinkedJoinRequest(showAlert, cadre.identityPeerId, asking);
   const nodeCodeHint = linkedNodeCode !== null && (
     <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.waitingNodeCode}>
       {cadre.status === 'connecting'
@@ -272,6 +277,14 @@ export default function SettingsScreen() {
         : 'A node code is waiting. Connect first, and the prompt to add the node opens.'}
     </Text>
   );
+  const joinRequestHint = linkedRequest !== null && (
+    <Text style={controlStyles.slowHint} testID={TEST_IDS.settings.waitingJoinRequest}>
+      {cadre.status === 'connecting'
+        ? `A join request from ${linkedRequest.appName} is waiting. The prompt to answer it opens once this phone connects.`
+        : `A join request from ${linkedRequest.appName} is waiting. Connect first, and the prompt to answer it opens.`}
+    </Text>
+  );
+  const waitingHints = <>{nodeCodeHint}{joinRequestHint}</>;
 
   return (
     // `handled`: a tap on a button while the keyboard is up presses it, instead of only
@@ -307,20 +320,23 @@ export default function SettingsScreen() {
             <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
           </>
         ) : switching ? (
-          <InfoRow label="Status" value={noCadreYet ? 'Joining your cadre…' : 'Switching cadre…'} color="#ff9800" />
+          <>
+            <InfoRow label="Status" value={noCadreYet ? 'Joining your cadre…' : 'Switching cadre…'} color="#ff9800" />
+            {waitingHints}
+          </>
         ) : cadre.savedStartRead === 'reading' ? (
           <InfoRow label="Status" value={cadre.status} color="#ff9800" />
         ) : asking && firstLaunchAnswer === null ? (
           <>
             <FirstLaunchQuestion onAnswer={setFirstLaunchAnswer} />
-            {nodeCodeHint}
+            {waitingHints}
           </>
         ) : firstLaunchJoin ? (
           <>
             <InfoRow label="Status" value={cadre.status} color="#ff9800" />
             <Text style={controlStyles.hint}>This app joins your cadre under Join my existing cadre below.</Text>
             <Btn label="Back" onPress={() => setFirstLaunchAnswer(null)} color="#444" testID={TEST_IDS.settings.firstLaunchBackBtn} />
-            {nodeCodeHint}
+            {waitingHints}
           </>
         ) : (
           <>
@@ -335,7 +351,7 @@ export default function SettingsScreen() {
             </Text>
             <NoiseCryptoChoice value={noiseCryptoMode} onChange={setNoiseCryptoMode} />
             <Btn label="Connect" onPress={handleConnect} disabled={cadre.status === 'connecting'} testID={TEST_IDS.settings.connectBtn} />
-            {nodeCodeHint}
+            {waitingHints}
           </>
         )}
       </Section>
@@ -365,7 +381,7 @@ export default function SettingsScreen() {
       {(connected || cadre.joinFlow !== null || firstLaunchJoin) && <JoinCadreSection showAlert={showAlert} firstLaunch={noCadreYet} />}
 
       {/* Add a device or app (an owner mints a cadre invitation for another app) */}
-      {connected && <AddDeviceSection showAlert={showAlert} />}
+      {connected && <AddDeviceSection showAlert={showAlert} linkedRequest={linkedRequest} onLinkedRequestTaken={clearLinkedRequest} />}
 
       {/* Strand */}
       {connected && (
@@ -539,6 +555,69 @@ function useLinkedNodeCode(): [string | null, (code: string | null) => void] {
     router.setParams({ nodeCode: undefined });
   }, [nodeCode, router]);
   return [code, setCode];
+}
+
+/**
+ * A join request another Sereus app on this phone opened this one with (`app/+native-intent.tsx`
+ * routes it here as the `joinRequest` parameter), decoded and held until Add a device or app
+ * takes it, which it does once the node is connected. The parameter is cleared as soon as it is
+ * read, as `useLinkedNodeCode` does.
+ *
+ * Two cases are settled here, since that section is not mounted in either: this app's own
+ * request, and any request while this app has no cadre (`noCadre`), answered `no-cadre` when it
+ * says where to. A request that does not decode gets no answer: its reply cannot be trusted.
+ */
+function useLinkedJoinRequest(
+  showAlert: ShowAlert,
+  identityPeerId: () => Promise<string>,
+  noCadre: boolean,
+): [CadreJoinRequest | null, () => void] {
+  const { joinRequest } = useLocalSearchParams<{ joinRequest?: string }>();
+  const router = useRouter();
+  const [request, setRequest] = useState<CadreJoinRequest | null>(null);
+
+  const hold = async (text: string) => {
+    let decoded: CadreJoinRequest;
+    try {
+      decoded = decodeCadreJoinRequest(text);
+    } catch (err) {
+      showAlert('Cannot use this request', err instanceof Error ? err.message : String(err));
+      return;
+    }
+    if (await isOwnRequest(decoded, identityPeerId)) {
+      showAlert('Cannot use this request', OWN_REQUEST_LINE);
+      return;
+    }
+    setRequest(decoded);
+  };
+
+  useEffect(() => {
+    if (typeof joinRequest !== 'string' || !joinRequest) return;
+    router.setParams({ joinRequest: undefined });
+    void hold(joinRequest);
+  }, [joinRequest, router]);
+
+  useEffect(() => {
+    if (!request || !noCadre) return;
+    setRequest(null);
+    if (isAnswerable(request)) {
+      void answerJoinRequest(request, { refused: 'no-cadre' });
+    } else {
+      showAlert('This app has no cadre yet', `It cannot add ${request.appName}. Copy that app's request into the app that holds your cadre.`);
+    }
+  }, [request, noCadre]);
+
+  return [request, () => setRequest(null)];
+}
+
+/** Whether this app made `request`. False when the identity cannot be read; Add a device or app checks again against the running node. */
+async function isOwnRequest(request: CadreJoinRequest, identityPeerId: () => Promise<string>): Promise<boolean> {
+  try {
+    return request.peerId === await identityPeerId();
+  } catch (err) {
+    console.warn('[settings] could not read this app\'s peer id to check a join request:', err);
+    return false;
+  }
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────

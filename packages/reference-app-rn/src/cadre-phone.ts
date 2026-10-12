@@ -166,12 +166,16 @@ export function identityPeerId(): Promise<string> {
 }
 
 /**
- * The join request this app shows under "Join my existing cadre": its peer id and the name
- * the owner's approval prompt shows, `app.json`'s `name` cut to the request's limit.
+ * The name this app gives itself to another Sereus app, in a join request and in the answer to
+ * one: `app.json`'s `name`, cut to the request's limit (the answer's is the same).
  */
+export function ownAppName(): string {
+  return (Constants.expoConfig?.name?.trim() || 'Sereus reference app').slice(0, CADRE_JOIN_REQUEST_MAX_APP_NAME);
+}
+
+/** The join request this app shows under "Join my existing cadre": its peer id and {@link ownAppName}. */
 export async function joinRequestText(): Promise<string> {
-  const appName = (Constants.expoConfig?.name?.trim() || 'Sereus reference app').slice(0, CADRE_JOIN_REQUEST_MAX_APP_NAME);
-  return encodeCadreJoinRequest({ v: 1, peerId: await phone.identityPeerId(), appName });
+  return encodeCadreJoinRequest({ v: 1, peerId: await phone.identityPeerId(), appName: ownAppName() });
 }
 
 /** The strand move a join left waiting, or `undefined`. Thin pass-through to the kit's `pendingStrandMove`. */

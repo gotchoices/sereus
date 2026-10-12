@@ -73,10 +73,17 @@ export const TEST_IDS = {
 		/** Opens the camera to scan another app's join request. */
 		scanJoinRequestBtn: 'btn-scan-join-request',
 		useJoinRequestBtn: 'btn-use-join-request',
-		/** The join request's approval prompt: its "Also an owner" switch, and mint the invitation or not. */
+		/**
+		 * The join request's approval prompt: its "Also an owner" switch, and mint the invitation or not
+		 * (Add / Cancel; Allow / Deny for a request another app on this phone opened this one with).
+		 */
 		requestOwnerSwitch: 'switch-request-owner',
 		approveJoinRequestBtn: 'btn-approve-join-request',
 		cancelJoinRequestBtn: 'btn-cancel-join-request',
+		/** What became of the last join request another app opened this one with (sent, or ignored). */
+		joinRequestLinkNotice: 'text-join-request-link-notice',
+		/** On the Node card: a join request another app opened this one with waits for Connect. */
+		waitingJoinRequest: 'text-waiting-join-request',
 		/** The open invitation's "Also an owner" switch, and the button that mints it. */
 		openInviteOwnerSwitch: 'switch-open-invite-owner',
 		makeInvitationBtn: 'btn-make-invitation',

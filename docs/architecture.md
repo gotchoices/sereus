@@ -610,7 +610,7 @@ One pass is the default and what `cadre start --invitation` uses; it leaves expi
 
 ##### Between apps on one phone
 
-Two Sereus apps on one phone hand the request and the response to each other by opening each other with a link, so the user confirms once in the owner app and copies nothing. Below, **B** is the app asking to join and **A** the owner app that holds the cadre. The kit side is `@serfab/cadre-rn/app-link` and the config plugin's `appLinks` option ([kit README → App links](../packages/cadre-rn/README.md#app-links-serfabcadre-rnapp-link)).
+Two Sereus apps on one phone hand the request and the response to each other by opening each other with a link, so the user confirms once in the owner app and copies nothing. Below, **B** is the app asking to join and **A** the owner app that holds the cadre. The kit side is `@serfab/cadre-rn/app-link` and the config plugin's `appLinks` option ([kit README → App links](../packages/cadre-rn/README.md#app-links-serfabcadre-rnapp-link)). In the React Native reference app, A's side is Settings → **Add a device or app**, which answers a request opened as a link ([reference-app-rn.md → Adding a Device or App](reference-app-rn.md#adding-a-device-or-app), "Opened from another app on this phone").
 
 1. B opens a request with `LinkRequestStore.begin`, which saves `{ nonce, ownerAppName, startedAtMs }` in B's node-local database, and encodes a join request carrying `reply: { scheme, nonce }`, where `scheme` is B's own URL scheme.
 2. B opens A with the request link.
