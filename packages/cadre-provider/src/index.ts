@@ -68,6 +68,9 @@ export {
   type UsageMetrics,
   type BillingPlan,
   type CustomerBilling,
+  type Subscription,
+  type SubscriptionStatus,
+  type StopReason,
   type ApiKey,
   type AuthorizationCode,
   type RefreshToken,
@@ -144,6 +147,7 @@ export {
   type BillingServiceOptions,
   type BillingHooks,
   type InvoiceLineItem,
+  type SubscriptionPatch,
   DEFAULT_PLANS,
   QUOTA_CONSUMING_STATUSES,
 } from './service/billing-service.js';

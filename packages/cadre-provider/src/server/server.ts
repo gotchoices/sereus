@@ -118,6 +118,7 @@ export async function createProviderServer(
     config: config.billing,
     store,
     orchestrator,
+    containerService,
     hooks: billingHooks,
     readStatus: container => containerService.readStatus(container),
   });

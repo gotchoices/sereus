@@ -229,7 +229,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
       ? parseShutdownFlag(body.shutdownAfter)
       : parseShutdownFlag(query.shutdownAfter);
 
-    const success = await containerService.terminateContainer(id);
+    const success = await containerService.terminateContainer(id, { reason: 'customer' });
     const triggerShutdown = success && shutdownAfter;
 
     const payload: { ok: boolean; message: string; shutdownInitiated?: true } = {

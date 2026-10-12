@@ -9,9 +9,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { BillingService, DEFAULT_PLANS } from '../billing-service.js';
+import { ContainerService } from '../container-service.js';
 import { MemoryStore } from '../store.js';
 import { MockOrchestrator } from '../orchestrator.js';
-import type { Container, ContainerStatus } from '../../types.js';
+import type { Container, ContainerStatus, SubscriptionStatus } from '../../types.js';
 
 const PLAN = DEFAULT_PLANS.starter!;
 
@@ -30,8 +31,8 @@ function container(id: string, status: ContainerStatus): Container {
   };
 }
 
-/** A customer on the starter plan holding `plan.maxContainers` records in `status`. */
-async function serviceAtPlanLimit(status: ContainerStatus): Promise<BillingService> {
+/** A starter-plan customer whose subscription is `subscription`, holding `count` records in `status`. */
+async function serviceFor(subscription: SubscriptionStatus, count = 0, status: ContainerStatus = 'running'): Promise<BillingService> {
   const store = new MemoryStore();
   await store.saveCustomerBilling({
     customerId: 'cust-1',
@@ -39,15 +40,27 @@ async function serviceAtPlanLimit(status: ContainerStatus): Promise<BillingServi
     balanceCents: 0,
     currentPeriodStart: new Date('2026-06-01T00:00:00.000Z'),
     currentPeriodEnd: new Date('2026-07-01T00:00:00.000Z'),
+    subscription: {
+      status: subscription,
+      renewsAt: null,
+      lapsesAt: subscription === 'past-due' ? new Date('2026-07-08T00:00:00.000Z') : null,
+    },
   });
-  for (let i = 0; i < PLAN.maxContainers; i++) {
+  for (let i = 0; i < count; i++) {
     await store.saveContainer(container(`ctr_${i}`, status));
   }
+  const orchestrator = new MockOrchestrator();
   return new BillingService({
     config: { enabled: true },
     store,
-    orchestrator: new MockOrchestrator(),
+    orchestrator,
+    containerService: new ContainerService({ store, orchestrator }),
   });
+}
+
+/** A customer on the starter plan holding `plan.maxContainers` records in `status`. */
+function serviceAtPlanLimit(status: ContainerStatus): Promise<BillingService> {
+  return serviceFor('active', PLAN.maxContainers, status);
 }
 
 describe('BillingService.canCreateContainer quota statuses', () => {
@@ -73,4 +86,19 @@ describe('BillingService.canCreateContainer quota statuses', () => {
       expect(await billing.canCreateContainer('cust-1')).toEqual({ allowed: true });
     }
   );
+});
+
+describe('BillingService.canCreateContainer subscription status', () => {
+  it('refuses a lapsed customer', async () => {
+    const billing = await serviceFor('lapsed');
+
+    expect(await billing.canCreateContainer('cust-1')).toEqual({ allowed: false, reason: 'Subscription lapsed' });
+  });
+
+  // The grace period is the operator's call: a past-due customer keeps renting until it lapses.
+  it('allows a past-due customer', async () => {
+    const billing = await serviceFor('past-due');
+
+    expect(await billing.canCreateContainer('cust-1')).toEqual({ allowed: true });
+  });
 });

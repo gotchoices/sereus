@@ -17,6 +17,7 @@ describe('FileStore customer billing persistence', () => {
       balanceCents: 500,
       currentPeriodStart: new Date('2026-06-01T00:00:00.000Z'),
       currentPeriodEnd: new Date('2026-07-01T00:00:00.000Z'),
+      subscription: { status: 'active', renewsAt: new Date('2026-07-01T00:00:00.000Z'), lapsesAt: null },
     };
     const store = new FileStore(dataDir);
     await store.saveCustomerBilling(billing);
@@ -31,7 +32,7 @@ describe('FileStore customer billing persistence', () => {
     expect(result?.currentPeriodStart.getTime()).toBe(billing.currentPeriodStart.getTime());
   });
 
-  it('persists optional fields and rehydrates the period end as a Date', async () => {
+  it('persists optional fields and rehydrates the period end and subscription dates as Dates', async () => {
     const billing: CustomerBilling = {
       customerId: 'cust-2',
       planId: 'starter',
@@ -40,6 +41,7 @@ describe('FileStore customer billing persistence', () => {
       billingEmail: 'owner@example.com',
       currentPeriodStart: new Date('2026-06-01T00:00:00.000Z'),
       currentPeriodEnd: new Date('2026-07-01T00:00:00.000Z'),
+      subscription: { status: 'past-due', renewsAt: null, lapsesAt: new Date('2026-07-08T00:00:00.000Z') },
     };
     const store = new FileStore(dataDir);
     await store.saveCustomerBilling(billing);
@@ -52,6 +54,10 @@ describe('FileStore customer billing persistence', () => {
     expect(result?.balanceCents).toBe(-250);
     expect(result?.currentPeriodEnd).toBeInstanceOf(Date);
     expect(result?.currentPeriodEnd.getTime()).toBe(billing.currentPeriodEnd.getTime());
+    // The lapse sweep compares lapsesAt with the clock; a string left by JSON never compares as due.
+    expect(result?.subscription.lapsesAt).toBeInstanceOf(Date);
+    expect(result?.subscription.lapsesAt?.getTime()).toBe(billing.subscription.lapsesAt?.getTime());
+    expect(result?.subscription.renewsAt).toBeNull();
   });
 
   it('writes a customer-billing.json backing file', async () => {
@@ -62,6 +68,7 @@ describe('FileStore customer billing persistence', () => {
       balanceCents: 0,
       currentPeriodStart: new Date('2026-06-01T00:00:00.000Z'),
       currentPeriodEnd: new Date('2026-07-01T00:00:00.000Z'),
+      subscription: { status: 'active', renewsAt: new Date('2026-07-01T00:00:00.000Z'), lapsesAt: null },
     });
 
     const billingFile = path.join(dataDir, 'customer-billing.json');

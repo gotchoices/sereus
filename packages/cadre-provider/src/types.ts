@@ -54,6 +54,9 @@ export type ContainerStatus =
   | 'stopped'      // Container terminated
   | 'error';       // Container in error state
 
+/** Why a container was stopped: its customer asked (`DELETE`), or the customer's subscription lapsed. */
+export type StopReason = 'customer' | 'non-payment';
+
 /** Container resource specifications */
 export interface ContainerResources {
   /** Memory limit (e.g., "512M", "2G") */
@@ -179,6 +182,12 @@ export interface Container {
    * container.
    */
   ownerKey?: string;
+  /**
+   * Why the container was stopped; absent while it runs. Written with `stopping`, so a
+   * terminate that failed leaves it on the `error` record too, and kept from the first stop
+   * when a stopped container is terminated again. Not a secret.
+   */
+  stopReason?: StopReason;
 }
 
 /** A container as the API returns it: no seed token, and the join reduced to its kind. */
@@ -237,6 +246,22 @@ export interface BillingPlan {
   maxContainers: number;
 }
 
+/** Where a customer's subscription stands. `past-due` still creates containers; `lapsed` does not. */
+export type SubscriptionStatus = 'active' | 'past-due' | 'lapsed';
+
+/**
+ * A customer's subscription as the operator's payment processor last reported it
+ * (`BillingService.updateSubscription`). The provider holds no payment logic of its own: it
+ * stops the customer's containers when the subscription lapses, and nothing else.
+ */
+export interface Subscription {
+  status: SubscriptionStatus;
+  /** When the current period renews; null once lapsed. */
+  renewsAt: Date | null;
+  /** past-due only: when the grace period ends and the customer's nodes are stopped. */
+  lapsesAt: Date | null;
+}
+
 /** Customer billing status */
 export interface CustomerBilling {
   /** Customer ID */
@@ -253,6 +278,8 @@ export interface CustomerBilling {
   currentPeriodStart: Date;
   /** Current period end */
   currentPeriodEnd: Date;
+  /** Subscription standing, renewal and lapse dates */
+  subscription: Subscription;
 }
 
 // ============================================================================

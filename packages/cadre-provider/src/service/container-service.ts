@@ -9,6 +9,7 @@ import {
   type ContainerStatus,
   type CreateContainerRequest,
   type ContainerStatusResponse,
+  type StopReason,
   UNCLAIMED_PARTY_ID,
 } from '../types.js';
 import type { ProviderStore } from './store.js';
@@ -272,8 +273,10 @@ export class ContainerService {
     // those resources (bounded host ports) on every non-success exit.
     let dockerId: string | undefined;
     try {
-      // Update status to creating
-      await this.updateStatus(container.id, 'creating');
+      if (!(await this.advance(container.id, 'pending', 'creating'))) {
+        log('Container %s was stopped or removed before provisioning began', container.id);
+        return;
+      }
 
       // Resolve push strictly by the OWNING tenant's id — never another tenant's.
       const push = resolveTenantPush(this.push, container.customerId);
@@ -310,23 +313,21 @@ export class ContainerService {
       });
       dockerId = result.dockerId;
 
-      // Update with orchestrator details
-      const updated = await this.store.getContainer(container.id);
-      if (!updated) {
-        // Record vanished after a successful create — reclaim the orchestrator
-        // resources we just allocated so the host port range does not leak.
+      const enrolling = await this.advance(container.id, 'creating', 'enrolling', {
+        dockerId: result.dockerId,
+        healthEndpoint: result.healthEndpoint,
+        metricsEndpoint: result.metricsEndpoint,
+        seedEndpoint: result.seedEndpoint,
+        seedToken: result.seedToken,
+      });
+      if (!enrolling) {
+        // The record vanished, or a terminate stopped it while the orchestrator was creating
+        // (it had no dockerId to stop then): reclaim what was just created so neither the
+        // container nor its host ports outlive the record.
+        log('Container %s was stopped or removed while it was being created; reclaiming it', container.id);
         await this.safeReclaim(dockerId);
         return;
       }
-
-      updated.dockerId = result.dockerId;
-      updated.healthEndpoint = result.healthEndpoint;
-      updated.metricsEndpoint = result.metricsEndpoint;
-      updated.seedEndpoint = result.seedEndpoint;
-      updated.seedToken = result.seedToken;
-      updated.status = 'enrolling';
-      updated.updatedAt = new Date();
-      await this.store.saveContainer(updated);
 
       log('Container %s provisioned, waiting for enrollment', container.id);
 
@@ -434,7 +435,8 @@ export class ContainerService {
    * as it is `running`. `fetchContainerHealthStatus` swallows unreachable/non-OK
    * responses, so a node that is still starting simply answers "not yet".
    *
-   * @returns whether the container enrolled.
+   * @returns whether the node reported healthy. The record is promoted only while it is
+   * still `enrolling`; a terminate that moved it during the read keeps it stopped.
    */
   private async enrollIfHealthy(container: Container): Promise<boolean> {
     const health = await this.readStatus(container);
@@ -446,8 +448,9 @@ export class ContainerService {
     // NOTE: nothing backfills it afterwards. Harmless while every consumer of
     // peerId reads live `/status` (`getPeerInfo`); if the stored field ever
     // becomes a read path of its own, add a backfill on the next status read.
-    await this.updateStatus(container.id, 'running', health.peerId ? { peerId: health.peerId } : undefined);
-    log('Container %s is now running (peer %s)', container.id, health.peerId ?? 'unknown');
+    if (await this.advance(container.id, 'enrolling', 'running', health.peerId ? { peerId: health.peerId } : undefined)) {
+      log('Container %s is now running (peer %s)', container.id, health.peerId ?? 'unknown');
+    }
     return true;
   }
 
@@ -507,6 +510,25 @@ export class ContainerService {
     patch?: Partial<Container>
   ): Promise<void> {
     await this.patchRecord(id, { ...patch, status });
+  }
+
+  /**
+   * Move the record from `from` to `to`, stamping `patch` in the same save. Writes nothing and
+   * returns false when the record is gone or another path (a terminate, the reap) moved it
+   * meanwhile, so a provision that finishes late never brings a stopped record back.
+   */
+  private async advance(
+    id: string,
+    from: ContainerStatus,
+    to: ContainerStatus,
+    patch?: Partial<Container>
+  ): Promise<boolean> {
+    const container = await this.store.getContainer(id);
+    if (container?.status !== from) return false;
+    Object.assign(container, patch, { status: to });
+    container.updatedAt = new Date();
+    await this.store.saveContainer(container);
+    return true;
   }
 
   /**
@@ -625,15 +647,20 @@ export class ContainerService {
     return this.store.listContainers(customerId);
   }
 
-  /** Terminate a container */
-  async terminateContainer(id: string): Promise<boolean> {
+  /**
+   * Terminate a container. `reason` is written with `stopping`, so the reap's
+   * stopping-to-stopped write keeps it if this process dies mid-stop; a record that already
+   * has one keeps it, since a second terminate of a stopped container stops nothing.
+   */
+  async terminateContainer(id: string, options: { reason?: StopReason } = {}): Promise<boolean> {
     const container = await this.store.getContainer(id);
     if (!container) return false;
 
-    log('Terminating container %s', id);
+    log('Terminating container %s (reason: %s)', id, options.reason ?? 'none given');
 
     try {
-      await this.updateStatus(id, 'stopping');
+      const stopReason = container.stopReason ?? options.reason;
+      await this.updateStatus(id, 'stopping', stopReason ? { stopReason } : undefined);
 
       if (container.dockerId) {
         await this.stopAndRemove(container.dockerId);

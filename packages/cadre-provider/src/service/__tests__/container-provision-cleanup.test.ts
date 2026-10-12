@@ -123,6 +123,28 @@ describe('ContainerService.provisionContainer orchestrator cleanup', () => {
     expect(removeContainer).toHaveBeenCalledWith('docker-xyz');
   });
 
+  // A terminate during `creating` (a DELETE, or a lapsed subscription) finds no dockerId to
+  // stop; the create returning afterwards must not bring the record back to life.
+  it('reclaims the created container when a terminate stopped the record during the create', async () => {
+    const store = new MemoryStore();
+    const container = pendingContainer();
+    await store.saveContainer(container);
+
+    const { orchestrator, createContainer, removeContainer } = stubOrchestrator();
+    const service = new ContainerService({ store, orchestrator });
+    createContainer.mockImplementation(async () => {
+      await service.terminateContainer('ctr_1', { reason: 'non-payment' });
+      return createResult;
+    });
+
+    await (service as unknown as ProvisionInternal).provisionContainer(container, provisionRequest);
+
+    expect(removeContainer).toHaveBeenCalledWith('docker-xyz');
+    const stored = await store.getContainer('ctr_1');
+    expect(stored?.status).toBe('stopped');
+    expect(stored?.stopReason).toBe('non-payment');
+  });
+
   it('does not reclaim when the orchestrator create itself fails', async () => {
     const store = new MemoryStore();
     const container = pendingContainer();

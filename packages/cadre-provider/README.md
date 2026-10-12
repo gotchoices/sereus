@@ -59,7 +59,7 @@ await server.start();
 | PUT | `/api/v1/containers/:id/seed` | Deliver a seed to the container (seed path) |
 | DELETE | `/api/v1/containers/:id` | Terminate container |
 | GET | `/api/v1/billing/plans` | List billing plans |
-| GET | `/api/v1/billing/status` | Get customer billing status |
+| GET | `/api/v1/billing/status` | Get customer billing status, with the subscription's standing and dates ([Subscription state](#subscription-state-and-termination-for-non-payment)) |
 
 ## Configuration
 
@@ -384,6 +384,60 @@ const server = await createProviderServer({
   billingHooks,
 });
 ```
+
+### Subscription state and termination for non-payment
+
+Each customer's billing record (`GET /billing/status`) carries `subscription`:
+
+```json
+{ "status": "past-due", "renewsAt": null, "lapsesAt": "2026-11-08T00:00:00.000Z" }
+```
+
+- `status`: `active`, `past-due` or `lapsed`. A new customer starts `active`.
+- `renewsAt`: when the current period renews; `null` once lapsed. A new customer's is the end of the month.
+- `lapsesAt`: `past-due` only; when the grace period ends and the customer's containers are stopped.
+
+The provider holds no payment logic. Your payment processor's webhook reports each change through
+`server.billingService`: `updateSubscription(customerId, patch)` writes the fields it is given
+(and clears `lapsesAt` unless the status is `past-due`), and `lapseSubscription(customerId)` lapses
+the subscription. `updateSubscription` refuses `status: 'lapsed'`, since only `lapseSubscription`
+also stops the containers. With Stripe, after verifying the event's signature and mapping its
+customer to yours:
+
+```typescript
+const { billingService } = server;
+
+switch (event.type) {
+  case 'invoice.paid':
+    await billingService.updateSubscription(customerId, {
+      status: 'active',
+      renewsAt: new Date(invoice.lines.data[0].period.end * 1000), // the paid period's end
+    });
+    break;
+  case 'invoice.payment_failed':
+    await billingService.updateSubscription(customerId, {
+      status: 'past-due',
+      lapsesAt: new Date(Date.now() + GRACE_PERIOD_MS), // your grace period
+    });
+    break;
+  case 'customer.subscription.deleted':
+    await billingService.lapseSubscription(customerId);
+    break;
+}
+```
+
+A subscription lapses when `lapseSubscription` is called, or on the billing tick (every
+`billing.usageCollectionIntervalSec`, with `billing.enabled`) once a `past-due` record's `lapsesAt`
+has passed. A lapse marks the record `lapsed` with both dates `null`, answers every further
+`POST /containers` with `403 QUOTA_EXCEEDED` "Subscription lapsed", and stops each of the customer's
+containers that is still up, one at a time. Each stopped container's record carries
+`stopReason: 'non-payment'` on `GET /containers/:id` and in the list (a `DELETE` writes
+`stopReason: 'customer'`), so an app can tell the user why the node stopped and offer to remove it
+from the cadre. A `past-due` customer still creates containers: the grace period is yours to set.
+
+Renewing a lapsed subscription (`updateSubscription` to `active`) does not bring stopped containers
+back. Each container's volume, and the node identity in it, was deleted with the container
+([Per-tenant durable state](#per-tenant-durable-state)), so the customer rents a new one.
 
 ## Deployment
 

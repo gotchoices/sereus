@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BillingService } from '../billing-service.js';
+import { ContainerService } from '../container-service.js';
 import { MemoryStore } from '../store.js';
 import { MockOrchestrator } from '../orchestrator.js';
 import type { Container, UsageMetrics } from '../../types.js';
@@ -34,10 +35,12 @@ function jsonResponse(body: unknown, ok = true): Response {
 async function makeService(containers: Container[]): Promise<{ service: BillingService; store: MemoryStore }> {
   const store = new MemoryStore();
   for (const c of containers) await store.saveContainer(c);
+  const orchestrator = new MockOrchestrator();
   const service = new BillingService({
     config: { enabled: true, usageCollectionIntervalSec: 60 },
     store,
-    orchestrator: new MockOrchestrator(),
+    orchestrator,
+    containerService: new ContainerService({ store, orchestrator }),
   });
   return { service, store };
 }

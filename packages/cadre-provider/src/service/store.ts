@@ -34,6 +34,7 @@ export interface ProviderStore {
 
   // Billing operations
   getCustomerBilling(customerId: string): Promise<CustomerBilling | undefined>;
+  listCustomerBilling(): Promise<CustomerBilling[]>;
   saveCustomerBilling(billing: CustomerBilling): Promise<void>;
 
   // Usage metrics
@@ -46,6 +47,18 @@ function takeFrom<T>(map: Map<string, T>, key: string): T | undefined {
   const entry = map.get(key);
   if (entry !== undefined) map.delete(key);
   return entry;
+}
+
+/**
+ * Turn a billing record's dates, which JSON left as strings, back into `Date`s. The lapse
+ * sweep compares `subscription.lapsesAt` with the clock, and a string never compares as due.
+ */
+function reviveBillingDates(billing: CustomerBilling): void {
+  billing.currentPeriodStart = new Date(billing.currentPeriodStart);
+  billing.currentPeriodEnd = new Date(billing.currentPeriodEnd);
+  const { subscription } = billing;
+  subscription.renewsAt = subscription.renewsAt === null ? null : new Date(subscription.renewsAt);
+  subscription.lapsesAt = subscription.lapsesAt === null ? null : new Date(subscription.lapsesAt);
 }
 
 /** In-memory store implementation for testing */
@@ -104,6 +117,10 @@ export class MemoryStore implements ProviderStore {
 
   async getCustomerBilling(customerId: string): Promise<CustomerBilling | undefined> {
     return this.customerBilling.get(customerId);
+  }
+
+  async listCustomerBilling(): Promise<CustomerBilling[]> {
+    return Array.from(this.customerBilling.values());
   }
 
   async saveCustomerBilling(billing: CustomerBilling): Promise<void> {
@@ -183,9 +200,8 @@ export class FileStore implements ProviderStore {
     const billingFile = path.join(this.dataDir, 'customer-billing.json');
     if (fs.existsSync(billingFile)) {
       const data = JSON.parse(fs.readFileSync(billingFile, 'utf-8'));
-      for (const b of data) {
-        b.currentPeriodStart = new Date(b.currentPeriodStart);
-        b.currentPeriodEnd = new Date(b.currentPeriodEnd);
+      for (const b of data as CustomerBilling[]) {
+        reviveBillingDates(b);
         this.cache.customerBilling.set(b.customerId, b);
       }
     }
@@ -283,6 +299,10 @@ export class FileStore implements ProviderStore {
   async getCustomerBilling(customerId: string): Promise<CustomerBilling | undefined> {
     await this.loadCache();
     return this.cache!.customerBilling.get(customerId);
+  }
+  async listCustomerBilling(): Promise<CustomerBilling[]> {
+    await this.loadCache();
+    return Array.from(this.cache!.customerBilling.values());
   }
   async saveCustomerBilling(billing: CustomerBilling): Promise<void> {
     await this.loadCache();
