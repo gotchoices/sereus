@@ -33,7 +33,7 @@ async function makeRecord(addrs: string[], updatedAt: number): Promise<{
   const libp2pKey = await generateKeyPair('Ed25519');
   const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(libp2pKey);
   const peerId = peerIdFromPrivateKey(libp2pKey).toString();
-  const record = signPeerRecord(PARTY_ID, { peerId, publicKey: publicKeyB64, addrs, updatedAt }, privateKeyB64);
+  const record = signPeerRecord(PARTY_ID, { peerId, publicKey: publicKeyB64, addrs, updatedAt, profile: 'storage' }, privateKeyB64);
   return { record, privateKeyB64, publicKeyB64, peerId };
 }
 
@@ -44,29 +44,29 @@ describe('peer-record signed payload', () => {
     const updatedAt = 1700000000000;
 
     const expected = digest(
-      ['CadreControl.CadrePeer', 'publish', PARTY_ID, peerId, multiaddr, String(updatedAt)],
+      ['CadreControl.CadrePeer', 'publish', PARTY_ID, peerId, multiaddr, String(updatedAt), 'storage'],
       'sha256',
       'base64url'
     ) as string;
-    expect(peerRecordSignedPayload(PARTY_ID, peerId, multiaddr, updatedAt)).toBe(expected);
+    expect(peerRecordSignedPayload(PARTY_ID, peerId, multiaddr, updatedAt, 'storage')).toBe(expected);
   });
 
   it('is deterministic and order/whitespace independent of any JSON canonicalizer', () => {
     // Pure multi-field sha256 → identical bytes in node/browser/RN. Two calls
     // with the same inputs must yield the same digest.
-    const a = peerRecordSignedPayload(PARTY_ID, 'peerA', '/a,/b', 5);
-    const b = peerRecordSignedPayload(PARTY_ID, 'peerA', '/a,/b', 5);
+    const a = peerRecordSignedPayload(PARTY_ID, 'peerA', '/a,/b', 5, null);
+    const b = peerRecordSignedPayload(PARTY_ID, 'peerA', '/a,/b', 5, null);
     expect(a).toBe(b);
     // Different field values → different payload.
-    expect(peerRecordSignedPayload(PARTY_ID, 'peerA', '/a,/b', 6)).not.toBe(a);
-    expect(peerRecordSignedPayload(PARTY_ID, 'peerA', '/a,/c', 5)).not.toBe(a);
-    expect(peerRecordSignedPayload('other-party', 'peerA', '/a,/b', 5)).not.toBe(a);
+    expect(peerRecordSignedPayload(PARTY_ID, 'peerA', '/a,/b', 6, null)).not.toBe(a);
+    expect(peerRecordSignedPayload(PARTY_ID, 'peerA', '/a,/c', 5, null)).not.toBe(a);
+    expect(peerRecordSignedPayload('other-party', 'peerA', '/a,/b', 5, null)).not.toBe(a);
   });
 
   it('joins addrs with "," exactly as the Multiaddr column stores them', () => {
     const addrs = ['/p2p-circuit/x', '/ip4/1.2.3.4/tcp/4001'];
-    const built = peerRecordSignedPayload(PARTY_ID, 'p', addrs.join(','), 1);
-    const directlyJoined = peerRecordSignedPayload(PARTY_ID, 'p', '/p2p-circuit/x,/ip4/1.2.3.4/tcp/4001', 1);
+    const built = peerRecordSignedPayload(PARTY_ID, 'p', addrs.join(','), 1, null);
+    const directlyJoined = peerRecordSignedPayload(PARTY_ID, 'p', '/p2p-circuit/x,/ip4/1.2.3.4/tcp/4001', 1, null);
     expect(built).toBe(directlyJoined);
   });
 });
@@ -89,17 +89,18 @@ describe('signPeerRecord / verifyPeerRecordSignature', () => {
     const otherKey = await generateKeyPair('Ed25519');
     const { privateKeyB64: otherPriv } = ed25519KeyPairFromLibp2p(otherKey);
     const forgedSig = sign(
-      peerRecordSignedPayload(PARTY_ID, peerId, record.addrs.join(','), record.updatedAt),
+      peerRecordSignedPayload(PARTY_ID, peerId, record.addrs.join(','), record.updatedAt, record.profile),
       otherPriv, 'ed25519', 'base64url', 'base64url', 'base64url'
     ) as string;
     const tampered: PeerAddressRecord = { ...record, publicKey: publicKeyB64, sig: forgedSig };
     expect(verifyPeerRecordSignature(PARTY_ID, tampered)).toBe(false);
   });
 
-  it('rejects a record with tampered addrs / updatedAt, or judged for another party', async () => {
+  it('rejects a record with tampered addrs / updatedAt / profile, or judged for another party', async () => {
     const { record } = await makeRecord(['/a', '/b'], 10);
     expect(verifyPeerRecordSignature(PARTY_ID, { ...record, addrs: ['/a', '/evil'] })).toBe(false);
     expect(verifyPeerRecordSignature(PARTY_ID, { ...record, updatedAt: record.updatedAt + 1 })).toBe(false);
+    expect(verifyPeerRecordSignature(PARTY_ID, { ...record, profile: 'transaction' })).toBe(false);
     expect(verifyPeerRecordSignature('other-party', record)).toBe(false);
   });
 

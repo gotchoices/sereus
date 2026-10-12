@@ -357,9 +357,15 @@ declare schema CadreControl {
                                         -- can pollute.
         VouchUsage text null,           -- the CadreInviteUsage.UsageStampId that admitted this row; null on an
                                         -- owner-vouched row. A row carries exactly one proof: a signature or a usage.
+        Profile text null,              -- the machine's own node profile (cadre-core NodeProfile): 'transaction' is an
+                                        -- app (phone, browser), 'storage' an always-on node; null until it self-publishes.
+                                        -- Self-declared and covered by Sig. No insert rule constrains it: an owner could
+                                        -- only mislabel a machine it already has full authority over, and that machine's
+                                        -- next self-publish corrects it.
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = new.StampId)
         ),
+        constraint KnownProfile check (new.Profile is null or new.Profile in ('transaction', 'storage')),
         constraint RevocationRecorded check on delete (
             exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = old.StampId and R.RowKey = old.PeerId)
         ),
@@ -403,10 +409,11 @@ declare schema CadreControl {
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'remove', party_id(), old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
                 or exists (select 1 from committed.Revocation R where R.TableName = 'CadrePeer' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
-        -- A peer re-publishes its own addrs and freshness under its own key (cadre-core
+        -- A peer re-publishes its own addrs, profile and freshness under its own key (cadre-core
         -- peer-record.ts); everything else is immutable and UpdatedAt must increase. Or an owner
         -- re-vouches the row over its current stamp, which also clears VouchUsage: the row then
-        -- stands on the signature and its invitation is no longer consulted for it. StampId never
+        -- stands on the signature and its invitation is no longer consulted for it. The owner
+        -- branch keeps Profile: it is the machine's own claim, not the owner's. StampId never
         -- changes on update: an update that rotated it would leave the old stamp free and
         -- untombstoned, so retiring a stamp is delete plus tombstone. The proof columns are
         -- compared null-safe: VouchSig and VouchUsage are null on one of the two row kinds, and a
@@ -421,7 +428,7 @@ declare schema CadreControl {
                 and coalesce(new.VouchUsage, '') = coalesce(old.VouchUsage, '')
                 and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
                 and verify(
-                        digest('CadreControl.CadrePeer', 'publish', party_id(), new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text)),
+                        digest('CadreControl.CadrePeer', 'publish', party_id(), new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text), coalesce(new.Profile, '')),
                         new.Sig, new.PublicKey, 'ed25519')
             )
                 or (
@@ -430,6 +437,7 @@ declare schema CadreControl {
                     and coalesce(new.VouchOwner, '') = context.OwnerKey
                     and coalesce(new.VouchSig, '') = context.Signature
                     and new.VouchUsage is null
+                    and coalesce(new.Profile, '') = coalesce(old.Profile, '')
                 )
         )
     ) with context (OwnerKey text null, Signature text);

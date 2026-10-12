@@ -11,7 +11,8 @@
  * SQL constraint from the row's own columns and the node-local `party_id()`:
  *
  *   digest('CadreControl.CadrePeer', 'publish', party_id(),
- *          new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text))
+ *          new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text),
+ *          coalesce(new.Profile, ''))
  *
  * Keep {@link peerRecordSignedPayload} and that constraint byte-for-byte in
  * sync. The `'publish'` action tag marks this as a peer's SELF-signed record
@@ -27,7 +28,7 @@
 
 import { digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
 import { controlAuthorizationFields } from './control-authorization.js';
-import type { PeerAddressRecord, PeerResolveTrustPolicy } from './types.js';
+import type { NodeProfile, PeerAddressRecord, PeerResolveTrustPolicy } from './types.js';
 
 /**
  * Default freshness ceiling for resolved peer-address records (15 minutes).
@@ -56,9 +57,12 @@ const SIGNALING_PREFIX = '/p2p-circuit';
  * @param peerId - base58btc libp2p peer id (the row key)
  * @param multiaddr - the comma-joined `Multiaddr` string EXACTLY as stored
  * @param updatedAt - epoch-ms freshness stamp
+ * @param profile - the publisher's node profile; null signs as `''`, as the constraint coalesces it
  */
-export function peerRecordSignedPayload(partyId: string, peerId: string, multiaddr: string, updatedAt: number): string {
-  const fields = controlAuthorizationFields('CadreControl.CadrePeer', 'publish', partyId, [peerId, multiaddr, String(updatedAt)]);
+export function peerRecordSignedPayload(
+  partyId: string, peerId: string, multiaddr: string, updatedAt: number, profile: NodeProfile | null
+): string {
+  const fields = controlAuthorizationFields('CadreControl.CadrePeer', 'publish', partyId, [peerId, multiaddr, String(updatedAt), profile ?? '']);
   return digest(fields, 'sha256', 'base64url') as string;
 }
 
@@ -73,10 +77,10 @@ export function peerRecordSignedPayload(partyId: string, peerId: string, multiad
  */
 export function signPeerRecord(
   partyId: string,
-  fields: { peerId: string; publicKey: string; addrs: string[]; updatedAt: number },
+  fields: Omit<PeerAddressRecord, 'sig'>,
   privateKeyB64: string
 ): PeerAddressRecord {
-  const payloadDigest = peerRecordSignedPayload(partyId, fields.peerId, fields.addrs.join(','), fields.updatedAt);
+  const payloadDigest = peerRecordSignedPayload(partyId, fields.peerId, fields.addrs.join(','), fields.updatedAt, fields.profile);
   const sig = sign(
     payloadDigest,
     privateKeyB64,
@@ -85,7 +89,7 @@ export function signPeerRecord(
     'base64url',
     'base64url'
   ) as string;
-  return { peerId: fields.peerId, publicKey: fields.publicKey, addrs: [...fields.addrs], updatedAt: fields.updatedAt, sig };
+  return { peerId: fields.peerId, publicKey: fields.publicKey, addrs: [...fields.addrs], updatedAt: fields.updatedAt, profile: fields.profile, sig };
 }
 
 /**
@@ -97,7 +101,7 @@ export function verifyPeerRecordSignature(partyId: string, record: PeerAddressRe
   if (!record.publicKey || !record.sig) {
     return false;
   }
-  const payloadDigest = peerRecordSignedPayload(partyId, record.peerId, record.addrs.join(','), record.updatedAt);
+  const payloadDigest = peerRecordSignedPayload(partyId, record.peerId, record.addrs.join(','), record.updatedAt, record.profile);
   return verify(
     payloadDigest,
     record.sig,

@@ -2994,7 +2994,7 @@ export class CadreNode implements SAppIdLookup {
     const updatedAt = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1);
     return signPeerRecord(
       this.partyId,
-      { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt },
+      { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt, profile: this.config.profile },
       signingKey.privateKeyB64
     );
   }

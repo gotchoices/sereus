@@ -164,7 +164,7 @@ async function seedReceiverRecord(
 	expect(publicKeyB64).toBe(ed25519PublicKeyB64FromPeerId(rxPeerId));
 	const record = signPeerRecord(
 		partyId,
-		{ peerId: rxPeerId, publicKey: publicKeyB64, addrs: rxAddrs, updatedAt: Date.now() },
+		{ peerId: rxPeerId, publicKey: publicKeyB64, addrs: rxAddrs, updatedAt: Date.now(), profile: null },
 		privateKeyB64,
 	);
 	await ownerNode.getSeedBootstrapService()!.insertSelfPeerRecord(record);

@@ -1208,7 +1208,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			peerId: bPeerId,
 			publicKey: bSigningKey.publicKeyB64,
 			addrs: before!.addrs,
-			updatedAt: Math.max(Date.now(), before!.updatedAt + 1)
+			updatedAt: Math.max(Date.now(), before!.updatedAt + 1),
+			profile: before!.profile
 		}, bSigningKey.privateKeyB64);
 
 		const baseline = forced!.callCount();

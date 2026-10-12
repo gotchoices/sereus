@@ -25,6 +25,7 @@ import {
   type KeyPair,
 } from './control-constraint-helpers.js';
 import { mintConsent } from './formation-consent-helper.js';
+import { signPeerRecord } from '../src/peer-record.js';
 
 /**
  * Remove-then-replay resurrection coverage for `CadreControl.Revocation`, plus the
@@ -620,6 +621,38 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       null,
     );
     expect(await db.queryCadrePeerStampId(peerId)).toBe(stamp);
+  }, 60_000);
+
+  it('CadrePeer: an owner re-vouch keeps the profile the machine self-published, and may not rewrite it', async () => {
+    const peerId = '12D3KooWProfileKeepTarget';
+    const machine = freshKeyPair();
+    expect(await db.insertCadrePeer(
+      { peerId, publicKey: machine.publicKey, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null },
+      founder.publicKey,
+      message => signAs(founder, message),
+    )).toBe(true);
+    await db.updateSelfPeerRecord(signPeerRecord(
+      node.partyId,
+      { peerId, publicKey: machine.publicKey, addrs: [], updatedAt: Date.now() + 60_000, profile: 'storage' },
+      machine.privateKey,
+    ));
+    const stamp = (await db.queryCadrePeerStampId(peerId))!;
+    const revouchSig = signB64(founder, cadrePeerVoucherDigest(node.partyId, peerId, stamp));
+
+    // rawRevouchCadrePeer's write plus one assignment, so only the Profile clause can refuse it.
+    await expectConstraintFailure(
+      rawDb.exec(
+        `update CadreControl.CadrePeer
+           with context OwnerKey = ?, Signature = ?
+           set VouchOwner = ?, VouchSig = ?, Profile = 'transaction'
+           where PeerId = ?`,
+        [founder.publicKey, revouchSig, founder.publicKey, revouchSig, peerId],
+      ),
+      'AuthorizedUpdate',
+    );
+
+    await rawRevouchCadrePeer(founder.publicKey, revouchSig, peerId, null);
+    expect((await db.queryPeerRecord(peerId))?.profile).toBe('storage');
   }, 60_000);
 
   // ── Removal is stamp-retirement, not an identity ban ───────────────────────

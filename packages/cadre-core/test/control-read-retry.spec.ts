@@ -515,7 +515,7 @@ describe('ControlDatabase — read retry', () => {
 	it('lets membership and peer-record lookups answer while the Revocation cohort is unreachable', async () => {
 		const peerId = 'isolated-revocation-peer';
 		expect(await db.insertCadrePeer(
-			{ peerId, publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null },
+			{ peerId, publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null },
 			owner.publicKey,
 			owner.sign
 		)).toBe(true);
@@ -605,7 +605,7 @@ describe('ControlDatabase — read retry', () => {
 			slots.controlReadRetryPacing = { sleep: () => { readSleeps++; return Promise.resolve(); } };
 
 			await expect(db.insertCadrePeer(
-				{ peerId: 'read-retry-locked-peer', publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null },
+				{ peerId: 'read-retry-locked-peer', publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null },
 				owner.publicKey,
 				owner.sign
 			)).rejects.toThrow(/Some peers did not complete/);
@@ -641,7 +641,7 @@ describe('ControlDatabase — read retry', () => {
 			slots.controlReadRetryPacing = { sleep: () => { readSleeps++; return Promise.resolve(); } };
 
 			await expect(db.insertCadrePeer(
-				{ peerId: 'read-retry-notify-peer', publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null },
+				{ peerId: 'read-retry-notify-peer', publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null },
 				owner.publicKey,
 				owner.sign
 			)).resolves.toBe(true);

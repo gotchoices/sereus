@@ -81,17 +81,17 @@ describe('digest-variadic TS↔SQL byte parity', () => {
     const peerId = '12D3KooWExamplePeer';
     const multiaddr = '/ip4/1.2.3.4/tcp/4001';
     const updatedAt = 1700000000000;
-    const fields = ['CadreControl.CadrePeer', 'publish', PARTY_ID, peerId, multiaddr, String(updatedAt)];
+    const fields = ['CadreControl.CadrePeer', 'publish', PARTY_ID, peerId, multiaddr, String(updatedAt), 'storage'];
 
     // The helper digests the tagged vector to a base64url string; sign over that (input
     // base64url -> raw digest bytes), matching what CadrePeer.AuthorizedUpdate's
     // self-branch checks.
-    const payloadDigest = peerRecordSignedPayload(PARTY_ID, peerId, multiaddr, updatedAt);
+    const payloadDigest = peerRecordSignedPayload(PARTY_ID, peerId, multiaddr, updatedAt, 'storage');
     const sig = sign(payloadDigest, priv, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 
     expect(await sqlVerify(fields, sig, pub)).toBe(true);
     // Tamper the multiaddr field.
-    expect(await sqlVerify(['CadreControl.CadrePeer', 'publish', PARTY_ID, peerId, '/ip4/9.9.9.9/tcp/4001', String(updatedAt)], sig, pub)).toBe(false);
+    expect(await sqlVerify(['CadreControl.CadrePeer', 'publish', PARTY_ID, peerId, '/ip4/9.9.9.9/tcp/4001', String(updatedAt), 'storage'], sig, pub)).toBe(false);
   });
 
   it('(c) strand single-string: signStrandPayload ⇔ verify(digest(payload))', async () => {

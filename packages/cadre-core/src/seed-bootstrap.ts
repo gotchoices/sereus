@@ -26,6 +26,7 @@ import type {
   AddDroneOptions,
   DroneInitResult,
   CadreInviteRow,
+  NodeProfile,
   PeerAddressRecord,
   DeviceTokenRecord,
   RevocationRow,
@@ -423,6 +424,7 @@ export class SeedBootstrapService {
       multiaddr: multiaddrStr,
       updatedAt: Date.now(),
       sig: null,
+      profile: null,
     });
     log('Peer %s authorized successfully', peerId);
   }
@@ -447,6 +449,7 @@ export class SeedBootstrapService {
       multiaddr: record.addrs.join(','),
       updatedAt: record.updatedAt,
       sig: record.sig,
+      profile: record.profile,
     });
   }
 
@@ -472,6 +475,7 @@ export class SeedBootstrapService {
     multiaddr: string;
     updatedAt: number;
     sig: string | null;
+    profile: NodeProfile | null;
   }): Promise<boolean> {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');

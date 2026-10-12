@@ -500,7 +500,7 @@ async function signedSibling(partyId: string, addrs: (peerId: string) => string[
   const peerId = peerIdFromPrivateKey(key).toString();
   const record = signPeerRecord(
     partyId,
-    { peerId, publicKey: publicKeyB64, addrs: addrs(peerId), updatedAt },
+    { peerId, publicKey: publicKeyB64, addrs: addrs(peerId), updatedAt, profile: null },
     privateKeyB64
   );
   return { peerId, record };

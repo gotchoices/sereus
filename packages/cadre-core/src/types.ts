@@ -1806,8 +1806,8 @@ export interface CadreNodeEvents {
  * PeerId by reading the record, re-verifying the self-signature against
  * `publicKey`, checking freshness, and applying a trust gate.
  *
- * The signature covers `peerId`, the comma-joined `addrs`, and `updatedAt` — see
- * `peerRecordSignedPayload`. `publicKey` is NOT inside the signed payload: it is
+ * The signature covers `peerId`, the comma-joined `addrs`, `updatedAt` and `profile` —
+ * see `peerRecordSignedPayload`. `publicKey` is NOT inside the signed payload: it is
  * the key the signature is verified *with*, and its libp2p-identity binding to
  * `peerId` is checked separately at resolve time, so re-signing it would be
  * redundant.
@@ -1821,6 +1821,12 @@ export interface PeerAddressRecord {
   addrs: string[];
   /** epoch ms — freshness; strictly increasing per peer. */
   updatedAt: number;
+  /**
+   * The publisher's own {@link CadreNodeConfig.profile}: `'transaction'` is an app (phone,
+   * browser), `'storage'` an always-on node. Null on a row the machine has not yet
+   * self-published (an owner or an invitation seated it).
+   */
+  profile: NodeProfile | null;
   /** ed25519 self-signature over the signed payload, base64url. */
   sig: string;
 }

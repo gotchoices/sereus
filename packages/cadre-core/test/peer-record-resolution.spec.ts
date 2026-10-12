@@ -63,7 +63,7 @@ async function insertForeignMember(
   const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
   const peerId = peerIdFromPrivateKey(key).toString();
   const resolvedAddrs = typeof addrs === 'function' ? addrs(peerId) : addrs;
-  const signed = signPeerRecord(owner.node.partyId, { peerId, publicKey: publicKeyB64, addrs: resolvedAddrs, updatedAt }, privateKeyB64);
+  const signed = signPeerRecord(owner.node.partyId, { peerId, publicKey: publicKeyB64, addrs: resolvedAddrs, updatedAt, profile: null }, privateKeyB64);
   const record = { ...signed, ...overrides };
   await owner.node.getSeedBootstrapService()!.insertSelfPeerRecord(record);
   return { peerId, record };
@@ -268,7 +268,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     // Re-sign with updatedAt EQUAL to the stored one → monotonic clause fails,
     // owner branch absent (context OwnerKey null) → constraint rejects.
     const stale = signPeerRecord(node.partyId,
-      { peerId, publicKey: publicKeyB64, addrs: ['/ip4/4.4.4.4/tcp/4001'], updatedAt: current!.updatedAt },
+      { peerId, publicKey: publicKeyB64, addrs: ['/ip4/4.4.4.4/tcp/4001'], updatedAt: current!.updatedAt, profile: current!.profile },
       privateKeyB64
     );
     await expect(node.getControlDatabase()!.updateSelfPeerRecord(stale)).rejects.toThrow();
@@ -290,7 +290,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     const attacker = await generateKeyPair('Ed25519');
     const { privateKeyB64: attackerPriv } = ed25519KeyPairFromLibp2p(attacker);
     const forged = signPeerRecord(node.partyId,
-      { peerId, publicKey: publicKeyB64, addrs: ['/ip4/6.6.6.6/tcp/4001'], updatedAt: current!.updatedAt + 1 },
+      { peerId, publicKey: publicKeyB64, addrs: ['/ip4/6.6.6.6/tcp/4001'], updatedAt: current!.updatedAt + 1, profile: current!.profile },
       attackerPriv
     );
     await expect(node.getControlDatabase()!.updateSelfPeerRecord(forged)).rejects.toThrow();
@@ -345,7 +345,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     const droneSig = circuitAddr(dronePeerId);
     const direct = '/ip4/10.0.0.1/tcp/4001';
     const record = signPeerRecord(node.partyId,
-      { peerId: dronePeerId, publicKey: dronePub, addrs: [droneSig, direct], updatedAt: current!.updatedAt + 1 },
+      { peerId: dronePeerId, publicKey: dronePub, addrs: [droneSig, direct], updatedAt: current!.updatedAt + 1, profile: 'storage' },
       dronePriv
     );
     await node.getControlDatabase()!.updateSelfPeerRecord(record);

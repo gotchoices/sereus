@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer } from './types.js';
+import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
@@ -1855,7 +1855,7 @@ export class ControlDatabase {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer');
     for (const row of await this.readRows(
-      'select PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId from CadreControl.CadrePeer where PeerId = ?',
+      'select PeerId, PublicKey, Multiaddr, UpdatedAt, Profile, Sig, StampId from CadreControl.CadrePeer where PeerId = ?',
       [peerId],
       'peer-record'
     )) {
@@ -1869,6 +1869,7 @@ export class ControlDatabase {
         publicKey: (row.PublicKey as string | null) ?? '',
         addrs: multiaddr.length > 0 ? multiaddr.split(',') : [],
         updatedAt: (row.UpdatedAt as number | null) ?? 0,
+        profile: (row.Profile as NodeProfile | null) ?? null,
         sig: (row.Sig as string | null) ?? '',
       };
     }
@@ -1904,9 +1905,9 @@ export class ControlDatabase {
     await this.execWrite(`
       update CadreControl.CadrePeer
         with context OwnerKey = null, Signature = ?
-        set Multiaddr = ?, UpdatedAt = ?, Sig = ?
+        set Multiaddr = ?, UpdatedAt = ?, Profile = ?, Sig = ?
         where PeerId = ?
-    `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId], 'self-record-update');
+    `, [record.sig, multiaddr, record.updatedAt, record.profile, record.sig, record.peerId], 'self-record-update');
     log('Self peer record updated: %s (updatedAt=%d)', record.peerId, record.updatedAt);
   }
 
@@ -2584,6 +2585,7 @@ export class ControlDatabase {
       multiaddr: string;
       updatedAt: number;
       sig: string | null;
+      profile: NodeProfile | null;
     },
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
@@ -2608,10 +2610,10 @@ export class ControlDatabase {
       // identical to the context pair, which the AuthorizedInsert constraint binds — so a
       // reader can later re-check the voucher against its node-local trusted-owner anchor.
       await this.db!.exec(`
-        insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
+        insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, Profile, StampId, VouchOwner, VouchSig)
           with context OwnerKey = ?, Signature = ?
-          values (?, ?, ?, ?, ?, ?, ?, ?)
-      `, [ownerKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, stampId, ownerKey, signature]);
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [ownerKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, row.profile, stampId, ownerKey, signature]);
       return true;
     });
   }
@@ -2626,7 +2628,8 @@ export class ControlDatabase {
    * local-only (its block's cluster ≤1 at insert) is pushed to the cohort once it grows, by
    * re-issuing this monotonic bump. It is an UPDATE (not the original INSERT) because the row
    * already exists locally; a re-INSERT would hit the `PeerId` PK. Only the freshness stamp
-   * and voucher change — `PublicKey` / `Multiaddr` / `Sig` are left intact — so it is safe
+   * and voucher change — `PublicKey` / `Multiaddr` / `Sig` / `Profile` are left intact (the
+   * owner branch requires `Profile` kept: it is the machine's own claim) — so it is safe
    * over a row whose peer has not self-published (`Sig` null); the caller must skip a row
    * that already carries a self-`Sig` (that row is the owning peer's to refresh, and bumping
    * `UpdatedAt` without re-signing would invalidate its self-signature).

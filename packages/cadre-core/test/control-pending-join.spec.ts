@@ -76,7 +76,7 @@ describe('pending joins (owner-signed JoinRequest; outcome rows keyed by its sta
   /** Enroll a machine of the party the legitimate way (owner-vouched), carrying `machine` as its key. */
   async function admitMachine(machine: KeyPair): Promise<void> {
     const admitted = await db.insertCadrePeer(
-      { peerId: '12D3KooWPendingJoinMachine' + rand(), publicKey: machine.publicKey, multiaddr: '', updatedAt: Date.now(), sig: null },
+      { peerId: '12D3KooWPendingJoinMachine' + rand(), publicKey: machine.publicKey, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null },
       owner.publicKey,
       asOwner,
     );

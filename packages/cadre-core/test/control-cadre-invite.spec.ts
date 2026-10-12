@@ -324,7 +324,7 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     const addrs = ['/ip4/10.0.0.9/tcp/4001'];
     await db.updateSelfPeerRecord(signPeerRecord(
       node.partyId,
-      { peerId: device.partyId, publicKey: device.peerKey, addrs, updatedAt: Date.now() + 60_000 },
+      { peerId: device.partyId, publicKey: device.peerKey, addrs, updatedAt: Date.now() + 60_000, profile: null },
       device.privateKey,
     ));
 

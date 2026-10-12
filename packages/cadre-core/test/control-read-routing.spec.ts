@@ -204,7 +204,7 @@ describe('ControlDatabase — read routing', () => {
 		const recorded = recordEvalOptions('select StampId from CadreControl.CadrePeer');
 		try {
 			await expect(db.insertCadrePeer(
-				{ peerId: 'read-routing-locked-peer', publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null },
+				{ peerId: 'read-routing-locked-peer', publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null },
 				owner.publicKey,
 				owner.sign
 			)).resolves.toBe(true);
