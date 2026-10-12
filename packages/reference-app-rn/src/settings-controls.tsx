@@ -3,7 +3,9 @@
  * share. Here rather than in `app/settings.tsx` because every file under `app/` is a route.
  */
 
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+
+const OWNER_SWITCH_LINE = 'An owner can add and remove devices and apps and approve everything in this cadre. Turn this off for an app that should only take part.';
 
 export function Section({ title, children }: { title: string; children: React.ReactNode }) {
 	return (
@@ -48,6 +50,28 @@ export function Fact({ label, value, note }: { label: string; value: string; not
 	);
 }
 
+/** "Also an owner", for what an invitation grants. `explained`: show what an owner can do under it; off where the prompt says it above. */
+export function OwnerSwitch({ value, onChange, testID, explained = true }: { value: boolean; onChange: (value: boolean) => void; testID: string; explained?: boolean }) {
+	return (
+		<View>
+			<View style={controlStyles.switchRow}>
+				<Text style={controlStyles.switchLabel}>Also an owner</Text>
+				<Switch value={value} onValueChange={onChange} testID={testID} />
+			</View>
+			{explained && <Text style={controlStyles.hint}>{OWNER_SWITCH_LINE}</Text>}
+		</View>
+	);
+}
+
+/** "Valid until 14:32", with the weekday when that is not today, in the phone's own time zone. */
+export function validUntilText(expiresAtMs: number | null): string {
+	if (expiresAtMs === null) return 'No expiry';
+	const at = new Date(expiresAtMs);
+	const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+	if (at.toDateString() === new Date().toDateString()) return `Valid until ${time}`;
+	return `Valid until ${at.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+}
+
 /** A peer id short enough for one line: its first 12 and last 6 characters. */
 export function shortPeerId(peerId: string): string {
 	return `${peerId.slice(0, 12)}…${peerId.slice(-6)}`;
@@ -56,6 +80,7 @@ export function shortPeerId(peerId: string): string {
 export const controlStyles = StyleSheet.create({
 	section: { marginBottom: 24 },
 	sectionTitle: { color: '#6c63ff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
+	subTitle: { color: '#fff', fontSize: 14, fontWeight: '600', marginTop: 12, marginBottom: 6 },
 	label: { color: '#aaa', fontSize: 13, marginBottom: 4 },
 	hint: { color: '#888', fontSize: 12, lineHeight: 17, marginBottom: 10 },
 	slowHint: { color: '#ff9800', fontSize: 12, lineHeight: 17, marginTop: 6 },
@@ -66,7 +91,16 @@ export const controlStyles = StyleSheet.create({
 	modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
 	modalBox: { backgroundColor: '#1e1e2e', borderRadius: 12, padding: 20, width: '85%', maxHeight: '60%' },
 	modalTitle: { color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
+	promptText: { color: '#ccc', fontSize: 14, lineHeight: 20, marginBottom: 8 },
 	fact: { marginBottom: 10 },
 	factValue: { color: '#fff', fontSize: 14 },
 	factNote: { color: '#888', fontSize: 12, marginTop: 2 },
+	switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+	switchLabel: { color: '#fff', fontSize: 14 },
+	/** A listed item with its two lines of text on the left and one button on the right. */
+	listRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+	listRowText: { flex: 1 },
+	listRowTitle: { color: '#fff', fontSize: 13 },
+	listRowMeta: { color: '#888', fontSize: 12, marginTop: 2 },
+	listRowBtn: { width: 110 },
 });

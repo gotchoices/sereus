@@ -277,6 +277,14 @@ The party whose local storage the kit is deleting, while `PhoneNode.dissolveForm
 
 The join request this app opened as a link to an owner app on this phone and has not taken an answer to: `{ nonce, ownerAppName, startedAtMs }` (the kit's `LinkRequestStore` in `@serfab/cadre-rn/app-link`, over `PhoneNode.linkRequestSlot()`). One record under the kit's default key `link-join-request` in the same `sereus-node-local` database, one per install. It is saved before the owner app opens, so an answer that cold-starts this app after the OS killed it is still taken; it is cleared by Cancel, by the answer it takes, by a join from a pasted or scanned response, and when this app's own request opens it. A record older than 30 minutes reads as none. The nonce is what an answer must carry, so the record is kept out of logs; nothing in it is trust-bearing beyond that. Read at launch for the waiting line ([Joining an Existing Cadre](#joining-an-existing-cadre)) and again by each answer.
 
+### Recommended apps (app-private LevelDB)
+
+The Sereus apps the user allowed to join before they asked, under [Recommend an app](#recommend-an-app): a list of `{ scheme, appName, partyId, grantsOwner, approvedAtMs }`, at most one entry per scheme (the kit's `AppRecommendationStore` in `@serfab/cadre-rn/app-link`, over `PhoneNode.recommendationSlot()`). One record under the kit's default key `recommended-apps` in the same `sereus-node-local` database, one per install; each entry names the party it was allowed in and is returned only for that party.
+
+- **Single use, one hour.** The request an entry answers removes it, and an entry older than an hour reads as none.
+- **Trust-bearing.** An entry lets this app make an invitation without a prompt, so logs name only the app.
+- **Cleared** by Withdraw, by the request it answers, and by expiry. Allow and a use also drop every other party's entries as they write.
+
 ## cadre-core React Native Compatibility
 
 ### Validated (2026-02-23)
@@ -448,12 +456,13 @@ packages/reference-app-rn/
     use-cadre.ts              # React hook: cadre lifecycle, seed application, strands, invitations
     use-join-flow.ts          # Its part behind Join my existing cadre: the join, moving chats, removing the old cadre
     use-link-request.ts       # Its part behind Choose the app that holds your cadre: the request opened as a link, the answer taken
-    join-link.ts              # The links to and from another Sereus app on this phone, and the words for an answer
+    join-link.ts              # The links to and from another Sereus app on this phone (a recommended one too), and the words for an answer
     join-flow.ts              # The steps after Join (joining, moving chats, removing the old cadre) and their words
     join-failure.ts           # Plain words for each way a join can fail before admission (NS carries a copy)
     settings-controls.tsx     # Section, button, input and styles shared by Settings and its sections
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
     add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw
+    recommend-app-section.tsx # Settings → Add a device or app → Recommend an app: allow another app to join, then get or open it
     join-cadre-section.tsx    # Settings → Join my existing cadre: choose the app holding the cadre, this app's request, paste or scan the answer, the join's steps
     code-scanner.tsx          # Full-screen camera (expo-camera) that reads a QR code of the kind its caller accepts
     share-code.tsx            # Text to hand another app: QR code (react-native-svg), Copy (expo-clipboard), selectable text
@@ -826,6 +835,7 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 - **Allow** makes the invitation for that peer id (valid 24 hours) and opens the asking app with it. The section says "Sent an invitation to ‹app›", and the invitation is listed under Outstanding invitations. When no invitation can be made, the alert shows as for a pasted request and nothing is sent, since no refusal names that case; the asking app's Cancel covers it.
 - **Deny**, or the system back button, opens the asking app with the refusal `denied`.
 - **Answered without a prompt:** `no-cadre` while this app has no cadre (the first-launch question's condition), `not-owner` on a member that is not an owner, and `already-member` for a machine already in the cadre. When the cadre's owners and machines cannot be read, the alert shows as for a pasted request and nothing is sent; the asking app's Cancel covers it.
+- **An app the user recommended here** within the past hour gets its invitation without a prompt, after the Deny cooldown and the not-owner and already-member checks ([Recommend an app](#recommend-an-app)).
 - **Before the node is connected** the request waits, as a node code does. While auto-start or a join is connecting, the prompt opens once it connects; otherwise the Node card says a join request from ‹app› is waiting and asks for Connect. A newer request replaces a waiting one, which gets no answer.
 - **After a Deny**, for 30 seconds, every request opened from another app with a reply is answered `denied` without a prompt. That bounds the prompts to one per 30 seconds after a denial, whatever peer ids a repeating app sends; a pasted request is never affected. The cooldown and a waiting request are screen state, lost if Settings is remounted; the asking app's Cancel and a new request recover.
 - **One at a time:** a request arriving while a prompt is open or an invitation is being made is ignored with a note in the section, and gets no answer.
@@ -834,6 +844,28 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 - **This app's own request** coming back means the user picked this app in Android's chooser: Join my existing cadre cancels its open request and says so ([Joining an Existing Cadre](#joining-an-existing-cadre)).
 
 Neither side has had a device run yet: `tickets/blocked/rn-device-run-join-existing-cadre.md` covers copy and paste, and `tickets/blocked/rn-device-run-same-phone-join-by-link.md` the links between two apps on one phone.
+
+### Recommend an app
+
+Below **Copy invitation**, the owner can recommend another Sereus app, so that it joins this cadre with nothing to copy and no second confirmation ([architecture.md → Recommending another app](architecture.md#recommending-another-app)). It is `src/recommend-app-section.tsx`, and has not had a device run yet.
+
+**The list** shows the other Sereus apps this build knows: the kit's `KNOWN_SEREUS_APPS` and the app config's `extra.sereusApps`, one per scheme, this app left out, the same list Join my existing cadre offers on iOS. An app `canOpenURL` reports installed shows **Open ‹app›**; one with a store id for this platform (`androidPackage`, `iosAppStoreId`) shows **Get ‹app›**; one with neither is left out, and with none left the line reads "No other Sereus app to recommend". No entry in this repo has a store id yet, so in practice the list shows the [second install](#device-test-runs) when it is installed. The list is read when the section appears and on **Refresh**, and its buttons wait while an invitation is being made.
+
+**The prompt**, "Let ‹app› join your cadre?", says that if the app asks to join within the next hour, this app lets it in without asking again, and has the **Also an owner** switch, on by default. **Cancel**, or the system back button, saves nothing.
+
+**Allow and get ‹app›** (or **Allow and open ‹app›**) saves the permission first, since the other app may ask before this one is in front again ([Recommended apps](#recommended-apps-app-private-leveldb)). It then opens the app's store page, which on Android names this app in the install referrer, or the installed app at `‹its scheme›://cadre-recommended-by/‹this app's scheme›`.
+
+- **When the link does not open** (no Play Store on an emulator, say, or the app uninstalled meanwhile), an alert says so and the permission stays, so the user can open the app themselves or withdraw it.
+- **When the permission cannot be saved**, an alert says so and nothing opens.
+
+**Allowed to join** lists the permissions not yet used for this cadre, newest first: the app's name, owner or member, and the time it lapses, an hour after Allow. **Withdraw** removes one without asking, since nothing has been issued. The list is hidden while empty; it is read when the section appears, after Allow and Withdraw, after a permission is used, and on **Refresh**, and is not polled, so a lapsed row stays until the next read.
+
+**Answered without a prompt.** A request opened as a link whose reply scheme is an allowed app's scheme uses up that permission (`AppRecommendationStore.take`). This app makes the invitation for the request's peer id with the grant chosen at Allow and opens the asking app with it. The section says "Sent an invitation to ‹app›, which you allowed when you recommended it", naming the app as this app's list does, never as the request calls itself, and the invitation is listed under Outstanding invitations. A pasted request never uses a permission.
+
+- **Checked after the other answers.** The Deny cooldown comes first: a request within 30 seconds of a Deny is denied and leaves the permission for the next request. A request from an app already in the cadre is answered `already-member` and leaves the permission to lapse.
+- **When no invitation can be made**, the usual alert shows and the permission is gone: recommend the app again. When the asking app cannot be opened, the invitation shows for copying.
+- **When the permissions cannot be read**, the request gets the usual prompt rather than no answer.
+- **An app answering to the allowed app's scheme** within the hour is admitted the same way, whichever app it is: the accepted tradeoff in architecture.md → Recommending another app. The notice and the Outstanding list show it, and Withdraw there retires the invitation.
 
 
 ## Joining an Existing Cadre
@@ -964,7 +996,7 @@ The observer's block and the phone's `[reload]` line appear at the same moment. 
 
 ### When Native Rebuild Is Needed
 
-Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. So are `expo-clipboard` and `react-native-svg` (an invitation's Copy button and QR code): a dev client built before them fails when Settings loads, because Settings imports the section that shows invitations. A change to the native configuration in `app.json` or `app.config.ts`, such as the Android intent filter for `sereus-join` codes or the kit plugin's `appLinks` option (the `sereus-join-request` scheme on Android, the other Sereus apps' schemes iOS may query, the second install among them), is one too: it takes effect only in a dev client built after it. Otherwise, JS-only iteration via the dev client.
+Only when `rn-leveldb` or another native dependency is added or changes version. Adding `react-native-quick-crypto`, `react-native-nitro-modules` and `react-native-quick-base64` (native Noise crypto) is such a change: a dev client built before them throws nitro's `ModuleNotFoundError` when the bundle first evaluates quick-crypto, which the app imports from its root (read from nitro's source, not yet seen on a device). Adding `expo-camera` (the node-code scanner) is another: a dev client built before it throws "Cannot find native module 'ExpoCamera'" when Settings loads, because Settings imports the scanner. So are `expo-clipboard` and `react-native-svg` (an invitation's Copy button and QR code): a dev client built before them fails when Settings loads, because Settings imports the section that shows invitations. A change to the native configuration in `app.json` or `app.config.ts`, such as the Android intent filter for `sereus-join` codes or the kit plugin's `appLinks` option (the `sereus-join-request` scheme on Android, the other Sereus apps' schemes Android and iOS may query, the second install among them), is one too: it takes effect only in a dev client built after it. On Android, a dev client built before the plugin declared the other apps' schemes under `<queries>` sees none of them installed, so Recommend an app offers no **Open ‹app›**. Otherwise, JS-only iteration via the dev client.
 
 ### Tracing a strand founding
 

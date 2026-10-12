@@ -48,7 +48,7 @@ import {
   type SavedStart,
 } from '@serfab/cadre-rn/phone-node';
 import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
-import { LinkRequestStore, type SereusApp } from '@serfab/cadre-rn/app-link';
+import { AppRecommendationStore, LinkRequestStore, type SereusApp } from '@serfab/cadre-rn/app-link';
 import { defaultNoiseCryptoMode } from './noise-crypto-config';
 import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE_PREFIX } from './node-local-names';
 import { resolveRelayAddrs } from './relay-config';
@@ -197,14 +197,24 @@ export function extraSereusApps(): SereusApp[] {
   const apps: unknown = Constants.expoConfig?.extra?.sereusApps;
   if (apps === undefined) return [];
   if (Array.isArray(apps) && apps.every(isSereusApp)) return apps;
-  console.warn('[cadre-phone] extra.sereusApps is not a list of { name, scheme }; reading it as none:', apps);
+  console.warn('[cadre-phone] extra.sereusApps is not a list of { name, scheme, androidPackage?, iosAppStoreId? }; reading it as none:', apps);
   return [];
 }
 
+// The forms the kit's config plugin requires of the same fields, so a store link built from them
+// stays on the store's own page.
+const ANDROID_PACKAGE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+const IOS_APP_STORE_ID = /^[0-9]{1,12}$/;
+
 function isSereusApp(value: unknown): value is SereusApp {
   if (typeof value !== 'object' || value === null) return false;
-  const { name, scheme } = value as Record<string, unknown>;
-  return typeof name === 'string' && name.trim() !== '' && typeof scheme === 'string' && scheme !== '';
+  const { name, scheme, androidPackage, iosAppStoreId } = value as Record<string, unknown>;
+  return typeof name === 'string' && name.trim() !== '' && typeof scheme === 'string' && scheme !== ''
+    && isAbsentOr(androidPackage, ANDROID_PACKAGE) && isAbsentOr(iosAppStoreId, IOS_APP_STORE_ID);
+}
+
+function isAbsentOr(value: unknown, form: RegExp): boolean {
+  return value === undefined || (typeof value === 'string' && form.test(value));
 }
 
 /**
@@ -221,6 +231,13 @@ export async function joinRequestText(reply?: CadreJoinReply): Promise<string> {
  * takes only the answer to it, once. One per app, as the kit requires.
  */
 export const linkRequests = new LinkRequestStore(phone.linkRequestSlot());
+
+/**
+ * The Sereus apps the user allowed to join before they asked, when recommending them, saved in the
+ * node-local database; the kit's `AppRecommendationStore` returns each once, within the hour, for
+ * the party it was allowed in. One per app, as the kit requires.
+ */
+export const recommendations = new AppRecommendationStore(phone.recommendationSlot());
 
 /** The strand move a join left waiting, or `undefined`. Thin pass-through to the kit's `pendingStrandMove`. */
 export function pendingStrandMove(): Promise<PendingStrandMove | undefined> {

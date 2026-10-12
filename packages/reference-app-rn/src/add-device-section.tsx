@@ -11,13 +11,14 @@
  * Withdraw retires.
  *
  * A request another app on this phone opened this one with, carrying a reply, is answered back
- * to that app instead (`join-link.ts`): the invitation, or why there is none.
+ * to that app instead (`join-link.ts`): the invitation, or why there is none. When the user allowed
+ * that app under Recommend an app (`recommend-app-section.tsx`), it is answered without a prompt.
  *
  * The encoded invitation carries its private key: log the row's key only.
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Modal, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Modal, ScrollView, Text, View } from 'react-native';
 import {
 	CADRE_JOIN_REQUEST_PREFIX,
 	decodeCadreJoinRequest,
@@ -28,17 +29,17 @@ import {
 	type CadreJoinRequest,
 	type CreateCadreInvitationOptions,
 } from '@serfab/cadre-core';
-import type { JoinRefusal } from '@serfab/cadre-rn/app-link';
+import type { AppRecommendation, JoinRefusal } from '@serfab/cadre-rn/app-link';
 import { useCadre } from './cadre-context';
+import { recommendations } from './cadre-phone';
 import { CodeScanner } from './code-scanner';
 import { answerJoinRequest, isAnswerable, OWN_REQUEST_LINE, type AnswerableJoinRequest } from './join-link';
-import { Btn, controlStyles, Fact, LabelledInput, Section, shortPeerId } from './settings-controls';
+import { RecommendAppSection } from './recommend-app-section';
+import { Btn, controlStyles, Fact, LabelledInput, OwnerSwitch, Section, shortPeerId, validUntilText } from './settings-controls';
 import { ShareCode } from './share-code';
 import { TEST_IDS } from './test-ids';
 
 const SECTION_TITLE = 'Add a device or app';
-
-const OWNER_SWITCH_LINE = 'An owner can add and remove devices and apps and approve everything in this cadre. Turn this off for an app that should only take part.';
 
 const LINKED_PROMPT_TITLE = 'An app on this phone asks to join your cadre';
 
@@ -125,6 +126,8 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 	const [linkNotice, setLinkNotice] = useState<string | null>(null);
 	// When the user last denied a request from another app (`performance.now()`), for DENY_COOLDOWN_MS.
 	const deniedAtRef = useRef(Number.NEGATIVE_INFINITY);
+	// Bumped to make Recommend an app read its lists again.
+	const [recommendRead, setRecommendRead] = useState(0);
 
 	const checkStanding = async () => {
 		try {
@@ -146,6 +149,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 	};
 
 	const refresh = async () => {
+		setRecommendRead((n) => n + 1);
 		await checkStanding();
 		await refreshInvitations();
 	};
@@ -168,7 +172,8 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 	};
 
 	/**
-	 * Check a request, then prompt. `viaLink`: another app on this phone opened this one with
+	 * Check a request, then prompt, unless the user allowed the asking app when recommending it.
+	 * `viaLink`: another app on this phone opened this one with
 	 * it. Only then is a reply used, so a request pasted here never makes this app open another.
 	 */
 	const handleRequest = async (request: CadreJoinRequest, viaLink: boolean) => {
@@ -207,8 +212,41 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 			showAlert('Cannot use this request right now', 'Could not read this cadre\'s owners and machines. Try again.', errorMessage(err));
 			return;
 		}
+		if (answerTo && await answerRecommended(request, answerTo)) return;
 		setRequestOwner(true);
 		setPending({ request, answerTo });
+	};
+
+	/**
+	 * Answer, without a prompt, a request from an app the user allowed when recommending it; false
+	 * when there is no such permission, and the prompt decides. The app is named as this app
+	 * recommended it, never as the request calls itself.
+	 */
+	const answerRecommended = async (request: CadreJoinRequest, answerTo: AnswerableJoinRequest): Promise<boolean> => {
+		// With another invitation being made, `mint` would make nothing once the permission is used up.
+		if (mintingRef.current) return false;
+		const recommendation = await takeRecommendation(answerTo.reply.scheme);
+		if (!recommendation) return false;
+		console.info(`[settings] answering ${recommendation.appName} without asking: it was allowed when recommended`);
+		setRecommendRead((n) => n + 1);
+		const made = await mint({ peerId: request.peerId, grantsOwner: recommendation.grantsOwner }, `Invitation for ${recommendation.appName}`);
+		if (made) {
+			await sendInvitation(answerTo, made, recommendation.appName, `Sent an invitation to ${recommendation.appName}, which you allowed when you recommended it.`);
+		}
+		return true;
+	};
+
+	/** The permission the user gave when recommending the app at `scheme`, used up; null when there is none. */
+	const takeRecommendation = async (scheme: string): Promise<AppRecommendation | null> => {
+		const partyId = cadre.node?.partyId;
+		if (!partyId) return null;
+		try {
+			return await recommendations.take(scheme, partyId);
+		} catch (err) {
+			// Prompting instead: the user can still decide, where refusing would hide the request.
+			console.warn('[settings] could not read the apps allowed to join; asking instead:', err);
+			return null;
+		}
 	};
 
 	// NOTE: the scanner closes and the approval prompt (or an alert) opens in the same
@@ -275,13 +313,20 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 	const approveRequest = async ({ request, answerTo }: PendingRequest) => {
 		const made = await mint({ peerId: request.peerId, grantsOwner: requestOwner }, `Invitation for ${request.appName}`);
 		if (!made) return;
-		if (!answerTo) {
+		if (answerTo) {
+			await sendInvitation(answerTo, made, request.appName, `Sent an invitation to ${request.appName}.`);
+		} else {
 			setRequestText('');
 			setMinted(made);
-		} else if (await answerJoinRequest(answerTo, { invitation: made.encoded })) {
-			setLinkNotice(`Sent an invitation to ${request.appName}.`);
+		}
+	};
+
+	/** Open the asking app with the invitation, or show the invitation for copying when it cannot be opened. */
+	const sendInvitation = async (answerTo: AnswerableJoinRequest, made: MintedInvitation, appName: string, sentNotice: string) => {
+		if (await answerJoinRequest(answerTo, { invitation: made.encoded })) {
+			setLinkNotice(sentNotice);
 		} else {
-			setMinted({ ...made, note: `Could not open ${request.appName}; copy this invitation into it.` });
+			setMinted({ ...made, note: `Could not open ${appName}; copy this invitation into it.` });
 		}
 	};
 
@@ -343,7 +388,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 				<MintedView minted={minted} onDone={() => setMinted(null)} />
 			) : (
 				<>
-					<Text style={styles.subTitle}>Paste request</Text>
+					<Text style={controlStyles.subTitle}>Paste request</Text>
 					<Text style={controlStyles.hint}>
 						In the other app, choose Join my existing cadre and copy its request, then paste or scan it here. Only that app can use the invitation this makes.
 					</Text>
@@ -351,7 +396,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 					<Btn label="Scan request" onPress={() => setScannerOpen(true)} disabled={minting} testID={TEST_IDS.settings.scanJoinRequestBtn} />
 					<Btn label="Use request" onPress={() => handleRequestText(requestText)} disabled={minting || !requestText.trim()} testID={TEST_IDS.settings.useJoinRequestBtn} />
 
-					<Text style={styles.subTitle}>Copy invitation</Text>
+					<Text style={controlStyles.subTitle}>Copy invitation</Text>
 					<Text style={controlStyles.hint}>
 						An open invitation: whichever app is given its text first can join with it.
 					</Text>
@@ -363,6 +408,10 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 						disabled={minting}
 						testID={TEST_IDS.settings.makeInvitationBtn}
 					/>
+
+					{cadre.node && (
+						<RecommendAppSection partyId={cadre.node.partyId} busy={minting} refreshKey={recommendRead} showAlert={showAlert} />
+					)}
 				</>
 			)}
 
@@ -406,19 +455,6 @@ function MintedView({ minted, onDone }: { minted: MintedInvitation; onDone: () =
 	);
 }
 
-/** `explained`: show what an owner can do under the switch; off where the prompt says it above. */
-function OwnerSwitch({ value, onChange, testID, explained = true }: { value: boolean; onChange: (value: boolean) => void; testID: string; explained?: boolean }) {
-	return (
-		<View>
-			<View style={styles.switchRow}>
-				<Text style={styles.switchLabel}>Also an owner</Text>
-				<Switch value={value} onValueChange={onChange} testID={testID} />
-			</View>
-			{explained && <Text style={controlStyles.hint}>{OWNER_SWITCH_LINE}</Text>}
-		</View>
-	);
-}
-
 function OutstandingInvitations({ invitations, listError, onWithdraw, onRefresh }: {
 	invitations: CadreInviteStatus[];
 	listError: string | null;
@@ -427,7 +463,7 @@ function OutstandingInvitations({ invitations, listError, onWithdraw, onRefresh 
 }) {
 	return (
 		<View>
-			<Text style={styles.subTitle}>Outstanding invitations</Text>
+			<Text style={controlStyles.subTitle}>Outstanding invitations</Text>
 			{listError && <Text style={controlStyles.slowHint}>Could not read the invitations: {listError}</Text>}
 			{!listError && invitations.length === 0 && <Text style={controlStyles.hint}>None.</Text>}
 			{invitations.map((status) => (
@@ -442,14 +478,14 @@ function InvitationRow({ status, onWithdraw }: { status: CadreInviteStatus; onWi
 	const { invite } = status;
 	const uses = invite.totalUses !== null && invite.totalUses > 1 ? ` · ${status.usesRecorded} of ${invite.totalUses} used` : '';
 	return (
-		<View style={styles.inviteRow}>
-			<View style={styles.inviteText}>
-				<Text style={styles.inviteFor}>{invite.peerId ? `For ${shortPeerId(invite.peerId)}` : 'Anyone with the text'}</Text>
-				<Text style={styles.inviteMeta}>
+		<View style={controlStyles.listRow}>
+			<View style={controlStyles.listRowText}>
+				<Text style={controlStyles.listRowTitle}>{invite.peerId ? `For ${shortPeerId(invite.peerId)}` : 'Anyone with the text'}</Text>
+				<Text style={controlStyles.listRowMeta}>
 					{invite.grantsOwner ? 'owner' : 'member'} · {validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}{uses}
 				</Text>
 			</View>
-			<View style={styles.withdrawBtn}>
+			<View style={controlStyles.listRowBtn}>
 				<Btn label="Withdraw" onPress={onWithdraw} color="#444" testID={TEST_IDS.settings.withdrawInvitationBtn(invite.key)} />
 			</View>
 		</View>
@@ -479,9 +515,9 @@ function RequestPrompt({ pending, grantsOwner, onGrantsOwnerChange, onApprove, o
 					<ScrollView>
 						{linked ? (
 							<>
-								<Text style={styles.promptText}>{`It calls itself ${appName}. That name cannot be checked.`}</Text>
+								<Text style={controlStyles.promptText}>{`It calls itself ${appName}. That name cannot be checked.`}</Text>
 								<Fact label="Code" value={code} note="Check it matches the code the asking app showed." />
-								<Text style={styles.promptText}>{LINKED_GRANT_LINE}</Text>
+								<Text style={controlStyles.promptText}>{LINKED_GRANT_LINE}</Text>
 							</>
 						) : (
 							<>
@@ -509,7 +545,7 @@ function WithdrawPrompt({ open, onConfirm, onCancel }: { open: boolean; onConfir
 			<View style={controlStyles.modalOverlay}>
 				<View style={controlStyles.modalBox}>
 					<Text style={controlStyles.modalTitle}>Withdraw this invitation?</Text>
-					<Text style={styles.promptText}>Nobody can join with it afterwards.</Text>
+					<Text style={controlStyles.promptText}>Nobody can join with it afterwards.</Text>
 					<Btn label="Withdraw" onPress={onConfirm} color="#f44336" testID={TEST_IDS.settings.confirmWithdrawBtn} />
 					<Btn label="Cancel" onPress={onCancel} color="#444" testID={TEST_IDS.settings.cancelWithdrawBtn} />
 				</View>
@@ -531,27 +567,6 @@ function outstanding(statuses: CadreInviteStatus[]): CadreInviteStatus[] {
 	return statuses.filter((status) => status.live).sort((a, b) => expiry(b) - expiry(a));
 }
 
-/** "Valid until 14:32", with the weekday when that is not today, in the phone's own time zone. */
-function validUntilText(expiresAtMs: number | null): string {
-	if (expiresAtMs === null) return 'No expiry';
-	const at = new Date(expiresAtMs);
-	const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-	if (at.toDateString() === new Date().toDateString()) return `Valid until ${time}`;
-	return `Valid until ${at.toLocaleDateString([], { weekday: 'short' })} ${time}`;
-}
-
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
-
-const styles = StyleSheet.create({
-	subTitle: { color: '#fff', fontSize: 14, fontWeight: '600', marginTop: 12, marginBottom: 6 },
-	switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-	switchLabel: { color: '#fff', fontSize: 14 },
-	inviteRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-	inviteText: { flex: 1 },
-	inviteFor: { color: '#fff', fontSize: 13 },
-	inviteMeta: { color: '#888', fontSize: 12, marginTop: 2 },
-	withdrawBtn: { width: 110 },
-	promptText: { color: '#ccc', fontSize: 14, lineHeight: 20, marginBottom: 8 },
-});

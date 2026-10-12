@@ -99,6 +99,14 @@ export const TEST_IDS = {
 		/** The open invitation's "Also an owner" switch, and the button that mints it. */
 		openInviteOwnerSwitch: 'switch-open-invite-owner',
 		makeInvitationBtn: 'btn-make-invitation',
+		/** Recommend an app: one other Sereus app (Get ‹app› or Open ‹app›); pass its scheme. */
+		recommendAppBtn: (scheme: string) => `btn-recommend-app-${scheme}`,
+		/** The recommend prompt's "Also an owner" switch, and Allow and get / open ‹app›, or Cancel. */
+		recommendOwnerSwitch: 'switch-recommend-owner',
+		allowRecommendedAppBtn: 'btn-allow-recommended-app',
+		cancelRecommendedAppBtn: 'btn-cancel-recommended-app',
+		/** Per-row Withdraw on an app allowed to join; pass its scheme. */
+		withdrawRecommendationBtn: (scheme: string) => `btn-withdraw-recommendation-${scheme}`,
 		/** The `ShareCode` prefix of a minted invitation; see `shareCodeText` and `shareCodeCopyBtn`. */
 		invitationShare: 'invitation',
 		/** Clears the minted invitation off the screen. */

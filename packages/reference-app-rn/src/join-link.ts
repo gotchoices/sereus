@@ -1,15 +1,16 @@
 /**
  * join-link.ts — the links this app and another Sereus app on this phone open each other with
  * (docs/architecture.md → "Between apps on one phone"). As the owner app, it answers a join request
- * by opening the asking app back at the scheme the request's `reply` names. As the asking app, it
- * opens an owner app with its own request, and puts the answer that comes back into words.
+ * by opening the asking app back at the scheme the request's `reply` names, and opens an app it
+ * recommends, or that app's store page. As the asking app, it opens an owner app with its own
+ * request, and puts the answer that comes back into words.
  *
  * The answer link carries the invitation, which holds its private key and the cadre's machine
  * addresses, and the request link the nonce the answer must match: log the other app's name and
- * the outcome, never a link.
+ * the outcome, never either link. A recommending link names only the two apps and may be logged.
  */
 
-import { Linking } from 'react-native';
+import { Linking, Platform } from 'react-native';
 import { CADRE_JOIN_REQUEST_PREFIX, type CadreJoinReply, type CadreJoinRequest } from '@serfab/cadre-core';
 import {
 	CADRE_JOIN_RESPONSE_PREFIX,
@@ -17,6 +18,8 @@ import {
 	joinRequestLink,
 	joinResponseLink,
 	KNOWN_SEREUS_APPS,
+	recommendedByLink,
+	storePageLink,
 	type JoinRefusal,
 	type SereusApp,
 } from '@serfab/cadre-rn/app-link';
@@ -29,6 +32,13 @@ export type AnswerableJoinRequest = CadreJoinRequest & { reply: CadreJoinReply }
 
 /** What goes back: the minted invitation's text, or why there is none. */
 export type JoinAnswer = { invitation: string } | { refused: JoinRefusal };
+
+/** A Sereus app this app can recommend, and the link that opens it (installed) or its store page. */
+export interface RecommendableApp {
+	app: SereusApp;
+	installed: boolean;
+	link: string;
+}
 
 /** Why this app does not answer its own request when it is pasted. */
 export const OWN_REQUEST_LINE = 'This is this app\'s own request. Open the other app and copy its request there.';
@@ -67,13 +77,61 @@ export async function answerJoinRequest(request: AnswerableJoinRequest, answer: 
 }
 
 /**
+ * The other Sereus apps this build knows: the kit's known apps and this build's extras, the first
+ * listed for each scheme, this app left out.
+ */
+export function otherSereusApps(): SereusApp[] {
+	const seen = new Set([ownScheme()]);
+	return [...KNOWN_SEREUS_APPS, ...extraSereusApps()].filter((app) => {
+		if (seen.has(app.scheme)) return false;
+		seen.add(app.scheme);
+		return true;
+	});
+}
+
+/**
  * The other Sereus apps on this phone this app can open with its request, for iOS, which has no
- * chooser: the kit's known apps and this build's extras that `canOpenURL` reports installed, this
- * app left out.
+ * chooser: those of {@link otherSereusApps} that `canOpenURL` reports installed.
  */
 export function installedOwnerApps(): Promise<SereusApp[]> {
+	return installedAmong(otherSereusApps());
+}
+
+/**
+ * The other Sereus apps this app can recommend: each installed one, to open, and each other one
+ * with a store page on this platform, to get.
+ */
+export async function recommendableApps(): Promise<RecommendableApp[]> {
+	const others = otherSereusApps();
+	const installed = new Set((await installedAmong(others)).map((app) => app.scheme));
+	return others.flatMap((app) => {
+		const isInstalled = installed.has(app.scheme);
+		const link = isInstalled ? recommendedByLink(app, ownScheme()) : storePage(app);
+		return link === null ? [] : [{ app, installed: isInstalled, link }];
+	});
+}
+
+/** Open a recommended app, or its store page. False when the system would not open it; never throws. */
+export async function openRecommendedApp({ app, installed, link }: RecommendableApp): Promise<boolean> {
+	const what = installed ? app.name : `the store page of ${app.name}`;
+	try {
+		await Linking.openURL(link);
+		console.info(`[settings] opened ${what}`);
+		return true;
+	} catch (err) {
+		console.warn(`[settings] could not open ${what}:`, err);
+		return false;
+	}
+}
+
+function installedAmong(apps: readonly SereusApp[]): Promise<SereusApp[]> {
 	// Wrapped: React Native's `canOpenURL` reads `this`.
-	return installedSereusApps([...KNOWN_SEREUS_APPS, ...extraSereusApps()], ownScheme(), (url) => Linking.canOpenURL(url));
+	return installedSereusApps(apps, ownScheme(), (url) => Linking.canOpenURL(url));
+}
+
+/** The app's store page; null on a platform with no store the kit links to, or when the app has no id there. */
+function storePage(app: SereusApp): string | null {
+	return Platform.OS === 'android' || Platform.OS === 'ios' ? storePageLink(app, Platform.OS, ownScheme()) : null;
 }
 
 /**
