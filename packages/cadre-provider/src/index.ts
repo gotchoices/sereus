@@ -112,11 +112,11 @@ export {
   encodeNodeCode,
 } from './service/node-code.js';
 
+export { type NodeCode, type NodeCodeRefusal } from './service/container-join.js';
+
 export {
   ContainerService,
   type ContainerServiceOptions,
-  type NodeCode,
-  type NodeCodeRefusal,
   CONTAINER_ENROLLMENT_TIMEOUT_MS,
   CONTAINER_ENROLLMENT_POLL_MS,
   CONTAINER_PROVISIONING_TTL_MS,

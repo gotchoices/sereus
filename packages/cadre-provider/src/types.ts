@@ -35,7 +35,7 @@ export type ContainerJoin =
  * The join as the node last reported it on `/status`; absent on a seed-path container and
  * before the first read. Self-contained, so a reader of this field alone knows the owner
  * and party a claim named; the record's own `partyId` and `ownerKey` carry the same two
- * values for the rest of the provider (the list filter, billing) to read.
+ * values so a list row names the real cadre without the node's report.
  */
 export type ContainerJoinState =
   | { kind: 'claim'; state: 'awaiting' }

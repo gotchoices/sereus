@@ -310,8 +310,8 @@ never. The secret is returned to the authenticated owner of the container over w
 the deployment puts in front of the API, so put TLS in front of it. `GET /containers` carries
 each container's `partyId` and `joinState` from the record, with no live read per row;
 `GET /containers/:id` always reads the node live and folds what it reports. A claim
-container's `partyId` is `unclaimed` until the claim is folded, so a list filtered by party
-misses it; find it by customer and `joinState`. An unclaimed container is never reaped: it is
+container's `partyId` is `unclaimed` until the claim is folded, so a client that picks
+containers out of the list by party misses it; find it by `joinState` instead. An unclaimed container is never reaped: it is
 billed like any other running container until the customer deletes it.
 
 **On the host.** The record holds the secret or the bundle (the file store's `containers.json`

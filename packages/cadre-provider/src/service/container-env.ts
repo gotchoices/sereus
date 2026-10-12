@@ -77,17 +77,18 @@ export interface NodeEnvSpec {
  * cadre-cli reads both straight from the environment (`COMMAND_ENV` in its `env.ts`),
  * never from a flag, since either value in a process list would leak it.
  *
- * Throws on pins beside a join: `cadre start` refuses that combination (a claim or an
- * invitation names the owner; a pin trusts a signer neither named), so the container
- * would die at boot with the cause visible only in its log. Failing here names it at the
- * provision instead. `POST /containers` already refuses the body; this guards a direct
- * `ContainerService` caller.
+ * Throws on pins beside a join: a claim names the owner and the bundle carries the owner
+ * keys the node pins itself, so a pin trusts a signer neither named. Beside a claim
+ * `cadre start` refuses `CADRE_OWNER_KEYS` and the container would die at boot with the
+ * cause visible only in its log; beside an invitation it would start with a trust anchor
+ * the owner never chose. Failing here names it at the provision instead. `POST /containers`
+ * already refuses the body; this guards a direct `ContainerService` caller.
  */
 function joinEnv(request: OrchestratorCreateRequest): string {
   const { join } = request;
   if (!join) return '';
   if (request.pinnedOwnerKeys?.length) {
-    throw new Error(`a container that joins by ${join.kind} cannot pin owner keys: the ${join.kind} names its owner, and cadre-cli refuses CADRE_OWNER_KEYS beside it`);
+    throw new Error(`a container that joins by ${join.kind} cannot pin owner keys: the ${join.kind} names its owner, and a pin would trust a signer it never named`);
   }
   return join.kind === 'claim' ? `CADRE_CLAIM_SECRET=${join.secret}` : `CADRE_INVITATION=${join.invitation}`;
 }

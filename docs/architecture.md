@@ -457,7 +457,7 @@ sequenceDiagram
 ```
 
 Key points of the two join paths:
-- A claim container's record says `partyId: unclaimed` until a `/status` read folds the claim, so a list filtered by party misses it; the app finds it by customer and `joinState`.
+- A claim container's record says `partyId: unclaimed` until a `/status` read folds the claim, so an app that picks its containers out of `GET /containers` by party misses it; it finds them by `joinState` instead.
 - The code carries only the WebSocket address at `docker.publicHost`, ending in `/p2p/<peerId>`: a phone has no TCP transport and cannot reach an in-container address, so a claim requires `publicHost` and `POST /containers` refuses one without it.
 - The claim secret leaves the provider only in `GET /containers/:id/code`, to the container's authenticated owner; every response shows `join: { kind }`, and an invitation's bundle is never returned.
 - The provider reads a container's `/status` in one place (`ContainerService.readStatus`) and every read folds the join state the node reports, so `GET /containers` carries each container's party and join state without a live read per row and the provider runs no poller; `GET /containers/:id` always reads live.

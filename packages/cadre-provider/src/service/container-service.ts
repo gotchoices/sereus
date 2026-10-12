@@ -4,12 +4,8 @@
 
 import debug from 'debug';
 import { nanoid } from 'nanoid';
-import { randomBytes } from 'node:crypto';
 import {
   type Container,
-  type ContainerJoin,
-  type ContainerJoinRequest,
-  type ContainerJoinState,
   type ContainerStatus,
   type CreateContainerRequest,
   type ContainerStatusResponse,
@@ -20,6 +16,7 @@ import type { ContainerRunState, RecoverableOrchestrator } from './orchestrator.
 import type { ProviderPushConfig, PushCredentials } from '../config/types.js';
 import { type ContainerHealthStatus, fetchContainerHealthStatus } from './container-health.js';
 import { claimAddressesFor, encodeNodeCode } from './node-code.js';
+import { type NodeCode, type NodeCodeRefusal, joinFor, joinStateFrom, sameJoinState } from './container-join.js';
 
 const log = debug('cadre:provider:container');
 
@@ -167,93 +164,6 @@ function normalizePinnedOwnerKeys(keys: string[] | undefined): string[] {
   return [...new Set((keys ?? []).map(key => key.trim()).filter(key => key.length > 0))];
 }
 
-/**
- * 32 random bytes, base64url: exactly what cadre-core's `parseClaimSecret` accepts and what
- * cadre-host mints. The one minting site, in the service, so both orchestrators only
- * inject what they are handed; the seed token is still minted in the orchestrators until
- * the seed path is retired.
- */
-function mintClaimSecret(): string {
-  return randomBytes(32).toString('base64url');
-}
-
-/** The join a record carries for a request: the claim gets its secret here, the invitation is kept as submitted. */
-function joinFor(request: ContainerJoinRequest | undefined): ContainerJoin | undefined {
-  if (!request) return undefined;
-  return request.kind === 'claim'
-    ? { kind: 'claim', secret: mintClaimSecret() }
-    : { kind: 'invitation', invitation: request.invitation };
-}
-
-/**
- * The join state a `/status` payload reports for a container, or undefined when it
- * reports none: a seed-path container, or a node that is not answering with the join
- * fields yet.
- *
- * A claim is `claimed` only once the node also reports the claimed party. `claim` flips
- * the moment the node writes its record, but the node then restarts in-process into that
- * party, and until the restart finishes `partyId` is still the placeholder (or empty while
- * the node object is rebuilt); folding on the flag alone would record the placeholder as
- * the container's cadre. Same rule as cadre-host's `reportsClaim`. `none` on a claim
- * container means the node was started without the secret, which this provider never does;
- * it is left unfolded rather than invented.
- */
-function joinStateFrom(join: ContainerJoin | undefined, health: ContainerHealthStatus): ContainerJoinState | undefined {
-  const node = health.node;
-  if (!join || !node) return undefined;
-  if (join.kind === 'claim') {
-    if (node.claim === 'claimed' && node.claimedBy && node.partyId && node.partyId !== UNCLAIMED_PARTY_ID) {
-      return { kind: 'claim', state: 'claimed', ownerKey: node.claimedBy, partyId: node.partyId };
-    }
-    return node.claim === 'awaiting' || node.claim === 'claimed' ? { kind: 'claim', state: 'awaiting' } : undefined;
-  }
-  const invitation = node.invitation;
-  if (!invitation) return undefined;
-  switch (invitation.state) {
-    case 'pending':
-      return { kind: 'invitation', state: 'pending' };
-    case 'accepted':
-      return { kind: 'invitation', state: 'accepted', ...(invitation.memberPeerId ? { memberPeerId: invitation.memberPeerId } : {}) };
-    case 'failed':
-      // NOTE: a spent or expired invitation reports `failed` with `invite-spent` and
-      // `retryable: false`, and the container keeps running with nothing to do. The app's
-      // remedy is to delete it and rent again, so there is no retry route; add one here
-      // and at the service if a retryable failure (no member reachable) ever needs more
-      // than the node's own restart.
-      return {
-        kind: 'invitation',
-        state: 'failed',
-        error: invitation.error ?? 'the invitation could not be redeemed',
-        retryable: invitation.retryable === true,
-      };
-  }
-}
-
-/** Both states are built field-by-field in one order (`joinStateFrom`), so their JSON compares. */
-function sameJoinState(a: ContainerJoinState | undefined, b: ContainerJoinState): boolean {
-  return a !== undefined && JSON.stringify(a) === JSON.stringify(b);
-}
-
-/** Why `nodeCode` has no code to give; the route maps each to a status. */
-export type NodeCodeRefusal =
-  /** A seed-path or invitation container: nothing to claim. */
-  | 'not-claimable'
-  /** A live read says the node has an owner. */
-  | 'already-claimed'
-  /** The container is `stopped` or `error`. */
-  | 'gone'
-  /** No `/status`, no peer id, or no announced WebSocket address yet; callers poll. */
-  | 'not-ready';
-
-/** What `GET /containers/:id/code` returns: the code the owner's phone scans or pastes, and its parts. */
-export interface NodeCode {
-  /** `sereus-join:1.…` (`encodeNodeCode`), what `CadreNode.claimNode` takes after `decodeNodeClaimPayload`. */
-  code: string;
-  peerId: string;
-  /** The addresses in the code, each ending in `/p2p/<peerId>`. */
-  multiaddrs: string[];
-}
-
 /** Container service options */
 export interface ContainerServiceOptions {
   /** Store for persisting container state */
@@ -329,7 +239,9 @@ export class ContainerService {
     const container: Container = {
       id,
       customerId: request.customerId,
-      partyId: request.partyId,
+      // A claim names the party; until it does the record and the node carry the
+      // placeholder, whatever a direct caller passed (the route already refuses one).
+      partyId: join?.kind === 'claim' ? UNCLAIMED_PARTY_ID : request.partyId,
       profile: request.profile,
       status: 'pending',
       resources: request.resources ?? {},
@@ -382,11 +294,12 @@ export class ContainerService {
         log('Container %s created with no pinned owner keys; it will reject any seed delivered to it', container.id);
       }
 
-      // Create the container via orchestrator. The join, like the pins, is read off the
-      // record: it holds the minted secret, and a re-provision must hand the node the same one.
+      // Create the container via orchestrator. The join, like the pins and the party, is
+      // read off the record: it holds the minted secret, and a re-provision must hand the
+      // node the same one.
       const result = await this.orchestrator.createContainer({
         containerId: container.id,
-        partyId: request.partyId,
+        partyId: container.partyId,
         bootstrapNodes: request.bootstrapNodes,
         profile: request.profile,
         resources: request.resources,
@@ -626,9 +539,10 @@ export class ContainerService {
   /**
    * Write the join state a `/status` payload reports onto the record, when it differs
    * from the stored one: a claim folds `claimed` with the party and owner it named onto
-   * the record's own `partyId` and `ownerKey` too, so the list filter and billing see the
-   * real cadre. A `claimed` record is never taken back to `awaiting`: a node reports the
-   * claim before it reports the claimed party, and the gap must not read as a regression.
+   * the record's own `partyId` and `ownerKey` too, so a list row names the real cadre
+   * without the node's report. A `claimed` record is never taken back to `awaiting`: a
+   * node reports the claim before it reports the claimed party, and the gap must not read
+   * as a regression.
    */
   private async foldJoinState(container: Container, health: ContainerHealthStatus): Promise<void> {
     const next = joinStateFrom(container.join, health);
@@ -665,6 +579,8 @@ export class ContainerService {
     if (current?.joinState?.state === 'claimed') return { refusal: 'already-claimed' };
     if (!health?.peerId) return { refusal: 'not-ready' };
 
+    // NOTE: without a `publicHost` this is `not-ready` for ever; the route never creates such
+    // a container, so only a direct caller can reach it. Answer a distinct refusal if one does.
     const multiaddrs = this.publicHost === undefined
       ? []
       : claimAddressesFor(health.multiaddrs ?? [], health.peerId, this.publicHost);
@@ -693,10 +609,12 @@ export class ContainerService {
     // `/status` URL, short-circuits to `undefined` when there is no health
     // endpoint / the fetch fails / the response is non-OK, and parses into the
     // wire-accurate ContainerHealthStatus — so the declared type stays honest.
-    // `readStatus` folds the join state the read carries, so `response.container`
-    // (the same record) already reflects it.
+    // `readStatus` folds the join state the read carries into the stored record; the
+    // response re-reads it rather than trusting the store to have handed out the same
+    // object it keeps.
     if (container.status === 'running') {
       response.health = await this.readStatus(container);
+      response.container = (await this.store.getContainer(id)) ?? container;
     }
 
     return response;

@@ -109,26 +109,26 @@ function memberRefusal(entry: unknown, index: number): string | undefined {
   return undefined;
 }
 
-/** The shape rule over a decoded bundle: the refusal, or undefined when it is well formed. */
-function bundleRefusal(parsed: unknown): string | undefined {
-  if (!isPlainObject(parsed)) return 'join.invitation is malformed: it does not decode to a JSON object';
+/** The shape rule over a decoded bundle: the party it names when well formed, else the refusal. */
+function checkBundle(parsed: unknown): { partyId: string } | { error: string } {
+  if (!isPlainObject(parsed)) return { error: 'join.invitation is malformed: it does not decode to a JSON object' };
   const { v, partyId, invitePrivateKey, invite, ownerKeys, members } = parsed;
-  if (v !== 1) return 'join.invitation is of an unsupported version (only v1 is read)';
-  if (!isNonEmptyString(partyId)) return 'join.invitation is malformed: it names no partyId';
-  if (!isNonEmptyString(invitePrivateKey)) return 'join.invitation is malformed: it carries no invitePrivateKey';
-  if (!isPlainObject(invite)) return 'join.invitation is malformed: it carries no invite row';
+  if (v !== 1) return { error: 'join.invitation is of an unsupported version (only v1 is read)' };
+  if (!isNonEmptyString(partyId)) return { error: 'join.invitation is malformed: it names no partyId' };
+  if (!isNonEmptyString(invitePrivateKey)) return { error: 'join.invitation is malformed: it carries no invitePrivateKey' };
+  if (!isPlainObject(invite)) return { error: 'join.invitation is malformed: it carries no invite row' };
   if (!Array.isArray(ownerKeys) || ownerKeys.length === 0 || !ownerKeys.every(isNonEmptyString)) {
-    return 'join.invitation is malformed: ownerKeys must be a non-empty array of strings';
+    return { error: 'join.invitation is malformed: ownerKeys must be a non-empty array of strings' };
   }
   if (!Array.isArray(members) || members.length === 0) {
-    return 'join.invitation names no member to dial: a node redeems an invitation at a member of the cadre, so the bundle must list at least one address';
+    return { error: 'join.invitation names no member to dial: a node redeems an invitation at a member of the cadre, so the bundle must list at least one address' };
   }
-  if (members.length > MAX_BUNDLE_MEMBERS) return `join.invitation is malformed: more than ${MAX_BUNDLE_MEMBERS} members`;
+  if (members.length > MAX_BUNDLE_MEMBERS) return { error: `join.invitation is malformed: more than ${MAX_BUNDLE_MEMBERS} members` };
   for (const [index, entry] of members.entries()) {
     const refusal = memberRefusal(entry, index);
-    if (refusal) return refusal;
+    if (refusal) return { error: refusal };
   }
-  return undefined;
+  return { partyId: partyId.trim() };
 }
 
 /**
@@ -153,7 +153,7 @@ export function validateInvitation(value: unknown): ValidatedInvitation | { erro
   }
   const parsed = decodeBundleJson(trimmed.slice(CADRE_INVITATION_PREFIX.length));
   if (parsed === undefined) return { error: 'join.invitation must carry base64url-encoded JSON after its prefix' };
-  const refusal = bundleRefusal(parsed);
-  if (refusal) return { error: refusal };
-  return { invitation: trimmed, partyId: ((parsed as Record<string, unknown>).partyId as string).trim() };
+  const checked = checkBundle(parsed);
+  if ('error' in checked) return checked;
+  return { invitation: trimmed, partyId: checked.partyId };
 }

@@ -4,7 +4,8 @@
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import debug from 'debug';
-import type { ContainerService, NodeCodeRefusal } from '../service/container-service.js';
+import type { ContainerService } from '../service/container-service.js';
+import type { NodeCodeRefusal } from '../service/container-join.js';
 import type { BillingService } from '../service/billing-service.js';
 import type { Container, RedactedContainer } from '../types.js';
 import { Scope, hasPermission } from './permissions.js';

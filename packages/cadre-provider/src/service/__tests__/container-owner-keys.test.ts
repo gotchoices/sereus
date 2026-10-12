@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ContainerService } from '../container-service.js';
 import { MemoryStore } from '../store.js';
 import type { Orchestrator, OrchestratorCreateRequest, OrchestratorCreateResult } from '../orchestrator.js';
-import type { Container, CreateContainerRequest } from '../../types.js';
+import { UNCLAIMED_PARTY_ID, type Container, type CreateContainerRequest } from '../../types.js';
 
 type ProvisionInternal = {
   provisionContainer(container: Container, request: CreateContainerRequest): Promise<void>;
@@ -167,5 +167,22 @@ describe('ContainerService pinned owner keys', () => {
     );
     expect(byContainer.get(a.id)).toEqual(['owner-a']);
     expect(byContainer.get(b.id)).toEqual(['owner-b']);
+  });
+});
+
+describe('ContainerService claim join party', () => {
+  // The route refuses a `partyId` beside a claim; the service holds the same line for a
+  // direct caller, so the record and the node both carry the placeholder the claim replaces.
+  it('records the placeholder party and hands it to the orchestrator, whatever party the caller passed', async () => {
+    const store = new MemoryStore();
+    const { orchestrator, create } = capturingOrchestrator();
+    const service = new ContainerService({ store, orchestrator });
+
+    const created = await service.createContainer({ ...request('cust-a'), join: { kind: 'claim' } });
+    await flush();
+
+    expect(created.partyId).toBe(UNCLAIMED_PARTY_ID);
+    expect((await store.getContainer(created.id))?.partyId).toBe(UNCLAIMED_PARTY_ID);
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ partyId: UNCLAIMED_PARTY_ID }));
   });
 });
