@@ -1,13 +1,14 @@
 /**
  * Dissolving the party this app founded and left (docs/architecture.md → "An app joins an
  * existing cadre" → "Dissolving the party it left"): the check that the running party holds
- * everything the left one holds, and the removal of the left party's local storage.
+ * everything the left one holds, and the removal of the left party's local storage. The same
+ * removal deletes a party whose owner removed this app ("Removed from A"), with no check.
  *
  * The removal is local: it writes nothing to either party's control database. A marker in the
  * node-local database names the party from before the first deletion until after the saved
  * start stops naming it, so a removal that a crash or a failed step interrupts is finished by
- * the next start or the next dissolve without checking again: the check passed before the
- * marker was written. Every step deletes what may already be gone.
+ * the next start or the next dissolve without checking again: the decision to remove was made
+ * before the marker was written. Every step deletes what may already be gone.
  */
 
 import { controlStorageScope, exportStrandBundle, KeyStoreJoinedStrandStore, unheldBundleContent } from '@serfab/cadre-core';
@@ -130,7 +131,7 @@ export interface PartyStorage {
 
 const MARKER_VERSION = 1;
 
-/** Mark `partyId` as being dissolved, then remove its local storage. Only once the check has passed. */
+/** Mark `partyId` as being removed, then remove its local storage. Only once removing it is decided: a dissolve's check passed, or an owner removed this app. */
 export async function removeParty(storage: PartyStorage, partyId: string): Promise<void> {
 	await storage.nodeLocal.set(storage.markerKey, JSON.stringify({ v: MARKER_VERSION, partyId }));
 	await finishRemoving(storage, partyId);

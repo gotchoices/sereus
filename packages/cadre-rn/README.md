@@ -137,6 +137,7 @@ When the running node reports that an owner removed this app from its party (cad
 - **The party's local storage is deleted** as a dissolve deletes it: its control database, node-local records, trusted-owner anchor, unpublished joined-strand records and move record, with the same marker, so a failure partway is finished by the next start. Strand databases stay.
 - **`status`** becomes `{ state: 'removed', partyId, removal, formerPartyId? }`: `removal` is cadre-core's `CadreRemoval` (the retired stamp, and `signerKey`, the removing owner, when its key is anchored here). From `removed`, `start` and `joinCadre` work as from `stopped`: the app offers "go back to your own cadre" (`start((await phone.loadSavedStart())!.options)`) when `formerPartyId` is set, and a join otherwise.
 - **A failure rewriting the saved start** leaves the storage, which that start still names, and `status` `failed`.
+- **An app that keeps its own copy of the start options** drops it on `removed`: the kit does not refuse them, and starting them builds the removed party again on empty storage. Starts that read `loadSavedStart()`, as `phoneNodeLifecycle` does, are safe.
 
 It is best-effort, as the report is: a phone removed while its app was not running never learns it, and keeps the party's data while the party's other machines refuse it.
 

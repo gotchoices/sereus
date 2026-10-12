@@ -952,6 +952,10 @@ class PhoneNodeRuntime implements PhoneNode {
 	 * by a join that ran before this turn, keeps running; only the removed party's storage goes.
 	 * Nothing starts unattended afterwards: the user sees why the app left its cadre first. A
 	 * failure is logged and leaves `status` `failed`; never rejects.
+	 *
+	 * NOTE: `start` does not refuse the removed party's options, so an app that cached them builds
+	 * that party again on empty storage. If one is seen doing so, refuse a start of `partyId` while
+	 * `status` is `removed`.
 	 */
 	private async forgetRemovedParty(removal: CadreRemoval): Promise<void> {
 		const { partyId } = removal;
