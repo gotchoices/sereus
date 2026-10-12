@@ -220,6 +220,10 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 
 	// One request at a time: one that arrives while a prompt is open or an invitation is
 	// being made is dropped, not queued, so the prompt on screen is the one the user acted on.
+	// NOTE: one arriving during the first's owner and member reads (before `pending` is set) is
+	// not dropped: both prompt in turn, the later replaces the earlier, and the earlier app gets no
+	// answer. Benign for one app opening twice (its answer satisfies either, by nonce); if two apps
+	// ever race here in practice, also drop while a check runs.
 	useEffect(() => {
 		if (linkedRequest === null) return;
 		onLinkedRequestTaken?.();
