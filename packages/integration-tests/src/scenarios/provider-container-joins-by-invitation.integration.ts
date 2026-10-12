@@ -59,7 +59,6 @@ import {
   DEFAULT_CONFIG,
   MemoryStore,
   createProviderServer,
-  type ContainerHealthStatus,
   type ProviderServer,
   type RedactedContainer,
 } from '@serfab/cadre-provider';
@@ -67,11 +66,17 @@ import {
 import {
   ProviderProcessOrchestrator,
   isChildUp,
+  providerApi,
   requireContainerRunning,
   startOwnerCliNode,
   waitUntil,
   writeIdentity,
   type OwnerCliNode,
+  type ProviderApi,
+  type ProviderContainerRead,
+  type ProviderContainerResponse,
+  type ProviderDeleteResponse,
+  type ProviderListResponse,
   type ProviderProcessHandle,
 } from '../harness/index.js';
 
@@ -79,17 +84,8 @@ import {
 const STARTUP_MS = 90_000;
 /** Per-op budget for round-trips once a node is up. */
 const OP_MS = 30_000;
-const BASE_PATH = '/api/v1';
 /** The invitation's lifetime: well past the two creates, and what an app would mint for a rented node. */
 const INVITATION_TTL_MS = 15 * 60_000;
-
-/** The provider's `{ ok: false, error }` envelope. */
-interface ApiRefusal {
-  ok: false;
-  error: { code: string; message: string };
-}
-type ContainerResponse = { ok: true; data: { container: RedactedContainer; health?: ContainerHealthStatus } } | ApiRefusal;
-type ListResponse = { ok: true; data: { containers: RedactedContainer[] } };
 
 describe('a provider container joins a cadre by invitation at an always-on member (real cadre-provider API, real cadre-cli)', () => {
   const partyId = `provider-invite-${Math.random().toString(36).slice(2)}`;
@@ -99,8 +95,8 @@ describe('a provider container joins a cadre by invitation at an always-on membe
   let ownerPeerId: string;
   let orchestrator: ProviderProcessOrchestrator;
   let server: ProviderServer;
-  /** Every response body the provider answered: the bundle must be in none. */
-  const answered: string[] = [];
+  /** The provider's routes; `api.answered` is every body, and the bundle must be in none. */
+  let api: ProviderApi;
 
   // Threaded across the ordered steps below (vitest runs them in order).
   let invitation: CadreInvitation;
@@ -135,6 +131,7 @@ describe('a provider container joins a cadre by invitation at an always-on membe
       store: new MemoryStore(),
     });
     await server.app.ready();
+    api = providerApi(server);
   }, STARTUP_MS + 15_000);
 
   afterAll(async () => {
@@ -147,16 +144,9 @@ describe('a provider container joins a cadre by invitation at an always-on membe
     catch { /* ignore — Windows can lag on workdir release */ }
   }, OP_MS);
 
-  /** One request against the provider's routes, its body recorded for the leak check. */
-  async function api<T>(method: 'GET' | 'POST' | 'DELETE', path: string, payload?: Record<string, unknown>): Promise<{ status: number; body: T }> {
-    const res = await server.app.inject({ method, url: `${BASE_PATH}${path}`, ...(payload ? { payload } : {}) });
-    answered.push(res.body);
-    return { status: res.statusCode, body: res.json<T>() };
-  }
-
   /** `POST /containers` with the bundle, as the app sends it: no party, no bootstrap peers, no pins. */
   async function createInvitationContainer(): Promise<RedactedContainer> {
-    const created = await api<ContainerResponse>('POST', '/containers', {
+    const created = await api.request<ProviderContainerResponse>('POST', '/containers', {
       join: { kind: 'invitation', invitation: encodedInvitation },
       profile: 'storage',
     });
@@ -169,19 +159,12 @@ describe('a provider container joins a cadre by invitation at an always-on membe
     return record;
   }
 
-  /** `GET /containers/:id`: the redacted record after the fold, and the live `/status` when running. */
-  async function readContainer(id: string): Promise<{ container: RedactedContainer; health?: ContainerHealthStatus }> {
-    const { status, body } = await api<ContainerResponse>('GET', `/containers/${id}`);
-    if (!body.ok) throw new Error(`GET /containers/${id} answered ${status}: ${body.error.code}`);
-    return body.data;
-  }
-
   /** Wait until the record's invitation has settled, `accepted` or `failed`; the failure carries the last read and the node's log. */
-  async function waitForSettledJoin(id: string, label: string): Promise<{ container: RedactedContainer; health?: ContainerHealthStatus }> {
-    let last: { container: RedactedContainer; health?: ContainerHealthStatus } | undefined;
+  async function waitForSettledJoin(id: string, label: string): Promise<ProviderContainerRead> {
+    let last: ProviderContainerRead | undefined;
     try {
       await waitUntil(async () => {
-        last = await readContainer(id);
+        last = await api.readContainer(id);
         const state = last.container.joinState?.state;
         return state === 'accepted' || state === 'failed';
       }, { timeoutMs: STARTUP_MS, intervalMs: 1_000, description: `${label}'s redemption settles` });
@@ -276,31 +259,31 @@ describe('a provider container joins a cadre by invitation at an always-on membe
   }, 2 * STARTUP_MS + 10_000);
 
   it('step 5: no response and neither child\'s output carries the bundle', async () => {
-    const listed = await api<ListResponse>('GET', '/containers');
+    const listed = await api.request<ProviderListResponse>('GET', '/containers');
     expect(listed.body.data.containers.map((c) => c.id).sort()).toEqual([firstId, secondId].sort());
     for (const container of listed.body.data.containers) {
       expect(container.join).toEqual({ kind: 'invitation' });
     }
-    await readContainer(firstId);
-    await readContainer(secondId);
+    await api.readContainer(firstId);
+    await api.readContainer(secondId);
 
     // The bundle carries the invitation's private key; it went into two children's
     // environments and came back out nowhere.
-    expect(answered.length).toBeGreaterThan(0);
-    expect(answered.some((body) => body.includes(encodedInvitation))).toBe(false);
+    expect(api.answered.length).toBeGreaterThan(0);
+    expect(api.answered.some((body) => body.includes(encodedInvitation))).toBe(false);
     for (const id of [firstId, secondId]) {
-      const handle = handleOf((await readContainer(id)).container);
+      const handle = handleOf((await api.readContainer(id)).container);
       expect(await orchestrator.getLogs(handle.dockerId, 10_000)).not.toContain(encodedInvitation);
     }
   }, OP_MS);
 
   it('step 6: deleting the containers stops both records and both children', async () => {
     for (const id of [firstId, secondId]) {
-      const handle = handleOf((await readContainer(id)).container);
-      const deleted = await api<{ ok: boolean; message: string }>('DELETE', `/containers/${id}`);
+      const handle = handleOf((await api.readContainer(id)).container);
+      const deleted = await api.request<ProviderDeleteResponse>('DELETE', `/containers/${id}`);
       expect(deleted.status).toBe(200);
       expect(deleted.body.ok).toBe(true);
-      expect((await readContainer(id)).container.status).toBe('stopped');
+      expect((await api.readContainer(id)).container.status).toBe('stopped');
       expect(isChildUp(handle.child)).toBe(false);
       expect(await orchestrator.inspectRunState(handle.dockerId)).toBeUndefined();
     }

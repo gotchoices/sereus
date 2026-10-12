@@ -36,9 +36,9 @@ export interface OwnerCliNodeOptions {
 	/** Budget for the child to start and answer on its admin channel. */
 	startupMs: number;
 	/**
-	 * Listen addresses, OS-assigned ports so the admin channel reports the bound ones. Defaults to
-	 * one loopback TCP port; add a `/ws` listener when a machine with only the WebSocket transport
-	 * (a phone) must be able to dial this node.
+	 * Listen addresses, each on port 0 so the admin channel reports the bound ones. Defaults to one
+	 * loopback TCP port; add a `/ws` listener when a machine with only the WebSocket transport (a
+	 * phone) must be able to dial this node.
 	 */
 	listenAddrs?: string[];
 }

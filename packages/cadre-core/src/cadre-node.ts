@@ -7941,6 +7941,11 @@ export class CadreNode implements SAppIdLookup {
    * {@link isMember}). Rows whose stamp is retired in `CadreControl.Revocation`
    * never reach here: {@link ControlDatabase.queryCadrePeers} excludes them, so a
    * revoked peer is not addressable either.
+   *
+   * NOTE: answers the whole `CadrePeerRow`, past the two fields declared; the integration
+   * harness (`owner-cli-node.ts`, `OwnerCliMemberRow.sig`) reads `sig` off it through the admin
+   * channel to tell a row another member seated from one the subject published itself. Narrow
+   * this to the declared fields only together with that reader.
    */
   async listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
     if (!this.controlDatabase) {

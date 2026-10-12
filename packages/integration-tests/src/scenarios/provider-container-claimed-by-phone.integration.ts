@@ -69,7 +69,6 @@ import {
   MemoryStore,
   UNCLAIMED_PARTY_ID,
   createProviderServer,
-  type ContainerHealthStatus,
   type NodeCode,
   type ProviderServer,
   type RedactedContainer,
@@ -83,8 +82,15 @@ import {
   hasOutboundTo,
   isChildUp,
   makeOwnOwner,
+  providerApi,
   requireContainerRunning,
   waitUntil,
+  type ProviderApi,
+  type ProviderCodeResponse,
+  type ProviderContainerRead,
+  type ProviderContainerResponse,
+  type ProviderDeleteResponse,
+  type ProviderListResponse,
   type ProviderProcessHandle,
 } from '../harness/index.js';
 
@@ -93,20 +99,10 @@ const STARTUP_MS = 90_000;
 /** Per-op budget for round-trips once a node is up. */
 const OP_MS = 30_000;
 const PUBLIC_HOST = 'localhost';
-const BASE_PATH = '/api/v1';
 /** Where `cadre start` records the claim: the node-state directory, the container's volume here. */
 const CLAIM_RECORD_FILE = 'claim.json';
 /** The orchestrator's per-container log, two runs of the child appended. */
 const LOG_FILE = 'node.log';
-
-/** The provider's `{ ok: false, error }` envelope. */
-interface ApiRefusal {
-  ok: false;
-  error: { code: string; message: string };
-}
-type ContainerResponse = { ok: true; data: { container: RedactedContainer; health?: ContainerHealthStatus } } | ApiRefusal;
-type ListResponse = { ok: true; data: { containers: RedactedContainer[] } };
-type CodeResponse = { ok: true; data: NodeCode } | ApiRefusal;
 
 describe('a phone-shaped requester claims a provider container from its node code (real cadre-provider API, real cadre-cli)', () => {
   const partyId = `provider-claim-${Math.random().toString(36).slice(2)}`;
@@ -114,8 +110,8 @@ describe('a phone-shaped requester claims a provider container from its node cod
   let tmpRoot: string;
   let orchestrator: ProviderProcessOrchestrator;
   let server: ProviderServer;
-  /** Every response body the provider answered, less a code route answer that IS the code: the secret must be in none. */
-  const answered: string[] = [];
+  /** The provider's routes; `api.answered` is every body but a code answer, and the secret must be in none. */
+  let api: ProviderApi;
 
   let requester: CadreNode | undefined;
   let requesterPeerId: string;
@@ -148,6 +144,7 @@ describe('a phone-shaped requester claims a provider container from its node cod
       store: new MemoryStore(),
     });
     await server.app.ready();
+    api = providerApi(server);
   });
 
   afterAll(async () => {
@@ -161,30 +158,15 @@ describe('a phone-shaped requester claims a provider container from its node cod
     catch { /* ignore — Windows can lag on workdir release */ }
   }, OP_MS);
 
-  /** One request against the provider's routes, its body recorded for the leak check unless told otherwise. */
-  async function api<T>(
-    method: 'GET' | 'POST' | 'DELETE',
-    path: string,
-    payload?: Record<string, unknown>,
-    options: { record?: boolean } = {},
-  ): Promise<{ status: number; body: T }> {
-    const res = await server.app.inject({ method, url: `${BASE_PATH}${path}`, ...(payload ? { payload } : {}) });
-    if (options.record !== false) answered.push(res.body);
-    return { status: res.statusCode, body: res.json<T>() };
-  }
-
-  /** `GET /containers/:id`: the redacted record after the fold, and the live `/status` when running. */
-  async function readContainer(): Promise<{ container: RedactedContainer; health?: ContainerHealthStatus }> {
-    const { status, body } = await api<ContainerResponse>('GET', `/containers/${containerId}`);
-    if (!body.ok) throw new Error(`GET /containers/${containerId} answered ${status}: ${body.error.code}`);
-    return body.data;
+  function readContainer(): Promise<ProviderContainerRead> {
+    return api.readContainer(containerId);
   }
 
   /** `GET /containers/:id/code`: the code, or the refusal's code. A code answer is not recorded: it carries the secret by design. */
   async function readCode(): Promise<{ status: number; code?: NodeCode; refusal?: string }> {
-    const { status, body } = await api<CodeResponse>('GET', `/containers/${containerId}/code`, undefined, { record: false });
+    const { status, body } = await api.request<ProviderCodeResponse>('GET', `/containers/${containerId}/code`, undefined, { record: false });
     if (body.ok) return { status, code: body.data };
-    answered.push(JSON.stringify(body));
+    api.answered.push(JSON.stringify(body));
     return { status, refusal: body.error.code };
   }
 
@@ -239,7 +221,7 @@ describe('a phone-shaped requester claims a provider container from its node cod
   }, STARTUP_MS);
 
   it('step 2: a claim container is created under the placeholder party and reaches running, awaiting its claim', async () => {
-    const created = await api<ContainerResponse>('POST', '/containers', { join: { kind: 'claim' }, profile: 'storage' });
+    const created = await api.request<ProviderContainerResponse>('POST', '/containers', { join: { kind: 'claim' }, profile: 'storage' });
     expect(created.status).toBe(201);
     if (!created.body.ok) throw new Error(`POST /containers refused: ${created.body.error.code}`);
     const record = created.body.data.container;
@@ -319,7 +301,7 @@ describe('a phone-shaped requester claims a provider container from its node cod
     expect(claimed.partyId).toBe(partyId);
     expect(claimed.ownerKey).toBe(requesterOwnerKey);
     // The list carries the folded party and join state with no live read per row.
-    const listed = (await api<ListResponse>('GET', '/containers')).body.data.containers.find((c) => c.id === containerId)!;
+    const listed = (await api.request<ProviderListResponse>('GET', '/containers')).body.data.containers.find((c) => c.id === containerId)!;
     expect(listed).toMatchObject({ partyId, ownerKey: requesterOwnerKey, joinState: { state: 'claimed' } });
 
     const status = await readStatus();
@@ -363,8 +345,8 @@ describe('a phone-shaped requester claims a provider container from its node cod
     expect(await readCode()).toEqual({ status: 409, refusal: 'ALREADY_CLAIMED' });
 
     // Every create, read, list and refusal so far: the secret left the provider in the code alone.
-    expect(answered.length).toBeGreaterThan(0);
-    expect(answered.some((body) => body.includes(claimPayload.secret))).toBe(false);
+    expect(api.answered.length).toBeGreaterThan(0);
+    expect(api.answered.some((body) => body.includes(claimPayload.secret))).toBe(false);
     expect(requester!.getMultiaddrs()).toEqual([]);
   }, 3 * STARTUP_MS + 2 * OP_MS);
 
@@ -426,11 +408,11 @@ describe('a phone-shaped requester claims a provider container from its node cod
 
     // Two runs' worth of output, including the `claim:accepted` line: the secret is never in it.
     expect(nodeLog()).not.toContain(claimPayload.secret);
-    expect(answered.some((body) => body.includes(claimPayload.secret))).toBe(false);
+    expect(api.answered.some((body) => body.includes(claimPayload.secret))).toBe(false);
   }, 2 * STARTUP_MS);
 
   it('step 8: deleting the container stops the record and the child', async () => {
-    const deleted = await api<{ ok: boolean; message: string }>('DELETE', `/containers/${containerId}`);
+    const deleted = await api.request<ProviderDeleteResponse>('DELETE', `/containers/${containerId}`);
     expect(deleted.status).toBe(200);
     expect(deleted.body.ok).toBe(true);
     expect((await readContainer()).container.status).toBe('stopped');
