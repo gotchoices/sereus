@@ -1,5 +1,5 @@
 description: One Sereus app links to another. The user approves the new app's enrollment before leaving, which issues an invitation; after installing, the new app redeems that invitation on first launch and joins the user's cadre with no copy and paste.
-prereq: same-phone-apps-exchange-join-by-deep-link
+prereq: reference-app-rn-asks-owner-app-by-link
 files: packages/cadre-rn/src/, packages/reference-app-rn/app/settings.tsx, docs/reference-app-rn.md, docs/architecture.md
 difficulty: medium
 ----
@@ -15,8 +15,8 @@ App A shows a link to app B. The user taps it and is asked "Allow ‹B› to joi
 B does not exist yet, so the invitation cannot name its peer id. Approving in A issues an **open** invitation (`cadre-invitations-redeemable-by-any-member`): single use, owner grant per the user's choice, short expiry (e.g. 1 hour), and annotated in A with the app it was meant for. A keeps the encoded invitation locally as a **pending handoff** for B, then opens the store page.
 
 The invitation reaches B on first launch:
-- **Android:** the Play Install Referrer carries it (or a handoff id that B exchanges with A through the ticket-9 intent, if the invitation is too large for the referrer).
-- **iOS:** there is no install referrer. On first launch B asks "Join an existing cadre?" (the first-launch prompt from `reference-app-rn-first-launch-asks-before-founding`) and opens owner apps through the ticket-9 discovery. A finds the pending handoff for B and returns the invitation without asking again; the user already approved it.
+- **Android:** the Play Install Referrer carries it (or a handoff id that B exchanges with A through the same-phone request link (`phone-kit-same-phone-join-links`: links both ways, no activity result), if the invitation is too large for the referrer).
+- **iOS:** there is no install referrer. On first launch B asks "Join an existing cadre?" (the first-launch prompt from `reference-app-rn-first-launch-asks-before-founding`) and opens owner apps through the same-phone discovery (known schemes plus `canOpenURL`). The answer-without-prompt check belongs at the seam `reference-app-rn-answers-join-requests-by-link` leaves in `handleRequest`. A finds the pending handoff for B and returns the invitation without asking again; the user already approved it.
 
 B redeems the invitation at a reachable cadre machine (ticket 5). It has no strands yet, so nothing needs moving.
 
