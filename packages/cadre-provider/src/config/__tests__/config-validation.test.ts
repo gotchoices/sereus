@@ -115,6 +115,17 @@ describe('provider config validation', () => {
     }
   });
 
+  // Docker ignores port bindings in these modes, so every container would collide on 4001/4002
+  // and the provider could reach none of them at its allocated host ports.
+  it('refuses a docker.network mode in which ports cannot be published', () => {
+    for (const network of ['host', 'none', 'container:abc']) {
+      expect(rejection(() => loadConfig({ env: { PROVIDER_DOCKER_NETWORK: network } }))).toContain(
+        'Environment variable PROVIDER_DOCKER_NETWORK: docker.network must be a network Docker can publish ports from',
+      );
+    }
+    expect(loadConfig({ env: { PROVIDER_DOCKER_NETWORK: 'bridge' } }).docker.network).toBe('bridge');
+  });
+
   it('accepts the shipped example config', () => {
     const config = loadConfig({ configFile: EXAMPLE_CONFIG, env: {} });
 

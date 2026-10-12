@@ -110,6 +110,20 @@ function publicHostProblem(host: string): string | undefined {
     : `does not parse as the single component ${component}`;
 }
 
+/**
+ * A network the containers' ports can be published from. In `host`, `none` and `container:<id>`
+ * mode Docker ignores `PortBindings`: every container would bind the same in-container ports on
+ * the host, and the provider, which reaches each one at its allocated host port, would reach none.
+ */
+const dockerNetwork = refine(nonEmptyString, (value, keyPath, ctx) =>
+  value === 'host' || value === 'none' || value.startsWith('container:')
+    ? ctx.fail(
+        keyPath,
+        `${keyPath} must be a network Docker can publish ports from, got ${ctx.describe(keyPath, value)} (port bindings are ignored in host, none and container: modes)`,
+      )
+    : value,
+);
+
 /** A DNS name or IP address the containers' public addresses can be built from. */
 const publicHost: Checker<string> = (value, keyPath, ctx) => {
   if (typeof value !== 'string') {
@@ -162,7 +176,7 @@ const auth = objectOf<Block<'auth'>>({
 
 const docker = objectOf<Block<'docker'>>({
   socketPath: nonEmptyString,
-  network: nonEmptyString,
+  network: dockerNetwork,
   image: nonEmptyString,
   pullPolicy: oneOf<NonNullable<DockerConfig['pullPolicy']>>({ always: true, 'if-not-present': true, never: true }),
   defaultResources: objectOf<NonNullable<Block<'docker'>['defaultResources']>>({

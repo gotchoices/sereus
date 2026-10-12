@@ -71,7 +71,8 @@ A block with no children (`server:` on its own) counts as absent. `storage.type:
 (`512M`, `2G`) and `cpuLimit` a quoted number (`"0.5"`); a create request's own `resources` are
 held to the same rule. `docker.portRange.end` must not be below `start`; each container takes four
 ports from the range (health, metrics, libp2p TCP, libp2p WebSocket), so the default 10000–20000
-serves 2,500 containers. `docker.publicHost` must be a DNS name or IP address with no whitespace
+serves 2,500 containers. `docker.network` may not be `host`, `none` or `container:<id>`, modes in
+which Docker ignores those port bindings. `docker.publicHost` must be a DNS name or IP address with no whitespace
 ([Phones dial containers at the public host](#phones-dial-containers-at-the-public-host)). Values under `push` and
 `billing` are never echoed into an error, and `check` prints the loaded config with every secret
 shown as `[redacted]`.
