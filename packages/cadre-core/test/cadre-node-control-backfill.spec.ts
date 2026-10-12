@@ -203,7 +203,7 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     // row is not authorizable without an anchor, which is beside the point here: the
     // re-arm follows the refresh, not the member count). The fake control node holds no
     // connections, so the hang-up of removed peers at the tail reads nothing.
-    priv.controlDatabase = { queryCadrePeers: async () => [{ peerId: 'joiner', multiaddr: null, stampId: null, vouchOwner: null, vouchSig: null, vouchUsage: null }] };
+    priv.controlDatabase = { queryCadrePeers: async () => [{ peerId: 'joiner', publicKey: null, multiaddr: null, updatedAt: 0, profile: null, sig: null, stampId: null, vouchOwner: null, vouchSig: null, vouchUsage: null }] };
 
     await priv.refreshAuthorizedControlPeers('test');
 

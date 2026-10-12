@@ -2214,9 +2214,13 @@ export class ControlDatabase {
     target: { peerId: string; ownerKey: string | null },
     signMessage: (message: Uint8Array) => string
   ): Promise<GuardedRemoval[]> {
-    const tombstones = await this.queryRevocations(false);
-    const retired = (table: RevocableTable): Set<string> =>
-      new Set(tombstones.filter((row) => row.tableName === table).map((row) => row.stampId));
+    const retiredByTable = new Map<RevocableTable, Set<string>>();
+    for (const tombstone of await this.queryRevocations(false)) {
+      const stamps = retiredByTable.get(tombstone.tableName) ?? new Set<string>();
+      stamps.add(tombstone.stampId);
+      retiredByTable.set(tombstone.tableName, stamps);
+    }
+    const retired = (table: RevocableTable): ReadonlySet<string> => retiredByTable.get(table) ?? new Set<string>();
     const liveStamp = async (table: RemovableTable, keyValue: string): Promise<string | null> => {
       const stampId = await this.queryStampId(table, keyValue, false);
       return stampId !== null && !retired(table).has(stampId) ? stampId : null;

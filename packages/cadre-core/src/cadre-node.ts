@@ -2677,6 +2677,10 @@ export class CadreNode implements SAppIdLookup {
       log('membership refresh: tombstone read for the hang-up of removed peers failed; next refresh retries: %o', error);
       return;
     }
+    // NOTE: awaited inside the membership listener, so under the control database's write
+    // lock; libp2p bounds each connection's close at its 1 s `connectionCloseTimeout`, so a
+    // silent peer holds local writes for at most that. If several removed peers ever pile up
+    // here, hang them up concurrently or move the call after the listener returns.
     for (const [remote, peer] of rowless) {
       if (!revoked.has(remote)) {
         continue;
