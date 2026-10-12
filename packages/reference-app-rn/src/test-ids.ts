@@ -121,9 +121,25 @@ export const TEST_IDS = {
 		refreshInvitationsBtn: 'btn-refresh-invitations',
 		/** Per-row Withdraw on an outstanding invitation; pass the invitation's key. */
 		withdrawInvitationBtn: (key: string) => `btn-withdraw-invitation-${key}`,
-		/** The withdraw confirmation's buttons. */
+		/** The withdraw confirmation's buttons (an open invitation, or a device invited and not joined yet). */
 		confirmWithdrawBtn: 'btn-confirm-withdraw-invitation',
 		cancelWithdrawBtn: 'btn-cancel-withdraw-invitation',
+		/** Devices and nodes: one listed machine (or owner key with no machine); pass its peer id. */
+		machineRow: (peerId: string) => `row-machine-${peerId}`,
+		/** Per-row Remove; pass the machine's peer id. Not on this device's row, nor for a member. */
+		removeMachineBtn: (peerId: string) => `btn-remove-machine-${peerId}`,
+		/** Re-reads the machines and the devices invited. */
+		refreshMachinesBtn: 'btn-refresh-machines',
+		/** The removal prompt's "Keep" switch for one device or owner the machine added; pass its peer id, else its owner key. */
+		keepDependentSwitch: (id: string) => `switch-keep-dependent-${id}`,
+		/** The removal prompt's buttons: Remove, and Cancel (Close when the removal is refused). */
+		confirmRemoveMachineBtn: 'btn-confirm-remove-machine',
+		cancelRemoveMachineBtn: 'btn-cancel-remove-machine',
+		/** On the Node card after an owner removed this app: the notice, Go back to your own cadre, Join a cadre, OK. */
+		removedNotice: 'text-removed-from-cadre',
+		returnToOwnCadreBtn: 'btn-return-to-own-cadre',
+		removedJoinBtn: 'btn-removed-join',
+		removedOkBtn: 'btn-removed-ok',
 		/** A `ShareCode`'s selectable text and its Copy button; pass the component's `testIDPrefix`. */
 		shareCodeText: (prefix: string) => `text-${prefix}-code`,
 		shareCodeCopyBtn: (prefix: string) => `btn-${prefix}-copy`,

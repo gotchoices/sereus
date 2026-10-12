@@ -437,7 +437,7 @@ packages/reference-app-rn/
   app/
     _layout.tsx               # Expo Router root layout
     index.tsx                 # Chat screen (message list + input)
-    settings.tsx              # Bootstrap config (drone address, join an existing cadre, add a device or app, seed paste, always-on node)
+    settings.tsx              # Bootstrap config (drone address, join an existing cadre, add a device or app, devices and nodes, seed paste, always-on node), and the card after this app was removed
   src/
     cadre-phone.ts            # This app's phone node (kit's createPhoneNode): WebRTC, Noise, storage names, seed apply
     node-local-names.ts       # The storage names installed phones' records are filed under, pinned by a Node test
@@ -463,7 +463,9 @@ packages/reference-app-rn/
     join-failure.ts           # Plain words for each way a join can fail before admission (NS carries a copy)
     settings-controls.tsx     # Section, button, input and styles shared by Settings and its sections
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
-    add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw
+    add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw open ones
+    machines-section.tsx      # Settings → Devices and nodes: the cadre's machines and the devices invited; an owner removes one, keeping the devices it added
+    machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, the removal prompt's Keep switches
     recommend-app-section.tsx # Settings → Add a device or app → Recommend an app: allow another app to join, then get or open it
     join-cadre-section.tsx    # Settings → Join my existing cadre: choose the app holding the cadre, this app's request, paste or scan the answer, the join's steps
     code-scanner.tsx          # Full-screen camera (expo-camera) that reads a QR code of the kind its caller accepts
@@ -807,7 +809,6 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 ### Not covered here
 
 - Strands on the node. A cadre-host node launches no strand of its own; whether it should is ticket `always-on-nodes-host-strands-of-apps-they-do-not-run`.
-- Listing the cadre's nodes or removing one from the app. cadre-host's UI and CLI do that on the machine's side.
 
 
 ## Adding a Device or App
@@ -828,14 +829,14 @@ The node code is a URI with the scheme `sereus-join`, and on Android the app reg
 | `local-network` | the new app must be on the same Wi-Fi as the cadre's other machines |
 | `issuer-only` | (warning colour) no always-on machine can answer, so the new app can join only while this app is open and reachable; add an always-on node |
 
-**Outstanding invitations** lists the invitations that can still be redeemed, latest expiry first: who it is for (a shortened peer id, or "Anyone with the text"), owner or member, expiry, and uses when it allows more than one. **Withdraw** asks once, then files the withdrawal (`withdrawCadreInvitation`), which reaches the cadre's other machines like any other control write. The list refreshes when the section appears, after an invitation is made or withdrawn, and on **Refresh**; it is not polled.
+**Outstanding invitations** lists the open invitations that can still be redeemed, latest expiry first: owner or member, expiry, and uses when it allows more than one. An invitation made for one app is listed under [Devices and Nodes](#devices-and-nodes) instead, as a device invited and not joined yet, so each invitation shows once. **Withdraw** asks once, then files the withdrawal (`withdrawCadreInvitation`), which reaches the cadre's other machines like any other control write. The list refreshes when the section appears, after an invitation is made or withdrawn, and on **Refresh**; it is not polled.
 
 **When no invitation can be made.** `createCadreInvitation` needs an address a device could dial: this phone's relay address, or another machine of the cadre's. With neither, the alert "Could not make an invitation" carries the core error, and says this phone has no relay address when it holds no relay reservation. A device whose owner key is not wired yet (a joined app whose owner grant has not arrived) is shown the member line.
 
 **Opened from another app on this phone.** Another Sereus app on this phone can open this one with its join request ([architecture.md → Between apps on one phone](architecture.md#between-apps-on-one-phone)). `app/+native-intent.tsx` routes the link to Settings, which holds the request until this section can take it. A request that carries a reply, saying where to send the answer, is answered by opening the asking app with a link (`src/join-link.ts`); the user copies nothing.
 
 - **The prompt** is titled "An app on this phone asks to join your cadre". It says what the app calls itself and that the name cannot be checked, shows the shortened peer id as **Code** to compare with the code the asking app showed, says what allowing grants, and has the **Also an owner** switch, on by default.
-- **Allow** makes the invitation for that peer id (valid 24 hours) and opens the asking app with it. The section says "Sent an invitation to ‹app›", and the invitation is listed under Outstanding invitations. When no invitation can be made, the alert shows as for a pasted request and nothing is sent, since no refusal names that case; the asking app's Cancel covers it.
+- **Allow** makes the invitation for that peer id (valid 24 hours) and opens the asking app with it. The section says "Sent an invitation to ‹app›", and the invitation is listed under Devices and nodes as invited, not joined yet. When no invitation can be made, the alert shows as for a pasted request and nothing is sent, since no refusal names that case; the asking app's Cancel covers it.
 - **Deny**, or the system back button, opens the asking app with the refusal `denied`.
 - **Answered without a prompt:** `no-cadre` while this app has no cadre (the first-launch question's condition), `not-owner` on a member that is not an owner, and `already-member` for a machine already in the cadre. When the cadre's owners and machines cannot be read, the alert shows as for a pasted request and nothing is sent; the asking app's Cancel covers it.
 - **An app the user recommended here** within the past hour gets its invitation without a prompt, after the Deny cooldown and the not-owner and already-member checks ([Recommend an app](#recommend-an-app)).
@@ -863,12 +864,57 @@ Below **Copy invitation**, the owner can recommend another Sereus app, so that i
 
 **Allowed to join** lists the permissions not yet used for this cadre, newest first: the app's name, owner or member, and the time it lapses, an hour after Allow. **Withdraw** removes one without asking, since nothing has been issued. The list is hidden while empty; it is read when the section appears, after Allow and Withdraw, after a permission is used, and on **Refresh**, and is not polled, so a lapsed row stays until the next read.
 
-**Answered without a prompt.** A request opened as a link whose reply scheme is an allowed app's scheme uses up that permission (`AppRecommendationStore.take`). This app makes the invitation for the request's peer id with the grant chosen at Allow and opens the asking app with it. The section says "Sent an invitation to ‹app›, which you allowed when you recommended it", naming the app as this app's list does, never as the request calls itself, and the invitation is listed under Outstanding invitations. A pasted request never uses a permission.
+**Answered without a prompt.** A request opened as a link whose reply scheme is an allowed app's scheme uses up that permission (`AppRecommendationStore.take`). This app makes the invitation for the request's peer id with the grant chosen at Allow and opens the asking app with it. The section says "Sent an invitation to ‹app›, which you allowed when you recommended it", naming the app as this app's list does, never as the request calls itself, and the invitation is listed under Devices and nodes as invited, not joined yet. A pasted request never uses a permission.
 
 - **Checked after the other answers.** The Deny cooldown comes first: a request within 30 seconds of a Deny is denied and leaves the permission for the next request. A request from an app already in the cadre is answered `already-member` and leaves the permission to lapse.
 - **When no invitation can be made**, the usual alert shows and the permission is gone: recommend the app again. When the asking app cannot be opened, the invitation shows for copying.
 - **When the permissions cannot be read**, the request gets the usual prompt rather than no answer.
-- **An app answering to the allowed app's scheme** within the hour is admitted the same way, whichever app it is: the accepted tradeoff in architecture.md → Recommending another app. The notice and the Outstanding list show it, and Withdraw there retires the invitation.
+- **An app answering to the allowed app's scheme** within the hour is admitted the same way, whichever app it is: the accepted tradeoff in architecture.md → Recommending another app. The notice and Devices and nodes show it, and Withdraw there retires the invitation.
+
+
+## Devices and Nodes
+
+**Settings → Devices and nodes** lists every machine of this cadre and lets an owner remove one: an uninstalled app, a lost or stolen phone, an always-on node whose machine died ([architecture.md → Removing a machine](architecture.md#removing-a-machine)). It is `src/machines-section.tsx`, shown below Add a device or app while the node is connected, and has not had a device run yet.
+
+**The list** has one row per machine `CadreNode.listMachines` reports:
+
+- **Title**: what the machine is, from the node profile it published: "App" (an app on a phone or in a browser), "Always-on node", or "Machine" until it has published one; "(this device)" on this phone's own row.
+- **Facts**: "Owner" when its key is an owner key; "Last seen" from its last self-signed record (just now, or minutes, hours or days ago; "never" when this phone holds none it can verify); and "Key", the first 8 characters of its public key, which is the fingerprint cadre-host shows for an owner. A running machine re-stamps its record every 7.5 minutes, so "Last seen 3 minutes ago" means it is running, and over about 15 minutes means it is stopped or cannot reach the cadre.
+- **Not trusted here** (warning colour): its row no longer passes this phone's membership check, as for a device an owner added, when that owner was removed and the device was not kept.
+- **Owner key, no machine joined**: an owner key whose machine has no row in the cadre, such as one seated for a machine not admitted yet.
+
+Below the machines, each live invitation made for one app that has not joined is a row "Invited, not joined yet", with the app's shortened peer id, owner or member, and expiry, and **Withdraw** (asks once). Open invitations stay under Add a device or app.
+
+The list is read when the section appears, when a join replaces the node, after each removal or withdrawal here, after Add a device or app makes or withdraws an invitation, and on **Refresh**; it is not polled. A read that finishes after the node was replaced is dropped.
+
+**Who can remove.** On an owner device every row has **Remove** except this device's, under which a line says "To remove this device, use another owner device": a device cannot sign the removal of its own owner key. A member sees the list with one line saying only an owner can remove machines, and no buttons.
+
+**The confirmation.** Remove reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or machine›?" with the machine's key and:
+
+- **What happens**: it is removed from this cadre; its owner key is removed too, when it is an owner; the invitations it could join again with are withdrawn, counted.
+- **Devices and owners this machine added**, when its owner key goes: one **Keep** switch per device or owner key that key added, on by default. A kept one is re-vouched under this device's key before the removal (`removeMachine`'s `revouch`); one switched off stops being trusted on every machine. A device added as an owner is one switch for its row and its owner key together. The prompt says to switch off anything the user does not recognise.
+- **When this device was added by the machine**: after removing it, ask another owner to add this device again, since this device cannot re-vouch its own rows.
+- **What removal does not do**: the machine keeps whatever it already copied, including the cadre's shared data, and removing it stops it syncing with this cadre's machines. It also keeps the strands' member keys (`tickets/blocked/decide-removed-machine-strand-access.md`), which is why the prompt says "this cadre's machines" and not more.
+
+**Remove** runs `removeMachine` and the list refreshes; **Cancel**, or the system back button, does nothing. A machine that holds the only owner key opens the prompt with "It cannot be removed: it holds the only owner key of this cadre." and only **Close**. A machine another owner removed meanwhile shows "Already removed", whether the plan or the removal finds it gone, and the list refreshes. Any other failure shows its error in an alert.
+
+**Uses.**
+
+- **An uninstalled app, or a lost or stolen phone**: remove it from another owner device. Its push token goes with it, so the cadre stops waking it.
+- **A dead always-on node, or a replaced host**: remove the old node here, then add the new one with [Add an always-on node](#adding-a-home-machines-node-cadre-host) (the QR claim). [cadre-host.md → Remove, reset and a lost host](cadre-host.md#remove-reset-and-a-lost-host) links here.
+- **Leaving the cadre from an owner device**: another owner removes it; this device cannot sign its own removal.
+
+### When this app is removed
+
+When an owner removes this app from its cadre while the app runs, the kit stops the node and deletes that cadre's data from this phone ([cadre-rn README → Removed from the cadre](../packages/cadre-rn/README.md#removed-from-the-cadre)). `use-cadre.ts` follows the kit's `removed` status, and the Node card reads "This device was removed from cadre ‹party id› by an owner (‹its key's fingerprint›). Its copy of that cadre has been deleted from this phone.", with:
+
+- **Go back to your own cadre**, when this app founded a cadre of its own before it joined: starts it from the start the kit saved, which has auto-start off until then.
+- **Join a cadre**: shows Join my existing cadre below.
+- **OK**: clears the card, leaving the Connect form filled from that saved start, or the first-launch question when this app has no cadre of its own.
+
+The status reads idle, not an error. Connected sections, a prompt open in them, and a join step on screen go with the node. As soon as the node reports the removal, before the kit has finished deleting, the hook drops the options the lifecycle runner cold-starts from, so a return to the foreground never builds the removed cadre again on empty storage.
+
+It is best-effort, as the report is: a phone removed while the app was not running is not told, and keeps that cadre's data while the cadre's machines refuse it.
 
 
 ## Joining an Existing Cadre

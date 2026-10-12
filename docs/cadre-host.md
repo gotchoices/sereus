@@ -120,7 +120,7 @@ Anyone who scans the code claims the node: the secret is the only check, so show
   *How the host hears it.* The child stops its node, writes a removal marker into its workdir, and stays up reporting `node.removed` on `/status` ([cadre-cli README → Removed from the cadre](../packages/cadre-cli/README.md#removed-from-the-cadre)); the watcher moves the record on its next poll. A node removed while the host was down reads the marker when it is respawned and reports the removal at once.
 
   *Best-effort.* The node learns of the removal only if it reaches the node before the cadre cuts it off ([architecture.md → Removing a machine](architecture.md#removing-a-machine)). One that never does goes on reading `joined` with `connected` false, and the admin removes it here.
-- **A host lost for good.** A dead disk or a replaced machine takes the nodes' identity keys with it, and nothing on another machine can come back as those peers. The owner removes the old node from the cadre with Remove in the reference app (`CadreNode.removeMachine`, [Removing a machine](architecture.md#removing-a-machine)), then claims a node on the replacement machine (Join by QR code).
+- **A host lost for good.** A dead disk or a replaced machine takes the nodes' identity keys with it, and nothing on another machine can come back as those peers. The owner removes the old node from the cadre with Remove in the phone reference app ([reference-app-rn.md → Devices and Nodes](reference-app-rn.md#devices-and-nodes); `CadreNode.removeMachine`, [Removing a machine](architecture.md#removing-a-machine)), then claims a node on the replacement machine (Join by QR code).
 
 ### Where the credentials go
 

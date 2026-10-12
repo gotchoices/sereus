@@ -16,6 +16,7 @@ import type {
   CadreInvitation,
   CadreJoinReply,
   CadreInviteStatus,
+  CadreMachine,
   CadreNode,
   CreateCadreInvitationOptions,
   CreateCadreInvitationResult,
@@ -24,7 +25,10 @@ import type {
   StrandInstance,
   StrandConfig,
   ConnectionPathSummary,
+  MachineRemovalPlan,
+  MachineRemovalResult,
   OpenInvitation,
+  RemoveMachineOptions,
   FormStrandResult,
   RelayReservationState,
   StrandFormationDisclosure,
@@ -53,7 +57,7 @@ import { defaultNoiseCryptoMode } from './noise-crypto-config';
 import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE_PREFIX } from './node-local-names';
 import { resolveRelayAddrs } from './relay-config';
 
-export type { JoinCadreResult, PhoneJoinProgress, PhoneNodeOptions, StrandMoveOutcome } from '@serfab/cadre-rn/phone-node';
+export type { JoinCadreResult, PhoneJoinProgress, PhoneNodeOptions, PhoneNodeStatus, StrandMoveOutcome } from '@serfab/cadre-rn/phone-node';
 // The errors `use-join-flow.ts` tells apart after a join, re-exported so the hook reaches the kit only
 // through this module, which its tests mock.
 export { FormerPartyNotEmptyError, StrandMovePendingError } from '@serfab/cadre-rn/phone-node';
@@ -267,9 +271,14 @@ export function getRunningOptions(): PhoneNodeOptions | null {
   return phone.options;
 }
 
-/** The kit's view of the node: stopped, starting, joining, running or failed. */
+/** The kit's view of the node: stopped, starting, joining, running, removed or failed. */
 export function getPhoneNodeStatus(): PhoneNodeStatus {
   return phone.status;
+}
+
+/** Follow the kit's status; returns the unsubscribe. */
+export function onPhoneNodeStatus(listener: (status: PhoneNodeStatus) => void): () => void {
+  return phone.onStatus(listener);
 }
 
 /**
@@ -378,6 +387,23 @@ export async function listCadreInvitations(): Promise<CadreInviteStatus[]> {
 /** Withdraw a cadre invitation by its key. Thin pass-through to {@link CadreNode.withdrawCadreInvitation}. */
 export async function withdrawCadreInvitation(key: string): Promise<boolean> {
   return running().withdrawCadreInvitation(key);
+}
+
+// ── Machine helpers (devices and nodes) ───────────────────────────────────────
+
+/** The cadre's machines and owner keys. Thin pass-through to {@link CadreNode.listMachines}. */
+export async function listMachines(): Promise<CadreMachine[]> {
+  return running().listMachines();
+}
+
+/** What removing `peerId` would do, read without writing. Thin pass-through to {@link CadreNode.planMachineRemoval}. */
+export async function planMachineRemoval(peerId: string): Promise<MachineRemovalPlan> {
+  return running().planMachineRemoval(peerId);
+}
+
+/** Remove a machine, re-vouching the dependents kept first. Thin pass-through to {@link CadreNode.removeMachine}. */
+export async function removeMachine(peerId: string, options: RemoveMachineOptions): Promise<MachineRemovalResult> {
+  return running().removeMachine(peerId, options);
 }
 
 // ── Formation helpers (closed-strand consent flow) ────────────────────────────

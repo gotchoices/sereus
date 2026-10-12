@@ -1,6 +1,7 @@
 /**
  * Settings screen — connect to cadre, join an existing cadre (the app that recommended this one
- * among them), add a device or app, apply seed, create strand, add an always-on node.
+ * among them), add a device or app, list and remove the cadre's devices and nodes, apply seed,
+ * create strand, add an always-on node; and what this app shows after an owner removed it.
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -19,6 +20,9 @@ import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { AddDeviceSection } from '../src/add-device-section';
 import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
+import { MachinesSection } from '../src/machines-section';
+import { ownerFingerprint } from '../src/node-claim';
+import type { RemovedFrom } from '../src/use-cadre';
 import { askOwnerAppOrAlert, JoinCadreSection } from '../src/join-cadre-section';
 import { answerJoinRequest, isAnswerable, joinResponseAlert } from '../src/join-link';
 import type { JoinResponseOutcome } from '../src/use-link-request';
@@ -99,17 +103,19 @@ export default function SettingsScreen() {
   const [noiseCryptoMode, setNoiseCryptoMode] = useState(initialForm.noiseCryptoMode);
   // The saved options are read at launch, and that read can resolve after this screen
   // mounted; apply them when it does. The hook also sets them after a join or a dissolve,
-  // which switch or restart the node. Each happens while the Connect form is hidden, so
-  // this never overwrites an edit.
-  const { savedStartOptions } = cadre;
+  // which switch or restart the node, and after this app was removed from its cadre, when
+  // they name this app's own cadre or are gone (null once read: the form must not offer the
+  // removed party). Each happens while the Connect form is hidden, so this never overwrites
+  // an edit.
+  const { savedStartOptions, savedStartRead } = cadre;
   useEffect(() => {
-    if (!savedStartOptions) return;
+    if (!savedStartOptions && savedStartRead !== 'read') return;
     const form = connectFormFrom(savedStartOptions);
     setPartyId(form.partyId);
     setBootstrapAddr(form.bootstrapAddr);
     setRelayAddr(form.relayAddr);
     setNoiseCryptoMode(form.noiseCryptoMode);
-  }, [savedStartOptions]);
+  }, [savedStartOptions, savedStartRead]);
   const [seedInput, setSeedInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
   const [inviteInput, setInviteInput] = useState('');
@@ -129,6 +135,14 @@ export default function SettingsScreen() {
   const [linkedNodeCode, setLinkedNodeCode] = useLinkedNodeCode();
   // Screen state, not saved: until a start is saved the question comes back on the next launch.
   const [firstLaunchAnswer, setFirstLaunchAnswer] = useState<FirstLaunchAnswer | null>(null);
+  // After a removal: Join a cadre was tapped, so the join section shows under the card.
+  const [joinAfterRemoval, setJoinAfterRemoval] = useState(false);
+  const { removedFrom } = cadre;
+  useEffect(() => {
+    setJoinAfterRemoval(false);
+  }, [removedFrom]);
+  // Bumped by Add a device or app so Devices and nodes reads the invitations made for one app.
+  const [machinesRead, setMachinesRead] = useState(0);
 
   const showAlert = useCallback((title: string, message: string, detail?: string) => {
     setModal({ title, message, detail });
@@ -158,6 +172,14 @@ export default function SettingsScreen() {
 
   const handleDisconnect = async () => {
     await cadre.stop();
+  };
+
+  const handleReturnToOwnCadre = async () => {
+    try {
+      await cadre.returnToOwnCadre();
+    } catch (err) {
+      showAlert('Could not go back to your own cadre', String(err));
+    }
   };
 
   // ── Seed ───────────────────────────────────────────────────────────────
@@ -271,6 +293,7 @@ export default function SettingsScreen() {
   // `error` too: a first-launch join whose start failed keeps the Yes state and its paste, not the Connect form.
   const asking = noCadreYet && (cadre.status === 'idle' || cadre.status === 'error') && cadre.joinFlow === null;
   const firstLaunchJoin = asking && firstLaunchAnswer === 'join';
+  const removedJoin = removedFrom !== null && joinAfterRemoval;
   // Called after `asking`, which it reads: a request that arrives while this app has no cadre is answered at once.
   const [linkedRequest, clearLinkedRequest] = useLinkedJoinRequest(showAlert, cadre.identityPeerId, asking, cadre.linkRequestCameBack);
   // Not while the launch read or a start runs: the join would stop a node the hook has not finished showing.
@@ -336,6 +359,19 @@ export default function SettingsScreen() {
           </>
         ) : cadre.savedStartRead === 'reading' ? (
           <InfoRow label="Status" value={cadre.status} color="#ff9800" />
+        ) : removedFrom ? (
+          <>
+            {/* Ahead of the first-launch question and the Connect form, and kept while Go back starts this app's own cadre. */}
+            <RemovedCard
+              removed={removedFrom}
+              returning={cadre.status === 'connecting'}
+              joinShown={joinAfterRemoval}
+              onReturn={() => void handleReturnToOwnCadre()}
+              onJoin={() => setJoinAfterRemoval(true)}
+              onDismiss={cadre.dismissRemoval}
+            />
+            {waitingHints}
+          </>
         ) : asking && firstLaunchAnswer === null ? (
           <>
             {recommending.reading ? (
@@ -400,11 +436,21 @@ export default function SettingsScreen() {
         </Section>
       )}
 
-      {/* Join my existing cadre; also while a join and what follows it are on screen, whatever the status, and on first launch after Yes */}
-      {(connected || cadre.joinFlow !== null || firstLaunchJoin) && <JoinCadreSection showAlert={showAlert} firstLaunch={noCadreYet} />}
+      {/* Join my existing cadre; also while a join and what follows it are on screen, whatever the status, on first launch after Yes, and after a removal on Join a cadre */}
+      {(connected || cadre.joinFlow !== null || firstLaunchJoin || removedJoin) && <JoinCadreSection showAlert={showAlert} firstLaunch={noCadreYet} />}
 
       {/* Add a device or app (an owner mints a cadre invitation for another app) */}
-      {connected && <AddDeviceSection showAlert={showAlert} linkedRequest={linkedRequest} onLinkedRequestTaken={clearLinkedRequest} />}
+      {connected && (
+        <AddDeviceSection
+          showAlert={showAlert}
+          linkedRequest={linkedRequest}
+          onLinkedRequestTaken={clearLinkedRequest}
+          onInvitationsChanged={() => setMachinesRead((n) => n + 1)}
+        />
+      )}
+
+      {/* Devices and nodes (list the cadre's machines; an owner removes one) */}
+      {connected && <MachinesSection showAlert={showAlert} refreshKey={machinesRead} />}
 
       {/* Strand */}
       {connected && (
@@ -512,6 +558,43 @@ function RecommendedFirstLaunchQuestion({ app, onJoin, onOtherChoices }: {
       <Text style={controlStyles.hint}>{`This app opens ${app.name} with its request to join, and joins when ${app.name} answers.`}</Text>
       <Btn label={`Join through ${app.name}`} onPress={() => onJoin(app)} testID={TEST_IDS.settings.firstLaunchRecommendedJoinBtn} />
       <Btn label="Other choices" onPress={onOtherChoices} color="#444" testID={TEST_IDS.settings.firstLaunchOtherChoicesBtn} />
+    </View>
+  );
+}
+
+/**
+ * Shown after an owner removed this app from its cadre: the kit has stopped the node and deleted
+ * that cadre's data. OK clears it, leaving the Connect form, or the first-launch question when
+ * this app has no cadre of its own.
+ */
+function RemovedCard({ removed, returning, joinShown, onReturn, onJoin, onDismiss }: {
+  removed: RemovedFrom;
+  /** Go back to your own cadre is starting it. */
+  returning: boolean;
+  /** Join a cadre was tapped, so the join section shows below. */
+  joinShown: boolean;
+  onReturn: () => void;
+  onJoin: () => void;
+  onDismiss: () => void;
+}) {
+  const by = removed.signerKey ? `an owner (${ownerFingerprint(removed.signerKey)})` : 'an owner';
+  return (
+    <View>
+      <Text style={styles.question} testID={TEST_IDS.settings.removedNotice}>
+        {`This device was removed from cadre ${removed.partyId} by ${by}. Its copy of that cadre has been deleted from this phone.`}
+      </Text>
+      {removed.formerPartyId !== undefined && (
+        <Btn
+          label={returning ? 'Going back to your own cadre…' : 'Go back to your own cadre'}
+          onPress={onReturn}
+          disabled={returning}
+          testID={TEST_IDS.settings.returnToOwnCadreBtn}
+        />
+      )}
+      {joinShown
+        ? <Text style={controlStyles.hint}>This app joins a cadre under Join my existing cadre below.</Text>
+        : <Btn label="Join a cadre" onPress={onJoin} disabled={returning} color="#444" testID={TEST_IDS.settings.removedJoinBtn} />}
+      <Btn label="OK" onPress={onDismiss} disabled={returning} color="#444" testID={TEST_IDS.settings.removedOkBtn} />
     </View>
   );
 }

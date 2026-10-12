@@ -15,8 +15,12 @@ import type {
   StrandFormationDisclosure,
   NodeClaimPayload,
   CadreInviteStatus,
+  CadreMachine,
   CreateCadreInvitationOptions,
   CreateCadreInvitationResult,
+  MachineRemovalPlan,
+  MachineRemovalResult,
+  RemoveMachineOptions,
 } from '@serfab/cadre-core';
 import {
   startPhoneNode,
@@ -27,6 +31,7 @@ import {
   getRelayState,
   getRunningOptions,
   getPhoneNodeStatus,
+  onPhoneNodeStatus,
   loadSavedStartOptions,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
@@ -35,9 +40,13 @@ import {
   createCadreInvitation as createCadreInvitationImpl,
   listCadreInvitations as listCadreInvitationsImpl,
   withdrawCadreInvitation as withdrawCadreInvitationImpl,
+  listMachines as listMachinesImpl,
+  planMachineRemoval as planMachineRemovalImpl,
+  removeMachine as removeMachineImpl,
   identityPeerId,
   joinRequestText,
   type PhoneNodeOptions,
+  type PhoneNodeStatus,
   type SavedStartOptions,
 } from './cadre-phone';
 import { useJoinFlow, type JoinFlowActions } from './use-join-flow';
@@ -102,6 +111,15 @@ export type CadreStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
 export type SavedStartRead = 'reading' | 'read' | 'failed';
 
+/** This app's removal from a cadre by one of its owners, as the kit reported it (its `removed` status). */
+export interface RemovedFrom {
+  partyId: string;
+  /** The owner key that removed this app, when this phone could verify it; null otherwise. */
+  signerKey: string | null;
+  /** The cadre this app founded and left, which {@link UseCadreResult.returnToOwnCadre} starts. */
+  formerPartyId?: string;
+}
+
 export interface UseCadreResult extends JoinFlowActions {
   /** Current connection status */
   status: CadreStatus;
@@ -153,6 +171,19 @@ export interface UseCadreResult extends JoinFlowActions {
    * `read` with null {@link savedStartOptions} means this app has no party yet.
    */
   savedStartRead: SavedStartRead;
+  /**
+   * Set when an owner removed this app from its cadre: the kit has stopped the node and deleted
+   * that cadre's data from this phone. Status is `idle`. Cleared when a node runs again, and by
+   * {@link dismissRemoval}.
+   */
+  removedFrom: RemovedFrom | null;
+  /** Clear {@link removedFrom} off the screen. */
+  dismissRemoval: () => void;
+  /**
+   * After a removal: start the cadre this app founded and left, which the saved start names
+   * (with auto-start off) once the kit has acted on the removal. Throws when no start is saved.
+   */
+  returnToOwnCadre: () => Promise<void>;
   /** Start the node with the given options */
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
@@ -218,6 +249,15 @@ export interface UseCadreResult extends JoinFlowActions {
    * it was already withdrawn or is not held here.
    */
   withdrawCadreInvitation: (key: string) => Promise<boolean>;
+  /** The cadre's machines, and owner keys with no machine, as this node judges them (`CadreNode.listMachines`). */
+  listMachines: () => Promise<CadreMachine[]>;
+  /** What removing a machine would do, read without writing (`CadreNode.planMachineRemoval`). */
+  planMachineRemoval: (peerId: string) => Promise<MachineRemovalPlan>;
+  /**
+   * Remove a machine from the cadre, re-vouching the dependents kept first (`CadreNode.removeMachine`).
+   * Throws `MachineRemovalRefusedError` on a refusal; all false when it was already removed.
+   */
+  removeMachine: (peerId: string, options: RemoveMachineOptions) => Promise<MachineRemovalResult>;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -247,6 +287,7 @@ export function useCadreInternal(): UseCadreResult {
   const [relayStatus, setRelayStatus] = useState<RelayReservationStatus>(() => getRelayState().status);
   const [savedStartOptions, setSavedStartOptions] = useState<PhoneNodeOptions | null>(null);
   const [savedStartRead, setSavedStartRead] = useState<SavedStartRead>('reading');
+  const [removedFrom, setRemovedFrom] = useState<RemovedFrom | null>(null);
   // Track the latest node so event handlers always reference it
   const nodeRef = useRef<CadreNode | null>(node);
   nodeRef.current = node;
@@ -558,6 +599,63 @@ export function useCadreInternal(): UseCadreResult {
     setStatus('idle');
   }, [showNode, dismissJoinFlow]);
 
+  // ── Removed from the cadre by an owner ─────────────────────────────────
+
+  // The runner's options name the removed party, and its cold start would build that party again
+  // on empty storage. They go when the node reports the removal: the kit stops the node at once but
+  // reports `removed` only after deleting the party's storage, and a foreground return in between
+  // finds no node and cold-starts.
+  useEffect(() => {
+    if (!node) return;
+    const onRemoved = () => {
+      optsRef.current = null;
+    };
+    node.on('cadre:removed', onRemoved);
+    return () => {
+      node.off('cadre:removed', onRemoved);
+    };
+  }, [node]);
+
+  // The kit has stopped the node and deleted the party's storage. Dropping the node stops the
+  // runner. The saved start now names this app's own cadre with auto-start off, or nothing; the
+  // Connect form refills from it.
+  const forgetRemovedParty = useCallback((removed: Extract<PhoneNodeStatus, { state: 'removed' }>) => {
+    optsRef.current = null;
+    showNode(null);
+    setSelectedStrandId(null);
+    // A step left on screen acts on the node that is gone.
+    dismissJoinFlow();
+    setError(null);
+    setStatus('idle');
+    setRemovedFrom({ partyId: removed.partyId, signerKey: removed.removal.signerKey, formerPartyId: removed.formerPartyId });
+    void loadSavedStartOptions().then(
+      (saved) => setSavedStartOptions(saved?.options ?? null),
+      (err: unknown) => console.warn('[use-cadre] could not read the saved start after this app was removed:', err),
+    );
+  }, [showNode, dismissJoinFlow]);
+
+  useEffect(() => {
+    const follow = (kit: PhoneNodeStatus) => {
+      if (kit.state === 'removed') forgetRemovedParty(kit);
+      else if (kit.state === 'running') setRemovedFrom(null);
+    };
+    const unsubscribe = onPhoneNodeStatus(follow);
+    // A removal the kit acted on before this mounted (a push wake's node) is still its status.
+    follow(getPhoneNodeStatus());
+    return unsubscribe;
+  }, [forgetRemovedParty]);
+
+  const dismissRemoval = useCallback(() => {
+    setRemovedFrom(null);
+  }, []);
+
+  // Read again rather than taken from `savedStartOptions`, which the removal refills asynchronously.
+  const returnToOwnCadre = useCallback(async () => {
+    const saved = await loadSavedStartOptions();
+    if (!saved) throw new Error('This app has no cadre of its own saved on this phone.');
+    await start(saved.options);
+  }, [start]);
+
   const applySeed = useCallback(async (encoded: string) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
@@ -692,14 +790,33 @@ export function useCadreInternal(): UseCadreResult {
     return await withdrawCadreInvitationImpl(key);
   }, []);
 
+  // ── Devices and nodes (listing and removing machines) ──────────────────
+
+  const listMachines = useCallback(async () => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await listMachinesImpl();
+  }, []);
+
+  const planMachineRemoval = useCallback(async (peerId: string) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await planMachineRemovalImpl(peerId);
+  }, []);
+
+  const removeMachine = useCallback(async (peerId: string, options: RemoveMachineOptions) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await removeMachineImpl(peerId, options);
+  }, []);
+
   return {
     status, node, peerId, ownerPublicKey, noiseCryptoMode, strands,
     selectedStrandId, activeStrand, selectStrand,
     error, runnerState, resuming, degraded, relayStatus, savedStartOptions, savedStartRead,
+    removedFrom, dismissRemoval, returnToOwnCadre,
     start, stop, applySeed, dialPeer, createStrand,
     identityPeerId, joinRequestText, ...joinFlowActions,
     createClosedStrandWithInvite, joinViaInvite, isOwnerDevice, claimHostNode,
     isMemberPeer, createCadreInvitation, listCadreInvitations, withdrawCadreInvitation,
+    listMachines, planMachineRemoval, removeMachine,
   };
 }
 

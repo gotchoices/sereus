@@ -1,6 +1,6 @@
 description: Someone with two Android devices (or a device and an emulator) and an always-on machine needs to try the phone app's "join my existing cadre" flows by hand, because adding an app to a cadre, joining one, moving chats into it and the new first-launch question were all written and tested without a phone.
 architecture: docs/architecture.md#an-app-joins-an-existing-cadre
-files: packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/src/use-join-flow.ts, packages/reference-app-rn/src/join-flow.ts, packages/reference-app-rn/src/join-failure.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/maestro/_setup.yaml, docs/reference-app-rn.md
+files: packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/src/machines-section.tsx, packages/reference-app-rn/src/use-join-flow.ts, packages/reference-app-rn/src/join-flow.ts, packages/reference-app-rn/src/join-failure.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/maestro/_setup.yaml, docs/reference-app-rn.md
 repro: none
 ----
 
@@ -10,11 +10,11 @@ repro: none
 
 ## Why this needs a person
 
-Four tickets landed with no device: `phone-kit-identity-peer-id-and-join-phases` (the kit's join progress and identity peer id), `reference-app-rn-owner-adds-device-or-app` (Settings → Add a device or app), `reference-app-rn-joins-existing-cadre` (Settings → Join my existing cadre, with chats moved and the old cadre removed) and `reference-app-rn-first-launch-asks-before-founding` (the "Do you already use Sereus apps?" question). Their headless coverage runs in Node; nothing has exercised the screens, the QR codes, the camera or a join across a real network.
+Four tickets landed with no device: `phone-kit-identity-peer-id-and-join-phases` (the kit's join progress and identity peer id), `reference-app-rn-owner-adds-device-or-app` (Settings → Add a device or app), `reference-app-rn-joins-existing-cadre` (Settings → Join my existing cadre, with chats moved and the old cadre removed) and `reference-app-rn-first-launch-asks-before-founding` (the "Do you already use Sereus apps?" question). `reference-app-rn-devices-and-nodes` (Settings → Devices and nodes, and the card a removed app shows) landed the same way. Their headless coverage runs in Node; nothing has exercised the screens, the QR codes, the camera or a join across a real network.
 
 ## Setup
 
-Follow `docs/reference-app-rn.md` → "Adding a Device or App" and "Joining an Existing Cadre". Call the device that holds the cadre the **owner app** and the one joining it the **new app**. Where the doc turns out to be wrong, correcting it is part of this ticket.
+Follow `docs/reference-app-rn.md` → "Adding a Device or App", "Devices and Nodes" and "Joining an Existing Cadre". Call the device that holds the cadre the **owner app** and the one joining it the **new app**. Where the doc turns out to be wrong, correcting it is part of this ticket.
 
 ## What to run
 
@@ -28,6 +28,7 @@ Follow `docs/reference-app-rn.md` → "Adding a Device or App" and "Joining an E
 | Cancel while waiting | Stop the always-on machine, then join from an app with its own cadre | "waiting for an always-on machine" with the next try's time; **Cancel** puts the app back in its own cadre unchanged |
 | Reach warnings | Make invitations on an owner app whose cadre's only dialable address is the issuer, and one that is local-network only | The `issuer-only` and `local-network` warnings show on the owner app |
 | Withdrawn invitation | Make an invitation, Withdraw it under Outstanding invitations, then paste it in the new app | Refused with the `invite-spent` alert; the new app stays where it was |
+| Devices and nodes, and removing the new app | After a join, on the owner app: Settings → Devices and nodes; then Remove on the new app's row (with a device it added as an owner, if any) → Remove | Both apps listed, the owner app's own row marked "(this device)", last seen within minutes; an invitation made for an app not joined shows "Invited, not joined yet". After Remove the row is gone, and the new app, if it was running, shows "This device was removed from cadre …" with Go back to your own cadre (when it founded one), Join a cadre and OK; leaving it in the background and returning does not start the removed cadre again |
 | Maestro | `yarn workspace @serfab/reference-app-rn test:e2e` (emulator, dev client, Maestro, adb) | `_setup.yaml` answers the question with Yes, joins the drone's cadre and flows 1–4 pass |
 
 Also note how long each joining step runs, whether the wording fits the screen, and how the modals behave when a scanner closes and an alert opens at once.

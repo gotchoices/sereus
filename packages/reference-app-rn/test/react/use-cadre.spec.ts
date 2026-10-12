@@ -16,7 +16,8 @@
  *    by the `node`-dep change mid-resume without leaving `resuming` stuck;
  *  - a degraded resume propagating out to the status banner;
  *  - launch resuming the last session from the saved start options;
- *  - a join holding no node while it runs, and refilling the saved options after.
+ *  - a join holding no node while it runs, and refilling the saved options after;
+ *  - a removal by an owner leaving the runner nothing to cold-start.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -150,9 +151,11 @@ const h = vi.hoisted(() => {
     saved: unknown;
     /** What `getRunningOptions()` reports: the options of the node the kit runs. */
     runningOptions: unknown;
+    /** The hook's `onPhoneNodeStatus` listeners, which a test calls as the kit would. */
+    statusListeners: Set<(status: unknown) => void>;
   } = {
     node: null, appState: new FakeAppState(), startCount: 0, nodeCounter: 0, lastOpts: null,
-    relay: noRelay(), saved: undefined, runningOptions: null,
+    relay: noRelay(), saved: undefined, runningOptions: null, statusListeners: new Set(),
   };
 
   return { FakeAppState, MockNode, ctl, noRelay };
@@ -186,6 +189,10 @@ vi.mock('../../src/cadre-phone', () => ({
   loadSavedStartOptions: vi.fn(async () => h.ctl.saved),
   getRunningOptions: () => h.ctl.runningOptions,
   getPhoneNodeStatus: () => (h.ctl.node ? { state: 'running' } : { state: 'stopped' }),
+  onPhoneNodeStatus: (listener: (status: unknown) => void) => {
+    h.ctl.statusListeners.add(listener);
+    return () => h.ctl.statusListeners.delete(listener);
+  },
   joinCadreByInvitation: vi.fn(),
   identityPeerId: vi.fn(),
   joinRequestText: vi.fn(),
@@ -306,6 +313,7 @@ function resetHarness(): void {
   h.ctl.relay = h.noRelay();
   h.ctl.saved = undefined;
   h.ctl.runningOptions = null;
+  h.ctl.statusListeners = new Set();
   vi.clearAllMocks();
 }
 
@@ -723,6 +731,43 @@ describe('useCadreInternal — joining an existing cadre', () => {
     // The Connect form shows the joined party: Disconnect → Connect must not restart the one it left.
     expect(sink.current!.node).toBe(h.ctl.node as unknown as UseCadreResult['node']);
     expect(sink.current!.savedStartOptions?.partyId).toBe('party-a');
+  });
+});
+
+describe('useCadreInternal — removed from the cadre by an owner', () => {
+  beforeEach(resetHarness);
+
+  const REMOVAL = { partyId: OPTS.partyId, stampId: 'stamp-1', signerKey: 'owner-key-b', at: 0 };
+  const OWN_OPTS: PhoneNodeOptions = { partyId: 'own-party', bootstrapAddrs: [], relayAddrs: [], origin: 'founded' };
+
+  // The kit stops the node when cadre-core reports the removal, and reports `removed` only after
+  // deleting the party's storage; a cold start from the runner's options in either window would
+  // build the removed party again on empty storage.
+  it('leaves the runner nothing to cold-start, then shows the removal', async () => {
+    const sink = await mountStarted();
+    const removedNode = h.ctl.node!;
+
+    await actFlush(() => {
+      removedNode.emit('cadre:removed', REMOVAL);
+      h.ctl.node = null;
+    });
+    await actFlush(() => h.ctl.appState.fire('background'));
+    await actFlush(() => h.ctl.appState.fire('active'));
+    expect(startPhoneNode).toHaveBeenCalledTimes(1);
+
+    h.ctl.saved = { options: OWN_OPTS, autoStart: false } satisfies SavedStartOptions;
+    await actFlush(() => {
+      for (const listener of h.ctl.statusListeners) {
+        listener({ state: 'removed', partyId: OPTS.partyId, removal: REMOVAL, formerPartyId: 'own-party' });
+      }
+    });
+
+    expect(sink.current!.node).toBeNull();
+    expect(sink.current!.status).toBe('idle');
+    expect(sink.current!.error).toBeNull();
+    expect(sink.current!.removedFrom).toEqual({ partyId: OPTS.partyId, signerKey: 'owner-key-b', formerPartyId: 'own-party' });
+    // The Connect form and Go back to your own cadre read the start the kit saved in place of the removed party's.
+    expect(sink.current!.savedStartOptions).toEqual(OWN_OPTS);
   });
 });
 

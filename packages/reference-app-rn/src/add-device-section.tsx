@@ -7,8 +7,8 @@
  * peer id, and after the owner approves, the invitation can be redeemed by that app alone.
  * **Copy invitation**: an open invitation that whoever holds the text can redeem. Either
  * way the invitation shows as a QR code and as text until Done; this phone keeps no copy of
- * the text. The cadre holds the invitation's row, which the outstanding list reads and
- * Withdraw retires.
+ * the text. The cadre holds the invitation's row, which Withdraw retires: an open one from the
+ * outstanding list here, one for a single app from Devices and nodes (`machines-section.tsx`).
  *
  * A request another app on this phone opened this one with, carrying a reply, is answered back
  * to that app instead (`join-link.ts`): the invitation, or why there is none. When the user allowed
@@ -35,7 +35,7 @@ import { recommendations } from './cadre-phone';
 import { CodeScanner } from './code-scanner';
 import { answerJoinRequest, isAnswerable, OWN_REQUEST_LINE, type AnswerableJoinRequest } from './join-link';
 import { RecommendAppSection } from './recommend-app-section';
-import { Btn, controlStyles, Fact, LabelledInput, OwnerSwitch, Section, shortPeerId, validUntilText } from './settings-controls';
+import { Btn, controlStyles, Fact, LabelledInput, OwnerSwitch, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
 import { ShareCode } from './share-code';
 import { TEST_IDS } from './test-ids';
 
@@ -99,11 +99,13 @@ interface PendingRequest {
 // minted invitation stays on screen across a tab switch. If Settings is ever unmounted on
 // blur, it would be lost (the cadre still holds its row, and the list shows it), and so would
 // the Deny cooldown.
-export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequestTaken }: {
+export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequestTaken, onInvitationsChanged }: {
 	showAlert: ShowAlert;
 	/** A join request opened from another app on this phone, decoded by Settings and not yet handled. */
 	linkedRequest?: CadreJoinRequest | null;
 	onLinkedRequestTaken?: () => void;
+	/** After an invitation is made or withdrawn here: Devices and nodes lists those made for one app. */
+	onInvitationsChanged?: () => void;
 }) {
 	const cadre = useCadre();
 	const [standing, setStanding] = useState<Standing>('checking');
@@ -294,6 +296,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 			const { key, expiresAt } = invitation.invite;
 			console.info(`[settings] made cadre invitation ${key} (for ${options.peerId ?? 'anyone'}, owner ${options.grantsOwner}, reach ${reach})`);
 			void refreshInvitations();
+			onInvitationsChanged?.();
 			return { key, title, encoded, reach, expiresAtMs: parseNullableStoredDatetimeMs(expiresAt) };
 		} catch (err) {
 			console.warn('[settings] making a cadre invitation failed:', err);
@@ -356,6 +359,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 			showAlert('Could not withdraw the invitation', errorMessage(err));
 		}
 		await refreshInvitations();
+		onInvitationsChanged?.();
 	};
 
 	const handleConfirmWithdraw = () => {
@@ -480,7 +484,7 @@ function InvitationRow({ status, onWithdraw }: { status: CadreInviteStatus; onWi
 	return (
 		<View style={controlStyles.listRow}>
 			<View style={controlStyles.listRowText}>
-				<Text style={controlStyles.listRowTitle}>{invite.peerId ? `For ${shortPeerId(invite.peerId)}` : 'Anyone with the text'}</Text>
+				<Text style={controlStyles.listRowTitle}>Anyone with the text</Text>
 				<Text style={controlStyles.listRowMeta}>
 					{invite.grantsOwner ? 'owner' : 'member'} · {validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}{uses}
 				</Text>
@@ -539,32 +543,18 @@ function RequestPrompt({ pending, grantsOwner, onGrantsOwnerChange, onApprove, o
 	);
 }
 
-function WithdrawPrompt({ open, onConfirm, onCancel }: { open: boolean; onConfirm: () => void; onCancel: () => void }) {
-	return (
-		<Modal visible={open} transparent animationType="fade" onRequestClose={onCancel}>
-			<View style={controlStyles.modalOverlay}>
-				<View style={controlStyles.modalBox}>
-					<Text style={controlStyles.modalTitle}>Withdraw this invitation?</Text>
-					<Text style={controlStyles.promptText}>Nobody can join with it afterwards.</Text>
-					<Btn label="Withdraw" onPress={onConfirm} color="#f44336" testID={TEST_IDS.settings.confirmWithdrawBtn} />
-					<Btn label="Cancel" onPress={onCancel} color="#444" testID={TEST_IDS.settings.cancelWithdrawBtn} />
-				</View>
-			</View>
-		</Modal>
-	);
-}
-
 function isJoinRequest(text: string): boolean {
 	return text.trim().startsWith(CADRE_JOIN_REQUEST_PREFIX);
 }
 
 /**
- * The invitations still redeemable, latest expiry first. A row records no creation time;
- * among invitations of one kind the newest expires last.
+ * The open invitations still redeemable, latest expiry first. A row records no creation time;
+ * among invitations of one kind the newest expires last. One made for a single app is listed
+ * under Devices and nodes, as a device invited and not joined yet.
  */
 function outstanding(statuses: CadreInviteStatus[]): CadreInviteStatus[] {
 	const expiry = (status: CadreInviteStatus) => parseNullableStoredDatetimeMs(status.invite.expiresAt) ?? Number.MAX_SAFE_INTEGER;
-	return statuses.filter((status) => status.live).sort((a, b) => expiry(b) - expiry(a));
+	return statuses.filter((status) => status.live && status.invite.peerId === null).sort((a, b) => expiry(b) - expiry(a));
 }
 
 function errorMessage(err: unknown): string {

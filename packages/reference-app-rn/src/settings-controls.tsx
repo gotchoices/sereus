@@ -3,7 +3,8 @@
  * share. Here rather than in `app/settings.tsx` because every file under `app/` is a route.
  */
 
-import { Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { TEST_IDS } from './test-ids';
 
 const OWNER_SWITCH_LINE = 'An owner can add and remove devices and apps and approve everything in this cadre. Turn this off for an app that should only take part.';
 
@@ -60,6 +61,22 @@ export function OwnerSwitch({ value, onChange, testID, explained = true }: { val
 			</View>
 			{explained && <Text style={controlStyles.hint}>{OWNER_SWITCH_LINE}</Text>}
 		</View>
+	);
+}
+
+/** The confirmation before a cadre invitation is withdrawn; the system back button cancels. */
+export function WithdrawPrompt({ open, onConfirm, onCancel }: { open: boolean; onConfirm: () => void; onCancel: () => void }) {
+	return (
+		<Modal visible={open} transparent animationType="fade" onRequestClose={onCancel}>
+			<View style={controlStyles.modalOverlay}>
+				<View style={controlStyles.modalBox}>
+					<Text style={controlStyles.modalTitle}>Withdraw this invitation?</Text>
+					<Text style={controlStyles.promptText}>Nobody can join with it afterwards.</Text>
+					<Btn label="Withdraw" onPress={onConfirm} color="#f44336" testID={TEST_IDS.settings.confirmWithdrawBtn} />
+					<Btn label="Cancel" onPress={onCancel} color="#444" testID={TEST_IDS.settings.cancelWithdrawBtn} />
+				</View>
+			</View>
+		</Modal>
 	);
 }
 
