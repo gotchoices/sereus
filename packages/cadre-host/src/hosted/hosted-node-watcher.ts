@@ -156,7 +156,7 @@ export class HostedNodeWatcher {
     const current = this.store.get(record.id);
     if (!current || current.status !== record.status) return;
     if (reportsRemoval(status)) {
-      await this.applyRemoved(current);
+      await this.applyRemoved(current, status);
     } else if (current.status === 'unclaimed') {
       this.applyUnclaimed(current, status);
     } else if (current.status === 'joining') {
@@ -225,18 +225,23 @@ export class HostedNodeWatcher {
    * A node that reports an owner removed it from its cadre: `error`, not retryable, its child
    * stopped after the write as a failed invitation's is, and its workdir kept for Remove (or a
    * claim node's Reset). The child had already stopped its node, and stays up only to report
-   * the removal, so stopping it loses nothing.
+   * the removal, so stopping it loses nothing. The party and owner come from the report, for an
+   * `unclaimed` record whose claim this watcher never saw: its own party is the placeholder.
    */
-  private async applyRemoved(current: HostedNode): Promise<void> {
+  private async applyRemoved(current: HostedNode, status: RemovedNodeStatus): Promise<void> {
+    const partyId = status.node.partyId || current.partyId;
+    const ownerKey = current.ownerKey ?? status.node.claimedBy;
     this.store.put({
       ...current,
       status: 'error',
+      partyId,
+      ...(ownerKey ? { ownerKey } : {}),
       error: REMOVED_BY_OWNER_ERROR,
       retryable: false,
       removedByOwner: true,
       updatedAt: this.now().toISOString(),
     });
-    log('hosted node %s was removed from cadre %s by an owner', current.id, current.partyId);
+    log('hosted node %s was removed from cadre %s by an owner', current.id, partyId);
     this.emit({ kind: 'changed', id: current.id });
     await this.stopChild(current, 'an owner removed it');
   }

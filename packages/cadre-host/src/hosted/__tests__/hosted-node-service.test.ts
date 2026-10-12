@@ -420,6 +420,20 @@ describe('HostedNodeService status watcher', () => {
     expect(changes).toEqual([{ kind: 'changed', id: view.id }]);
   });
 
+  it('records the reported party and owner for an unclaimed node that reports its removal', async () => {
+    // The claim and the removal both happened between polls (or while the host was down), so
+    // the record still carries the placeholder party.
+    const { store, svc } = makeHarness();
+    const view = await svc.join();
+    stubStatusFetch({
+      peerId: null, multiaddrs: [], claim: 'claimed', claimedBy: OWNER_KEY, partyId: 'party-P',
+      removed: { stampId: 'stamp-1', signerKey: null, at: 0 },
+    });
+    await svc.pollStatuses();
+
+    expect(requireNode(store, view.id)).toMatchObject({ status: 'error', removedByOwner: true, partyId: 'party-P', ownerKey: OWNER_KEY });
+  });
+
   it('retries a node that does not answer on the next pass', async () => {
     const { store, svc } = makeHarness();
     const view = await svc.join();
