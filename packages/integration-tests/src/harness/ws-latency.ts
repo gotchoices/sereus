@@ -121,14 +121,14 @@ function byteLengthOf(data: WsSendData): number {
 }
 
 /** Process-wide totals, printed periodically while a run is in flight. */
-const stats = { sockets: 0, frames: 0, maxFramesPerSocket: 0, maxWaitMs: 0 };
+const stats = { sockets: 0, frames: 0, maxFramesPerSocket: 0, maxWaitMs: 0, bytes: 0, tiny: 0, small: 0, large: 0 };
 /** `stats.frames` as of the last line printed, so the same totals are never reported twice. */
 let reportedAtFrames = -1;
 
 function summaryLine(): string {
 	return `[ws-latency] ${stats.sockets} dialed sockets, ${stats.frames} frames, `
 		+ `busiest socket ${stats.maxFramesPerSocket} frames, worst observed send wait ${stats.maxWaitMs} ms `
-		+ `(delay ${delayMs} ms, mode ${mode})`;
+		+ `(delay ${delayMs} ms, mode ${mode}; ${stats.bytes} bytes: ${stats.tiny} frames <=64 B, ${stats.small} <=1 KiB, ${stats.large} larger)`;
 }
 
 function reportSummary(): void {
@@ -142,6 +142,10 @@ function resetStats(): void {
 	stats.frames = 0;
 	stats.maxFramesPerSocket = 0;
 	stats.maxWaitMs = 0;
+	stats.bytes = 0;
+	stats.tiny = 0;
+	stats.small = 0;
+	stats.large = 0;
 	reportedAtFrames = -1;
 }
 
@@ -226,6 +230,11 @@ function wrapGlobalWebSocket(): void {
 			this.#frames++;
 			stats.frames++;
 			if (this.#frames > stats.maxFramesPerSocket) stats.maxFramesPerSocket = this.#frames;
+			const bytes = byteLengthOf(data);
+			stats.bytes += bytes;
+			if (bytes <= 64) stats.tiny++;
+			else if (bytes <= 1024) stats.small++;
+			else stats.large++;
 			// At zero delay this module is a pure counter: sending straight through keeps the
 			// baseline run's timing identical to an uninstrumented one, which is the only way
 			// its frame count is comparable to a delayed run's.
@@ -233,7 +242,6 @@ function wrapGlobalWebSocket(): void {
 				super.send(data);
 				return;
 			}
-			const bytes = byteLengthOf(data);
 			const queuedAt = Date.now();
 			this.#queued += bytes;
 			const release = (): void => {

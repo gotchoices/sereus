@@ -39,6 +39,7 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { identify } from '@libp2p/identify';
 import { circuitRelayServer, type CircuitRelayService } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { prefixLogger } from '@libp2p/logger';
 import type { PrivateKey } from '@libp2p/interface';
 import type { Identify } from '@libp2p/identify';
 
@@ -97,10 +98,22 @@ async function createRelayNode(
 ): Promise<RelayNode> {
   return await createLibp2p<RelayServices>({
     privateKey,
+    logger: prefixLogger('relay'),
     addresses: { listen: [listenAddr] },
     transports: [webSockets()],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
+    // The deployed relay's liveness and connection limits, from `ops/docker/libp2p-infra/src/main.ts`
+    // (the numbers and their measurement live there). libp2p's stock 5 s ping deadline aborted every
+    // circuit through this relay on a slow link (`slow-relay-joiner-strand-connection-keeps-dropping`).
+    connectionMonitor: {
+      pingInterval: 35_000,
+      pingTimeout: { minTimeout: 30_000, maxTimeout: 30_000 }
+    },
+    connectionManager: {
+      dialTimeout: 17_500,
+      inboundUpgradeTimeout: 17_500
+    },
     services: {
       identify: identify(),
       relay: circuitRelayServer({
