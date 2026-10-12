@@ -608,58 +608,9 @@ export {
 // OAuth 2 + PKCE sign-in, the typed client for its container API, and `rentNode` /
 // `finishRental`, which add the rented container to this node's cadre by invitation or by
 // claim. Global `fetch` and `crypto.getRandomValues` only, so the whole set loads on React
-// Native and in the browser (`docs/architecture.md` → "Renting a node from an app").
-export {
-  parseProviderDescriptor,
-  fetchProviderDescriptor,
-  ProviderAuthError,
-  pkceChallenge,
-  createPkce,
-  createAuthorizationState,
-  authorizationUrl,
-  readAuthorizationRedirect,
-  exchangeAuthorizationCode,
-  refreshTokens,
-  createTokenSource,
-  TOKEN_REFRESH_MARGIN_MS,
-  createProviderClient,
-  ProviderApiError,
-  rentNode,
-  finishRental,
-  RentNodeError,
-  DEFAULT_NODE_CODE_DEADLINE_MS,
-  NODE_CODE_POLL_MS,
-  RENTAL_INVITATION_TTL_MS,
-  type ProviderDescriptor,
-  type Pkce,
-  type ProviderTokens,
-  type AuthorizationUrlOptions,
-  type AuthorizationRedirect,
-  type ExchangeAuthorizationCodeOptions,
-  type RefreshTokensOptions,
-  type TokenSource,
-  type TokenSourceOptions,
-  type ProviderClient,
-  type ProviderClientOptions,
-  type ContainerJoinRequest,
-  type ContainerJoinState,
-  type ContainerStopReason,
-  type RentedContainer,
-  type RentedContainerStatus,
-  type RentedContainerHealth,
-  type RentedContainerStatusReport,
-  type CreateContainerBody,
-  type SubscriptionStatus,
-  type BillingStatus,
-  type NodeCodeAnswer,
-  type RentNodeJoin,
-  type RentNodeStep,
-  type RentNodeOptions,
-  type RentNodeResult,
-  type RentalFailed,
-  type RentNodeErrorCode,
-  type RentingNode
-} from './provider/index.js';
+// Native and in the browser (`docs/architecture.md` → "Renting a node from an app"). The
+// barrel is the curated list; it is not repeated here.
+export * from './provider/index.js';
 
 // Schema Verification
 export {

@@ -63,7 +63,7 @@ export type RentNodeErrorCode =
 	| 'not-an-owner'
 	/** The node code was not ready by the deadline; the container exists, `finishRental` resumes it. */
 	| 'node-not-ready'
-	/** The container is `stopped` or `error`. */
+	/** The container is `stopped` or `error`, or the provider reported it so while the code was awaited. */
 	| 'container-gone'
 	/** A claim container that another cadre's owner claimed. */
 	| 'claimed-by-another'
@@ -185,18 +185,31 @@ async function claimContainer(node: RentingNode, client: ProviderClient, contain
 	return { containerId, join: 'claim', peerId };
 }
 
-/** `getNodeCode` every poll interval until it answers or the deadline passes. */
+/**
+ * `getNodeCode` every poll interval until it answers or the deadline passes. A container that
+ * dies meanwhile (`409 CONTAINER_GONE`) is `container-gone`, the same code `finishRental` gives
+ * one found dead, so an app handles both at one site.
+ */
 async function awaitNodeCode(client: ProviderClient, containerId: string, options: RentNodeOptions): Promise<{ code: string; peerId: string }> {
 	const deadline = Date.now() + (options.nodeCodeDeadlineMs ?? DEFAULT_NODE_CODE_DEADLINE_MS);
 	const poll = options.nodeCodePollMs ?? NODE_CODE_POLL_MS;
 	for (;;) {
-		const answer = await client.getNodeCode(containerId);
+		const answer = await requestNodeCode(client, containerId);
 		if (!('notReady' in answer)) return answer;
 		if (Date.now() >= deadline) {
 			log('container %s has no node code by the deadline', containerId);
 			throw new RentNodeError('node-not-ready', containerId);
 		}
 		await sleep(poll);
+	}
+}
+
+async function requestNodeCode(client: ProviderClient, containerId: string): ReturnType<ProviderClient['getNodeCode']> {
+	try {
+		return await client.getNodeCode(containerId);
+	} catch (error) {
+		if (error instanceof ProviderApiError && error.code === 'CONTAINER_GONE') throw new RentNodeError('container-gone', containerId);
+		throw error;
 	}
 }
 

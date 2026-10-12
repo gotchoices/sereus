@@ -220,7 +220,7 @@ function parseContainer(value: unknown): RentedContainer {
 		id: requireString(record.id, 'id'),
 		partyId: requireString(record.partyId, 'partyId'),
 		profile: record.profile === 'transaction' ? 'transaction' : 'storage',
-		status: requireString(record.status, 'status') as RentedContainerStatus,
+		status: requireStatus(record.status),
 		createdAt: parseIsoMs(record.createdAt, 'createdAt'),
 		updatedAt: parseIsoMs(record.updatedAt, 'updatedAt'),
 		tags: typeof record.tags === 'object' && record.tags !== null ? record.tags as Record<string, string> : {},
@@ -284,6 +284,15 @@ function parseBilling(value: unknown): BillingStatus {
 			lapsesAt: parseNullableIsoMs(subscription.lapsesAt, 'subscription.lapsesAt'),
 		},
 	};
+}
+
+const CONTAINER_STATUSES: readonly RentedContainerStatus[] = ['pending', 'creating', 'enrolling', 'running', 'stopping', 'stopped', 'error'];
+
+function requireStatus(value: unknown): RentedContainerStatus {
+	if (!CONTAINER_STATUSES.includes(value as RentedContainerStatus)) {
+		throw new Error(`The provider reported a container status this client does not know (${String(value)})`);
+	}
+	return value as RentedContainerStatus;
 }
 
 function requireObject(value: unknown, what: string): Record<string, unknown> {
