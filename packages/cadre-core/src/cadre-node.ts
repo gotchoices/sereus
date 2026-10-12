@@ -2043,6 +2043,11 @@ export class CadreNode implements SAppIdLookup {
       log('No control backfill on this node; device %s is neither caught up nor admitted before its admission', peerId);
       return () => undefined;
     }
+    // NOTE: counted in before the push, because the backfill's gate must admit the device to
+    // push to it; so for the push's length any other control write this member makes includes
+    // a device without the base revisions, which refuses it and the write retries. If that
+    // shows up as retried control writes during redemptions, count the device into the cohort
+    // choice only once the push resolves (a second set beside this one).
     const release = this.countAdmittingDevice(peerId);
     try {
       const result = await backfill.forceCatchUpPeer(peerIdFromString(peerId));
