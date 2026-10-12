@@ -61,6 +61,12 @@
  * 2 s, dial included, and a relayed dial on that link takes longer -- so what reconnects them is
  * the strand member redial, which dials with the relayed-dial budget the declared link gives
  * (`strand-peer-redial.ts`). The rows reached the founder about 45 s after the restart began.
+ *
+ * The sixth arm checks what the app is told about a write made alone (docs/strands.md, "A commit's
+ * durability"), on an undelayed link: with the joiner stopped, the founder writes one row, and its
+ * strand database must report that commit held only here and followed; once the joiner restarts
+ * over its kept storage and takes the copies it is owed, the founder must emit `strand:commit-held`
+ * for it.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -73,7 +79,7 @@ import {
 	PersistentStrandNetworkStateStore,
 	generateStrandMemberKey,
 } from '@serfab/cadre-core';
-import type { DurableSlot, SAppConfig, StrandInstance, StrandRow } from '@serfab/cadre-core';
+import type { DurableSlot, SAppConfig, StrandCommitDurability, StrandInstance, StrandRow } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import {
 	waitUntil,
@@ -397,6 +403,95 @@ async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void
 	}
 }
 
+/** The founder's view of one commit, for the run output: who holds it, and whether it is followed. */
+function describeCommit(commit: StrandCommitDurability | undefined): string {
+	if (!commit) return 'no report recorded';
+	const overall = commit.report.durability.overall;
+	const holders = overall
+		? `${overall.quorum} (${overall.confirmed}/${overall.cohort}, unconfirmed [${overall.unconfirmed?.join(', ') ?? '?'}], recordedBy ${overall.recordedBy ?? 'none'})`
+		: 'holders unknown';
+	return `${holders}, heldElsewhere ${commit.heldElsewhere}, followed ${commit.followed}`;
+}
+
+/**
+ * Founder and joiner synced, the joiner stopped, then the founder writes one row alone. The founder
+ * must report that commit held only on itself and followed, and once the joiner restarts over its
+ * kept storage, report it held.
+ */
+async function runWriteMadeAloneReportedThenHeld(): Promise<void> {
+	let relay: DedicatedRelay | undefined;
+	let A: CadreNode | undefined;
+	let B: CadreNode | undefined;
+	const label = 'made alone';
+	try {
+		const runTag = Date.now();
+		const strandId = `strand-commit-held-${runTag}`;
+		const sApp = createSignedSAppConfig(SCHEMA, '0.1.0');
+		relay = await startDedicatedRelay();
+		const aHome = await partyHome(`held-a-${runTag}`);
+		const bHome = await partyHome(`held-b-${runTag}`);
+
+		A = await startPartyNode(aHome, relay);
+		await makeOwnOwner(A, aHome.key);
+		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey: await generateStrandMemberKey(), sAppConfig: sApp });
+		const aStrand = founded.instance.database!;
+		const aDb = aStrand.getDatabase();
+		await aDb.exec(seatBatch('S', 'sid-a', 'key-a', 'Founder'), undefined, { transaction: true });
+		const invitation = await A.createOpenInvitation(SAPP_ID, YEAR_MS);
+		await A.publishFormationInvite(invitation.token, SAPP_ID, { strandId, expiresAtMs: Date.now() + YEAR_MS, totalUses: 1 });
+
+		B = await startPartyNode(bHome, relay);
+		await makeOwnOwner(B, bHome.key);
+		const formResult = await B.formStrand(B.decodeInvitation(A.encodeInvitation(invitation)), {
+			partyId: bHome.partyId,
+			purpose: 'a write made alone is reported, then reported held',
+		});
+		await B.addStrand({
+			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null },
+			sAppConfig: sApp,
+			awaitFirstSync: false,
+		});
+		const bStrandPeer = (await B.whenStrandWritable(strandId, { timeoutMs: FIRST_SYNC_MS })).libp2pNode!.peerId;
+		const stopping = B;
+		B = undefined;
+		await stopping.stop();
+		const aStrandNode = founded.instance.libp2pNode!;
+		await waitUntil(() => !aStrandNode.getConnections().some(c => c.remotePeer.equals(bStrandPeer)),
+			{ timeoutMs: 30_000, intervalMs: 100, description: "the founder's strand node to drop its connection to the stopped joiner's" });
+
+		const held = new Set<string>();
+		A.on('strand:commit-held', (event) => {
+			if (event.strandId === strandId) held.add(event.transactionId);
+		});
+		// One statement is one commit, and its `returning` hands back that commit's id.
+		const written = await aDb.get(`insert into App.Party (Sid, Name) values ('sid-a2', 'written alone') returning StampId() as Tx`);
+		const tx = String(written!.Tx);
+		const alone = aStrand.commitDurability(tx);
+		console.log(`[first-commit ${label}] founder's write with the joiner stopped: ${describeCommit(alone)}`);
+		expect({ heldElsewhere: alone?.heldElsewhere, followed: alone?.followed }, describeCommit(alone))
+			.toEqual({ heldElsewhere: false, followed: true });
+
+		const tRestart = Date.now();
+		B = await startPartyNode(bHome, relay);
+		const bInstance = await claimDiscoveredStrand(B, strandId, sApp);
+		await waitUntil(() => held.has(tx),
+			{ ...CONVERGE, description: "strand:commit-held for the founder's write made alone" })
+			.catch(async (error: unknown) => {
+				const joinerHolds = bInstance.database
+					? (await rows(bInstance.database.getDatabase(), `select Sid from App.Party where Sid = 'sid-a2'`)).length > 0
+					: 'not yet writable';
+				console.log(`[first-commit ${label}] no strand:commit-held: founder records ${describeCommit(aStrand.commitDurability(tx))}; `
+					+ `restarted joiner holds the row: ${joinerHolds}`);
+				throw error;
+			});
+		console.log(`[first-commit ${label}] strand:commit-held ${since(tRestart)} after the joiner's restart began`);
+		expect(aStrand.commitDurability(tx)?.heldElsewhere).toBe(true);
+	} finally {
+		await Promise.allSettled([B?.stop(), A?.stop()]);
+		await relay?.stop();
+	}
+}
+
 describe("a joiner's first transaction over a relayed link", () => {
 	it('commits, and its rows outlive the joiner, on loopback', async () => {
 		await runJoinerFirstCommit();
@@ -421,4 +516,8 @@ describe("a joiner's first transaction over a relayed link", () => {
 	it("delivers the rows of a commit made alone once the joiner restarts over its kept storage, still on the slow link", async () => {
 		await runJoinerRestartDelivers({ slowRestart: true });
 	}, 1_800_000);
+
+	it('tells the writer a commit made while the other member was stopped is held only here, then held once it returns', async () => {
+		await runWriteMadeAloneReportedThenHeld();
+	}, 900_000);
 });

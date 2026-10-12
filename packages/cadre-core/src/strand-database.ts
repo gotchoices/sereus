@@ -7,11 +7,13 @@ import type { IRepo } from '@optimystic/db-core';
 import type { SAppConfig } from './types.js';
 import { bootstrapFounderMembership } from './strand-membership-writer.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
+import { StrandCommitRecord } from './strand-commit-durability.js';
+import type { StrandCommitDurability, StrandCommitListeners } from './strand-commit-durability.js';
 
 const log = debug('sereus:cadre:strand-db');
 const timing = debug('sereus:cadre:timing');
 
-export interface StrandDatabaseConfig {
+export interface StrandDatabaseConfig extends StrandCommitListeners {
   /** The strand ID */
   strandId: string;
   /**
@@ -76,9 +78,12 @@ export class StrandDatabase {
   private resolvedTransactor: SereusPluginResult['transactor'] | null = null;
   private readonly config: StrandDatabaseConfig;
   private initialized = false;
+  private readonly commits: StrandCommitRecord;
+  private unsubscribeCommits: (() => void) | null = null;
 
   constructor(config: StrandDatabaseConfig) {
     this.config = config;
+    this.commits = new StrandCommitRecord(config.strandId, config);
   }
 
   /**
@@ -126,6 +131,8 @@ export class StrandDatabase {
     });
     this.shutdownStrand = result.shutdown;
     this.resolvedTransactor = result.transactor;
+    // Before the founder bootstrap, so its commits are reported like any other.
+    this.subscribeToCommits(result);
     timing('[strandDb:%s] connectToStrand: %dms (hydrated tables=%d, indexes=%d)',
       sid, Math.round(performance.now() - t0),
       result.hydrated?.tables ?? 0, result.hydrated?.indexes ?? 0);
@@ -140,6 +147,15 @@ export class StrandDatabase {
 
     this.initialized = true;
     log('StrandDatabase for strand %s initialized successfully', sid);
+  }
+
+  private subscribeToCommits(result: SereusPluginResult): void {
+    const unsubscribeDurability = result.onCommitDurability(report => this.commits.reportCommit(report));
+    const unsubscribeHeld = result.onCommitFullyHeld(event => this.commits.reportHeld(event));
+    this.unsubscribeCommits = () => {
+      unsubscribeDurability();
+      unsubscribeHeld();
+    };
   }
 
   /**
@@ -248,6 +264,19 @@ export class StrandDatabase {
   }
 
   /**
+   * The durability of a recent commit on this database, by its `StampId()` — the id a single
+   * `insert … returning StampId() as Tx` statement returns. Read it after that statement
+   * resolves: the plugin reports the commit before the statement returns, and a commit already
+   * held everywhere is marked held by then too. `undefined` for a commit that wrote nothing, one
+   * made before this database was built, or one more than 256 commits back. Each value is a
+   * snapshot: read again after `strand:commit-held` to see the change.
+   */
+  commitDurability(transactionId: string): StrandCommitDurability | undefined {
+    this.ensureInitialized();
+    return this.commits.get(transactionId);
+  }
+
+  /**
    * The Optimystic transactor this strand's connection resolved to — always
    * `'network'` here, since cadre-core passes no `transactor` option and takes
    * the plugin's default. Exposed so a spec measuring or asserting the network
@@ -266,6 +295,9 @@ export class StrandDatabase {
    * failed part-way.
    */
   async close(): Promise<void> {
+    // First, so an event from the closing connection reaches no app handler.
+    this.unsubscribeCommits?.();
+    this.unsubscribeCommits = null;
     if (this.shutdownStrand) {
       await this.shutdownStrand();
       this.shutdownStrand = null;

@@ -163,6 +163,7 @@ export {
 
 // Strand database
 export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';
+export type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
 
 // Strand management
 export {

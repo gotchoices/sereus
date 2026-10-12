@@ -1,6 +1,7 @@
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
+import type { SqlCommitDurabilityListener, CommitFullyHeldListener } from '@optimystic/quereus-plugin-optimystic/plugin';
 
 /**
  * Which Optimystic transactor a strand connection commits through — a choice of
@@ -93,6 +94,20 @@ export interface SereusPluginResult {
 	 * given, `'network'` otherwise.
 	 */
 	transactor: StrandTransactor;
+	/**
+	 * Be told, after every commit on this connection that wrote something, who holds what it
+	 * wrote. Called once per such commit, synchronously, before the commit returns. The Optimystic
+	 * plugin's listener of the same name, passed through; what the report means is in that
+	 * plugin's README § "A commit's durability". Returns an idempotent unsubscribe.
+	 */
+	onCommitDurability: (listener: SqlCommitDurabilityListener) => () => void;
+	/**
+	 * Be told once when a commit reported `followed` below full replication becomes held by
+	 * every member of its cohort. Can fire inside the commit, right after its durability report.
+	 * Followed commits live in memory: {@link shutdown} or a restart forgets them, and nothing
+	 * fires for a forgotten one. Passed through like {@link onCommitDurability}.
+	 */
+	onCommitFullyHeld: (listener: CommitFullyHeldListener) => () => void;
 	/** Shuts down the libp2p node and collection factory. Call when done. */
 	shutdown: () => Promise<void>;
 }

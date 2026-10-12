@@ -270,6 +270,10 @@ const strand = await connectToStrand(db, {
 The plugin uses the injected node instead of creating one, and will not stop it
 on shutdown.
 
+### A commit's durability
+
+The result's `onCommitDurability(listener)` is called after every commit that wrote something, before the commit returns, with who holds what it wrote; `onCommitFullyHeld(listener)` is called once when a commit reported `followed` below full replication becomes held by its whole cohort. Both pass through from `@optimystic/quereus-plugin-optimystic`, whose README explains the report ([A commit's durability](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#a-commits-durability--pluginoncommitdurabilitylistener)); the `SqlCommitDurability` and `CommitFullyHeld` types are re-exported here. A cadre app reads the same reports through `@serfab/cadre-core` ([strands.md → A commit's durability](../../docs/strands.md#a-commits-durability)).
+
 ---
 
 ## Configuration

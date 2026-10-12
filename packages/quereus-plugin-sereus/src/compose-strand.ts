@@ -1,6 +1,7 @@
 import debug from 'debug';
 import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInfo } from '@quereus/quereus';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
+import type { SqlCommitDurabilityListener, CommitFullyHeldListener } from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage, NodeOptions } from '@optimystic/db-p2p';
@@ -25,11 +26,23 @@ interface CollectionFactory {
 }
 
 /**
- * Release a composition's collection factory. A node the composition created is stopped
- * with it; an injected node is left running, because it belongs to the caller — cadre-core
- * keeps a strand's node up across a failed database build and retries the build on it.
+ * Release a composition's hold on the optimystic plugin. The transaction bridge goes first: its
+ * durability follower subscribes to the node's `StorageRepo`, and cadre-core keeps a strand's node
+ * across a database rebuild, so a bridge never disposed stays subscribed once per rebuild. Then the
+ * collection factory: a node the composition created is stopped with it; an injected node is left
+ * running, because it belongs to the caller — cadre-core keeps a strand's node up across a failed
+ * database build and retries the build on it.
+ *
+ * Disposes the bridge itself rather than calling the plugin's `dispose()`, which would release the
+ * factory a second time on the created-node path (`shutdown()` ends with the same `dispose()`).
  */
-async function releaseCollectionFactory(collectionFactory: CollectionFactory, createdNode: Libp2p | null): Promise<void> {
+async function releaseOptimysticPlugin(plugin: OptimysticPluginResult, createdNode: Libp2p | null): Promise<void> {
+	// NOTE: the bridge's follower re-subscribes at the start of any transaction, so a write begun on
+	// this `Database` after release (before its owner closes it) subscribes again and nothing releases it. cadre-core
+	// stops its own writers before releasing; if an app write in flight at close ever shows up as a
+	// leaked subscription, close the `Database` before releasing.
+	plugin.txnBridge.dispose();
+	const { collectionFactory } = plugin;
 	if (!createdNode) {
 		await collectionFactory.dispose();
 		return;
@@ -59,6 +72,10 @@ interface OptimysticPluginResult {
 	 * on cold start.
 	 */
 	hydrate: (db: Database) => Promise<{ tables: number; indexes: number }>;
+	onCommitDurability: (listener: SqlCommitDurabilityListener) => () => void;
+	onCommitFullyHeld: (listener: CommitFullyHeldListener) => () => void;
+	/** Holds the durability follower's subscription to the node's `StorageRepo`; see {@link releaseOptimysticPlugin}. */
+	txnBridge: { dispose(): void };
 	[key: string]: unknown;
 }
 
@@ -353,22 +370,24 @@ export async function composeStrand(
 		}
 	} catch (err) {
 		// Clean up resources if setup fails after partial initialization.
-		await releaseCollectionFactory(collectionFactory, createdNode);
+		await releaseOptimysticPlugin(pluginResult, createdNode);
 		await releaseStorageCache();
 		throw err;
 	}
 
-	// 8. Return result with hydrate counts + shutdown handler. `shutdown` releases the
-	// collection factory and stops the node only if this composition created it.
+	// 8. Return result with hydrate counts, the commit-durability listeners + shutdown handler.
+	// `shutdown` releases the plugin and stops the node only if this composition created it.
 	return {
 		vtables: [],
 		functions: [],
 		collations: [],
 		hydrated,
 		transactor: resolvedTransactor,
+		onCommitDurability: listener => pluginResult.onCommitDurability(listener),
+		onCommitFullyHeld: listener => pluginResult.onCommitFullyHeld(listener),
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
-			await releaseCollectionFactory(collectionFactory, createdNode);
+			await releaseOptimysticPlugin(pluginResult, createdNode);
 			await releaseStorageCache();
 			log('Strand connection %s shut down', strandId);
 		},

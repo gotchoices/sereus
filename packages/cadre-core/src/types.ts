@@ -8,6 +8,7 @@ import type { StrandRevocationEnforcementConfig } from './strand-revocation-enfo
 import type { StrandMembershipReconciliationConfig } from './strand-membership-reconciler.js';
 import type { StrandFirstSyncConfig } from './strand-first-sync-gate.js';
 import type { StrandDatabase } from './strand-database.js';
+import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
@@ -1657,6 +1658,24 @@ export interface CadreNodeEvents {
    * watcher auto-launched) hangs its "waiting for the other member" screen on the pair.
    */
   'strand:writable': { strandId: string };
+  /**
+   * Emitted after every commit on a strand's database that wrote something, with whether
+   * another member already holds it (`heldElsewhere`) and whether `strand:commit-held` will
+   * say when it does (`followed`). Synchronous, inside the commit, before the app's statement
+   * returns: keep handlers short. Covers every commit on the strand database, cadre-core's own
+   * membership writes included, so filter by the ids you hold — the `StampId()` a
+   * `returning StampId() as Tx` statement gave you. The same record is readable afterwards with
+   * `StrandDatabase.commitDurability(tx)`. See docs/strands.md, "A commit's durability".
+   */
+  'strand:commit-durability': StrandCommitDurability;
+  /**
+   * Emitted once when a commit reported `followed` below full replication becomes held by every
+   * member of its cohort — the moment a write made while the others were away reaches them.
+   * Synchronous, like `strand:commit-durability`, and can come right after it inside the same
+   * commit. Never emitted for a commit made before your listener attached, or one forgotten
+   * because its database closed, hibernated or the node restarted.
+   */
+  'strand:commit-held': StrandCommitHeld;
   /**
    * Emitted when this node discovers it is no longer a member of a CLOSED
    * strand — its party was removed by a manager, or it left. Detected by the

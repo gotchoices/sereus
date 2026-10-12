@@ -3,6 +3,7 @@ import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase } from './strand-database.js';
+import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
 import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import { strandNetworkStatePersistence, type StrandNetworkStateStore } from './strand-network-state.js';
 import {
@@ -287,6 +288,22 @@ export interface StartStrandConfig {
    * launch config, so a hibernation resume that comes up gated announces too.
    */
   onWritable?: (strandId: string) => void;
+
+  /**
+   * Called synchronously inside every commit on the strand's database that wrote something,
+   * with who holds it — the app's commits and cadre-core's own membership writes alike.
+   * `CadreNode` wires it to its `strand:commit-durability` event. Retained with the launch
+   * config and passed to every database built for the launch, so a hibernation wake's rebuilt
+   * database reports too. A throw is logged and does not affect the commit.
+   */
+  onCommitDurability?: (commit: StrandCommitDurability) => void;
+
+  /**
+   * Called when a commit reported `followed` below full replication becomes held by every member
+   * of its cohort, while the database that made it is still open. `CadreNode` wires it to its
+   * `strand:commit-held` event. Retained and isolated like {@link onCommitDurability}.
+   */
+  onCommitHeld?: (event: StrandCommitHeld) => void;
 
   /**
    * Re-announce this strand's delegate peer id (`delegatePeerId` — the strand
@@ -1087,7 +1104,9 @@ export class StrandInstanceManager {
       strandType: config.strandRow.Type,
       memberPrivateKey: config.strandRow.MemberPrivateKey ?? undefined,
       partyMemberPrivateKey: config.partyMemberPrivateKey,
-      founder: config.founder
+      founder: config.founder,
+      onCommitDurability: config.onCommitDurability,
+      onCommitHeld: config.onCommitHeld
     });
     const gate = new StrandFirstSyncGate({
       label: strandId,

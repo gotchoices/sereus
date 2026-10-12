@@ -6524,6 +6524,8 @@ export class CadreNode implements SAppIdLookup {
       // comes up `'syncing'` announces the moment its database is published.
       firstSync: this.config.strandFirstSync,
       onWritable: (writableStrandId) => this.handleStrandWritable(writableStrandId),
+      onCommitDurability: (commit) => this.emit('strand:commit-durability', commit),
+      onCommitHeld: (held) => this.emit('strand:commit-held', held),
       // Re-announce the delegate to ONE relay before the strand node's reservation
       // supervisor re-drives it (see announceDelegateToRelay). Retained with the
       // launch config, so a hibernation wake's rebuilt supervisors get it too.
