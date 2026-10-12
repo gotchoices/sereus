@@ -12,6 +12,10 @@
  *
  * The dissolve: `planDissolve` on the running node, then `removeFormerParty`; the store starts the
  * stored party again after either outcome. Its checks and removal steps are `web-dissolve.ts`'s.
+ *
+ * The removal: when an owner removes this tab from the party it runs, `forgetRemovedParty` stops the
+ * node, points the start record back at the party the tab founded and deletes the removed party's
+ * storage, as the kit's `forgetRemovedParty` does. Nothing starts afterwards.
  */
 import {
 	decodeCadreInvitation,
@@ -40,8 +44,8 @@ import {
 	stopCadre,
 	wireJoinedOwnerKey,
 } from './cadre-web.js';
-import { openStores, NODE_LOCAL_STORE_KEY } from './strand-storage.js';
-import { joinedStart, writePartyStart } from './party-start.js';
+import { closeStores, openStores, NODE_LOCAL_STORE_KEY } from './strand-storage.js';
+import { deletePartyStart, joinedStart, readPartyStart, startAfterRemoval, writePartyStart } from './party-start.js';
 import {
 	adoptMovesInto,
 	deferredOutcome,
@@ -50,7 +54,7 @@ import {
 	waitingStrandIds,
 	type StrandMoveOutcome,
 } from './web-strand-move.js';
-import { formerPartyRefusal, readFormerParty, removeParty, StrandMovePendingError } from './web-dissolve.js';
+import { finishMarkedRemoval, formerPartyRefusal, readFormerParty, removeParty, StrandMovePendingError } from './web-dissolve.js';
 
 /** The name this tab gives in its join request, for the owner's approval prompt. */
 export const WEB_APP_NAME = 'Sereus web reference';
@@ -333,6 +337,65 @@ export async function removeFormerParty(plan: DissolvePlan, discard: readonly st
 	if (refusal) throw refusal;
 	await openStores([NODE_LOCAL_STORE_KEY]);
 	await removeParty(requireNodeLocalHandle(), plan.formerPartyId);
+}
+
+// ── Removed from the cadre by an owner ────────────────────────────────────────
+
+/**
+ * Act on an owner of `partyId`, the party the tab runs, removing this tab from it (architecture.md →
+ * "Removing a machine"): stop the node, point the start record away from the party, then delete the
+ * party's storage with the dissolve's marked removal. Returns the party the start record now names,
+ * the one this tab founded and left, or `undefined` when the record was deleted and the next start
+ * founds a party of the tab's own. Leaves no node running and no store open.
+ *
+ * The start record is rewritten first, as the kit's saved start is: a start reading it while it still
+ * named the party would delete the marker as one naming the party being started, and run the party on
+ * what is left of its storage. A failure reading or rewriting it throws, with the storage left as the
+ * record still names it. A failure deleting is logged; once the marker is written, the next start
+ * finishes the removal.
+ */
+export async function forgetRemovedParty(partyId: string): Promise<string | undefined> {
+	try {
+		await stopCadre();
+	} catch (err) {
+		// The stores are closed either way (see `stopCadre`).
+		console.warn(`[reference-app-web] stopping the node of party ${partyId}, which removed this tab, failed:`, err);
+	}
+	try {
+		await openStores([NODE_LOCAL_STORE_KEY]);
+		const handle = requireNodeLocalHandle();
+		const formerPartyId = await leaveRemovedStart(handle, partyId);
+		await removeLocalParty(handle, partyId);
+		return formerPartyId;
+	} finally {
+		await closeStores();
+	}
+}
+
+/**
+ * Replace a start record naming `partyId` with {@link startAfterRemoval}'s, or delete it; returns
+ * the party the new record names. A record naming another party is left alone.
+ */
+async function leaveRemovedStart(handle: OptimysticWebDBHandle, partyId: string): Promise<string | undefined> {
+	const stored = await readPartyStart(handle);
+	if (stored?.partyId !== partyId) return undefined;
+	const next = startAfterRemoval(stored);
+	if (next) await writePartyStart(handle, next);
+	else await deletePartyStart(handle);
+	return next?.partyId;
+}
+
+/**
+ * Delete `partyId`'s storage with the marked removal, after finishing one a failure left, so this
+ * marker does not replace it. A failure is logged, not thrown: the tab has left the party either way.
+ */
+async function removeLocalParty(handle: OptimysticWebDBHandle, partyId: string): Promise<void> {
+	try {
+		await finishMarkedRemoval(handle);
+		await removeParty(handle, partyId);
+	} catch (err) {
+		console.warn(`[reference-app-web] deleting the storage of party ${partyId}, which removed this tab, failed:`, err);
+	}
 }
 
 // ── The running node ──────────────────────────────────────────────────────────

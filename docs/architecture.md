@@ -708,7 +708,7 @@ The join moves B's strands into A ([Moving the app's strands](#moving-the-apps-s
 
 `formerPartyId` records the party the app founded and left, carried through any later join, for moving its strands and dissolving the old cadre.
 
-**Removed from A.** When an owner of A removes the app ([Removing a machine](#removing-a-machine)) and its node learns it, the kit stops the node, saves a start of `formerPartyId` that does not start unattended (or none), deletes A's local storage as a dissolve deletes B's, and reports `removed`, so the app can tell the user and offer to go back to B ([kit README → Removed from the cadre](../packages/cadre-rn/README.md#removed-from-the-cadre)).
+**Removed from A.** When an owner of A removes the app ([Removing a machine](#removing-a-machine)) and its node learns it, the kit stops the node, saves a start of `formerPartyId` that does not start unattended (or none), deletes A's local storage as a dissolve deletes B's, and reports `removed`, so the app can tell the user and offer to go back to B ([kit README → Removed from the cadre](../packages/cadre-rn/README.md#removed-from-the-cadre)). The browser reference app does the same in its store; its start record has no auto-start, so the next load starts B, or a fresh party when there is none ([reference-app-web README → When this tab is removed](../packages/reference-app-web/README.md#when-this-tab-is-removed)).
 
 **The switch and its rollback.** `joinCadre` runs as one transition in the kit's queue, so no start, stop or restart interleaves with it:
 
@@ -2431,7 +2431,7 @@ transport-only demos:
 |-----|----------|---------|----------|
 | `packages/reference-app-rn` | React Native / Hermes (phone) | `LevelDBRawStorage` | control network + open chat strand; seed apply; WebSocket/relay transports; Maestro e2e (drone fixture + sidecar) |
 | `packages/reference-app-ns` | NativeScript / V8 (Android) · JSC (iOS) | SQLite (`db-p2p-storage-ns`) | control network + open chat strand; seed apply; WebSocket/relay transports; **reuses the RN Maestro e2e** (only the app id differs) |
-| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo owner self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; an owner adds a device or app by cadre invitation, and a tab joins an existing cadre by one, moving its node, carrying its strands and then removing the cadre it left (Cadre page); WebSocket/relay/WebRTC transports |
+| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo owner self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; an owner adds a device or app by cadre invitation, and a tab joins an existing cadre by one, moving its node, carrying its strands and then removing the cadre it left; an owner lists the cadre's machines and removes one, and a removed tab deletes that cadre (Cadre page); WebSocket/relay/WebRTC transports |
 
 The browser app ([reference-app-web/README.md](../packages/reference-app-web/README.md))
 drives the full **consent/invitation formation path** end-to-end — it is the

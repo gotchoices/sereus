@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { nodeState, start } from './lib/store.svelte.js';
+	import { dismissJoinFlow, joinCadreState } from './lib/join-cadre.svelte.js';
 	import {
 		routeState,
 		startRouter,
@@ -15,11 +16,19 @@
 
 	const route = routeState();
 	const node = nodeState();
+	const join = joinCadreState();
 
 	onMount(() => {
 		startRouter();
 		void start();
 		return () => stopRouter();
+	});
+
+	// A removal ends whatever the join card showed, whichever page is open: the cadre it was about
+	// is gone from this browser. The flow is a dependency too, for a step a join already admitted
+	// sets after the removal began.
+	$effect(() => {
+		if (node.status === 'removed' && join.flow) untrack(dismissJoinFlow);
 	});
 
 	const NAV: Array<{ path: string; label: string }> = [

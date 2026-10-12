@@ -60,10 +60,6 @@
 		}
 	}
 
-	function inviteTarget(status: CadreInviteStatus): string {
-		return status.invite.peerId ? `For ${peerCode(status.invite.peerId)}` : 'Anyone with the text';
-	}
-
 	function inviteMeta(status: CadreInviteStatus): string {
 		const { invite } = status;
 		const uses = invite.totalUses !== null && invite.totalUses > 1 ? ` · ${status.usesRecorded} of ${invite.totalUses} used` : '';
@@ -188,7 +184,7 @@
 			{#each add.invitations as status (status.invite.key)}
 				<li data-testid="invitation-row">
 					<div>
-						<div class="invite-for">{inviteTarget(status)}</div>
+						<div class="invite-for">Anyone with the text</div>
 						<div class="invite-meta">{inviteMeta(status)}</div>
 					</div>
 					<button onclick={() => confirmWithdraw(status)} data-testid="btn-withdraw-invitation">Withdraw</button>

@@ -8,7 +8,9 @@
  * is what names the party every per-party record (`node-local-slots.ts`) is read through. A
  * tab mints a party and writes `{ origin: 'founded' }` on its first load; a join rewrites the
  * record once a member admitted the tab, with `origin: 'joined'` and the founded party it
- * left as `formerPartyId`, until dissolving that party drops it (`web-dissolve.ts`). A joined
+ * left as `formerPartyId`, until dissolving that party drops it (`web-dissolve.ts`). An owner
+ * removing the tab from the party it names turns it back into the founded party's start, or
+ * deletes it ({@link startAfterRemoval}; `web-join.ts` → `forgetRemovedParty`). A joined
  * party never runs owner genesis: genesis on a party whose control store has not arrived would
  * seat this tab as a second founder.
  */
@@ -52,6 +54,18 @@ export function joinedStart(partyId: string, formerPartyId: string | undefined):
 }
 
 /**
+ * The start once an owner of its party removed this tab (the phone kit's `startAfterRemoval`): the
+ * party the tab founded and left, founded again, or `undefined` when it left none, so the next start
+ * founds a party of its own. Unlike the kit's, it cannot be kept from starting: a tab starts on load,
+ * which is what "Go back to your own cadre" does.
+ */
+export function startAfterRemoval(start: PartyStart): PartyStart | undefined {
+	const { partyId, formerPartyId } = start;
+	if (formerPartyId === undefined || formerPartyId === partyId) return undefined;
+	return foundedStart(formerPartyId);
+}
+
+/**
  * The stored record, or `undefined` when the tab has none yet. A record that is present but not
  * one this module wrote throws: starting a fresh party over an unreadable record would orphan
  * the party it names, the same posture as an unreadable trusted-owner anchor.
@@ -68,6 +82,11 @@ export async function readPartyStart(handle: OptimysticWebDBHandle): Promise<Par
 /** One `put`, so a reload between two writes cannot see half a record. */
 export async function writePartyStart(handle: OptimysticWebDBHandle, start: PartyStart): Promise<void> {
 	await handle.put('kv', JSON.stringify(start), PARTY_START_KV_KEY);
+}
+
+/** The next start then founds a party of the tab's own, as a first load does. */
+export async function deletePartyStart(handle: OptimysticWebDBHandle): Promise<void> {
+	await handle.delete('kv', PARTY_START_KV_KEY);
 }
 
 /** The record in `text`; throws, naming the fault, when it is not a version-1 record. */

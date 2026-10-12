@@ -7,7 +7,8 @@
  * **Paste request**: the other app's join request names its peer id, and after the owner
  * approves, only that app can redeem the invitation. **Copy invitation**: an open
  * invitation whoever holds the text can redeem. The cadre holds each invitation's row,
- * which the outstanding list reads and Withdraw retires.
+ * which Withdraw retires: an open one from the outstanding list here, one for a single app
+ * from "Devices and nodes" (`machines.svelte.ts`).
  *
  * Module state, not component state: the router unmounts the page on every route change,
  * and a minted invitation's text exists nowhere else, so it has to survive a visit to Home.
@@ -32,6 +33,8 @@ import {
 	withdrawCadreInvitation,
 } from './cadre-web.js';
 import { pushError } from './diagnostics.svelte.js';
+import { errorMessage } from './cadre-format.js';
+import { refreshMachines } from './machines.svelte.js';
 
 // Chosen on the relay status, not on which error core threw, so it states only what that
 // status shows: the cadre's other machines are not checked here.
@@ -71,7 +74,7 @@ interface AddDeviceState {
 	/** Which flow's invitation is being made, while one is. */
 	minting: NoticeArea | null;
 	minted: MintedInvitation | null;
-	/** The live invitations, latest expiry first. */
+	/** The live open invitations, latest expiry first. */
 	invitations: CadreInviteStatus[];
 	listError: string | null;
 	notice: Notice | null;
@@ -196,6 +199,8 @@ async function mint(options: CreateCadreInvitationOptions, title: string, area: 
 		console.info(`[cadre] made cadre invitation ${key} (for ${options.peerId ?? 'anyone'}, owner ${options.grantsOwner}, reach ${reach})`);
 		state.minted = { key, title, encoded, reach, expiresAtMs: parseNullableStoredDatetimeMs(expiresAt) };
 		void refreshInvitations();
+		// One made for a single app is listed there, as a device invited and not joined yet.
+		void refreshMachines();
 		return true;
 	} catch (err) {
 		console.warn('[cadre] making a cadre invitation failed:', err);
@@ -229,18 +234,15 @@ export async function withdrawInvitation(key: string): Promise<void> {
 }
 
 /**
- * The invitations still redeemable, latest expiry first. A row records no creation time;
- * among invitations of one kind the newest expires last.
+ * The open invitations still redeemable, latest expiry first. A row records no creation time;
+ * among invitations of one kind the newest expires last. One made for a single app is listed
+ * under "Devices and nodes", as a device invited and not joined yet.
  */
 function outstanding(statuses: CadreInviteStatus[]): CadreInviteStatus[] {
 	const expiry = (status: CadreInviteStatus) => parseNullableStoredDatetimeMs(status.invite.expiresAt) ?? Number.MAX_SAFE_INTEGER;
-	return statuses.filter((status) => status.live).sort((a, b) => expiry(b) - expiry(a));
+	return statuses.filter((status) => status.live && status.invite.peerId === null).sort((a, b) => expiry(b) - expiry(a));
 }
 
 function notice(area: NoticeArea, title: string, message: string, detail: string | null = null): Notice {
 	return { area, title, message, detail };
-}
-
-function errorMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
 }

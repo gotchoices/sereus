@@ -13,7 +13,10 @@
  * The store also runs the join of an existing cadre ({@link joinCadre}) and the removal of
  * the cadre the tab left ({@link dissolveFormerParty}): each tears down what it attached to
  * the running node, drives `web-join.ts`'s steps, and attaches to whichever node runs
- * afterwards.
+ * afterwards. When the node reports that an owner removed this tab from its cadre
+ * (`cadre:removed`), the store lets go of it and `web-join.ts` stops it and deletes that
+ * cadre's data (status `removing`, then `removed`), never in the middle of another of these
+ * transitions ({@link inTransition}).
  */
 
 import {
@@ -33,6 +36,7 @@ import {
 import {
 	decodeInvitationForThisTab,
 	finishStrandMove,
+	forgetRemovedParty,
 	planDissolve,
 	redeemInPlace,
 	recordStrandMove,
@@ -43,14 +47,30 @@ import {
 	type JoinOutcome,
 } from './web-join.js';
 import type { StrandMoveOutcome } from './web-strand-move.js';
-import type { CadreNode, StrandStatus } from '@serfab/cadre-core';
+import type { CadreNode, CadreRemoval, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
 import { resetAddDeviceCard } from './add-device.svelte.js';
+import { resetMachinesCard } from './machines.svelte.js';
+import { ownerFingerprint } from './cadre-format.js';
 
-/** `joining`: started in the party an invitation names and redeeming it there; not admitted yet. */
-export type NodeStatus = 'idle' | 'starting' | 'joining' | 'running' | 'stopped' | 'error';
+/**
+ * `joining`: started in the party an invitation names and redeeming it there; not admitted yet.
+ * `removing`: an owner removed this tab from the party it ran; the node is stopping and the
+ * party's data being deleted. `removed`: that is done ({@link NodeState.removed}); nothing runs
+ * until the next start.
+ */
+export type NodeStatus = 'idle' | 'starting' | 'joining' | 'running' | 'stopped' | 'removing' | 'removed' | 'error';
 /** Phase 1 is a single-node cadre. Kept for the header badge + Phase-2 growth. */
 export type CadreMode = 'solo';
+
+/** The cadre an owner removed this tab from, as the Cadre page's card tells it. */
+export interface RemovedFrom {
+	partyId: string;
+	/** The owner key that signed the removal, when it is anchored here (`CadreRemoval.signerKey`). */
+	signerKey: string | null;
+	/** The party this tab founded and left, which the start record names now: the next start runs it. */
+	formerPartyId?: string;
+}
 
 interface NodeState {
 	status: NodeStatus;
@@ -64,6 +84,8 @@ interface NodeState {
 	strandError: string | null;
 	owner: OwnerState;
 	relay: RelayState;
+	/** Set when an owner removed this tab from its cadre, until a start reaches `running` again. */
+	removed: RemovedFrom | null;
 }
 
 export interface CadreEvent {
@@ -87,12 +109,17 @@ const state = $state<NodeState>({
 	strandError: null,
 	owner: 'pending',
 	relay: noRelayState(),
+	removed: null,
 });
 
 const events = $state<{ list: CadreEvent[] }>({ list: [] });
 
 let subscribed = false;
 let refreshPoll: ReturnType<typeof setInterval> | null = null;
+/** Starts, stops, joins, dissolves and removals in progress ({@link inTransition}). */
+let transitions = 0;
+/** A removal a node reported that has not been acted on yet ({@link actOnReportedRemoval}). */
+let removalReported: CadreRemoval | null = null;
 
 export function nodeState(): NodeState {
 	return state;
@@ -145,6 +172,11 @@ function subscribe(node: CadreNode): void {
 	node.on('seed:received', ({ peerId }) => record('seed:received', peerId));
 	node.on('seed:applied', ({ peersAdded }) => record('seed:applied', `${peersAdded} peers`));
 	node.on('seed:error', ({ error }) => record('seed:error', error));
+	// NOTE: a tab removed while it was closed never sees its own row live after the next start, so
+	// it never reports (docs/architecture.md → "The removed machine learns it"), and runs that cadre
+	// while every other machine refuses it. If users meet this, persist "seen live" per party, as the
+	// phone kit's note at `watchRemoval` says.
+	node.on('cadre:removed', onRemoved);
 }
 
 /** Pull the current chat-strand status/peers/error into reactive state. */
@@ -201,18 +233,17 @@ function stopRefreshPoll(): void {
 	}
 }
 
+/**
+ * Start the party the start record names and attach to it. From `removed`, that is the party the
+ * tab founded and left, or a fresh one of its own: the Cadre page's "Go back to your own cadre".
+ */
 export async function start(): Promise<void> {
-	if (state.status === 'starting' || state.status === 'joining' || state.status === 'running') return;
-	state.status = 'starting';
-	state.error = null;
-	let node: CadreNode;
-	try {
-		node = await startCadre();
-	} catch (err) {
-		failed('startCadre', err);
-		return;
-	}
-	await attachRunningNode(node);
+	if (['starting', 'joining', 'running', 'removing'].includes(state.status)) return;
+	await inTransition(async () => {
+		state.status = 'starting';
+		state.error = null;
+		await startStoredParty('startCadre');
+	});
 }
 
 /**
@@ -242,10 +273,78 @@ async function attachRunningNode(node: CadreNode): Promise<void> {
 		syncStrand();
 		startRefreshPoll();
 
+		state.removed = null;
 		state.status = 'running';
 	} catch (err) {
 		failed('startCadre', err);
 	}
+}
+
+/**
+ * Run `change`, a start, stop, join, dissolve or removal, as a transition: a removal a node reports
+ * meanwhile is acted on once no transition runs, so it never stops the node or deletes storage under
+ * one. The status checks at each entry point keep transitions from overlapping otherwise.
+ */
+async function inTransition<T>(change: () => Promise<T>): Promise<T> {
+	transitions += 1;
+	try {
+		return await change();
+	} finally {
+		transitions -= 1;
+		if (transitions === 0) actOnReportedRemoval();
+	}
+}
+
+/** `cadre:removed` from a node the store attached: acted on now, or after the transition in progress. */
+function onRemoved(removal: CadreRemoval): void {
+	const by = removal.signerKey ? ` by ${ownerFingerprint(removal.signerKey)}` : '';
+	record('cadre:removed', `${removal.partyId}${by}`);
+	removalReported = removal;
+	if (transitions === 0) actOnReportedRemoval();
+}
+
+/**
+ * Leave the running party when a node of it reported the tab's removal: the running node itself,
+ * before or after the store subscribed, or an earlier node of the party, while a transition held
+ * the store. A report waits while no node runs, for the next start of its party.
+ *
+ * NOTE: a report for a party the tab has since left (a join was leaving it when the report came) is
+ * dropped. That party's storage stays in this browser, as a joined party's does whenever the tab
+ * leaves it, and a founded one is offered for removal by the join card. The phone kit deletes it; if
+ * this window (a join's first steps, before it stops the old node) is ever hit, delete it here too.
+ */
+function actOnReportedRemoval(): void {
+	const removal = removalReported ?? getCadreNode()?.removedFromCadre() ?? null;
+	if (removal === null || state.status !== 'running') return;
+	removalReported = null;
+	if (removal.partyId === state.partyId) void leaveRemovedParty(removal);
+}
+
+/**
+ * Let go of the node and have `web-join.ts` stop it, point the start record away from the party and
+ * delete the party's storage, then report `removed` for the Cadre page's card. A failure reading or
+ * rewriting the start record is the store's `error`, with the storage left as the record names it.
+ *
+ * NOTE: after that failure the next start runs the removed party again, on its storage, and its new
+ * node does not report the removal. It takes an IndexedDB fault; if it is seen, keep the report and
+ * act on it after that start.
+ */
+async function leaveRemovedParty(removal: CadreRemoval): Promise<void> {
+	await inTransition(async () => {
+		record('removal:leaving', removal.partyId);
+		releaseNode();
+		resetNodeState();
+		forgetPartyCards();
+		state.status = 'removing';
+		try {
+			const formerPartyId = await forgetRemovedParty(removal.partyId);
+			state.removed = { partyId: removal.partyId, signerKey: removal.signerKey, ...(formerPartyId !== undefined && { formerPartyId }) };
+			state.status = 'removed';
+			record('removal:done', formerPartyId ?? '');
+		} catch (err) {
+			failed('forgetRemovedParty', err);
+		}
+	});
 }
 
 function failed(where: string, err: unknown): void {
@@ -272,16 +371,24 @@ function resetNodeState(): void {
 	state.relay = noRelayState();
 }
 
+/** The cards' state that belongs to the party the node ran: a join, its rollback and a removal forget it. */
+function forgetPartyCards(): void {
+	resetAddDeviceCard();
+	resetMachinesCard();
+}
+
 export async function stop(): Promise<void> {
 	if (state.status !== 'running') return;
-	try {
-		releaseNode();
-		await stopCadre();
-		resetNodeState();
-		state.status = 'stopped';
-	} catch (err) {
-		failed('stopCadre', err);
-	}
+	await inTransition(async () => {
+		try {
+			releaseNode();
+			await stopCadre();
+			resetNodeState();
+			state.status = 'stopped';
+		} catch (err) {
+			failed('stopCadre', err);
+		}
+	});
 }
 
 /** Stop then re-start the cadre (Home's "Restart node"). */
@@ -303,36 +410,39 @@ export async function restart(): Promise<void> {
  * else: the tab goes back to the party it left and the join's error is thrown; a failure
  * going back leaves the store in `error` with that message, the join's error still thrown.
  *
- * The "Add a device or app" card's minted invitation and pending approval belong to the party
- * the node ran when they were made, so a switch, and a rollback, forget them.
+ * The "Add a device or app" card's minted invitation and pending approval, and an open removal
+ * confirmation on "Devices and nodes", belong to the party the node ran when they were made, so
+ * a switch, and a rollback, forget them.
  */
 export async function joinCadre(encoded: string, options: JoinOptions = {}): Promise<JoinOutcome> {
 	if (state.status !== 'running') throw new Error('The node is not running.');
-	const invitation = decodeInvitationForThisTab(encoded);
-	if (invitation.partyId === state.partyId) {
-		const outcome = await redeemInPlace(invitation, options);
-		record('join:admitted', invitation.partyId);
-		syncOwner();
-		return outcome;
-	}
-	const movingFrom = await recordStrandMove(invitation);
-	record('join:leaving', state.partyId ?? '');
-	releaseNode();
-	resetNodeState();
-	resetAddDeviceCard();
-	state.status = 'joining';
-	state.partyId = invitation.partyId;
-	state.peerId = getCadreNode()?.peerId?.toString() ?? null;
-	try {
-		const outcome = await switchToParty(invitation, options, movingFrom);
-		record('join:admitted', invitation.partyId);
-		await attachRunningNode(requireNode());
-		return outcome;
-	} catch (err) {
-		record('join:failed', err instanceof Error ? err.message : String(err));
-		await startLeftPartyAgain(movingFrom);
-		throw err;
-	}
+	return inTransition(async () => {
+		const invitation = decodeInvitationForThisTab(encoded);
+		if (invitation.partyId === state.partyId) {
+			const outcome = await redeemInPlace(invitation, options);
+			record('join:admitted', invitation.partyId);
+			syncOwner();
+			return outcome;
+		}
+		const movingFrom = await recordStrandMove(invitation);
+		record('join:leaving', state.partyId ?? '');
+		releaseNode();
+		resetNodeState();
+		forgetPartyCards();
+		state.status = 'joining';
+		state.partyId = invitation.partyId;
+		state.peerId = getCadreNode()?.peerId?.toString() ?? null;
+		try {
+			const outcome = await switchToParty(invitation, options, movingFrom);
+			record('join:admitted', invitation.partyId);
+			await attachRunningNode(requireNode());
+			return outcome;
+		} catch (err) {
+			record('join:failed', err instanceof Error ? err.message : String(err));
+			await startLeftPartyAgain(movingFrom);
+			throw err;
+		}
+	});
 }
 
 /**
@@ -342,10 +452,12 @@ export async function joinCadre(encoded: string, options: JoinOptions = {}): Pro
  */
 export async function retryStrandMove(): Promise<StrandMoveOutcome | undefined> {
 	if (state.status !== 'running') throw new Error('The node is not running.');
-	const outcome = await finishStrandMove();
-	syncOwner();
-	record('move:retried', outcome?.state ?? 'nothing waiting');
-	return outcome;
+	return inTransition(async () => {
+		const outcome = await finishStrandMove();
+		syncOwner();
+		record('move:retried', outcome?.state ?? 'nothing waiting');
+		return outcome;
+	});
 }
 
 /**
@@ -361,20 +473,22 @@ export async function retryStrandMove(): Promise<StrandMoveOutcome | undefined> 
  */
 export async function dissolveFormerParty(discard: readonly string[] = []): Promise<void> {
 	if (state.status !== 'running') throw new Error('The node is not running.');
-	const plan = await planDissolve();
-	record('dissolve:removing', plan.formerPartyId);
-	releaseNode();
-	resetNodeState();
-	state.status = 'starting';
-	try {
-		await removeFormerParty(plan, discard);
-	} catch (err) {
-		record('dissolve:stopped', err instanceof Error ? err.message : String(err));
-		await startStoredParty('dissolveFormerParty');
-		throw err;
-	}
-	record('dissolve:removed', plan.formerPartyId);
-	if (!(await startStoredParty('dissolveFormerParty'))) throw new Error(state.error ?? 'The node did not start again.');
+	await inTransition(async () => {
+		const plan = await planDissolve();
+		record('dissolve:removing', plan.formerPartyId);
+		releaseNode();
+		resetNodeState();
+		state.status = 'starting';
+		try {
+			await removeFormerParty(plan, discard);
+		} catch (err) {
+			record('dissolve:stopped', err instanceof Error ? err.message : String(err));
+			await startStoredParty('dissolveFormerParty');
+			throw err;
+		}
+		record('dissolve:removed', plan.formerPartyId);
+		if (!(await startStoredParty('dissolveFormerParty'))) throw new Error(state.error ?? 'The node did not start again.');
+	});
 }
 
 /**
@@ -396,7 +510,7 @@ async function startStoredParty(where: string): Promise<boolean> {
 /** After a failed join: start the party the tab left and attach to it; a failure here is the store's `error`, not the join's. */
 async function startLeftPartyAgain(movingFrom: string | undefined): Promise<void> {
 	resetNodeState();
-	resetAddDeviceCard();
+	forgetPartyCards();
 	state.status = 'starting';
 	let node: CadreNode;
 	try {

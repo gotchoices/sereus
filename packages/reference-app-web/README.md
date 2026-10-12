@@ -248,13 +248,78 @@ The minted invitation shows as a QR code (`lib/QrCode.svelte`) and as text with 
 button, with its expiry and, when no other machine of the cadre has an address a device
 could dial, a warning that the new app can join only while this tab is open. It stays on
 the card, in memory only, until *Done*, including across visits to other pages.
-**Outstanding invitations** lists the live ones, latest expiry first, each with *Withdraw*.
+**Outstanding invitations** lists the live open ones, latest expiry first, each with *Withdraw*.
+One made for a single app is listed under [Devices and nodes](#devices-and-nodes) instead, as
+a device invited and not joined yet, so each invitation shows once.
 
 Only an owner can mint: a tab that is not one, or whose owner genesis failed, sees one line
 instead. The invitation must carry an address: with no relay reservation and no other
 machine of the cadre holding one, *Make invitation* fails and says the tab has no relay
 address. With a relay and no other machine (the usual solo tab) it succeeds with the
 open-tab warning.
+
+## Devices and nodes
+
+The Cadre page's **Devices and nodes** card lists every machine of this cadre and lets an
+owner remove one: an uninstalled app, a lost or stolen phone, an always-on node whose machine
+died ([Removing a machine](../../docs/architecture.md#removing-a-machine)). It has the phone
+app's list, confirmation and wording ([reference-app-rn.md → Devices and Nodes](../../docs/reference-app-rn.md#devices-and-nodes)),
+with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
+
+- **The list** has one row per machine `CadreNode.listMachines` reports: what it is, from the
+  node profile it published ("App", "Always-on node", or "Machine" until it publishes one), with
+  "(this tab)" on the tab's own row; "Owner"; "Last seen" from its last self-signed record (a
+  running machine re-stamps it every 7.5 minutes); and "Key", the first 8 characters of its
+  public key, which is the fingerprint cadre-host shows for an owner. A row that no longer
+  passes this tab's membership check says **Not trusted here**; an owner key with no machine
+  row reads "Owner key, no machine joined".
+- **Invited, not joined yet**: each live invitation made for one app whose peer has not
+  joined, with its code, owner or member, and expiry, and *Withdraw* (asks once).
+- **When it is read**: when the node reaches `running` and its owner step settles, after each
+  removal or withdrawal here, after *Add a device or app* makes an invitation, and on
+  *Refresh*; it is not polled. A read that finishes after the node was replaced is dropped.
+- **Who can remove.** On an owner tab every row has *Remove* except the tab's own, under which
+  "To remove this tab, use another owner device": a machine cannot sign the removal of its own
+  owner key. A member sees the list with one line saying only an owner can remove machines.
+- **The confirmation** reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or
+  machine›?" in the card, with the machine's key, what happens (it leaves the cadre; its owner
+  key goes too, when it is one; the invitations it could join again with are withdrawn), one
+  **Keep** checkbox per device or owner key its key added (on by default; a kept one is
+  re-vouched under this tab's key first, through `removeMachine`'s `revouch`), a line when that
+  machine added this tab, and what removal does not do. *Remove* runs `removeMachine`. A machine
+  holding the only owner key shows the refusal and only *Close*, and one another owner removed
+  meanwhile says "Already removed". The confirmation stays open across a visit to another page;
+  a join, or this tab's own removal, closes it.
+
+### When this tab is removed
+
+When an owner removes this tab from its cadre while the tab runs, the node reports it
+(`cadre:removed`) and the store acts on it, as the phone kit does
+([cadre-rn README → Removed from the cadre](../cadre-rn/README.md#removed-from-the-cadre)):
+
+1. **In turn.** A start, stop, join, dissolve or strand-move retry in progress finishes first
+   (`inTransition` in `lib/store.svelte.ts`). A node that reported before the store attached it
+   is read through `removedFromCadre()` once that transition ends. Home's status reads
+   `removing` while the next steps run.
+2. **The node stops**, and the start record stops naming the party before anything is deleted
+   (`lib/web-join.ts` → `forgetRemovedParty`). It becomes a founded start of `formerPartyId`, the
+   party the tab founded and left, or is deleted when there is none. The web start record has
+   no auto-start, so the next load starts that party, or founds a fresh one, as the card's
+   button does.
+3. **The party's storage is deleted** with the dissolve's marked removal
+   ([Removing the cadre the tab left](#removing-the-cadre-the-tab-left)), after finishing any
+   removal a marker already names.
+4. **Status `removed`.** The Cadre page shows "This tab was removed from cadre ‹party id› by an
+   owner (‹its key's fingerprint›). Its copy of that cadre has been deleted from this browser.",
+   with **Go back to your own cadre** when the tab founded one, or **Start a new cadre**, and a
+   line saying that joining another cadre starts from the tab's own, since a join switches a
+   running node. *Restart node* on Home does the same. The card stays until a start reaches
+   `running`. The join card's steps and an open removal confirmation are cleared.
+
+It is best-effort, as the report is: a tab removed while it was closed is not told after the
+next load, and runs that cadre while its machines refuse it. Two narrower gaps are `NOTE:`s in
+`lib/store.svelte.ts`: a report from the node a join is leaving is dropped, and a failure
+rewriting the start record leaves the store in `error` with the storage in place.
 
 ## Joining an existing cadre
 
@@ -336,7 +401,9 @@ written before the first deletion and deleted after the start record stops namin
 start reads it first: a marker naming another party finishes the deletions without checking
 again and drops that party as `formerPartyId`; one naming the party being started was not
 written by a removal and is deleted with a warning. A tab closed partway finishes on its next
-load.
+load. The same marked removal deletes the storage of a party an owner removed this tab from,
+with no check, once its node has stopped and the start record no longer names it
+([When this tab is removed](#when-this-tab-is-removed)).
 
 **Another tab of this site still running B** keeps B's database open, and the browser fires
 `blocked` on the delete and waits for that tab. `deleteStore` does not wait: the removal stops
@@ -429,9 +496,10 @@ ticket rather than papering it over with a shim — the same applies as for
 src/
   App.svelte             # nav + hash route switcher (Home, Cadre, Messages, Activity, Diagnostics)
   Home.svelte            # node status + party/peer/control/strand/relay state + strand-formation panel
-  Cadre.svelte           # /cadre — cadre membership page
+  Cadre.svelte           # /cadre — cadre membership page, and the card after an owner removed this tab
   JoinCadre.svelte       # /cadre's "Join my existing cadre" card
   AddDevice.svelte       # /cadre's "Add a device or app" card
+  Machines.svelte        # /cadre's "Devices and nodes" card
   Messages.svelte        # /messages — chat strand send / list
   Activity.svelte        # /log — CadreNode lifecycle event log
   Diagnostics.svelte     # /diag — cadre + libp2p diagnostic surface
@@ -440,7 +508,7 @@ src/
   main.css               # global styles
   lib/
     cadre-web.ts             # CadreNode lifecycle (control net, owner step, chat strand, reading a party alone)
-    web-join.ts              # joining an existing cadre, retrying the move, dissolving the party left
+    web-join.ts              # joining an existing cadre, retrying the move, dissolving the party left, leaving a party that removed the tab
     web-dissolve.ts          # the dissolve's refusals, marker and removal steps
     party-start.ts           # the start record: party id, founded or joined, the party left
     web-strand-move.ts       # move records: the founded party's strands carried into the joined one
@@ -449,10 +517,11 @@ src/
     chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
     store.svelte.ts          # Svelte 5 runes store: node state + CadreNode event log
     network.svelte.ts        # strand-formation panel state (create / join invitation)
-    add-device.svelte.ts     # "Add a device or app" state: request, approval, mint, list, withdraw
+    add-device.svelte.ts     # "Add a device or app" state: request, approval, mint, list and withdraw open ones
+    machines.svelte.ts       # "Devices and nodes" state: the cadre's machines, the devices invited, removing one
     join-cadre.svelte.ts     # "Join my existing cadre" state: the request, the join and its steps
     join-flow.ts             # the join's steps, their words, and the words for each failure
-    cadre-format.ts          # peer-id code + expiry text shared by the Cadre page's cards
+    cadre-format.ts          # peer-id code, key fingerprint, expiry and error text shared by the Cadre page's cards
     relay-config.ts          # optional circuit-relay multiaddr from a runtime manifest
     messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
     router.svelte.ts         # tiny hash-based router (#/, #/cadre, #/messages, #/log, #/diag)
@@ -517,6 +586,9 @@ yarn workspace @serfab/reference-app-web test:e2e
   no `formerPartyId` and that party's control block database is gone. Same gate and
   self-skip as the formation tier.
 
+Devices and nodes, and this tab's own removal, have no tier: removing a machine needs a second
+owner machine, which neither fixture runs.
+
 Wiring this suite into CI is out of scope for the current ticket — it stops at
 "runs cleanly locally."
 
@@ -524,3 +596,8 @@ Wiring this suite into CI is out of scope for the current ticket — it stops at
 
 - Real-time push (gossip / sync subscription wiring) — convergence is poll-based.
 - A richer app-level RBAC notion beyond the schema-enforced `CadreControl` gates.
+- Two same-origin tabs running one party. Nothing keeps a second tab from starting the party the
+  first runs: they share the node-local database, the start record and the identity. When an
+  owner removes that machine, the tab that acts first rewrites the start record and deletes the
+  party's records under the other, and its delete of the control database waits for the other
+  tab to close (`deleteStore`), with the marker kept.

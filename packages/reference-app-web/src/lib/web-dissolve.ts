@@ -4,7 +4,9 @@
  * holds everything the left one holds, and the removal of the left party's IndexedDB storage. The
  * browser counterpart of the phone kit's `dissolve.ts` (`packages/cadre-rn/src/phone-node/dissolve.ts`),
  * with the same refusals, marker and removal order. The transition that stops and starts the node
- * around them is `web-join.ts`'s.
+ * around them is `web-join.ts`'s. The same marked removal deletes the storage of a party an owner
+ * removed this tab from, with no check: that party is not the tab's to keep (`web-join.ts` →
+ * `forgetRemovedParty`).
  *
  * The removal is local: it writes nothing to either party's control database. A marker in the
  * node-local database names the party from before the first deletion until after the start record
@@ -102,10 +104,20 @@ export const DISSOLVE_MARKER_KV_KEY = 'dissolving-party';
 
 const MARKER_VERSION = 1;
 
-/** Mark `partyId` as being dissolved, then remove its storage. Only once the check has passed, with no node of it running. */
+/**
+ * Mark `partyId` as being dissolved, then remove its storage. Only once the decision to remove it
+ * is made (a dissolve's check passed, or an owner removed this tab from it), with no node of it
+ * running and no start record naming it as the party to start.
+ */
 export async function removeParty(handle: OptimysticWebDBHandle, partyId: string): Promise<void> {
 	await handle.put('kv', JSON.stringify({ v: MARKER_VERSION, partyId }), DISSOLVE_MARKER_KV_KEY);
 	await finishRemoving(handle, partyId);
+}
+
+/** Finish the removal a marker names, if any, so a new {@link removeParty} does not replace its marker. Throws its failure, the marker kept. */
+export async function finishMarkedRemoval(handle: OptimysticWebDBHandle): Promise<void> {
+	const partyId = await markedParty(handle);
+	if (partyId !== undefined) await finishRemoving(handle, partyId);
 }
 
 /** A removal a marker names that the start could not finish; the marker stays for the next start. */
@@ -117,8 +129,10 @@ export interface UnfinishedRemoval {
 /**
  * Before a start of `starting`: finish the removal a marker names, and return the start to run,
  * without `formerPartyId` when the marker names it, finished or not. A failure is logged and
- * returned, and the start goes on. A marker naming the party being started was not written by a
- * dissolve, which never names the running party: it is deleted with a warning, not acted on.
+ * returned, and the start goes on. A marker naming the party being started was written by neither
+ * removal: a dissolve never names the running party, and the removal of a party that removed this
+ * tab names it only once its node has stopped and the start record no longer names it. Such a
+ * marker is deleted with a warning, not acted on.
  */
 export async function finishRemovalAtStart(
 	handle: OptimysticWebDBHandle,
