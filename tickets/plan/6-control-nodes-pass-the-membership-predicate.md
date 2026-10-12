@@ -3,7 +3,7 @@ architecture: docs/architecture.md#per-stream-protocol-guard
 files: packages/cadre-core/src/cadre-node.ts (buildControlNodeOptions, authorizeInboundControlStream, refreshMembershipGate), tickets/blocked/stranger-joins-the-control-cohort-by-advertising-protocols.md
 prereq: stranger-joins-the-control-cohort-by-advertising-protocols
 ----
-**Blocked: a dependency outside this repo.** Optimystic implemented and reviewed `network-membership-predicate-gates-cohort-selection` and `network-membership-predicate-gates-block-pushes` on branch `garden/2026-10-11`; unreleased. Unblocks when an Optimystic release carries them.
+**Unblocked:** optimystic main 1b352916 (the release candidate, linked here) carries the membership predicate. Build against the linked tree; the floor bump comes with the release.
 
 # Control nodes pass the membership predicate
 
