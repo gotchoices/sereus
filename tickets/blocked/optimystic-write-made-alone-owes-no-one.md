@@ -14,6 +14,7 @@ Optimystic's ticket names the likely fix (record as owed the members the node kn
 ## What Sereus does when it lands
 
 - Adopt the release (floors in `packages/cadre-core/package.json` and the other `@optimystic/*` dependents; the adoption pattern is in the recent `adopt optimystic …` commits).
+  Sereus master already calls the plugin's `onCommitDurability`, `onCommitFullyHeld` and `txnBridge.dispose()` (`strand-commit-durability-reaches-the-app`), which published 1.12.1 lacks, so the raised floors must be a release that carries them, and Sereus must not be published before that.
 - Re-run `joiner-first-commit-over-slow-relay.integration.ts`. Its third arm is `it.fails` (`fix/joiner-write-made-alone-lost-when-it-stops` commits it); when it starts failing, the bug is fixed: make it a plain `it`.
 - If the fix stage of `joiner-write-made-alone-lost-when-it-stops` found a Sereus-side delivery defect after restart, confirm both together.
 - Reply on #44 and close it.

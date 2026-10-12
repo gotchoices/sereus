@@ -38,9 +38,9 @@ interface CollectionFactory {
  */
 async function releaseOptimysticPlugin(plugin: OptimysticPluginResult, createdNode: Libp2p | null): Promise<void> {
 	// NOTE: the bridge's follower re-subscribes at the start of any transaction, so a write begun on
-	// this `Database` after release (before its owner closes it) subscribes again and nothing releases it. cadre-core
-	// stops its own writers before releasing; if an app write in flight at close ever shows up as a
-	// leaked subscription, close the `Database` before releasing.
+	// this `Database` after release (before its owner closes it) subscribes again and nothing
+	// releases it. cadre-core stops its own writers before releasing; if an app write in flight at
+	// close ever shows up as a leaked subscription, close the `Database` before releasing.
 	plugin.txnBridge.dispose();
 	const { collectionFactory } = plugin;
 	if (!createdNode) {

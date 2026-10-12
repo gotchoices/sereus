@@ -11,9 +11,9 @@ export interface StrandCommitDurability {
   /** `StampId()` inside the committed transaction. */
   readonly transactionId: string;
   /**
-   * Another member holds every block the commit wrote: the overall answer is `majority` or `full`.
-   * False for `local`, `unrouted`, or an unknown overall. Becomes true once `strand:commit-held`
-   * fires for the commit.
+   * Another member holds every block the commit wrote: the overall answer is `majority` or `full`
+   * and no block was abandoned (`torn`). False for `local`, `unrouted`, an unknown overall, or a
+   * torn commit. Becomes true once `strand:commit-held` fires for the commit.
    */
   readonly heldElsewhere: boolean;
   /**
@@ -43,10 +43,14 @@ const RECENT_COMMIT_LIMIT = 256;
 
 /**
  * `majority` counts: a strict majority of a cohort of at least two is at least two machines, so
- * the write survives this one stopping. The one place this rule lives; apps read the field.
+ * the write survives this one stopping. A torn commit does not, though it can succeed as `majority`
+ * (Optimystic clamps a torn `full` to it): its abandoned blocks are held by nobody. The one place
+ * this rule lives; apps read the field.
  */
 function isHeldElsewhere(overall: WriteDurability | undefined): boolean {
-  return overall !== undefined && durabilityRank(overall.quorum) >= durabilityRank('majority');
+  return overall !== undefined
+    && durabilityRank(overall.quorum) >= durabilityRank('majority')
+    && (overall.torn?.length ?? 0) === 0;
 }
 
 /**

@@ -189,6 +189,8 @@ The main entry point for cadre participation.
 | `strand:started` | `{ strandId }` | Strand instance started |
 | `strand:stopped` | `{ strandId }` | Strand instance stopped |
 | `strand:error` | `{ strandId, error }` | Error in strand instance. A failed launch re-emits this on every retry (backing off up to 5 min), so treat it as a repeating signal, not a one-shot |
+| `strand:commit-durability` | `StrandCommitDurability` | After every commit on a strand's database that wrote something: whether another member already holds it (`heldElsewhere`) and whether `strand:commit-held` will say when one does (`followed`). Also readable as `instance.database.commitDurability(tx)`; see [strands.md → A commit's durability](../../docs/strands.md#a-commits-durability) |
+| `strand:commit-held` | `{ strandId, transactionId }` | A followed commit held only below full replication is now held by every member of its cohort |
 
 ## Related Documentation
 
