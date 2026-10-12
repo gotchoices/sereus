@@ -110,12 +110,6 @@ function buildNodeConfig(config: ResolvedConfig, partyId: string, stores: NodeSt
  * that writes `claim.json` and reports what it wrote. Undefined without the secret — a claimed
  * node started without it is still honoured from its record, just with no claim policy, so a
  * rival's seed is refused as an untrusted seed rather than `already-claimed`.
- *
- * NOTE: without `claim`, cadre-core's `publishSelfRecordOnceClaimed` does not run either, so a
- * claimed node restarted with the secret unset republishes its address record on the heartbeat
- * only (about 7.5 min), not on its first reconcile pass. Its owner retained its addresses and
- * dials in regardless. cadre-host keeps the secret set on respawn; if an embedder that drops it
- * ever needs the prompt publish, key that method on the anchor's `claim` source, not the config.
  */
 export function claimConfigFor(
   secret: string | undefined,

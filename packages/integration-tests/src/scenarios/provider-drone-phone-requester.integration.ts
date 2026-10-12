@@ -22,13 +22,14 @@
  *   2. `ContainerService.createContainer` with `bootstrapNodes: []` and the requester's owner
  *      key pinned; the record reaches `running`
  *   3. `getPeerInfo` carries the announced public pair, `/tcp/<p2p>` and `/tcp/<ws>/ws`
- *   4. the requester mints a seed with `addDrone` from the peer info's addresses, and the
+ *   4. once the node has run 5 s, so its boot-time self-publish has found no row, the
+ *      requester mints a seed with `addDrone` from the peer info's addresses, and the
  *      provider's `applySeed` delivers it; the node accepts it
  *   5. after `reconcileControlCohort()` the requester holds an OUTBOUND connection, the node a
  *      WebSocket one; the node admits the requester by the cold-start rule plus the seed, and
  *      the requester's row reaches the node: it is in the node's authorized member set. The
- *      other direction, the node's self-published record reaching the requester, is not
- *      pinned yet (the NOTE in that step says why)
+ *      other direction too: the node's self-published record, with a `/ws` address, resolves
+ *      on the requester within about one of the node's reconcile passes
  *   6. `terminateContainer` stops the record and the child exits
  *
  * The public host is `localhost`, a name: the child binds `0.0.0.0`, which already lists
@@ -74,6 +75,17 @@ const STARTUP_MS = 90_000;
 /** Per-op budget for round-trips once a node is up. */
 const OP_MS = 30_000;
 const PUBLIC_HOST = 'localhost';
+/**
+ * How long the node runs before the requester adds it, so its boot-time self-publish (1 s after
+ * `CadreNode.start()`) has already found no row, as on a rented node a phone seeds minutes later.
+ *
+ * The wait goes before `addDrone`, not between it and the seed: the requester dials a node it
+ * added on its next 2 s reconcile pass, and a connection made before the seed lets the node's
+ * row replicate in first. The seed then publishes the record by accident — it carries the node's
+ * own addresses, and merging them into its own peer store fires the node's `self:peer:update`
+ * republish — and step 5 would pass without the reconcile-pass publish it exists to check.
+ */
+const SEED_AFTER_RUNNING_S = 5;
 
 describe('a phone-shaped requester rents a provider node it gives no address (real cadre-provider, real cadre-cli)', () => {
   const partyId = `provider-phone-${Math.random().toString(36).slice(2)}`;
@@ -92,6 +104,8 @@ describe('a phone-shaped requester rents a provider node it gives no address (re
   let handle: ProviderProcessHandle;
   let nodePeerId: string;
   let nodeAddrs: string[];
+  /** The node's `/status` uptime when its record first read `running` (step 2). */
+  let uptimeWhenRunning: number;
 
   beforeAll(() => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'provider-phone-'));
@@ -155,6 +169,9 @@ describe('a phone-shaped requester rents a provider node it gives no address (re
     handle = orchestrator.listHandles().find((h) => h.dockerId === record.dockerId)!;
     expect(handle).toBeDefined();
     expect(handle.admin).toBeDefined();
+    // `uptime` counts from the health server's construction, before `CadreNode.start()`, so
+    // step 4 measures from here rather than from zero.
+    uptimeWhenRunning = (await readStatus()).uptime;
   }, STARTUP_MS + 10_000);
 
   it('step 3: the node\'s peer info carries the public pair it announces', async () => {
@@ -174,6 +191,11 @@ describe('a phone-shaped requester rents a provider node it gives no address (re
   }, STARTUP_MS);
 
   it('step 4: the requester adds the node from its peer info, and the provider delivers the seed', async () => {
+    await waitUntil(async () => (await readStatus()).uptime >= uptimeWhenRunning + SEED_AFTER_RUNNING_S, {
+      timeoutMs: OP_MS,
+      intervalMs: 500,
+      description: `the node has run ${SEED_AFTER_RUNNING_S} s past reading running`,
+    });
     const { encodedSeed } = await requester!.addDrone({ dronePeerId: nodePeerId, droneMultiaddrs: nodeAddrs });
 
     // The node's seed route can lag the `/status` readiness that marked the record `running`.
@@ -191,9 +213,9 @@ describe('a phone-shaped requester rents a provider node it gives no address (re
     }
     // No assertion on `peersAdded`: it counts seed peers carrying addresses, and a requester
     // that listens on nothing contributes none.
-  }, OP_MS + 10_000);
+  }, 2 * OP_MS + 10_000);
 
-  it('step 5: the requester DIALS IN over /ws, the node admits it, and the requester\'s row reaches the node', async () => {
+  it('step 5: the requester DIALS IN over /ws, the node admits it, and each one\'s record reaches the other', async () => {
     await requester!.reconcileControlCohort();
     await waitUntil(() => hasOutboundTo(requester!, nodePeerId), {
       timeoutMs: OP_MS,
@@ -214,15 +236,17 @@ describe('a phone-shaped requester rents a provider node it gives no address (re
       intervalMs: 1_000,
       description: 'the requester is in the node\'s authorized member set',
     });
-    // NOTE: node → requester (the node's signed record resolving on the requester through
-    // `resolvePeerAddrs`) is not asserted: a seeded node publishes it only if the row
-    // `addDrone` wrote has replicated in by its one-shot publish 1 s after start, and otherwise
-    // on the 7.5-minute heartbeat. Measured both ways here (0.74 s from start to seed: resolved;
-    // later: nothing in 90 s). `seeded-node-publishes-its-address-record-late` owns the fix and
-    // adds the assertion here.
+    // Node → requester: the node found the row `addDrone` wrote for it, self-published a signed,
+    // addressed record on its next reconcile pass (every 15 s), and that record replicated back.
+    let resolved: string[] = [];
+    await waitUntil(async () => {
+      resolved = (await requester!.resolvePeerAddrs(nodePeerId)).map((ma) => ma.toString());
+      return resolved.length > 0;
+    }, { timeoutMs: OP_MS, intervalMs: 1_000, description: 'the node\'s signed record reaches the requester' });
+    expect(resolved.some((a) => a.includes('/ws'))).toBe(true);
 
     expect(requester!.getMultiaddrs()).toEqual([]);
-  }, STARTUP_MS + 2 * OP_MS);
+  }, STARTUP_MS + 3 * OP_MS);
 
   it('step 6: terminating the container stops the record and the child', async () => {
     expect(await containers.terminateContainer(containerId)).toBe(true);

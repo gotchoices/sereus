@@ -939,9 +939,11 @@ export class CadreNode implements SAppIdLookup {
    * When this node last PUBLISHED its own `CadrePeer` address record (inserted or
    * refreshed), or null if it never has in this session. Stamped by
    * {@link noteSelfRecordPublished} on every successful publish, wherever it was driven
-   * from — the boot pass, the heartbeat, an address change, a drain or an explicit call.
+   * from — the boot pass, the heartbeat, an address change, a drain, a reconcile pass or an
+   * explicit call.
    *
-   * Read by {@link escalateIfSelfRecordStale} for the one consequence worth an operator's
+   * Read by {@link publishFirstSelfRecord}, which stops trying once it is set, and by
+   * {@link escalateIfSelfRecordStale} for the one consequence worth an operator's
    * attention: once this gap exceeds {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}, every other
    * machine in the party is already discarding this node's address as stale.
    */
@@ -2958,12 +2960,11 @@ export class CadreNode implements SAppIdLookup {
         try {
           await this.registerSelf();
         } catch (error) {
-          // Background task — a failed publish must not crash the node.
-          // NOTE: a restarted machine whose own CadrePeer row replicates in while this update
-          // runs fails here with ConcurrentModificationError (seen on the owner's restart in
-          // every traced run of cadre-invite-any-member), leaving its record unrefreshed until
-          // the next heartbeat. If a restarted machine's changed addresses must publish sooner,
-          // retry once here.
+          // Background task — a failed publish must not crash the node. A restarted machine
+          // whose own CadrePeer row replicates in while this update runs fails here with
+          // ConcurrentModificationError (seen on the owner's restart in every traced run of
+          // cadre-invite-any-member); the next connected reconcile pass retries
+          // (publishFirstSelfRecord).
           log('Self-registration failed: %o', error);
         }
         // Wire the ongoing refresh + control-cohort reconcile cadence, then run
@@ -3033,24 +3034,27 @@ export class CadreNode implements SAppIdLookup {
     }
 
     const peerId = this.controlNode.peerId.toString();
-    const addrs = await this.collectSelfAddrs();
     const existing = await this.controlDatabase.queryPeerRecord(peerId);
+    // A listener-only service (`enableSeedListener`, a claim node's) holds no owner key and
+    // cannot sign the insert, so it is "no owner service" here too.
+    const ownerService = this.seedBootstrapService?.canAuthorize() ? this.seedBootstrapService : null;
+    if (!existing && !ownerService) {
+      // "No row" also covers "revoked": queryPeerRecord reads a row whose StampId is
+      // retired in Revocation as absent, so a removed node lands here every heartbeat
+      // and stops refreshing its own record — correct, but say so, or the message reads
+      // as "never added" for a node that was removed.
+      log('registerSelf: no readable CadrePeer row for self (never added, or removed and its stamp retired) and no owner service to self-insert; skipping');
+      return 'skipped';
+    }
+    // Collected only past that skip, which a node waiting for its row replicated in takes on
+    // every connected reconcile pass ({@link publishFirstSelfRecord}).
+    const addrs = await this.collectSelfAddrs();
 
-    if (!existing) {
-      // A listener-only service (`enableSeedListener`, a claim node's) holds no owner key and
-      // cannot sign the insert, so it is "no owner service" here too.
-      if (!this.seedBootstrapService?.canAuthorize()) {
-        // "No row" also covers "revoked": queryPeerRecord reads a row whose StampId is
-        // retired in Revocation as absent, so a removed node lands here every heartbeat
-        // and stops refreshing its own record — correct, but say so, or the message reads
-        // as "never added" for a node that was removed.
-        log('registerSelf: no readable CadrePeer row for self (never added, or removed and its stamp retired) and no owner service to self-insert; skipping');
-        return 'skipped';
-      }
+    if (!existing && ownerService) {
       // First-time row: requires an owner signature (the node is its own
       // owner). insertSelfPeerRecord throws if no owner key is present.
       const record = this.signSelfRecord(peerId, signingKey, addrs, null);
-      if (await this.seedBootstrapService.insertSelfPeerRecord(record)) {
+      if (await ownerService.insertSelfPeerRecord(record)) {
         if (this.committedAlone()) this.pendingSelfPeerWrite = true;
         this.noteSelfRecordPublished();
         log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
@@ -3271,25 +3275,39 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Publish this node's own address record from the reconcile pass, for a CLAIMED node that
-   * has not published one this session. Its owner writes its `CadrePeer` row only after the
-   * claim is accepted (`claimNode`), so the row reaches this node by replication, after the
-   * boot-time publish and the first-growth drain have both found nothing to publish; without
-   * this the record would wait for the heartbeat ({@link startRecordRefresh}), and the cadre
-   * could not resolve the node's addresses until then. The reconcile pass is where replicated
-   * membership is picked up, so each pass tries until the first publish lands. A try before
-   * the row has arrived is a `skipped` publish: one `CadrePeer` read. A claimed node later
-   * removed from its cadre never publishes again, so it pays that read on every pass.
+   * Publish this node's own address record from the reconcile pass until its first publish of
+   * this session lands. A node with no owner key — seeded (`addDrone`, `cadre enroll add`),
+   * claimed (`claimNode`) or otherwise authorized after it booted — cannot insert its own
+   * `CadrePeer` row; the row an owner wrote for it reaches it by replication once the two
+   * connect, usually after the boot-time publish and the first-growth drain have both found
+   * nothing to publish. Without this the record would wait for the heartbeat
+   * ({@link startRecordRefresh}), and the cadre could not resolve the node's addresses until
+   * then. The reconcile pass is where replicated membership is picked up, so each pass tries.
+   * It also retries an owner's boot-time publish that failed.
+   *
+   * A try before the row has arrived is a `skipped` publish: one `CadrePeer` read. Not tried
+   * while the node waits to be claimed (it has no row and no party yet) or once it has learned
+   * it was removed (nothing to publish). A removed node that never saw its own row live in this
+   * process does not learn it was removed ({@link noteOwnRemoval}), and pays that read on every
+   * pass.
+   *
+   * Connected-only: a row written elsewhere arrives over a connection, and an owner's publish
+   * committed alone is local-only and forks its own history — a restarted owner whose embedder
+   * runs a pass before it reconnects would write its row on the stale side of the fork, and
+   * then never see rows written while it was down (`cadre-invite-any-member` runs that pass and
+   * fails every time without this condition). The boot-time publish and the first-growth drain already try at the node's lone and
+   * first-connection moments; this retries on the passes after.
    */
-  private async publishSelfRecordOnceClaimed(): Promise<void> {
-    if (!this.config.claim || this.isAwaitingClaim() || this.lastSelfRecordPublishAt !== null) {
+  private async publishFirstSelfRecord(): Promise<void> {
+    if (this.lastSelfRecordPublishAt !== null || this.isAwaitingClaim() || this.removal !== null
+      || this.getControlConnectionCount() === 0) {
       return;
     }
     const outcome = await this.registerSelf().catch((error: unknown) => {
-      log('reconcileControlCohort: claimed-node self-record publish failed (continuing): %o', error);
+      log('reconcileControlCohort: first self-record publish failed (continuing): %o', error);
       return 'skipped' as const;
     });
-    log('reconcileControlCohort: claimed node self-record publish: %s', outcome);
+    log('reconcileControlCohort: first self-record publish: %s', outcome);
   }
 
   /**
@@ -3338,25 +3356,21 @@ export class CadreNode implements SAppIdLookup {
     };
     this.controlNode.addEventListener('self:peer:update', this.selfPeerUpdateHandler);
 
-    // NOTE: a node AUTHORIZED AFTER IT BOOTED can wait a whole heartbeat (7.5 min)
-    // to publish its address. `registerSelf` no-ops while a node has no readable
-    // `CadrePeer` row, so its boot-time publish does nothing, and the two triggers
-    // wired here are the only ones after that: `self:peer:update` needs an ADDRESS
-    // CHANGE, and a relay-only node's addresses stop changing the moment its
-    // reservation lands — inside `start()`, before this listener exists (on the
-    // `network.requireRelay: false` posture the reservation may instead land LATER,
-    // from the retry supervisor, and then this listener is what publishes the
-    // `/p2p-circuit` address the boot-time publish could not carry). Harmless
-    // where a late-authorized node's addresses keep churning (NAT/relay rotation
-    // fire the event anyway), and invisible while parties authorize members before
-    // they boot. A claimed node is always authorized after it boots, and the reconcile
-    // pass publishes for it ({@link publishSelfRecordOnceClaimed}). If late enrollment
-    // becomes the normal path for other nodes too — an invited phone is exactly that —
-    // drop that method's claim condition rather than lengthening this list of triggers:
-    // the membership-change seam (`ControlDatabase.setMembershipChangeListener`) fires
-    // on LOCAL commits only, and the row a late-authorized node waits for is written
-    // elsewhere. Measured while writing `relay-only-control-addr.integration.ts` case 4,
-    // which drives `registerSelf()` explicitly because neither trigger is dependable there.
+    // A node AUTHORIZED AFTER IT BOOTED (seeded, claimed, invited) gets its first
+    // publish from the reconcile pass ({@link publishFirstSelfRecord}), not from the
+    // two triggers wired here. `registerSelf` no-ops while a node has no readable
+    // `CadrePeer` row, so its boot-time publish does nothing, and neither trigger is
+    // dependable after that: `self:peer:update` needs an ADDRESS CHANGE, and a
+    // relay-only node's addresses stop changing the moment its reservation lands —
+    // inside `start()`, before this listener exists (on the `network.requireRelay:
+    // false` posture the reservation may instead land LATER, from the retry
+    // supervisor, and then this listener is what publishes the `/p2p-circuit` address
+    // the boot-time publish could not carry); the heartbeat is 7.5 min away. Nor is
+    // the membership-change seam (`ControlDatabase.setMembershipChangeListener`): it
+    // fires on LOCAL commits only, and the row a late-authorized node waits for is
+    // written elsewhere. Measured while writing `relay-only-control-addr.integration.ts`
+    // case 4, which drives `registerSelf()` explicitly because neither trigger is
+    // dependable there.
     this.recordRefreshTimer = setInterval(() => republish('heartbeat'), DEFAULT_PEER_RECORD_HEARTBEAT_MS);
     (this.recordRefreshTimer as { unref?: () => void } | null)?.unref?.();
 
@@ -3662,7 +3676,7 @@ export class CadreNode implements SAppIdLookup {
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return { dialed: [] };
     }
-    await this.publishSelfRecordOnceClaimed();
+    await this.publishFirstSelfRecord();
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return { dialed: [] };
     }

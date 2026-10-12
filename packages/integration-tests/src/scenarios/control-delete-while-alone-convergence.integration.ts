@@ -120,6 +120,18 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 		// scenario: B pins no owner key, so trust-facing reads are out of scope.
 		expect(await B.isMember(xPeerId)).toBe(true);
 
+		// B's first publish of its own address record is a background CadrePeer write its
+		// reconcile pass makes once B's row has replicated in. Let it land before anything
+		// stops: one still in flight when A stops is torn, and A's restarted store then refuses
+		// the removal below with `CoordinatorStaleLossError … stale conflict`. `registerSelf`
+		// joins that publish when it is in flight, or makes it.
+		const member = B;
+		await waitUntil(async () => (await member.registerSelf()) !== 'skipped', {
+			timeoutMs: 30_000,
+			intervalMs: 250,
+			description: 'B publishes its own address record',
+		});
+
 		// Wait for the peer-join catch-up to physically land on B before anything
 		// stops: without this gate, B can be stopped inside the 1 s catch-up debounce
 		// (`peer-join-backfill.ts`), before its raw store ever holds the blocks the
