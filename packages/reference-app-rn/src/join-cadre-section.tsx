@@ -57,6 +57,8 @@ export function JoinCadreSection({ showAlert, firstLaunch = false }: {
 		try {
 			await cadre.joinExistingCadre(encoded);
 			setInvitationText('');
+			// Joined: a request still open to an owner app would show as waiting, and its answer would join again.
+			void cadre.cancelLinkRequest();
 		} catch (err) {
 			console.warn('[settings] joining a cadre failed:', err);
 			const { title, message } = joinFailureAlert(err);

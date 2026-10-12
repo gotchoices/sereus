@@ -61,6 +61,9 @@ export function useLinkRequest(
 	const [linkRequestReturned, setLinkRequestReturned] = useState(false);
 
 	// The store's view, read in its turn, so a cancel or a take queued before this read shows.
+	// NOTE: read only at mount and after each action, so a request that passes the store's
+	// 30 minutes still shows as waiting until the next read; if that confuses users, re-read on a
+	// timer while one is open, or on the app coming to the foreground.
 	const showOpenRequest = useCallback(async () => {
 		try {
 			setLinkRequest(await linkRequests.current());
@@ -87,6 +90,9 @@ export function useLinkRequest(
 	const askOwnerApp = useCallback(async (app: SereusApp | null) => {
 		setLinkRequestReturned(false);
 		// A second tap reuses the open request's nonce, so an answer to either tap is taken.
+		// NOTE: it keeps the first tap's `ownerAppName` too, so on iOS picking another app the
+		// second time leaves the waiting line naming the first; if that is reported, have the
+		// kit's `begin` update the name of a request it reuses.
 		const request = await linkRequests.begin(app?.name ?? null);
 		let opened: boolean;
 		try {
