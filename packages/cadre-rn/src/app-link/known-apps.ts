@@ -10,6 +10,10 @@ export interface SereusApp {
 	name: string;
 	/** The app's own custom URL scheme (`expo.scheme`), lowercase. */
 	scheme: string;
+	/** The app's Play application id, for its store page; absent while it is not on Play. */
+	androidPackage?: string;
+	/** The app's numeric App Store id, for its store page; absent while it is not on the App Store. */
+	iosAppStoreId?: string;
 }
 
 /**

@@ -162,6 +162,12 @@ export interface PhoneNodeNames {
 	 * {@link PhoneNodeNames.savedStartKey} is.
 	 */
 	linkRequestKey: string;
+	/**
+	 * Key, inside {@link PhoneNodeNames.nodeLocalDb}, of the apps the user allowed to join before
+	 * they asked (`AppRecommendationStore` in `@serfab/cadre-rn/app-link`). Dot-free and one per
+	 * app, as {@link PhoneNodeNames.savedStartKey} is; each entry names its party.
+	 */
+	recommendationsKey: string;
 }
 
 export const DEFAULT_PHONE_NODE_NAMES: PhoneNodeNames = {
@@ -171,6 +177,7 @@ export const DEFAULT_PHONE_NODE_NAMES: PhoneNodeNames = {
 	savedStartKey: 'start-options',
 	dissolveMarkerKey: 'dissolving-party',
 	linkRequestKey: 'link-join-request',
+	recommendationsKey: 'recommended-apps',
 };
 
 export type PhoneNodeStatus =
@@ -305,6 +312,12 @@ export interface PhoneNode {
 	 * `loadSavedStart` does; a read fault throws.
 	 */
 	linkRequestSlot(): DurableSlot;
+	/**
+	 * The slot `AppRecommendationStore` (`@serfab/cadre-rn/app-link`) keeps the apps the user allowed
+	 * to join before they asked in, beside the saved start. Works with no node running, as
+	 * `linkRequestSlot` does; a read fault throws.
+	 */
+	recommendationSlot(): DurableSlot;
 	/**
 	 * Subscribe to a node event for the life of this phone node, not of one `CadreNode`: the
 	 * handler is re-applied to every node a start or restart builds, before it starts. Register the
@@ -456,13 +469,22 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	linkRequestSlot(): DurableSlot {
+		return this.appLinkSlot(this.names.linkRequestKey);
+	}
+
+	recommendationSlot(): DurableSlot {
+		return this.appLinkSlot(this.names.recommendationsKey);
+	}
+
+	/** A node-local slot for a store the app keeps across stops and starts. */
+	private appLinkSlot(key: string): DurableSlot {
 		// Each load and save looks the database up again: a stop closes the handle, and the store outlives the stop.
 		const slot = async (): Promise<DurableSlot> => {
 			// Opening it while a stop is closing it would take a second lock on the same name.
 			// NOTE: a restart, join or dissolve closes it too, with no `stopping` to wait on, so a
 			// load in that short window can fail on the lock. If that is ever seen, track each shutdown as `stopping` is tracked.
 			await this.stopping?.catch(() => undefined);
-			return this.nodeLocalSlot(this.names.linkRequestKey);
+			return this.nodeLocalSlot(key);
 		};
 		return {
 			load: async () => (await slot()).load(),

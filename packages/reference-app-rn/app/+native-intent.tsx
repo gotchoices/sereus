@@ -19,6 +19,10 @@ export function redirectSystemPath({ path }: { path: string; initial: boolean })
 	if (path.startsWith(NODE_CODE_SCHEME)) return `/settings?nodeCode=${encodeURIComponent(path)}`;
 	const link = parseCadreLink(path);
 	if (!link) return path;
-	const param = link.kind === 'join-request' ? 'joinRequest' : 'joinResponse';
-	return `/settings?${param}=${encodeURIComponent(link.text)}`;
+	switch (link.kind) {
+		case 'join-request': return `/settings?joinRequest=${encodeURIComponent(link.text)}`;
+		case 'join-response': return `/settings?joinResponse=${encodeURIComponent(link.text)}`;
+		// Routed by `reference-app-rn-joins-the-app-that-recommended-it`; until then it opens the app as any other link.
+		case 'recommended-by': return path;
+	}
 }

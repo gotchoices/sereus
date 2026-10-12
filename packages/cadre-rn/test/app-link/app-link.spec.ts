@@ -9,6 +9,7 @@ import {
 	LINK_REQUEST_TTL_MS,
 	LinkRequestStore,
 	parseCadreLink,
+	recommendedBySchemeFromReferrer,
 	UnsolicitedJoinResponseError,
 	type CadreJoinResponse,
 } from '../../src/app-link/index.js';
@@ -33,13 +34,27 @@ describe('parseCadreLink', () => {
 		['sereus-join-request:1.eyJ2IjoxfQ', { kind: 'join-request', text: 'sereus-join-request:1.eyJ2IjoxfQ' }],
 		['sereus-chat://cadre-join-request/sereus-join-request:1.eyJ2IjoxfQ', { kind: 'join-request', text: 'sereus-join-request:1.eyJ2IjoxfQ' }],
 		['sereus-chat-2://cadre-join-response/sereus-join-response:1.eyJ2IjoxfQ', { kind: 'join-response', text: 'sereus-join-response:1.eyJ2IjoxfQ' }],
+		['sereus-chat://cadre-recommended-by/sereus-notes', { kind: 'recommended-by', text: 'sereus-notes' }],
 		// A node code and an invitation belong to the app's other link routing.
 		['sereus-join:1.eyJ2IjoxfQ', null],
 		[`${CADRE_INVITATION_PREFIX}eyJ2IjoxfQ`, null],
 		['sereus-chat://settings/cadre', null],
 		['sereus-chat://cadre-join-response/', null],
+		['sereus-chat://cadre-recommended-by/', null],
 	])('%s', (url, expected) => {
 		expect(parseCadreLink(url)).toEqual(expected);
+	});
+});
+
+describe('recommendedBySchemeFromReferrer', () => {
+	it.each([
+		['sereus-recommended-by:1.sereus-notes', 'sereus-notes'],
+		// What Play reports for an install no link of ours started.
+		['utm_source=google-play&utm_medium=organic', null],
+		['', null],
+		['sereus-recommended-by:1.', null],
+	])('%s', (referrer, expected) => {
+		expect(recommendedBySchemeFromReferrer(referrer)).toBe(expected);
 	});
 });
 

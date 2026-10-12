@@ -7,6 +7,8 @@
  * - iOS: `<owner scheme>://cadre-join-request/<request text>`, one owner app chosen by its scheme.
  * - The answer, both platforms: `<reply scheme>://cadre-join-response/<response text>`. The owner
  *   app builds it from the request's `reply.scheme`; it never opens a URL a request supplied.
+ * - A recommendation, both platforms: `<recommended app's scheme>://cadre-recommended-by/<own scheme>`,
+ *   opened by an owner app at a recommended app that is already installed.
  */
 import { CADRE_JOIN_REQUEST_PREFIX, requireCadreJoinReply } from '@serfab/cadre-core';
 import { encodeCadreJoinResponse, type CadreJoinResponse } from './join-response.js';
@@ -21,12 +23,26 @@ export const CADRE_LINK_MAX_LENGTH = 32_768;
 
 const REQUEST_PATH = 'cadre-join-request';
 const RESPONSE_PATH = 'cadre-join-response';
+const RECOMMENDED_BY_PATH = 'cadre-recommended-by';
 
-/** `<scheme>://cadre-join-request/<text>` or `…/cadre-join-response/<text>`, for any scheme. */
-const SCHEME_LINK = new RegExp(`^[a-z][a-z0-9+.-]*://(${REQUEST_PATH}|${RESPONSE_PATH})/(.+)$`, 'i');
+/** `<scheme>://<path>/<text>` for any scheme, where the path names the link's kind. */
+const SCHEME_LINK = new RegExp(`^[a-z][a-z0-9+.-]*://(${REQUEST_PATH}|${RESPONSE_PATH}|${RECOMMENDED_BY_PATH})/(.+)$`, 'i');
 
-/** What an incoming URL carries: a join request to answer, or the answer to this app's own. */
-export type CadreLink = { kind: 'join-request'; text: string } | { kind: 'join-response'; text: string };
+/**
+ * What an incoming URL carries: a join request to answer, the answer to this app's own, or the
+ * scheme of the app that recommended this one. That scheme is unverified: the app trusts it only
+ * when it is on its own known-apps list, and names that app from the list.
+ */
+export type CadreLink =
+	| { kind: 'join-request'; text: string }
+	| { kind: 'join-response'; text: string }
+	| { kind: 'recommended-by'; text: string };
+
+const KIND_BY_PATH: Readonly<Record<string, CadreLink['kind']>> = {
+	[REQUEST_PATH]: 'join-request',
+	[RESPONSE_PATH]: 'join-response',
+	[RECOMMENDED_BY_PATH]: 'recommended-by',
+};
 
 /** {@link joinResponseLink} refused to build a link longer than {@link CADRE_LINK_MAX_LENGTH}; show the invitation for copying instead. */
 export class CadreLinkTooLongError extends Error {
@@ -48,7 +64,7 @@ export function parseCadreLink(url: string): CadreLink | null {
 	const match = SCHEME_LINK.exec(trimmed);
 	if (!match) return null;
 	const [, path, text] = match;
-	return { kind: path.toLowerCase() === REQUEST_PATH ? 'join-request' : 'join-response', text };
+	return { kind: KIND_BY_PATH[path.toLowerCase()], text };
 }
 
 /** Android (`ownerApp` null): the request text itself. iOS: `<ownerApp.scheme>://cadre-join-request/<text>`. */
@@ -66,4 +82,9 @@ export function joinResponseLink(reply: { scheme: string }, response: CadreJoinR
 	const link = `${scheme}://${RESPONSE_PATH}/${encodeCadreJoinResponse(response)}`;
 	if (link.length > CADRE_LINK_MAX_LENGTH) throw new CadreLinkTooLongError(link.length);
 	return link;
+}
+
+/** `<app.scheme>://cadre-recommended-by/<ownScheme>`: opened at a recommended app already installed, it names the recommending app as the install referrer would. */
+export function recommendedByLink(app: SereusApp, ownScheme: string): string {
+	return `${app.scheme}://${RECOMMENDED_BY_PATH}/${ownScheme}`;
 }

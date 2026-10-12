@@ -614,7 +614,7 @@ Two Sereus apps on one phone hand the request and the response to each other by 
 
 1. B opens a request with `LinkRequestStore.begin`, which saves `{ nonce, ownerAppName, startedAtMs }` in B's node-local database, and encodes a join request carrying `reply: { scheme, nonce }`, where `scheme` is B's own URL scheme.
 2. B opens A with the request link.
-3. A decodes the request, and the user confirms it as a pasted one.
+3. A decodes the request, and the user confirms it as a pasted one, unless A holds the user's pre-approval for the request's reply scheme ([Recommending another app](#recommending-another-app)).
 4. A mints the targeted invitation, or settles on a refusal, and opens the response link it builds from `reply.scheme`.
 5. B recognizes the response link (`parseCadreLink`), takes it with `LinkRequestStore.take`, and joins with the invitation.
 
@@ -651,10 +651,42 @@ type CadreJoinResponse =
 
 **Security.**
 
-- **A link is a request, never a grant.** The confirmation in A authorizes. A opens a reply only for a request that arrived as a link, never for a pasted one.
+- **A link is a request, never a grant.** The confirmation in A authorizes, or the pre-approval the user gave in A when recommending the app. A opens a reply only for a request that arrived as a link, never for a pasted one.
 - **An invitation that reaches the wrong app is useless.** It is targeted at B's peer id, so a hijacked reply scheme leaks the cadre's machine addresses, as any invitation does, and grants no access.
 - **B takes only the answer to its open request, once.** `LinkRequestStore.take` accepts a response only when its nonce is the open request's, within 30 minutes (`LINK_REQUEST_TTL_MS`), and closes the request as it does; it refuses with `UnsolicitedJoinResponseError` an answer when no request is open, to another request, a second answer, and a late one. An unsolicited link cannot inject an invitation. A second tap of B's button reuses the open request's nonce, so the answer to the first tap still lands.
 - **Accepted tradeoff: an impostor owner app.** An installed app that registers `sereus-join-request` (Android) or a known app's scheme (iOS) can answer B with an invitation to a cadre of its own, and B would join it and move its chats there. Pasting from the wrong app carries the same risk, and custom schemes give no way to verify the answering app. Revisit when Sereus apps have web domains: Android App Links and iOS universal links bind a link to the app's signing identity.
+
+##### Recommending another app
+
+An owner app can recommend a Sereus app the user does not have yet, or has but has not joined to this cadre, so that the recommended app joins on its first launch with nothing to copy. Below, **A** is the owner app that recommends and **B** the recommended app. The kit side is `AppRecommendationStore`, `storePageLink`, `recommendedByLink` and `recommendedBySchemeFromReferrer` in `@serfab/cadre-rn/app-link` ([kit README → App links](../packages/cadre-rn/README.md#app-links-serfabcadre-rnapp-link)).
+
+1. In A, the user picks B from A's known-apps list and allows it to join, choosing whether it is also an owner. A records a pre-approval (`AppRecommendationStore.approve`): `{ scheme, appName, partyId, grantsOwner, approvedAtMs }`, where `scheme` and `appName` are B's entry in A's list and `partyId` the party A runs.
+2. A opens B's store page (`storePageLink`) when `canOpenURL` reports B not installed, and B itself (`recommendedByLink`) when it is installed.
+3. B learns A's scheme from the hint below, asks the user whether to join the app that recommended it, and opens A with an ordinary join request opened as a link ([Between apps on one phone](#between-apps-on-one-phone), steps 1 and 2), at A's own scheme on both platforms.
+4. A takes the pre-approval whose scheme is the request's `reply.scheme` (`AppRecommendationStore.take`), skips its Allow / Deny prompt, mints the targeted invitation for the request's peer id with the approved grant, and answers by link as for any request. B joins as in step 5 there.
+
+| Hint | When B gets it | What it carries |
+| --- | --- | --- |
+| Play install referrer, the store link's `referrer` parameter | Android, at B's first launch after an install from A's link | `sereus-recommended-by:1.<A's scheme>` |
+| `<B's scheme>://cadre-recommended-by/<A's scheme>` | both platforms, when B was already installed | A's scheme |
+
+The iOS store link names nothing about A, since iOS has no install referrer. B installed from it asks to join through **Choose the app that holds your cadre** as any app does, and A still finds the pre-approval when the request arrives.
+
+**A mints nothing until B asks.** Every way B can reach A on one phone ends with B opening A with a join request that carries B's peer id and a reply scheme, so A mints there, targeted at that peer id, and stores only the user's consent.
+
+- **An open invitation in the referrer was rejected.** It would be a bearer credential in a parameter of the store URL, which Google's servers receive and store; one waiting in A's storage would be a bearer credential there for its lifetime.
+- **A handoff id in the referrer was rejected.** B would exchange it with A in the same round trip a plain request makes, and it adds a second secret to track.
+- **What that gives up.** A must be able to mint when B asks (its node connected, as for any link request), and B always makes one round trip to A.
+
+**B trusts a hint only when its own list names the app.** Anyone can build a Play link with any referrer, and any app can open B with any link. B looks the scheme up in its own known-apps list (the kit's `KNOWN_SEREUS_APPS` plus its extras) by exact equality, drops a scheme that is not there, and names the app from its list, never from the hint. A hint can therefore only make B offer to open an app it already knows.
+
+**The pre-approval is single-use, party-bound and lasts an hour.** A keeps one list in its node-local database (`PhoneNode.recommendationSlot()`, key `recommended-apps`), at most one entry per scheme, so approving the same app again replaces the grant and the expiry.
+
+- **Single use.** `take` removes the entry as it returns it, so a second delivery of the request, or a second request racing it, finds none and gets A's usual prompt. If A then cannot mint, the entry is gone and the user recommends again; it fails safe rather than restoring the entry.
+- **One hour.** `RECOMMENDATION_TTL_MS` is long enough to install B from the store and open it; an older entry reads as absent.
+- **Party-bound.** An entry is returned only for the party A was in when the user allowed it, so an A that joined another cadre in between does not admit B there on consent given for the old one. Each write drops expired entries and other parties' entries.
+
+**Accepted tradeoff: during the hour, an app answering to B's scheme is admitted without a prompt.** A request with reply scheme `S` takes the pre-approval for `S` whichever app sent it, and the invitation is targeted at that sender's peer id. The answer still goes to `S`, so only an installed app that registers B's scheme can receive it: the impostor-owner-app tradeoff under [Between apps on one phone](#between-apps-on-one-phone), seen from A's side. The mitigations are the single use (B's own request then gets the usual prompt), the expiry, the notice A shows when it admits an app without asking, and the targeted invitation then being listed and withdrawable in A. Revisit with that tradeoff, when Sereus apps have web domains: Android App Links and iOS universal links bind a link to the app's signing identity.
 
 #### An app joins an existing cadre
 

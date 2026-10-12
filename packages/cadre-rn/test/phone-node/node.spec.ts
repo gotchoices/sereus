@@ -515,6 +515,7 @@ describe('createPhoneNode — storage names', () => {
 			savedStartKey: 'start-options',
 			dissolveMarkerKey: 'dissolving-party',
 			linkRequestKey: 'link-join-request',
+			recommendationsKey: 'recommended-apps',
 		});
 	});
 });

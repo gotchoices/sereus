@@ -11,8 +11,9 @@
 // `appLinks`: the native settings `@serfab/cadre-rn/app-link` needs so two Sereus apps on one
 // phone can open each other with a join request and its answer (docs/architecture.md →
 // "Between apps on one phone"). Android: the main activity handles `sereus-join-request:` links,
-// so the system chooser lists every owner app. iOS: the known Sereus apps' schemes are listed in
-// LSApplicationQueriesSchemes, so `canOpenURL` may report which are installed.
+// so the system chooser lists every owner app, and the known Sereus apps' schemes are declared
+// under `<queries>`. iOS: the same schemes are listed in LSApplicationQueriesSchemes. On both,
+// that lets `canOpenURL` report which known apps are installed.
 //
 // CommonJS because Expo loads config plugins with require(). It imports nothing from Expo
 // at load time, as metro/index.cjs imports nothing from metro: the kit does not install
@@ -52,7 +53,7 @@ const { createRequire } = require('node:module');
  * 		},
  * 	},
  * }} ConfigPlugins
- * @typedef {{ name: string, scheme: string }} SereusApp
+ * @typedef {{ name: string, scheme: string, androidPackage?: string, iosAppStoreId?: string }} SereusApp
  * @typedef {{ extraApps: SereusApp[] }} AppLinksOptions
  */
 
@@ -78,6 +79,12 @@ const IOS_MAX_QUERIED_SCHEMES = 50;
  * cadre-core's form changes, change this one with it.
  */
 const APP_SCHEME = /^[a-z][a-z0-9+.-]{0,63}$/;
+
+/** A Play application id: a Java package name of two or more dotted parts. */
+const ANDROID_PACKAGE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
+
+/** A numeric App Store id. */
+const IOS_APP_STORE_ID = /^[0-9]{1,12}$/;
 
 const VIEW_ACTION = 'android.intent.action.VIEW';
 
@@ -116,13 +123,14 @@ function withAndroidCleartextWebSocket(config, { withAndroidManifest, AndroidCon
  * @returns {ExpoConfig}
  */
 function withAppLinks(config, plugins, appLinks) {
+	const appSchemes = [...KNOWN_SEREUS_APPS, ...appLinks.extraApps].map((app) => app.scheme);
 	const withAndroid = plugins.withAndroidManifest(config, (modConfig) => {
 		addJoinRequestIntentFilter(plugins.AndroidConfig.Manifest.getMainActivityOrThrow(modConfig.modResults));
-		addJoinRequestQuery(modConfig.modResults);
+		addViewQueries(modConfig.modResults, [JOIN_REQUEST_SCHEME, ...appSchemes]);
 		return modConfig;
 	});
 	return plugins.withInfoPlist(withAndroid, (modConfig) => {
-		addQueriedSchemes(modConfig.modResults, [...KNOWN_SEREUS_APPS, ...appLinks.extraApps].map((app) => app.scheme));
+		addQueriedSchemes(modConfig.modResults, appSchemes);
 		return modConfig;
 	});
 }
@@ -135,7 +143,7 @@ function withAppLinks(config, plugins, appLinks) {
  */
 function addJoinRequestIntentFilter(activity) {
 	const filters = (activity['intent-filter'] ??= []);
-	if (filters.some(viewsJoinRequests)) return;
+	if (filters.some((filter) => viewsScheme(filter, JOIN_REQUEST_SCHEME))) return;
 	filters.push({
 		action: [{ $: { 'android:name': VIEW_ACTION } }],
 		category: [
@@ -147,30 +155,33 @@ function addJoinRequestIntentFilter(activity) {
 }
 
 /**
- * A `<queries>` entry for the same intent: on Android 11 and later an app's `resolveActivity`
- * sees other apps' handlers of an intent only when the app declares the intent here. Skipped
- * when the manifest already declares one.
+ * A `<queries>` `VIEW` intent for each of `schemes`: on Android 11 and later an app's
+ * `resolveActivity` (behind `canOpenURL`) sees other apps' handlers of an intent only when the
+ * app declares the intent here. Each is skipped when the manifest already declares it.
  *
  * @param {AndroidManifest} androidManifest
+ * @param {string[]} schemes
  */
-function addJoinRequestQuery(androidManifest) {
+function addViewQueries(androidManifest, schemes) {
 	const queries = (androidManifest.manifest.queries ??= []);
-	if (queries.some((query) => (query.intent ?? []).some(viewsJoinRequests))) return;
+	const missing = [...new Set(schemes)].filter((scheme) => !queries.some((query) => (query.intent ?? []).some((intent) => viewsScheme(intent, scheme))));
+	if (missing.length === 0) return;
 	queries.push({
-		intent: [{
+		intent: missing.map((scheme) => ({
 			action: [{ $: { 'android:name': VIEW_ACTION } }],
-			data: [{ $: { 'android:scheme': JOIN_REQUEST_SCHEME } }],
-		}],
+			data: [{ $: { 'android:scheme': scheme } }],
+		})),
 	});
 }
 
 /**
  * @param {ManifestIntent} intent
+ * @param {string} scheme
  * @returns {boolean}
  */
-function viewsJoinRequests(intent) {
+function viewsScheme(intent, scheme) {
 	return (intent.action ?? []).some((action) => action.$['android:name'] === VIEW_ACTION)
-		&& (intent.data ?? []).some((data) => data.$['android:scheme'] === JOIN_REQUEST_SCHEME);
+		&& (intent.data ?? []).some((data) => data.$['android:scheme'] === scheme);
 }
 
 /**
@@ -208,7 +219,7 @@ function appLinksOption(props) {
 	if (appLinks === true) return { extraApps: [] };
 	const { extraApps = [], ...unknownAppLinks } = /** @type {Record<string, unknown>} */ (requireObject(appLinks, 'appLinks'));
 	refuseUnknownKeys(unknownAppLinks, 'appLinks');
-	if (!Array.isArray(extraApps)) throw new Error('@serfab/cadre-rn config plugin: appLinks.extraApps must be a list of { name, scheme }');
+	if (!Array.isArray(extraApps)) throw new Error('@serfab/cadre-rn config plugin: appLinks.extraApps must be a list of { name, scheme, androidPackage?, iosAppStoreId? }');
 	return { extraApps: extraApps.map(requireSereusApp) };
 }
 
@@ -219,7 +230,7 @@ function appLinksOption(props) {
  */
 function requireSereusApp(app, index) {
 	const where = `appLinks.extraApps[${index}]`;
-	const { name, scheme, ...unknown } = /** @type {Record<string, unknown>} */ (requireObject(app, where));
+	const { name, scheme, androidPackage, iosAppStoreId, ...unknown } = /** @type {Record<string, unknown>} */ (requireObject(app, where));
 	refuseUnknownKeys(unknown, where);
 	if (typeof name !== 'string' || name.trim().length === 0) {
 		throw new Error(`@serfab/cadre-rn config plugin: ${where}.name must be the app's name`);
@@ -227,7 +238,29 @@ function requireSereusApp(app, index) {
 	if (typeof scheme !== 'string' || !APP_SCHEME.test(scheme)) {
 		throw new Error(`@serfab/cadre-rn config plugin: ${where}.scheme must be a lowercase URL scheme (it is ${JSON.stringify(scheme)})`);
 	}
-	return { name: name.trim(), scheme };
+	/** @type {SereusApp} */
+	const sereusApp = { name: name.trim(), scheme };
+	if (androidPackage !== undefined) {
+		sereusApp.androidPackage = requireMatch(androidPackage, ANDROID_PACKAGE, `${where}.androidPackage`, 'a Play application id such as com.example.app');
+	}
+	if (iosAppStoreId !== undefined) {
+		sereusApp.iosAppStoreId = requireMatch(iosAppStoreId, IOS_APP_STORE_ID, `${where}.iosAppStoreId`, 'the numeric App Store id, as a string');
+	}
+	return sereusApp;
+}
+
+/**
+ * @param {unknown} value
+ * @param {RegExp} form
+ * @param {string} where
+ * @param {string} what
+ * @returns {string}
+ */
+function requireMatch(value, form, where, what) {
+	if (typeof value !== 'string' || !form.test(value)) {
+		throw new Error(`@serfab/cadre-rn config plugin: ${where} must be ${what} (it is ${JSON.stringify(value)})`);
+	}
+	return value;
 }
 
 /**

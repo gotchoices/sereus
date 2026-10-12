@@ -215,6 +215,7 @@ if (link?.kind === 'join-request') {
 - **`installedSereusApps(apps, ownScheme, canOpenURL)`** is for iOS: the apps whose scheme `canOpenURL` reports installed, the app's own excluded. React Native's `canOpenURL` rejects for a scheme missing from `LSApplicationQueriesSchemes`; that app counts as not installed, with a warning naming the scheme.
 - **`LinkRequestStore`** holds the asking app's open request; see [below](#the-open-request).
 - **`PhoneNode.linkRequestSlot()`** is where the store keeps the request: the node-local database, under `PhoneNodeNames.linkRequestKey` (default `link-join-request`), so an asking app the OS killed while the owner app was in front takes the answer when the link starts it. It works with no node running.
+- **Recommending another app** has its own store and links; see [below](#recommending-another-app).
 
 ### The open request
 
@@ -225,9 +226,48 @@ if (link?.kind === 'join-request') {
 - **`current()` and `cancel()`** read and close the open request. A slot read that fails throws from `current` and `take` rather than reading as no request.
 - **One per app.** Its calls run one at a time, so two deliveries of the same link cannot both take the answer; a second store over the same slot would not share that.
 
+### Recommending another app
+
+An owner app recommends a Sereus app and lets it join on its first launch without a prompt: the user allows it in the owner app first, and the owner app answers that app's join request without asking again. [docs/architecture.md → Recommending another app](../../docs/architecture.md#recommending-another-app) has the flow and the security reasoning.
+
+The owner app, which recommends:
+
+```ts
+import { Linking, Platform } from 'react-native';
+import { AppRecommendationStore, recommendedByLink, storePageLink } from '@serfab/cadre-rn/app-link';
+
+const recommendations = new AppRecommendationStore(phone.recommendationSlot());   // one per app
+
+// The user picked `app` from the known list and allowed it, choosing grantsOwner.
+await recommendations.approve({ scheme: app.scheme, appName: app.name, partyId, grantsOwner });
+const installed = await Linking.canOpenURL(`${app.scheme}://`);
+const url = installed ? recommendedByLink(app, ownScheme) : storePageLink(app, Platform.OS === 'ios' ? 'ios' : 'android', ownScheme);
+
+// Later, for a join request opened as a link, before prompting:
+const approved = request.reply ? await recommendations.take(request.reply.scheme, partyId) : null;
+// approved: mint the targeted invitation with approved.grantsOwner and answer by link, no prompt.
+```
+
+The recommended app reads the hint once, at first launch (the Play Install Referrer, through the app's own install-referrer module) or from a `recommended-by` link:
+
+```ts
+import { KNOWN_SEREUS_APPS, parseCadreLink, recommendedBySchemeFromReferrer } from '@serfab/cadre-rn/app-link';
+
+const scheme = recommendedBySchemeFromReferrer(referrer) ?? (link?.kind === 'recommended-by' ? link.text : null);
+const recommender = [...KNOWN_SEREUS_APPS, ...extraApps].find((app) => app.scheme === scheme);
+// recommender: ask whether to join it, then send the join request to it as above, with recommender as ownerApp.
+```
+
+- **`AppRecommendationStore`** keeps the owner app's pre-approvals, one per scheme. `approve(entry)` records one, replacing any for the same scheme; `live(partyId)` lists the live ones, most recently approved first; `withdraw(scheme)` drops one; `take(scheme, partyId)` returns the live one for that scheme and party and removes it, or returns null. An entry lasts `RECOMMENDATION_TTL_MS` (an hour), is used up by one `take`, and is never returned for another party. Its calls run one at a time, as `LinkRequestStore`'s do; a malformed record reads as none, with a warning, and a slot read that fails throws.
+- **`PhoneNode.recommendationSlot()`** is where the store keeps them: the node-local database, under `PhoneNodeNames.recommendationsKey` (default `recommended-apps`). It works with no node running.
+- **`storePageLink(app, platform, ownScheme)`** is the app's Play page on `'android'`, with the install referrer `sereus-recommended-by:1.<ownScheme>` (`recommendedByReferrer`), and its App Store page on `'ios'`, which has no referrer. It is null when the app has no store id for that platform.
+- **`recommendedByLink(app, ownScheme)`** is `<app.scheme>://cadre-recommended-by/<ownScheme>`, for an app already installed; `parseCadreLink` reads it as `{ kind: 'recommended-by', text: <scheme> }`.
+- **`recommendedBySchemeFromReferrer(referrer)`** is the scheme when the referrer is exactly that token, and null for anything else, Play's `utm_source=google-play&utm_medium=organic` for an install no link started included.
+- **Trust neither hint.** Anyone can build a Play link with any referrer, and any app can open another with any link. Use a scheme only when the app's own known list (the kit's plus its extras) has it, by exact equality, and show the name from that list, never from the hint.
+
 ### Adding an app to the known list
 
-`KNOWN_SEREUS_APPS` has one entry per published Sereus app, `{ name, scheme }`. A new app is added to it in `src/app-link/known-apps.ts` and to the copy in `app.plugin.cjs` (the plugin is CommonJS and cannot load the ESM build; a test keeps the two equal), then the kit is released. Until then the app passes itself as an extra, both in the plugin's `appLinks.extraApps` and in the `apps` argument of `installedSereusApps`.
+`KNOWN_SEREUS_APPS` has one entry per published Sereus app, `{ name, scheme }`, plus `androidPackage` (its Play application id) and `iosAppStoreId` (its numeric App Store id) once it is in a store, for `storePageLink`. A new app is added to it in `src/app-link/known-apps.ts` and to the copy in `app.plugin.cjs` (the plugin is CommonJS and cannot load the ESM build; a test keeps the two equal), then the kit is released. Until then the app passes itself as an extra, both in the plugin's `appLinks.extraApps` and in the `apps` argument of `installedSereusApps`.
 
 Every Sereus app needs a URL scheme of its own, `expo.scheme`, which Expo registers: the answer comes back at it, and on iOS which of two apps sharing a scheme opens a link is undefined.
 
@@ -358,12 +398,12 @@ The native settings [App links](#app-links-serfabcadre-rnapp-link) needs. Withou
 { "expo": { "scheme": "my-sereus-app", "plugins": [["@serfab/cadre-rn", { "appLinks": true }]] } }
 ```
 
-`"appLinks": { "extraApps": [{ "name": "My Other App", "scheme": "my-other-app" }] }` adds Sereus apps not yet in the kit's known list.
+`"appLinks": { "extraApps": [{ "name": "My Other App", "scheme": "my-other-app" }] }` adds Sereus apps not yet in the kit's known list. An extra may also carry `androidPackage` and `iosAppStoreId`, as a known app does, so one list of extras serves the plugin and the app's code.
 
-- **Android.** The main activity gets a `VIEW` intent filter (`DEFAULT`, `BROWSABLE`) for the scheme `sereus-join-request`, so opening a join request lists the app in the system chooser. The manifest gets a `<queries>` entry for the same intent, so the opening app's `resolveActivity` sees the other handlers on Android 11 and later. Each is skipped when already present.
+- **Android.** The main activity gets a `VIEW` intent filter (`DEFAULT`, `BROWSABLE`) for the scheme `sereus-join-request`, so opening a join request lists the app in the system chooser. The manifest gets a `<queries>` `VIEW` intent for that scheme, so the opening app's `resolveActivity` sees the other handlers on Android 11 and later, and one for each scheme of `KNOWN_SEREUS_APPS` and `extraApps`, so `canOpenURL('<scheme>://')` can report which are installed. Each is skipped when already present.
 - **iOS.** The schemes of `KNOWN_SEREUS_APPS` and of `extraApps` are added to `LSApplicationQueriesSchemes`, keeping the entries already there, so `canOpenURL` can report which apps are installed. The prebuild fails when the list passes 50 schemes, the most iOS reads.
 - **The app's own scheme** is `expo.scheme`, which Expo registers as usual.
-- **A misspelt option fails the prebuild**, as does an extra app without a name or with a scheme that is not a lowercase URL scheme, rather than leaving the app without links.
+- **A misspelt option fails the prebuild**, as does an extra app without a name, with a scheme that is not a lowercase URL scheme, with an `androidPackage` that is not a dotted Java package name, or with an `iosAppStoreId` that is not 1 to 12 digits, rather than leaving the app without links.
 
 A bare React Native app adds the intent filter and the `<queries>` entry to `AndroidManifest.xml`, and the schemes to `Info.plist`, by hand.
 
