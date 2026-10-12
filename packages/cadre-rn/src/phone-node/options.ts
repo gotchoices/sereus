@@ -3,9 +3,10 @@
  *
  * The record is one per app, not party-scoped: it is what *selects* the party, so every other
  * node-local record is read through the `partyId` it carries. `PhoneNode.start` writes it after
- * every successful start and `joinCadre` once a member admitted the app (`autoStart: true`), and
- * `stop` rewrites it with `autoStart: false`; an app's launch and a push wake into a killed
- * process read it to start the node unattended.
+ * every successful start and `joinCadre` once a member admitted the app (`autoStart: true`),
+ * `stop` rewrites it with `autoStart: false`, and a removal from the party replaces it
+ * ({@link startAfterRemoval}); an app's launch and a push wake into a killed process read it to
+ * start the node unattended.
  */
 
 // Type-only: the noise-crypto module loads react-native-quick-crypto at runtime.
@@ -52,6 +53,20 @@ export interface SavedStart {
 	 * the stored data is usable.
 	 */
 	writtenBy?: string;
+}
+
+/**
+ * The saved start once an owner of its party removed this app: the party this app founded and
+ * left (`formerPartyId`), which it may go back to, not started unattended; `undefined` when it
+ * left none. No bootstrap addresses: the former party's machines are in its own bootstrap-peer
+ * store, which every start reads.
+ */
+export function startAfterRemoval(saved: SavedStart): SavedStart | undefined {
+	const { partyId, formerPartyId, relayAddrs, noiseCryptoMode } = saved.options;
+	if (formerPartyId === undefined || formerPartyId === partyId) return undefined;
+	const options: PhoneNodeOptions = { partyId: formerPartyId, bootstrapAddrs: [], relayAddrs, origin: 'founded' };
+	if (noiseCryptoMode !== undefined) options.noiseCryptoMode = noiseCryptoMode;
+	return { options, autoStart: false, ...(saved.writtenBy !== undefined && { writtenBy: saved.writtenBy }) };
 }
 
 /** Every Noise crypto mode, so a stored mode can be validated without loading the native module. */

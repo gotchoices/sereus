@@ -15,6 +15,7 @@ import {
 	ed25519PublicKeyFromPrivate,
 	exportStrandBundle,
 	type CadreInvitation,
+	type CadreRemoval,
 	type SAppConfig,
 } from '@serfab/cadre-core';
 import { FakeWriteBatch, lockingFakeRNLevelDB } from '../../../../test-harness/fake-rn-leveldb.js';
@@ -94,6 +95,16 @@ function expiredInvitation(partyId: string, grantsOwner = true): CadreInvitation
 /** The secure-store key a join keeps the strands of `partyId`, the party it leaves, under: a persistence contract. */
 function moveRecordKey(partyId: string): string {
 	return 'sereus.ks.' + secureStoreKeySegment(`cadre/strand-move/${secureStoreKeySegment(partyId)}`);
+}
+
+/** Whether `party`'s control database holds any entry. Opened and closed again, so it must not be open. */
+function controlDatabaseHoldsData(platform: PhoneNodePlatform, leveldb: ReturnType<typeof lockingFakeRNLevelDB>, party: string): boolean {
+	const db = leveldb.openFn(`${platform.names!.storagePrefix}${controlStorageScope(party)}`, true, false);
+	try {
+		return db.newIterator().seekToFirst().valid();
+	} finally {
+		db.close();
+	}
 }
 
 const started: PhoneNode[] = [];
@@ -421,16 +432,6 @@ describe('createPhoneNode — joining another party', () => {
 });
 
 describe('createPhoneNode — dissolving the party it left', () => {
-	/** Whether `party`'s control database holds any entry. Opened and closed again, so it must not be open. */
-	function controlDatabaseHoldsData(platform: PhoneNodePlatform, leveldb: ReturnType<typeof lockingFakeRNLevelDB>, party: string): boolean {
-		const db = leveldb.openFn(`${platform.names!.storagePrefix}${controlStorageScope(party)}`, true, false);
-		try {
-			return db.newIterator().seekToFirst().valid();
-		} finally {
-			db.close();
-		}
-	}
-
 	it('deletes the left party\'s storage once the running party holds its strands, and runs on without formerPartyId', async () => {
 		const { platform, leveldb, secureStore, partyId: former } = device();
 		const phone = phoneNode(platform);
@@ -504,6 +505,31 @@ describe('createPhoneNode — dissolving the party it left', () => {
 		expect(secureStore.map.has(anchorSlotKey(former))).toBe(false);
 		expect((await phone.loadSavedStart())?.options.formerPartyId).toBeUndefined();
 	}, LIFECYCLE_MS * 6);
+});
+
+describe('createPhoneNode — removed from its party by an owner', () => {
+	it('stops, deletes the party\'s storage, and saves the party it left as a start that waits for the user', async () => {
+		const { platform, leveldb, secureStore, partyId: former } = device();
+		const phone = phoneNode(platform);
+		const removedFrom = `${former}-joined`;
+		// Founded rather than joined, so genesis writes the rows and anchor this must delete: the removal does not read `origin`.
+		const node = await phone.start({ ...options(removedFrom), formerPartyId: former });
+		expect(await node.getControlDatabase()?.hasOwnerKey()).toBe(true);
+		expect(secureStore.map.has(anchorSlotKey(removedFrom))).toBe(true);
+		const removal: CadreRemoval = { partyId: removedFrom, stampId: 'phone-node-spec-stamp', signerKey: null, at: Date.now() };
+
+		// What the node raises on learning its removal; a real one needs a second owner machine to remove it.
+		(node as unknown as { emit(event: 'cadre:removed', data: CadreRemoval): void }).emit('cadre:removed', removal);
+		const saved = await phone.loadSavedStart(); // answers once the kit has acted on the removal
+
+		expect(phone.status).toEqual({ state: 'removed', partyId: removedFrom, removal, formerPartyId: former });
+		expect(node.isRunning).toBe(false);
+		expect(saved).toEqual({ options: { ...options(former), origin: 'founded' }, autoStart: false, writtenBy: 'spec-data-1' });
+		expect(secureStore.map.has(anchorSlotKey(removedFrom))).toBe(false);
+		expect(controlDatabaseHoldsData(platform, leveldb, removedFrom)).toBe(false);
+		await phone.start(saved!.options); // the app's "go back to your own cadre"
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+	}, LIFECYCLE_MS * 3);
 });
 
 describe('createPhoneNode — storage names', () => {

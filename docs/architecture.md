@@ -708,6 +708,8 @@ The join moves B's strands into A ([Moving the app's strands](#moving-the-apps-s
 
 `formerPartyId` records the party the app founded and left, carried through any later join, for moving its strands and dissolving the old cadre.
 
+**Removed from A.** When an owner of A removes the app ([Removing a machine](#removing-a-machine)) and its node learns it, the kit stops the node, saves a start of `formerPartyId` that does not start unattended (or none), deletes A's local storage as a dissolve deletes B's, and reports `removed`, so the app can tell the user and offer to go back to B ([kit README → Removed from the cadre](../packages/cadre-rn/README.md#removed-from-the-cadre)).
+
 **The switch and its rollback.** `joinCadre` runs as one transition in the kit's queue, so no start, stop or restart interleaves with it:
 
 1. Already running in A: redeem on the running node (a device already admitted is answered as such) and wire the owner key.

@@ -23,7 +23,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 
 ## Phone node
 
-`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity in the secure store, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by invitation, and deletes the cadre it left once that cadre is empty. Call it once, at module scope; a second call over the same storage names throws while the first is running.
+`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity in the secure store, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by invitation, deletes the cadre it left once that cadre is empty, and deletes a cadre whose owner removed the app. Call it once, at module scope; a second call over the same storage names throws while the first is running.
 
 ```ts
 import * as SecureStore from 'expo-secure-store';           // or an adapter over the app's own secure store
@@ -58,9 +58,9 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `pendingStrandMove()` | The move from `formerPartyId` still waiting to be adopted: the party it moves to, the strands not seated there yet and those it refused. `undefined` when none waits. |
 | `finishStrandMove()` | Adopts the waiting move on the running node now, in turn with start, stop and join, and returns cadre-core's `StrandMoveReport`; `undefined` when no move names the running party. Throws `StrandMoveNotOwnerError` while the app's key is no owner there. |
 | `dissolveFormerParty(options?)` | Deletes the local storage of `formerPartyId` once the running party holds everything it holds and no other machine is in it, and starts the running party again without `formerPartyId` (see [Dissolving the left cadre](#dissolving-the-left-cadre)). |
-| `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`. |
+| `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`, and during a removal after the removal has replaced it. |
 | `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
-| `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the invitation's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), or `failed` (with the error). |
+| `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the invitation's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), `removed` (an owner removed the app from `partyId`; see [Removed from the cadre](#removed-from-the-cadre)), or `failed` (with the error). |
 | `ownerPublicKey()` | The identity's public key for pairing; null unless running, and for a `member`. |
 
 Platform options with defaults:
@@ -128,6 +128,17 @@ try {
 - **Removed:** the left party's control database (through `leveldb.destroy`, rn-leveldb's `LevelDB.destroyDB`), its node-local records, its trusted-owner anchor, its unpublished joined-strand records and its move record; the saved start drops `formerPartyId`. Strand databases stay: a moved strand's database is the running party's copy.
 - **A crash partway** is finished by the next start, or the next call: a node-local record under `names.dissolveMarkerKey` (`dissolving-party`) names the party from before the first deletion until the last.
 - **A failure starting the running party again** after the removal is the call's error, the node down; after a refusal it is logged and leaves `status` `failed`.
+
+### Removed from the cadre
+
+When the running node reports that an owner removed this app from its party (cadre-core's `cadre:removed`, [architecture.md → Removing a machine](../../docs/architecture.md#removing-a-machine)), the kit acts on it in turn with start, stop and join, so the app only has to show it:
+
+- **The node stops**, and the saved start stops naming the party before anything is deleted: it becomes a start of `formerPartyId` (the party this app founded and left, `origin: 'founded'`) with `autoStart: false`, or is deleted when there is none. Nothing starts unattended; the user sees why the app left its cadre first.
+- **The party's local storage is deleted** as a dissolve deletes it: its control database, node-local records, trusted-owner anchor, unpublished joined-strand records and move record, with the same marker, so a failure partway is finished by the next start. Strand databases stay.
+- **`status`** becomes `{ state: 'removed', partyId, removal, formerPartyId? }`: `removal` is cadre-core's `CadreRemoval` (the retired stamp, and `signerKey`, the removing owner, when its key is anchored here). From `removed`, `start` and `joinCadre` work as from `stopped`: the app offers "go back to your own cadre" (`start((await phone.loadSavedStart())!.options)`) when `formerPartyId` is set, and a join otherwise.
+- **A failure rewriting the saved start** leaves the storage, which that start still names, and `status` `failed`.
+
+It is best-effort, as the report is: a phone removed while its app was not running never learns it, and keeps the party's data while the party's other machines refuse it.
 
 ### Helpers
 

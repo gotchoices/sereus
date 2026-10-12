@@ -24,6 +24,7 @@ import type {
 	CadreJoinProgress,
 	CadreNodeConfig,
 	CadreNodeEvents,
+	CadreRemoval,
 	RedeemCadreInvitationOptions,
 	RedeemCadreInvitationResult,
 	StrandMoveReport,
@@ -63,7 +64,7 @@ import {
 	type DissolveFormerPartyOptions,
 	type PartyStorage,
 } from './dissolve.js';
-import { parseSavedStart, serializeSavedStart, type PhoneNodeOptions, type SavedStart } from './options.js';
+import { parseSavedStart, serializeSavedStart, startAfterRemoval, type PhoneNodeOptions, type SavedStart } from './options.js';
 import {
 	adoptMoveRecord,
 	adoptMovesInto,
@@ -186,6 +187,13 @@ export type PhoneNodeStatus =
 	/** Started in the party an invitation names and redeeming it there; not admitted yet, so `PhoneNode.node` is null. */
 	| { state: 'joining'; node: CadreNode }
 	| { state: 'running'; node: CadreNode; owner: OwnerGenesisResult }
+	/**
+	 * An owner of `partyId` removed this app from it: the node is stopped and the party's local
+	 * storage deleted. `formerPartyId` is the party this app founded and left, which the saved start
+	 * now names with `autoStart: false`; absent when there is none. `start` and `joinCadre` work as
+	 * from `stopped`.
+	 */
+	| { state: 'removed'; partyId: string; removal: CadreRemoval; formerPartyId?: string }
 	| { state: 'failed'; error: Error };
 
 /** A join's progress: the redemption's passes and pauses, then the steps after a member admitted the app. */
@@ -303,7 +311,8 @@ export interface PhoneNode {
 	dissolveFormerParty(options?: DissolveFormerPartyOptions): Promise<void>;
 	/**
 	 * The last start, or `undefined` when none is saved or the record is unusable. A read fault
-	 * throws. Called during a stop, it answers after the stop has saved `autoStart: false`.
+	 * throws. Called during a stop, it answers after the stop has saved `autoStart: false`; during
+	 * the kit's response to a removal, after that has replaced the saved start.
 	 */
 	loadSavedStart(): Promise<SavedStart | undefined>;
 	/**
@@ -422,20 +431,12 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	stop(): Promise<void> {
-		// A start called from here on runs after this stop rather than joining the one it ends.
-		this.starting = null;
 		// A join can wait for a member until its invitation expires; the user's disconnect ends it.
 		// NOTE: the cancelled join starts the party it left again, and only then does this stop
 		// stop it. If that restart makes Disconnect noticeably slow, let a join cancelled by a stop
 		// save the left start with `autoStart: false` and stay stopped instead.
 		for (const join of this.joins) join.abort(new Error('the phone node was stopped during a join'));
-		const stopping = this.inTurn(() => this.stopAndClearAutoStart());
-		this.stopping = stopping;
-		const settled = (): void => {
-			if (this.stopping === stopping) this.stopping = null;
-		};
-		stopping.then(settled, settled);
-		return stopping;
+		return this.trackStop(() => this.stopAndClearAutoStart());
 	}
 
 	restart(options: PhoneNodeOptions): Promise<CadreNode> {
@@ -562,6 +563,22 @@ class PhoneNodeRuntime implements PhoneNode {
 		return result;
 	}
 
+	/**
+	 * Queue a transition that rewrites the saved start as it takes the node down (a stop, a
+	 * removal), and let `loadSavedStart` and the app-link slots wait for it until it settles.
+	 */
+	private trackStop(op: () => Promise<void>): Promise<void> {
+		// A start called from here on runs after this transition rather than joining the one it ends.
+		this.starting = null;
+		const stopping = this.inTurn(op);
+		this.stopping = stopping;
+		const settled = (): void => {
+			if (this.stopping === stopping) this.stopping = null;
+		};
+		stopping.then(settled, settled);
+		return stopping;
+	}
+
 	/** Queue a start, and let later `start` calls join it until it settles. */
 	private trackStart(op: () => Promise<CadreNode>): Promise<CadreNode> {
 		const starting = this.inTurn(op);
@@ -606,6 +623,7 @@ class PhoneNodeRuntime implements PhoneNode {
 		const node = new CadreNode(await this.buildConfig(resolved));
 		this.current = node;
 		for (const subscription of this.subscriptions) subscription.attach(node);
+		this.watchRemoval(node);
 		await node.start();
 		return { node, resolved };
 	}
@@ -704,9 +722,9 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	// ── join ─────────────────────────────────────────────────────────────────
-	// NOTE: this file is about 970 lines (`wc -l`), the join and its strand move the largest part,
-	// the dissolve's transition next (its checks and removal are in `dissolve.ts`). If either grows
-	// further, move it to a module of its own over a narrow view of this runtime.
+	// NOTE: this file is about 1170 lines (`wc -l`), the join and its strand move the largest part,
+	// the dissolve's and the removal's transitions next (the storage they delete is in `dissolve.ts`).
+	// If any of them grows further, move it to a module of its own over a narrow view of this runtime.
 
 	private async join(invitation: CadreInvitation, options: JoinCadreOptions, signal: AbortSignal): Promise<JoinCadreResult> {
 		signal.throwIfAborted();
@@ -906,6 +924,83 @@ class PhoneNodeRuntime implements PhoneNode {
 			await this.buildAndStart(running);
 		} catch (err) {
 			console.warn('[cadre-rn/phone-node] starting the running party again after a dissolve failed:', err);
+		}
+	}
+
+	// ── removal ──────────────────────────────────────────────────────────────
+
+	/**
+	 * Answer `node` reporting that an owner removed this app from its party
+	 * ({@link forgetRemovedParty}). Attached before the node starts, so no report comes before it
+	 * and `removedFromCadre()` has nothing to add; never detached, so a report raised while the
+	 * node stops, which it made while running, is still answered.
+	 *
+	 * NOTE: a phone removed while its app was not running never sees its own row live after the
+	 * next start, so it never reports (docs/architecture.md → "The removed machine learns it"), and
+	 * keeps the party's data while every other machine refuses it. If users meet this, persist
+	 * "seen live" per party so the rule survives a restart.
+	 */
+	private watchRemoval(node: CadreNode): void {
+		node.on('cadre:removed', (removal) => {
+			void this.trackStop(() => this.forgetRemovedParty(removal));
+		});
+	}
+
+	/**
+	 * In turn with start, stop and join: stop the removed party's node, point the saved start away
+	 * from that party, delete its local storage and report `removed`. A node of another party, started
+	 * by a join that ran before this turn, keeps running; only the removed party's storage goes.
+	 * Nothing starts unattended afterwards: the user sees why the app left its cadre first. A
+	 * failure is logged and leaves `status` `failed`; never rejects.
+	 */
+	private async forgetRemovedParty(removal: CadreRemoval): Promise<void> {
+		const { partyId } = removal;
+		try {
+			if (this.current !== null && this.current.partyId !== partyId) {
+				await this.removeLocalParty(partyId);
+				if (this.runningOptions) this.runningOptions = withoutFormerParty(this.runningOptions, partyId);
+				return;
+			}
+			await this.shutDown().catch((err: unknown) => {
+				// `shutDown` has closed every database and dropped the node whether or not its stop threw.
+				console.warn(`[cadre-rn/phone-node] stopping the node of party ${partyId}, which removed this app, failed:`, err);
+			});
+			const formerPartyId = await this.leaveRemovedStart(partyId);
+			await this.removeLocalParty(partyId);
+			this.setStatus({ state: 'removed', partyId, removal, ...(formerPartyId !== undefined && { formerPartyId }) });
+		} catch (err) {
+			console.warn(`[cadre-rn/phone-node] acting on this app's removal from party ${partyId} failed:`, err);
+			this.setStatus({ state: 'failed', error: toError(err) });
+		}
+	}
+
+	/**
+	 * Replace a saved start of `partyId` with {@link startAfterRemoval}'s, or delete it, before any
+	 * of the party's storage goes, so no start builds that party again on deleted storage; returns
+	 * the former party the new start names. A saved start of another party is left alone. Throws a
+	 * failed read or write, and the storage then stays, matching the saved start that still names it.
+	 */
+	private async leaveRemovedStart(partyId: string): Promise<string | undefined> {
+		const saved = await this.readSavedStart();
+		if (saved?.options.partyId !== partyId) return undefined;
+		const next = startAfterRemoval(saved);
+		if (next) await this.nodeLocalSlot(this.names.savedStartKey).save(serializeSavedStart(next));
+		else await this.nodeLocalKv().delete(this.names.savedStartKey);
+		return next?.options.partyId;
+	}
+
+	/**
+	 * Delete `partyId`'s local storage with the dissolve's marked removal, after finishing one a
+	 * failure left, so this marker does not replace it. A failure is logged: once the marker is
+	 * written, the next start finishes the removal.
+	 */
+	private async removeLocalParty(partyId: string): Promise<void> {
+		const storage = this.partyStorage();
+		try {
+			await finishMarkedRemoval(storage);
+			await removeParty(storage, partyId);
+		} catch (err) {
+			console.warn(`[cadre-rn/phone-node] deleting the storage of party ${partyId}, which removed this app, failed:`, err);
 		}
 	}
 
