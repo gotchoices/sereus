@@ -65,16 +65,13 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generateKeyPair } from '@libp2p/crypto/keys';
-import type { PrivateKey } from '@libp2p/interface';
-
-import { CadreNode, ClaimRefusedError, MemoryBootstrapPeerStore } from '@serfab/cadre-core';
+import { ClaimRefusedError, MemoryBootstrapPeerStore, type CadreNode } from '@serfab/cadre-core';
 import type { ClaimState, CliConfigFile, HealthStatus } from '@serfab/cadre-cli';
 
 import {
   allocFreePort,
+  buildPhoneOwner,
   connectionsTo,
-  controlNodeConfig,
   hasOutboundTo,
   isChildUp,
   makeOwnOwner,
@@ -90,8 +87,6 @@ import {
 const STARTUP_MS = 90_000;
 /** Per-op budget for round-trips once a node is up. */
 const OP_MS = 30_000;
-/** The claimants' control-cohort reconcile cadence, which drives step 6's reconnect. */
-const RECONCILE_MS = 2_000;
 const STOP_TIMEOUT_MS = 10_000;
 const LOG_FILE = 'node.log';
 const LOG_TAIL_LINES = 40;
@@ -213,21 +208,6 @@ async function isAuthorizedOnNode(node: ClaimableNode, peerId: string): Promise<
   const body = (await res.json()) as { ok: boolean; data?: { member: boolean }; error?: { message: string } };
   if (!body.ok || !body.data) throw new Error(`admin channel refused: ${body.error?.message ?? res.status}`);
   return body.data.member;
-}
-
-/** A phone-shaped owner node of its own party, not yet started. */
-async function buildPhoneOwner(partyId: string, bootstrapPeerStore?: MemoryBootstrapPeerStore): Promise<{ node: CadreNode; key: PrivateKey }> {
-  const key = await generateKeyPair('Ed25519');
-  const node = new CadreNode(controlNodeConfig({
-    partyId,
-    privateKey: key,
-    profile: 'transaction',
-    // Nothing can dial a phone: whatever connects the two, the phone opened it.
-    listenAddrs: [],
-    reconcileMs: RECONCILE_MS,
-    ...(bootstrapPeerStore ? { bootstrapPeerStore } : {}),
-  }));
-  return { node, key };
 }
 
 describe('a phone-shaped owner claims a cadre-cli node started with a claim secret', () => {

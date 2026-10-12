@@ -45,16 +45,13 @@ import { existsSync } from 'node:fs';
 import { format } from 'node:util';
 
 import debug from 'debug';
-import { generateKeyPair } from '@libp2p/crypto/keys';
-import type { PrivateKey } from '@libp2p/interface';
-
-import { CadreNode, MemoryBootstrapPeerStore, decodeNodeClaimPayload, type NodeClaimPayload } from '@serfab/cadre-core';
+import { MemoryBootstrapPeerStore, decodeNodeClaimPayload, type CadreNode, type NodeClaimPayload } from '@serfab/cadre-core';
 import type { ClaimDetails, HostedNodeView, LocalUiEvent } from '@serfab/cadre-host';
 import type { HealthStatus } from '@serfab/cadre-cli';
 
 import {
+  buildPhoneOwner,
   connectionsTo,
-  controlNodeConfig,
   createTestCadreHost,
   hasOutboundTo,
   makeOwnOwner,
@@ -67,8 +64,6 @@ import {
 const STARTUP_MS = 90_000;
 /** Per-op budget for round-trips once a node is up. */
 const OP_MS = 30_000;
-/** The claimant's control-cohort reconcile cadence, which drives the reconnect in step 4. */
-const RECONCILE_MS = 2_000;
 /** A dedicated band for the host's children, clear of the other child-process scenarios' (`harness/port-allocator.ts`). */
 const PORT_RANGE = { start: 20040, end: 20199 };
 
@@ -76,21 +71,6 @@ type HostedNodesChanged = Extract<LocalUiEvent, { type: 'hosted-nodes-changed' }
 
 function isHostedNodesChanged(e: LocalUiEvent, nodeId: string, kind: HostedNodesChanged['kind']): boolean {
   return e.type === 'hosted-nodes-changed' && e.nodeId === nodeId && e.kind === kind;
-}
-
-/** A phone-shaped owner node of its own party, not yet started. */
-async function buildPhoneOwner(partyId: string, bootstrapPeerStore: MemoryBootstrapPeerStore): Promise<{ node: CadreNode; key: PrivateKey }> {
-  const key = await generateKeyPair('Ed25519');
-  const node = new CadreNode(controlNodeConfig({
-    partyId,
-    privateKey: key,
-    profile: 'transaction',
-    // Nothing can dial a phone: whatever connects the two, the phone opened it.
-    listenAddrs: [],
-    reconcileMs: RECONCILE_MS,
-    bootstrapPeerStore,
-  }));
-  return { node, key };
 }
 
 /**

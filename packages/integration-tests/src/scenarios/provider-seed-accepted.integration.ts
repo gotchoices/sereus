@@ -50,6 +50,7 @@ import { ContainerService, MemoryStore } from '@serfab/cadre-provider';
 import {
   ProviderProcessOrchestrator,
   readNodeLocalStore,
+  requireContainerRunning,
   startOwnerCliNode,
   waitUntil,
   withPeerId,
@@ -80,45 +81,6 @@ describe('provider-started node accepts the seed the provider delivers (real cad
   let idB: string;
   let peerInfoA: { peerId: string; multiaddrs: string[] };
   let encodedSeed: string;
-
-  /** Tail a provider child's node.log for a failure message — never throws. */
-  async function tailNodeLog(dockerId: string | undefined): Promise<string> {
-    if (!dockerId) return '(no dockerId recorded)';
-    try {
-      return await orchestrator.getLogs(dockerId, 200);
-    } catch {
-      return '(node.log unavailable)';
-    }
-  }
-
-  /**
-   * Poll the provider store until the service's real enrollment loop settles
-   * the record (`running`, or `error` on a provisioning failure), then require
-   * `running` — with the child's node.log in the failure message, since a node
-   * that never came up is otherwise a bare timeout.
-   */
-  async function requireRunning(id: string, label: string): Promise<void> {
-    try {
-      await waitUntil(async () => {
-        const c = await store.getContainer(id);
-        return c?.status === 'running' || c?.status === 'error';
-      }, { timeoutMs: STARTUP_MS, intervalMs: 500, description: `${label} enrollment settles` });
-    } catch (err) {
-      const record = await store.getContainer(id);
-      const nodeLog = await tailNodeLog(record?.dockerId);
-      throw new Error(
-        `${label} never settled (status: ${record?.status}).\n--- node.log ---\n${nodeLog}`,
-        { cause: err },
-      );
-    }
-    const record = (await store.getContainer(id))!;
-    if (record.status !== 'running') {
-      const nodeLog = await tailNodeLog(record.dockerId);
-      throw new Error(
-        `${label} settled as '${record.status}' (error: ${record.error}).\n--- node.log ---\n${nodeLog}`,
-      );
-    }
-  }
 
   /** A message for anything a poll can have thrown, `undefined` included. */
   function reasonOf(err: unknown): string {
@@ -166,14 +128,13 @@ describe('provider-started node accepts the seed the provider delivers (real cad
         return result.success === true;
       }, { timeoutMs, intervalMs: 1_000, description });
     } catch (err) {
-      const record = await store.getContainer(id);
       throw new Error(
         [
           (err as Error).message,
           `last mint error: ${reasonOf(mintError)}`,
           `last delivery result: ${JSON.stringify(result ?? null)}`,
           '--- node.log ---',
-          await tailNodeLog(record?.dockerId),
+          orchestrator.logTail(id),
         ].join('\n'),
         { cause: err },
       );
@@ -243,7 +204,7 @@ describe('provider-started node accepts the seed the provider delivers (real cad
 
     // Provisioning is async — this is ContainerService's own enrollment loop
     // (real /status polls against the real child) settling the record.
-    await requireRunning(idA, 'node A');
+    await requireContainerRunning(containers, orchestrator, idA, 'node A', STARTUP_MS);
 
     const record = (await store.getContainer(idA))!;
     // The delivery credentials the provider will later present are persisted on
@@ -297,7 +258,7 @@ describe('provider-started node accepts the seed the provider delivers (real cad
 
     // B must be RUNNING before the negative assertion — a fetch error from a
     // still-starting node is not a trust refusal.
-    await requireRunning(idB, 'node B');
+    await requireContainerRunning(containers, orchestrator, idB, 'node B', STARTUP_MS);
     const record = (await store.getContainer(idB))!;
 
     // Trust gate: correct bearer (ContainerService presents B's own token), but
@@ -369,9 +330,8 @@ describe('provider-started node accepts the seed the provider delivers (real cad
         return !!info;
       }, { timeoutMs: STARTUP_MS, intervalMs: 500, description: 'restarted node A live' });
     } catch (err) {
-      const nodeLog = await tailNodeLog(fresh.dockerId);
       throw new Error(
-        `restarted node A never came up: ${(err as Error).message}\n--- node.log ---\n${nodeLog}`,
+        `restarted node A never came up: ${(err as Error).message}\n--- node.log ---\n${orchestrator.logTail(idA)}`,
         { cause: err },
       );
     }

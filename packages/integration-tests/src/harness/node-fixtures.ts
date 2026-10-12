@@ -292,6 +292,36 @@ export async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<st
   return publicKeyB64;
 }
 
+/**
+ * The control-cohort reconcile cadence of {@link buildPhoneOwner}'s node: the pass that dials
+ * its retained dial targets, so it is what drives a reconnect after the node it dials restarts.
+ */
+const PHONE_RECONCILE_MS = 2_000;
+
+/**
+ * A phone-shaped owner node of its own party, not yet started: `listenAddrs: []`, the WebSocket
+ * and circuit-relay transports every control node gets (no TCP), `profile: 'transaction'` — the
+ * shape `reference-app-rn` runs, minus WebRTC. Start it, then make it its own owner with
+ * {@link makeOwnOwner} and the returned key. Pass `bootstrapPeerStore` to read what `addDrone`
+ * or `claimNode` retained as a dial target.
+ */
+export async function buildPhoneOwner(
+  partyId: string,
+  bootstrapPeerStore?: BootstrapPeerStore,
+): Promise<{ node: CadreNode; key: PrivateKey }> {
+  const key = await generateKeyPair('Ed25519');
+  const node = new CadreNode(controlNodeConfig({
+    partyId,
+    privateKey: key,
+    profile: 'transaction',
+    // Nothing can dial a phone: whatever connects the two, the phone opened it.
+    listenAddrs: [],
+    reconcileMs: PHONE_RECONCILE_MS,
+    ...(bootstrapPeerStore ? { bootstrapPeerStore } : {}),
+  }));
+  return { node, key };
+}
+
 /** A real Ed25519 peer id for a peer that is NEVER started (a pure row subject). */
 export async function randomPeerId(): Promise<string> {
   return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();

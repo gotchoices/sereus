@@ -110,10 +110,10 @@ function launchOwnerChild(
 }
 
 /**
- * One request against the admin channel's `{ ok, data }` / `{ ok: false, error }` envelope,
- * throwing with the node's own message on a refusal.
+ * One request against a `cadre-cli` admin channel's `{ ok, data }` / `{ ok: false, error }`
+ * envelope, throwing with the node's own message on a refusal.
  */
-function adminClient(baseUrl: string, token: string) {
+export function adminClient(baseUrl: string, token: string) {
 	return async <T>(method: string, path: string, body?: unknown): Promise<T> => {
 		const headers: Record<string, string> = { authorization: `Bearer ${token}` };
 		if (body !== undefined) headers['content-type'] = 'application/json';

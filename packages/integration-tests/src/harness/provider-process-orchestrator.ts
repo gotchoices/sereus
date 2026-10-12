@@ -13,9 +13,13 @@
  *      with `/data` rewritten to the per-container volume dir,
  *   3. the two vars `entrypoint.sh` derives and exports (CADRE_KEY_FILE,
  *      CADRE_NODE_STATE_DIR),
- *   4. `buildNodeEnv(...)` parsed into key/value pairs — LAST, because in
- *      Docker the container `Env` overrides the image `ENV`, and the
- *      provider's values must win here for the same reason.
+ *   4. `buildNodeEnv(...)` parsed into key/value pairs — LAST of the
+ *      production layers, because in Docker the container `Env` overrides the
+ *      image `ENV`, and the provider's values must win here for the same reason.
+ *      With `publicHost` set it carries `CADRE_APPEND_ANNOUNCE_ADDRS` from the
+ *      provider's own `publicNodeAddrs`, as `DockerOrchestrator` does.
+ *   5. opt-in (`adminChannel`), test-only: the node's loopback admin channel,
+ *      which no provider sets — a window onto the node's authorized member set.
  *
  * The per-container "volume" directory under `rootDir` is the stand-in for
  * the image's `/data` durable volume: it survives `stopContainer` and even
@@ -33,7 +37,9 @@ import debug from 'debug';
 
 import {
 	buildNodeEnv,
+	publicNodeAddrs,
 	type ContainerRunState,
+	type ContainerService,
 	type NodeEnvPorts,
 	type OrchestratorCreateRequest,
 	type OrchestratorCreateResult,
@@ -49,6 +55,7 @@ import {
 	scrubbedParentEnv,
 	stopChildProcess,
 } from './child-node-fixtures.js';
+import { waitUntil } from './wait-utils.js';
 
 const log = debug('sereus:integration:provider-orchestrator');
 
@@ -63,24 +70,48 @@ export interface ProviderProcessHandle {
 	containerId: string;
 	volumeDir: string;
 	ports: NodeEnvPorts;
+	/** Present when the orchestrator was built with `adminChannel`. */
+	admin?: ProviderChildAdmin;
 	child: ChildProcess;
 	/** Stamped by the child's own `exit` event; absent while it is still up. */
 	exitedAt?: Date;
 }
 
+/** A child's loopback admin channel: `http://127.0.0.1:<port>/admin/…` with `Bearer <token>`. */
+export interface ProviderChildAdmin {
+	port: number;
+	token: string;
+}
+
 export interface ProviderProcessOrchestratorOptions {
 	/** Root under which each container gets its own durable "volume" dir. */
 	rootDir: string;
+	/**
+	 * The provider's `docker.publicHost`. There is no port mapping here, so the
+	 * child's bound ports are its "host" ports and the announced pair is
+	 * `<publicHost>/tcp/<p2p>` and `<publicHost>/tcp/<ws>/ws`.
+	 */
+	publicHost?: string;
+	/**
+	 * Give each child a loopback admin channel (`CADRE_ADMIN_PORT` +
+	 * `CADRE_STARTUP_TOKEN`), recorded on its handle. Test-only: a provider never
+	 * sets these, so leave it off unless a scenario must read the node's member set.
+	 */
+	adminChannel?: boolean;
 }
 
 export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	private readonly rootDir: string;
+	private readonly publicHost: string | undefined;
+	private readonly adminChannel: boolean;
 	private readonly cliBin: string;
 	private readonly handles = new Map<string, ProviderProcessHandle>();
 	private spawnCounter = 0;
 
 	constructor(options: ProviderProcessOrchestratorOptions) {
 		this.rootDir = resolvePath(options.rootDir);
+		this.publicHost = options.publicHost;
+		this.adminChannel = options.adminChannel ?? false;
 		mkdirSync(this.rootDir, { recursive: true });
 		this.cliBin = resolveCadreCliBin();
 	}
@@ -118,8 +149,11 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		// Per-container secret gating the node's POST /seed — same mint as the
 		// real DockerOrchestrator (which the provider hands back on the result).
 		const seedToken = randomBytes(32).toString('base64url');
+		const admin = this.adminChannel
+			? { port: await allocFreePort(), token: randomBytes(16).toString('hex') }
+			: undefined;
 
-		const env = this.buildChildEnv(request, seedToken, ports, volumeDir, keyFile);
+		const env = this.buildChildEnv(request, seedToken, ports, volumeDir, keyFile, admin);
 		const configPath = this.ensureConfigFile(volumeDir);
 
 		// Append (not truncate): across a restart of the same container the log
@@ -145,6 +179,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 			containerId: request.containerId,
 			volumeDir,
 			ports,
+			...(admin ? { admin } : {}),
 			child,
 		};
 		// The child carries its exit code but not WHEN it exited, and a caller
@@ -246,6 +281,20 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		return trimmed.slice(-tail).join('\n');
 	}
 
+	/**
+	 * The last `tail` lines of a container's node.log, for a failure message. Read from its
+	 * volume dir rather than through a handle, so it still answers once a failed provision's
+	 * reclaim has forgotten the handle. Never throws.
+	 */
+	logTail(containerId: string, tail = 200): string {
+		const logPath = join(this.volumeDirFor(containerId), LOG_FILE);
+		try {
+			return readFileSync(logPath, 'utf8').split('\n').slice(-tail).join('\n');
+		} catch (err) {
+			return `(node.log unavailable: ${(err as Error).message})`;
+		}
+	}
+
 	/** entrypoint.sh's create_identity: `cadre enroll create` as a child, awaited. */
 	private runEnrollCreate(volumeDir: string): Promise<void> {
 		return new Promise((resolve, reject) => {
@@ -274,6 +323,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		ports: NodeEnvPorts,
 		volumeDir: string,
 		keyFile: string,
+		admin: ProviderChildAdmin | undefined,
 	): NodeJS.ProcessEnv {
 		const env: NodeJS.ProcessEnv = {
 			// Layer 1: scrubbed parent env (see scrubbedParentEnv).
@@ -295,9 +345,15 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		// as Docker's container-Env-over-image-ENV precedence. There is no host
 		// port mapping here, so the allocated host ports go in as the container
 		// ports the provider writes into the env.
-		for (const entry of buildNodeEnv({ request, seedToken, ports })) {
+		const appendAnnounceAddrs = this.publicHost === undefined ? [] : publicNodeAddrs(this.publicHost, ports);
+		for (const entry of buildNodeEnv({ request, seedToken, ports, appendAnnounceAddrs })) {
 			const eq = entry.indexOf('=');
 			env[entry.slice(0, eq)] = entry.slice(eq + 1);
+		}
+		// Layer 5 — test-only. The provider sets neither variable, so nothing of its layer is overridden.
+		if (admin) {
+			env.CADRE_ADMIN_PORT = String(admin.port);
+			env.CADRE_STARTUP_TOKEN = admin.token;
 		}
 		return env;
 	}
@@ -336,5 +392,37 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		const handle = this.handles.get(dockerId);
 		if (!handle) throw new Error(`Container not found: ${dockerId}`);
 		return handle;
+	}
+}
+
+/**
+ * Wait until `ContainerService`'s own enrollment loop settles a record (`running`, or `error`
+ * on a provisioning failure), then require `running`. The failure carries the child's
+ * node.log, since a node that never came up is otherwise a bare timeout.
+ */
+export async function requireContainerRunning(
+	containers: ContainerService,
+	orchestrator: ProviderProcessOrchestrator,
+	id: string,
+	label: string,
+	timeoutMs: number,
+): Promise<void> {
+	try {
+		await waitUntil(async () => {
+			const status = (await containers.getContainer(id))?.status;
+			return status === 'running' || status === 'error';
+		}, { timeoutMs, intervalMs: 500, description: `${label} enrollment settles` });
+	} catch (err) {
+		const record = await containers.getContainer(id);
+		throw new Error(
+			`${label} never settled (status: ${record?.status}).\n--- node.log ---\n${orchestrator.logTail(id)}`,
+			{ cause: err },
+		);
+	}
+	const record = (await containers.getContainer(id))!;
+	if (record.status !== 'running') {
+		throw new Error(
+			`${label} settled as '${record.status}' (error: ${record.error}).\n--- node.log ---\n${orchestrator.logTail(id)}`,
+		);
 	}
 }
