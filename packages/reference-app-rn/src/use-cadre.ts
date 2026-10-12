@@ -863,10 +863,12 @@ export function useCadreInternal(): UseCadreResult {
     const current = beginAddingNode();
     try {
       const recording = recordingClient(client, async (container, join) => {
+        // The caller learns the id before the record is written: a record that cannot be written
+        // must not leave a retry renting a second container.
+        options.onCreated?.(container.id);
         await rentals.add(current.partyId, {
           providerId: provider.id, providerName: provider.name, containerId: container.id, join, createdAt: Date.now(), finished: false,
         });
-        options.onCreated?.(container.id);
       });
       const result = await rentNode(current, recording, { onProgress: options.onProgress });
       await rentals.update(current.partyId, result.containerId, { finished: true, ...(result.peerId ? { peerId: result.peerId } : {}) });

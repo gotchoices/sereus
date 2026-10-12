@@ -4,9 +4,9 @@
  * the provider's own pages in the system browser, rents a container and adds it to this cadre
  * (cadre-core's `rentNode`, through `useCadre`; docs/reference-app-rn.md → "Renting a Provider
  * Node"). Below, one row per node this phone rented, re-read from the provider every few seconds
- * while the section is on screen: its standing, its join, and what to do about a node the provider
- * stopped (`rentals.ts`). Removing such a node from the cadre is the Devices and nodes confirmation
- * (`machine-removal.tsx`).
+ * while Settings is in front (`use-rental-poll.ts`): its standing, its join, and what to do about a
+ * node the provider stopped (`rentals.ts`). Removing such a node from the cadre is the Devices and
+ * nodes confirmation (`machine-removal.tsx`).
  *
  * The sign-in's code and the tokens are credentials: log the container id and the peer id only.
  */
@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Image, Linking, Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
-import type { BillingStatus, CadreMachine, RentalFailed, RentNodeResult, RentNodeStep } from '@serfab/cadre-core';
+import type { BillingStatus, RentalFailed, RentNodeResult, RentNodeStep } from '@serfab/cadre-core';
 import type { Rental } from '@serfab/cadre-rn/provider';
 import { useCadre } from './cadre-context';
 import { ownScheme, providerTokens } from './cadre-phone';
@@ -25,12 +25,10 @@ import { configuredProviders, fetchPlans, planPriceText, providerRedirectUri, ty
 import { billingText, describeRentalFailure, readingFromError, rentalRow, rentStepText, type ContainerReading, type RentalAction } from './rentals';
 import { Btn, ConfirmPrompt, controlStyles, errorMessage, Fact, Section, useLaterThan } from './settings-controls';
 import { TEST_IDS } from './test-ids';
+import { useRentalPoll } from './use-rental-poll';
 
 /** The providers this build offers; Settings mounts the section only when there is one. */
 export const PROVIDERS = configuredProviders();
-
-/** How often the rows are re-read from the provider while the section is on screen. */
-const RENTAL_POLL_MS = 5_000;
 
 /** When the progress line adds that some addresses are not answering; as in the add-node section. */
 const CLAIM_SLOW_HINT_MS = 20_000;
@@ -75,11 +73,7 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 	// standing with them, so an unreadable one is not stuck until the next join.
 	const [tick, setTick] = useState(0);
 	const standing = useOwnerStanding(tick);
-	const [signedIn, setSignedIn] = useState(false);
-	const [rentals, setRentals] = useState<Rental[]>([]);
-	const [readings, setReadings] = useState<ReadonlyMap<string, ContainerReading>>(new Map());
-	const [billing, setBilling] = useState<BillingStatus | undefined>(undefined);
-	const [machines, setMachines] = useState<CadreMachine[]>([]);
+	const { rentals, readings, billing, machines, signedIn } = useRentalPoll(store.state === 'ready' ? store.session : null, tick);
 	// The approval prompt shows while set.
 	const [approving, setApproving] = useState(false);
 	// The rental whose Cancel confirmation is open.
@@ -100,7 +94,6 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 				tokensFor: providerTokens,
 			});
 			if (stale) return;
-			setSignedIn(session.signedIn());
 			setStore({ state: 'ready', session, plans: null, plansError: null });
 			try {
 				const plans = await fetchPlans(session.descriptor.plansUrl);
@@ -119,84 +112,6 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 		};
 	}, [provider, attempt]);
 
-	// ── The rentals, polled ─────────────────────────────────────────────────
-
-	useEffect(() => {
-		if (store.state !== 'ready') return;
-		const { session } = store;
-		let stopped = false;
-		// One read at a time: a slow provider must not pile polls up.
-		let inFlight = false;
-		const poll = async () => {
-			if (inFlight) return;
-			inFlight = true;
-			try {
-				const list = await cadre.listRentals();
-				if (stopped) return;
-				setRentals(list);
-				const client = session.client();
-				setSignedIn(client !== null);
-				if (!client) {
-					setReadings(signedOutReadings(list));
-					return;
-				}
-				const next = new Map<string, ContainerReading>();
-				for (const rental of list) {
-					try {
-						const report = await client.getContainer(rental.containerId);
-						next.set(rental.containerId, { kind: 'live', report });
-						if (!rental.peerId && report.container.peerId) await cadre.noteRentalPeer(rental.containerId, report.container.peerId);
-					} catch (err) {
-						// A poll never opens the browser: a spent pair leaves the rows saying to sign in.
-						if (await session.tokensRefused(err)) {
-							if (!stopped) {
-								setSignedIn(false);
-								setReadings(signedOutReadings(list));
-							}
-							return;
-						}
-						next.set(rental.containerId, readingFromError(err));
-					}
-				}
-				if (stopped) return;
-				setReadings(next);
-				await readBilling(client);
-				// NOTE: re-reads the whole machine list every poll while any rental names a peer id, to
-				// know whether a stopped node is still a member. A local read, cheap for a cadre of a
-				// few machines; if it ever shows in profiles, read it only when a row is stopped or gone.
-				if (list.some((rental) => rental.peerId)) await readMachines();
-			} catch (err) {
-				console.warn('[settings] could not read this phone\'s rentals:', err);
-			} finally {
-				inFlight = false;
-			}
-		};
-		/** The subscription, kept from the last read when this one fails. */
-		const readBilling = async (client: NonNullable<ReturnType<ProviderSession['client']>>) => {
-			try {
-				const status = await client.getBillingStatus();
-				if (!stopped) setBilling(status);
-			} catch (err) {
-				console.warn('[settings] could not read the subscription\'s standing:', err);
-			}
-		};
-		/** The machines, for whether a stopped node is still in the cadre. */
-		const readMachines = async () => {
-			try {
-				const listed = await cadre.listMachines();
-				if (!stopped) setMachines(listed);
-			} catch (err) {
-				console.warn('[settings] could not read this cadre\'s machines:', err);
-			}
-		};
-		void poll();
-		const timer = setInterval(() => void poll(), RENTAL_POLL_MS);
-		return () => {
-			stopped = true;
-			clearInterval(timer);
-		};
-	}, [store, cadre.node, tick]);
-
 	// ── Actions ─────────────────────────────────────────────────────────────
 
 	/** Run one rental step with the progress line; a second tap while one runs is ignored. */
@@ -209,7 +124,6 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 		} finally {
 			busyRef.current = false;
 			setProgress(null);
-			setSignedIn(store.session.signedIn());
 			setTick((n) => n + 1);
 			onRentalsChanged();
 		}
@@ -432,14 +346,11 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 	);
 }
 
-/** Every row reads "Sign in to see its status". */
-function signedOutReadings(list: readonly Rental[]): ReadonlyMap<string, ContainerReading> {
-	return new Map(list.map((rental) => [rental.containerId, { kind: 'signed-out' } as const]));
-}
-
 /** The provider's name, icon, regions and plans, and the links to its terms and its site. */
 function ProviderCard({ session, plans, plansError }: { session: ProviderSession; plans: ProviderPlan[] | null; plansError: string | null }) {
 	const { descriptor } = session;
+	const terms = descriptor.termsUrl;
+	// Expo's runtime installs a WHATWG `URL` (React Native's own has no `origin`).
 	const site = new URL(descriptor.apiBaseUrl).origin;
 	return (
 		<View style={styles.card}>
@@ -455,8 +366,8 @@ function ProviderCard({ session, plans, plansError }: { session: ProviderSession
 			))}
 			<Text style={controlStyles.hint}>
 				{'You sign in and pay on the provider\'s own site; the plan is chosen there. '}
-				{descriptor.termsUrl && <Text style={styles.link} onPress={() => void Linking.openURL(descriptor.termsUrl ?? site)}>Terms</Text>}
-				{descriptor.termsUrl ? ' · ' : ''}
+				{terms && <Text style={styles.link} onPress={() => void Linking.openURL(terms)}>Terms</Text>}
+				{terms ? ' · ' : ''}
 				<Text style={styles.link} onPress={() => void Linking.openURL(site)}>{`${descriptor.name}'s site`}</Text>
 			</Text>
 		</View>
