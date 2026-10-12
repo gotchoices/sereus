@@ -11,7 +11,7 @@ tradeoffs: It needs a loopback admin channel on every hosted node (an admin port
 
 - Give every hosted node an admin port (`--admin-port`, bearer `CADRE_STARTUP_TOKEN`, loopback only), as the owner node had.
 - `GET /api/nodes/:id/strands` in cadre-host, forwarding to the node's `GET /admin/strands`; `503 node_unavailable` when the node is down.
-- A "Strands this node serves" card on the node detail page: id, open or closed, running, status. No removal: that is an owner-signed delete, done from the owner app (`remove-a-device-or-app-from-a-cadre` and the strand tickets own that side).
+- A "Strands this node serves" card on the node detail page: id, open or closed, running, status. No removal: that is an owner-signed delete, done from the owner app (`cadre-node-removes-a-machine` and the strand tickets own that side).
 
 ## Use case
 
