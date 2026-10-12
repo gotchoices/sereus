@@ -57,14 +57,15 @@ const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; vi.restoreAllMocks(); });
 
 /** Service over a fresh memory store already holding one pending container. */
-async function provisionable() {
+async function provisionable(overrides: Partial<Container> = {}) {
   const store = new MemoryStore();
-  const container = pendingContainer();
+  const container = pendingContainer(overrides);
   await store.saveContainer(container);
-  const { orchestrator } = stubOrchestrator();
+  const { orchestrator, createContainer } = stubOrchestrator();
   const service = new ContainerService({ store, orchestrator }) as unknown as ProvisionInternal;
   return {
     store,
+    createContainer,
     provision: () => service.provisionContainer(container, provisionRequest),
   };
 }
@@ -106,6 +107,22 @@ describe('ContainerService.provisionContainer peerId recording', () => {
     await provision();
 
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:18080/status');
+  });
+
+  // A claim container's record carries the minted secret; the orchestrator must be handed
+  // exactly that (it mints nothing), and the enrol read folds the node's join state, so the
+  // record reads `awaiting` the moment it is `running`.
+  it('hands the record\'s join to the orchestrator and records joinState awaiting on enrol', async () => {
+    const join = { kind: 'claim', secret: 'minted-secret' } as const;
+    const { store, createContainer, provision } = await provisionable({ partyId: 'unclaimed', join });
+    stubStatus({ status: 'healthy', peerId: '12D3KooWabc', node: { claim: 'awaiting' } });
+
+    await provision();
+
+    expect(createContainer).toHaveBeenCalledWith(expect.objectContaining({ join }));
+    const stored = await store.getContainer('ctr_1');
+    expect(stored?.status).toBe('running');
+    expect(stored?.joinState).toEqual({ kind: 'claim', state: 'awaiting' });
   });
 
   // The orchestrator's endpoints land on the record before the poll loop starts, so a

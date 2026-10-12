@@ -17,7 +17,10 @@
  *      production layers, because in Docker the container `Env` overrides the
  *      image `ENV`, and the provider's values must win here for the same reason.
  *      With `publicHost` set it carries `CADRE_APPEND_ANNOUNCE_ADDRS` from the
- *      provider's own `publicNodeAddrs`, as `DockerOrchestrator` does.
+ *      provider's own `publicNodeAddrs`, as `DockerOrchestrator` does. A request's
+ *      `join` reaches the child the same way, as `CADRE_CLAIM_SECRET` or
+ *      `CADRE_INVITATION`; layer 3's identity file and state dir are what the
+ *      claim (`claim.json`) and the invitation (the signing identity) need.
  *   5. opt-in (`adminChannel`), test-only: the node's loopback admin channel,
  *      which no provider sets — a window onto the node's authorized member set.
  *

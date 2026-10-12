@@ -56,12 +56,17 @@ export {
   type Container,
   type ContainerStatus,
   type ContainerResources,
+  type ContainerJoin,
+  type ContainerJoinRequest,
+  type ContainerJoinState,
   type CreateContainerRequest,
   type ContainerStatusResponse,
+  type RedactedContainer,
   type UsageMetrics,
   type BillingPlan,
   type CustomerBilling,
   type ApiKey,
+  UNCLAIMED_PARTY_ID,
 } from './types.js';
 
 // Services
@@ -99,9 +104,19 @@ export {
   publicNodeAddrs,
 } from './service/container-env.js';
 
+// The node code a claim container is claimed with: its format and address rule.
+export {
+  type NodeCodePayload,
+  NODE_CODE_PREFIX,
+  claimAddressesFor,
+  encodeNodeCode,
+} from './service/node-code.js';
+
 export {
   ContainerService,
   type ContainerServiceOptions,
+  type NodeCode,
+  type NodeCodeRefusal,
   CONTAINER_ENROLLMENT_TIMEOUT_MS,
   CONTAINER_ENROLLMENT_POLL_MS,
   CONTAINER_PROVISIONING_TTL_MS,
@@ -113,6 +128,7 @@ export {
 // ContainerStatusResponse.health), plus the helpers that fetch/derive it.
 export {
   type ContainerHealthStatus,
+  type ContainerInvitationStatus,
   type ContainerStrandCounts,
   fetchContainerHealthStatus,
   statusUrlFromHealthEndpoint,

@@ -415,7 +415,60 @@ The node doesn't need to know who will dial whom — it tries everything and acc
 
 ### Enrollment Flow: Phone Adds Provider Drone
 
-The most common case: a user on a NAT'd phone adds a provider-hosted node.
+The most common case: a user on a NAT'd phone rents a provider-hosted node. The container joins the phone's cadre the same two ways a cadre-host node does ([Which Side Dials](#which-side-dials-the-add-a-node-flows-compared), rows 5 and 6): the phone **claims** it with a one-time code, or the container **redeems an invitation** at a member that is already online. The provider handles no owner key and no seed for such a container ([cadre-provider README → Joining a cadre: claim or invitation](../packages/cadre-provider/README.md#joining-a-cadre-claim-or-invitation)). The seed flow at the end of this section is the original path, kept until the two are proven on the wire.
+
+**By claim.** The cadre's only member is the phone, so there is no member online for the container to join through; the phone dials the container and claims it:
+
+```mermaid
+sequenceDiagram
+    participant Ph as Phone (Owner, NAT'd)
+    participant P as Provider API
+    participant D as Drone (New)
+    Ph->>P: 1. POST /containers { join: { kind: 'claim' } }
+    P->>D: 2. Spawn container with CADRE_CLAIM_SECRET, party the placeholder "unclaimed"
+    Note over D: 3. Waits to be claimed: admits a connection and nothing else
+    Ph->>P: 4. GET /containers/:id/code (503 until the node announces its WebSocket address)
+    P->>D: /status → peerId, multiaddrs, claim: awaiting
+    P->>Ph: 5. { code, peerId, multiaddrs } — the /ws address at docker.publicHost, and the secret
+    Note over Ph: 6. decodeNodeClaimPayload(code) → claimNode(): mint a seed, prove the secret over it
+    Ph->>D: 7. Deliver the claim seed over /ws (outbound from the phone, NAT-safe)
+    Note over D: 8. Verify the proof, record the claim, anchor the owner,<br/>restart in-process into the phone's party
+    Note over Ph: 9. authorizePeer(drone), retain its addresses as a dial target
+    Ph->>P: 10. GET /containers/:id — /status says claim: claimed, partyId: the phone's,<br/>and the provider folds joinState, partyId and ownerKey into the record
+    Ph->>D: 11. reconcileControlCohort() dials the drone again
+    Ph<<->>D: Control Network Sync
+```
+
+**By invitation.** The cadre has an always-on member the container can reach, so the phone can close as soon as the create returns:
+
+```mermaid
+sequenceDiagram
+    participant Ph as Phone (Owner)
+    participant M as Member (always-on)
+    participant P as Provider API
+    participant D as Drone (New)
+    Note over Ph: 1. createCadreInvitation() — single use, no ownership, short expiry
+    Ph->>P: 2. POST /containers { join: { kind: 'invitation', invitation } }
+    P->>D: 3. Spawn container with CADRE_INVITATION, party from the bundle
+    D->>M: 4. Redeem at a member the bundle names (/sereus/cadre-invite/1.0.0)
+    M->>D: 5. Rows written, then { partyId, row, peers }
+    D<<->>M: Control Network Sync
+    Ph->>P: 6. GET /containers/:id — joinState: { kind: 'invitation', state: 'accepted', memberPeerId }
+```
+
+Key points of the two join paths:
+- A claim container's record says `partyId: unclaimed` until a `/status` read folds the claim, so a list filtered by party misses it; the app finds it by customer and `joinState`.
+- The code carries only the WebSocket address at `docker.publicHost`, ending in `/p2p/<peerId>`: a phone has no TCP transport and cannot reach an in-container address, so a claim requires `publicHost` and `POST /containers` refuses one without it.
+- The claim secret leaves the provider only in `GET /containers/:id/code`, to the container's authenticated owner; every response shows `join: { kind }`, and an invitation's bundle is never returned.
+- The provider reads a container's `/status` in one place (`ContainerService.readStatus`) and every read folds the join state the node reports, so `GET /containers` carries each container's party and join state without a live read per row and the provider runs no poller; `GET /containers/:id` always reads live.
+- A claim is folded as `claimed` only once the node also reports the claimed party: `claim` flips when the node records the claim, and the in-process restart into that party follows, during which `partyId` is still the placeholder.
+- A Docker restart replays the same environment: the node starts from its `claim.json` and, with the secret still set, answers a rival claimant `already-claimed`.
+- An invitation spent or expired before the node redeemed it reports `joinState: failed` with `invite-spent` and `retryable: false`; the remedy is to delete the container and rent again, and there is no retry route.
+- An invitation container needs no `publicHost`: it dials the member; without one a phone cannot dial it directly later.
+- An unclaimed container is never reaped; it is billed until the customer deletes it.
+- While it waits to be claimed, the container admits a connection and nothing else, the one un-enrolled state the connection gate treats so (the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol)); once claimed, the cold-start admission window the seed bullets below describe applies until the phone's rows reach it.
+
+**By seed (being retired).** The original flow, which `provider-retires-the-seed-path` removes together with `pinnedOwnerKeys`, `GET /containers/:id/peer` and `PUT /containers/:id/seed`:
 
 ```mermaid
 sequenceDiagram
@@ -437,7 +490,7 @@ sequenceDiagram
     Note over D: 11. select * from CadrePeer → authoritative cache refresh
 ```
 
-Key points:
+Key points of the seed path:
 - Phone is NAT'd → seed has no multiaddrs for phone → drone waits
 - Phone dials drone (outbound from phone's perspective) → NAT-safe
 - The drone's row is unsigned until the drone self-publishes, so the phone dials from the addresses `CadreNode.addDrone` retained in its bootstrap-peer store — on this launch and after a relaunch. The caller triggers step 9 with `reconcileControlCohort()` once the seed is delivered; otherwise the next timed pass does it
@@ -804,11 +857,11 @@ A node never joins when neither side holds an address at which it can reach the 
 | 1 | Reference app: a phone plus a `cadre-cli` drone ([reference-app-rn.md → Two-Node Startup Sequence](reference-app-rn.md#two-node-startup-sequence)) | the phone dials the drone's `/ws` bootstrap address | the drone: same LAN, or a public address |
 | 2 | `cadre enroll add` without `--addr` ([cadre-cli README → Add a Machine to the Cadre](../packages/cadre-cli/README.md#add-a-machine-to-the-cadre)) | the new machine dials the owner addresses in the seed | the owner: its listen addresses on a LAN, `network.appendAnnounceAddrs`, or a relay |
 | 3 | `cadre enroll add --addr <new machine's multiaddr>` (same page) | both: the owner also dials the new machine | either one |
-| 4 | A cadre-provider container ([Provider Integration](#provider-integration), [Enrollment Flow: Phone Adds Provider Drone](#enrollment-flow-phone-adds-provider-drone)) | the container dials the requester's `bootstrapNodes`; a phone gives none and dials the container's WebSocket address from `GET /containers/:id/peer` | the requester, when it gives `bootstrapNodes`; otherwise the container, at the provider's `docker.publicHost` (a provider without one requires `bootstrapNodes`) |
+| 4 | A cadre-provider container ([Provider Integration](#provider-integration), [Enrollment Flow: Phone Adds Provider Drone](#enrollment-flow-phone-adds-provider-drone)), three ways in: by claim (`join.kind: 'claim'`, row 6's flow), by invitation (`join.kind: 'invitation'`, row 5's flow), or by seed (no `join`; being retired) | by claim: the phone dials the container's WebSocket address from the node code (`GET /containers/:id/code`); by invitation: the container dials the members the bundle names; by seed: the container dials the requester's `bootstrapNodes`, or a phone gives none and dials the container's address from `GET /containers/:id/peer` | by claim: the container, at the provider's `docker.publicHost`, which a claim requires; by invitation: any named member, and the container need not be reachable; by seed: the requester when it gives `bootstrapNodes`, otherwise the container at `publicHost` (a provider without one requires `bootstrapNodes`) |
 | 5 | A device redeems a cadre invitation at any member (`cadre enroll invite` / `cadre start --invitation`, the reference apps' **Join my existing cadre** and **Join a Cadre**, `cadre-host join --invitation` ([cadre-host.md → Join by invitation](cadre-host.md#join-by-invitation)), `CadreNode.createCadreInvitation` / `redeemCadreInvitation`; [Enrollment Flow: Invitation Redeemed at Any Member](#enrollment-flow-invitation-redeemed-at-any-member)) | the device dials the members the invitation names, in order: the minting owner's addresses first, then other members', six addresses at most | any one named member; the owner that minted it may be offline |
-| 6 | A phone claims a node started with a claim secret (`CADRE_CLAIM_SECRET` or `claim.secretFile` on `cadre start`, `CadreNodeConfig.claim`; `CadreNode.claimNode`; the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol)); the `cadre-host join` flow ([cadre-host.md → Join by QR code](cadre-host.md#join-by-qr-code)) and the React Native reference app's **Add an always-on node** ([reference-app-rn.md → Adding a Home Machine's Node](reference-app-rn.md#adding-a-home-machines-node-cadre-host)) | the phone dials the node's addresses from the QR code it scanned, and `claimNode` retains them as a dial target | the node: over the LAN when the phone is at home; from outside, only through ports the router maps or the user forwards, which the host's reachability verdict for the node reports ([cadre-host.md → Reachability from outside](cadre-host.md#reachability-from-outside)) |
+| 6 | A phone claims a node started with a claim secret (`CADRE_CLAIM_SECRET` or `claim.secretFile` on `cadre start`, `CadreNodeConfig.claim`; `CadreNode.claimNode`; the claim-secret entry under [Seed Delivery Protocol](#seed-delivery-protocol)); the `cadre-host join` flow ([cadre-host.md → Join by QR code](cadre-host.md#join-by-qr-code)), a provider container created with `join.kind: 'claim'` (row 4), and the React Native reference app's **Add an always-on node** ([reference-app-rn.md → Adding a Home Machine's Node](reference-app-rn.md#adding-a-home-machines-node-cadre-host)) | the phone dials the node's addresses from the QR code it scanned, and `claimNode` retains them as a dial target | the node: over the LAN when the phone is at home; from outside, only through ports the router maps or the user forwards, which the host's reachability verdict for the node reports ([cadre-host.md → Reachability from outside](cadre-host.md#reachability-from-outside)) |
 
-Which flow fits depends on which of the two machines can accept a connection. A phone is not dialed unless it holds a relay reservation, so a phone adding a node needs that node reachable from where the phone is (rows 1, 4 and 6). A machine that can be dialed passes its own address and the new node dials it (rows 2 and 4, and every named member in row 5). When it is unclear which side is reachable, give both sets of addresses (row 3). A phone that owns a cadre with an always-on member invites through row 5: its own address list is empty, so the bundle names the member, and the device joins there. A cadre-host node joins the same way when the cadre already has a member the host can reach; a cadre's first always-on node has none, so the phone claims it through row 6.
+Which flow fits depends on which of the two machines can accept a connection. A phone is not dialed unless it holds a relay reservation, so a phone adding a node needs that node reachable from where the phone is (rows 1, 4 and 6). A machine that can be dialed passes its own address and the new node dials it (rows 2 and 4, and every named member in row 5). When it is unclear which side is reachable, give both sets of addresses (row 3). A phone that owns a cadre with an always-on member invites through row 5: its own address list is empty, so the bundle names the member, and the device joins there. A cadre-host node joins the same way when the cadre already has a member the host can reach; a cadre's first always-on node has none, so the phone claims it through row 6. A provider container (row 4) makes the same choice: an invitation when a member is online, a claim for the cadre's first always-on node.
 
 A `/p2p-circuit` address makes a machine behind NAT reachable only if that machine holds a relay reservation, and which kinds of node can hold one is the table under [Which nodes can be reached through a relay](#which-nodes-can-be-reached-through-a-relay). cadre-host nodes and cadre-provider containers cannot, so no relay makes the hosted node in row 6 reachable, and a phone reaches a container in row 4 only at the public address the provider announces.
 
@@ -1509,9 +1562,48 @@ No cross-network communication. Each network has its own connection pool, gossip
 
 Cloud providers can host cadre nodes on behalf of users. The provider never has access to user keys—nodes generate their own libp2p identity and are authorized via signed messages.
 
-> **`@serfab/cadre-host` is a second node host, with a different way in.** Where a cloud provider hosts nodes in Docker containers, [`@serfab/cadre-host`](cadre-host.md) hosts them as OS-managed child processes on a home machine and implements the same `Orchestrator` interface. It does not use the provider flow below: no one requests a node from it. The admin starts a node, and the node joins a cadre by claim (the owner's phone scans the node's QR code and claims it) or by invitation (the node redeems an owner-minted invitation at a member) ([cadre-host.md → Join a cadre](cadre-host.md#join-a-cadre)). As with a provider, the owner's device is the authority and the host never holds owner keys.
+> **`@serfab/cadre-host` is a second node host, with a different way of being asked.** Where a cloud provider hosts nodes in Docker containers, [`@serfab/cadre-host`](cadre-host.md) hosts them as OS-managed child processes on a home machine and implements the same `Orchestrator` interface. It does not use the provider API below: no one requests a node from it. The admin starts a node, and the node joins a cadre by claim (the owner's phone scans the node's QR code and claims it) or by invitation (the node redeems an owner-minted invitation at a member) ([cadre-host.md → Join a cadre](cadre-host.md#join-a-cadre)), the same two ways a provider container joins. In both, the owner's device is the authority and the host never holds owner keys.
 
 ### Provider Flow
+
+A container joins the user's cadre by claim or by invitation (`POST /containers` `join`); the seed flow is the original path, being retired. [Enrollment Flow: Phone Adds Provider Drone](#enrollment-flow-phone-adds-provider-drone) gives each in full.
+
+**By claim** (the cadre's only member is the phone):
+
+```mermaid
+sequenceDiagram
+    participant U as User (Phone)
+    participant P as Provider API
+    participant C as Provider Container
+    U->>P: 1. POST /containers { join: { kind: 'claim' } } (payment)
+    P->>C: 2. Spawn container with a one-time claim secret
+    U->>P: 3. GET /containers/:id/code (polled)
+    P->>C: /status → peer id, addresses
+    P->>U: { code, peerId, multiaddrs }
+    Note over U: 4. claimNode(code): a seed with proof of the secret
+    U->>C: 5. Dial container over /ws, deliver the claim seed (outbound, NAT-safe)
+    Note over C: Record the claim, anchor the owner,<br/>restart into the user's party
+    U<<->>C: Control Network Sync
+    Note over C: Watch Strand table
+```
+
+**By invitation** (the cadre has an always-on member):
+
+```mermaid
+sequenceDiagram
+    participant U as User (Phone)
+    participant P as Provider API
+    participant C as Provider Container
+    participant M as Member (always-on)
+    U->>P: 1. POST /containers { join: { kind: 'invitation', invitation } }
+    P->>C: 2. Spawn container with the bundle
+    C->>M: 3. Redeem the invitation
+    M->>C: Rows written, then party, row, peers
+    C<<->>M: Control Network Sync
+    U->>P: 4. GET /containers/:id → joinState accepted
+```
+
+**By seed (being retired):**
 
 ```mermaid
 sequenceDiagram
@@ -1531,7 +1623,7 @@ sequenceDiagram
     Note over C: Watch Strand table
 ```
 
-Provider only sees: container ID, network traffic, opaque seed. Provider never has: owner keys, strand data.
+Provider only sees: container ID, network traffic, the node's `/status` report of its join (awaiting, claimed by which owner key into which party; invitation pending, accepted, failed), and, on the seed path, an opaque seed. Provider never has: owner keys, strand data. The claim secret and the invitation bundle it holds are the node's credentials, not the owner's: the secret proves nothing without the owner's signature, and the bundle admits one device as a non-owner.
 
 ### Durable Container Identity
 

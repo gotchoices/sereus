@@ -4,6 +4,7 @@ import { buildNodeEnv } from '../container-env.js';
 import { DockerOrchestrator } from '../docker-orchestrator.js';
 import type { DockerConfig } from '../../config/types.js';
 import type { OrchestratorCreateRequest } from '../orchestrator.js';
+import { UNCLAIMED_PARTY_ID } from '../../types.js';
 import { daemonStubs } from './fake-docker.js';
 
 const base: OrchestratorCreateRequest = {
@@ -53,6 +54,37 @@ describe('buildNodeEnv', () => {
     expect(env).toContain('CADRE_HEALTH_PORT=18080');
     expect(env).toContain('CADRE_METRICS_PORT=19090');
     expect(env).toContain('CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/14001,/ip4/0.0.0.0/tcp/14002/ws');
+  });
+});
+
+describe('buildNodeEnv join', () => {
+  it('a claim emits CADRE_CLAIM_SECRET and the placeholder party, and no owner keys or bootstrap nodes', () => {
+    const env = buildNodeEnv({
+      request: { ...base, partyId: UNCLAIMED_PARTY_ID, bootstrapNodes: [], join: { kind: 'claim', secret: 's3cret' } },
+      seedToken: 'tok',
+    });
+
+    expect(env).toContain('CADRE_CLAIM_SECRET=s3cret');
+    expect(env).toContain(`CADRE_PARTY_ID=${UNCLAIMED_PARTY_ID}`);
+    expect(env.some(e => e.startsWith('CADRE_OWNER_KEYS=') || e.startsWith('CADRE_BOOTSTRAP_NODES=') || e.startsWith('CADRE_INVITATION='))).toBe(false);
+  });
+
+  it('an invitation emits CADRE_INVITATION with the bundle verbatim and the bundle\'s party', () => {
+    const env = buildNodeEnv({
+      request: { ...base, partyId: 'party-invited', bootstrapNodes: [], join: { kind: 'invitation', invitation: 'sereus-invite:1.abc' } },
+      seedToken: 'tok',
+    });
+
+    expect(env).toContain('CADRE_INVITATION=sereus-invite:1.abc');
+    expect(env).toContain('CADRE_PARTY_ID=party-invited');
+    expect(env.some(e => e.startsWith('CADRE_CLAIM_SECRET='))).toBe(false);
+  });
+
+  it('throws on pinned owner keys beside a join, naming the conflict', () => {
+    expect(() => buildNodeEnv({
+      request: { ...base, pinnedOwnerKeys: ['a'], join: { kind: 'claim', secret: 's' } },
+      seedToken: 'tok',
+    })).toThrow(/cannot pin owner keys/);
   });
 });
 

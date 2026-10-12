@@ -3,10 +3,10 @@
  */
 
 import debug from 'debug';
-import type { ContainerStatus, UsageMetrics, BillingPlan, CustomerBilling } from '../types.js';
+import type { Container, ContainerStatus, UsageMetrics, BillingPlan, CustomerBilling } from '../types.js';
 import type { ProviderStore } from './store.js';
 import type { Orchestrator } from './orchestrator.js';
-import { fetchContainerHealthStatus } from './container-health.js';
+import { type ContainerHealthStatus, fetchContainerHealthStatus } from './container-health.js';
 import type { BillingConfig } from '../config/types.js';
 
 const log = debug('cadre:provider:billing');
@@ -85,6 +85,12 @@ export interface BillingServiceOptions {
   store: ProviderStore;
   orchestrator: Orchestrator;
   hooks?: BillingHooks;
+  /**
+   * How the usage collector reads a container's live `/status`. The server passes
+   * `ContainerService.readStatus`, so the collector's read keeps the record's join state
+   * current like every other read the provider makes. Defaults to the bare fetch.
+   */
+  readStatus?: (container: Container) => Promise<ContainerHealthStatus | undefined>;
 }
 
 /**
@@ -96,6 +102,7 @@ export class BillingService {
   private readonly orchestrator: Orchestrator;
   private readonly hooks: BillingHooks;
   private readonly plans: Map<string, BillingPlan>;
+  private readonly readStatus: (container: Container) => Promise<ContainerHealthStatus | undefined>;
   private collectionInterval?: ReturnType<typeof setInterval>;
 
   constructor(options: BillingServiceOptions) {
@@ -103,6 +110,7 @@ export class BillingService {
     this.store = options.store;
     this.orchestrator = options.orchestrator;
     this.hooks = options.hooks ?? {};
+    this.readStatus = options.readStatus ?? fetchContainerHealthStatus;
     this.plans = new Map(Object.entries(DEFAULT_PLANS));
     log('BillingService initialized, enabled: %s', this.config.enabled);
   }
@@ -143,7 +151,7 @@ export class BillingService {
         // Resolves to undefined on any fetch failure (helper swallows errors),
         // so a single unreachable container degrades to 0 strands rather than
         // aborting the whole collection pass.
-        const health = await fetchContainerHealthStatus(container);
+        const health = await this.readStatus(container);
         const peakStrands = health?.node?.strands?.active ?? 0;
 
         const metrics: UsageMetrics = {

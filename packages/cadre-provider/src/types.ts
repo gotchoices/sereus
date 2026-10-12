@@ -8,6 +8,42 @@ import type { ContainerHealthStatus } from './service/container-health.js';
 // Container Types
 // ============================================================================
 
+/**
+ * The party a container that waits to be claimed is started with. A claimed node takes
+ * its party from the claim, so this is the placeholder cadre-host and the cadre-cli README
+ * use for a node whose cadre is not known yet; `readStatus`'s fold replaces it on the
+ * record once the node reports the claim.
+ */
+export const UNCLAIMED_PARTY_ID = 'unclaimed';
+
+/** How the caller asks for a container to get into its cadre (`POST /containers` `join`). */
+export type ContainerJoinRequest =
+  | { kind: 'claim' }
+  | { kind: 'invitation'; invitation: string };
+
+/**
+ * How a container gets into a cadre, with the credential the node is started with. Stored
+ * on the record (a provider restart must reproduce the environment) and redacted on the
+ * wire to `{ kind }`: the claim secret is handed only to `GET /containers/:id/code`, and
+ * the invitation bundle carries the invitation's private key.
+ */
+export type ContainerJoin =
+  | { kind: 'claim'; secret: string }          // CADRE_CLAIM_SECRET, minted by ContainerService
+  | { kind: 'invitation'; invitation: string }; // CADRE_INVITATION, the bundle as submitted
+
+/**
+ * The join as the node last reported it on `/status`; absent on a seed-path container and
+ * before the first read. Self-contained, so a reader of this field alone knows the owner
+ * and party a claim named; the record's own `partyId` and `ownerKey` carry the same two
+ * values for the rest of the provider (the list filter, billing) to read.
+ */
+export type ContainerJoinState =
+  | { kind: 'claim'; state: 'awaiting' }
+  | { kind: 'claim'; state: 'claimed'; ownerKey: string; partyId: string }
+  | { kind: 'invitation'; state: 'pending' }
+  | { kind: 'invitation'; state: 'accepted'; memberPeerId?: string }
+  | { kind: 'invitation'; state: 'failed'; error: string; retryable: boolean };
+
 /** Container status lifecycle */
 export type ContainerStatus =
   | 'pending'      // Container requested, not yet created
@@ -59,6 +95,16 @@ export interface CreateContainerRequest {
    * only blanks is equivalent to omitting the field.
    */
   pinnedOwnerKeys?: string[];
+  /**
+   * How the container gets into its cadre without the provider ever holding an owner key
+   * or a seed: it waits to be claimed with a one-time code (`claim`), or it redeems an
+   * owner-minted cadre invitation at a member that is online (`invitation`). With `claim`,
+   * `partyId` is {@link UNCLAIMED_PARTY_ID} and `bootstrapNodes` is empty; with
+   * `invitation`, `partyId` is the bundle's. Neither takes `pinnedOwnerKeys`: the claim
+   * names the owner, and the bundle carries the owner keys the node pins itself. Absent:
+   * the seed path (`pinnedOwnerKeys` + `PUT /containers/:id/seed`).
+   */
+  join?: ContainerJoinRequest;
 }
 
 /** Container record in the provider database */
@@ -120,7 +166,23 @@ export interface Container {
    * pin into the already-running node (the env var is read once at start).
    */
   pinnedOwnerKeys?: string[];
+  /**
+   * How the container gets into its cadre, with the credential its environment carries.
+   * Absent on a seed-path container. Redacted on the wire; see {@link ContainerJoin}.
+   */
+  join?: ContainerJoin;
+  /** The join as the node last reported it; see {@link ContainerJoinState}. */
+  joinState?: ContainerJoinState;
+  /**
+   * The owner key (base64url) the claim named, written when a `/status` read folds the
+   * claim. A public key, so not redacted. Absent before the claim and on every other
+   * container.
+   */
+  ownerKey?: string;
 }
+
+/** A container as the API returns it: no seed token, and the join reduced to its kind. */
+export type RedactedContainer = Omit<Container, 'seedToken' | 'join'> & { join?: { kind: ContainerJoin['kind'] } };
 
 /** Container status response */
 export interface ContainerStatusResponse {

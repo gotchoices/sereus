@@ -46,9 +46,12 @@ await server.start();
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/status` | Health check |
-| POST | `/api/v1/containers` | Create a new container |
-| GET | `/api/v1/containers` | List customer's containers |
-| GET | `/api/v1/containers/:id` | Get container status |
+| POST | `/api/v1/containers` | Create a new container; `join` says how it gets into its cadre ([Joining a cadre: claim or invitation](#joining-a-cadre-claim-or-invitation)) |
+| GET | `/api/v1/containers` | List customer's containers, each with its `partyId` and `joinState` |
+| GET | `/api/v1/containers/:id` | Get container status (reads the node live and folds its join state into the record) |
+| GET | `/api/v1/containers/:id/code` | The node code a phone claims the container with (claim containers only) |
+| GET | `/api/v1/containers/:id/peer` | The container's peer id and addresses (seed path) |
+| PUT | `/api/v1/containers/:id/seed` | Deliver a seed to the container (seed path) |
 | DELETE | `/api/v1/containers/:id` | Terminate container |
 | GET | `/api/v1/billing/plans` | List billing plans |
 | GET | `/api/v1/billing/status` | Get customer billing status |
@@ -246,6 +249,79 @@ cadre that authorized it. The volume is created on first provision, re-attached 
 a container is recreated under the same id, and deleted along with the container on terminate. Nothing
 in `/data` survives termination, by design.
 
+### Joining a cadre: claim or invitation
+
+A rented node gets into the user's cadre the same two ways a cadre-host node does, and the
+provider handles no owner key and no seed for it: the app **claims** the container with a
+one-time code, or the container **redeems an invitation** at a member of the cadre that is
+already online. `POST /containers` takes `join` beside `profile`, `resources`, `strandFilter`
+and `tags`:
+
+```json
+{ "join": { "kind": "claim" } }
+{ "join": { "kind": "invitation", "invitation": "sereus-invite:1.…" } }
+```
+
+Without `join` the request is the seed path below (`partyId`, `bootstrapNodes`,
+`pinnedOwnerKeys`, then `PUT /containers/:id/seed`), which stays until the two join paths are
+proven on the wire and is then retired.
+
+**Claim** — for a cadre whose only member is the phone, which nothing can dial. The container
+starts waiting to be claimed (`CADRE_CLAIM_SECRET`, a secret the provider mints per container),
+with the placeholder party `unclaimed`. `partyId`, a non-empty `bootstrapNodes` and
+`pinnedOwnerKeys` are each refused by name: a container that is claimed takes its party and
+owner from the claim. A claim needs `docker.publicHost`, since the phone dials the container;
+without it the create is `400 INVALID_REQUEST` naming `docker.publicHost`. The app then:
+
+1. Polls `GET /containers/:id/code`: `503 NOT_AVAILABLE` until the node reports its peer id
+   and an announced WebSocket address, then `200 { code, peerId, multiaddrs }`. The code is
+   `sereus-join:1.…` (cadre-core's node claim payload, the same code a cadre-host shows as a
+   QR code): the node's peer id, its claim secret, and only its `/ws` address at `publicHost`,
+   ending in `/p2p/<peerId>`, since a phone can dial neither TCP nor an in-container address.
+   `409 NOT_CLAIMABLE` for a seed-path or invitation container, `409 ALREADY_CLAIMED` once a
+   live read says the node has an owner, `409 CONTAINER_GONE` for a stopped or failed one.
+2. Hands the code to `CadreNode.claimNode` (after `decodeNodeClaimPayload`). The node verifies
+   the proof, records the claim, and restarts in-process into the phone's cadre; `/status` is
+   briefly `unhealthy` while it does.
+3. Reads `GET /containers/:id`: the provider folds the node's report into the record as
+   `joinState: { kind: 'claim', state: 'claimed', ownerKey, partyId }` and replaces the record's
+   `partyId` and `ownerKey`. Before the claim it reads `joinState: { kind: 'claim', state: 'awaiting' }`.
+
+**Invitation** — for a cadre with an always-on member the container can reach; the phone can
+close as soon as the create returns. The bundle is the text the owner's app encodes
+(`encodeCadreInvitation`), checked for shape at create (prefix `sereus-invite:1.`, base64url
+JSON, version 1, a party, the invitation key, the signed row, at least one owner key, and at
+least one member address naming the member it reaches; a `sereus-join-request:1.` text is
+refused as "a join request, not an invitation"). The error never echoes the bundle, which
+carries the invitation's private key. `partyId` comes from the bundle and a body `partyId`
+that disagrees is refused; `bootstrapNodes` and `pinnedOwnerKeys` are refused, since the
+bundle names the members to dial and carries the owner keys the node pins itself.
+`docker.publicHost` is not required: the container dials out and holds its connections (a
+phone cannot dial it directly later without one). `GET /containers/:id` reads
+`joinState: { kind: 'invitation', state: 'pending' }`, then `accepted` with the `memberPeerId`
+that admitted it, or `failed` with `error` and `retryable`. An invitation spent or expired
+before the node redeemed it reports `failed` with `invite-spent` in the error and
+`retryable: false`, and the container keeps running with nothing to do: delete it and rent
+again with a fresh invitation. There is no retry route.
+
+**What the API shows.** A container's `join` is returned as `{ kind }` only: the claim secret
+leaves the provider in `GET /containers/:id/code` and nowhere else, and the invitation bundle
+never. The secret is returned to the authenticated owner of the container over whatever TLS
+the deployment puts in front of the API, so put TLS in front of it. `GET /containers` carries
+each container's `partyId` and `joinState` from the record, with no live read per row;
+`GET /containers/:id` always reads the node live and folds what it reports. A claim
+container's `partyId` is `unclaimed` until the claim is folded, so a list filtered by party
+misses it; find it by customer and `joinState`. An unclaimed container is never reaped: it is
+billed like any other running container until the customer deletes it.
+
+**On the host.** The record holds the secret or the bundle (the file store's `containers.json`
+with `storage.type: file`), as it holds the seed token, so a provider restart reproduces the
+container's environment; and `docker inspect` on the host shows `CADRE_CLAIM_SECRET` or
+`CADRE_INVITATION` in the container's environment, as it shows `CADRE_SEED_TOKEN` today. A
+container restarted by Docker (`unless-stopped`) replays the same environment: a claimed node
+starts from its `claim.json` and, with the secret still set, answers a rival claimant
+`already-claimed`.
+
 ### Seed trust: pin the tenant's owner key at create time
 
 Delivering a seed (`PUT /containers/:id/seed`) is authenticated by a per-container
@@ -355,6 +431,10 @@ describes the flow.
 - **No TLS proxy.** A provider that fronts containers with `/wss` on 443 would announce
   the proxy's address instead and needs a per-container path or port there; the
   provider does not do this.
+- **A claim needs the host, an invitation does not.** `join.kind: 'claim'` is refused
+  without `publicHost`, since the phone dials the container to claim it;
+  `join.kind: 'invitation'` is allowed, since the container dials the member, but a phone
+  cannot dial such a container directly later ([Joining a cadre: claim or invitation](#joining-a-cadre-claim-or-invitation)).
 
 ### Kubernetes
 

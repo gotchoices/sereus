@@ -4,9 +4,9 @@
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import debug from 'debug';
-import type { ContainerService } from '../service/container-service.js';
+import type { ContainerService, NodeCodeRefusal } from '../service/container-service.js';
 import type { BillingService } from '../service/billing-service.js';
-import type { Container } from '../types.js';
+import type { Container, RedactedContainer } from '../types.js';
 import { Scope, hasPermission } from './permissions.js';
 import { validateCreateContainerRequest } from './create-request-validation.js';
 import { packageVersion } from '../package-version.js';
@@ -36,13 +36,27 @@ export interface RouteContext {
  * Strip secrets from a Container before it crosses the API boundary. The
  * per-container `seedToken` gates the node's `POST /seed` route — the provider
  * presents it on the customer's behalf, so it must never appear in a response
- * (the customer never needs it, and it is a credential). All other fields,
- * including the loopback-only endpoint URLs, are unchanged.
+ * (the customer never needs it, and it is a credential). The `join` keeps its kind
+ * only: the claim secret is handed out by `GET /containers/:id/code` alone, and the
+ * invitation bundle carries the invitation's private key. All other fields,
+ * including the loopback-only endpoint URLs and `joinState`, are unchanged.
  */
-function redactContainer(container: Container): Omit<Container, 'seedToken'> {
-  const { seedToken: _seedToken, ...rest } = container;
-  return rest;
+function redactContainer(container: Container): RedactedContainer {
+  const { seedToken: _seedToken, join, ...rest } = container;
+  return join ? { ...rest, join: { kind: join.kind } } : rest;
 }
+
+/**
+ * How `GET /containers/:id/code` answers each refusal. 409 for a container that cannot
+ * be claimed as it is; 503 while the node is simply not ready, which clients poll
+ * through (as cadre-host's claim route is polled).
+ */
+const NODE_CODE_REFUSALS: Record<NodeCodeRefusal, { status: number; code: string; message: string }> = {
+  'not-claimable': { status: 409, code: 'NOT_CLAIMABLE', message: 'Container was not created to be claimed' },
+  'already-claimed': { status: 409, code: 'ALREADY_CLAIMED', message: 'Container has already been claimed' },
+  'gone': { status: 409, code: 'CONTAINER_GONE', message: 'Container is stopped or failed' },
+  'not-ready': { status: 503, code: 'NOT_AVAILABLE', message: 'Node code not yet available' },
+};
 
 /** Coerce an arbitrary value to a strict boolean for the shutdownAfter flag */
 function parseShutdownFlag(value: unknown): boolean {
@@ -126,7 +140,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     // reaches the spawned child, so it is read off the raw body rather than
     // validated into the create request.
     const shutdownAfter = parseShutdownFlag((request.body as { shutdownAfter?: unknown } | undefined)?.shutdownAfter);
-    const payload: { ok: true; data: { container: Omit<Container, 'seedToken'> }; shutdownInitiated?: true } = {
+    const payload: { ok: true; data: { container: RedactedContainer }; shutdownInitiated?: true } = {
       ok: true,
       data: { container: redactContainer(container) },
     };
@@ -262,6 +276,40 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
       ok: true,
       data: peerInfo,
     });
+  });
+
+  // GET /containers/:id/code - The node code a phone claims the container with
+  app.get(`${basePath}/containers/:id/code`, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    // The id only: the code carries the claim secret, and neither reaches a log line.
+    log('GET %s/containers/%s/code', basePath, id);
+
+    const customer = request.customer;
+    if (!customer) {
+      return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
+    }
+    if (!requireScope(reply, customer, Scope.ContainersRead)) return reply;
+
+    const container = await containerService.getContainer(id);
+    if (!container) {
+      return errorResponse(reply, 'NOT_FOUND', 'Container not found', 404);
+    }
+
+    // Verify ownership before the secret is even looked up.
+    if (container.customerId !== customer.customerId) {
+      return errorResponse(reply, 'FORBIDDEN', 'Access denied', 403);
+    }
+
+    const result = await containerService.nodeCode(id);
+    if (!result) {
+      return errorResponse(reply, 'NOT_FOUND', 'Container not found', 404);
+    }
+    if ('refusal' in result) {
+      const { status, code, message } = NODE_CODE_REFUSALS[result.refusal];
+      return errorResponse(reply, code, message, status);
+    }
+
+    return reply.send({ ok: true, data: result });
   });
 
   // PUT /containers/:id/seed - Apply a seed to a container

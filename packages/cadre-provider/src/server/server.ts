@@ -104,12 +104,15 @@ export async function createProviderServer(
     store,
     orchestrator,
     ...(config.push ? { push: config.push } : {}),
+    // The host a node code's addresses must carry: a phone dials a container only there.
+    ...(config.docker.publicHost !== undefined ? { publicHost: config.docker.publicHost } : {}),
   });
   const billingService = new BillingService({
     config: config.billing,
     store,
     orchestrator,
     hooks: billingHooks,
+    readStatus: container => containerService.readStatus(container),
   });
 
   const basePath = config.server.basePath ?? '/api/v1';

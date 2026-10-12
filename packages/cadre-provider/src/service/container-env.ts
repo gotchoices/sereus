@@ -2,8 +2,10 @@
  * The environment a provider-hosted node is started with — the entire
  * contract between the provider and the node it spawns: party id, bootstrap
  * peers, profile, listen and announced addresses, health/metrics ports, the
- * per-container seed token gating `POST /seed`, and the pinned owner keys a
- * fresh node needs to accept its first delivered seed.
+ * per-container seed token gating `POST /seed`, and how the node joins its
+ * cadre: the claim secret (`CADRE_CLAIM_SECRET`) or the invitation bundle
+ * (`CADRE_INVITATION`) of a `join`, or the pinned owner keys a fresh seed-path
+ * node needs to accept its first delivered seed.
  *
  * Pulled out of `DockerOrchestrator.createContainer` so a non-Docker
  * consumer (e.g. a test starting a real `@serfab/cadre-cli` child) can
@@ -70,6 +72,26 @@ export interface NodeEnvSpec {
   appendAnnounceAddrs?: readonly string[];
 }
 
+/**
+ * The one variable that tells the node how to join its cadre, or '' on the seed path.
+ * cadre-cli reads both straight from the environment (`COMMAND_ENV` in its `env.ts`),
+ * never from a flag, since either value in a process list would leak it.
+ *
+ * Throws on pins beside a join: `cadre start` refuses that combination (a claim or an
+ * invitation names the owner; a pin trusts a signer neither named), so the container
+ * would die at boot with the cause visible only in its log. Failing here names it at the
+ * provision instead. `POST /containers` already refuses the body; this guards a direct
+ * `ContainerService` caller.
+ */
+function joinEnv(request: OrchestratorCreateRequest): string {
+  const { join } = request;
+  if (!join) return '';
+  if (request.pinnedOwnerKeys?.length) {
+    throw new Error(`a container that joins by ${join.kind} cannot pin owner keys: the ${join.kind} names its owner, and cadre-cli refuses CADRE_OWNER_KEYS beside it`);
+  }
+  return join.kind === 'claim' ? `CADRE_CLAIM_SECRET=${join.secret}` : `CADRE_INVITATION=${join.invitation}`;
+}
+
 /** `KEY=value` entries, empty ones already dropped — Docker `Env` order preserved. */
 export function buildNodeEnv(spec: NodeEnvSpec): string[] {
   const { request, seedToken } = spec;
@@ -78,6 +100,8 @@ export function buildNodeEnv(spec: NodeEnvSpec): string[] {
   const announce = spec.appendAnnounceAddrs ?? [];
 
   return [
+    // The placeholder party (`UNCLAIMED_PARTY_ID`) for a claim, the bundle's for an
+    // invitation; the request carries the right one either way.
     `CADRE_PARTY_ID=${request.partyId}`,
     // Omitted when empty, like CADRE_OWNER_KEYS: the image's entrypoint then writes
     // `bootstrapNodes: []`, a node that waits to be dialed.
@@ -111,5 +135,6 @@ export function buildNodeEnv(spec: NodeEnvSpec): string[] {
     // empty (the CLI would parse a bare var to [] anyway, but a node told to
     // trust nobody should not look configured).
     request.pinnedOwnerKeys?.length ? `CADRE_OWNER_KEYS=${request.pinnedOwnerKeys.join(',')}` : '',
+    joinEnv(request),
   ].filter(Boolean);
 }

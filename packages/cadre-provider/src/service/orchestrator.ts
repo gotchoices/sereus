@@ -3,7 +3,7 @@
  * Allows swapping between Docker, Kubernetes, etc.
  */
 
-import type { ContainerResources } from '../types.js';
+import type { ContainerJoin, ContainerResources } from '../types.js';
 import type { PushCredentials } from '../config/types.js';
 
 /** Container creation request for orchestrator */
@@ -44,6 +44,14 @@ export interface OrchestratorCreateRequest {
    * because a shared pin would let one tenant's owner seed another tenant's node.
    */
   pinnedOwnerKeys?: string[];
+  /**
+   * How the node gets into its cadre, credential included: the claim secret the service
+   * minted (`CADRE_CLAIM_SECRET`) or the invitation bundle the caller submitted
+   * (`CADRE_INVITATION`). Like `push` and `pinnedOwnerKeys`, the orchestrator injects
+   * exactly what it is handed (`buildNodeEnv`) and mints nothing itself. Absent on the
+   * seed path. Cannot be combined with `pinnedOwnerKeys`: `buildNodeEnv` throws.
+   */
+  join?: ContainerJoin;
 }
 
 /** Container creation result from orchestrator */
