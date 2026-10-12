@@ -22,10 +22,24 @@ auth:
   # apiKeyHashes:
   #   - abc123...
   
-  # For oauth mode:
+  # For oauth mode with your own identity provider (validateJwt hook):
   # jwksUri: https://your-auth-provider.com/.well-known/jwks.json
   # issuer: https://your-auth-provider.com
   # audience: cadre-provider-api
+  #
+  # For oauth mode with the built-in sign-in endpoints (README → Sign-in from apps):
+  # apps register here, and your account system resolves the customer through the
+  # authorizeCustomer hook. Allowed only with mode: oauth.
+  # oauth:
+  #   clients:
+  #     - clientId: sereus-chat
+  #       redirectUris: ["sereus-chat://provider-auth", "sereus-chat-second://provider-auth"]
+  #       scopes: ["containers:*", "billing:read"]   # the most a token for this client may carry
+  #   accessTokenTtlSec: 3600       # default
+  #   refreshTokenTtlSec: 2592000   # default, 30 days
+  #   # true serves the built-in consent form instead of the hook: anyone can sign in as any
+  #   # customer id, so it needs allowInsecureNoAuth: true, like mode: none.
+  #   devConsentPage: false
 
 # Docker Orchestrator Configuration
 docker:
@@ -81,4 +95,17 @@ storage:
 logging:
   # Options: debug, info, warn, error
   level: info
+
+# What GET /descriptor says about this provider: the document an app's store screen
+# renders (README → Provider descriptor). Without this block the route answers 404.
+provider:
+  # Stable identifier an app keys its rental records by; never change it once published.
+  id: acme-nodes
+  name: Acme Cadre Nodes
+  # The origin this API is reached at; every descriptor URL is this plus server.basePath.
+  # https, except at a loopback host for a dev run (http://127.0.0.1:3000).
+  publicUrl: https://nodes.acme.example
+  # termsUrl: https://acme.example/terms
+  # regions: ["eu-west"]
+  # icon: https://acme.example/icon.png
 

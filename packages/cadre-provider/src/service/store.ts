@@ -5,7 +5,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import debug from 'debug';
-import type { Container, ApiKey, CustomerBilling, UsageMetrics } from '../types.js';
+import type { ApiKey, AuthorizationCode, Container, CustomerBilling, RefreshToken, UsageMetrics } from '../types.js';
 import type { StorageConfig } from '../config/types.js';
 
 const log = debug('cadre:provider:store');
@@ -23,6 +23,15 @@ export interface ProviderStore {
   saveApiKey(key: ApiKey): Promise<void>;
   deleteApiKey(keyHash: string): Promise<boolean>;
 
+  // OAuth records: each `take` returns the record and deletes it, so a code is single-use
+  // and a refresh token rotates. NOTE: an expired record is removed only when presented; if
+  // a long-running provider accumulates enough never-presented ones to matter, sweep them on
+  // the reaper's tick.
+  saveAuthorizationCode(code: AuthorizationCode): Promise<void>;
+  takeAuthorizationCode(codeHash: string): Promise<AuthorizationCode | undefined>;
+  saveRefreshToken(token: RefreshToken): Promise<void>;
+  takeRefreshToken(tokenHash: string): Promise<RefreshToken | undefined>;
+
   // Billing operations
   getCustomerBilling(customerId: string): Promise<CustomerBilling | undefined>;
   saveCustomerBilling(billing: CustomerBilling): Promise<void>;
@@ -32,10 +41,19 @@ export interface ProviderStore {
   getUsageMetrics(containerId: string, periodStart: Date, periodEnd: Date): Promise<UsageMetrics[]>;
 }
 
+/** The entry at `key`, removed from `map` as it is read; `undefined` when there is none. */
+function takeFrom<T>(map: Map<string, T>, key: string): T | undefined {
+  const entry = map.get(key);
+  if (entry !== undefined) map.delete(key);
+  return entry;
+}
+
 /** In-memory store implementation for testing */
 export class MemoryStore implements ProviderStore {
   private containers = new Map<string, Container>();
   private apiKeys = new Map<string, ApiKey>();
+  private authorizationCodes = new Map<string, AuthorizationCode>();
+  private refreshTokens = new Map<string, RefreshToken>();
   private customerBilling = new Map<string, CustomerBilling>();
   private usageMetrics: UsageMetrics[] = [];
 
@@ -68,6 +86,22 @@ export class MemoryStore implements ProviderStore {
     return this.apiKeys.delete(keyHash);
   }
 
+  async saveAuthorizationCode(code: AuthorizationCode): Promise<void> {
+    this.authorizationCodes.set(code.codeHash, code);
+  }
+
+  async takeAuthorizationCode(codeHash: string): Promise<AuthorizationCode | undefined> {
+    return takeFrom(this.authorizationCodes, codeHash);
+  }
+
+  async saveRefreshToken(token: RefreshToken): Promise<void> {
+    this.refreshTokens.set(token.tokenHash, token);
+  }
+
+  async takeRefreshToken(tokenHash: string): Promise<RefreshToken | undefined> {
+    return takeFrom(this.refreshTokens, tokenHash);
+  }
+
   async getCustomerBilling(customerId: string): Promise<CustomerBilling | undefined> {
     return this.customerBilling.get(customerId);
   }
@@ -96,6 +130,8 @@ export class FileStore implements ProviderStore {
   private cache: {
     containers: Map<string, Container>;
     apiKeys: Map<string, ApiKey>;
+    authorizationCodes: Map<string, AuthorizationCode>;
+    refreshTokens: Map<string, RefreshToken>;
     customerBilling: Map<string, CustomerBilling>;
   } | null = null;
 
@@ -111,6 +147,8 @@ export class FileStore implements ProviderStore {
     this.cache = {
       containers: new Map(),
       apiKeys: new Map(),
+      authorizationCodes: new Map(),
+      refreshTokens: new Map(),
       customerBilling: new Map(),
     };
 
@@ -135,6 +173,13 @@ export class FileStore implements ProviderStore {
       }
     }
 
+    for (const code of this.readExpiring<AuthorizationCode>('authorization-codes.json')) {
+      this.cache.authorizationCodes.set(code.codeHash, code);
+    }
+    for (const token of this.readExpiring<RefreshToken>('refresh-tokens.json')) {
+      this.cache.refreshTokens.set(token.tokenHash, token);
+    }
+
     const billingFile = path.join(this.dataDir, 'customer-billing.json');
     if (fs.existsSync(billingFile)) {
       const data = JSON.parse(fs.readFileSync(billingFile, 'utf-8'));
@@ -146,6 +191,15 @@ export class FileStore implements ProviderStore {
     }
   }
 
+  /** The records in `file`, whose only date is `expiresAt`, revived; none when the file is absent. */
+  private readExpiring<T extends { expiresAt: Date }>(file: string): T[] {
+    const filePath = path.join(this.dataDir, file);
+    if (!fs.existsSync(filePath)) return [];
+    const records = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T[];
+    for (const record of records) record.expiresAt = new Date(record.expiresAt);
+    return records;
+  }
+
   private async saveCache(): Promise<void> {
     if (!this.cache) return;
 
@@ -154,6 +208,12 @@ export class FileStore implements ProviderStore {
 
     const apiKeysFile = path.join(this.dataDir, 'api-keys.json');
     fs.writeFileSync(apiKeysFile, JSON.stringify(Array.from(this.cache.apiKeys.values()), null, 2));
+
+    const codesFile = path.join(this.dataDir, 'authorization-codes.json');
+    fs.writeFileSync(codesFile, JSON.stringify(Array.from(this.cache.authorizationCodes.values()), null, 2));
+
+    const refreshFile = path.join(this.dataDir, 'refresh-tokens.json');
+    fs.writeFileSync(refreshFile, JSON.stringify(Array.from(this.cache.refreshTokens.values()), null, 2));
 
     const billingFile = path.join(this.dataDir, 'customer-billing.json');
     fs.writeFileSync(billingFile, JSON.stringify(Array.from(this.cache.customerBilling.values()), null, 2));
@@ -197,6 +257,28 @@ export class FileStore implements ProviderStore {
     const r = this.cache!.apiKeys.delete(keyHash);
     await this.saveCache();
     return r;
+  }
+  async saveAuthorizationCode(code: AuthorizationCode): Promise<void> {
+    await this.loadCache();
+    this.cache!.authorizationCodes.set(code.codeHash, code);
+    await this.saveCache();
+  }
+  async takeAuthorizationCode(codeHash: string): Promise<AuthorizationCode | undefined> {
+    await this.loadCache();
+    const code = takeFrom(this.cache!.authorizationCodes, codeHash);
+    if (code !== undefined) await this.saveCache();
+    return code;
+  }
+  async saveRefreshToken(token: RefreshToken): Promise<void> {
+    await this.loadCache();
+    this.cache!.refreshTokens.set(token.tokenHash, token);
+    await this.saveCache();
+  }
+  async takeRefreshToken(tokenHash: string): Promise<RefreshToken | undefined> {
+    await this.loadCache();
+    const token = takeFrom(this.cache!.refreshTokens, tokenHash);
+    if (token !== undefined) await this.saveCache();
+    return token;
   }
   async getCustomerBilling(customerId: string): Promise<CustomerBilling | undefined> {
     await this.loadCache();

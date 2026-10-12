@@ -131,4 +131,59 @@ describe('provider config validation', () => {
 
     expect(config.storage).toEqual({ type: 'file', path: '/data/provider' });
   });
+
+  // The built-in sign-in endpoints: `auth.oauth` serves only `oauth` mode, and the dev consent
+  // page hands a token to anyone for any customer id, the openness `mode: none` acknowledges.
+  describe('auth.oauth', () => {
+    const CLIENT = { clientId: 'app', redirectUris: ['app://cb'], scopes: ['containers:*'] };
+
+    it("is refused under a mode other than 'oauth'", () => {
+      const configPath = writeConfig({ auth: { mode: 'api-key', oauth: { clients: [CLIENT] } } });
+
+      expect(rejection(() => loadConfig({ configFile: configPath, env: {} }))).toContain(
+        "auth.oauth is allowed only when auth.mode is 'oauth', got \"api-key\"",
+      );
+    });
+
+    it('devConsentPage needs the allowInsecureNoAuth acknowledgement, from the file or the environment', () => {
+      const configPath = writeConfig({ auth: { mode: 'oauth', oauth: { clients: [CLIENT], devConsentPage: true } } });
+
+      expect(rejection(() => loadConfig({ configFile: configPath, env: {} }))).toContain('allowInsecureNoAuth');
+      expect(loadConfig({ configFile: configPath, env: { PROVIDER_ALLOW_INSECURE_NO_AUTH: 'true' } }).auth.oauth?.devConsentPage).toBe(true);
+    });
+
+    // A code is sent to this URI; `http` off the machine would carry it in the clear, and a
+    // fragment would hide the query from a server-side target.
+    it('accepts custom-scheme and loopback redirect URIs and refuses http elsewhere or a fragment', () => {
+      const accepted = ['app://cb', 'http://127.0.0.1:8080/cb', 'http://localhost/cb', 'https://app.example/cb'];
+      const configPath = writeConfig({ auth: { mode: 'oauth', oauth: { clients: [{ ...CLIENT, redirectUris: accepted }] } } });
+      expect(loadConfig({ configFile: configPath, env: {} }).auth.oauth?.clients[0]?.redirectUris).toEqual(accepted);
+
+      for (const [uri, problem] of [['http://app.example/cb', 'uses http at a host other than loopback'], ['app://cb#frag', 'has a fragment'], ['cb', 'is not an absolute URL']]) {
+        const bad = writeConfig({ auth: { mode: 'oauth', oauth: { clients: [{ ...CLIENT, redirectUris: [uri] }] } } });
+        expect(rejection(() => loadConfig({ configFile: bad, env: {} }))).toContain(`auth.oauth.clients[0].redirectUris[0] must be an absolute URL with no fragment (http only at a loopback host), got ${JSON.stringify(uri)}, which ${problem}`);
+      }
+    });
+
+    it('refuses a scope no token can carry, and a repeated clientId', () => {
+      const wildcard = writeConfig({ auth: { mode: 'oauth', oauth: { clients: [{ ...CLIENT, scopes: ['*'] }] } } });
+      expect(rejection(() => loadConfig({ configFile: wildcard, env: {} }))).toContain(
+        'auth.oauth.clients[0].scopes[0] must be a permission scope such as containers:read or containers:*, got "*"',
+      );
+
+      const repeated = writeConfig({ auth: { mode: 'oauth', oauth: { clients: [CLIENT, { ...CLIENT, redirectUris: ['other://cb'] }] } } });
+      expect(rejection(() => loadConfig({ configFile: repeated, env: {} }))).toContain('auth.oauth.clients[1].clientId repeats "app"');
+    });
+  });
+
+  // The descriptor's URLs are built from `publicUrl`, and the node code and tokens travel over
+  // them, so only a dev run on the machine itself may use plain http.
+  it('requires provider.publicUrl to be https except at a loopback host', () => {
+    const identity = { PROVIDER_ID: 'acme', PROVIDER_NAME: 'Acme' };
+
+    expect(loadConfig({ env: { ...identity, PROVIDER_PUBLIC_URL: 'http://127.0.0.1:3000' } }).provider?.publicUrl).toBe('http://127.0.0.1:3000');
+    expect(rejection(() => loadConfig({ env: { ...identity, PROVIDER_PUBLIC_URL: 'http://nodes.acme.example' } }))).toContain(
+      'Environment variable PROVIDER_PUBLIC_URL: provider.publicUrl must be an https URL (http only at a loopback host) with no query or fragment, got "http://nodes.acme.example", which uses http at a host other than loopback',
+    );
+  });
 });

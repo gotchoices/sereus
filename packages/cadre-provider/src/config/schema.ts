@@ -41,6 +41,7 @@ import type {
   DockerConfig,
   FcmCredentials,
   LoggingConfig,
+  OAuthClientConfig,
   ProviderConfigFile,
   PushCredentials,
   StorageConfig,
@@ -50,6 +51,7 @@ import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { envVarsFor } from './env.js';
 import { parseCpuLimit, parseMemoryLimit } from '../service/resource-limits.js';
 import { hostComponent } from '../service/container-env.js';
+import { isKnownScope } from '../server/permissions.js';
 
 type Block<K extends keyof ProviderConfigFile> = NonNullable<ProviderConfigFile[K]>;
 
@@ -151,6 +153,84 @@ const cpuLimit: Checker<string> = (value, keyPath, ctx) => {
     );
 };
 
+/** Hosts at which plain `http` is accepted: the traffic never leaves the machine. */
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+/** A parsed absolute URL, or `undefined` when `text` is not one. */
+function parseUrl(text: string): URL | undefined {
+  try {
+    return new URL(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Why `text` cannot be a registered redirect URI, or `undefined`: it must be an absolute URL
+ * with no fragment (the code is appended as a query, and a fragment would hide it from a
+ * server-side redirect target), and `http` is accepted only at a loopback host, since the
+ * authorization code travels in this URL. Any other scheme is the app's own.
+ */
+function redirectUriProblem(text: string): string | undefined {
+  const url = parseUrl(text);
+  if (url === undefined) return 'is not an absolute URL';
+  if (url.hash !== '' || text.endsWith('#')) return 'has a fragment';
+  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) return 'uses http at a host other than loopback';
+  return undefined;
+}
+
+const redirectUri: Checker<string> = (value, keyPath, ctx) => {
+  if (typeof value !== 'string') {
+    return ctx.fail(keyPath, `${keyPath} must be an absolute URL, got ${ctx.describe(keyPath, value)}`);
+  }
+  const problem = redirectUriProblem(value);
+  return problem === undefined
+    ? value
+    : ctx.fail(keyPath, `${keyPath} must be an absolute URL with no fragment (http only at a loopback host), got ${ctx.describe(keyPath, value)}, which ${problem}`);
+};
+
+/** A scope a token may carry (`server/permissions.ts`); the global `*` is not one. */
+const scopeName: Checker<string> = (value, keyPath, ctx) =>
+  typeof value === 'string' && isKnownScope(value)
+    ? value
+    : ctx.fail(keyPath, `${keyPath} must be a permission scope such as containers:read or containers:*, got ${ctx.describe(keyPath, value)}`);
+
+/**
+ * Why `text` cannot be `provider.publicUrl`, or `undefined`: the origin apps reach this API at,
+ * so `https` (plain `http` only at a loopback host, for a dev run), with no query or fragment,
+ * since the descriptor appends the base path and a route to it.
+ */
+function publicUrlProblem(text: string): string | undefined {
+  const url = parseUrl(text);
+  if (url === undefined) return 'is not an absolute URL';
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return 'is not an http(s) URL';
+  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) return 'uses http at a host other than loopback';
+  if (url.search !== '' || url.hash !== '' || /[?#]$/.test(text)) return 'has a query or fragment';
+  return undefined;
+}
+
+const publicUrl: Checker<string> = (value, keyPath, ctx) => {
+  if (typeof value !== 'string') {
+    return ctx.fail(keyPath, `${keyPath} must be an https URL, got ${ctx.describe(keyPath, value)}`);
+  }
+  const problem = publicUrlProblem(value);
+  return problem === undefined
+    ? value
+    : ctx.fail(keyPath, `${keyPath} must be an https URL (http only at a loopback host) with no query or fragment, got ${ctx.describe(keyPath, value)}, which ${problem}`);
+};
+
+/** An http(s) URL an app may open: the terms page, the icon. */
+const webUrl: Checker<string> = (value, keyPath, ctx) => {
+  const url = typeof value === 'string' ? parseUrl(value) : undefined;
+  return url !== undefined && (url.protocol === 'https:' || url.protocol === 'http:')
+    ? (value as string)
+    : ctx.fail(keyPath, `${keyPath} must be an http(s) URL, got ${ctx.describe(keyPath, value)}`);
+};
+
+const wholeSeconds = numberWhere((n) => Number.isSafeInteger(n) && n > 0, 'a whole number of seconds above zero');
+
 // ---------------------------------------------------------------------------
 // Field tables — one per block of ProviderConfigFile
 // ---------------------------------------------------------------------------
@@ -165,14 +245,74 @@ const server = objectOf<Block<'server'>>({
   }),
 });
 
-const auth = objectOf<Block<'auth'>>({
-  mode: oneOf<AuthConfig['mode']>({ none: true, 'api-key': true, oauth: true }),
-  allowInsecureNoAuth: booleanValue,
-  apiKeyHashes: arrayOf(nonEmptyString),
-  jwksUri: nonEmptyString,
-  issuer: nonEmptyString,
-  audience: nonEmptyString,
+const oauthClient = refine(
+  objectOf<OAuthClientConfig>(
+    {
+      clientId: nonEmptyString,
+      redirectUris: arrayOf(redirectUri),
+      scopes: arrayOf(scopeName),
+    },
+    { required: ['clientId', 'redirectUris', 'scopes'] },
+  ),
+  // A client with nowhere to send a code, or nothing a token may carry, can never sign in.
+  (value, keyPath, ctx) => {
+    if (value.redirectUris.length === 0) return ctx.fail(`${keyPath}.redirectUris`, `${keyPath}.redirectUris must list at least one URI`);
+    if (value.scopes.length === 0) return ctx.fail(`${keyPath}.scopes`, `${keyPath}.scopes must list at least one scope`);
+    return value;
+  },
+);
+
+const oauthClients = refine(arrayOf(oauthClient), (value, keyPath, ctx) => {
+  if (value.length === 0) return ctx.fail(keyPath, `${keyPath} must list at least one client`);
+  const seen = new Set<string>();
+  for (const [i, client] of value.entries()) {
+    if (seen.has(client.clientId)) {
+      return ctx.fail(`${keyPath}[${i}].clientId`, `${keyPath}[${i}].clientId repeats ${JSON.stringify(client.clientId)}; each clientId must be unique`);
+    }
+    seen.add(client.clientId);
+  }
+  return value;
 });
+
+const oauth = objectOf<NonNullable<Block<'auth'>['oauth']>>(
+  {
+    clients: oauthClients,
+    accessTokenTtlSec: wholeSeconds,
+    refreshTokenTtlSec: wholeSeconds,
+    devConsentPage: booleanValue,
+  },
+  { required: ['clients'] },
+);
+
+const auth = refine(
+  objectOf<Block<'auth'>>({
+    mode: oneOf<AuthConfig['mode']>({ none: true, 'api-key': true, oauth: true }),
+    allowInsecureNoAuth: booleanValue,
+    apiKeyHashes: arrayOf(nonEmptyString),
+    jwksUri: nonEmptyString,
+    issuer: nonEmptyString,
+    audience: nonEmptyString,
+    oauth,
+  }),
+  // Cross-field: the built-in endpoints serve only `oauth` mode; under another mode the block
+  // would be silently ignored, and the operator who wrote it expects sign-in to work.
+  (value, keyPath, ctx) =>
+    value.oauth !== undefined && value.mode !== 'oauth'
+      ? ctx.fail(`${keyPath}.oauth`, `${keyPath}.oauth is allowed only when ${keyPath}.mode is 'oauth', got ${ctx.describe(`${keyPath}.mode`, value.mode)}`)
+      : value,
+);
+
+const provider = objectOf<Block<'provider'>>(
+  {
+    id: nonEmptyString,
+    name: nonEmptyString,
+    publicUrl,
+    termsUrl: webUrl,
+    regions: arrayOf(nonEmptyString),
+    icon: webUrl,
+  },
+  { required: ['id', 'name', 'publicUrl'] },
+);
 
 const docker = objectOf<Block<'docker'>>({
   socketPath: nonEmptyString,
@@ -262,6 +402,7 @@ const root = objectOf<ProviderConfigFile>({
   storage,
   logging,
   push,
+  provider,
 });
 
 // ---------------------------------------------------------------------------

@@ -265,7 +265,7 @@ export interface ApiKey {
   keyHash: string;
   /** Customer ID */
   customerId: string;
-  /** Key name/description */
+  /** Key name/description; `oauth:<clientId>` for an access token the built-in OAuth endpoints minted */
   name: string;
   /** Key permissions */
   permissions: string[];
@@ -275,5 +275,47 @@ export interface ApiKey {
   lastUsedAt?: Date;
   /** Expiration timestamp (optional) */
   expiresAt?: Date;
+}
+
+// ============================================================================
+// OAuth records (the built-in authorize and token endpoints)
+// ============================================================================
+//
+// Both hold the SHA-256 hex of the secret, as `ApiKey.keyHash` does: the raw code exists only
+// in the redirect and the raw tokens only in the token response. Each is taken (read and
+// deleted) when presented, so a code is single-use and a refresh token rotates.
+
+/** An authorization code issued by `GET`/`POST /oauth/authorize`, pending its exchange. */
+export interface AuthorizationCode {
+  /** SHA-256 hex of the code (for lookup) */
+  codeHash: string;
+  /** The client the code was issued to; the exchange must name the same one */
+  clientId: string;
+  /** The customer the operator's site (or the dev page) resolved */
+  customerId: string;
+  /** The scopes granted, already checked against the client's allowance */
+  scopes: string[];
+  /** The S256 challenge the exchange's verifier must hash to */
+  codeChallenge: string;
+  /** The redirect URI the code was sent to; the exchange must repeat it */
+  redirectUri: string;
+  /** After this the code is refused (and deleted when presented) */
+  expiresAt: Date;
+}
+
+/** A refresh token issued with an access token by `POST /oauth/token`. */
+export interface RefreshToken {
+  /** SHA-256 hex of the token (for lookup) */
+  tokenHash: string;
+  /** The client it was issued to; a refresh must name the same one */
+  clientId: string;
+  /** Customer ID */
+  customerId: string;
+  /** The scopes the new pair is minted with */
+  scopes: string[];
+  /** `ApiKey.keyHash` of the access token issued alongside, deleted on rotation */
+  accessKeyHash: string;
+  /** After this the token is refused (and deleted when presented) */
+  expiresAt: Date;
 }
 

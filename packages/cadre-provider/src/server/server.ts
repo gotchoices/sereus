@@ -4,6 +4,7 @@
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyCors from '@fastify/cors';
+import fastifyFormbody from '@fastify/formbody';
 import debug from 'debug';
 import type { ProviderConfig } from '../config/types.js';
 import { createStore, type ProviderStore } from '../service/store.js';
@@ -13,6 +14,8 @@ import { DockerOrchestrator } from '../service/docker-orchestrator.js';
 import { MockOrchestrator, type Orchestrator } from '../service/orchestrator.js';
 import { registerRoutes } from './routes.js';
 import { registerAuth, type AuthHooks } from './auth.js';
+import { registerOAuthRoutes } from './oauth.js';
+import { registerDescriptorRoute } from './descriptor.js';
 
 const log = debug('cadre:provider:server');
 
@@ -80,6 +83,10 @@ export async function createProviderServer(
     origin: config.server.cors?.origin ?? true,
     credentials: config.server.cors?.credentials ?? true,
   });
+
+  // The OAuth token endpoint takes form-encoded bodies (RFC 6749 §4.1.3) as well as JSON,
+  // and the dev consent page posts a form. Registered once, for the whole app.
+  await app.register(fastifyFormbody);
 
   // Create store
   const store = options.store ?? createStore(config.storage);
@@ -175,6 +182,13 @@ export async function createProviderServer(
     // A container can be dialed only at the public host it announces.
     bootstrapNodesOptional: config.docker.publicHost !== undefined,
   });
+
+  // The built-in sign-in endpoints, when the provider runs its own (`auth.oauth`), and the
+  // descriptor an app's store screen reads (404 until a `provider` block names this provider).
+  if (config.auth.mode === 'oauth' && config.auth.oauth) {
+    registerOAuthRoutes(app, { basePath, oauth: config.auth.oauth, store, billingService, hooks: authHooks });
+  }
+  registerDescriptorRoute(app, { basePath, config });
 
   log('Server configured at %s', basePath);
 

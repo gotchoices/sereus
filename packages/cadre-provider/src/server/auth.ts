@@ -3,14 +3,39 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { IncomingHttpHeaders } from 'node:http';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import debug from 'debug';
 import type { AuthConfig } from '../config/types.js';
 import { validateAuthConfig } from '../config/validate.js';
 import type { ProviderStore } from '../service/store.js';
+import type { ApiKey } from '../types.js';
 import type { CustomerIdentity } from './routes.js';
 
 const log = debug('cadre:provider:auth');
+
+/**
+ * What `GET /oauth/authorize` hands the operator's account system once the client, redirect
+ * URI and scopes have been checked. `headers` carries the browser's cookies, which is how the
+ * operator's site knows who is signed in; `query` is the authorize request as received.
+ */
+export interface AuthorizationRequest {
+  clientId: string;
+  scopes: string[];
+  headers: IncomingHttpHeaders;
+  query: Record<string, string>;
+}
+
+/**
+ * The account system's answer: the signed-in, paid-up customer (with the plan the billing
+ * record is created with when the customer has none); a page to send the browser to first
+ * (login or checkout, which brings it back to the same authorize URL afterwards); or a
+ * refusal, redirected to the app as `access_denied` with this reason.
+ */
+export type AuthorizationDecision =
+  | { customerId: string; planId?: string }
+  | { redirect: string }
+  | { deny: string };
 
 /** Authentication hooks for custom auth logic */
 export interface AuthHooks {
@@ -18,6 +43,12 @@ export interface AuthHooks {
   validateApiKey?(key: string): Promise<CustomerIdentity | undefined>;
   /** Validate a JWT token and return customer identity */
   validateJwt?(token: string): Promise<CustomerIdentity | undefined>;
+  /**
+   * Resolve the customer behind a browser at `GET /oauth/authorize`: the one place the
+   * operator's account and checkout system touches the provider. Without it, the built-in
+   * endpoints need `auth.oauth.devConsentPage` to resolve a customer at all.
+   */
+  authorizeCustomer?(request: AuthorizationRequest): Promise<AuthorizationDecision>;
 }
 
 /** Authentication context */
@@ -27,7 +58,7 @@ export interface AuthContext {
   hooks?: AuthHooks;
   /**
    * API base path (e.g. '/api/v1'). Used to recognize the unauthenticated
-   * health endpoints precisely, so customer-scoped routes that merely end in
+   * endpoints precisely, so customer-scoped routes that merely end in
    * '/status' (e.g. '/billing/status') are still authenticated.
    */
   basePath: string;
@@ -38,20 +69,92 @@ export function hashApiKey(key: string): string {
   return createHash('sha256').update(key).digest('hex');
 }
 
+/**
+ * The routes that need no bearer: health, and what a browser or an app reaches before it has
+ * a token (the descriptor and the sign-in endpoints). Matched by exact path.
+ */
+function publicPaths(basePath: string): ReadonlySet<string> {
+  return new Set(['/status', '/health', '/descriptor', '/oauth/authorize', '/oauth/token'].map((route) => `${basePath}${route}`));
+}
+
+/** The credential in an `Authorization` header, with or without the `Bearer` scheme. */
+function bearerOf(header: string): string {
+  return header.startsWith('Bearer ') ? header.slice(7) : header;
+}
+
+/**
+ * The stored key record for `keyHash` while it is valid. An expired record is deleted and
+ * treated as absent: nothing can ever accept it again, and the built-in OAuth endpoints mint
+ * a record per sign-in, so keeping them would only grow the store.
+ */
+async function liveApiKey(store: ProviderStore, keyHash: string): Promise<ApiKey | undefined> {
+  const apiKey = await store.getApiKey(keyHash);
+  if (!apiKey) return undefined;
+  if (apiKey.expiresAt && apiKey.expiresAt < new Date()) {
+    log('Stored key expired; deleting');
+    await store.deleteApiKey(keyHash);
+    return undefined;
+  }
+  return apiKey;
+}
+
+/** Mode `api-key`: the hook, else the static admin hashes, else the store. */
+async function apiKeyIdentity(ctx: AuthContext, key: string): Promise<CustomerIdentity | undefined> {
+  if (ctx.hooks?.validateApiKey) return ctx.hooks.validateApiKey(key);
+  const keyHash = hashApiKey(key);
+  if (ctx.config.apiKeyHashes?.includes(keyHash)) return { customerId: 'admin', permissions: ['*'] };
+  const apiKey = await liveApiKey(ctx.store, keyHash);
+  if (!apiKey) return undefined;
+  apiKey.lastUsedAt = new Date();
+  await ctx.store.saveApiKey(apiKey);
+  return { customerId: apiKey.customerId, permissions: apiKey.permissions };
+}
+
+/**
+ * Mode `oauth`: a token the built-in endpoints minted is a stored key record, consulted first;
+ * anything else goes to the `validateJwt` hook, so one provider can serve both its own tokens
+ * and an external identity provider's.
+ */
+async function oauthIdentity(ctx: AuthContext, token: string): Promise<CustomerIdentity | undefined> {
+  const apiKey = await liveApiKey(ctx.store, hashApiKey(token));
+  if (apiKey) return { customerId: apiKey.customerId, permissions: apiKey.permissions };
+  if (ctx.hooks?.validateJwt) return ctx.hooks.validateJwt(token);
+  log('Bearer is not a built-in token and no validateJwt hook is installed');
+  return undefined;
+}
+
+/**
+ * Refuse at start a configuration under which `GET /oauth/authorize` could never resolve a
+ * customer: the built-in endpoints are on, but there is neither an `authorizeCustomer` hook
+ * nor the dev consent page. Every sign-in would fail at request time otherwise.
+ */
+function assertCustomerResolvable(config: AuthConfig, hooks: AuthHooks | undefined): void {
+  if (config.mode === 'oauth' && config.oauth && !hooks?.authorizeCustomer && !config.oauth.devConsentPage) {
+    throw new Error(
+      'auth.oauth is configured but nothing can resolve a customer at GET /oauth/authorize: ' +
+        'pass an authorizeCustomer hook to createProviderServer, or set auth.oauth.devConsentPage: true ' +
+        '(with auth.allowInsecureNoAuth: true) for development.'
+    );
+  }
+}
+
 /** Register authentication middleware */
 export function registerAuth(app: FastifyInstance, ctx: AuthContext): void {
-  const { config, store, hooks, basePath } = ctx;
+  const { config, basePath } = ctx;
 
   // Defense in depth: programmatic construction that bypasses loadConfig must
   // not silently go fully open in 'none' mode without an explicit opt-in.
   validateAuthConfig(config);
+  assertCustomerResolvable(config, ctx.hooks);
+
+  const open = publicPaths(basePath);
 
   app.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
-    // Skip auth for the health/status endpoints only. Match the exact paths
-    // (ignoring any query string) so customer-scoped routes that merely end in
-    // '/status' — e.g. '/billing/status' — are not accidentally left open.
+    // Skip auth for the public endpoints only. Match the exact paths (ignoring any query
+    // string) so customer-scoped routes that merely end in '/status' — e.g.
+    // '/billing/status' — are not accidentally left open.
     const path = request.url.split('?', 1)[0];
-    if (path === `${basePath}/status` || path === `${basePath}/health`) {
+    if (open.has(path)) {
       return;
     }
 
@@ -74,58 +177,10 @@ export function registerAuth(app: FastifyInstance, ctx: AuthContext): void {
     }
 
     try {
-      let customer: CustomerIdentity | undefined;
-
-      // API key authentication
-      if (config.mode === 'api-key') {
-        const key = authHeader.startsWith('Bearer ')
-          ? authHeader.slice(7)
-          : authHeader;
-
-        // Custom hook takes precedence
-        if (hooks?.validateApiKey) {
-          customer = await hooks.validateApiKey(key);
-        } else {
-          // Default: lookup in store
-          const keyHash = hashApiKey(key);
-
-          // Check static config keys first
-          if (config.apiKeyHashes?.includes(keyHash)) {
-            customer = { customerId: 'admin', permissions: ['*'] };
-          } else {
-            const apiKey = await store.getApiKey(keyHash);
-            if (apiKey) {
-              // Check expiration
-              if (apiKey.expiresAt && apiKey.expiresAt < new Date()) {
-                log('API key expired');
-              } else {
-                customer = {
-                  customerId: apiKey.customerId,
-                  permissions: apiKey.permissions,
-                };
-                // Update last used
-                apiKey.lastUsedAt = new Date();
-                await store.saveApiKey(apiKey);
-              }
-            }
-          }
-        }
-      }
-
-      // OAuth/JWT authentication
-      if (config.mode === 'oauth') {
-        const token = authHeader.startsWith('Bearer ')
-          ? authHeader.slice(7)
-          : authHeader;
-
-        if (hooks?.validateJwt) {
-          customer = await hooks.validateJwt(token);
-        } else {
-          // Without custom hook, we can't validate JWTs
-          // In production, you'd integrate with your JWT library
-          log('OAuth mode requires validateJwt hook');
-        }
-      }
+      const credential = bearerOf(authHeader);
+      const customer = config.mode === 'api-key'
+        ? await apiKeyIdentity(ctx, credential)
+        : await oauthIdentity(ctx, credential);
 
       if (!customer) {
         log('Authentication failed');
@@ -149,4 +204,3 @@ export function registerAuth(app: FastifyInstance, ctx: AuthContext): void {
 
   log('Authentication middleware registered, mode: %s', config.mode);
 }
-

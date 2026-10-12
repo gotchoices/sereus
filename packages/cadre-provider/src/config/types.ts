@@ -51,14 +51,49 @@ export interface ServerConfig {
   };
 }
 
+/**
+ * One app registered with the provider's built-in OAuth endpoints. A public client (a phone
+ * app) has no secret: what identifies it is the exact redirect URI the authorization code is
+ * sent to, so the list here is the whole defence against a code being sent elsewhere.
+ */
+export interface OAuthClientConfig {
+  /** The `client_id` the app presents; unique across `clients`. */
+  clientId: string;
+  /**
+   * Every redirect URI the app may name, compared by exact string equality. Absolute, with no
+   * fragment; a custom scheme (`sereus-chat://provider-auth`) is the usual form, and `http`
+   * is accepted only at a loopback host.
+   */
+  redirectUris: string[];
+  /** The most a token issued to this client may carry; a request for more is `invalid_scope`. */
+  scopes: string[];
+}
+
+/** The provider's built-in OAuth 2 authorization code + PKCE endpoints (`auth.mode: oauth`). */
+export interface OAuthConfig {
+  /** The apps that may sign a customer in here; at least one. */
+  clients: OAuthClientConfig[];
+  /** Access token lifetime in seconds (default 3600). */
+  accessTokenTtlSec?: number;
+  /** Refresh token lifetime in seconds (default 2592000, 30 days). */
+  refreshTokenTtlSec?: number;
+  /**
+   * Serve the built-in consent form in place of an `authorizeCustomer` hook: anyone who
+   * opens the authorize URL may type a customer id and get a token for it. Requires
+   * `allowInsecureNoAuth: true`, the same acknowledgement mode `none` needs.
+   */
+  devConsentPage?: boolean;
+}
+
 /** Authentication configuration */
 export interface AuthConfig {
   /** Auth mode: none, api-key, oauth */
   mode: 'none' | 'api-key' | 'oauth';
   /**
-   * Required to run with mode 'none'. When mode is 'none' and this is not
-   * true, the provider refuses to start. 'none' disables authentication and
-   * grants every caller a wildcard identity — only for local/dev use.
+   * Required to run with mode 'none', and with `oauth.devConsentPage: true`. When either
+   * is set and this is not true, the provider refuses to start. 'none' disables
+   * authentication and grants every caller a wildcard identity; the dev consent page
+   * issues a token to anyone for any customer id — both only for local/dev use.
    */
   allowInsecureNoAuth?: boolean;
   /** For api-key mode: list of valid keys (hashed) */
@@ -69,6 +104,33 @@ export interface AuthConfig {
   issuer?: string;
   /** For oauth mode: expected audience */
   audience?: string;
+  /**
+   * For oauth mode: the provider's own authorize and token endpoints. Absent, the provider
+   * validates bearers through the `validateJwt` hook alone (an external identity provider).
+   */
+  oauth?: OAuthConfig;
+}
+
+/**
+ * What the provider says about itself in `GET /descriptor`, the document an app's store
+ * screen renders. Optional: without it the route answers 404 `NOT_CONFIGURED`.
+ */
+export interface ProviderIdentityConfig {
+  /** Stable identifier an app keys its rental records by; never changes once published. */
+  id: string;
+  /** Display name. */
+  name: string;
+  /**
+   * The origin this API is reached at (`https://nodes.acme.example`). Every URL in the
+   * descriptor is this plus `server.basePath` plus the route; `https` except at a loopback host.
+   */
+  publicUrl: string;
+  /** Terms of service page, if any. */
+  termsUrl?: string;
+  /** Regions the provider hosts nodes in, in the provider's own words. */
+  regions?: string[];
+  /** Icon URL for the store screen. */
+  icon?: string;
 }
 
 /** Billing configuration */
@@ -181,6 +243,8 @@ export interface ProviderConfig {
    * Optional — absent ⇒ no node gets a push block (control-network wake only).
    */
   push?: ProviderPushConfig;
+  /** What `GET /descriptor` says about this provider; absent ⇒ the route answers 404. */
+  provider?: ProviderIdentityConfig;
 }
 
 /** Partial configuration for programmatic overrides (`loadConfig({ overrides })`). */
@@ -188,12 +252,17 @@ export type PartialProviderConfig = {
   [K in keyof ProviderConfig]?: Partial<ProviderConfig[K]>;
 };
 
-/** Recursively-optional view of T — a config layer may override any leaf without supplying siblings. */
+/**
+ * Recursively-optional view of T — a config layer may override any leaf without supplying
+ * siblings. An optional block (`provider?: ProviderIdentityConfig`) recurses like a required
+ * one: the `undefined` is stripped before the object test, which an indexed access type would
+ * otherwise fail and leave the block's own keys required.
+ */
 export type DeepPartial<T> = {
-  [K in keyof T]?: T[K] extends ReadonlyArray<unknown>
+  [K in keyof T]?: NonNullable<T[K]> extends ReadonlyArray<unknown>
     ? T[K]
-    : T[K] extends object
-      ? DeepPartial<T[K]>
+    : NonNullable<T[K]> extends object
+      ? DeepPartial<NonNullable<T[K]>>
       : T[K];
 };
 

@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
+    "@fastify/formbody": "^9.0.1",
     "@libp2p/peer-id": "^6.0.15",
     "@multiformats/multiaddr": "^13.0.3",
     "@serfab/config-check": "workspace:^",

@@ -7,7 +7,8 @@ import type { AuthConfig, ProviderPushConfig, PushCredentials } from './types.js
 /**
  * Throws when the auth configuration would silently run the provider fully
  * open. Mode 'none' disables authentication and grants every caller a wildcard
- * identity, so it must be explicitly acknowledged via `allowInsecureNoAuth`.
+ * identity, and the OAuth dev consent page issues a token to anyone for any
+ * customer id; each must be explicitly acknowledged via `allowInsecureNoAuth`.
  */
 export function validateAuthConfig(auth: AuthConfig): void {
   if (auth.mode === 'none' && auth.allowInsecureNoAuth !== true) {
@@ -15,6 +16,13 @@ export function validateAuthConfig(auth: AuthConfig): void {
       "auth.mode 'none' disables authentication and runs fully open. " +
         'Set auth.allowInsecureNoAuth=true (or PROVIDER_ALLOW_INSECURE_NO_AUTH=true) ' +
         "to acknowledge, or use 'api-key'/'oauth'."
+    );
+  }
+  if (auth.oauth?.devConsentPage === true && auth.allowInsecureNoAuth !== true) {
+    throw new Error(
+      'auth.oauth.devConsentPage lets anyone who opens the authorize URL get a token for any customer id. ' +
+        'Set auth.allowInsecureNoAuth=true (or PROVIDER_ALLOW_INSECURE_NO_AUTH=true) ' +
+        'to acknowledge, or provide an authorizeCustomer hook instead.'
     );
   }
 }

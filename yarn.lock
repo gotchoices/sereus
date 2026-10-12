@@ -2543,6 +2543,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@fastify/formbody@npm:^9.0.1":
+  version: 9.0.1
+  resolution: "@fastify/formbody@npm:9.0.1"
+  dependencies:
+    fast-querystring: "npm:^1.1.2"
+    fastify-plugin: "npm:^6.0.0"
+  checksum: 10c0/a58d2710a228b33c30eeead0b67cfa0caa394d8e40a5eb33049c00cc4ef5f77e3e59f3a95d57ae18741c5a8c5b51f6aadff7ab2e4f158a5c586ec7fa5044f3bc
+  languageName: node
+  linkType: hard
+
 "@fastify/forwarded@npm:^3.0.0":
   version: 3.0.1
   resolution: "@fastify/forwarded@npm:3.0.1"
@@ -5102,6 +5112,7 @@ __metadata:
   resolution: "@serfab/cadre-provider@workspace:packages/cadre-provider"
   dependencies:
     "@fastify/cors": "npm:^11.2.0"
+    "@fastify/formbody": "npm:^9.0.1"
     "@libp2p/peer-id": "npm:^6.0.15"
     "@multiformats/multiaddr": "npm:^13.0.3"
     "@serfab/config-check": "workspace:^"
@@ -9658,7 +9669,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"fast-querystring@npm:^1.0.0":
+"fast-querystring@npm:^1.0.0, fast-querystring@npm:^1.1.2":
   version: 1.1.2
   resolution: "fast-querystring@npm:1.1.2"
   dependencies:
@@ -9685,6 +9696,13 @@ __metadata:
   version: 5.1.0
   resolution: "fastify-plugin@npm:5.1.0"
   checksum: 10c0/61b330b8cb03a3581b796d745137499a782934abcf65dbf9a41d07248520cfd220b3ae8b16afeaf81af712e68e1ac24352895132cfeb2b372c66662c0170f365
+  languageName: node
+  linkType: hard
+
+"fastify-plugin@npm:^6.0.0":
+  version: 6.0.1
+  resolution: "fastify-plugin@npm:6.0.1"
+  checksum: 10c0/01bae91a7b8283232ff16cf7cad24dfe2d4bea9dc0b44a7eecc3f649bfe8ca0479ddabaf2a24690d90dbc5c118bec19c884b44ba2f34be80b72c4413d6f8b1df
   languageName: node
   linkType: hard
 

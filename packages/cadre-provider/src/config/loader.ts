@@ -41,7 +41,7 @@ function deepMerge<T extends object>(target: T, source: DeepPartial<T>): T {
     ) {
       result[key] = deepMerge(
         targetVal as Record<string, unknown>,
-        sourceVal as Record<string, unknown>
+        sourceVal as DeepPartial<Record<string, unknown>>
       );
     } else if (sourceVal !== undefined) {
       result[key] = sourceVal;

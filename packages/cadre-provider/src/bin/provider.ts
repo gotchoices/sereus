@@ -79,6 +79,9 @@ program
       const config = loadConfig({ configFile: options.config });
       console.log('Configuration is valid (secrets shown as [redacted]):');
       console.log(JSON.stringify(redactConfigSecrets(config), null, 2));
+      if (!config.provider) {
+        console.log('No provider block: GET /descriptor answers 404 NOT_CONFIGURED until provider.id, provider.name and provider.publicUrl are set.');
+      }
     } catch (error) {
       console.error('Configuration error:', error instanceof Error ? error.message : error);
       process.exit(1);

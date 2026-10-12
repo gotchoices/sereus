@@ -7,7 +7,8 @@ Reference provider service for hosting Sereus cadre nodes on behalf of users.
 This package provides a complete provider API that enables:
 - **Container Management**: Allocate, monitor, and terminate cadre node containers
 - **Billing Integration**: Usage metering, quota enforcement, and payment processor hooks
-- **Authentication**: API key and OAuth/JWT authentication
+- **Authentication**: API key and OAuth/JWT authentication, with built-in sign-in endpoints for apps ([Sign-in from apps](#sign-in-from-apps-oauth-2-with-pkce))
+- **Provider descriptor**: what an app's store screen shows about this provider ([Provider descriptor](#provider-descriptor))
 - **Docker Orchestration**: Container lifecycle management via Docker API
 
 ## Installation
@@ -46,6 +47,10 @@ await server.start();
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/status` | Health check |
+| GET | `/api/v1/descriptor` | What this provider says about itself, for an app's store screen ([Provider descriptor](#provider-descriptor)); public |
+| GET | `/api/v1/oauth/authorize` | Start a sign-in from an app ([Sign-in from apps](#sign-in-from-apps-oauth-2-with-pkce)); public, `auth.oauth` only |
+| POST | `/api/v1/oauth/authorize` | The dev consent page's form; `auth.oauth.devConsentPage` only |
+| POST | `/api/v1/oauth/token` | Exchange a code for tokens, or refresh them; public, `auth.oauth` only |
 | POST | `/api/v1/containers` | Create a new container; `join` says how it gets into its cadre ([Joining a cadre: claim or invitation](#joining-a-cadre-claim-or-invitation)) |
 | GET | `/api/v1/containers` | List customer's containers, each with its `partyId` and `joinState` |
 | GET | `/api/v1/containers/:id` | Get container status (reads the node live and folds its join state into the record) |
@@ -76,9 +81,11 @@ held to the same rule. `docker.portRange.end` must not be below `start`; each co
 ports from the range (health, metrics, libp2p TCP, libp2p WebSocket), so the default 10000–20000
 serves 2,500 containers. `docker.network` may not be `host`, `none` or `container:<id>`, modes in
 which Docker ignores those port bindings. `docker.publicHost` must be a DNS name or IP address with no whitespace
-([Phones dial containers at the public host](#phones-dial-containers-at-the-public-host)). Values under `push` and
+([Phones dial containers at the public host](#phones-dial-containers-at-the-public-host)). `auth.oauth` is allowed
+only with `mode: oauth` ([Sign-in from apps](#sign-in-from-apps-oauth-2-with-pkce)), and `provider.publicUrl` must be
+`https` except at a loopback host ([Provider descriptor](#provider-descriptor)). Values under `push` and
 `billing` are never echoed into an error, and `check` prints the loaded config with every secret
-shown as `[redacted]`.
+shown as `[redacted]`, then says whether `GET /descriptor` has a `provider` block to serve.
 
 ### Example Configuration
 
@@ -133,6 +140,10 @@ counts as unset. Unknown `PROVIDER_*` names are ignored, since other software ma
 | `PROVIDER_JWKS_URI` | `auth.jwksUri` | JWKS endpoint (oauth mode) |
 | `PROVIDER_ISSUER` | `auth.issuer` | Expected token issuer (oauth mode) |
 | `PROVIDER_AUDIENCE` | `auth.audience` | Expected token audience (oauth mode) |
+| `PROVIDER_OAUTH_DEV_CONSENT_PAGE` | `auth.oauth.devConsentPage` | Set to `true` to serve the built-in consent form in place of an `authorizeCustomer` hook; needs `PROVIDER_ALLOW_INSECURE_NO_AUTH=true`, and the clients stay in the file |
+| `PROVIDER_ID` | `provider.id` | Stable identifier in the descriptor |
+| `PROVIDER_NAME` | `provider.name` | Display name in the descriptor |
+| `PROVIDER_PUBLIC_URL` | `provider.publicUrl` | The origin this API is reached at (`https`, or `http` at a loopback host); every descriptor URL is built from it |
 | `PROVIDER_DOCKER_SOCKET` | `docker.socketPath` | Docker socket path |
 | `PROVIDER_DOCKER_IMAGE` | `docker.image` | Container image |
 | `PROVIDER_DOCKER_NETWORK` | `docker.network` | Docker network for tenant containers |
@@ -187,6 +198,7 @@ that resource. Static `apiKeyHashes` admin keys and `none`-mode callers carry
 | `GET /billing/status` | `billing:read` |
 | `GET /billing/plans` | none (public listing) |
 | `GET /status` | none (skipped by auth) |
+| `GET /descriptor`, `GET`/`POST /oauth/authorize`, `POST /oauth/token` | none (skipped by auth: an app reaches them before it has a token) |
 
 Scope enforcement is orthogonal to ownership: per-container routes still verify
 that the container belongs to the calling customer regardless of scope.
@@ -211,6 +223,148 @@ const server = await createProviderServer({
   authHooks,
 });
 ```
+
+## Sign-in from apps: OAuth 2 with PKCE
+
+An app needs a token scoped to one customer's containers without ever seeing the customer's
+password or card. With `auth.mode: oauth` and an `auth.oauth` block the provider runs the
+standard flow for a public client, OAuth 2 authorization code with PKCE (RFC 6749 §4.1 and
+RFC 7636): the app opens `GET /oauth/authorize` in the system browser, the customer signs in and
+pays on your pages, the browser is sent back to the app with a one-time code, and the app
+exchanges the code at `POST /oauth/token` for a bearer. Your account system plugs in through one
+hook. An operator with an identity provider of their own leaves `auth.oauth` unset and keeps
+`validateJwt`.
+
+### Configuration
+
+```yaml
+auth:
+  mode: oauth
+  oauth:
+    clients:
+      - clientId: sereus-chat
+        redirectUris: ["sereus-chat://provider-auth", "sereus-chat-second://provider-auth"]
+        scopes: ["containers:*", "billing:read"]   # the most a token for this client may carry
+    accessTokenTtlSec: 3600       # default
+    refreshTokenTtlSec: 2592000   # default, 30 days
+    devConsentPage: false
+```
+
+`auth.oauth` is allowed only with `mode: oauth`. `clients` is file-only and names at least one
+app; each `clientId` is unique. Each redirect URI is an absolute URL with no fragment, compared
+by exact string equality (no trailing-slash, case or query normalization): a custom scheme is
+the usual form, and `http` is accepted only at a loopback host, since the code travels in that
+URL. Each scope is one of the [permission scopes](#permission-scopes) or a `<resource>:*`
+wildcard; `*` is not allowed.
+
+### The hook
+
+```typescript
+const authHooks: AuthHooks = {
+  async authorizeCustomer({ clientId, scopes, headers, query }) {
+    const session = await readSessionCookie(headers.cookie);
+    const here = `/api/v1/oauth/authorize?${new URLSearchParams(query)}`;
+    if (!session) return { redirect: `https://acme.example/login?next=${encodeURIComponent(here)}` };
+    if (!session.paid) return { redirect: `https://acme.example/checkout?next=${encodeURIComponent(here)}` };
+    return { customerId: session.customerId, planId: session.planId };
+  },
+};
+```
+
+`authorizeCustomer` runs once the client, redirect URI and scopes have been checked, with the
+browser's headers (its cookies are how your site knows who is signed in) and the authorize
+query. It answers one of three ways. `{ customerId, planId? }` issues the code; a customer with
+no billing record gets one with that plan on the first code, so `GET /billing/status` answers
+for every signed-in customer and the plan's container limit applies from the first create.
+`{ redirect }` sends the browser to your login or checkout page, which brings it back to the
+same authorize URL afterwards. `{ deny }` sends the app `error=access_denied` with that reason.
+
+### The dev consent page
+
+With no hook and `devConsentPage: true` the provider serves a form instead: whoever opens the
+authorize URL types a customer id, picks a plan and approves. Anyone can sign in as any
+customer, so it requires `allowInsecureNoAuth: true`, the acknowledgement `mode: none` needs;
+without it `start` and `check` refuse. With neither a hook nor the page the provider refuses to
+start, since no sign-in could ever succeed. For local development only.
+
+### Endpoints
+
+All three are public. `GET /oauth/authorize` takes `response_type=code`, `client_id`,
+`redirect_uri`, `scope` (space-separated), `state`, `code_challenge` and
+`code_challenge_method=S256`. An unknown client or an unregistered redirect URI is answered with
+a 400 page and no redirect, since redirecting to an unregistered URI is the attack. Every other
+fault (`plain` challenge method, a malformed challenge, a missing state, a scope that is unknown
+or outside the client's allowance) redirects to the registered URI with `error`
+(`invalid_request`, `invalid_scope`, `unsupported_response_type` or `access_denied`),
+`error_description` and the `state`. On success the browser is sent to
+`redirect_uri?code=…&state=…`; the code lives ten minutes and is single-use.
+
+`POST /oauth/token`, form-encoded or JSON, answers
+`{ access_token, token_type: "Bearer", expires_in, refresh_token, scope }` with
+`Cache-Control: no-store`:
+
+- `grant_type=authorization_code` with `code`, `code_verifier`, `client_id` and `redirect_uri`:
+  `invalid_grant` when the code is unknown, expired, already presented (even once with a wrong
+  verifier), issued to another client or redirect URI, or the verifier does not hash to the
+  challenge.
+- `grant_type=refresh_token` with `refresh_token` and `client_id`: rotates. The presented
+  refresh token is spent, its access token deleted, and a new pair issued with the same scopes;
+  `invalid_grant` when it is unknown, expired, already used or for another client.
+
+Errors follow RFC 6749 §5.2: `400 { error, error_description }` with `invalid_request`,
+`invalid_client`, `invalid_grant` or `unsupported_grant_type`.
+
+### Bearer lookup order
+
+In `oauth` mode a bearer is first looked up as a built-in token. It is stored hashed, as API
+keys are, as an API key record named `oauth:<clientId>` whose permissions are the granted
+scopes; an expired one is deleted and counts as absent. A bearer that is not one goes to
+`validateJwt` when the hook is installed, so one provider can serve its own tokens and an
+external identity provider's at once. Codes and refresh tokens are stored hashed too
+(`authorization-codes.json` and `refresh-tokens.json` with the file store); the raw values exist
+only in the redirect and the token response.
+
+## Provider descriptor
+
+`GET /descriptor` (public) is what an app's store screen renders and what cadre-core's
+`parseProviderDescriptor` reads, built at request time from the `provider` block plus
+`server.basePath`, so it never disagrees with the registered routes:
+
+```yaml
+provider:
+  id: acme-nodes                          # stable; an app keys its rental records by it
+  name: Acme Cadre Nodes
+  publicUrl: https://nodes.acme.example   # the origin this API is reached at
+  termsUrl: https://acme.example/terms    # optional
+  regions: ["eu-west"]                    # optional
+  icon: https://acme.example/icon.png     # optional
+```
+
+```json
+{
+  "v": 1,
+  "id": "acme-nodes",
+  "name": "Acme Cadre Nodes",
+  "apiBaseUrl": "https://nodes.acme.example/api/v1",
+  "oauth": {
+    "authorizeUrl": "https://nodes.acme.example/api/v1/oauth/authorize",
+    "tokenUrl": "https://nodes.acme.example/api/v1/oauth/token",
+    "scopes": ["containers:*", "billing:read"]
+  },
+  "plansUrl": "https://nodes.acme.example/api/v1/billing/plans",
+  "termsUrl": "https://acme.example/terms",
+  "regions": ["eu-west"],
+  "icon": "https://acme.example/icon.png"
+}
+```
+
+`publicUrl` is `https`, except at a loopback host for a dev run, with no query or fragment.
+`oauth.scopes` is the union of the registered clients' allowances, and the descriptor carries no
+client id: each app pairs it with the client id it registered. `oauth` is present only when
+`auth.oauth` is configured; a provider with an identity provider of its own publishes a
+descriptor elsewhere naming that provider's endpoints. Without a `provider` block the route
+answers `404 NOT_CONFIGURED`, and `check` says so. Where an app gets descriptors from is an open
+decision (`decide-provider-directory`); this route is what every option reads from.
 
 ## Custom Billing
 

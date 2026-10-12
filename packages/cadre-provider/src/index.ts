@@ -40,6 +40,9 @@ export {
   type LoadConfigOptions,
   type ServerConfig,
   type AuthConfig,
+  type OAuthConfig,
+  type OAuthClientConfig,
+  type ProviderIdentityConfig,
   type DockerConfig,
   type BillingConfig,
   type StorageConfig,
@@ -66,6 +69,8 @@ export {
   type BillingPlan,
   type CustomerBilling,
   type ApiKey,
+  type AuthorizationCode,
+  type RefreshToken,
   UNCLAIMED_PARTY_ID,
 } from './types.js';
 
@@ -159,12 +164,32 @@ export {
 export {
   type AuthHooks,
   type AuthContext,
+  type AuthorizationRequest,
+  type AuthorizationDecision,
   registerAuth,
   hashApiKey,
 } from './server/auth.js';
 
+// The built-in OAuth 2 + PKCE endpoints and the descriptor an app's store screen reads.
+export {
+  type OAuthRouteContext,
+  type TokenResponse,
+  DEFAULT_ACCESS_TOKEN_TTL_SEC,
+  DEFAULT_REFRESH_TOKEN_TTL_SEC,
+  registerOAuthRoutes,
+} from './server/oauth.js';
+
+export { codeChallengeFor, verifyCodeVerifier } from './server/pkce.js';
+
+export {
+  type ProviderDescriptor,
+  buildProviderDescriptor,
+  registerDescriptorRoute,
+} from './server/descriptor.js';
+
 export {
   Scope,
   hasPermission,
+  isKnownScope,
 } from './server/permissions.js';
 
