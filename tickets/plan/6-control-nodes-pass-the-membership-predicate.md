@@ -1,7 +1,6 @@
 description: Once Optimystic ships its network-membership predicate, control nodes must pass the cadre's authorized-member snapshot to it, so a connected non-member can no longer be chosen for a control cohort or receive control block pushes.
 architecture: docs/architecture.md#per-stream-protocol-guard
 files: packages/cadre-core/src/cadre-node.ts (buildControlNodeOptions, authorizeInboundControlStream, refreshMembershipGate), tickets/blocked/stranger-joins-the-control-cohort-by-advertising-protocols.md
-prereq: stranger-joins-the-control-cohort-by-advertising-protocols
 ----
 **Unblocked:** optimystic main 1b352916 (the release candidate, linked here) carries the membership predicate. Build against the linked tree; the floor bump comes with the release.
 
