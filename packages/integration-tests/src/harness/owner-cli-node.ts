@@ -10,13 +10,13 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { DroneInitResult } from '@serfab/cadre-core';
 import type { CliConfigFile } from '@serfab/cadre-cli';
 
-import { allocFreePort, isChildUp, resolveCadreCliBin, scrubbedParentEnv, stopChildProcess } from './child-node-fixtures.js';
+import { allocFreePort, isChildUp, readLogTail, resolveCadreCliBin, scrubbedParentEnv, stopChildProcess } from './child-node-fixtures.js';
 import { waitUntil } from './wait-utils.js';
 
 const LOG_FILE = 'node.log';
@@ -56,7 +56,7 @@ export async function startOwnerCliNode(opts: OwnerCliNodeOptions): Promise<Owne
 	const adminToken = randomBytes(16).toString('hex');
 	const child = launchOwnerChild(opts, ports, adminToken);
 	const admin = adminClient(`http://127.0.0.1:${ports.admin}`, adminToken);
-	const logTail = (): string => readLogTail(opts.workdir);
+	const logTail = (): string => readLogTail(join(opts.workdir, LOG_FILE), LOG_TAIL_LINES);
 	const node: OwnerCliNode = {
 		getPeerId: async () => (await admin<{ peerId: string | null }>('GET', '/admin/identity')).peerId ?? '',
 		getMultiaddrs: async () => (await admin<{ multiaddrs: string[] }>('GET', '/admin/multiaddrs')).multiaddrs,
@@ -128,10 +128,4 @@ export function adminClient(baseUrl: string, token: string) {
 		}
 		return envelope.data as T;
 	};
-}
-
-function readLogTail(workdir: string): string {
-	const path = join(workdir, LOG_FILE);
-	if (!existsSync(path)) return '(no node.log)';
-	return readFileSync(path, 'utf8').split('\n').slice(-LOG_TAIL_LINES).join('\n');
 }

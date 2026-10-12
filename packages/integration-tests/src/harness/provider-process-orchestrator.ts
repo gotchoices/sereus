@@ -51,6 +51,7 @@ import type { CliConfigFile } from '@serfab/cadre-cli';
 import {
 	allocFreePort,
 	isChildUp,
+	readLogTail,
 	resolveCadreCliBin,
 	scrubbedParentEnv,
 	stopChildProcess,
@@ -287,12 +288,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	 * reclaim has forgotten the handle. Never throws.
 	 */
 	logTail(containerId: string, tail = 200): string {
-		const logPath = join(this.volumeDirFor(containerId), LOG_FILE);
-		try {
-			return readFileSync(logPath, 'utf8').split('\n').slice(-tail).join('\n');
-		} catch (err) {
-			return `(node.log unavailable: ${(err as Error).message})`;
-		}
+		return readLogTail(join(this.volumeDirFor(containerId), LOG_FILE), tail);
 	}
 
 	/** entrypoint.sh's create_identity: `cadre enroll create` as a child, awaited. */

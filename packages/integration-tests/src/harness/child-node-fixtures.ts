@@ -56,6 +56,19 @@ export function readNodeLocalStore(dir: string, name: string): NodeLocalEnvelope
 }
 
 /**
+ * The last `lines` lines of a child's log file, for a failure message. Never throws: a log
+ * that cannot be read is named in the returned text instead, so a failure message built
+ * around it still reports the original failure.
+ */
+export function readLogTail(path: string, lines: number): string {
+  try {
+    return readFileSync(path, 'utf8').split('\n').slice(-lines).join('\n');
+  } catch (err) {
+    return `(${path} unavailable: ${(err as Error).message})`;
+  }
+}
+
+/**
  * This process's `process.env` with every `CADRE_*` key removed, as the base of a child's
  * environment. cadre-cli treats inherited `CADRE_*` vars as config overrides, so an inherited
  * `CADRE_PARTY_ID` on the developer's shell would silently reconfigure the child. Scrubbing the
