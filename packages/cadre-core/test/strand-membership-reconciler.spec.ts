@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { QuereusError, StatusCode, type Database } from '@quereus/quereus';
-import { CoordinatorPartialCommitError } from '@optimystic/db-core';
+import { CoordinatorPartialCommitError, type WriteDurability } from '@optimystic/db-core';
 import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import {
   StrandMembershipReconciler,
@@ -156,13 +156,18 @@ function viaQuereus(error: Error): QuereusError {
   return new QuereusError(`Commit failed: ${error.message}`, StatusCode.ERROR, error);
 }
 
+/** The committed half of a `CoordinatorPartialCommitError`: every collection saved, who holds it unknown. */
+function savedHoldersUnknown(...collections: string[]): Map<string, WriteDurability | undefined> {
+  return new Map(collections.map(id => [id, undefined]));
+}
+
 /**
  * The half-commit observed on 2026-09-17 (`tickets/.pre-existing-known.md`): `ConsumedInvite`
  * saved, `Member` and its unique index not.
  */
 function consumedInviteSavedMemberNot(): CoordinatorPartialCommitError {
   return new CoordinatorPartialCommitError(
-    ['default/strand/ConsumedInvite'],
+    savedHoldersUnknown('default/strand/ConsumedInvite'),
     ['default/strand/Member', 'default/strand/Member/index/_uniq_7.stampid'],
     new Error('Stale commit for collection default/strand/Member'),
   );
@@ -776,7 +781,7 @@ describe('a half-committed join', () => {
     {
       name: 'Member saved, ConsumedInvite not',
       failure: () => new CoordinatorPartialCommitError(
-        ['default/strand/Member', 'default/strand/Member/index/_uniq_7.stampid'],
+        savedHoldersUnknown('default/strand/Member', 'default/strand/Member/index/_uniq_7.stampid'),
         ['default/strand/ConsumedInvite'],
         new Error('Stale commit for collection default/strand/ConsumedInvite'),
       ),
@@ -939,7 +944,7 @@ describe('consume rejection classification', () => {
 
   it('a partial commit carrying a dead-invitation text in its underlying failure is still half-committed', () => {
     // Typed checks run before text checks: the embedded constraint text must not win.
-    const partial = new CoordinatorPartialCommitError(['default/strand/ConsumedInvite'], ['default/strand/Member'],
+    const partial = new CoordinatorPartialCommitError(savedHoldersUnknown('default/strand/ConsumedInvite'), ['default/strand/Member'],
       new Error('UNIQUE constraint failed: ConsumedInvite.InviteKey'));
 
     expect(classifyConsumeFailure(viaQuereus(partial)).kind).toBe('half-committed');

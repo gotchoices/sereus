@@ -4,6 +4,7 @@ import {
 	SyncRetryExhaustedError,
 	SyncRevisionStalledError,
 	TornActionError,
+	type WriteDurability,
 } from '@optimystic/db-core';
 import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import { QuereusError, StatusCode } from '@quereus/quereus';
@@ -507,6 +508,11 @@ function tornWrite(final: boolean, detail = 'block PaWaynQLVfuwhcw4tGh0uX is hel
 		'rival-holds-revision', final, detail);
 }
 
+/** The committed half of a `CoordinatorPartialCommitError`: every collection saved, who holds it unknown. */
+function savedHoldersUnknown(...collections: string[]): Map<string, WriteDurability | undefined> {
+	return new Map(collections.map(id => [id, undefined]));
+}
+
 /**
  * How a commit failure reaches `ControlDatabase`: the optimystic bridge rethrows the original
  * error, and Quereus wraps it in a `QuereusError` whose `cause` is that error.
@@ -588,7 +594,7 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 	});
 
 	it('never retries a partial commit reporting a final torn sibling — another collection landed', () => {
-		const partial = new CoordinatorPartialCommitError(['default/cadrecontrol/CadrePeer$PeerIdIndex'],
+		const partial = new CoordinatorPartialCommitError(savedHoldersUnknown('default/cadrecontrol/CadrePeer$PeerIdIndex'),
 			[PEER_COLLECTION], tornWrite(true));
 		for (const delivered of everyDelivery(partial)) {
 			expect(classify(delivered)).toBe(false);
@@ -603,7 +609,7 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 	 */
 	it('never retries a partial commit whose failure is a pend-phase aggregate', () => {
 		const partials = [
-			new CoordinatorPartialCommitError(['default/cadrecontrol/CadrePeer$PeerIdIndex'], [PEER_COLLECTION],
+			new CoordinatorPartialCommitError(savedHoldersUnknown('default/cadrecontrol/CadrePeer$PeerIdIndex'), [PEER_COLLECTION],
 				new Error(TRANSACTOR_AGGREGATE)),
 			new PartialCommitError(['default/cadrecontrol/CadrePeer'], ['default/cadrecontrol/CadrePeer$PeerIdIndex'],
 				new Error(TRANSACTOR_AGGREGATE)),
@@ -622,7 +628,7 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 	 */
 	it('lets the partial-commit veto beat a final torn write on the same chain', () => {
 		const partials = [
-			new CoordinatorPartialCommitError(['default/cadrecontrol/CadrePeer$PeerIdIndex'], [PEER_COLLECTION],
+			new CoordinatorPartialCommitError(savedHoldersUnknown('default/cadrecontrol/CadrePeer$PeerIdIndex'), [PEER_COLLECTION],
 				tornWrite(true)),
 			new PartialCommitError(['default/cadrecontrol/CadrePeer'], ['default/cadrecontrol/CadrePeer$PeerIdIndex'],
 				tornWrite(true)),
