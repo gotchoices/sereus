@@ -1,6 +1,6 @@
 description: Someone with an Android phone and an iPhone (or emulator and simulator), each with two copies of the phone app installed, needs to try joining one app's cadre from the other app on the same phone by tapping a button instead of copying and pasting, because both halves were written and checked without a phone.
 architecture: docs/architecture.md#between-apps-on-one-phone
-files: packages/reference-app-rn/src/use-link-request.ts, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/join-link.ts, packages/reference-app-rn/src/recommend-app-section.tsx, packages/reference-app-rn/src/recommended-by.ts, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/app.config.ts, packages/reference-app-rn/README.md, docs/reference-app-rn.md, docs/architecture.md
+files: packages/reference-app-rn/src/use-link-request.ts, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/join-link.ts, packages/reference-app-rn/src/recommend-app-section.tsx, packages/reference-app-rn/src/recommended-by.ts, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/src/use-recommending-app.ts, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/app.config.ts, packages/reference-app-rn/README.md, docs/reference-app-rn.md, docs/architecture.md
 repro: none
 ----
 

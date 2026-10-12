@@ -6,7 +6,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -34,10 +33,10 @@ import {
 } from '../src/founding-progress';
 import { defaultNoiseCryptoMode } from '../src/noise-crypto-config';
 import { NOISE_CRYPTO_MODES, type PhoneNodeOptions } from '@serfab/cadre-rn/phone-node';
-import { appFromInstallReferrer, recommendingApp } from '../src/recommended-by';
 import { resolveRelayAddrs, splitRelayAddrs } from '../src/relay-config';
 import { Btn, controlStyles, LabelledInput, Section } from '../src/settings-controls';
 import { TEST_IDS } from '../src/test-ids';
+import { useRecommendingApp } from '../src/use-recommending-app';
 import { uuid } from '../src/uuid';
 
 /**
@@ -711,79 +710,6 @@ function useLinkedJoinResponse(
       if (alert) showAlert(alert.title, alert.message, alert.detail);
     });
   }, [response, ready, takeJoinResponse, showAlert]);
-}
-
-/** The Sereus app that recommended this one, as the Node card and {@link RecommendedJoinPrompt} use it. */
-interface RecommendingApp {
-  /** The app the first-launch question names; null for the plain question. */
-  named: SereusApp | null;
-  /** The install referrer is still being read and no link named an app, so the first-launch question waits. */
-  reading: boolean;
-  /** Other choices: the plain question, until another link names an app. */
-  dropNamed: () => void;
-  /** The app a link named while this app has a cadre, for the prompt; null while none is offered. */
-  suggested: SereusApp | null;
-  dropSuggested: () => void;
-}
-
-type ReferrerRead = 'pending' | SereusApp | null;
-
-/**
- * Which Sereus app recommended this one (`src/recommended-by.ts`), from two hints.
- *
- * The Android install referrer is read once per mount, the first time `asking` is true, and names
- * the app in the first-launch question, which waits for it at most `REFERRER_WAIT_MS`.
- *
- * A `cadre-recommended-by` link (`app/+native-intent.tsx` routes it here as the `recommendedBy`
- * parameter, cleared as soon as it is read, as `useLinkedNodeCode` does) wins over the referrer, as
- * the user's latest action. While `asking` it names the app in the question, which shows again from
- * the top (`onNamed`). Otherwise it waits until `settled`, then opens the prompt, unless
- * `joinUnderWay`: the request or join already on screen wins, and the link is dropped.
- */
-function useRecommendingApp(asking: boolean, settled: boolean, joinUnderWay: boolean, onNamed: () => void): RecommendingApp {
-  const { recommendedBy } = useLocalSearchParams<{ recommendedBy?: string }>();
-  const router = useRouter();
-  const [referrer, setReferrer] = useState<ReferrerRead>(Platform.OS === 'android' ? 'pending' : null);
-  const referrerAsked = useRef(false);
-  const [linked, setLinked] = useState<SereusApp | null>(null);
-  const [linkNamed, setLinkNamed] = useState<SereusApp | null>(null);
-  const [dropped, setDropped] = useState(false);
-  const [suggested, setSuggested] = useState<SereusApp | null>(null);
-
-  useEffect(() => {
-    if (!asking || referrerAsked.current || Platform.OS !== 'android') return;
-    referrerAsked.current = true;
-    void appFromInstallReferrer().then(setReferrer);
-  }, [asking]);
-
-  useEffect(() => {
-    if (typeof recommendedBy !== 'string' || !recommendedBy) return;
-    router.setParams({ recommendedBy: undefined });
-    setLinked(recommendingApp(recommendedBy, 'a recommended-by link'));
-  }, [recommendedBy, router]);
-
-  useEffect(() => {
-    if (!linked || !settled) return;
-    setLinked(null);
-    if (asking) {
-      setLinkNamed(linked);
-      setDropped(false);
-      onNamed();
-    } else if (joinUnderWay) {
-      console.info(`[settings] ${linked.name} suggested joining the cadre it holds while a request to join or a join is under way; ignored`);
-    } else {
-      setSuggested(linked);
-    }
-  }, [linked, settled, asking, joinUnderWay]);
-
-  const fromReferrer = referrer === 'pending' ? null : referrer;
-  return {
-    named: dropped ? null : linkNamed ?? fromReferrer,
-    reading: !dropped && linkNamed === null && referrer === 'pending',
-    dropNamed: () => setDropped(true),
-    suggested,
-    dropSuggested: () => setSuggested(null),
-  };
 }
 
 /** Whether this app made `request`. False when the identity cannot be read; Add a device or app checks again against the running node. */
