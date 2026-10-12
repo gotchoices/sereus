@@ -87,7 +87,7 @@ export function describeHandleContract<O extends ContractOrchestrator>(
     });
 
     // Launching over a live child hands its ports to a second child that then
-    // dies on them, while the caller records the new dockerId and seed token.
+    // dies on them, while the caller records the new dockerId.
     it('refuses to re-spawn a container whose previous child is still running', async () => {
       const orch = harness.make();
       const first = await spawn(orch, CONTAINER);

@@ -555,9 +555,9 @@ describe('HostProcessOrchestrator.isRunning', () => {
  *
  * The incident this guards against: the respawn supervisor asked `isRunning`
  * during that window, got `false`, and re-spawned the container. The re-spawn
- * released and reused the same ports, rotated the seed token, and returned
- * success; the second child then died on the port the first still held, leaving
- * the host's records naming a dead child and the live one refusing every seed.
+ * released and reused the same ports and returned success; the second child
+ * then died on the port the first still held, leaving the host's records naming
+ * a dead child while the live one ran with no handle naming it.
  */
 describe('HostProcessOrchestrator re-spawn over a child that is still starting', () => {
   const TOKEN_DELAY_MS = 3000;
