@@ -25,6 +25,7 @@ import { queryMessages, type ChatMessage } from '../../src/chat-operations';
 vi.mock('../../src/chat-operations', () => ({
   insertParticipant: vi.fn(async () => {}),
   insertMessage: vi.fn(),
+  isHeldOnlyHere: vi.fn(() => false),
   messageExists: vi.fn(async () => false),
   newChatMessageId: vi.fn(() => 'id'),
   queryMessages: vi.fn(),

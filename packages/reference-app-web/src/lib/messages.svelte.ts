@@ -236,7 +236,12 @@ export async function sendMessage(author: string, content: string): Promise<void
 	}
 }
 
-/** Record the message as not yet delivered when the strand reports its commit held by no other member. */
+/**
+ * Record the message as not yet delivered when the strand reports its commit held by no other
+ * member. The read and the record share one synchronous step: cadre-core updates the record before
+ * it emits `strand:commit-held`, so an event that already landed shows in the read, and a later one
+ * finds the mark to clear.
+ */
 function markIfHeldOnlyHere(strand: StrandInstance, transactionId: string, messageId: string): void {
 	const durability = strand.database?.commitDurability(transactionId);
 	if (durability && !durability.heldElsewhere) {

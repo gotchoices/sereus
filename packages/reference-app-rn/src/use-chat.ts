@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { CadreNode, CadreNodeEvents, StrandInstance } from '@serfab/cadre-core';
 import {
   insertParticipant,
+  isHeldOnlyHere,
   queryMessages,
   queryParticipants,
   type ChatMessage,
@@ -220,8 +221,10 @@ export function useChat(opts: UseChatOptions): UseChatResult {
     if (!pid) throw new Error('No participant ID');
 
     const { stored } = await sender.send(s, pid, content);
-    const transactionId = stored?.undeliveredCommit;
-    if (stored && transactionId) {
+    const transactionId = stored?.transactionId;
+    // A `strand:commit-held` queued after this mark removes it, since React applies the two
+    // updaters in order; one that landed earlier shows in the read — see `isHeldOnlyHere`.
+    if (stored && transactionId && isHeldOnlyHere(s, transactionId)) {
       setMarks((prev) => [...prev, { strandId: s.strandId, transactionId, messageId: stored.message.Id }]);
     }
     // A switch may have landed while the insert ran; the row belongs to the strand it was

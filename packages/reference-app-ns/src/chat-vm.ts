@@ -14,6 +14,7 @@ import type { StrandInstance } from '@serfab/cadre-core';
 import {
 	insertParticipant,
 	insertMessage,
+	isHeldOnlyHere,
 	messageExists,
 	newChatMessageId,
 	queryMessages,
@@ -344,9 +345,9 @@ export class ChatViewModel extends Observable {
 				return;
 			}
 
-			const { message, undeliveredCommit } = await insertMessage(strand, draft.id, participantId, text);
-			if (undeliveredCommit) {
-				this.undelivered.push({ strandId: strand.strandId, transactionId: undeliveredCommit, messageId: message.Id });
+			const { message, transactionId } = await insertMessage(strand, draft.id, participantId, text);
+			if (transactionId && isHeldOnlyHere(strand, transactionId)) {
+				this.undelivered.push({ strandId: strand.strandId, transactionId, messageId: message.Id });
 			}
 			this.pendingDraft = null;
 			this.draft = '';
