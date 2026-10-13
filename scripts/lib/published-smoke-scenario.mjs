@@ -385,7 +385,7 @@ async function mintBlackholePeer(node, n) {
 	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
 	const peerId = peerIdFromPrivateKey(key).toString();
 	const addrs = [`/ip4/192.0.2.${n}/tcp/4001/ws/p2p/${peerId}`];
-	const record = signPeerRecord(node.partyId, { peerId, publicKey: publicKeyB64, addrs, updatedAt: Date.now() }, privateKeyB64);
+	const record = signPeerRecord(node.partyId, { peerId, publicKey: publicKeyB64, addrs, updatedAt: Date.now(), profile: null }, privateKeyB64);
 	await node.getSeedBootstrapService().insertSelfPeerRecord(record);
 
 	const resolved = await within(`resolvePeerAddrs(${peerId.slice(-8)}) (anti-vacuity)`, OP_TIMEOUT_MS,
