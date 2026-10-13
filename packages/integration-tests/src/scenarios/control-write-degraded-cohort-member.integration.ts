@@ -82,7 +82,16 @@
  * path may re-coordinate through any node, which needs every node serving the
  * repo protocol. Degradation is injected one layer down instead — the node's
  * registered cluster protocol handler is re-registered behind a delay (or a
- * never-answer hold), so everything else about the node stays honest.
+ * never-answer hold), so everything else about the node stays honest. The swap
+ * also aborts the cluster streams opened to the node before it (see
+ * `abortPreSwapStreams`), so the member degrades from the moment of the swap
+ * and every write here fails in its pend.
+ *
+ * A member that answers a write's pend and goes silent before its commit is NOT
+ * covered here: the commit and its cancel both miss the unanimity bar, the pend
+ * record stays in the writer's own storage, and every later write to that block
+ * is refused as `held` after the member recovers. That is an Optimystic defect,
+ * tracked in `tickets/blocked/optimystic-failed-cancel-strands-the-writers-pend-record`.
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -91,6 +100,7 @@ import { format } from 'node:util';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Stream, Connection } from '@libp2p/interface';
+import type { Libp2p } from 'libp2p';
 import { resolveLinkDeadlines } from '@optimystic/db-p2p';
 import {
 	CadreNode, DECLARED_LINK_ROUND_TRIP_MS, isRetriableControlWriteFailure, optimysticDialLimits, signPeerRecord, ed25519KeyPairFromLibp2p
@@ -527,14 +537,53 @@ function untilAbort(signal: AbortSignal): Promise<void> {
 }
 
 /**
+ * Abort every `protocol` stream between `controlNode` and `peers` that was opened before
+ * `controlNode`'s handler was replaced, at both ends, so no request after the swap can reach the
+ * handler that was there before it.
+ *
+ * Optimystic keeps one already-negotiated stream per peer and protocol ready for the next request
+ * (`PreparedStreams`, db-p2p). The answering side dispatches a stream to its handler when the stream
+ * is negotiated, not when the request arrives, so a stream prepared before the swap is served by the
+ * old handler. Left in place, the first request after a degradation is answered at full speed: a
+ * never-answering member then promises a pend it should have stalled, and the write fails in the
+ * commit instead of the pend. Aborting the peers' ends is what closes this: the pool refuses a stream
+ * that is not open, synchronously, whereas a reset sent from `controlNode`'s end reaches it only after
+ * a network hop, and a write issued straight after the swap can take the stream first. `controlNode`'s
+ * ends are aborted too, for a stream whose negotiation finished there before the swap but not yet at
+ * the peer. A request already in flight on an aborted stream fails, which only background writes can
+ * be doing at the moment of the swap.
+ */
+function abortPreSwapStreams(controlNode: Libp2p, protocol: string, peers: readonly CadreNode[]): void {
+	const self = controlNode.peerId.toString();
+	const reason = new Error('opened before the cluster handler was degraded');
+	const peerConnections = peers.flatMap((peer) => (peer.getControlNode()?.getConnections() ?? [])
+		.filter((connection) => connection.remotePeer.toString() === self));
+	const ends = [
+		...peerConnections.flatMap((connection) => connection.streams.filter((stream) => stream.direction === 'outbound')),
+		...controlNode.getConnections().flatMap((connection) => connection.streams.filter((stream) => stream.direction === 'inbound'))
+	].filter((stream) => stream.protocol === protocol);
+	for (const stream of ends) stream.abort(reason);
+	log('degrade: aborted %d pre-swap %s stream end(s)', ends.length, protocol);
+}
+
+/**
  * Re-register `node`'s control-network cluster protocol handler so every
  * inbound cluster RPC is delayed by `delayMs` — or held open forever when
  * `delayMs` is `Infinity` — before the REAL handler (captured off the
  * registrar, authorization gate and all) runs. The transactor's retry path can
  * hit the degraded member several times per write, so the wrapper tolerates
  * any number of concurrently held streams; `restore()` aborts them all.
+ * `peers` are the nodes that send `node` cluster requests; a degrading swap
+ * aborts their pre-swap streams to it ({@link abortPreSwapStreams}).
+ *
+ * NOTE: the delay starts when a stream is negotiated, not when its request
+ * arrives. A stream the writer prepared ahead of its next request (Optimystic's
+ * `PreparedStreams`) has already served part of the delay while it sat idle, so
+ * a finite delay costs a write less than one delay per RPC. The 2 s case asserts
+ * only that the write commits under the response deadline, which this does not
+ * change; if it is ever made a latency guard, delay from the first request byte.
  */
-async function degradeClusterHandler(node: CadreNode, partyId: string, delayMs: number): Promise<DegradedHandle> {
+async function degradeClusterHandler(node: CadreNode, partyId: string, delayMs: number, peers: readonly CadreNode[]): Promise<DegradedHandle> {
 	const controlNode = node.getControlNode();
 	if (!controlNode) throw new Error('degradeClusterHandler: node has no started control node');
 	const registrar = (controlNode as unknown as { components: { registrar: RegistrarLike } }).components.registrar;
@@ -568,6 +617,7 @@ async function degradeClusterHandler(node: CadreNode, partyId: string, delayMs: 
 
 	await registrar.unhandle(protocol);
 	await registrar.handle(protocol, wrapped, options);
+	if (delayMs > 0) abortPreSwapStreams(controlNode, protocol, peers);
 
 	let restored = false;
 	return {
@@ -594,7 +644,7 @@ async function degradeClusterHandler(node: CadreNode, partyId: string, delayMs: 
  * case honest about an abandoned control write — see {@link DegradedHandle.degradesCohort}.
  */
 function observeClusterHandler(node: CadreNode, partyId: string): Promise<DegradedHandle> {
-	return degradeClusterHandler(node, partyId, 0);
+	return degradeClusterHandler(node, partyId, 0, []);
 }
 
 interface ResetHandle extends DegradedHandle {
@@ -943,7 +993,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	it('commits with a member delayed under the response deadline', async () => {
 		const target = await randomPeerId();
 		const baseline = forced!.callCount();
-		activeDegradation = await degradeClusterHandler(C, partyId, UNDER_DEADLINE_DELAY_MS);
+		activeDegradation = await degradeClusterHandler(C, partyId, UNDER_DEADLINE_DELAY_MS, [A, B]);
 		// Record-only, like the healthy case: same rationale (see
 		// printRetryDecisions).
 		const retryLog = captureControlRetryLogs();
@@ -977,7 +1027,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	it('fails with a named super-majority error when a member stalls past the response deadline', async () => {
 		const target = await randomPeerId();
 		const baseline = forced!.callCount();
-		activeDegradation = await degradeClusterHandler(C, partyId, Infinity);
+		activeDegradation = await degradeClusterHandler(C, partyId, Infinity, [A, B]);
 		const retryLog = captureControlRetryLogs();
 		try {
 			const outcome = await timedSettle(`authorizePeer(${target.slice(-8)}) stalled`, STALLED_WRITE_TIMEOUT_MS,
@@ -1075,7 +1125,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	it('a control read answers locally while a write is stalled', async () => {
 		const target = await randomPeerId();
 		const bPeerId = B.peerId!.toString();
-		activeDegradation = await degradeClusterHandler(C, partyId, Infinity);
+		activeDegradation = await degradeClusterHandler(C, partyId, Infinity, [A, B]);
 		// Kick the doomed write off UNAWAITED, capturing settlement immediately so it
 		// can neither become an unhandled rejection nor race teardown. Declared
 		// outside the `try` so the `finally` can always drain it.
@@ -1132,7 +1182,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		await within(`authorizePeer(${target.slice(-8)}) setup`, WRITE_TIMEOUT_MS, () => A.authorizePeer(target));
 		expect(await within('isMember (setup)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
 
-		activeDegradation = await degradeClusterHandler(C, partyId, Infinity);
+		activeDegradation = await degradeClusterHandler(C, partyId, Infinity, [A, B]);
 		const retryLog = captureControlRetryLogs();
 		try {
 			const outcome = await timedSettle(`removePeer(${target.slice(-8)}) stalled`, STALLED_WRITE_TIMEOUT_MS,

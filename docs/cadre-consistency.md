@@ -49,6 +49,8 @@ A silent cohort member costs less than the transaction budget, because what ends
 - The cancel then keeps starting rounds until its budget has passed, which is three rounds. The budget outlasts two rounds by only 500 ms, so a machine whose two rounds overrun by more than that stops at two, and the write fails after about 63 s.
 - So a failing control write takes about 84 s. `control-write-degraded-cohort-member.integration.ts` derives its bounds from these budgets.
 
+A member that answers a write's pend and goes silent before its commit costs more, about 137 s: the pend succeeds, the commit fails twice (the one-round commit, then the tail), and the cancel runs its three rounds. The cancel misses the bar too, so the writer keeps the pend's record and refuses later writes to that block after the member recovers. That is an Optimystic defect, `blocked/optimystic-failed-cancel-strands-the-writers-pend-record`.
+
 The transaction budget is reached only by a phase that keeps retrying, for example one that re-picks a coordinator that does not answer.
 
 **A stalled member holds the control write lock.** Control writes run one at a time under `ControlDatabase.withWriteLock`. While a member stalls, each failing write therefore holds every other control write on the node (self-record updates, authorizations, revocation-ledger writes) for its whole failure: about 84 s, and up to the transaction budget plus the cancel budget on the retrying path. A write queued behind one failing write settles after about 168 s. The control-write retry adds nothing to this, because one such attempt already exceeds `CONTROL_WRITE_RETRY_BUDGET_MS`.
