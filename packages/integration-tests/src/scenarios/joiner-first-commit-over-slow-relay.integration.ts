@@ -50,7 +50,7 @@
  * (`strand-deferred-join-keeps-its-runtime`), and the joiner's first sync completes across several
  * of those windows. When it does, the joiner can be between windows, with only the relay
  * connected. The harness relay carries the deployed relay's monitor, limits and ping handler
- * (`harness/dedicated-relay.ts`), so it no longer cuts circuits on a deadline of its own. With the
+ * (`harness/dedicated-relay.ts`), so it does not cut circuits on a deadline of its own. With the
  * relay answering pings the joiner became writable after 385 s, against 85 s with the relay not
  * answering them (one run each); why the relay's ping handler costs that much is
  * `fix/slow-link-joiner-first-sync-slower-when-relay-answers-pings`.
@@ -133,7 +133,13 @@ table Trading (Id text primary key, Body text);
 const SAPP_ID = 'sapp-joiner-first-commit';
 const YEAR_MS = 365 * 24 * 3600_000;
 
-/** Generous on purpose: the arm reports how long each step took; a gate only bounds a hang. */
+/**
+ * Generous on purpose: the arm reports how long each step took; a gate only bounds a hang.
+ *
+ * NOTE: the slow-link arms' first sync has reached about 400 s with the relay answering pings
+ * (`fix/slow-link-joiner-first-sync-slower-when-relay-answers-pings`). If the fourth or fifth arm
+ * times out here, look there before raising this.
+ */
 const FIRST_SYNC_MS = 600_000;
 const CONVERGE = { timeoutMs: 180_000, intervalMs: 500 } as const;
 

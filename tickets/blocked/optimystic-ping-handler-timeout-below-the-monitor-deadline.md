@@ -1,6 +1,6 @@
 description: Every Sereus node answers liveness pings with a 10-second limit built into a library Sereus does not control, so on a slow link the node being pinged gives up before the 30 seconds the pinging side was told to allow, and the connection is dropped anyway. Needs a change in Optimystic, or a decision to work around it here.
 architecture: docs/architecture.md
-files: ../optimystic/packages/db-p2p/src/libp2p-node-base.ts (`ping: ping()` ~959, built bare), packages/cadre-core/src/types.ts (`DEFAULT_CONNECTION_MONITOR` ~665, the 30 s deadline this defeats), ops/docker/libp2p-infra/src/main.ts (the deployed relay's `ping: ping()` ~97, same defect, fixed in this repo by `implement/slow-relay-joiner-strand-connection-keeps-dropping`), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (where it was measured)
+files: ../optimystic/packages/db-p2p/src/libp2p-node-base.ts (`ping: ping()` ~959, built bare), packages/cadre-core/src/types.ts (`DEFAULT_CONNECTION_MONITOR` ~665, the 30 s deadline this defeats), ops/docker/libp2p-infra/src/main.ts (the deployed relay's ping service ~106, which had the same defect and now sets `ping({ timeout: 60_000 })`, from `slow-relay-joiner-strand-connection-keeps-dropping`; the precedent for the proposed option), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (where it was measured)
 repro: verified
 ----
 

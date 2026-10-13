@@ -460,7 +460,7 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   `libp2p`, `@libp2p/*`, `@multiformats/multiaddr`, `datastore-core` and `uint8arrays` are not
   linked, so their ranges here are checked against nothing. Keep them on the release line
   `../optimystic/packages/db-p2p/package.json` declares, exact pins (`@libp2p/identify`,
-  `@libp2p/webrtc`) included. `yarn upgrade:optimystic` does not move them. When they drift, two
+  `@libp2p/ping`, `@libp2p/webrtc`) included. `yarn upgrade:optimystic` does not move them. When they drift, two
   physical copies of `@libp2p/interface` (or of `multiaddr`) appear and `yarn typecheck` fails with
   TS2322/TS2345 messages naming both paths; the NativeScript bundle check fails on `uint8arrays`
   instead (`typecheck-fails-on-libp2p-interface-3-1-against-linked-optimystic-3-3`).
@@ -691,7 +691,7 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   the strand member redial (`strand-peer-redial.ts`) reconnects the two strand nodes. All five
   run by default although the third waits out its 180 s gate after the joiner becomes writable
   (about 10 minutes in all), the fourth takes 4 to 8 minutes and the fifth 6 to 7 (the slow first
-  sync behind those figures is `fix/slow-link-joiner-first-sync-slower-when-relay-answers-pings`):
+  sync behind those figures is ticket `slow-link-joiner-first-sync-slower-when-relay-answers-pings`):
   they are a regression reproduction, not a measurement, the third arm has to run to turn red
   when the fix lands, which is the signal its `it.fails` exists for, and the fifth is the only
   end-to-end check of the member redial.

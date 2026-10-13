@@ -17,7 +17,7 @@ repro: verified
 | fifth (restart on the slow link), whole arm | 420 s, 373 s | 143 s |
 | third, joiner writable after | 385 s | 85 s |
 
-All runs on 2026-10-12, one Windows machine. The 228 s and 114 s fourth-arm runs were run back to back as a pair, because other heavy processes were sharing the CPU at the time; the pairing rules out machine load. Every run passed (the third arm as its expected failure). The fourth and fifth arms are plain `it`s whose first sync is gated at `FIRST_SYNC_MS` (600 s), so the slowest run here (about 400 s to writable) leaves a third of the margin.
+All runs on 2026-10-12, one Windows machine. The 228 s and 114 s fourth-arm runs were run back to back as a pair, because other heavy processes were sharing the CPU at the time; the pairing rules out machine load. Every run passed (the third arm as its expected failure). The fourth and fifth arms are plain `it`s whose first sync is gated at `FIRST_SYNC_MS` (600 s), so the slowest run here (about 400 s to writable) leaves a third of the margin. The third arm is an `it.fails` with the same gate: a first sync past 600 s would keep it green for the timeout rather than for the bug it reproduces, hiding the signal that the bug is fixed.
 
 In the paired runs, the frame counts and the sequence of connection aborts are the same for the first 85 s or so. They diverge after the relay first aborts its connection to a strand node (that abort is `blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`, present in both columns). Over every run logged with the first-sync debug channel, the joiner's first-sync gate opened 10, 20 and 22 s after its database build with the relay not answering pings, and 82, 142, 153 and 291 s after with the relay answering. The longer waits pass through repeated cycles of the member redial reconnecting the two strand nodes and the next ping dropping them about 40 s later.
 
@@ -26,6 +26,7 @@ In the paired runs, the frame counts and the sequence of connection aborts are t
 - **The relay's inbound ping stream cap** (`maxInboundStreams: 2`). A diagnostic run under `DEBUG='relay:*:ping,relay:*:error'` logged no `Too many inbound protocol streams`, and the relay's handler held its 21 pings for a median of 1.8 s, longest 24.3 s.
 - **Cadre nodes' pings to the relay timing out.** Cadre monitors logged 0 to 4 `AbortError`s per run, mostly after the scenario had finished; the aborts are `StreamResetError` and `UnexpectedEOFError`, as in the other column.
 - **Optimystic's peer classification.** `membershipOf` (`libp2p-key-network.ts`) already reads the relay as `foreign` from the circuit hop protocol in its peerStore record; adding `/ipfs/ping/1.0.0` to that record does not change the verdict.
+- **The handler's 60 s timer outliving the ping** (read, not measured). `handlePing` in `@libp2p/ping` 3.1.13 never removes its `AbortSignal.timeout` listener, so 60 s after every ping it calls `stream.abort`, but `abort` returns at once on a stream that is already `closed` (`@libp2p/utils`' `abstract-message-stream.js`). It would matter only for a ping stream still open at 60 s.
 - **`Connection.rtt`.** A successful ping stores a measured round trip on the connection where an unsupported one stores half the negotiation time, but nothing in Optimystic or cadre-core reads it.
 
 ## What differs, as far as known
