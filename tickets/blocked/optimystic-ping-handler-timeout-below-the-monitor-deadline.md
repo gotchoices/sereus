@@ -35,3 +35,7 @@ Every relayed connection whose one-way queue exceeds 10 s drops on the next ping
 ## Reversibility
 
 A configuration option with a default equal to today's behaviour when undeclared. Fully reversible.
+
+## What the proposed option would not fix on its own (2026-10-13, from `fix/slow-link-joiner-first-sync-slower-when-relay-answers-pings`)
+
+Tried in memory, test-only: the scenario's fourth arm with the handler timeout of Optimystic's `@libp2p/ping` copy raised to 60 s on every cadre node (its `Ping.prototype.start` wrapped to set `timeout` before registering), once with the harness relay answering pings and once without. Both runs were stopped at 285 s with the joiner still not writable; in 9 of 12 runs with the 10 s handler the joiner was writable by 103 s. The resets were gone, but pings over the congested circuit now outran the 30 s monitor deadline instead (`AbortError`, 2 to 3 per run), so connections still dropped. In one run a circuit then stayed up for 154 s with its sockets at the frame cap (about 7,000 frames in that window) while one first-sync probe ran for 3 minutes and failed. So this option removes one source of drops, but on that link the joiner's first sync is still not fast: the link stays saturated, and pings can still miss a 30 s deadline. Two runs only; the first-sync cost on a saturated link was not investigated further.
