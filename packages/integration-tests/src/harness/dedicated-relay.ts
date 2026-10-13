@@ -33,7 +33,11 @@
  *   monitor then aborts the connection whatever deadline it was given, so the handler timeout
  *   has to stay above every pinging node's deadline. Without the service a cadre node's ping
  *   is refused as an unsupported protocol, which its monitor counts as an answer, so the
- *   fixture would hide a handler timeout the deployed relay has.
+ *   fixture would hide a handler timeout the deployed relay has. It also decides when a client
+ *   learns the relay aborted its connection: the abort does not close the WebSocket
+ *   (`blocked/report-libp2p-websockets-buffered-amount`), so the client finds out mostly through
+ *   its own in-flight ping being reset. Without the service, clients keep connections the relay
+ *   aborted until their next ping, which shortens the slow-link arms.
  *
  * Deliberate divergences from the container, none load-bearing for relaying:
  * no raw-TCP listener (every harness node dials WebSockets), no on-disk identity key

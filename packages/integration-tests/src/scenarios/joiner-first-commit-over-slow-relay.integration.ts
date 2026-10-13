@@ -50,10 +50,18 @@
  * (`strand-deferred-join-keeps-its-runtime`), and the joiner's first sync completes across several
  * of those windows. When it does, the joiner can be between windows, with only the relay
  * connected. The harness relay carries the deployed relay's monitor, limits and ping handler
- * (`harness/dedicated-relay.ts`), so it does not cut circuits on a deadline of its own. With the
- * relay answering pings the joiner became writable after 385 s, against 85 s with the relay not
- * answering them (one run each); why the relay's ping handler costs that much is
- * `fix/slow-link-joiner-first-sync-slower-when-relay-answers-pings`.
+ * (`harness/dedicated-relay.ts`), so it does not cut circuits on a deadline of its own.
+ *
+ * Why the joiner's first sync takes minutes there: the joiner becomes writable only once it is
+ * cut off from the founder, on blocks it already holds, so the first sync lasts until such a
+ * cut-off. A relay abort does not close the WebSocket
+ * (`blocked/report-libp2p-websockets-buffered-amount`, second arm): the aborted node keeps a
+ * connection whose muxer is closed until it next opens a stream on it. With the relay answering
+ * pings that is usually at once, because the node's own monitor ping to the relay is in flight
+ * (its echo crosses the same slow socket queue) and the abort resets it; the node re-dials and
+ * reserves within about 2 s, the strand nodes reconnect, and the first sync waits for a later
+ * cut-off. Without the relay's ping service the node stays unreachable through the relay until
+ * its next ping, up to 35 s, and the joiner is cut off sooner.
  *
  * The fourth arm is the restart the phones also tried: the third arm's solo commit, then the
  * joiner stops, is rebuilt over the storage it kept (raw stores, saved strand network state,
@@ -136,9 +144,13 @@ const YEAR_MS = 365 * 24 * 3600_000;
 /**
  * Generous on purpose: the arm reports how long each step took; a gate only bounds a hang.
  *
- * NOTE: the slow-link arms' first sync has reached about 400 s with the relay answering pings
- * (`fix/slow-link-joiner-first-sync-slower-when-relay-answers-pings`). If the fourth or fifth arm
- * times out here, look there before raising this.
+ * NOTE: the slow-link arms' first sync has reached about 400 s. That is the cost on that link with
+ * the relay behaving as deployed, not a fixture artifact. If the fourth or fifth arm times out
+ * here, the causes are the drop cycle
+ * (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`) and the saturated link.
+ * Removing the fixture relay's ping service would make the arm pass by cutting the joiner off
+ * from the founder sooner (header), so do not do that. A first sync past 600 s would keep the
+ * third arm's `it.fails` green for the wrong reason.
  */
 const FIRST_SYNC_MS = 600_000;
 const CONVERGE = { timeoutMs: 180_000, intervalMs: 500 } as const;

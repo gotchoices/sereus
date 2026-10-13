@@ -2088,7 +2088,10 @@ interface CadreNodeConfig {
     // ping stream is refused and aborts the connection just as a timeout does. A
     // configured value replaces the default whole; `{}` asks for libp2p's stock
     // behaviour. Cost: a dead peer is reclaimed 30-65s after it stops answering rather
-    // than ~5-15s. The deadline holds only up to the pinged node's ping-handler timeout,
+    // than ~5-15s. An aborted WebSocket connection is not closed on the wire
+    // (`blocked/report-libp2p-websockets-buffered-amount`), so the far end finds out only
+    // when it next opens a stream, at the latest on its next ping, up to 35s later.
+    // The deadline holds only up to the pinged node's ping-handler timeout,
     // 10s on every cadre node until
     // `blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline` lands.
     connectionMonitor?: Libp2pConnectionMonitorInit;

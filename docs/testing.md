@@ -690,8 +690,8 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   repeats that restart with the frame cap and the busy event loop still in force, where only
   the strand member redial (`strand-peer-redial.ts`) reconnects the two strand nodes. All five
   run by default although the third waits out its 180 s gate after the joiner becomes writable
-  (about 10 minutes in all), the fourth takes 4 to 8 minutes and the fifth 6 to 7 (the slow first
-  sync behind those figures is ticket `slow-link-joiner-first-sync-slower-when-relay-answers-pings`):
+  (about 10 minutes in all), the fourth takes 4 to 8 minutes and the fifth 6 to 7 (the first sync
+  lasts until the joiner is cut off from the founder; the scenario's header says why):
   they are a regression reproduction, not a measurement, the third arm has to run to turn red
   when the fix lands, which is the signal its `it.fails` exists for, and the fifth is the only
   end-to-end check of the member redial.
