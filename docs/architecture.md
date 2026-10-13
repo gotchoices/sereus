@@ -2090,7 +2090,8 @@ interface CadreNodeConfig {
     // behaviour. Cost: a dead peer is reclaimed 30-65s after it stops answering rather
     // than ~5-15s. An aborted WebSocket connection is not closed on the wire
     // (`blocked/report-libp2p-websockets-buffered-amount`), so the far end finds out only
-    // when it next opens a stream, at the latest on its next ping, up to 35s later.
+    // when it next opens a stream, usually its next ping, sent every 35s (25-50s measured
+    // on a saturated link).
     // The deadline holds only up to the pinged node's ping-handler timeout,
     // 10s on every cadre node until
     // `blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline` lands.
