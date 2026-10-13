@@ -56,3 +56,13 @@ The writer knows exactly which action it failed to cancel. Two candidate sites, 
 - Adopt the release.
 - Add a case to `control-write-degraded-cohort-member.integration.ts` where C answers the pend and goes silent before the commit (degrade C's handler after its promise vote, for example by holding only streams whose first message is a commit). Assert that the write fails with the named shortfall and that a write to the same table commits after C is restored.
 - Remove the paragraph about this ticket from that file's header.
+
+## Upstream status
+
+Fixed on optimystic main (`fix/4.6-a-cancel-that-misses-the-bar-strands-the-writers-pending-record`, ed98ef15; notes 20ed393f), not yet released. A cancel that misses the bar stays owed by the writer's transactor and is re-sent on a timer, and any new pend of the same blocks re-sends it first. New API: `NetworkTransactor.stop()`, called by `CollectionFactory.shutdown()`.
+
+When adopting:
+
+- Do not call `stop()` on the `dispose()` path in `compose-strand.ts` `releaseOptimysticPlugin` (an injected node kept across a rebuild). The old transactor's owed cancel is the only thing that clears a stuck pending record on live members. Its timer is unref'd, re-arms only while a cancel is owed, and holds at most 256 owed actions (`cancel:owed-evicted`). Keep `shutdown()` on the created-node path.
+- If a cancel that never lands keeps an old transactor alive while the node runs, report it to Optimystic. The fix there is to hand the owed set to the next transactor or to give up after a deadline, not a Sereus `stop()` call.
+- A writer that exits before its cancel lands is still `debt-unpromotable-pending-records-need-a-sweep`'s case.
