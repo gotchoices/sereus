@@ -1,5 +1,5 @@
 description: An owner-granting invitation today seats the redeeming device's own key as an owner. Split it into two kinds: a machine invitation, which admits a machine and grants no ownership, and an owner grant, which gives a freshly generated owner key to whoever holds the invitation and admits no machine. An owner grant is never targeted at a peer id.
-prereq: owner-key-independent-of-machine-identity
+prereq: reference-app-web-owner-keys
 files: schemas/control.qsql, packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/cadre-node.ts, packages/reference-app-rn/src, packages/reference-app-web/src, packages/cadre-cli/src/commands, docs/architecture.md
 ----
 
@@ -40,3 +40,12 @@ files: schemas/control.qsql, packages/cadre-core/src/control-schema.ts, packages
 
 - Update `docs/architecture.md` (`CadreInvite`, `CadreInviteUsage`, the invitation flows, "Why the invitation is a keypair").
 - Split into implement tickets: schema + `ControlDatabase` writers/redeemers; `CadreNode` API (`createOwnerGrant`, `redeemOwnerGrant`, machine invitation without `grantsOwner`); reference apps and cadre-cli; integration scenarios (owner grant redeemed with no machine joining; backup grant redeemed later).
+
+## Left for this ticket by the owner-key split
+
+`owner-key-independent-of-machine-identity` was planned into the `1.01`–`1.10` implement tickets (`owner-signer-seam` … `reference-app-web-owner-keys`); this ticket now waits on the last of them. They leave three things here on purpose:
+
+- **The interim identity owner.** An owner-granting `CadreInvite` still seats the redeeming device's identity key (`OwnerKey.Key = CadrePeer.PublicKey`), and `CadreNode.wireOwnKeyIfOwner()` with no argument still wires a software signer over the identity key when that key is a live owner; the phone kit and the web app call it for joined parties. Removing both is this ticket's job (`docs/architecture.md` → Owner Keys, "Invitation-granted owners, until owner grants land").
+- **Labels on granted keys.** `OwnerKey.Label` is bound into the owner-signed add digest; the invitation consent branch requires it null. Decide whether an owner grant carries a label (chosen by the issuer and covered by the issuer's signature on the grant row, or chosen by the holder and covered by the new key's own signature) and change that branch.
+- **Owner-grant redemption stores the key in an owner slot.** The redeemer generates the key with `createOwnerKey` (`owner-key-store.ts`) or into a file/QR export (`owner-key-export.ts`), and the apps' owner-keys sections (`reference-app-rn-owner-keys`, `reference-app-web-owner-keys`) are where "Add an owner key" / "Make a backup" should mint and redeem grants.
+
