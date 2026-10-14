@@ -8,7 +8,7 @@ files: schemas/control.qsql, packages/cadre-core/src/cadre-node.ts, docs/archite
 
 ## The problem
 
-Owner signing stays on user-held devices (phones, hardware keys), never on servers (`backlog/feat-owner-keys-only-on-user-devices`). If a person has one phone and loses it:
+Owner keys belong to the user, not to any machine, and a user may hold backups (a hardware key, a QR/paper key, an owner-granting invitation) (`owner-key-independent-of-machine-identity`, `owner-grant-separate-from-machine-invitation`). If a person has one phone and loses it:
 
 - Their always-on nodes keep the data and keep serving strands, but nothing can sign an owner action ever again: no new devices, no removals, no strand joins (`JoinedStrand` is owner-signed).
 - A new phone cannot join, because joining needs an owner to sign.
