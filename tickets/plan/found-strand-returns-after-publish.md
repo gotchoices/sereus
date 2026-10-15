@@ -16,6 +16,8 @@ Verified at 70b2dc1d:
 
 ## Plan
 
+Approved (maintainer, 2026-10-15): the opt-in `{ background: true }` form as replied on #49.
+
 - Add an opt-in background form and keep today's return for existing callers: `foundStrand(…, { background: true })` returns `{ strandRow, founded, ready: Promise<StrandInstance> }`. `ready` rejects with the bring-up's error while the watcher keeps retrying. `whenStrandWritable` already covers "wait until usable".
 - A joiner that redeems during the bring-up gets the existing retryable rejection. Check that the formation client retries it within its budget, and say so in the docs.
 - Move the RN and web reference apps' "make an invitation" path to the background form.

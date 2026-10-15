@@ -21,7 +21,7 @@ Reported by kjeib (gotchoices/sereus#46) with a three-release reproduction. Veri
 
 ## Out of scope: the policy
 
-The reporter's point 4 (phones receive app-store updates one at a time, so "upgrade every machine together" is not something a phone app can do) questions the no-migration policy itself. That is `blocked/decide-control-schema-upgrade-across-separately-updated-machines`.
+The reporter's point 4 (phones receive app-store updates one at a time, so "upgrade every machine together" is not something a phone app can do) questions the no-migration policy itself. Decided (maintainer, 2026-10-15): versioned migrations, in `plan/control-schema-versioned-migrations`, which takes this ticket as its prereq. Here, make the schema fingerprint a version that ticket can build on, and make the typed error cover a store whose version is newer than the build's own (a downgrade) as well as an older one.
 
 ## Timing
 
