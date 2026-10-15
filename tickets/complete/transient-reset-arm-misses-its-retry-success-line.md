@@ -24,3 +24,9 @@ The gate log was in a session scratchpad and is gone; reproduce by running the w
 ## Expected
 
 The arm passes whenever the write commits on a retry, and fails only when it does not.
+
+## Cause and fix
+
+Seen a second time in the optimystic 1.15.0 gate, with a different assertion (`no transient-retry decision was logged for the refresh`). That run's log showed the cause: two writes labelled `[self-record-update]`. B's own background self-record publish (`CadreNode.registerSelf`, heartbeat or address change) had been in flight for 28 s, since the previous case's degraded window. It consumed both injected resets and was abandoned on its budget after 1/3 attempts, while the case's driven write committed on its first attempt in 450 ms. In the first failure the background write took the resets the same way, and the driven write's success line never appeared because the driven write never retried.
+
+Fix: before reading B's row and arming the resets, the case awaits `B.registerSelf()`, which joins any publish in flight. Verified: the whole file 3 of 4 runs green; the fourth failed two earlier cases (the stall and the recovery case) once without a kept log, and passed in both full gates and the later runs.

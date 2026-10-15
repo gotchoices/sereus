@@ -1249,6 +1249,16 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// `resetFirstProtocolStreams`' header).
 		const bPeerId = B.peerId!.toString();
 		const bDb = B.getControlDatabase()!;
+		// Drain B's own background self-record publish (heartbeat or address change) first.
+		// It writes under the same `self-record-update` label, so one still in flight from an
+		// earlier case's degraded window consumes the injected resets and owns the retry lines,
+		// while the driven write commits on its first attempt. `registerSelf` joins an
+		// in-flight publish, so awaiting it waits that one out; its outcome is not this case's.
+		await within('registerSelf(B) (drain before reset)', DELAYED_WRITE_TIMEOUT_MS,
+			() => B.registerSelf().catch((error: unknown) => {
+				console.log(`[measured] B's background self-record publish failed before the reset case: ${errorChainText(error)}`);
+				return 'skipped' as const;
+			}));
 		const before = await within('queryPeerRecord(B) (pre-reset)', READ_TIMEOUT_MS,
 			() => bDb.queryPeerRecord(bPeerId));
 		expect(before, 'B has no CadrePeer row to refresh — the case cannot drive a self-update').not.toBeNull();
