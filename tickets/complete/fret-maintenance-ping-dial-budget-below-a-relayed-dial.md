@@ -21,3 +21,7 @@ Alternatives considered: raising the constant outright (rejected: a long ping ho
 
 - Adopt the release; pass the declared link's relayed-dial budget if FRET takes an option.
 - Re-run the slow-restart arm (`strand-peers-redial-on-the-declared-link-budget` adds it) with Sereus's own redial disabled, to see whether FRET alone now reconnects; if it does, decide whether Sereus's supervisor stays as a backstop or goes.
+
+## Resolved upstream
+
+FRET `maintenance-redial-off-the-tick` (p2p-fret 1.1.0) moved the redial off the stabilization tick with its own `dialTimeoutMs`, and Optimystic 1.15.0 (`0-fret-dial-timeout-from-the-node-dial-timeout`, filed from here) sets it from the node's `connectionManager.dialTimeout` (39 s on Sereus's declared link). Adopted in 35a0bf08; `joiner-first-commit-over-slow-relay`'s two restart arms pass (336 s, 200 s). Not done: re-running those arms with Sereus's own strand redial disabled, to measure FRET's redial alone.
