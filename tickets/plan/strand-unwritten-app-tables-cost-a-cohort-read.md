@@ -19,3 +19,8 @@ Verified at 70b2dc1d:
 2. At founding, create an empty collection for every table in the `App` schema and for the strand schema's never-written tables, so peer-join backfill ships them and no read of a declared table needs the cohort to prove absence. This also closes the "two machines invent one table" residual (`docs/strands.md` ~239). Find the cheapest way to create a collection without a row (an Optimystic API, or a marker row where constraints allow), and measure the founding cost it adds, as the residual asks.
 3. A table added by a later schema version has the same problem. Decide whether a schema apply on a running strand creates its new tables' collections the same way.
 4. Flip the scenario's arms to `it` and update `docs/strands.md`.
+
+## From the issue's comments
+
+- On loopback the offline arm passed 9 of 9 in a later run: whether a lone founder answers "absent" or "unknown" depends on timing. Commit the scenario with the reporter's diff that moves the offline arm to the 100 ms pipelined link.
+- On Optimystic 1.15.0 the joiner's first writes read the never-written `ConsumedInvite`, `CancelledInvite`, `Revocation` and `Manager` one after another, each `no-quorum` (`holders: 0, absent: 1`) and each asked twice. Make those reads part of the acceptance check. The serial and doubled fetches are Optimystic's (`backlog/feat-a-cohort-consult-batches-blocks-per-peer`, gotchoices/Optimystic#39).

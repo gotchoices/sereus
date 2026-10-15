@@ -15,3 +15,5 @@ Options to choose between:
 - **Versioned migrations** in `loadSchema`, which the NOTE there already names as the site.
 
 Also decide whether two machines on different schema versions may share a party at all, and what the newer one does when it meets an older peer's rows.
+
+Also decide what a machine that recreated its store receives from the party's other machines, which still hold control blocks written under the old schema: control is replicated, and whether a fresh store re-syncs the old schema from its peers is not verified.

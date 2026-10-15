@@ -22,3 +22,7 @@ Reported by kjeib (gotchoices/sereus#46) with a three-release reproduction. Veri
 ## Out of scope: the policy
 
 The reporter's point 4 (phones receive app-store updates one at a time, so "upgrade every machine together" is not something a phone app can do) questions the no-migration policy itself. That is `blocked/decide-control-schema-upgrade-across-separately-updated-machines`.
+
+## Timing
+
+`implement/1.03-owner-key-label-and-founder-machine` edits control constraint text, so the release that carries the owner-key series breaks warm starts again. Land the typed error before or with it, or that release's notes must tell embedders to recreate.
