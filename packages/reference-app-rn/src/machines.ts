@@ -1,11 +1,10 @@
 /**
  * machines.ts — what Settings → "Devices and nodes" (`machines-section.tsx`) shows from
- * `CadreNode.listMachines`, `listCadreInvitations`, `planMachineRemoval` and the app's rental
- * records, and how a machine is named in a prompt or an alert. No React and no native imports,
- * so `test/machines.spec.ts` runs these in Node.
+ * `CadreNode.listMachines`, `listCadreInvitations` and the app's rental records, and how a machine
+ * is named in a prompt or an alert. No React and no native imports.
  */
 
-import type { CadreInviteStatus, CadreMachine, MachineRemovalPlan, RemoveMachineOptions } from '@serfab/cadre-core';
+import type { CadreInviteStatus, CadreMachine } from '@serfab/cadre-core';
 import type { Rental } from '@serfab/cadre-rn/provider';
 import { ownerFingerprint } from './node-claim';
 
@@ -14,7 +13,7 @@ export function shortPeerId(peerId: string): string {
 	return `${peerId.slice(0, 12)}…${peerId.slice(-6)}`;
 }
 
-/** The key fingerprint cadre-host shows for an owner, else the shortened peer id. */
+/** The fingerprint of the machine's identity key, in cadre-host's form, else the shortened peer id. */
 export function machineCode(machine: CadreMachine): string {
 	return machine.publicKey !== null ? ownerFingerprint(machine.publicKey) : shortPeerId(machine.peerId);
 }
@@ -74,45 +73,6 @@ function plural(count: number, unit: string): string {
  * such invitations turn up, list them on the machine's row.
  */
 export function pendingDeviceInvitations(statuses: readonly CadreInviteStatus[], machines: readonly CadreMachine[]): CadreInviteStatus[] {
-	const members = new Set(machines.filter((machine) => machine.isMember).map((machine) => machine.peerId));
+	const members = new Set(machines.map((machine) => machine.peerId));
 	return statuses.filter((status) => status.live && status.invite.peerId !== null && !members.has(status.invite.peerId));
-}
-
-/**
- * One "Keep" switch in the removal prompt: a machine or owner key the removed machine added. A
- * device added as an owner is one dependent with both its peer row and its owner key, so one
- * switch keeps or drops it whole.
- */
-export interface Dependent {
-	/** Unique within the prompt: the peer id, else the owner key. */
-	id: string;
-	/** A dependent `CadrePeer` row's peer id. */
-	peerId: string | null;
-	/** A dependent `OwnerKey` row's key. */
-	ownerKey: string | null;
-	/** The listed machine it is, when one is listed. */
-	machine: CadreMachine | null;
-}
-
-/** The plan's dependents as switches: each owner key joined to the dependent peer row behind it, when there is one. */
-export function dependentsOf(plan: MachineRemovalPlan, machines: readonly CadreMachine[]): Dependent[] {
-	const byPeerId = new Map(machines.map((machine) => [machine.peerId, machine]));
-	const byKey = new Map(machines.filter((machine) => machine.publicKey !== null).map((machine) => [machine.publicKey, machine]));
-	const dependents = plan.dependents.peers.map((peerId): Dependent => ({ id: peerId, peerId, ownerKey: null, machine: byPeerId.get(peerId) ?? null }));
-	for (const ownerKey of plan.dependents.owners) {
-		const machine = byKey.get(ownerKey) ?? null;
-		const sameMachine = machine && dependents.find((dependent) => dependent.peerId === machine.peerId);
-		if (sameMachine) sameMachine.ownerKey = ownerKey;
-		else dependents.push({ id: ownerKey, peerId: null, ownerKey, machine });
-	}
-	return dependents;
-}
-
-/** The re-vouch `removeMachine` takes for the dependents whose switch is on. */
-export function revouchFor(dependents: readonly Dependent[], kept: ReadonlySet<string>): NonNullable<RemoveMachineOptions['revouch']> {
-	const chosen = dependents.filter((dependent) => kept.has(dependent.id));
-	return {
-		owners: chosen.flatMap((dependent) => dependent.ownerKey ?? []),
-		peers: chosen.flatMap((dependent) => dependent.peerId ?? []),
-	};
 }

@@ -4,25 +4,28 @@ import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { cadreInviteConsentMessage, cadreInviteRedeemMessage, generateStampId } from '../src/control-database.js';
-import { ed25519KeyPairFromLibp2p, peerIdFromEd25519PublicKeyB64 } from '../src/ed25519-key.js';
 import { deviceTokenAddDigest } from '../src/peer-authorization.js';
 import { signDeviceTokenRecord } from '../src/device-token.js';
 import { expectConstraintFailure, freshKeyPair, freshStamp, signAs, signB64, type KeyPair } from './control-constraint-helpers.js';
 import { mintContactJoiner, type TestContactJoiner } from './formation-consent-helper.js';
 
 /**
- * `CadreNode.removeMachine` against one real control database: an owner machine admitted
- * through a multi-use owner-granting invitation, holding a push token and having vouched one
- * device, is removed in one transaction with its dependent kept by re-vouch; and a re-vouch
- * naming a row the machine never vouched is refused before anything is written.
+ * `CadreNode.removeMachine` and `CadreNode.removeOwner` against one real control database.
  *
- * The node's own identity key is the founding owner (`makeOwnOwner`'s shape), because the
- * owner-gated calls sign with the key behind the node's peer id. The other machines are bare
- * keypairs: their rows are written as the production writers would write them (the
- * redemption through `redeemCadreInvite`; the push token and the vouched row through the
- * schema's own insert rules), with no second node started.
+ * A machine admitted through a multi-use owner-granting invitation, holding a push token and
+ * having vouched one device with the owner key the invitation seated, is removed in one
+ * transaction: its row, token and invitation go, and its owner key, with the device it vouched,
+ * stays. An owner key that vouched a device and another owner key is removed with the device
+ * kept by re-vouch; a re-vouch naming a row the key never vouched, or re-vouching an owner row
+ * while the node is alone, is refused before anything is written. The refusals by name run
+ * first, while the founding key is the only owner.
+ *
+ * The node's owner key is a fresh key, not its identity. The other machines are bare keypairs:
+ * their rows are written as the production writers would write them (the redemption through
+ * `redeemCadreInvite`; the push token and the vouched rows through the schema's own insert
+ * rules), with no second node started.
  */
-describe('CadreNode.removeMachine', () => {
+describe('CadreNode.removeMachine and removeOwner', () => {
   let node: CadreNode;
   let db: ControlDatabase;
   let rawDb: Database;
@@ -33,13 +36,11 @@ describe('CadreNode.removeMachine', () => {
   const asSigner = (device: TestContactJoiner): KeyPair => ({ privateKey: device.privateKey, publicKey: device.peerKey });
 
   beforeAll(async () => {
-    const identity = await generateKeyPair('Ed25519');
-    const pair = ed25519KeyPairFromLibp2p(identity);
-    owner = { privateKey: pair.privateKeyB64, publicKey: pair.publicKeyB64 };
+    owner = freshKeyPair();
     node = new CadreNode({
       controlNetwork: { partyId: 'remove-machine-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
       profile: 'transaction',
-      privateKey: identity,
+      privateKey: await generateKeyPair('Ed25519'),
       trustedOwners: { pinnedKeys: [owner.publicKey] },
     });
     await node.start();
@@ -95,76 +96,109 @@ describe('CadreNode.removeMachine', () => {
     return (await db.queryCadrePeerStampId(device.partyId))!;
   }
 
+  /** `voucher` (an owner) seats `key` as a further owner through the database writer, as `addOwner` does. */
+  async function vouchOwner(voucher: KeyPair, key: KeyPair): Promise<void> {
+    expect(await db.insertOwnerKeyVouched(key.publicKey, voucher.publicKey, (message) => signAs(voucher, message))).toBe(true);
+  }
+
   function rawRow(sql: string, key: string): Promise<Record<string, unknown> | undefined> {
     return rawDb.get(sql, [key]);
   }
 
-  it('removes an owner machine completely in one transaction, keeping the device it vouched by re-vouching it', async () => {
+  async function tombstonedKeys(): Promise<string[]> {
+    return (await db.queryRevocations()).map((row) => row.rowKey);
+  }
+
+  it('refuses an owner key removal by name: the only owner key, this node\'s own, and one with no live row', async () => {
+    expect((await node.planOwnerKeyRemoval(owner.publicKey)).refusal).toBe('last-owner');
+    await expect(node.removeOwner(owner.publicKey)).rejects.toMatchObject({ name: 'OwnerKeyRemovalRefusedError', code: 'last-owner' });
+
+    await vouchOwner(owner, freshKeyPair());
+    await expect(node.removeOwner(owner.publicKey)).rejects.toMatchObject({ name: 'OwnerKeyRemovalRefusedError', code: 'self' });
+    await expect(node.removeOwner(freshKeyPair().publicKey)).rejects.toMatchObject({ name: 'OwnerKeyRemovalRefusedError', code: 'unknown' });
+
+    expect((await db.getOwnerKeys()).has(owner.publicKey)).toBe(true);
+    expect(await tombstonedKeys()).toEqual([]);
+  }, 60_000);
+
+  it('removes a machine completely in one transaction, leaving its owner key and the device that key vouched', async () => {
     const invite = await issueOwnerInvitation(3);
     const machine = await mintContactJoiner();
     const admitted = await redeem(invite, machine);
     expect(admitted.alreadyMember).toBe(false);
     // The redemption's membership notification ran the anchor sync: the issuer is anchored, so
-    // the machine's key is derived from the row the node itself wrote.
+    // the seated owner key is derived from the row the node itself wrote.
     expect(node.getTrustedOwnerStore()!.sources().get(machine.peerKey)).toBe('chain');
     await seatDeviceToken(machine);
     const dependent = await mintContactJoiner();
-    const dependentPublishedAt = Date.now() - 1_000;
-    const dependentStamp = await vouchDevice(asSigner(machine), dependent, dependentPublishedAt);
-    expect((await node.listAuthorizedMembers()).map((row) => row.peerId).sort()).toEqual([dependent.partyId, machine.partyId].sort());
+    await vouchDevice(asSigner(machine), dependent, Date.now() - 1_000);
 
     const plan = await node.planMachineRemoval(machine.partyId);
-    expect(plan.refusal).toBeNull();
-    expect(plan.machine).toMatchObject({ peerId: machine.partyId, publicKey: machine.peerKey, isSelf: false, isOwner: true, isMember: true, trusted: true, vouchedBy: owner.publicKey });
-    expect(plan.removesOwnerKey).toBe(true);
-    expect(plan.dependents).toEqual({ owners: [], peers: [dependent.partyId] });
-    expect(plan.invitations).toEqual([invite.publicKey]);
-    expect(plan.ownDependency).toBe(false);
-
-    const result = await node.removeMachine(machine.partyId, { revouch: { peers: [dependent.partyId] } });
-    expect(result).toEqual({
-      removedPeer: true,
-      removedOwnerKey: true,
-      removedDeviceToken: true,
-      withdrawnInvitations: [invite.publicKey],
-      revouched: { owners: [], peers: [dependent.partyId] },
+    expect(plan).toEqual({
+      machine: expect.objectContaining({ peerId: machine.partyId, isSelf: false, trusted: true, vouchedBy: owner.publicKey }),
+      refusal: null,
+      invitations: [invite.publicKey],
     });
 
-    // Every row of the machine is gone and its stamp retired; the invitation's row stays, withdrawn.
+    const result = await node.removeMachine(machine.partyId);
+    expect(result).toEqual({ removedPeer: true, removedDeviceToken: true, withdrawnInvitations: [invite.publicKey] });
+
+    // The machine's row and token are gone and their stamps retired; the invitation's row stays, withdrawn.
     expect(await rawRow('select PeerId from CadreControl.CadrePeer where PeerId = ?', machine.partyId)).toBeUndefined();
-    expect(await rawRow('select Key from CadreControl.OwnerKey where Key = ?', machine.peerKey)).toBeUndefined();
     expect(await rawRow('select PeerId from CadreControl.DeviceToken where PeerId = ?', machine.partyId)).toBeUndefined();
     const tombstones = await db.queryRevocations();
     expect(tombstones.filter((row) => row.rowKey === machine.partyId).map((row) => row.tableName).sort()).toEqual(['CadrePeer', 'DeviceToken']);
-    expect(tombstones.filter((row) => row.rowKey === machine.peerKey).map((row) => row.tableName)).toEqual(['OwnerKey']);
     expect(tombstones.filter((row) => row.rowKey === invite.publicKey).map((row) => row.tableName)).toEqual(['CadreInvite']);
     expect(tombstones.every((row) => row.signerKey === owner.publicKey)).toBe(true);
     expect((await node.listCadreInvitations()).find((status) => status.invite.key === invite.publicKey)).toMatchObject({ withdrawn: true, live: false, usesRecorded: 1 });
     // The machine cannot come back through the invitation it redeemed, seats left or not.
     await expectConstraintFailure(redeem(invite, machine), 'Authorized');
 
-    // The dependent stands on the remover's signature, with its own stamp and freshness untouched.
+    // The owner key the invitation seated is the person's: it stays, trusted, and so does what it vouched.
+    expect(tombstones.some((row) => row.rowKey === machine.peerKey)).toBe(false);
+    expect((await node.listOwnerKeys()).find((entry) => entry.key === machine.peerKey)).toMatchObject({ trusted: true });
     expect((await node.listAuthorizedMembers()).map((row) => row.peerId)).toEqual([dependent.partyId]);
-    const kept = (await db.queryCadrePeers()).find((row) => row.peerId === dependent.partyId);
-    expect(kept).toMatchObject({ vouchOwner: owner.publicKey, vouchUsage: null, stampId: dependentStamp, updatedAt: dependentPublishedAt });
     expect((await node.listMachines()).map((entry) => entry.peerId)).not.toContain(machine.partyId);
   }, 60_000);
 
-  it('refuses a re-vouch naming a row the machine did not vouch, before any write', async () => {
-    const other = freshKeyPair();
-    // Through the database writer: with authorized siblings and no connection, this node is
-    // alone, and `addOwner` refuses an owner add then.
-    expect(await db.insertOwnerKeyVouched(other.publicKey, owner.publicKey, signOwner)).toBe(true);
-    const otherPeerId = peerIdFromEd25519PublicKeyB64(other.publicKey)!;
+  it('removes an owner key, re-vouching the device it vouched first; an owner re-vouch while alone and a row it did not vouch are refused before any write', async () => {
+    const removed = freshKeyPair();
+    await vouchOwner(owner, removed);
+    const ownerDependent = freshKeyPair();
+    await vouchOwner(removed, ownerDependent);
+    const device = await mintContactJoiner();
+    const devicePublishedAt = Date.now() - 1_000;
+    const deviceStamp = await vouchDevice(removed, device, devicePublishedAt);
     const bystander = await mintContactJoiner();
-    const bystanderStamp = await vouchDevice(owner, bystander, Date.now());
-    expect((await node.listMachines()).find((entry) => entry.peerId === otherPeerId)).toMatchObject({ isOwner: true, isMember: false, trusted: false, vouchedBy: owner.publicKey });
+    await vouchDevice(owner, bystander, Date.now());
 
-    await expect(node.removeMachine(otherPeerId, { revouch: { peers: [bystander.partyId] } }))
-      .rejects.toThrow(/re-vouch names rows the removed machine did not vouch/);
+    const plan = await node.planOwnerKeyRemoval(removed.publicKey);
+    expect(plan).toEqual({
+      ownerKey: { key: removed.publicKey, label: null, vouchedBy: owner.publicKey, heldHere: false, trusted: true },
+      refusal: null,
+      dependents: { owners: [ownerDependent.publicKey], peers: [device.partyId] },
+      ownDependency: false,
+    });
 
-    expect((await db.getOwnerKeys()).has(other.publicKey)).toBe(true);
-    expect(await db.queryCadrePeerStampId(bystander.partyId)).toBe(bystanderStamp);
-    expect((await db.queryRevocations()).some((row) => row.rowKey === other.publicKey)).toBe(false);
+    await expect(node.removeOwner(removed.publicKey, { revouch: { peers: [bystander.partyId] } }))
+      .rejects.toThrow(/re-vouch names rows the removed owner key did not vouch/);
+    // Authorized siblings and no control connection: the re-added owner row would stay on this node.
+    expect(node.getControlConnectionCount()).toBe(0);
+    await expect(node.removeOwner(removed.publicKey, { revouch: { owners: [ownerDependent.publicKey] } }))
+      .rejects.toMatchObject({ name: 'OwnerKeyRemovalRefusedError', code: 'alone' });
+    expect((await db.getOwnerKeys()).has(removed.publicKey)).toBe(true);
+    expect(await tombstonedKeys()).not.toContain(removed.publicKey);
+    expect(await tombstonedKeys()).not.toContain(ownerDependent.publicKey);
+
+    const result = await node.removeOwner(removed.publicKey, { revouch: { peers: [device.partyId] } });
+    expect(result).toEqual({ removed: true, revouched: { owners: [], peers: [device.partyId] } });
+
+    expect(await rawRow('select Key from CadreControl.OwnerKey where Key = ?', removed.publicKey)).toBeUndefined();
+    const [tombstone] = (await db.queryRevocations()).filter((row) => row.rowKey === removed.publicKey);
+    expect(tombstone).toMatchObject({ tableName: 'OwnerKey', signerKey: owner.publicKey });
+    // The device stands on the remover's signature, with its own stamp and freshness untouched.
+    const kept = (await db.queryCadrePeers()).find((row) => row.peerId === device.partyId);
+    expect(kept).toMatchObject({ vouchOwner: owner.publicKey, vouchUsage: null, stampId: deviceStamp, updatedAt: devicePublishedAt });
+    expect((await node.listAuthorizedMembers()).map((row) => row.peerId)).toContain(device.partyId);
   }, 60_000);
 });

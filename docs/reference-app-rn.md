@@ -478,8 +478,8 @@ packages/reference-app-rn/
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
     add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw open ones
     machines-section.tsx      # Settings → Devices and nodes: the cadre's machines and the devices invited; an owner removes one
-    machine-removal.tsx       # Removing a machine: the plan, the confirmation with its Keep switches, removeMachine; shared with the provider section
-    machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, the removal prompt's Keep switches, a rented node's provider
+    machine-removal.tsx       # Removing a machine: the plan, the confirmation, removeMachine; shared with the provider section
+    machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, a rented node's provider
     provider-store-section.tsx # Settings → Rent an always-on node: the provider, sign-in in the browser, rent, the rows for rented nodes
     use-rental-poll.ts        # The rows' re-read from the provider every few seconds, only while Settings is in front and the app is in the foreground
     provider-session.ts       # One provider's descriptor, tokens and client; sign-in again, once, when the provider refuses the tokens
@@ -946,30 +946,29 @@ Below **Copy invitation**, the owner can recommend another Sereus app, so that i
 **The list** has one row per machine `CadreNode.listMachines` reports:
 
 - **Title**: what the machine is, from the node profile it published: "App" (an app on a phone or in a browser), "Always-on node", or "Machine" until it has published one; "(this device)" on this phone's own row.
-- **Facts**: "Owner" when its key is an owner key; "Last seen" from its last self-signed record (just now, or minutes, hours or days ago; "never" when this phone holds none it can verify); and "Key", the first 8 characters of its public key, which is the fingerprint cadre-host shows for an owner. A running machine re-stamps its record every 7.5 minutes, so "Last seen 3 minutes ago" means it is running, and over about 15 minutes means it is stopped or cannot reach the cadre.
-- **Not trusted here** (warning colour): its row no longer passes this phone's membership check, as for a device an owner added, when that owner was removed and the device was not kept.
-- **Owner key, no machine joined**: an owner key whose machine has no row in the cadre, such as one seated for a machine not admitted yet. On this phone's own row (a founder that has not published one) the fact reads "Owner" instead.
+- **Facts**: "Last seen" from its last self-signed record (just now, or minutes, hours or days ago; "never" when this phone holds none it can verify); and "Key", the first 8 characters of its identity key, in the fingerprint form cadre-host uses. A running machine re-stamps its record every 7.5 minutes, so "Last seen 3 minutes ago" means it is running, and over about 15 minutes means it is stopped or cannot reach the cadre.
+- **Not trusted here** (warning colour): its row no longer passes this phone's membership check, as for a device whose owner key was removed without keeping the device.
+
+Owner keys are not machines and are not listed here ([architecture.md → Owner Keys](architecture.md#owner-keys)).
 
 Below the machines, each live invitation made for one app that has not joined is a row "Invited, not joined yet", with the app's shortened peer id, owner or member, and expiry, and **Withdraw** (asks once). Open invitations stay under Add a device or app.
 
 The list is read when the section appears, when a join replaces the node, after each removal or withdrawal here, after Add a device or app makes or withdraws an invitation, and on **Refresh**; it is not polled. A read that finishes after the node was replaced is dropped.
 
-**Who can remove.** On an owner device every row has **Remove** except this device's, under which a line says "To remove this device, use another owner device": a device cannot sign the removal of its own owner key. A member sees the list with one line saying only an owner can remove machines, and no buttons.
+**Who can remove.** On an owner device every row has **Remove** except this device's, under which a line says "To remove this device, use another owner device": a machine does not remove itself (`self`); another machine removes it, and this app then learns of it and forgets the cadre ([When this app is removed](#when-this-app-is-removed)). A member sees the list with one line saying only an owner can remove machines, and no buttons.
 
 **The confirmation.** Remove reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or machine›?" with the machine's key and:
 
-- **What happens**: it is removed from this cadre; its owner key is removed too, when it is an owner; the invitations it could join again with are withdrawn, counted.
-- **Devices and owners this machine added**, when its owner key goes: one **Keep** switch per device or owner key that key added, on by default. A kept one is re-vouched under this device's key before the removal (`removeMachine`'s `revouch`); one switched off stops being trusted on every machine. A device added as an owner is one switch for its row and its owner key together. The prompt says to switch off anything the user does not recognise.
-- **When this device was added by the machine**: after removing it, ask another owner to add this device again, since this device cannot re-vouch its own rows.
+- **What happens**: it is removed from this cadre, and the invitations it could join again with are withdrawn, counted. Owner keys stay, including one the machine held.
 - **What removal does not do**: the machine keeps whatever it already copied, including the cadre's shared data, and removing it stops it syncing with this cadre's machines. It also keeps the strands' member keys (`tickets/blocked/decide-removed-machine-strand-access.md`), which is why the prompt says "this cadre's machines" and not more.
 
-**Remove** runs `removeMachine` and the list refreshes; **Cancel**, or the system back button, does nothing. A machine that holds the only owner key opens the prompt with "It cannot be removed: it holds the only owner key of this cadre." and only **Close**. A machine another owner removed meanwhile shows "Already removed", whether the plan or the removal finds it gone, and the list refreshes. Any other failure shows its error in an alert.
+**Remove** runs `removeMachine` and the list refreshes; **Cancel**, or the system back button, does nothing. A machine another owner removed meanwhile shows "Already removed", whether the plan or the removal finds it gone, and the list refreshes. Any other failure shows its error in an alert.
 
 **Uses.**
 
 - **An uninstalled app, or a lost or stolen phone**: remove it from another owner device. Its push token goes with it, so the cadre stops waking it.
 - **A dead always-on node, or a replaced host**: remove the old node here, then add the new one with [Add an always-on node](#adding-a-home-machines-node-cadre-host) (the QR claim). [cadre-host.md → Remove, reset and a lost host](cadre-host.md#remove-reset-and-a-lost-host) links here.
-- **Leaving the cadre from an owner device**: another owner removes it; this device cannot sign its own removal.
+- **Leaving the cadre from an owner device**: another owner device removes it.
 
 ### When this app is removed
 

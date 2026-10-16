@@ -234,7 +234,7 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 
 	const handleRemove = (rental: Rental) => {
 		const machine = machines.find((entry) => entry.peerId === rental.peerId);
-		if (machine) removal.request(machine, machines);
+		if (machine) removal.request(machine);
 	};
 
 	const handleForget = async (rental: Rental) => {
@@ -306,7 +306,7 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 							key={rental.containerId}
 							rental={rental}
 							reading={readings.get(rental.containerId) ?? { kind: 'unread' }}
-							listed={rental.peerId !== undefined && machines.some((machine) => machine.peerId === rental.peerId && machine.isMember)}
+							listed={rental.peerId !== undefined && machines.some((machine) => machine.peerId === rental.peerId)}
 							busy={busy}
 							onAction={handleAction}
 						/>

@@ -1997,9 +1997,8 @@ export interface InvitationChain {
 }
 
 /**
- * One machine of the cadre as `CadreNode.listMachines` reports it: a live `CadrePeer` row,
- * or a live `OwnerKey` whose key derives a peer id with no `CadrePeer` row (an owner key
- * seated for a machine not yet admitted, or a founder that never self-published).
+ * One machine of the cadre as `CadreNode.listMachines` reports it: a live `CadrePeer` row. An
+ * owner key is not a machine; `CadreNode.listOwnerKeys` lists those.
  *
  * `profile` and `lastPublishedAt` are the machine's own claim only when the row's
  * self-signature verifies; both are null otherwise, so an owner re-vouch that bumped
@@ -2008,21 +2007,17 @@ export interface InvitationChain {
  */
 export interface CadreMachine {
   peerId: string;
-  /** ed25519 public key (base64url) behind `peerId`; null when the id is not ed25519. */
+  /** The machine's ed25519 identity key (base64url) behind `peerId`; null when the id is not ed25519. Never an owner key. */
   publicKey: string | null;
   /** This node itself. */
   isSelf: boolean;
-  /** `publicKey` is a live `OwnerKey` here. */
-  isOwner: boolean;
-  /** Has a live `CadrePeer` row; false for an owner key with no machine row. */
-  isMember: boolean;
   /** Passes this node's authorized-membership predicate now (`CadreNode.listAuthorizedMembers`; always false for self, which that set excludes). */
   trusted: boolean;
   /** The machine's self-published node profile; null until it publishes, or when its signature does not verify. */
   profile: NodeProfile | null;
   /** `UpdatedAt` of its self-signed record, re-stamped while it runs; null on the same terms as `profile`. */
   lastPublishedAt: number | null;
-  /** `CadrePeer.VouchOwner` (or `OwnerKey.VouchOwner` for an owner-only entry): the owner that vouched it, or the issuer of the invitation that admitted it. */
+  /** `CadrePeer.VouchOwner`: the owner key that vouched it, or the issuer of the invitation that admitted it. */
   vouchedBy: string | null;
 }
 
@@ -2049,36 +2044,67 @@ export type OwnerKeyAddRefusal =
 export type MachineRemovalRefusal =
   /** This node holds no enrolled owner key, so it cannot sign the removal. */
   | 'not-an-owner'
-  /** The machine is this node: an owner cannot sign its own `OwnerKey` removal, so ask another owner. */
-  | 'self'
-  /** The machine holds the only live owner key here (`MinOneOwner`). */
-  | 'last-owner';
+  /** The machine is this node: leaving a cadre is the embedder's flow (stop the node, delete its data), not a removal. */
+  | 'self';
 
 /**
  * What `CadreNode.removeMachine` would do for one machine, read without writing
- * (`CadreNode.planMachineRemoval`), for an app's confirmation step.
+ * (`CadreNode.planMachineRemoval`), for an app's confirmation step. A machine vouches nothing
+ * (a `VouchOwner` is an owner key), so removing one strands no other row.
  */
 export interface MachineRemovalPlan {
   /** The machine as listed, or null when no live row names it here (already removed). */
   machine: CadreMachine | null;
   refusal: MachineRemovalRefusal | null;
-  /** The machine's key is a live owner key, so the removal also retires it. */
-  removesOwnerKey: boolean;
-  /** Rows the machine's owner key vouched, which stop passing the membership predicate everywhere once it is removed unless re-vouched first. Empty unless `removesOwnerKey`. */
-  dependents: {
-    /** Live `OwnerKey` rows whose `VouchOwner` is the machine's key, this node's own excluded. */
-    owners: string[];
-    /** Live `CadrePeer` rows whose `VouchOwner` is the machine's key, the machine itself and this node excluded. */
-    peers: string[];
-  };
   /** Live `CadreInvite` keys the machine could redeem to come back: targeted at it, or already redeemed by it with uses left. */
   invitations: string[];
-  /** This node's own `OwnerKey` or `CadrePeer` row was vouched by the machine. It cannot re-vouch its own rows; another owner has to re-add it afterwards. */
+}
+
+/** What `CadreNode.removeMachine` wrote. All false and empty when no live row named the machine here. */
+export interface MachineRemovalResult {
+  removedPeer: boolean;
+  removedDeviceToken: boolean;
+  /** `CadreInvite` keys whose withdrawal tombstone this call filed. */
+  withdrawnInvitations: string[];
+}
+
+/** Why `CadreNode.removeOwner` refuses by name (`OwnerKeyRemovalRefusedError.code`). */
+export type OwnerKeyRemovalRefusal =
+  /** This node holds no enrolled owner key, so it cannot sign the removal. */
+  | 'not-an-owner'
+  /** No live `OwnerKey` row names the key here (never an owner, or already removed). */
+  | 'unknown'
+  /** The key is the only live owner key (`MinOneOwner`); no owner can remove it. */
+  | 'last-owner'
+  /** The key is this node's own owner key: an owner cannot sign its own row's removal (`A.Key <> old.Key`), so ask another owner key. */
+  | 'self'
+  /** A re-vouch of an `OwnerKey` row was asked for while this node has no control connection and the party has other members: the re-added row has no re-issue path. Decided at call time, so never planned. */
+  | 'alone';
+
+/** The rows sharing the owner keys' voucher column that a removed owner key strands unless re-vouched first. */
+export interface OwnerKeyDependents {
+  /** Live `OwnerKey` rows whose `VouchOwner` is the key, this node's own excluded. */
+  owners: string[];
+  /** Live `CadrePeer` rows (peer ids) whose `VouchOwner` is the key, this node's own excluded. */
+  peers: string[];
+}
+
+/**
+ * What `CadreNode.removeOwner` would do for one owner key, read without writing
+ * (`CadreNode.planOwnerKeyRemoval`), for an app's confirmation step.
+ */
+export interface OwnerKeyRemovalPlan {
+  /** The key as `CadreNode.listOwnerKeys` lists it, or null when no live row names it here. */
+  ownerKey: CadreOwnerKey | null;
+  refusal: Exclude<OwnerKeyRemovalRefusal, 'alone'> | null;
+  /** Rows the key vouched, which stop passing the membership predicate on every machine once it is removed unless re-vouched first. */
+  dependents: OwnerKeyDependents;
+  /** This node's own `OwnerKey` or `CadrePeer` row was vouched by the key. It cannot re-vouch its own rows; another owner has to re-add it afterwards. */
   ownDependency: boolean;
 }
 
-/** Options for `CadreNode.removeMachine`. */
-export interface RemoveMachineOptions {
+/** Options for `CadreNode.removeOwner`. */
+export interface RemoveOwnerOptions {
   /** Dependents to re-vouch under this node's key before the removal; each must appear in the plan's `dependents`. */
   revouch?: {
     owners?: readonly string[];
@@ -2086,18 +2112,12 @@ export interface RemoveMachineOptions {
   };
 }
 
-/** What `CadreNode.removeMachine` wrote. All false and empty when no live row named the machine here. */
-export interface MachineRemovalResult {
-  removedPeer: boolean;
-  removedOwnerKey: boolean;
-  removedDeviceToken: boolean;
-  /** `CadreInvite` keys whose withdrawal tombstone this call filed. */
-  withdrawnInvitations: string[];
+/** What `CadreNode.removeOwner` wrote. */
+export interface OwnerKeyRemovalResult {
+  /** The `OwnerKey` row and its tombstone were written; false only when another owner's removal reached this node between the plan and the write. */
+  removed: boolean;
   /** Dependents re-vouched under this node's key before the removal. */
-  revouched: {
-    owners: string[];
-    peers: string[];
-  };
+  revouched: OwnerKeyDependents;
 }
 
 /**

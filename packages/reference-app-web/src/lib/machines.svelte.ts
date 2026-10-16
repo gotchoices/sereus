@@ -1,12 +1,9 @@
 /**
  * machines.svelte.ts — state of the Cadre page's "Devices and nodes" card: every machine of this
- * cadre (apps, always-on nodes, owner keys no machine has joined with) and the devices invited and
- * not joined yet, and on an owner tab, Remove (`CadreNode.removeMachine`; docs/architecture.md →
- * "Removing a machine"). The browser counterpart of the phone app's `machines-section.tsx` and
- * `machines.ts`, with the same list, confirmation and wording.
- *
- * A removed machine's owner key goes with it, and the devices and owners that key added stop being
- * trusted unless re-vouched first, so the confirmation lists them with a Keep switch each.
+ * cadre (apps and always-on nodes) and the devices invited and not joined yet, and on an owner tab,
+ * Remove (`CadreNode.removeMachine`; docs/architecture.md → "Removing a machine"). The browser
+ * counterpart of the phone app's `machines-section.tsx` and `machines.ts`, with the same list,
+ * confirmation and wording. Owner keys are not machines and stay when one is removed.
  *
  * Module state, as `add-device.svelte.ts` is: the router unmounts the page on every route change.
  * The store forgets it when the node moves to another party (`resetMachinesCard`), and a read that
@@ -20,7 +17,6 @@ import {
 	type CadreNode,
 	type MachineRemovalPlan,
 	type MachineRemovalRefusal,
-	type RemoveMachineOptions,
 } from '@serfab/cadre-core';
 import { getCadreNode, isOwner } from './cadre-web.js';
 import { pushError } from './diagnostics.svelte.js';
@@ -31,7 +27,6 @@ import type { Standing } from './add-device.svelte.js';
 export const REFUSAL_LINE: Record<MachineRemovalRefusal, string> = {
 	'not-an-owner': 'Only an owner can remove machines, and this tab is not one.',
 	self: 'To remove this tab, use another owner device.',
-	'last-owner': 'It cannot be removed: it holds the only owner key of this cadre.',
 };
 
 /** Why the last action did not do what was asked; replaced by the next action's. */
@@ -40,29 +35,10 @@ export interface MachinesNotice {
 	message: string;
 }
 
-/**
- * One "Keep" switch in the confirmation: a machine or owner key the removed machine added. A device
- * added as an owner is one dependent with both its peer row and its owner key, so one switch keeps
- * or drops it whole.
- */
-export interface Dependent {
-	/** Unique within the confirmation: the peer id, else the owner key. */
-	id: string;
-	/** A dependent `CadrePeer` row's peer id. */
-	peerId: string | null;
-	/** A dependent `OwnerKey` row's key. */
-	ownerKey: string | null;
-	/** The listed machine it is, when one is listed. */
-	machine: CadreMachine | null;
-}
-
 /** The removal the confirmation is for. */
 export interface PendingRemoval {
 	machine: CadreMachine;
 	plan: MachineRemovalPlan;
-	dependents: Dependent[];
-	/** `Dependent.id`s whose Keep switch is on. */
-	kept: string[];
 }
 
 interface MachinesState {
@@ -132,23 +108,15 @@ export async function askToRemove(machine: CadreMachine): Promise<void> {
 			void refreshMachines();
 			return;
 		}
-		const dependents = dependentsOf(plan, state.machines);
-		state.confirming = { machine: plan.machine, plan, dependents, kept: dependents.map((dependent) => dependent.id) };
+		state.confirming = { machine: plan.machine, plan };
 	});
-}
-
-export function setKeep(id: string, keep: boolean): void {
-	const removal = state.confirming;
-	if (!removal) return;
-	const others = removal.kept.filter((kept) => kept !== id);
-	removal.kept = keep ? [...others, id] : others;
 }
 
 export function cancelRemoval(): void {
 	state.confirming = null;
 }
 
-/** Remove the machine the confirmation is for, re-vouching the dependents kept first, then re-read the list. */
+/** Remove the machine the confirmation is for, then re-read the list. */
 export async function confirmRemoval(): Promise<void> {
 	const removal = state.confirming;
 	state.confirming = null;
@@ -159,14 +127,14 @@ export async function confirmRemoval(): Promise<void> {
 	});
 }
 
-async function remove(node: CadreNode, { machine, dependents, kept }: PendingRemoval): Promise<void> {
+async function remove(node: CadreNode, { machine }: PendingRemoval): Promise<void> {
 	try {
-		const result = await node.removeMachine(machine.peerId, { revouch: revouchFor(dependents, new Set(kept)) });
-		if (!result.removedPeer && !result.removedOwnerKey) {
+		const result = await node.removeMachine(machine.peerId);
+		if (!result.removedPeer) {
 			state.notice = alreadyRemoved(machine);
 			return;
 		}
-		console.info(`[cadre] removed machine ${machine.peerId} (owner key ${result.removedOwnerKey}, invitations withdrawn ${result.withdrawnInvitations.length}, kept ${result.revouched.peers.length} devices and ${result.revouched.owners.length} owner keys)`);
+		console.info(`[cadre] removed machine ${machine.peerId} (invitations withdrawn ${result.withdrawnInvitations.length})`);
 	} catch (err) {
 		console.warn(`[cadre] removing machine ${machine.peerId} failed:`, err);
 		if (err instanceof MachineRemovalRefusedError) {
@@ -217,9 +185,9 @@ function alreadyRemoved(machine: CadreMachine): MachinesNotice {
 }
 
 // ── What the card shows ───────────────────────────────────────────────────────
-// NOTE: hand-kept copies of the phone app's `machines.ts` and the words in `machines-section.tsx`,
-// where `test/machines.spec.ts` covers `dependentsOf` and `revouchFor`. If a third surface (cadre-host's
-// UI) lists machines, move them into cadre-core and import them everywhere.
+// NOTE: hand-kept copies of the phone app's `machines.ts` and the words in `machines-section.tsx`
+// and `machine-removal.tsx`. If a third surface (cadre-host's UI) lists machines, move them into
+// cadre-core and import them everywhere.
 
 /** What a listed machine is, from the node profile it published; `Machine` until it publishes one. */
 export function machineKind(machine: CadreMachine): string {
@@ -252,7 +220,7 @@ function plural(count: number, unit: string): string {
 	return `${count} ${unit}${count === 1 ? '' : 's'} ago`;
 }
 
-/** The key fingerprint cadre-host shows for an owner, else the shortened peer id. */
+/** The fingerprint of the machine's identity key, in cadre-host's form, else the shortened peer id. */
 export function machineCode(machine: CadreMachine): string {
 	return machine.publicKey !== null ? ownerFingerprint(machine.publicKey) : peerCode(machine.peerId);
 }
@@ -262,20 +230,11 @@ function machineName(machine: CadreMachine): string {
 	return `The ${machineKind(machine).toLowerCase()} ${machineCode(machine)}`;
 }
 
-/** "App 1a2b3c4d (owner)"; an owner key the listing has no machine for is named by its fingerprint. */
-export function dependentName({ id, machine, peerId, ownerKey }: Dependent): string {
-	const owner = ownerKey !== null ? ' (owner)' : '';
-	if (machine) return `${machineKind(machine)} ${machineCode(machine)}${owner}`;
-	if (peerId !== null) return `Machine ${peerCode(peerId)}${owner}`;
-	return `Owner key ${ownerFingerprint(id)}`;
-}
-
-/** "It is removed from this cadre. Its owner key is removed too. 2 invitations it could join again with are withdrawn." */
+/** "It is removed from this cadre. The 2 invitations it could join again with are withdrawn." */
 export function removalEffects(plan: MachineRemovalPlan): string {
 	const count = plan.invitations.length;
 	return [
 		'It is removed from this cadre.',
-		plan.removesOwnerKey ? 'Its owner key is removed too.' : null,
 		count === 1 ? 'The invitation it could join again with is withdrawn.' : null,
 		count > 1 ? `The ${count} invitations it could join again with are withdrawn.` : null,
 	].filter((line) => line !== null).join(' ');
@@ -291,29 +250,6 @@ export function removalEffects(plan: MachineRemovalPlan): string {
  * such invitations turn up, list them on the machine's row.
  */
 function pendingDeviceInvitations(statuses: readonly CadreInviteStatus[], machines: readonly CadreMachine[]): CadreInviteStatus[] {
-	const members = new Set(machines.filter((machine) => machine.isMember).map((machine) => machine.peerId));
+	const members = new Set(machines.map((machine) => machine.peerId));
 	return statuses.filter((status) => status.live && status.invite.peerId !== null && !members.has(status.invite.peerId));
-}
-
-/** The plan's dependents as switches: each owner key joined to the dependent peer row behind it, when there is one. */
-function dependentsOf(plan: MachineRemovalPlan, machines: readonly CadreMachine[]): Dependent[] {
-	const byPeerId = new Map(machines.map((machine) => [machine.peerId, machine]));
-	const byKey = new Map(machines.filter((machine) => machine.publicKey !== null).map((machine) => [machine.publicKey, machine]));
-	const dependents = plan.dependents.peers.map((peerId): Dependent => ({ id: peerId, peerId, ownerKey: null, machine: byPeerId.get(peerId) ?? null }));
-	for (const ownerKey of plan.dependents.owners) {
-		const machine = byKey.get(ownerKey) ?? null;
-		const sameMachine = machine && dependents.find((dependent) => dependent.peerId === machine.peerId);
-		if (sameMachine) sameMachine.ownerKey = ownerKey;
-		else dependents.push({ id: ownerKey, peerId: null, ownerKey, machine });
-	}
-	return dependents;
-}
-
-/** The re-vouch `removeMachine` takes for the dependents whose switch is on. */
-function revouchFor(dependents: readonly Dependent[], kept: ReadonlySet<string>): NonNullable<RemoveMachineOptions['revouch']> {
-	const chosen = dependents.filter((dependent) => kept.has(dependent.id));
-	return {
-		owners: chosen.flatMap((dependent) => dependent.ownerKey ?? []),
-		peers: chosen.flatMap((dependent) => dependent.peerId ?? []),
-	};
 }

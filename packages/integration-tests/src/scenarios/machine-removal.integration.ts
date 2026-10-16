@@ -1,7 +1,8 @@
 /**
  * E2E: an owner removes another owner's machine from the cadre with one call,
- * `CadreNode.removeMachine` (`docs/architecture.md` → "Removing a machine"), and every other
- * machine follows by replication.
+ * `CadreNode.removeMachine`, then that owner's key with another, `CadreNode.removeOwner`, keeping
+ * the device the key vouched (`docs/architecture.md` → "Removing a machine", "Removing an owner
+ * key"), and every other machine follows by replication.
  *
  * Machines:
  * - **A**, the founding owner, listening on a loopback WebSocket port: the remover.
@@ -9,19 +10,20 @@
  *   (`addDrone` plus seed delivery). Nothing on M is driven by the scenario: it follows the
  *   removal from the rows and tombstones that replicate to it, at its next membership refresh.
  * - **B**, a phone-shaped device (no listen address) that joins by redeeming an owner-granting
- *   invitation at A, so it holds a control connection to A, wires its own key as an owner and
- *   vouches C. The machine removed.
- * - **C**, a device B vouches: a bare peer id with no node, because what is asserted is the
+ *   invitation at A, so it holds a control connection to A, wires the owner key the invitation
+ *   seated and vouches C. The machine removed, and the owner key removed after it.
+ * - **C**, a device B's key vouches: a bare peer id with no node, because what is asserted is the
  *   membership predicate on A and M. The dependent A keeps by re-vouching it under its own key.
  *
  * The invitation has two uses, so after B's redemption it is still live and B could redeem it
  * again; the removal withdraws it in the same transaction, and M sees it withdrawn.
  *
- * Asserted on A, before `removeMachine` returns: the one call removed B's membership row and
- * owner key, withdrew the invitation, re-vouched C, and closed B's control connection (the
- * refresh the removal notified hung it up). Asserted on M, by replication alone: B stops being
- * authorized and C stays authorized under A's voucher, the invitation is withdrawn, and M's
- * anchor drops B's key at its next refresh.
+ * Asserted on A, before `removeMachine` returns: the one call removed B's membership row,
+ * withdrew the invitation and closed B's control connection (the refresh the removal notified
+ * hung it up), and left B's owner key trusted, so C stays authorized. Then, before `removeOwner`
+ * returns: B's key is gone from A's anchor and C is re-vouched under A's key. Asserted on M, by
+ * replication alone: B stops being authorized and C stays authorized under A's voucher, the
+ * invitation is withdrawn, and M's anchor drops B's key at its next refresh.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -43,7 +45,7 @@ const M_RECONCILE_MS = 2_000;
 const REFRESH_MS = 10_000;
 
 describe('E2E an owner removes a machine from the cadre', () => {
-	it('A removes B in one call: B\'s row, owner key and invitation go, C is kept under A\'s voucher, B\'s connection closes, and M follows', async () => {
+	it('A removes machine B, then B\'s owner key keeping C: B\'s row and invitation go, its connection closes, C is kept under A\'s voucher, and M follows', async () => {
 		const partyId = `machine-removal-${Date.now()}`;
 		const aKey = await generateKeyPair('Ed25519');
 		const bKey = await generateKeyPair('Ed25519');
@@ -92,32 +94,37 @@ describe('E2E an owner removes a machine from the cadre', () => {
 			});
 			expect(connectedTo(owner, bPeerId)).toBe(true);
 
-			// ── The plan A's app would confirm ─────────────────────────────────────
-			const plan = await owner.planMachineRemoval(bPeerId);
-			expect(plan).toMatchObject({ refusal: null, removesOwnerKey: true, invitations: [inviteKey], ownDependency: false });
-			expect(plan.machine).toMatchObject({ peerId: bPeerId, publicKey: bOwnerKey, isSelf: false, isOwner: true, isMember: true, trusted: true, vouchedBy: aOwnerKey });
-			expect(plan.dependents).toEqual({ owners: [], peers: [cPeerId] });
-
-			// ── A removes B, keeping C ──────────────────────────────────────────────
+			// ── A removes machine B; B's owner key, and so C, stay ──────────────────
+			// B's first publish of its own address record rewrites its row. A removal that races it
+			// fails as a concurrent modification, which the control-write retry does not re-run
+			// (`tickets/backlog/bug-owner-write-racing-a-machines-own-publish-fails`), so let it land
+			// first. `registerSelf` joins that publish when it is in flight, or makes it.
+			await waitUntil(async () => (await removed.registerSelf()) !== 'skipped', {
+				timeoutMs: OP_MS, intervalMs: 250, description: 'B publishes its own address record',
+			});
+			const machinePlan = await owner.planMachineRemoval(bPeerId);
+			expect(machinePlan).toMatchObject({ refusal: null, invitations: [inviteKey] });
+			expect(machinePlan.machine).toMatchObject({ peerId: bPeerId, isSelf: false, trusted: true, vouchedBy: aOwnerKey });
 			const closed: string[] = [];
 			owner.getControlNode()!.addEventListener('connection:close', (event: CustomEvent<Connection>) => {
 				closed.push(event.detail.remotePeer.toString());
 			});
 			const removedAt = Date.now();
-			const result = await owner.removeMachine(bPeerId, { revouch: { peers: [cPeerId] } });
-			expect(result).toEqual({
-				removedPeer: true,
-				removedOwnerKey: true,
-				removedDeviceToken: false,
-				withdrawnInvitations: [inviteKey],
-				revouched: { owners: [], peers: [cPeerId] },
-			});
+			expect(await owner.removeMachine(bPeerId)).toEqual({ removedPeer: true, removedDeviceToken: false, withdrawnInvitations: [inviteKey] });
 			// The refresh the removal notified hung B up before the call returned.
 			expect(closed).toContain(bPeerId);
 			expect(await listsAuthorized(owner, bPeerId)).toBe(false);
+			expect(owner.getTrustedOwnerStore()!.has(bOwnerKey)).toBe(true);
 			expect(await listsAuthorized(owner, cPeerId)).toBe(true);
-			expect(owner.getTrustedOwnerStore()!.has(bOwnerKey)).toBe(false);
 			expect((await owner.listMachines()).map((machine) => machine.peerId)).not.toContain(bPeerId);
+
+			// ── A removes B's owner key, keeping C ─────────────────────────────────
+			const keyPlan = await owner.planOwnerKeyRemoval(bOwnerKey);
+			expect(keyPlan).toMatchObject({ refusal: null, dependents: { owners: [], peers: [cPeerId] }, ownDependency: false });
+			expect(keyPlan.ownerKey).toMatchObject({ key: bOwnerKey, vouchedBy: aOwnerKey, heldHere: false, trusted: true });
+			expect(await owner.removeOwner(bOwnerKey, { revouch: { peers: [cPeerId] } })).toEqual({ removed: true, revouched: { owners: [], peers: [cPeerId] } });
+			expect(owner.getTrustedOwnerStore()!.has(bOwnerKey)).toBe(false);
+			expect(await listsAuthorized(owner, cPeerId)).toBe(true);
 
 			// ── M follows by replication alone ─────────────────────────────────────
 			await waitUntil(async () => !(await listsAuthorized(member, bPeerId)) && await listsAuthorized(member, cPeerId), {
@@ -132,7 +139,7 @@ describe('E2E an owner removes a machine from the cadre', () => {
 			await waitUntil(() => !member.getTrustedOwnerStore()!.has(bOwnerKey), {
 				timeoutMs: REFRESH_MS, intervalMs: 250, description: 'M\'s anchor drops B\'s key',
 			});
-			console.log('[machine-removal] the removal reached M after %d ms; M\'s anchor followed after %d ms', reachedMMs, Date.now() - removedAt);
+			console.log('[machine-removal] both removals reached M after %d ms; M\'s anchor followed after %d ms', reachedMMs, Date.now() - removedAt);
 		} finally {
 			await Promise.allSettled([B?.stop(), M?.node.stop(), A?.stop()]);
 		}

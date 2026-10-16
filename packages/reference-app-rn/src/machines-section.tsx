@@ -1,7 +1,6 @@
 /**
- * machines-section.tsx — Settings → "Devices and nodes": every machine of this cadre (apps,
- * always-on nodes, owner keys no machine has joined with) and the devices invited and not joined
- * yet, and on an owner device, Remove (`machine-removal.tsx`; docs/architecture.md → "Removing a
+ * machines-section.tsx — Settings → "Devices and nodes": every machine of this cadre (apps and
+ * always-on nodes) and the devices invited and not joined yet, and on an owner device, Remove (`machine-removal.tsx`; docs/architecture.md → "Removing a
  * machine"). A node this phone rented from a hosting provider says so, from the app's rental
  * record. The words for a listed machine are `machines.ts`'s.
  */
@@ -104,7 +103,7 @@ export function MachinesSection({ showAlert, refreshKey }: {
 					machine={machine}
 					rentedFrom={rentedFromText(machine, listing.rentals)}
 					nowMs={listing.readAtMs}
-					onRemove={owner && !machine.isSelf ? () => removal.request(machine, listing.machines) : undefined}
+					onRemove={owner && !machine.isSelf ? () => removal.request(machine) : undefined}
 					selfLine={owner && machine.isSelf}
 					busy={removal.busy}
 				/>
@@ -140,11 +139,7 @@ function MachineRow({ machine, rentedFrom, nowMs, onRemove, selfLine, busy }: {
 	selfLine: boolean;
 	busy: boolean;
 }) {
-	// A founder that has not published its own row is listed by its owner key alone; on this
-	// device's own row that key is this device, so it is not "no machine joined".
-	const facts = machine.isMember
-		? [machine.isOwner ? 'Owner' : null, rentedFrom, `Last seen ${lastSeenText(machine.lastPublishedAt, nowMs)}`, `Key ${machineCode(machine)}`]
-		: [machine.isSelf ? 'Owner' : 'Owner key, no machine joined', `Key ${machineCode(machine)}`];
+	const facts = [rentedFrom, `Last seen ${lastSeenText(machine.lastPublishedAt, nowMs)}`, `Key ${machineCode(machine)}`];
 	return (
 		<View testID={TEST_IDS.settings.machineRow(machine.peerId)}>
 			<View style={controlStyles.listRow}>
@@ -152,7 +147,7 @@ function MachineRow({ machine, rentedFrom, nowMs, onRemove, selfLine, busy }: {
 					<Text style={controlStyles.listRowTitle}>{machine.isSelf ? `${machineKind(machine)} (this device)` : machineKind(machine)}</Text>
 					<Text style={controlStyles.listRowMeta}>{facts.filter((fact) => fact !== null).join(' · ')}</Text>
 					{/* `trusted` is always false for this device: the membership predicate it reads excludes self. */}
-					{machine.isMember && !machine.isSelf && !machine.trusted && <Text style={controlStyles.slowHint}>Not trusted here</Text>}
+					{!machine.isSelf && !machine.trusted && <Text style={controlStyles.slowHint}>Not trusted here</Text>}
 				</View>
 				{onRemove && (
 					<View style={controlStyles.listRowBtn}>

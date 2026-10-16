@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { peerIdFromEd25519PublicKeyB64 } from '../src/ed25519-key.js';
-import { freshKeyPair } from './control-constraint-helpers.js';
+import { freshKeyPair, peerIdOf } from './control-constraint-helpers.js';
 import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
@@ -20,7 +19,7 @@ describe('CadreNode.addOwner while alone', () => {
 				key: backup.publicKey, label: 'paper backup', vouchedBy: ownerKey.publicKeyB64, heldHere: false, trusted: true,
 			});
 
-			await node.authorizePeer(peerIdFromEd25519PublicKeyB64(freshKeyPair().publicKey)!);
+			await node.authorizePeer(peerIdOf(freshKeyPair()));
 			const refused = freshKeyPair();
 			await expect(node.addOwner(refused.publicKey)).rejects.toMatchObject({ name: 'OwnerKeyAddRefusedError', code: 'alone' });
 			expect((await node.getControlDatabase()!.getOwnerKeys()).has(refused.publicKey)).toBe(false);

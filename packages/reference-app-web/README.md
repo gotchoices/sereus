@@ -268,27 +268,24 @@ with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
 
 - **The list** has one row per machine `CadreNode.listMachines` reports: what it is, from the
   node profile it published ("App", "Always-on node", or "Machine" until it publishes one), with
-  "(this tab)" on the tab's own row; "Owner"; "Last seen" from its last self-signed record (a
-  running machine re-stamps it every 7.5 minutes); and "Key", the first 8 characters of its
-  public key, which is the fingerprint cadre-host shows for an owner. A row that no longer
-  passes this tab's membership check says **Not trusted here**; an owner key with no machine
-  row reads "Owner key, no machine joined", except on the tab's own row (a founder that has not
-  published one), which reads "Owner".
+  "(this tab)" on the tab's own row; "Last seen" from its last self-signed record (a running
+  machine re-stamps it every 7.5 minutes); and "Key", the first 8 characters of its identity
+  key, in the fingerprint form cadre-host uses. A row that no longer passes this tab's
+  membership check says **Not trusted here**. Owner keys are not machines and are not listed
+  here.
 - **Invited, not joined yet**: each live invitation made for one app whose peer has not
   joined, with its code, owner or member, and expiry, and *Withdraw* (asks once).
 - **When it is read**: when the node reaches `running` and its owner step settles, after each
   removal or withdrawal here, after *Add a device or app* makes an invitation, and on
   *Refresh*; it is not polled. A read that finishes after the node was replaced is dropped.
 - **Who can remove.** On an owner tab every row has *Remove* except the tab's own, under which
-  "To remove this tab, use another owner device": a machine cannot sign the removal of its own
-  owner key. A member sees the list with one line saying only an owner can remove machines.
+  "To remove this tab, use another owner device": a machine does not remove itself (`self`);
+  another machine removes it, and the tab then learns of it ([When this tab is removed](#when-this-tab-is-removed)).
+  A member sees the list with one line saying only an owner can remove machines.
 - **The confirmation** reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or
-  machine›?" in the card, with the machine's key, what happens (it leaves the cadre; its owner
-  key goes too, when it is one; the invitations it could join again with are withdrawn), one
-  **Keep** checkbox per device or owner key its key added (on by default; a kept one is
-  re-vouched under this tab's key first, through `removeMachine`'s `revouch`), a line when that
-  machine added this tab, and what removal does not do. *Remove* runs `removeMachine`. A machine
-  holding the only owner key shows the refusal and only *Close*, and one another owner removed
+  machine›?" in the card, with the machine's key, what happens (it leaves the cadre, and the
+  invitations it could join again with are withdrawn; owner keys stay, including one the machine
+  held), and what removal does not do. *Remove* runs `removeMachine`. One another owner removed
   meanwhile says "Already removed". The confirmation stays open across a visit to another page;
   a join, or this tab's own removal, closes it.
 

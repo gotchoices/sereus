@@ -110,7 +110,7 @@ describe('E2E the trusted-owner anchor follows owner additions and removals', ()
 			expect(await member.applySeed(await second.createSeed())).toMatchObject({ success: true });
 
 			// ── A removes B; the tombstone reaches M, and M stops honouring B ─────────
-			expect(await owner.removeOwner(bOwnerKey)).toBe(true);
+			expect(await owner.removeOwner(bOwnerKey)).toMatchObject({ removed: true });
 			const removedAt = Date.now();
 			expect(owner.getTrustedOwnerStore()!.has(bOwnerKey)).toBe(false);
 			expect(await listsAuthorized(owner, cPeerId)).toBe(false);

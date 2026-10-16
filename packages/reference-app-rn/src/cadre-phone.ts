@@ -28,7 +28,6 @@ import type {
   MachineRemovalPlan,
   MachineRemovalResult,
   OpenInvitation,
-  RemoveMachineOptions,
   FormStrandResult,
   RelayReservationState,
   StrandFormationDisclosure,
@@ -407,7 +406,7 @@ export async function withdrawCadreInvitation(key: string): Promise<boolean> {
 
 // ── Machine helpers (devices and nodes) ───────────────────────────────────────
 
-/** The cadre's machines and owner keys. Thin pass-through to {@link CadreNode.listMachines}. */
+/** The cadre's machines. Thin pass-through to {@link CadreNode.listMachines}. */
 export async function listMachines(): Promise<CadreMachine[]> {
   return running().listMachines();
 }
@@ -417,9 +416,9 @@ export async function planMachineRemoval(peerId: string): Promise<MachineRemoval
   return running().planMachineRemoval(peerId);
 }
 
-/** Remove a machine, re-vouching the dependents kept first. Thin pass-through to {@link CadreNode.removeMachine}. */
-export async function removeMachine(peerId: string, options: RemoveMachineOptions): Promise<MachineRemovalResult> {
-  return running().removeMachine(peerId, options);
+/** Remove a machine. Thin pass-through to {@link CadreNode.removeMachine}. */
+export async function removeMachine(peerId: string): Promise<MachineRemovalResult> {
+  return running().removeMachine(peerId);
 }
 
 // ── Formation helpers (closed-strand consent flow) ────────────────────────────

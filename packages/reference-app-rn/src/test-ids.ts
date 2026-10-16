@@ -124,14 +124,12 @@ export const TEST_IDS = {
 		/** The withdraw confirmation's buttons (an open invitation, or a device invited and not joined yet). */
 		confirmWithdrawBtn: 'btn-confirm-withdraw-invitation',
 		cancelWithdrawBtn: 'btn-cancel-withdraw-invitation',
-		/** Devices and nodes: one listed machine (or owner key with no machine); pass its peer id. */
+		/** Devices and nodes: one listed machine; pass its peer id. */
 		machineRow: (peerId: string) => `row-machine-${peerId}`,
 		/** Per-row Remove; pass the machine's peer id. Not on this device's row, nor for a member. */
 		removeMachineBtn: (peerId: string) => `btn-remove-machine-${peerId}`,
 		/** Re-reads the machines and the devices invited. */
 		refreshMachinesBtn: 'btn-refresh-machines',
-		/** The removal prompt's "Keep" switch for one device or owner the machine added; pass its peer id, else its owner key. */
-		keepDependentSwitch: (id: string) => `switch-keep-dependent-${id}`,
 		/** The removal prompt's buttons: Remove, and Cancel (Close when the removal is refused). */
 		confirmRemoveMachineBtn: 'btn-confirm-remove-machine',
 		cancelRemoveMachineBtn: 'btn-cancel-remove-machine',

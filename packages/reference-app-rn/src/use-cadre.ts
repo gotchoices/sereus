@@ -21,7 +21,6 @@ import type {
   MachineRemovalPlan,
   MachineRemovalResult,
   ProviderClient,
-  RemoveMachineOptions,
   RentalFailed,
   RentNodeResult,
   RentNodeStep,
@@ -263,15 +262,15 @@ export interface UseCadreResult extends JoinFlowActions {
    * it was already withdrawn or is not held here.
    */
   withdrawCadreInvitation: (key: string) => Promise<boolean>;
-  /** The cadre's machines, and owner keys with no machine, as this node judges them (`CadreNode.listMachines`). */
+  /** The cadre's machines as this node judges them (`CadreNode.listMachines`). */
   listMachines: () => Promise<CadreMachine[]>;
   /** What removing a machine would do, read without writing (`CadreNode.planMachineRemoval`). */
   planMachineRemoval: (peerId: string) => Promise<MachineRemovalPlan>;
   /**
-   * Remove a machine from the cadre, re-vouching the dependents kept first (`CadreNode.removeMachine`).
-   * Throws `MachineRemovalRefusedError` on a refusal; all false when it was already removed.
+   * Remove a machine from the cadre (`CadreNode.removeMachine`). Throws `MachineRemovalRefusedError`
+   * on a refusal; all false when it was already removed.
    */
-  removeMachine: (peerId: string, options: RemoveMachineOptions) => Promise<MachineRemovalResult>;
+  removeMachine: (peerId: string) => Promise<MachineRemovalResult>;
   /**
    * Rent a node from the provider `client` talks to and add it to this cadre (cadre-core's
    * `rentNode`, by claim or by invitation as the cadre's reach decides). The rental is recorded for
@@ -840,9 +839,9 @@ export function useCadreInternal(): UseCadreResult {
     return await planMachineRemovalImpl(peerId);
   }, []);
 
-  const removeMachine = useCallback(async (peerId: string, options: RemoveMachineOptions) => {
+  const removeMachine = useCallback(async (peerId: string) => {
     if (!nodeRef.current) throw new Error('Node not started');
-    return await removeMachineImpl(peerId, options);
+    return await removeMachineImpl(peerId);
   }, []);
 
   // ── Renting a node from a hosting provider ─────────────────────────────

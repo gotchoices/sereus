@@ -30,9 +30,10 @@ import type {
   PeerAddressRecord,
   DeviceTokenRecord,
   RevocationRow,
-  RevocationLedgerOpenResult
+  RevocationLedgerOpenResult,
+  MachineRemovalResult
 } from './types.js';
-import type { ControlDatabase, MachineRemovalWrites } from './control-database.js';
+import type { ControlDatabase } from './control-database.js';
 import { generateStampId, ownerKeyLabel } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { deviceTokenAddDigest } from './peer-authorization.js';
@@ -44,6 +45,7 @@ import {
 } from './seed-trust-policy.js';
 import type { TrustedOwnerStore } from './trusted-owner-store.js';
 import { withinOwnerApproval, type OwnerSign, type OwnerSigner } from './owner-signer.js';
+import { namedOwnerKey } from './owner-keys.js';
 
 const log = debug('sereus:cadre:seed-bootstrap');
 
@@ -645,8 +647,7 @@ export class SeedBootstrapService {
     const controlDatabase = this.requireControlDatabase();
     // Checked before the approval opens, so a label the row would refuse never prompts the user.
     const storedLabel = ownerKeyLabel(label);
-    const named = storedLabel === null ? ownerPublicKey : `"${storedLabel}" (${ownerPublicKey})`;
-    return await this.withOwnerSign(`Add owner key ${named}`, sign, (approved) =>
+    return await this.withOwnerSign(`Add owner key ${namedOwnerKey(ownerPublicKey, storedLabel)}`, sign, (approved) =>
       controlDatabase.insertOwnerKeyVouched(ownerPublicKey, ownerKey, approved, storedLabel));
   }
 
@@ -669,7 +670,7 @@ export class SeedBootstrapService {
   /**
    * Re-vouch another owner's row under this service's owner signer, so it stands on a remaining
    * owner's signature before the owner that added it is removed
-   * ({@link ControlDatabase.revouchOwnerKey}; for `CadreNode.removeMachine` only). What stays
+   * ({@link ControlDatabase.revouchOwnerKey}; for `CadreNode.removeOwner` only). What stays
    * here is the owner-signer precondition, checked before any read (see {@link removePeer}).
    *
    * @returns `true` when the row was re-vouched, `false` when the key is not a live owner here.
@@ -683,15 +684,14 @@ export class SeedBootstrapService {
 
   /**
    * Remove a machine completely, signed by this service's owner signer: its `CadrePeer` row, its
-   * `OwnerKey` row when `target.ownerKey` names one, its `DeviceToken` row, and the
-   * withdrawal of every invitation in `target.inviteKeys`, all in one transaction
-   * ({@link ControlDatabase.removeMachine}). What stays here is the owner-signer precondition,
-   * checked before any read (see {@link removePeer}).
+   * `DeviceToken` row, and the withdrawal of every invitation in `target.inviteKeys`, all in one
+   * transaction ({@link ControlDatabase.removeMachine}). What stays here is the owner-signer
+   * precondition, checked before any read (see {@link removePeer}).
    */
-  async removeMachine(target: Parameters<ControlDatabase['removeMachine']>[0], sign?: OwnerSign): Promise<MachineRemovalWrites> {
+  async removeMachine(target: Parameters<ControlDatabase['removeMachine']>[0], sign?: OwnerSign): Promise<MachineRemovalResult> {
     const ownerKey = this.requireOwnerSigner().publicKey;
     const controlDatabase = this.requireControlDatabase();
-    return await this.withOwnerSign(`Remove the machine ${target.peerId}`, sign, (approved) =>
+    return await this.withOwnerSign(`Remove the machine ${target.peerId} from the cadre`, sign, (approved) =>
       controlDatabase.removeMachine(target, ownerKey, approved));
   }
 

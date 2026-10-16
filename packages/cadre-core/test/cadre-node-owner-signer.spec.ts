@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
-import { peerIdFromEd25519PublicKeyB64 } from '../src/ed25519-key.js';
 import type { JoinedStrandSession } from '../src/joined-strand-store.js';
 import { softwareOwnerSigner, type OwnerSigner, type OwnerSigningRequest } from '../src/owner-signer.js';
 import type { FormStrandResult } from '../src/types.js';
-import { freshKeyPair, signAs, type KeyPair } from './control-constraint-helpers.js';
+import { freshKeyPair, peerIdOf, signAs, type KeyPair } from './control-constraint-helpers.js';
 import { newUnstartedNode } from './self-owner-node-helpers.js';
 import { signedSApp } from './signed-sapp.js';
 
@@ -46,13 +45,6 @@ describe('CadreNode signs every owner write through the one signer it was given'
 	}
 
 	const rand = () => Math.random().toString(36).slice(2);
-
-	/** The peer id behind an Ed25519 public key (never null for one). */
-	function peerIdOf(key: KeyPair): string {
-		const peerId = peerIdFromEd25519PublicKeyB64(key.publicKey);
-		expect(peerId).not.toBeNull();
-		return peerId!;
-	}
 
 	beforeAll(async () => {
 		({ node } = await newUnstartedNode('owner-signer-'));
@@ -122,22 +114,20 @@ describe('CadreNode signs every owner write through the one signer it was given'
 		expect(signatures).toBe(4);
 		expect(await db.queryStrand(strandId)).toBeNull();
 
-		// A second owner machine that vouched a device: removing the machine re-vouches the device
-		// under this node's key, then removes the machine's row and owner key.
-		const machine = freshKeyPair();
-		const machinePeerId = peerIdOf(machine);
+		// A second owner key that vouched a device: removing the key re-vouches the device under
+		// this node's key, then removes the key's row.
+		const second = freshKeyPair();
 		// Through the database writer: with an authorized sibling and no connection, this node is
 		// alone, and `addOwner` refuses an owner add then.
-		await db.insertOwnerKeyVouched(machine.publicKey, owner.publicKey, (message) => signAs(owner, message));
-		await node.authorizePeer(machinePeerId);
+		await db.insertOwnerKeyVouched(second.publicKey, owner.publicKey, (message) => signAs(owner, message));
 		const device = freshKeyPair();
 		const devicePeerId = peerIdOf(device);
 		const deviceRow = { peerId: devicePeerId, publicKey: device.publicKey, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null };
-		expect(await db.insertCadrePeer(deviceRow, machine.publicKey, (message) => signAs(machine, message))).toBe(true);
+		expect(await db.insertCadrePeer(deviceRow, second.publicKey, (message) => signAs(second, message))).toBe(true);
 
 		resetCounts();
-		const result = await node.removeMachine(machinePeerId, { revouch: { peers: [devicePeerId] } });
-		expect(result).toMatchObject({ removedPeer: true, removedOwnerKey: true, revouched: { owners: [], peers: [devicePeerId] } });
+		const result = await node.removeOwner(second.publicKey, { revouch: { peers: [devicePeerId] } });
+		expect(result).toEqual({ removed: true, revouched: { owners: [], peers: [devicePeerId] } });
 		expect(approvals).toHaveLength(1);
 		expect(signatures).toBeGreaterThan(1);
 	}, 120_000);

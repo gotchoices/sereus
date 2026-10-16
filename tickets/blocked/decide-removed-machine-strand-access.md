@@ -6,7 +6,7 @@ files: docs/strands.md (Removing Members, What removal does to the network), doc
 
 ## The gap
 
-Removing a machine from a cadre (`CadreNode.removeMachine`, planned in `cadre-node-removes-a-machine`) is a control-plane act: the machine's `CadrePeer` row and owner key go, the cadre's other machines refuse its control streams, and the remover closes its control connections. The cadre's strands are separate networks with their own membership, and removal touches none of it:
+Removing a machine from a cadre (`CadreNode.removeMachine`, planned in `cadre-node-removes-a-machine`) is a control-plane act: the machine's `CadrePeer` row goes (owner keys are the person's and are removed separately), the cadre's other machines refuse its control streams, and the remover closes its control connections. The cadre's strands are separate networks with their own membership, and removal touches none of it:
 
 - **It keeps the keys.** Every machine of a party holds the party's strand member identity for each closed strand (`StrandPartyKey`, replicated in the control database to every party machine) and the strand's read secret (`MemberPrivateKey`). A removed machine keeps what it already synced.
 - **The strand gate does not refuse it.** The closed-strand gate (`strand-revocation-enforcer.ts`) is a deny set: it refuses machines whose `Strand.MemberPeer` binding points at a party that is no longer a `Strand.Member` (docs/strands.md → "What removal does to the network"). A removed machine is bound to its party, which is still a member, so every machine of every party in the strand, the cadre's own included, keeps serving it.

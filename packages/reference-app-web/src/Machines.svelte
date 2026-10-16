@@ -6,7 +6,6 @@
 		askToRemove,
 		cancelRemoval,
 		confirmRemoval,
-		dependentName,
 		lastSeenText,
 		machineCode,
 		machineKind,
@@ -14,7 +13,6 @@
 		refreshMachines,
 		removalEffects,
 		REFUSAL_LINE,
-		setKeep,
 		withdrawDeviceInvitation,
 	} from './lib/machines.svelte.js';
 	import { peerCode, validUntilText } from './lib/cadre-format.js';
@@ -24,8 +22,6 @@
 
 	const NOT_OWNER_LINE = 'Only an owner of this cadre can remove machines. This tab is a member.';
 	const UNREADABLE_LINE = 'Could not check whether this tab is an owner of this cadre, so nothing can be removed from here until Refresh reads it.';
-	const DEPENDENTS_LINE = 'A device it added stops being trusted unless you keep it here. Switch off anything you do not recognise.';
-	const OWN_DEPENDENCY_LINE = 'This tab was added by the machine you are removing. After removing it, ask another owner to add this tab again.';
 	const KEEPS_LINE = "It keeps whatever it already copied, including the cadre's shared data. Removing it stops it syncing with this cadre's machines.";
 
 	const owner = $derived(list.standing === 'owner');
@@ -41,13 +37,8 @@
 		return machine.isSelf ? `${machineKind(machine)} (this tab)` : machineKind(machine);
 	}
 
-	// A founder that has not published its own row is listed by its owner key alone; on this tab's
-	// own row that key is this tab, so it is not "no machine joined".
 	function machineFacts(machine: CadreMachine): string {
-		const facts = machine.isMember
-			? [machine.isOwner ? 'Owner' : null, `Last seen ${lastSeenText(machine.lastPublishedAt, list.readAtMs)}`, `Key ${machineCode(machine)}`]
-			: [machine.isSelf ? 'Owner' : 'Owner key, no machine joined', `Key ${machineCode(machine)}`];
-		return facts.filter((fact) => fact !== null).join(' · ');
+		return [`Last seen ${lastSeenText(machine.lastPublishedAt, list.readAtMs)}`, `Key ${machineCode(machine)}`].join(' · ');
 	}
 
 	function pendingMeta(status: CadreInviteStatus): string {
@@ -81,24 +72,6 @@
 					<p class="text">{REFUSAL_LINE[refusal]}</p>
 				{:else}
 					<p class="text">{removalEffects(removal.plan)}</p>
-					{#if removal.dependents.length > 0}
-						<h5>Devices and owners this machine added</h5>
-						<p class="hint">{DEPENDENTS_LINE}</p>
-						{#each removal.dependents as dependent (dependent.id)}
-							<label class="check">
-								<input
-									type="checkbox"
-									checked={removal.kept.includes(dependent.id)}
-									onchange={(event) => setKeep(dependent.id, event.currentTarget.checked)}
-									data-testid="keep-dependent"
-								/>
-								Keep {dependentName(dependent)}
-							</label>
-						{/each}
-					{/if}
-					{#if removal.plan.ownDependency}
-						<p class="hint warn">{OWN_DEPENDENCY_LINE}</p>
-					{/if}
 					<p class="hint">{KEEPS_LINE}</p>
 				{/if}
 				<div class="buttons">
@@ -127,7 +100,7 @@
 							<div class="title">{machineTitle(machine)}</div>
 							<div class="meta">{machineFacts(machine)}</div>
 							<!-- `trusted` is always false for this tab: the membership predicate it reads excludes self. -->
-							{#if machine.isMember && !machine.isSelf && !machine.trusted}
+							{#if !machine.isSelf && !machine.trusted}
 								<div class="untrusted">Not trusted here</div>
 							{/if}
 						</div>
@@ -198,25 +171,10 @@
 		color: #4a4d54;
 	}
 
-	h5 {
-		margin: 0.5rem 0 0.25rem 0;
-		font-size: 0.8125rem;
-		font-weight: 600;
-		color: #4a4d54;
-	}
-
 	.hint {
 		font-size: 0.8125rem;
 		color: #6c6f76;
 		margin: 0 0 0.5rem 0;
-	}
-
-	.hint.warn {
-		color: #6b4d00;
-		background: #fff6e0;
-		border: 1px solid #f0d68a;
-		border-radius: 0.375rem;
-		padding: 0.5rem 0.625rem;
 	}
 
 	.hint.self {
@@ -254,14 +212,6 @@
 		font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 		font-size: 0.9rem;
 		word-break: break-all;
-	}
-
-	label.check {
-		display: flex;
-		align-items: center;
-		gap: 0.375rem;
-		font-size: 0.875rem;
-		color: #1d1f24;
 	}
 
 	button {

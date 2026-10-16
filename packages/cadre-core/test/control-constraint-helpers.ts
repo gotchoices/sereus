@@ -5,6 +5,9 @@ import {
   sign as cryptoSign,
   randomBytes,
 } from '@optimystic/quereus-plugin-crypto';
+import { peerIdFromPublicKey } from '@libp2p/peer-id';
+import { publicKeyFromRaw } from '@libp2p/crypto/keys';
+import { fromString as uint8ArrayFromString } from 'uint8arrays';
 import { buildAuthorizationMessage } from '../src/control-database.js';
 
 /**
@@ -74,6 +77,11 @@ export function freshKeyPair(): KeyPair {
     privateKey,
     publicKey: getPublicKey(privateKey, 'ed25519', 'base64url', 'base64url') as string,
   };
+}
+
+/** The libp2p peer id whose identity key is `kp`'s public key: a machine identity for a bare keypair. */
+export function peerIdOf(kp: KeyPair): string {
+  return peerIdFromPublicKey(publicKeyFromRaw(uint8ArrayFromString(kp.publicKey, 'base64url'))).toString();
 }
 
 /** A fresh one-off `StampId` nonce, sized like production's (generateStampId). */
