@@ -63,9 +63,8 @@ export function decodeInvitationFor(invitation: StartupInvitation, partyId: stri
  * The start-up options that cannot be combined with an invitation, each with why. A seed is
  * the owner-online way to the same end. `--owner` runs the founder's genesis insert on a fresh
  * store, which on a node that is joining somebody else's cadre would seat a second founding
- * key beside theirs; an invitation that grants ownership seats this node's key by consent
- * instead, and the node wires it for signing on a later start with `--owner` once the
- * invitation is dropped.
+ * key beside theirs. A member that should also hold an owner key restarts with `--owner` once
+ * it has joined (`start-owner.ts`), which names its owner key for an owner to add.
  */
 export function refuseInvitationConflicts(invitation: StartupInvitation, options: { seed?: string; owner?: boolean }): void {
   const { source } = invitation;
@@ -74,7 +73,7 @@ export function refuseInvitationConflicts(invitation: StartupInvitation, options
   }
   if (options.owner) {
     throw new Error(`${source} and --owner cannot be combined: --owner founds a cadre on this node, an invitation joins one. `
-      + `Join first; if the invitation granted ownership, restart with --owner and without ${source} to wire the key for signing.`);
+      + `Join first; to make this server an owner too, restart with --owner and without ${source}, which names its owner key for an owner to add.`);
   }
 }
 
@@ -96,7 +95,13 @@ export function refuseInvitationConflicts(invitation: StartupInvitation, options
 export async function redeemStartupInvitation(node: CadreNode, invitation: CadreInvitation): Promise<InvitationStatus> {
   try {
     const joined = await node.redeemCadreInvitation(invitation);
-    console.log(`✓ Invitation accepted by member ${joined.peerId ?? '(unnamed address)'}: this node is a member of party ${invitation.partyId}${joined.grantsOwner ? ', and an owner' : ''}`);
+    console.log(`✓ Invitation accepted by member ${joined.peerId ?? '(unnamed address)'}: this node is a member of party ${invitation.partyId}`);
+    // NOTE: an owner-granting invitation seats the node's identity key as an owner, and cadre-cli
+    // signs owner writes only with its owner key file, so that grant goes unused here until owner
+    // grants seat a key of their own (`owner-grant-separate-from-machine-invitation`).
+    if (joined.grantsOwner) {
+      console.warn('⚠ The invitation also made this node\'s identity key an owner key; cadre-cli signs owner writes only with its owner key file (`cadre owner-key`), so this node makes none with it.');
+    }
     return { state: 'accepted', ...(joined.peerId ? { memberPeerId: joined.peerId } : {}) };
   } catch (err) {
     const failure = describeRedemptionFailure(err);

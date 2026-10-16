@@ -44,8 +44,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
-import { CadreNode, type CadreNodeConfig, type StrandRow } from '@serfab/cadre-core';
+import { CadreNode, type CadreNodeConfig, type OwnerSigner, type StrandRow } from '@serfab/cadre-core';
 import { openNodeStorage, type NodeStorage } from '../src/commands/node-session.js';
+import { loadOrCreateOwnerKeyFile } from '../src/commands/owner-key-file.js';
 
 /** The compiled entry the `cadre` bin points at — what an operator actually runs. */
 const CLI_ENTRY = fileURLToPath(new URL('../dist/bin/cadre.js', import.meta.url));
@@ -135,10 +136,8 @@ function writeConfig(dir: string, body: object, name = 'cadre.json'): string {
 }
 
 /**
- * Write a protobuf identity key for the config to point at, and hand the same key back.
- *
- * Same key ⇒ same PeerId ⇒ the owner a seed node enrols at genesis is the owner the spawned
- * CLI runs as, which is what lets the CLI's owner-signed removal be authorized at all.
+ * Write a protobuf identity key for the config to point at, and hand the same key back, so the
+ * seed node and the spawned CLI are one machine.
  */
 async function writeIdentity(dir: string): Promise<{ keyPath: string; privateKey: PrivateKey }> {
   const privateKey = await generateKeyPair('Ed25519');
@@ -201,25 +200,33 @@ async function withSoloNode(
 const MEMBER_PRIVATE_KEY = 'cli-oneshot-membership-key';
 
 /**
- * Perform genesis and publish `strands`, so the spawned CLI meets a party it is the owner of.
+ * The owner key the spawned CLI signs with: the owner key file at its default place, the config's
+ * directory (`<nodeStateDir>/owner.key`). Never the identity key.
+ */
+async function writeOwnerKey(dir: string): Promise<OwnerSigner> {
+  return (await loadOrCreateOwnerKeyFile(join(dir, 'owner.key'))).signer;
+}
+
+/**
+ * Perform genesis with `owner` and publish `strands`, so the spawned CLI meets a party its owner
+ * key file's key is the owner of.
  *
  * Genesis has to happen here because a bare CLI node is not an owner — an unseeded
- * `strand remove` would fail authorization rather than exercise the write — and no CLI command
- * performs genesis (`enroll register` is an offline signature check; genesis lives in
- * `start --owner`).
+ * `strand remove` would fail authorization rather than exercise the write — and the one CLI
+ * command that performs genesis, `start --owner`, runs until stopped.
  */
 async function seedStrands(
   partyId: string,
   blocksDir: string,
   privateKey: PrivateKey,
+  owner: OwnerSigner,
   strands: { id: string; type: 'o' | 'c' }[],
 ): Promise<void> {
   await withSoloNode(partyId, blocksDir, privateKey, async (node) => {
-    const owner = node.getIdentityOwnerKey();
     const db = node.getControlDatabase();
     expect(db).not.toBeNull();
-    expect(await db!.ensureOwnerKey(owner.publicKeyB64)).toBe(true);
-    await node.initializeSeedBootstrap(owner.privateKeyB64);
+    expect(await db!.ensureOwnerKey(owner.publicKey)).toBe(true);
+    await node.useOwnerSigner(owner);
 
     for (const strand of strands) {
       await node.publishStrand(strand.id, strand.type, strand.type === 'c' ? MEMBER_PRIVATE_KEY : undefined);
@@ -235,7 +242,8 @@ async function seedStrands(
 }
 
 /**
- * The config a spawned CLI resolves for itself: same party, identity and storage as the seed.
+ * The config a spawned CLI resolves for itself: same party, identity and storage as the seed,
+ * and the owner key file {@link writeOwnerKey} wrote beside it.
  *
  * `strandFilter: 'none'` keeps the one-shot node from trying to LAUNCH an instance for a seeded
  * row — there is no strand network behind it. Nothing under test is weakened: `strand remove`
@@ -285,7 +293,7 @@ describe('one-shot commands against a real solo node', () => {
       const strandId = 'cli-oneshot-strand';
 
       const configPath = ownerCliConfig(dir, keyPath, partyId, blocksDir);
-      await seedStrands(partyId, blocksDir, privateKey, [{ id: strandId, type: 'o' }]);
+      await seedStrands(partyId, blocksDir, privateKey, await writeOwnerKey(dir), [{ id: strandId, type: 'o' }]);
 
       const result = await runCli(['strand', 'remove', strandId, '--yes', '-c', configPath], dir);
 
@@ -312,7 +320,7 @@ describe('one-shot commands against a real solo node', () => {
       const strandId = 'cli-oneshot-closed-strand';
 
       const configPath = ownerCliConfig(dir, keyPath, partyId, blocksDir);
-      await seedStrands(partyId, blocksDir, privateKey, [{ id: strandId, type: 'c' }]);
+      await seedStrands(partyId, blocksDir, privateKey, await writeOwnerKey(dir), [{ id: strandId, type: 'c' }]);
 
       const result = await runCli(['strand', 'remove', strandId, '-c', configPath], dir);
 

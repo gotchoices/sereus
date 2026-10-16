@@ -143,6 +143,8 @@ const nodeState = objectOf<Block<'nodeState'>>({ dir: nonEmptyString });
 
 const claim = objectOf<Block<'claim'>>({ secretFile: nonEmptyString });
 
+const owner = objectOf<Block<'owner'>>({ keyFile: nonEmptyString });
+
 // Push sub-fields are type-checked only. Which of them must be present when a platform block
 // is present stays with cadre-core's `validatePushCredentials`, which host and provider also
 // use; `resolveConfig` calls it after this pass.
@@ -181,6 +183,7 @@ const root = objectOf<CliConfig>(
     nodeState,
     push,
     claim,
+    owner,
   },
   { required: ['controlNetwork', 'profile'] },
 );

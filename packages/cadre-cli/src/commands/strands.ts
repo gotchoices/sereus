@@ -13,7 +13,7 @@ import {
  *
  * `list` reports what this node is currently running; `remove` deletes the party's row, which
  * every cadre node in the party observes and stops its own instance for. Removal is
- * owner-signed, so it needs a config whose identity key is an enrolled `OwnerKey`.
+ * owner-signed, so it needs an owner key file (`owner.keyFile`) whose key is an enrolled `OwnerKey`.
  *
  * Like `validation-key`, `remove` READS the row before writing: the write itself cannot tell
  * "was not published" from "removed" (the database treats both as a silent no-op), and the

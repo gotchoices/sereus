@@ -13,11 +13,11 @@
  * malformed file refuses the start rather than starting the node unclaimed: an unclaimed node
  * is claimable by anyone holding the secret, while its owner's cadre has lost it.
  */
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { requireEd25519PublicKeyB64, type NodeClaimRecord } from '@serfab/cadre-core';
 import type { ResolvedConfig } from '../config/index.js';
+import { writePrivateFileAtomically } from './private-file.js';
 
 export const CLAIM_RECORD_FILE = 'claim.json';
 const RECORD_VERSION = 1;
@@ -78,33 +78,12 @@ export function parseClaimRecord(text: string, path: string): ClaimRecord {
 }
 
 /**
- * Write the record atomically and durably: to a sibling temp file, fsync'd, then renamed over
- * `claim.json`, so a crash leaves either the previous file or the complete new one. Returns
- * what was written.
- *
- * NOTE: a copy of cadre-core's `writeFileAtomically` (`fs-atomic.ts`), which that package keeps
- * out of its exported surface, minus its best-effort directory fsync; cadre-host carries the
- * same write-then-rename shape in its own stores. If a third copy is ever needed here, export
- * cadre-core's and use it.
+ * Write the record atomically and durably (`writePrivateFileAtomically`), so a crash leaves
+ * either the previous file or the complete new one. Returns what was written.
  */
 export async function writeClaimRecord(nodeStateDir: string, claim: NodeClaimRecord, now: () => Date = () => new Date()): Promise<ClaimRecord> {
   const record: ClaimRecord = { version: RECORD_VERSION, partyId: claim.partyId, ownerKey: claim.ownerKey, claimedAt: now().toISOString() };
-  const path = claimRecordPath(nodeStateDir);
-  const tmpPath = join(nodeStateDir, `${CLAIM_RECORD_FILE}.${randomBytes(6).toString('hex')}.tmp`);
-  await mkdir(nodeStateDir, { recursive: true, mode: 0o700 });
-  const handle = await open(tmpPath, 'wx', 0o600);
-  try {
-    try {
-      await handle.writeFile(JSON.stringify(record, null, 2), 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close().catch(() => {});
-    }
-    await rename(tmpPath, path);
-  } catch (err) {
-    await rm(tmpPath, { force: true }).catch(() => {});
-    throw err;
-  }
+  await writePrivateFileAtomically(claimRecordPath(nodeStateDir), JSON.stringify(record, null, 2));
   return record;
 }
 

@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { startCommand } from '../commands/start.js';
 import { statusCommand } from '../commands/status.js';
 import { enrollCommand } from '../commands/enroll.js';
+import { ownerKeyCommand } from '../commands/owner-key.js';
 import { strandCommand } from '../commands/strands.js';
 import { validationKeyCommand } from '../commands/validation-key.js';
 import { initCommand } from '../commands/init.js';
@@ -28,6 +29,7 @@ program.addCommand(codeCommand);
 program.addCommand(serviceCommand);
 program.addCommand(statusCommand);
 program.addCommand(enrollCommand);
+program.addCommand(ownerKeyCommand);
 program.addCommand(strandCommand);
 program.addCommand(validationKeyCommand);
 

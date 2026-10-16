@@ -13,10 +13,9 @@ CadreNode → control network (CadreControl) → signed open chat strand (chat s
 
 - **Control network** — an Optimystic network named `control-<partyId>` carrying
   the `CadreControl` schema (owner keys, cadre peers, strands).
-- **Owner self-genesis** — a solo node seeds itself as its own owner,
-  mirroring `cadre-cli start --owner` (bridge the libp2p identity into a
-  base64url owner key, idempotent genesis `OwnerKey` insert, then
-  `initializeSeedBootstrap`).
+- **Owner self-genesis** — a solo node seeds itself as its own owner (bridge
+  the libp2p identity into a base64url owner key, idempotent genesis
+  `OwnerKey` insert, then `initializeSeedBootstrap`).
 - **Signed chat strand** — an open strand whose chat sApp schema is **signed**;
   `StrandInstanceManager` verifies the signature on start
   (`assertSchemaSignature`), so the browser exercises the schema-signature gate

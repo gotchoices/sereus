@@ -162,16 +162,50 @@ export async function resolveConfig(
     ? loadIdentityKey(config.identity.keyFile)
     : undefined;
 
+  const ownerKeyFile = resolveOwnerKeyFile(config, nodeStateDir);
+
   // Everything not resolved into something else is carried over as-is, so a key added to
   // `CliConfig` reaches the node without being listed here.
   // `claim` is stripped like `identity`: `CadreNodeConfig.claim` is the node's claim policy, which
   // `cadre start` builds from the secret, not this file reference.
-  const { identity: _identity, nodeState: _nodeState, strandFilter, claim, ...nodeFacing } = config;
+  const { identity: _identity, nodeState: _nodeState, owner: _owner, strandFilter, claim, ...nodeFacing } = config;
   return {
     ...nodeFacing,
     privateKey,
     nodeStateDir,
+    ownerKeyFile,
     strandFilter: parseStrandFilter(strandFilter),
     ...(claim?.secretFile ? { claimSecretFile: path.resolve(claim.secretFile) } : {}),
   };
+}
+
+/** The file name of the owner key in the node-state directory when `owner.keyFile` is not set. */
+const DEFAULT_OWNER_KEY_FILE = 'owner.key';
+
+/**
+ * `owner.keyFile` as an absolute path, else `<nodeStateDir>/owner.key`. Refused when it is the
+ * identity key file: an owner key is never the node identity (`docs/architecture.md` → Owner
+ * Keys), and `cadre start --owner` would otherwise make the node's identity an owner of its party.
+ */
+function resolveOwnerKeyFile(config: CliConfig, nodeStateDir: string): string {
+  const ownerKeyFile = config.owner?.keyFile
+    ? path.resolve(config.owner.keyFile)
+    : path.join(nodeStateDir, DEFAULT_OWNER_KEY_FILE);
+  if (config.identity?.keyFile && samePath(ownerKeyFile, path.resolve(config.identity.keyFile))) {
+    throw new Error(
+      `The owner key file ${ownerKeyFile} is the node's identity key file (identity.keyFile): an owner key is never the node identity. `
+      + `Point owner.keyFile (CADRE_OWNER_KEY_FILE, --owner-key-file) at a file of its own${config.owner?.keyFile ? '' : ', or give the identity key file another name'}.`,
+    );
+  }
+  return ownerKeyFile;
+}
+
+/**
+ * Whether two absolute paths name one file, ignoring case where the filesystem usually does.
+ * NOTE: compares the paths as written, so a symlink or a hard link to the identity file passes;
+ * resolve with `fs.realpathSync` here if that ever matters.
+ */
+function samePath(a: string, b: string): boolean {
+  const caseless = process.platform === 'win32' || process.platform === 'darwin';
+  return caseless ? a.toLowerCase() === b.toLowerCase() : a === b;
 }

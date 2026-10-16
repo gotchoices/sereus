@@ -54,7 +54,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { CadreInvitation } from '@serfab/cadre-core';
+import { ed25519PublicKeyB64FromPeerId, type CadreInvitation } from '@serfab/cadre-core';
 import {
   DEFAULT_CONFIG,
   MemoryStore,
@@ -199,6 +199,12 @@ describe('a provider container joins a cadre by invitation at an always-on membe
     // The only member there is: the owner node's own addresses, which is where the container dials.
     expect(invitation.members.length).toBeGreaterThan(0);
     expect(invitation.members.every((a) => a.endsWith(`/p2p/${ownerPeerId}`))).toBe(true);
+    // The issuer and the one pinned owner key are the owner node's owner key file's key, not the
+    // key behind its peer id.
+    const ownerKey = await owner.getOwnerKey();
+    expect(invitation.invite.issuerKey).toBe(ownerKey);
+    expect(invitation.ownerKeys).toEqual([ownerKey]);
+    expect(ownerKey).not.toBe(ed25519PublicKeyB64FromPeerId(ownerPeerId));
   }, OP_MS);
 
   it('step 2: an invitation container reaches running and the fold reaches accepted, naming the owner node', async () => {

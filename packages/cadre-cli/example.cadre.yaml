@@ -49,6 +49,14 @@ strandFilter: all
 # nodeState:
 #   dir: /var/lib/cadre
 
+# The owner key this server holds when you make it an owner (optional): read by
+# 'cadre start --owner' (which creates the file when it is missing) and by the commands
+# that make owner-signed writes. Same file format as identity.keyFile, and never the
+# same file. Defaults to <nodeState.dir>/owner.key. Anyone who can read it controls
+# the cadre. See the README's "Make this server an owner".
+# owner:
+#   keyFile: /var/lib/cadre/owner.key
+
 # Wait to be claimed by the owner's phone (optional): a file holding a one-time
 # claim secret (base64url of 32 random bytes, mode 600). Set controlNetwork.partyId
 # to the placeholder "unclaimed"; the claim names the party. 'cadre init' writes

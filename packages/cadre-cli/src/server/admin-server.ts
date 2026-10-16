@@ -113,7 +113,7 @@ export interface AdminStrandRemoval {
  * `{ ok: false, error: { code, message } }`.
  *
  * Routes (all under `/admin`):
- * - `GET    /admin/identity`          → `{ peerId, partyId }`
+ * - `GET    /admin/identity`          → `{ peerId, partyId, ownerKey }` (`ownerKey`: the wired owner signer's public key, or null)
  * - `GET    /admin/multiaddrs`        → `{ multiaddrs: string[] }`
  * - `GET    /admin/members`           → `{ members: { peerId, multiaddr }[] }` (ADDRESSABLE: includes self)
  * - `GET    /admin/members/:peerId`   → `{ member: boolean }` (ADDRESSABLE)
@@ -218,7 +218,7 @@ export class AdminServer {
     const id = segments[2] !== undefined ? decodePathSegment(segments[2]) : undefined;
 
     if (resource === 'identity' && method === 'GET') {
-      return { peerId: node.peerId?.toString() ?? null, partyId: node.partyId };
+      return { peerId: node.peerId?.toString() ?? null, partyId: node.partyId, ownerKey: node.getOwnerSigner()?.publicKey ?? null };
     }
 
     if (resource === 'multiaddrs' && method === 'GET') {

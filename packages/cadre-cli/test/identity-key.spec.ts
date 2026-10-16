@@ -240,6 +240,17 @@ describe('resolveConfig identity block', () => {
       .toBe(peerIdFromPrivateKey(key).toString());
   });
 
+  // An owner key is never the node identity: `cadre start --owner` over this config would make
+  // the node's identity an owner of its party.
+  it('refuses an owner key file that is the identity key file', async () => {
+    const dir = tmpDir('owner-is-identity');
+    const { keyFile } = await writeEnrolledKey(dir, 'node.key');
+    const configPath = writeConfig(dir, { keyFile });
+
+    await expect(resolveConfig(configPath, { CADRE_OWNER_KEY_FILE: keyFile }))
+      .rejects.toThrow(/owner key file .*node\.key is the node's identity key file/);
+  });
+
   // Regression: node-local stores (bootstrap-peer store, trusted-owner anchor) need a directory
   // whether or not an identity is configured — they must not ride on the identity resolution.
   it('yields a nodeStateDir for a keyFile-identity config', async () => {

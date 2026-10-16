@@ -2,7 +2,6 @@ import { writeFileSync } from 'node:fs';
 import { Command } from 'commander';
 import debug from 'debug';
 import {
-  ed25519KeyPairFromLibp2p,
   pinnedKeyTrustPolicy,
   requireEd25519PublicKeyB64,
   type CadreNode,
@@ -20,6 +19,7 @@ import { claimRecordPath, partyOnRecord, type ClaimRecord } from './claim-record
 import { resolveClaimSecret } from './claim-secret.js';
 import { afterClaimSeedSettles, buildClaimedNode, buildConfiguredNode, claimConfigFor, stopWhenRemoved, warnRemoved } from './start-node.js';
 import { openNodeStorage } from './node-session.js';
+import { loadServerOwnerKey, ownerKeyLabel, wireServerOwnerKey, type ServerOwnerKey } from './start-owner.js';
 import { readRemovalMarker } from './removal-marker.js';
 import {
   decodeInvitationFor,
@@ -125,6 +125,19 @@ export function refuseClaimConflicts(
     throw new Error(`${subject} cannot be combined with ${conflicts.join(', ')}: a node that is claimed, or waiting to be, `
       + 'takes its owner from the claim. Remove the claim, or start without the conflicting options.');
   }
+}
+
+/**
+ * The founding label for `--owner` (`ownerKeyLabel`), refusing `--owner-label` and
+ * `--owner-key-file` without `--owner`, which would otherwise be ignored without a word.
+ */
+function ownerKeyLabelFor(options: { owner?: boolean; ownerLabel?: string; ownerKeyFile?: string }): string {
+  if (!options.owner) {
+    const strays = [options.ownerLabel !== undefined ? '--owner-label' : undefined, options.ownerKeyFile !== undefined ? '--owner-key-file' : undefined]
+      .filter((name): name is string => name !== undefined);
+    if (strays.length > 0) throw new Error(`${strays.join(' and ')} ${strays.length === 1 ? 'applies' : 'apply'} only with --owner`);
+  }
+  return ownerKeyLabel(options.ownerLabel);
 }
 
 /**
@@ -239,7 +252,9 @@ export const startCommand = new Command('start')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
   .option('--startup-token-file <path>', 'Write $CADRE_STARTUP_TOKEN to this file as the first step of start-up, before any port is bound. Used by external orchestrators to verify a live PID is the child they spawned (vs a recycled PID) — an identity check, not a readiness signal.')
   .option('--identity-file <path>', 'Load the node identity from a libp2p protobuf private key file — the one identity format, written by \'cadre enroll create\' and by cadre-host for each node it runs (identity.key). Takes precedence over the config file\'s identity.keyFile.')
-  .option('--owner', 'Run as the owner of this node\'s OWN cadre: initialize seed-bootstrap from the node identity and perform the idempotent genesis OwnerKey insert on a fresh party. This is the founder persona — NOT a node donated to a requester. Donated nodes are generic and pin the requester\'s owner key via --pin-owner-key instead.')
+  .option('--owner', 'This server holds an owner key for its cadre, in the owner key file (owner.keyFile, default <node state dir>/owner.key; created when missing), never its node identity. On a party with no owner the key founds it; on one that lists the key the node signs with it; on one whose owners do not include it start-up fails, naming the key to add. Not for a node donated to a requester: that one pins the requester\'s owner key with --pin-owner-key instead.')
+  .option('--owner-key-file <path>', 'With --owner: the owner key file. Takes precedence over the config file\'s owner.keyFile and CADRE_OWNER_KEY_FILE.')
+  .option('--owner-label <text>', 'With --owner, founding a party: the founding owner key\'s label (default "server <hostname>"; at most 64 characters).')
   .option('--admin-port <port>', 'Bind the loopback admin channel (127.0.0.1) on this port. Requires CADRE_STARTUP_TOKEN in env.')
   .option('--pin-owner-key <b64url>', 'Pin a base64url owner key as a cold-start seed-trust anchor (repeatable; unions with CADRE_OWNER_KEYS). Required for a cold node to accept --seed / POST /seed.', collectPinKey, [])
   .action(async (options) => {
@@ -268,6 +283,11 @@ export const startCommand = new Command('start')
       if (options.identityFile) {
         process.env.CADRE_KEY_FILE = options.identityFile;
       }
+      // The same route for --owner-key-file (CADRE_OWNER_KEY_FILE -> owner.keyFile).
+      if (options.ownerKeyFile) {
+        process.env.CADRE_OWNER_KEY_FILE = options.ownerKeyFile;
+      }
+      const ownerLabel = ownerKeyLabelFor(options);
 
       const config = await resolveConfig(options.config);
       applyWsPortOption(config, options.wsPort);
@@ -337,6 +357,18 @@ export const startCommand = new Command('start')
         return await serveRemoved(removal, config.nodeStateDir, healthServer);
       }
       const noteRemoval = (reported: CadreRemoval): void => { removal = reported; };
+
+      // Loaded (or created) before the node is built, so a key file that cannot be read stops
+      // the start before any port is bound.
+      let serverOwnerKey: ServerOwnerKey | undefined;
+      if (options.owner) {
+        if (!config.privateKey) {
+          // The node's own CadrePeer row, which names it in every seed it mints, is signed with
+          // the node identity; a node on an ephemeral one publishes none.
+          throw new Error('--owner requires a node identity (set identity.keyFile in the config, or pass --identity-file)');
+        }
+        serverOwnerKey = await loadServerOwnerKey(config.ownerKeyFile, partyId);
+      }
 
       // The raw stores of every node this process runs; closed after each node stops.
       const storage = openNodeStorage(config.storage);
@@ -418,25 +450,10 @@ export const startCommand = new Command('start')
       // bundle names and the node then syncs the control database over the connection it holds.
       if (invitation) invitationStatus = await redeemStartupInvitation(node, invitation);
 
-      // Owner init: bridge the libp2p identity into a base64url owner
-      // keypair, run the idempotent genesis insert on a fresh party, then bring
-      // up seed-bootstrap so this node can mint invites and authorize peers.
-      if (options.owner) {
-        if (!config.privateKey) {
-          throw new Error('--owner requires a node identity (set identity.keyFile in the config, or pass --identity-file)');
-        }
-        const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(config.privateKey);
-
-        const controlDb = node.getControlDatabase();
-        if (!controlDb) {
-          throw new Error('Control database unavailable after start; cannot run owner genesis');
-        }
-        const inserted = await controlDb.ensureOwnerKey(publicKeyB64);
-        console.log(inserted
-          ? '✓ Genesis: inserted founding owner key'
-          : '• Owner key already present; skipping genesis');
-
-        await node.initializeSeedBootstrap(privateKeyB64);
+      // Owner init: wire the server's owner key, founding the party when it has no owner, so
+      // this node can mint invites and authorize peers.
+      if (serverOwnerKey) {
+        await wireServerOwnerKey(node, serverOwnerKey, ownerLabel);
         console.log('✓ Owner seed-bootstrap initialized');
 
         // Write the owner's own signed CadrePeer row up-front, before any

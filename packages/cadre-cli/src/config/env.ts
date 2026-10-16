@@ -52,6 +52,7 @@ export const ENV_MAPPINGS = {
   CADRE_PUSH: { path: 'push', kind: 'json' },
   CADRE_NODE_STATE_DIR: { path: 'nodeState.dir', kind: 'string' },
   CADRE_CLAIM_SECRET_FILE: { path: 'claim.secretFile', kind: 'string' },
+  CADRE_OWNER_KEY_FILE: { path: 'owner.keyFile', kind: 'string' },
 } as const satisfies Record<string, EnvMapping>;
 
 /**
@@ -68,6 +69,7 @@ export const COMMAND_ENV = [
   'CADRE_STARTUP_TOKEN',
   'CADRE_CLAIM_SECRET',
   'CADRE_INVITATION',
+  'CADRE_OWNER_KEY_PASSPHRASE',
 ] as const;
 
 export type CommandEnvName = (typeof COMMAND_ENV)[number];

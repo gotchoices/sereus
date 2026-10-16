@@ -4,6 +4,9 @@
  * the owner invites it (`provider-container-joins-by-invitation`): `createInvitation` mints the
  * bundle, and its member set says who the redemption admitted.
  *
+ * The child creates its owner key file itself (`owner.key` in its workdir, its node-state
+ * directory), apart from its identity; `getOwnerKey` reads the key back from the admin channel.
+ *
  * Spawned directly because no product code runs an owner node as a child: owner keys stay on
  * devices people hold (docs/cadre-host.md → Control-plane separation).
  */
@@ -59,6 +62,8 @@ export interface OwnerCliMemberRow {
 
 export interface OwnerCliNode {
 	getPeerId(): Promise<string>;
+	/** The owner key the node signs with (its owner key file's), base64url; null before it is wired. */
+	getOwnerKey(): Promise<string | null>;
 	/** The node's dialable control-network addresses. */
 	getMultiaddrs(): Promise<string[]>;
 	/**
@@ -87,6 +92,7 @@ export async function startOwnerCliNode(opts: OwnerCliNodeOptions): Promise<Owne
 	const logTail = (): string => readLogTail(join(opts.workdir, LOG_FILE), LOG_TAIL_LINES);
 	const node: OwnerCliNode = {
 		getPeerId: async () => (await admin<{ peerId: string | null }>('GET', '/admin/identity')).peerId ?? '',
+		getOwnerKey: async () => (await admin<{ ownerKey: string | null }>('GET', '/admin/identity')).ownerKey,
 		getMultiaddrs: async () => (await admin<{ multiaddrs: string[] }>('GET', '/admin/multiaddrs')).multiaddrs,
 		createInvitation: (options) => admin<CreateCadreInvitationResult>('POST', '/admin/invites', options),
 		isAuthorizedMember: async (peerId) =>

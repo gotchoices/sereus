@@ -82,6 +82,35 @@ cadre start -c cadre.yaml
 cadre start -c cadre.yaml --debug
 ```
 
+### Make this server an owner
+
+An owner key belongs to a person, not to a machine, so a server normally holds none: it is a member of a cadre whose owner keys live on the owner's phone, a hardware key or a backup ([docs/architecture.md → Owner Keys](../../docs/architecture.md#owner-keys)). `cadre start --owner` is the deliberate exception: this server holds an owner key of its own, in the **owner key file**, and signs the cadre's owner writes with it (admitting and inviting machines over the admin channel, removing strands, enrolling approver keys).
+
+```bash
+cadre start -c cadre.yaml --owner
+cadre start -c cadre.yaml --owner --owner-label "office server"   # founding a party: the key's label
+```
+
+- The owner key file is `owner.keyFile` in the config (`CADRE_OWNER_KEY_FILE`, `--owner-key-file <path>`), by default `owner.key` in the node-state directory. It has the identity file's format, and it is never the identity file: a config naming the same file for both is refused. When the file is missing, `--owner` creates it and says so on stderr. **Anyone who can read that file controls the cadre**; keep it private and back it up (`cadre owner-key export`).
+- On a party with no owner yet, the key founds it: the genesis `OwnerKey` row, labelled `--owner-label` (default `server <hostname>`, at most 64 characters).
+- On a party that lists the key as an owner, the node signs with it; nothing is inserted.
+- On a party whose owners do not include the key, start-up fails, naming the key's fingerprint and public key. Add it as an owner from a device that holds one of the party's owner keys, or import one of the party's owner keys here (`cadre owner-key import`), then start again.
+
+`--owner` needs a node identity (`identity.keyFile` or `--identity-file`): the node's own `CadrePeer` row, which names it in every seed it mints, is signed with it. `--owner-label` and `--owner-key-file` are refused without `--owner`.
+
+#### `cadre owner-key`
+
+```bash
+cadre owner-key show -c cadre.yaml            # public key, the 8-character fingerprint the apps show, and the file
+cadre owner-key show --json                   # { publicKey, fingerprint, file }
+cadre owner-key export > owner-key.txt        # the key as text; add --passphrase-file <path> to lock it, --label <text> to name it
+cadre owner-key import < owner-key.txt        # store an exported key in the owner key file
+```
+
+Each finds the owner key file as `cadre start` does (`-c`, `--owner-key-file`). An export is the private key: whoever holds the text is an owner of every cadre that lists the key, which the command says on stderr; only the text goes to stdout. A locked export (`sereus-owner-key-locked:1.…`) needs its passphrase on import. Passphrases come from `--passphrase-file <path>` or `CADRE_OWNER_KEY_PASSPHRASE`, never an argument, since an argument lands in shell history and the process list; giving both is refused.
+
+`import` takes the text as an argument, or reads it from stdin when given `-` or nothing; stdin keeps an unlocked key out of shell history too. It refuses a file that holds a different owner key, naming both fingerprints, and importing the key the file already holds changes nothing. An export from the Sereus apps imports the same way.
+
 ### Check Status
 
 `cadre status` reads **live runtime** from a running node's health `/status`
@@ -176,7 +205,7 @@ cadre start -c cadre.yaml --identity-file node-b.key --invitation "$(cat node-b.
 
 Only the bundle goes to stdout, so `>` and `$(…)` capture exactly what `--invitation` takes; stderr names the party, the key, what it admits and grants, when it expires, and the member addresses the device will try in order. `--json` prints `{ invitation, encoded, warnings }` instead. The owner's admin channel also lists the invitations the node holds (`GET /admin/invites`, each with whether it is still live and how many times it was redeemed) and withdraws one (`DELETE /admin/invites/<key>`).
 
-On the new machine, `--invitation` redeems right after the node is up: the node dials the listed members in order, pins the invitation's owner keys as its trust anchor, and once a member accepts it syncs the control database over that connection. It needs a node identity (the redemption is signed with it) and cannot be combined with `--seed` (the owner-online way to the same end) or with `--owner` (which founds a cadre on this node rather than joining one; an invitation that grants ownership seats this node's key by consent, and the node wires that key for signing on a later start with `--owner` and without `--invitation`). A node that is already a member, started again with the flag still in its service file, is accepted again without a second record being written. A failed redemption is reported and the node keeps running, as a failed `--seed` is.
+On the new machine, `--invitation` redeems right after the node is up: the node dials the listed members in order, pins the invitation's owner keys as its trust anchor, and once a member accepts it syncs the control database over that connection. It needs a node identity (the redemption is signed with it) and cannot be combined with `--seed` (the owner-online way to the same end) or with `--owner` (which founds a cadre on this node rather than joining one). To make the machine an owner as well, start it with `--owner` and without `--invitation` once it has joined ([Make this server an owner](#make-this-server-an-owner)). An invitation minted with `--owner` seats the redeeming machine's identity key as an owner, which cadre-cli never signs with; the node says so when it redeems one. A node that is already a member, started again with the flag still in its service file, is accepted again without a second record being written. A failed redemption is reported and the node keeps running, as a failed `--seed` is.
 
 `CADRE_INVITATION` is the same as `--invitation`, for a launcher: the bundle carries the invitation's private key, and an argument shows in the process list. Pass one of the two; both at once is refused. While the redemption runs and after it settles, `/status` reports it as `node.invitation`: `{ state: 'pending' }` from start, `{ state: 'accepted', memberPeerId? }` with the member that admitted the node, or `{ state: 'failed', error, retryable }`. A member's refusal keeps its code in parentheses at the end of `error` (`… (invite-spent)`); `retryable` is true only when no member named in the bundle could be reached, so starting again with the same invitation may succeed. The field is absent on a node started without an invitation. cadre-host's join by invitation reads it.
 
@@ -255,7 +284,7 @@ cadre strand list --json          # payload on stdout, progress on stderr — pi
 Remove a strand. This deletes **this party's** `Strand` row, so every cadre node in the party
 stops running the strand on its next watcher poll. Other *parties* in that strand are
 unaffected — removal withdraws our participation, it does not destroy the network. The write
-is owner-signed, so the config's identity key must be an enrolled owner key.
+is owner-signed, so the node's owner key file must hold one of the party's owner keys ([Make this server an owner](#make-this-server-an-owner)).
 
 ```bash
 cadre strand remove <strandId>
@@ -284,7 +313,7 @@ An invitation may carry a validation URL: a web hook an outside approver operate
 to sign off before the invitation can be redeemed. `validation-key` is how the party says
 which approvers it trusts — a party with none enrolled cannot use such invitations at all.
 
-The config's identity key must be an enrolled owner key; these writes are owner-signed.
+These writes are owner-signed: the node's owner key file must hold one of the party's owner keys ([Make this server an owner](#make-this-server-an-owner)).
 
 ```bash
 cadre validation-key list -c cadre.yaml
@@ -333,6 +362,7 @@ says so rather than starting without it.
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation (`true`/`false`/`1`/`0`) |
 | `CADRE_LATENCY_HINT` | `hibernation.defaultLatencyHint` | Default latency hint: `realtime`, `interactive`, `background` or `archive` |
 | `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher polling interval in milliseconds |
+| `CADRE_OWNER_KEY_FILE` | `owner.keyFile` | The owner key file `cadre start --owner` and the owner-signed commands use ([Make this server an owner](#make-this-server-an-owner)); same format as the identity file, never the same file. Defaults to `owner.key` in the node-state directory. `--owner-key-file <path>` sets this |
 | `CADRE_CLAIM_SECRET_FILE` | `claim.secretFile` | File holding the claim secret, the file form of `CADRE_CLAIM_SECRET` ([Waiting to be claimed](#waiting-to-be-claimed)); `cadre init` writes it. Setting both is refused |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets, the claim record `claim.json`, the removal marker `removed.<partyId>.json`). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
 | `CADRE_HEALTH_PORT` | _(env only)_ | Health server port for `cadre start`, and the port `cadre status` queries; the env value wins over `--health-port` |
@@ -342,6 +372,7 @@ says so rather than starting without it.
 | `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add` and `cadre enroll invite` connect to when they are not given `--admin-port` |
 | `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor. Each entry must be a base64url 32-byte Ed25519 public key; a malformed entry fails startup naming the bad value, rather than sitting in the anchor and silently matching no signer |
 | `CADRE_CLAIM_SECRET` | _(env only)_ | Start the node waiting to be claimed ([Waiting to be claimed](#waiting-to-be-claimed)): a one-time secret, base64url of 32 random bytes. The claim names the party; `controlNetwork.partyId` is a placeholder. A malformed value fails startup without echoing it; a set-but-empty value means no claim. May stay set after the claim. Cannot be combined with `--owner`, `--seed`, `--invitation`, `CADRE_INVITATION`, `--pin-owner-key` or `CADRE_OWNER_KEYS` |
+| `CADRE_OWNER_KEY_PASSPHRASE` | _(env only)_ | The passphrase `cadre owner-key export` locks an export with and `cadre owner-key import` unlocks one with; the environment form of `--passphrase-file`. Setting both is refused |
 | `CADRE_INVITATION` | _(env only)_ | `cadre start --invitation` without the argument ([Join by invitation](#join-by-invitation-the-owner-may-be-offline)): the encoded bundle `cadre enroll invite` prints, kept out of the process list because it carries the invitation's private key. A set-but-empty value means none. Refused beside `--invitation`; cannot be combined with `--seed`, `--owner` or `CADRE_CLAIM_SECRET`. `/status` then reports `node.invitation` |
 
 Environment variables override config file values. A variable that is **set but
@@ -440,8 +471,10 @@ trust and its way back into the party across restarts. It also holds each
 strand's saved routing table (`strand-network.<partyId>.json`), which a
 restarted node uses to reach the strand's other members again, and, once an
 owner has removed the node from a cadre, the marker that keeps it stopped
-(`removed.<partyId>.json`, see [Removed from the cadre](#removed-from-the-cadre)). It must be
-writable by the node's user, and it belongs in backups alongside the identity key.
+(`removed.<partyId>.json`, see [Removed from the cadre](#removed-from-the-cadre)), and, on a
+server made an owner, the owner key file (`owner.key`, see
+[Make this server an owner](#make-this-server-an-owner)). It must be writable by the node's
+user, and it belongs in backups alongside the identity key.
 
 ### Installation Steps
 

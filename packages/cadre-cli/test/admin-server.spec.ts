@@ -40,6 +40,7 @@ class MockNode {
 
   readonly partyId = 'party-xyz';
   get peerId() { return { toString: () => '12D3KooWSelf' }; }
+  getOwnerSigner() { return { publicKey: 'owner-key-b64' }; }
 
   private record(method: string, ...args: unknown[]): void {
     this.calls.push({ method, args });
@@ -179,7 +180,7 @@ describe('AdminServer', () => {
       const res = await fetch(`${base}/admin/identity`, { headers: auth() });
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ ok: true, data: { peerId: '12D3KooWSelf', partyId: 'party-xyz' } });
+      expect(body).toEqual({ ok: true, data: { peerId: '12D3KooWSelf', partyId: 'party-xyz', ownerKey: 'owner-key-b64' } });
     });
 
     it('returns 400 bad_request on malformed JSON bodies', async () => {

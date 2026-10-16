@@ -5,6 +5,7 @@ import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { resolveConfig, type ResolvedConfig } from '../config/index.js';
 import { partyOnRecord } from './claim-record.js';
+import { loadOwnerKeyFile } from './owner-key-file.js';
 
 const log = debug('cadre:cli:node-session');
 
@@ -132,6 +133,8 @@ export async function withConnectedNode(
   const config = await resolveConfig(configPath);
   // A claimed node serves the party on record, not its config's placeholder (`claim-record.ts`).
   const { partyId } = await partyOnRecord(config);
+  // Read before the node starts, so an owner key file that cannot be read fails the command first.
+  const ownerSigner = await loadOwnerKeyFile(config.ownerKeyFile);
   const storage = openNodeStorage(config.storage);
   const node = new CadreNode(oneShotNodeConfig(config, partyId, storage));
 
@@ -153,9 +156,10 @@ export async function withConnectedNode(
     // a process crash — losing the very message the timeout exists to print.
     await Promise.all([node.start(), connected]);
     // The owner-signed commands (`strand remove`, `validation-key add|remove`) sign through the
-    // node's owner signer, so a node whose identity key is a live owner gets it wired here; any
-    // other node is left unwired and its owner writes refuse.
-    await node.wireOwnKeyIfOwner();
+    // node's owner signer: the owner key file's key, wired when the party lists it. Without the
+    // file, or when its key is not an owner here, the node is left unwired and its owner writes
+    // refuse. Never the identity key (`wireOwnKeyIfOwner`'s default without a signer).
+    if (ownerSigner) await node.wireOwnKeyIfOwner(ownerSigner);
     await action(node);
   } finally {
     clearTimeout(timer);

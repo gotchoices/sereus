@@ -158,6 +158,21 @@ export interface CliConfig {
   push?: PushCredentials;
 
   /**
+   * The owner key this server holds, when the user deliberately made it an owner
+   * (`docs/architecture.md` → Owner Keys): `cadre start --owner` signs with it, and the one-shot
+   * commands sign their owner writes with it. Never the node identity.
+   */
+  owner?: {
+    /**
+     * Path to the owner key file, in the identity file's format (a libp2p protobuf-encoded
+     * Ed25519 private key). Defaults to `<nodeState.dir>/owner.key`; must not be
+     * `identity.keyFile`. Relative paths resolve against the working directory, as
+     * `identity.keyFile` does.
+     */
+    keyFile?: string;
+  };
+
+  /**
    * Waiting to be claimed, with the secret kept in a file rather than the environment — what
    * `cadre init` writes. `CADRE_CLAIM_SECRET` is the environment form; a start that sets both is
    * refused. Read by `cadre start` and `cadre code`; never passed to the node as written.
@@ -189,10 +204,10 @@ export type CliConfigFile = DeepPartial<CliConfig>;
 /**
  * Resolved configuration after loading, applying environment overrides, validating, and
  * loading the identity key. The node-facing blocks (`controlNetwork`, `storage`, `network`,
- * `hibernation`, `push`, ...) are {@link CliConfig}'s own; only the three keys that resolve
- * into something else are replaced.
+ * `hibernation`, `push`, ...) are {@link CliConfig}'s own; only the keys that resolve into
+ * something else are replaced.
  */
-export interface ResolvedConfig extends Omit<CliConfig, 'identity' | 'nodeState' | 'strandFilter' | 'claim'> {
+export interface ResolvedConfig extends Omit<CliConfig, 'identity' | 'nodeState' | 'strandFilter' | 'claim' | 'owner'> {
   privateKey?: PrivateKey;
   /**
    * Directory for this node's durable node-local stores (the bootstrap-peer
@@ -205,4 +220,10 @@ export interface ResolvedConfig extends Omit<CliConfig, 'identity' | 'nodeState'
   strandFilter: StrandFilter;
   /** `claim.secretFile`, resolved to an absolute path. Kept apart from the node-facing keys: `CadreNodeConfig.claim` means something else. */
   claimSecretFile?: string;
+  /**
+   * `owner.keyFile`, resolved to an absolute path, else `<nodeStateDir>/owner.key`. Always set;
+   * the file itself may not exist (this machine holds no owner key). Read only by the commands
+   * that sign owner writes (`owner-key-file.ts`).
+   */
+  ownerKeyFile: string;
 }
