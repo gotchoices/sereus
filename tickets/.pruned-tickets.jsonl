@@ -267,3 +267,17 @@
 {"slug":"strand-party-member-key","file":"strand-party-member-key.md","completedAt":"2026-09-10","commit":"c86d8d6a4b8f21bf2c12ed5cd0258ca1d41c23a9","prunedAt":"2026-10-11T07:04:37.542Z"}
 {"slug":"strand-removal-e2e-and-docs","file":"strand-removal-e2e-and-docs.md","completedAt":"2026-09-10","commit":"97fcba34db669bd1c4f940adada555dc0a0eefed","prunedAt":"2026-10-11T07:04:37.542Z"}
 {"slug":"strand-revoked-peer-gate","file":"strand-revoked-peer-gate.md","completedAt":"2026-09-10","commit":"5a1c0a52a0aa4250b2b6f030d61b133fc3bcb6f9","prunedAt":"2026-10-11T07:04:37.542Z"}
+{"slug":"rn-solo-founding-stall-on-device","file":"0-rn-solo-founding-stall-on-device.md","completedAt":"2026-09-15","commit":"2797b79be8411767675d7ec2aa9138c8a3dcdc91","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"bug-strand-relay-reservation-not-resupervised","file":"1-bug-strand-relay-reservation-not-resupervised.md","completedAt":"2026-09-15","commit":"360f0e063eba7781bd15451a97d1bc5c9bcb34b0","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"relay-can-be-optional-at-startup","file":"1-relay-can-be-optional-at-startup.md","completedAt":"2026-09-16","commit":"e6e9b668b35cbee578a31f570530d05423b3e8d5","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"phone-becomes-reachable-through-a-relay","file":"2-phone-becomes-reachable-through-a-relay.md","completedAt":"2026-09-16","commit":"70c815b726a60f8faf20ca18b26d13391150e9ef","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"control-plane-consult-budget-gate","file":"control-plane-consult-budget-gate.md","completedAt":"2026-09-15","commit":"3d38e4e4781402fbdcb00907db958d446bed1ba9","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"discovered-strands-lost-to-late-subscriber","file":"discovered-strands-lost-to-late-subscriber.md","completedAt":"2026-09-16","commit":"60faf5c0ada97dd6fd3a5635808a62e58c181f5a","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"donated-node-reachable-by-phone","file":"donated-node-reachable-by-phone.md","completedAt":"2026-09-15","commit":"6b397c254f1dddeb109e72250679de040768daed","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"donation-scenario-phone-shaped-requester","file":"donation-scenario-phone-shaped-requester.md","completedAt":"2026-09-16","commit":"4d5c810a64cb998021ec077dfc40433d3dae4915","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"owner-keeps-dialing-node-it-added","file":"owner-keeps-dialing-node-it-added.md","completedAt":"2026-09-15","commit":"32879daa14054daff81db0db0adc2c11dbb04bce","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"phone-control-storage-shared-across-parties","file":"phone-control-storage-shared-across-parties.md","completedAt":"2026-09-16","commit":"61c97bf2d56af3653e08a34ee19f9546f0db1720","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"revocation-ledger-marker","file":"revocation-ledger-marker.md","completedAt":"2026-09-15","commit":"ce47af68a9e1b055a2aefeae838ce95da6e298ce","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"rn-create-strand-progress-and-founding-trace","file":"rn-create-strand-progress-and-founding-trace.md","completedAt":"2026-09-15","commit":"267509bba65580add3da03797d293e740a84d0e1","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"rn-request-node-from-cadre-host","file":"rn-request-node-from-cadre-host.md","completedAt":"2026-09-16","commit":"132469257732e3101b8bd47f6367bd8059b6d2ac","prunedAt":"2026-10-16T07:55:49.215Z"}
+{"slug":"rn-solo-founding-device-run","file":"rn-solo-founding-device-run.md","completedAt":"2026-09-15","commit":"d5909df5b8b903e4147d1861ba8d7e002c2058fd","prunedAt":"2026-10-16T07:55:49.215Z"}
