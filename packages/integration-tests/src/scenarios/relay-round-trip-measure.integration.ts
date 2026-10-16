@@ -404,7 +404,7 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 			partyId: `rrt-b-${runTag}`, purpose: 'relay round-trip measurement',
 		});
 		const bStrandRow: StrandRow = {
-			Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null,
+			Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null, FounderPeerId: null,
 		};
 		const bStrand = await B.addStrand({ strandRow: bStrandRow, sAppConfig: sApp, awaitFirstSync: false });
 		const bStrandNode = bStrand.libp2pNode!;

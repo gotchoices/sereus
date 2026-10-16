@@ -247,6 +247,7 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
 			MemberPrivateKey: formResult.memberPrivateKey ?? null,
 			Type: 'c',
 			FounderOwnerKey: null,
+			FounderPeerId: null,
 		};
 		const tJoin = Date.now();
 		await B.addStrand({ strandRow: bStrandRow, sAppConfig: sApp, awaitFirstSync: false });
@@ -394,7 +395,7 @@ async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void
 			purpose: 'joiner restart delivers a write made alone',
 		});
 		await B.addStrand({
-			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null },
+			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null, FounderPeerId: null },
 			sAppConfig: sApp,
 			awaitFirstSync: false,
 		});
@@ -471,7 +472,7 @@ async function runWriteMadeAloneReportedThenHeld(): Promise<void> {
 			purpose: 'a write made alone is reported, then reported held',
 		});
 		await B.addStrand({
-			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null },
+			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null, FounderPeerId: null },
 			sAppConfig: sApp,
 			awaitFirstSync: false,
 		});

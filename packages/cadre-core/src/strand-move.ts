@@ -571,7 +571,7 @@ function isOpenJoin(join: PendingJoin, nowMs: number): boolean {
 	return join.outcome === null && nowMs < join.ExpiresAt;
 }
 
-/** Content only: `Type` and the read secret. `FounderOwnerKey` is provenance, and a moved strand's changes. */
+/** Content only: `Type` and the read secret. The founder columns are provenance, and a moved strand's change. */
 function sameStrandContent(live: StrandRow, desired: StrandBundleEntry['row']): boolean {
 	return live.Type === desired.Type && (live.MemberPrivateKey ?? null) === (desired.MemberPrivateKey ?? null);
 }

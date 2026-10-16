@@ -135,7 +135,7 @@ function proofVerifies(partyId: string, row: OwnerKeyRow, trusted: ReadonlySet<s
 		return false;
 	}
 	if (row.vouchSig !== null) {
-		return verifyOwnerKeyVoucher(partyId, row.key, row.stampId, row.vouchOwner, row.vouchSig);
+		return verifyOwnerKeyVoucher(partyId, row.key, row.label, row.stampId, row.vouchOwner, row.vouchSig);
 	}
 	if (row.vouchUsage === null) {
 		return false;

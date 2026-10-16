@@ -33,7 +33,7 @@ import type {
   RevocationLedgerOpenResult
 } from './types.js';
 import type { ControlDatabase, MachineRemovalWrites } from './control-database.js';
-import { generateStampId } from './control-database.js';
+import { generateStampId, ownerKeyLabel } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { deviceTokenAddDigest } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
@@ -636,13 +636,18 @@ export class SeedBootstrapService {
    * {@link ControlDatabase.insertOwnerKeyVouched}'s; what stays here is the owner-signer
    * precondition, checked before any read (see {@link removePeer}).
    *
+   * @param label - the user's name for the key, bound into the signature
+   *   ({@link ControlDatabase.insertOwnerKey} has the rule).
    * @returns `true` when the row was seated, `false` when the key is already a live owner.
    */
-  async addOwner(ownerPublicKey: string, sign?: OwnerSign): Promise<boolean> {
+  async addOwner(ownerPublicKey: string, label?: string, sign?: OwnerSign): Promise<boolean> {
     const ownerKey = this.requireOwnerSigner().publicKey;
     const controlDatabase = this.requireControlDatabase();
-    return await this.withOwnerSign(`Add owner key ${ownerPublicKey}`, sign, (approved) =>
-      controlDatabase.insertOwnerKeyVouched(ownerPublicKey, ownerKey, approved));
+    // Checked before the approval opens, so a label the row would refuse never prompts the user.
+    const storedLabel = ownerKeyLabel(label);
+    const named = storedLabel === null ? ownerPublicKey : `"${storedLabel}" (${ownerPublicKey})`;
+    return await this.withOwnerSign(`Add owner key ${named}`, sign, (approved) =>
+      controlDatabase.insertOwnerKeyVouched(ownerPublicKey, ownerKey, approved, storedLabel));
   }
 
   /**

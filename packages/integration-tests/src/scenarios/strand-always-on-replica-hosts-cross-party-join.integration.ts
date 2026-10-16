@@ -253,7 +253,7 @@ describe('Always-on machine hosts a strand joined from another party', () => {
 			expect(formResult.strandId).toBe(strandId);
 			expect(formResult.strandAddrs.length).toBeGreaterThan(0);
 			const phoneStrand = await phone.node.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 				sAppConfig: host.sApp,
 			});
 			expect(phoneStrand.status).toBe('active');
@@ -277,7 +277,7 @@ describe('Always-on machine hosts a strand joined from another party', () => {
 				.toBeGreaterThan(0);
 			await freshReconcilePass(phone.node);
 			expect(await phoneControl.queryJoinedStrand(strandId), 'party-wide JoinedStrand row on the phone').toEqual({
-				Id: strandId, Type: 'o', MemberPrivateKey: null, FounderOwnerKey: null,
+				Id: strandId, Type: 'o', MemberPrivateKey: null, FounderOwnerKey: null, FounderPeerId: null,
 			});
 			expect(await phone.joinedStore.list(), 'publication drains the local record').toEqual([]);
 

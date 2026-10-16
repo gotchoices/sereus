@@ -20,8 +20,8 @@ import {
 
 const STRAND_ID = 'strand-alpha';
 
-const openRow = (Id = STRAND_ID): StrandRow => ({ Id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
-const closedRow = (Id = STRAND_ID): StrandRow => ({ Id, MemberPrivateKey: 'secret-key', Type: 'c', FounderOwnerKey: null });
+const openRow = (Id = STRAND_ID): StrandRow => ({ Id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null });
+const closedRow = (Id = STRAND_ID): StrandRow => ({ Id, MemberPrivateKey: 'secret-key', Type: 'c', FounderOwnerKey: null, FounderPeerId: null });
 
 /** A `StrandStore` over an in-memory map that records every write it is asked to make. */
 function fakeStore(initial: StrandRow[] = []): StrandStore & { readonly writes: string[] } {

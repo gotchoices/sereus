@@ -74,7 +74,7 @@ beforeEach(() => {
 });
 
 function createStartConfig(strandId: string, type: 'o' | 'c', overrides?: Partial<StartStrandConfig>): StartStrandConfig {
-  const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: type, FounderOwnerKey: null };
+  const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: type, FounderOwnerKey: null, FounderPeerId: null };
   const sAppConfig: SAppConfig = {
     id: authorPublicKey,
     version: testVersion,

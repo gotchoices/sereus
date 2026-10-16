@@ -336,7 +336,7 @@ async function runInProcess(persistentNetworkState: boolean, oneSidedMemory = fa
 		});
 		expect(formResult.strandId).toBe(strandId);
 		const bStrand = await B.addStrand({
-			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null },
+			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null, FounderPeerId: null },
 			sAppConfig: sApp,
 			awaitFirstSync: false,
 		});

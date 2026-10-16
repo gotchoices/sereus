@@ -276,6 +276,7 @@ function launchOnJoiner(side: HostSide, joined: JoinerSide): Promise<StrandInsta
 			MemberPrivateKey: joined.memberPrivateKey,
 			Type: 'c',
 			FounderOwnerKey: null,
+			FounderPeerId: null,
 		},
 		sAppConfig: side.sApp,
 	});

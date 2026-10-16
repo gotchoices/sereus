@@ -29,7 +29,7 @@ describe('claiming a hosted storage replica', () => {
   it('attaches the app schema in place during the replica launch, then founds it with the sApp in the Header', async () => {
     manager = new StrandInstanceManager();
     const sApp = signedSApp();
-    const strandRow: StrandRow = { Id: 'replica-claimed', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+    const strandRow: StrandRow = { Id: 'replica-claimed', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 
     // The claim lands while the replica's runtime is still being built, so the attach must
     // wait for the build and act on the database it produced.

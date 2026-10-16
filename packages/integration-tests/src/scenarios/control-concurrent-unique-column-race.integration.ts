@@ -70,19 +70,20 @@ describe('Concurrent same-unique-column insert across two machines', () => {
 	/**
 	 * Insert one owner-signed, open `Strand` row under a CHOSEN `StampId` — the same
 	 * statement and `buildAuthorizationMessage` field order `ControlDatabase.insertStrand`
-	 * uses (Id, Type, MemberPrivateKey-or-empty, StampId), issued through `execWrite`
+	 * uses (Id, Type, MemberPrivateKey-or-empty, FounderPeerId, StampId), issued through `execWrite`
 	 * because `insertStrand` mints its own stamp, which is exactly what this race shares.
 	 */
 	async function seatStrand(db: ControlDatabase, strandId: string, stampId: string): Promise<void> {
 		const { A, ownerPublicKey, ownerSign } = pair!;
+		const founderPeerId = A.peerId!.toString();
 		const signature = ownerSign(
-			buildAuthorizationMessage('CadreControl.Strand', 'add', A.partyId, [strandId, 'o', '', stampId]),
+			buildAuthorizationMessage('CadreControl.Strand', 'add', A.partyId, [strandId, 'o', '', founderPeerId, stampId]),
 		);
 		await db.execWrite(`
-			insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
+			insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
 				with context OwnerKey = ?, Signature = ?
-				values (?, ?, ?, ?, ?)
-		`, [ownerPublicKey, signature, strandId, 'o', null, stampId, ownerPublicKey], 'unique-race-probe');
+				values (?, ?, ?, ?, ?, ?)
+		`, [ownerPublicKey, signature, strandId, 'o', null, stampId, ownerPublicKey, founderPeerId], 'unique-race-probe');
 	}
 
 	/** Does this view hold a `Strand` row with this id? A table SCAN, not a seek. */

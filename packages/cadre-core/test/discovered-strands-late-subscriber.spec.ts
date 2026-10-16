@@ -171,8 +171,8 @@ describe('discovered strands survive a late subscriber', () => {
 		// (`CHAT_SAPP_ID`), and a fresh `signedSApp()` per era would mint a new id and
 		// make the restart look like a different application attaching.
 		const sAppConfig = signedSApp({ latencyHint: 'realtime' });
-		// Same key store ⇒ same libp2p identity ⇒ the same owner key across the
-		// restart, so the stored row's `FounderOwnerKey` is still this device's own —
+		// Same key store ⇒ same libp2p identity across the restart, so the stored row's
+		// `FounderPeerId` is still this device's own —
 		// the phone case, where the strand being re-attached is one it founded itself.
 		const config = (): CadreNodeConfig => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
 
@@ -460,7 +460,7 @@ function bareWatcher(tag: string): BareHarness {
 		controlNetwork: { partyId: freshPartyId(`discovered-${tag}`), bootstrapNodes: [] },
 		profile: 'transaction'
 	});
-	const row: StrandRow = { Id: strandId(tag), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+	const row: StrandRow = { Id: strandId(tag), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 	const rows: StrandRow[] = [row];
 	const queryable: StrandQueryable = { queryStrands: async () => [...rows] };
 	const internals = node as unknown as CadreNodeInternals;

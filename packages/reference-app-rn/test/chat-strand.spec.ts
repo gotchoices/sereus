@@ -33,6 +33,7 @@ function makeStubNode(memberPrivateKey: string | null = null) {
 		MemberPrivateKey: memberPrivateKey,
 		Type: type,
 		FounderOwnerKey: null,
+		FounderPeerId: null,
 	});
 	return {
 		foundStrand: vi
@@ -91,7 +92,7 @@ describe('chat-strand caller: creation founds rather than attaches', () => {
 	it('joinChatStrand attaches without founding', async () => {
 		const { joinChatStrand } = await import('../src/chat-strand.js');
 		const node = makeStubNode();
-		const strandRow = { Id: 'join-id', MemberPrivateKey: null, Type: 'o' as const, FounderOwnerKey: null };
+		const strandRow = { Id: 'join-id', MemberPrivateKey: null, Type: 'o' as const, FounderOwnerKey: null, FounderPeerId: null };
 		await joinChatStrand(node as never, strandRow);
 		expect(node.addStrand).toHaveBeenCalledWith(
 			expect.not.objectContaining({ founder: true }),

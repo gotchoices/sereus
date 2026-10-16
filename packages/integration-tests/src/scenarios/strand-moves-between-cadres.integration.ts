@@ -211,7 +211,7 @@ async function pJoinsClosedStrand(P: CadreNode, invited: InvitedStrand, sApp: SA
 	expect(formed.strandId).toBe(S);
 	expect(formed.membershipInvite).toBeDefined();
 	await P.addStrand({
-		strandRow: { Id: S, MemberPrivateKey: formed.memberPrivateKey!, Type: 'c', FounderOwnerKey: null },
+		strandRow: { Id: S, MemberPrivateKey: formed.memberPrivateKey!, Type: 'c', FounderOwnerKey: null, FounderPeerId: null },
 		sAppConfig: sApp,
 		awaitFirstSync: false,
 	});
@@ -229,7 +229,7 @@ async function nJoinsOpenStrand(N: CadreNode, invited: InvitedStrand, sApp: SApp
 	const formed = await N.formStrand(N.decodeInvitation(invited.envelope), { partyId: N.partyId, purpose: 'strand T' });
 	expect(formed.strandId).toBe(T);
 	expect(formed.strandAddrs.length).toBeGreaterThan(0);
-	await N.addStrand({ strandRow: { Id: T, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null }, sAppConfig: sApp, awaitFirstSync: false });
+	await N.addStrand({ strandRow: { Id: T, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null }, sAppConfig: sApp, awaitFirstSync: false });
 	const db = (await N.whenStrandWritable(T, { timeoutMs: STARTUP_MS })).database!.getDatabase();
 	expect((await N.listUnpublishedJoinedStrands()).map((record) => record.Id), 'T is a machine-local join on N').toEqual([T]);
 	expect(await N.getControlDatabase()!.queryJoinedStrand(T), 'B never publishes T party-wide').toBeNull();

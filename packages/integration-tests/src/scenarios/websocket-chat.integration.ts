@@ -95,7 +95,7 @@ describe('WebSocket Chat (server-to-server)', () => {
 
     // ── 3. Create the chat strand on both nodes ────────────────────────
 
-    const strandRow: StrandRow = { Id: STRAND_ID, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+    const strandRow: StrandRow = { Id: STRAND_ID, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 
     // The drone FOUNDS (writes the Header); the phone joins without waiting for its
     // first sync, since the dial that carries the Header to it happens below — a

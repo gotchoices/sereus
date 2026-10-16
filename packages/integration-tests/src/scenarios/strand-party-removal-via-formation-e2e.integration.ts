@@ -622,6 +622,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 						MemberPrivateKey: formResult.memberPrivateKey!,
 						Type: 'c',
 						FounderOwnerKey: null,
+						FounderPeerId: null,
 					},
 					sAppConfig: sApp,
 				}));
@@ -830,7 +831,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 				'join[0]', joinOwner.node,
 				await joinOwner.node.addStrand({
 					strandRow: {
-						Id: strandId, MemberPrivateKey: firstForm.memberPrivateKey!, Type: 'c', FounderOwnerKey: null,
+						Id: strandId, MemberPrivateKey: firstForm.memberPrivateKey!, Type: 'c', FounderOwnerKey: null, FounderPeerId: null,
 					},
 					sAppConfig: sApp,
 				}));

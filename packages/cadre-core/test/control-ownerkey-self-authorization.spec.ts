@@ -59,9 +59,9 @@ function signAs(kp: KeyPair, message: Uint8Array): string {
   return cryptoSign(message, kp.privateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
 
-/** The enrollment message the insert branch binds: digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, new.StampId). */
+/** The enrollment message the insert branch binds for an unlabelled row: digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, coalesce(new.Label, ''), new.StampId). */
 const enrollMessage = (partyId: string, key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
+  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, '', stampId]);
 
 /** The removal message the delete branch binds: digest('CadreControl.OwnerKey', 'remove', party_id(), old.Key, old.StampId). */
 const removeMessage = (partyId: string, key: string, stampId: string): Uint8Array =>
@@ -474,7 +474,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
   // ── Cross-direction signature replay ──────────────────────────────────────
 
   it('rejects: an ENROLLMENT signature replayed as a removal', async () => {
-    // The enrollment signature covers digest('CadreControl.OwnerKey', 'add', party_id(), Key, StampId);
+    // The enrollment signature covers digest('CadreControl.OwnerKey', 'add', party_id(), Key, Label, StampId);
     // the delete branch binds the 'remove' action tag, so the two can never substitute.
     const second = freshKeyPair();
     const stamp = freshStamp();

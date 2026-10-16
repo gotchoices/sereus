@@ -152,7 +152,9 @@ describe('CadreNode.removeMachine', () => {
 
   it('refuses a re-vouch naming a row the machine did not vouch, before any write', async () => {
     const other = freshKeyPair();
-    expect(await node.addOwner(other.publicKey)).toBe(true);
+    // Through the database writer: with authorized siblings and no connection, this node is
+    // alone, and `addOwner` refuses an owner add then.
+    expect(await db.insertOwnerKeyVouched(other.publicKey, owner.publicKey, signOwner)).toBe(true);
     const otherPeerId = peerIdFromEd25519PublicKeyB64(other.publicKey)!;
     const bystander = await mintContactJoiner();
     const bystanderStamp = await vouchDevice(owner, bystander, Date.now());

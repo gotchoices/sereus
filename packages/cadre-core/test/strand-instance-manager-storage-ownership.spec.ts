@@ -71,7 +71,7 @@ beforeEach(() => {
 });
 
 function createStrandRow(id: string): StrandRow {
-  return { Id: id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+  return { Id: id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 }
 
 function createSAppConfig(): SAppConfig {

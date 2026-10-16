@@ -126,7 +126,9 @@ describe('CadreNode signs every owner write through the one signer it was given'
 		// under this node's key, then removes the machine's row and owner key.
 		const machine = freshKeyPair();
 		const machinePeerId = peerIdOf(machine);
-		await node.addOwner(machine.publicKey);
+		// Through the database writer: with an authorized sibling and no connection, this node is
+		// alone, and `addOwner` refuses an owner add then.
+		await db.insertOwnerKeyVouched(machine.publicKey, owner.publicKey, (message) => signAs(owner, message));
 		await node.authorizePeer(machinePeerId);
 		const device = freshKeyPair();
 		const devicePeerId = peerIdOf(device);

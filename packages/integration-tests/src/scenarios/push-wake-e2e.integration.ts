@@ -191,7 +191,7 @@ async function bringUpHibernatingStrand(Rx: CadreNode, strandId: string): Promis
 	// `founder: true`: a solo strand is a FOUNDED strand — a joiner launched alone comes
 	// up 'syncing' with its database withheld until a peer supplies the Header.
 	const strand = await Rx.addStrand({
-		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 		sAppConfig: sApp,
 		founder: true,
 	});
@@ -410,7 +410,7 @@ describe('E2E push-wake over the control network', () => {
 			// ack round-trip), NOT the networked strand resume (see header note).
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 			const strand = await Rx.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 				sAppConfig: sApp,
 				founder: true, // solo ⇒ founded; see bringUpHibernatingStrand
 			});

@@ -201,7 +201,7 @@ describe('Always-on storage replica', () => {
 			const strandId = `strand-replica-${Date.now()}`;
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 			const phoneStrand = await phone.node.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 				sAppConfig: sApp,
 				founder: true,
 			});

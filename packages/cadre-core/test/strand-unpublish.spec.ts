@@ -107,7 +107,7 @@ describe('CadreNode strand unpublish', () => {
     const schema = 'table Test (id text primary key);';
     const version = '1.0.0';
     return {
-      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
       sAppConfig: {
         id: authorPublicKey,
         version,
@@ -192,6 +192,7 @@ describe('CadreNode strand unpublish', () => {
       MemberPrivateKey: memberKey,
       Type: 'c',
       FounderOwnerKey: ownerKey.publicKeyB64,
+      FounderPeerId: node.peerId!.toString(),
     });
     const partyKeyStamp = await db.queryStrandPartyKeyStampId(strandId);
     expect(partyKeyStamp).not.toBeNull();

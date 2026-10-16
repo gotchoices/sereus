@@ -73,19 +73,20 @@ describe('Cross-machine uniqueness on a unique control column', () => {
 	 * `ControlDatabase.insertStrand` mints its own stamp, which is exactly what this
 	 * scenario must control, so the insert is issued here through `execWrite` — the same
 	 * statement and the same `buildAuthorizationMessage` field order `insertStrand` uses
-	 * (Id, Type, MemberPrivateKey-or-empty, StampId), so a schema change that breaks the
+	 * (Id, Type, MemberPrivateKey-or-empty, FounderPeerId, StampId), so a schema change that breaks the
 	 * production writer breaks this one too rather than leaving it quietly passing.
 	 */
 	async function seatStrand(db: ControlDatabase, strandId: string, stampId: string): Promise<void> {
 		const { A, ownerPublicKey, ownerSign } = pair!;
+		const founderPeerId = A.peerId!.toString();
 		const signature = ownerSign(
-			buildAuthorizationMessage('CadreControl.Strand', 'add', A.partyId, [strandId, 'o', '', stampId]),
+			buildAuthorizationMessage('CadreControl.Strand', 'add', A.partyId, [strandId, 'o', '', founderPeerId, stampId]),
 		);
 		await db.execWrite(`
-			insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
+			insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
 				with context OwnerKey = ?, Signature = ?
-				values (?, ?, ?, ?, ?)
-		`, [ownerPublicKey, signature, strandId, 'o', null, stampId, ownerPublicKey], 'unique-column-probe');
+				values (?, ?, ?, ?, ?, ?)
+		`, [ownerPublicKey, signature, strandId, 'o', null, stampId, ownerPublicKey, founderPeerId], 'unique-column-probe');
 	}
 
 	/** Does this node's view hold a `Strand` row with this id? A table SCAN, not a seek. */

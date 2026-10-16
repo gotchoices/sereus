@@ -167,6 +167,7 @@ describe('Cross-party strand seed carried by formation', () => {
 				MemberPrivateKey: null,
 				Type: 'o',
 				FounderOwnerKey: null,
+				FounderPeerId: null,
 			};
 			const joinerStrand = await joiner.addStrand({ strandRow: joinerRow, sAppConfig: sApp });
 			expect(joinerStrand.status).toBe('active');
@@ -342,6 +343,7 @@ describe('Cross-party strand seed carried by formation', () => {
 					MemberPrivateKey: formResult.memberPrivateKey!,
 					Type: 'c',
 					FounderOwnerKey: null,
+					FounderPeerId: null,
 				},
 				sAppConfig: sApp,
 			});

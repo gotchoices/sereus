@@ -119,13 +119,13 @@ class MapLedger implements PartyJoinedStrandLedger {
 	}
 }
 
-const joinedRow = (Id: string, MemberPrivateKey: string): StrandRow => ({ Id, Type: 'c', MemberPrivateKey, FounderOwnerKey: null });
+const joinedRow = (Id: string, MemberPrivateKey: string): StrandRow => ({ Id, Type: 'c', MemberPrivateKey, FounderOwnerKey: null, FounderPeerId: null });
 const localJoin = (Id: string, MemberPrivateKey: string): JoinedStrandRecord => ({ Id, Type: 'c', MemberPrivateKey, joinedAt: 1 });
 
 describe('JoinedStrandSession', () => {
 	it('offers control rows over party-wide joins over local ones, drains the stale local records, and survives a failed party-wide read', async () => {
 		const store = new KeyStoreJoinedStrandStore(new InMemoryKeyStore(), PARTY);
-		const control: StrandRow[] = [{ Id: 'a', Type: 'o', MemberPrivateKey: null, FounderOwnerKey: 'owner-key' }];
+		const control: StrandRow[] = [{ Id: 'a', Type: 'o', MemberPrivateKey: null, FounderOwnerKey: 'owner-key', FounderPeerId: 'founder-peer' }];
 		const ledger = new MapLedger([joinedRow('a', 'ledger-a'), joinedRow('b', 'ledger-b')], ['a']);
 		for (const record of [localJoin('a', 'local-a'), localJoin('b', 'local-b'), localJoin('c', 'local-c')]) {
 			await store.record(record);
@@ -252,7 +252,7 @@ describe('CadreNode remembers strands joined from another party', () => {
 
 			expect(second.getDiscoveredStrands().get(strandId),
 				'the restarted node did not offer the strand it joined — nothing but an app-side list would bring it back'
-			).toEqual({ Id: strandId, Type: 'c', MemberPrivateKey: 'shared-read-secret', FounderOwnerKey: null });
+			).toEqual({ Id: strandId, Type: 'c', MemberPrivateKey: 'shared-read-secret', FounderOwnerKey: null, FounderPeerId: null });
 
 			await within('forgetJoinedStrand()', OP_TIMEOUT_MS, () => second.forgetJoinedStrand(strandId));
 

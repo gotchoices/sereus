@@ -199,7 +199,7 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 			partyId: `reattach-b-${runTag}`, purpose: 'strand re-attach first-sync measurement',
 		});
 		const bStrandRow: StrandRow = {
-			Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null,
+			Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null, FounderPeerId: null,
 		};
 
 		let expectKey = 'before';

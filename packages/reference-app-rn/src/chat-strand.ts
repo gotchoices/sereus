@@ -197,6 +197,7 @@ export async function joinClosedChatStrand(
     MemberPrivateKey: memberPrivateKey,
     Type: 'c',
     FounderOwnerKey: null,
+    FounderPeerId: null,
   };
 
   const instance = await cadreNode.addStrand({

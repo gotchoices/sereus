@@ -49,7 +49,7 @@ async function fixture(): Promise<Fixture> {
   const memberPrivateKey = await generateStrandMemberKey();
   const partyMemberPrivateKey = await generateStrandMemberKey();
   return {
-    strandRow: { Id: `pre-split-${randomUUID()}`, MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null },
+    strandRow: { Id: `pre-split-${randomUUID()}`, MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null, FounderPeerId: null },
     sApp: signedSApp(),
     partyMemberPrivateKey,
     sharedKeyPair: strandMemberKeyPair(memberPrivateKey),

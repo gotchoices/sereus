@@ -96,12 +96,12 @@ describe('CadreControl approvals are bound to the party', () => {
   it('rejects an OwnerKey add signed for another party (Authorized), accepts it for this one', async () => {
     const second = freshKeyPair();
     const stamp = freshStamp();
-    const forOther = signAs(founder, buildAuthorizationMessage('CadreControl.OwnerKey', 'add', OTHER_PARTY, [second.publicKey, stamp]));
+    const forOther = signAs(founder, buildAuthorizationMessage('CadreControl.OwnerKey', 'add', OTHER_PARTY, [second.publicKey, '', stamp]));
 
     await expectConstraintFailure(insertOwnerKey(forOther, second.publicKey, stamp), 'Authorized');
     expect(await count('select count(1) as n from CadreControl.OwnerKey where Key = ?', [second.publicKey])).toBe(0);
 
-    const forThis = signAs(founder, buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [second.publicKey, stamp]));
+    const forThis = signAs(founder, buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [second.publicKey, '', stamp]));
     await insertOwnerKey(forThis, second.publicKey, stamp);
     expect(await count('select count(1) as n from CadreControl.OwnerKey where Key = ?', [second.publicKey])).toBe(1);
   }, 60_000);

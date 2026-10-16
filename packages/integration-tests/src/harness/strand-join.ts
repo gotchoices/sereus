@@ -222,6 +222,7 @@ export async function joinStrandOn(spec: StrandJoinSpec): Promise<StrandInstance
 		MemberPrivateKey: spec.memberPrivateKey ?? null,
 		Type: spec.type ?? 'o',
 		FounderOwnerKey: null,
+		FounderPeerId: null,
 	};
 
 	// The FOUNDING party's own membership identity for a closed strand (the harness's

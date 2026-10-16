@@ -27,16 +27,17 @@ const PARTY_ID = 'owner-anchor-sync-spec';
 function signedRow(owner: KeyPair, voucher: KeyPair, stampId = freshStamp()): OwnerKeyRow {
 	return {
 		key: owner.publicKey,
+		label: null,
 		stampId,
 		vouchOwner: voucher.publicKey,
-		vouchSig: signB64(voucher, ownerKeyAddDigest(PARTY_ID, owner.publicKey, stampId)),
+		vouchSig: signB64(voucher, ownerKeyAddDigest(PARTY_ID, owner.publicKey, null, stampId)),
 		vouchUsage: null,
 	};
 }
 
 /** The founding row: no proof at all. */
 function foundingRow(owner: KeyPair): OwnerKeyRow {
-	return { key: owner.publicKey, stampId: freshStamp(), vouchOwner: null, vouchSig: null, vouchUsage: null };
+	return { key: owner.publicKey, label: null, stampId: freshStamp(), vouchOwner: null, vouchSig: null, vouchUsage: null };
 }
 
 /** An `OwnerKey` tombstone naming `row`, signed by `signer`, as `deleteOwnerKey` stores it. */
@@ -73,7 +74,7 @@ async function invitationAdmittedOwner(issuer: KeyPair): Promise<{ row: OwnerKey
 		inviteSig: signB64(inviteKeys, cadreInviteRedeemDigest(PARTY_ID, invite.key, usageStampId, device.peerKey)),
 		peerSig: signB64({ privateKey: device.privateKey, publicKey: device.peerKey }, cadreInviteConsentDigest(PARTY_ID, invite.key, usageStampId, device.peerKey)),
 	};
-	const row: OwnerKeyRow = { key: device.peerKey, stampId: ownerStampId, vouchOwner: issuer.publicKey, vouchSig: null, vouchUsage: usageStampId };
+	const row: OwnerKeyRow = { key: device.peerKey, label: null, stampId: ownerStampId, vouchOwner: issuer.publicKey, vouchSig: null, vouchUsage: usageStampId };
 	return {
 		row,
 		device: { privateKey: device.privateKey, publicKey: device.peerKey },

@@ -45,6 +45,9 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
 
   const freshStamp = (): string => randomBytes(256, 'base64url') as string;
 
+  // The machine a raw Strand insert names as founder; the owner signature binds it.
+  const FOUNDER_PEER_ID = 'founder-machine-peer-id';
+
   async function strandCount(): Promise<number> {
     const row = await rawDb.get('select count(1) as c from CadreControl.Strand');
     return Number(row?.c ?? 0);
@@ -70,20 +73,20 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     // FounderOwnerKey must equal the context owner (the schema's AuthorizedInsert
     // pins the stored column to the verified signer) or the insert is rejected.
     return rawDb.exec(
-      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
+      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?, ?)`,
-      [ownerPublicKey, sig, id, type, memberPrivateKey, stampId, ownerPublicKey],
+         values (?, ?, ?, ?, ?, ?)`,
+      [ownerPublicKey, sig, id, type, memberPrivateKey, stampId, ownerPublicKey, FOUNDER_PEER_ID],
     );
   }
 
-  function rawInsertOwnerKey(sig: string | null, key: string, stampId: string): Promise<void> {
+  function rawInsertOwnerKey(sig: string | null, key: string, stampId: string, label: string | null = null): Promise<void> {
     // VouchOwner/VouchSig store the context pair: the owner-signed branch pins them equal.
     return rawDb.exec(
-      `insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
+      `insert into CadreControl.OwnerKey (Key, Label, StampId, VouchOwner, VouchSig)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?)`,
-      [ownerPublicKey, sig, key, stampId, ownerPublicKey, sig],
+         values (?, ?, ?, ?, ?)`,
+      [ownerPublicKey, sig, key, label, stampId, ownerPublicKey, sig],
     );
   }
 
@@ -250,8 +253,8 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const s1 = 'strand-src-' + Math.random().toString(36).slice(2);
     const s2 = 'strand-attacker-' + Math.random().toString(36).slice(2);
 
-    // Owner signs a valid authorization for s1 (Id, Type, '', stamp).
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [s1, 'o', '', stamp]));
+    // Owner signs a valid authorization for s1 (Id, Type, '', FounderPeerId, stamp).
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [s1, 'o', '', FOUNDER_PEER_ID, stamp]));
 
     const before = await strandCount();
     // Attacker transplants the (stamp, sig) pair onto a DIFFERENT strand id.
@@ -263,8 +266,8 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('cross-table transplant rejected: a Strand signature cannot authorize an OwnerKey insert', async () => {
     const stamp = freshStamp();
     const sId = 'strand-xtab-' + Math.random().toString(36).slice(2);
-    // A valid Strand authorization (tagged 4-field message).
-    const strandSig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [sId, 'o', '', stamp]));
+    // A valid Strand authorization (tagged 5-field message).
+    const strandSig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [sId, 'o', '', FOUNDER_PEER_ID, stamp]));
 
     const attackerKey = generatePrivateKey('ed25519', 'base64url') as string;
     const attackerPub = getPublicKey(attackerKey, 'ed25519', 'base64url', 'base64url') as string;
@@ -279,7 +282,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('replay rejected: re-using the exact (Id, StampId, Signature) is blocked by the unique StampId', async () => {
     const stamp = freshStamp();
     const id = 'strand-replay-' + Math.random().toString(36).slice(2);
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'o', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'o', '', FOUNDER_PEER_ID, stamp]));
 
     // First insert is valid and succeeds.
     await rawInsertStrand(sig, id, 'o', null, stamp);
@@ -294,7 +297,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const id = 'strand-tamper-' + Math.random().toString(36).slice(2);
     // Sign for Type 'o' ...
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'o', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'o', '', FOUNDER_PEER_ID, stamp]));
 
     const before = await strandCount();
     // ... but insert the row with Type 'c'. The verify rebinds to 'c' and fails.
@@ -307,7 +310,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const id = 'strand-tamper-mpk-' + Math.random().toString(36).slice(2);
     // Sign for an empty (null) MemberPrivateKey ...
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'c', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', node.partyId, [id, 'c', '', FOUNDER_PEER_ID, stamp]));
 
     const before = await strandCount();
     // ... but insert a row carrying an actual MemberPrivateKey.
@@ -355,11 +358,22 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const newAuthKey = generatePrivateKey('ed25519', 'base64url') as string;
     const newAuthPub = getPublicKey(newAuthKey, 'ed25519', 'base64url', 'base64url') as string;
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [newAuthPub, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [newAuthPub, '', stamp]));
 
     const before = await ownerKeyCount();
     await rawInsertOwnerKey(sig, newAuthPub, stamp);
     expect(await ownerKeyCount()).toBe(before + 1);
+  });
+
+  it('OwnerKey label bound: an add signed under one label cannot seat the key under another', async () => {
+    const stamp = freshStamp();
+    const newPub = getPublicKey(generatePrivateKey('ed25519', 'base64url') as string, 'ed25519', 'base64url', 'base64url') as string;
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [newPub, 'phone', stamp]));
+
+    await expectConstraintFailure(rawInsertOwnerKey(sig, newPub, stamp, 'YubiKey'), 'Authorized');
+    await expectConstraintFailure(rawInsertOwnerKey(sig, newPub, stamp), 'Authorized');
+    await rawInsertOwnerKey(sig, newPub, stamp, 'phone');
+    expect((await rawDb.get('select Label from CadreControl.OwnerKey where Key = ?', [newPub]))?.Label).toBe('phone');
   });
 
   it('OwnerKey transplant rejected: a captured pair cannot self-grant a different owner', async () => {
@@ -374,7 +388,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     ) as string;
 
     // Valid authorization built for k1Pub ...
-    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [k1Pub, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [k1Pub, '', stamp]));
 
     const before = await ownerKeyCount();
     // ... transplanted onto an attacker-chosen key. Rebound verify fails.

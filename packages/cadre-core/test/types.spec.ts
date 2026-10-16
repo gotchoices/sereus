@@ -82,14 +82,16 @@ describe('Types', () => {
         Id: 'strand-123',
         MemberPrivateKey: null,
         Type: 'o',
-        FounderOwnerKey: null
+        FounderOwnerKey: null,
+        FounderPeerId: null
       };
 
       const closedStrand: StrandRow = {
         Id: 'strand-456',
         MemberPrivateKey: 'private-key-data',
         Type: 'c',
-        FounderOwnerKey: null
+        FounderOwnerKey: null,
+        FounderPeerId: null
       };
 
       expect(openStrand.Type).toBe('o');

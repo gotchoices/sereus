@@ -58,7 +58,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     manager = new StrandInstanceManager();
     const memberPrivateKey = await generateStrandMemberKey();
     const partyMemberPrivateKey = await generateStrandMemberKey();
-    const strandRow: StrandRow = { Id: 'founder-closed', MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null };
+    const strandRow: StrandRow = { Id: 'founder-closed', MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null, FounderPeerId: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, true, partyMemberPrivateKey));
     expect(instance.status).toBe('active');
@@ -81,7 +81,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
   it('joiner of a closed strand writes nothing locally (founder:false): it comes up syncing with its database withheld', async () => {
     manager = new StrandInstanceManager();
     const memberPrivateKey = await generateStrandMemberKey();
-    const strandRow: StrandRow = { Id: 'joiner-closed', MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null };
+    const strandRow: StrandRow = { Id: 'joiner-closed', MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null, FounderPeerId: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, false));
     // No bootstrap ran, and nothing CAN run: the rows arrive via sync in a real cadre, and
@@ -97,7 +97,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
 
   it('founder of an open strand seats only a Header(o) — no Member/Manager', async () => {
     manager = new StrandInstanceManager();
-    const strandRow: StrandRow = { Id: 'founder-open', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+    const strandRow: StrandRow = { Id: 'founder-open', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, true));
     expect(instance.status).toBe('active');
@@ -115,7 +115,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     manager = new StrandInstanceManager();
     // The row even carries the shared MemberPrivateKey — which must NOT be accepted
     // as an identity substitute; only the party's own key founds.
-    const strandRow: StrandRow = { Id: 'founder-closed-nokey', MemberPrivateKey: await generateStrandMemberKey(), Type: 'c', FounderOwnerKey: null };
+    const strandRow: StrandRow = { Id: 'founder-closed-nokey', MemberPrivateKey: await generateStrandMemberKey(), Type: 'c', FounderOwnerKey: null, FounderPeerId: null };
 
     await expect(manager.startStrand(startConfig(strandRow, true))).rejects.toThrow(/StrandPartyKey/i);
 
@@ -135,7 +135,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     // per pass, and the first-sync gate keeps that unset until the Header is held, so
     // the loop cannot even reach a table to write into.
     manager = new StrandInstanceManager();
-    const strandRow: StrandRow = { Id: 'joiner-reconciling', MemberPrivateKey: await generateStrandMemberKey(), Type: 'c', FounderOwnerKey: null };
+    const strandRow: StrandRow = { Id: 'joiner-reconciling', MemberPrivateKey: await generateStrandMemberKey(), Type: 'c', FounderOwnerKey: null, FounderPeerId: null };
 
     const instance = await manager.startStrand(startConfig(strandRow, false, await generateStrandMemberKey()));
     expect(instance.status).toBe('syncing');

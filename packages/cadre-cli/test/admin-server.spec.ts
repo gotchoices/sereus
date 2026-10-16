@@ -27,8 +27,8 @@ class MockNode {
 
   /** The control-database rows — the source of truth for the strands routes. */
   strandRows: StrandRow[] = [
-    { Id: 'strand-open', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
-    { Id: 'strand-closed', MemberPrivateKey: CLOSED_STRAND_KEY, Type: 'c', FounderOwnerKey: null },
+    { Id: 'strand-open', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
+    { Id: 'strand-closed', MemberPrivateKey: CLOSED_STRAND_KEY, Type: 'c', FounderOwnerKey: null, FounderPeerId: null },
   ];
   /** Instances this node is running, overlaid onto the rows by the list route. */
   strandInstances = new Map<string, { status: StrandStatus }>();
@@ -547,7 +547,7 @@ describe('AdminServer', () => {
       });
 
       it('removes a slash-bearing id when it is percent-encoded', async () => {
-        node.strandRows.push({ Id: 'ns/strand', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
+        node.strandRows.push({ Id: 'ns/strand', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null });
         const res = await del('/ns%2Fstrand');
         expect(res.status).toBe(200);
         expect((await res.json()).data.strandId).toBe('ns/strand');

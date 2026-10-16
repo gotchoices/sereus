@@ -10,7 +10,7 @@ describe('StrandWatcher Filters', () => {
   }
 
   function createStrand(id: string): StrandRow {
-    return { Id: id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+    return { Id: id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
   }
 
   // Mock sAppId lookup for testing

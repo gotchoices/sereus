@@ -69,6 +69,7 @@ export async function createChatStrand(
 		MemberPrivateKey: null,
 		Type: 'o', // open — anyone can participate
 		FounderOwnerKey: null,
+		FounderPeerId: null,
 	};
 
 	return cadreNode.addStrand({

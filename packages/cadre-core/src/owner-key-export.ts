@@ -28,8 +28,8 @@ export const OWNER_KEY_EXPORT_PREFIX = `${OWNER_KEY_EXPORT_STEM}:1.`;
 /** Version 1 of the passphrase-locked export. */
 export const LOCKED_OWNER_KEY_EXPORT_PREFIX = `${OWNER_KEY_EXPORT_STEM}-locked:1.`;
 
-/** Longest label an export carries, the user's name for the key ("phone", "paper backup"). */
-export const OWNER_KEY_EXPORT_MAX_LABEL = 64;
+/** Longest label an owner key carries, the user's name for it ("phone", "paper backup"): in an export and on its `OwnerKey` row (the control schema's `LabelLength` check). */
+export const OWNER_KEY_MAX_LABEL = 64;
 
 /**
  * The encoder's scrypt cost: about 140 ms and 64 MiB on Node 24 (x64, measured with
@@ -107,7 +107,7 @@ export type DecodedOwnerKeyExport = ({ locked: false } & OwnerKeyExportContents)
 export interface OwnerKeyExportInput {
 	/** The 32-byte Ed25519 seed, base64url (`readOwnerPrivateKey`). */
 	privateKeyB64: string;
-	/** Trimmed; at most {@link OWNER_KEY_EXPORT_MAX_LABEL} characters; a blank one is left out. */
+	/** Trimmed; at most {@link OWNER_KEY_MAX_LABEL} characters; a blank one is left out. */
 	label?: string;
 	/** Locks the export when present; must not be empty. */
 	passphrase?: string;
@@ -332,8 +332,8 @@ function requireKey(privateKeyB64: string): string {
 }
 
 function requireLabel(label: string): string {
-	if (label.length > OWNER_KEY_EXPORT_MAX_LABEL) {
-		throw new OwnerKeyExportError('malformed', `An owner key's label must be at most ${OWNER_KEY_EXPORT_MAX_LABEL} characters (this one has ${label.length})`);
+	if (label.length > OWNER_KEY_MAX_LABEL) {
+		throw new OwnerKeyExportError('malformed', `An owner key's label must be at most ${OWNER_KEY_MAX_LABEL} characters (this one has ${label.length})`);
 	}
 	return label;
 }

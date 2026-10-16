@@ -38,7 +38,7 @@ describe('CadreNode', () => {
 
   // Helper to create test strand rows
   function createStrandRow(id: string): StrandRow {
-    return { Id: id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+    return { Id: id, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
   }
 
   // Helper to create test sApp config with real signature

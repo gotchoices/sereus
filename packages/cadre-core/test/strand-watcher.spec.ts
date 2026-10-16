@@ -16,7 +16,8 @@ describe('StrandWatcher', () => {
       Id: id,
       MemberPrivateKey: type === 'c' ? 'test-key' : null,
       Type: type,
-      FounderOwnerKey: null
+      FounderOwnerKey: null,
+      FounderPeerId: null
     };
   }
 

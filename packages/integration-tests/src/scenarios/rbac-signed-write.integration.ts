@@ -103,7 +103,7 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			});
 			expect(formResult.strandId).toBeDefined();
 
-			const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+			const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 			// Alice FOUNDS (writes the Header); Bob joins without waiting for his first sync,
 			// since the dial that carries the Header to him happens below — a joiner's
 			// database is withheld until then (docs/strands.md, "Joining").

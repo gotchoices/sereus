@@ -98,8 +98,8 @@ describe('JoinedStrand authorization (row-bound + single-use stamp)', () => {
     const { key } = await recordClosed(closedId);
     await db.insertJoinedStrand({ Id: openId, Type: 'o', MemberPrivateKey: null }, ownerPublicKey, signMessage);
 
-    const closed = { Id: closedId, Type: 'c', MemberPrivateKey: key, FounderOwnerKey: null };
-    const open = { Id: openId, Type: 'o', MemberPrivateKey: null, FounderOwnerKey: null };
+    const closed = { Id: closedId, Type: 'c', MemberPrivateKey: key, FounderOwnerKey: null, FounderPeerId: null };
+    const open = { Id: openId, Type: 'o', MemberPrivateKey: null, FounderOwnerKey: null, FounderPeerId: null };
     expect(await db.queryJoinedStrand(closedId)).toEqual(closed);
     expect(await db.queryJoinedStrand(openId)).toEqual(open);
     expect(await db.queryJoinedStrand('js-absent-' + rand())).toBeNull();

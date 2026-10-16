@@ -530,7 +530,7 @@ const SEED: ControlNetworkSeed = {
 };
 
 const STRAND: StrandConfig = {
-	strandRow: { Id: 'strand-1', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+	strandRow: { Id: 'strand-1', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 	sAppConfig: { id: 'chat', version: '1', schema: 'table Message (Id text primary key)' },
 };
 

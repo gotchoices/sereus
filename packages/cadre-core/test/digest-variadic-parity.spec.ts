@@ -64,15 +64,15 @@ describe('digest-variadic TS↔SQL byte parity', () => {
   }
 
   it('(a) control multi-field: buildAuthorizationMessage ⇔ verify(digest(tags…,f1,…,fN))', async () => {
-    // Field order/shape mirrors a closed Strand: Id, Type, MemberPrivateKey (''), StampId.
-    const rowFields = ['strand-id-xyz', 'c', '', 'stamp-abc'];
+    // Field order/shape mirrors a closed Strand: Id, Type, MemberPrivateKey (''), FounderPeerId, StampId.
+    const rowFields = ['strand-id-xyz', 'c', '', 'founder-peer-id', 'stamp-abc'];
     const message = buildAuthorizationMessage('CadreControl.Strand', 'add', PARTY_ID, rowFields);
     // ed25519 signs the raw digest bytes directly (no second hash), exactly as the writers do.
     const sig = sign(message, priv, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 
     expect(await sqlVerify(['CadreControl.Strand', 'add', PARTY_ID, ...rowFields], sig, pub)).toBe(true);
     // Tamper one field (Type 'c' -> 'o'): the rebound digest differs, verify rejects.
-    expect(await sqlVerify(['CadreControl.Strand', 'add', PARTY_ID, 'strand-id-xyz', 'o', '', 'stamp-abc'], sig, pub)).toBe(false);
+    expect(await sqlVerify(['CadreControl.Strand', 'add', PARTY_ID, 'strand-id-xyz', 'o', '', 'founder-peer-id', 'stamp-abc'], sig, pub)).toBe(false);
     // Swap the action tag: same row fields, different rule — verify rejects.
     expect(await sqlVerify(['CadreControl.Strand', 'remove', PARTY_ID, ...rowFields], sig, pub)).toBe(false);
   });
@@ -105,8 +105,8 @@ describe('digest-variadic TS↔SQL byte parity', () => {
 
   it('(d) leading literal tags and party_id(): TS array elements ⇔ SQL literal arguments', async () => {
     // The schema writes the domain/action tags as SQL string LITERALS and the party as
-    // the `party_id()` CALL (digest('CadreControl.OwnerKey', 'add', party_id(), new.Key,
-    // new.StampId)), while every TS signer passes them as the first three ARRAY ELEMENTS.
+    // the `party_id()` CALL (digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, ...)),
+    // while every TS signer passes them as the first three ARRAY ELEMENTS.
     // This case pins that the two spellings hash identical bytes — the parity the
     // domain-separation and party-binding scheme rests on.
     const key = 'owner-key-b64url';

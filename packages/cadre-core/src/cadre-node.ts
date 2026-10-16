@@ -39,6 +39,7 @@ import type {
   InvitationChain,
   CadreInviteStatus,
   CadreMachine,
+  CadreOwnerKey,
   MachineRemovalPlan,
   MachineRemovalResult,
   RemoveMachineOptions,
@@ -87,6 +88,7 @@ import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSigner } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
 import { describeMachines, planMachineRemoval, revouchWithinPlan, MachineRemovalRefusedError } from './machine-removal.js';
+import { describeOwnerKeys, OwnerKeyAddRefusedError } from './owner-keys.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
   signPeerRecord,
@@ -307,13 +309,13 @@ function requireNonBlank(value: string, label: string): string {
  * Is the live `Strand` row the one a publish of `desired` would have produced?
  *
  * "Identical content" means `(Type, MemberPrivateKey)` and deliberately NOT
- * `FounderOwnerKey`: that column is provenance (WHICH machine published the row), not
- * content. Two machines of one party racing to found the same id must keep resolving as
- * "the winner's row stands" — the loser adopts the row and, since the winner's key is on
- * it, correctly comes up as a joiner (see `launchStrand`'s founder derivation). Comparing
- * it here would turn that benign race into a hard throw. `Id` is the lookup key and
- * `StampId` is a single-use nonce, so the two compared columns are all the content there
- * is. A live row matching on both is, by construction, the state a repeat publish would
+ * `FounderOwnerKey` or `FounderPeerId`: those columns are provenance (WHICH owner signed the
+ * row and WHICH machine founds it), not content. Two machines of one party racing to found
+ * the same id must keep resolving as "the winner's row stands" — the loser adopts the row
+ * and, since the winner's peer id is on it, correctly comes up as a joiner (see
+ * `launchStrand`'s founder derivation). Comparing them here would turn that benign race
+ * into a hard throw. `Id` is the lookup key and `StampId` is a single-use nonce, so the two
+ * compared columns are all the content there is. A live row matching on both is, by construction, the state a repeat publish would
  * have reached, whichever branch of `Strand.AuthorizedInsert` seated it (owner-signed, or
  * the unsigned consent branch an invite redemption uses).
  *
@@ -3292,25 +3294,16 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Does the `Strand` row name THIS machine as its founder — i.e. is its
-   * `FounderOwnerKey` the key of this node's owner signer ({@link getOwnerSigner})?
-   * A null/absent column (a consent-seated strand, or a hand-built row) and a
-   * node with no owner signer wired both derive `false`: without a positive match this
-   * machine must attach, never bootstrap. Pure key comparison, no I/O — cheap
-   * enough for {@link launchStrand}'s tracked-instance early return.
-   *
-   * NOTE: reads "one owner key per machine". Two machines wired with the SAME owner key
-   * would both derive `true` and each bootstrap on its own replica, which is the
-   * double-`Header` hazard this derivation exists to avoid; `owner-key-label-and-founder-machine`
-   * replaces the key comparison with a per-machine signal. Until then, a strand whose watcher
-   * launch runs before the embedder wires the signer comes up as a joiner, and the
-   * embedder's later `foundStrand` founds the tracked instance in place.
+   * Does the `Strand` row name THIS machine as its founder — is its `FounderPeerId` this
+   * node's peer id? A null column (a consent-seated strand, or a hand-built row) derives
+   * `false`: without a positive match this machine must attach, never bootstrap. A peer id
+   * rather than an owner key, so two machines holding one owner key never both bootstrap
+   * (the double-`Header` hazard), and a node derives it before any owner signer is wired.
+   * Pure comparison, no I/O — cheap enough for {@link launchStrand}'s tracked-instance
+   * early return.
    */
   private isSelfFoundedRow(strand: StrandRow): boolean {
-    if (strand.FounderOwnerKey == null) {
-      return false;
-    }
-    return strand.FounderOwnerKey === this.getOwnerSigner()?.publicKey;
+    return strand.FounderPeerId !== null && strand.FounderPeerId === this.peerId?.toString();
   }
 
   /**
@@ -5644,7 +5637,7 @@ export class CadreNode implements SAppIdLookup {
    * `Strand` row. A joiner (the row arrived over the control network) wants exactly this; a
    * FOUNDER wants {@link foundStrand}, which publishes and attaches in one resumable call.
    * With no explicit `founder` flag, founder-ness is derived from the row's
-   * `FounderOwnerKey` (see {@link StrandConfig.founder}) — so attaching a row THIS machine
+   * `FounderPeerId` (see {@link StrandConfig.founder}) — so attaching a row THIS machine
    * published (e.g. re-attaching its own orphan after a restart) founds it, and attaching
    * anyone else's row joins, without the caller needing to know which it is.
    *
@@ -5690,7 +5683,7 @@ export class CadreNode implements SAppIdLookup {
     // A row this node offered itself came from the control table or is already a
     // remembered join, and a row this node founds is not a join, so only a joined row
     // from elsewhere can be a new join to remember. A founded row recorded here would
-    // come back after a restart with `FounderOwnerKey: null` and relaunch as a joiner.
+    // come back after a restart with null founder columns and relaunch as a joiner.
     // Captured before the backlog delete below.
     const rememberable = founder !== true && !this.discoveredStrands.has(strandRow.Id);
 
@@ -5711,7 +5704,7 @@ export class CadreNode implements SAppIdLookup {
     }
 
     // An unset `founder` is DERIVED from the row inside launchStrand (this node founds
-    // iff the row's FounderOwnerKey is its own owner key); an explicit flag wins — the
+    // iff the row's FounderPeerId is its own peer id); an explicit flag wins — the
     // formation/responder flows pass one deliberately, since their consent-seated rows
     // carry a null column. See StrandConfig.founder. Same rule for the explicit
     // partyMemberPrivateKey: it wins over the StrandPartyKey control-row read.
@@ -5734,7 +5727,7 @@ export class CadreNode implements SAppIdLookup {
       // from the row and arguments passed here — so a caller that enriched either (a
       // synthetic `MemberPrivateKey`, an explicit `founder` or `partyMemberPrivateKey`)
       // is retried with less than it asked for. Inert today: founder-ness re-derives from
-      // `FounderOwnerKey`, the party key re-reads from `StrandPartyKey`, and the row's
+      // `FounderPeerId`, the party key re-reads from `StrandPartyKey`, and the row's
       // shared `MemberPrivateKey` is read only by the founder bootstrap. If a joiner
       // launch ever starts depending on that key, gate this hand-back on the passed row
       // matching the control one.
@@ -5810,9 +5803,10 @@ export class CadreNode implements SAppIdLookup {
    * (the key exists nowhere else). No app-data wipe is needed for either.
    *
    * The insert is signed through this node's owner signer ({@link getOwnerSigner}), in one
-   * approval with a closed strand's party-key mint. The signer's key is also persisted on the
-   * row as `FounderOwnerKey` (the schema pins the column to the verified signer), which is
-   * what later lets any launch derive "this machine is the founder" from the row alone.
+   * approval with a closed strand's party-key mint. The signer's key is persisted on the row
+   * as `FounderOwnerKey` (the schema pins the column to the verified signer), and this node's
+   * peer id as `FounderPeerId` (bound into the signature), which is what later lets any
+   * launch derive "this machine is the founder" from the row alone.
    * The key must be enrolled in `OwnerKey` (e.g. via {@link ControlDatabase.ensureOwnerKey}
    * at genesis) or the schema's `Strand.AuthorizedInsert` constraint rejects the write.
    * Failing loudly here is intentional: a silently-unpublished strand would run
@@ -5848,13 +5842,14 @@ export class CadreNode implements SAppIdLookup {
     // a storage scope key would otherwise reach the whole party's control database and be
     // declined once per member. Asserted after the trim so the id checked is the id stored.
     assertStrandScopeKey(trimmed);
-    // FounderOwnerKey records THIS machine as the row's publisher (the schema pins it to
-    // the signing owner), which is what later lets a relaunch derive founder-ness.
+    // FounderPeerId records THIS machine as the founder, which is what later lets a relaunch
+    // derive founder-ness; ControlDatabase.insertStrand writes the same id (its own node's).
     const desired: StrandRow = {
       Id: trimmed,
       Type: type,
       MemberPrivateKey: memberPrivateKey ?? null,
       FounderOwnerKey: signer.publicKey,
+      FounderPeerId: this.controlNode!.peerId.toString(),
     };
 
     // Read first rather than leaning on the insert's collision for BOTH readings. The
@@ -5941,7 +5936,7 @@ export class CadreNode implements SAppIdLookup {
    *   attempt (as the reference apps do) would otherwise present a key that does not match
    *   the membership already seated in the strand.
    * - **instance already running** → the tracked instance is returned, and — because the
-   *   `Strand` row records its publishing machine (`FounderOwnerKey`) — a founder request
+   *   `Strand` row records its founding machine (`FounderPeerId`) — a founder request
    *   against an instance that was first launched as a joiner now runs the (idempotent,
    *   insert-if-absent) founder bootstrap on it rather than silently skipping it
    *   ({@link StrandInstanceManager.foundExistingStrand}). So a strand that something else
@@ -5950,7 +5945,7 @@ export class CadreNode implements SAppIdLookup {
    *   `resolveCohortSeed` window — still ends up with its `Strand.Header` written.
    *
    * Founder-ness is resolved FROM THE ROW, not assumed: this machine founds iff the
-   * resolved row's `FounderOwnerKey` is its own owner key. A fresh publish records this
+   * resolved row's `FounderPeerId` is its own peer id. A fresh publish records this
    * machine, so the common path founds; a machine that lost a concurrent founding race to
    * a sibling adopts the sibling's row and ATTACHES instead — deliberately, since two
    * machines bootstrapping the same strand on separate replicas is the double-`Header`
@@ -5981,9 +5976,9 @@ export class CadreNode implements SAppIdLookup {
     // machine runs the bootstrap — this one must attach or it would write a second Header.
     const founded = this.isSelfFoundedRow(strandRow);
     if (!founded) {
-      log('foundStrand(%s): the stored row was published by a different machine ' +
-        '(FounderOwnerKey is not this node\'s owner key) — attaching as a joiner; ' +
-        'the founder bootstrap runs on the publishing machine', trimmed);
+      log('foundStrand(%s): the stored row names a different machine as founder ' +
+        '(FounderPeerId is not this node\'s peer id) — attaching as a joiner; ' +
+        'the founder bootstrap runs on that machine', trimmed);
     }
     const instance = await timed('addStrand',
       () => this.addStrand({ strandRow, sAppConfig, founder: founded, awaitFirstSync }));
@@ -6198,9 +6193,9 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Resolve the party membership key a closed strand's launch threads into the founder
    * bootstrap: the explicit attach-time key when given, else the party's persisted
-   * `StrandPartyKey` row, else — on the one machine whose owner key the row names as
-   * founder — a freshly minted-and-persisted key, which seats the identity for a publish
-   * that was interrupted before its mint. Everyone else resolves undefined: non-founding
+   * `StrandPartyKey` row, else — on the one machine the row names as founder (`FounderPeerId`)
+   * — a freshly minted-and-persisted key, which seats the identity for a publish that was
+   * interrupted before its mint. Everyone else resolves undefined: non-founding
    * machines never mint (no mint race between a party's machines), and only a founder
    * bootstrap needs the key at all.
    *
@@ -6377,10 +6372,10 @@ export class CadreNode implements SAppIdLookup {
    * before emitting `strand:started`.
    *
    * Founder-ness: an explicit `founder` argument wins (the formation/responder flows pass
-   * one deliberately — their consent-seated rows carry a null `FounderOwnerKey`); when
+   * one deliberately — their consent-seated rows carry a null `FounderPeerId`); when
    * unset it is DERIVED from the row, so the control-discovered path
    * (`handleStrandAdded`) and a restart's re-attach found this machine's own strands
-   * without the caller having to know. The derivation is pure key comparison — no I/O.
+   * without the caller having to know. The derivation is a pure peer-id comparison — no I/O.
    *
    * Idempotent when the strand manager already tracks `strand.Id` — the watcher
    * rediscovers a row this node already started and calls this again via
@@ -8597,23 +8592,56 @@ export class CadreNode implements SAppIdLookup {
    * `OwnerKey.Authorized`; the row stores the vouching pair). The write notifies the
    * membership hub, so the refresh it triggers has run by the time this resolves.
    *
+   * Refused while alone ({@link refuseOwnerKeyWriteAlone}): an `OwnerKey` add has no re-issue
+   * path, so one committed with no control connection would stay on this node.
+   *
    * @param ownerPublicKeyB64 - the new owner's ed25519 public key (base64url).
+   * @param options.label - the user's name for the key ("phone", "paper backup"), bound into
+   *   the signature; trimmed, at most 64 characters, blank meaning none.
    * @returns `true` when the row was seated, `false` when the key is already a live owner.
+   * @throws OwnerKeyAddRefusedError `alone`, before any write.
    */
-  async addOwner(ownerPublicKeyB64: string): Promise<boolean> {
+  async addOwner(ownerPublicKeyB64: string, options: { label?: string } = {}): Promise<boolean> {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     const key = requireEd25519PublicKeyB64(ownerPublicKeyB64, 'owner key');
-    const added = await this.seedBootstrapService.addOwner(key);
-    // NOTE: an OwnerKey add committed alone is local-only and nothing re-issues it (no
-    // update branch to re-touch, unlike CadrePeer), so it is only logged;
-    // tickets/backlog/debt-owner-key-add-while-alone-has-no-reissue.md owns the fix.
+    this.refuseOwnerKeyWriteAlone(key);
+    const added = await this.seedBootstrapService.addOwner(key, options.label);
+    // NOTE: the refusal is checked before the approval, and a connection can drop while the
+    // user approves; an add that still commits alone is logged. If that window ever loses an
+    // owner key in practice, re-check inside the write and roll back.
     if (added && this.committedAlone()) {
-      log('addOwner(%s) committed while ALONE (0 control connections): the new owner row is ' +
-        'local-only and is not re-issued on cohort growth, so other machines may never see it.', key);
+      log('addOwner(%s) committed while ALONE (the last control connection dropped during the add): ' +
+        'the new owner row is local-only and is not re-issued on cohort growth.', key);
     }
     return added;
+  }
+
+  /**
+   * Throw {@link OwnerKeyAddRefusedError} `alone` when this node holds no control connection
+   * while the party has other members: an `OwnerKey` row has no update to re-touch, so
+   * nothing re-issues it on cohort growth, and a row written now would fork this node's
+   * history. A party with no other members cannot fork, so a solo founder adding its backup
+   * key is not refused.
+   */
+  private refuseOwnerKeyWriteAlone(key: string): void {
+    if (this.committedAlone() && this.authorizedControlPeers.size > 0) {
+      throw new OwnerKeyAddRefusedError(key, 'alone');
+    }
+  }
+
+  /**
+   * Every live owner key with its label, who vouched it, whether this node's owner signer
+   * holds it and whether this node's trusted-owner anchor trusts it ({@link CadreOwnerKey}),
+   * for an app's owner-key screen.
+   */
+  async listOwnerKeys(): Promise<CadreOwnerKey[]> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before listing owner keys');
+    }
+    const rows = await this.controlDatabase.queryOwnerKeyRows();
+    return describeOwnerKeys(rows, this.getOwnerSigner()?.publicKey ?? null, this.trustedOwnerStore?.all() ?? new Set());
   }
 
   /**
@@ -8784,9 +8812,10 @@ export class CadreNode implements SAppIdLookup {
    *
    * A failure rethrows and stops the call before the removal; re-vouches already made stay
    * (the row is only re-signed by a current owner) and the caller retries. An owner re-vouch
-   * committed alone is not re-issued on growth (the add half has no re-issue path,
-   * `tickets/backlog/debt-owner-key-add-while-alone-has-no-reissue`), so it is logged as
-   * {@link addOwner} logs it; the peer re-touches are re-issued by the existing drain.
+   * committed alone is not re-issued on growth (the add half has no re-issue path), so it is
+   * logged; `machine-removal-leaves-owner-keys` moves the re-vouch to `removeOwner`, which
+   * refuses it alone as {@link addOwner} does. The peer re-touches are re-issued by the
+   * existing drain.
    */
   private async revouchDependents(
     service: SeedBootstrapService,

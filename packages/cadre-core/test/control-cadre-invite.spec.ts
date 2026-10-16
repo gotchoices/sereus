@@ -165,12 +165,12 @@ describe('cadre invitations: schema and ControlDatabase', () => {
   }
 
   /** The bare consent-branch `OwnerKey` insert `redeemCadreInvite` issues for an owner-granting invitation. */
-  function rawInsertOwnerByConsent(device: TestContactJoiner, ownerStampId: string, usageStampId: string, issuerKey: string): Promise<void> {
+  function rawInsertOwnerByConsent(device: TestContactJoiner, ownerStampId: string, usageStampId: string, issuerKey: string, label: string | null = null): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig, VouchUsage)
+      `insert into CadreControl.OwnerKey (Key, Label, StampId, VouchOwner, VouchSig, VouchUsage)
          with context OwnerKey = null, Signature = null
-         values (?, ?, ?, null, ?)`,
-      [device.peerKey, ownerStampId, issuerKey, usageStampId],
+         values (?, ?, ?, ?, null, ?)`,
+      [device.peerKey, label, ownerStampId, issuerKey, usageStampId],
     );
   }
 
@@ -433,6 +433,23 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     );
     expect(await ownerRow(device.peerKey)).toBeUndefined();
     expect(await db.countCadreInviteUsage(invite.publicKey)).toBe(0);
+  });
+
+  it('refuses: an OwnerKey row seated by consent with a label (OwnerKey.Authorized); the same row unlabelled seats', async () => {
+    const device = await mintContactJoiner();
+    const peerStampId = await admit(device);
+    const { invite, row } = await issue({ grantsOwner: true });
+    const ownerStampId = freshStamp();
+    const seat = (label: string | null) => inTransaction(async () => {
+      const usageStampId = await rawInsertUsage(invite, device, { peerStampId, ownerStampId });
+      await rawInsertOwnerByConsent(device, ownerStampId, usageStampId, row.issuerKey, label);
+    });
+
+    // Nothing signed on this branch names a label, so the redeemer could otherwise pick one.
+    await expectConstraintFailure(seat('phone'), 'Authorized');
+    expect(await ownerRow(device.peerKey)).toBeUndefined();
+    await seat(null);
+    expect((await ownerRow(device.peerKey))?.StampId).toBe(ownerStampId);
   });
 
   it('refuses: an invitation seated and redeemed in one transaction (Authorized, from the committed reads)', async () => {

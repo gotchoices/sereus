@@ -250,12 +250,12 @@ describe('CadreControl approval domain separation', () => {
 
   it('rejects: an OwnerKey enrollment approval replayed as a ValidationKey insert', async () => {
     // Reverse direction of the escalation: a full-owner grant must not double as a
-    // narrow validation-key grant (same (Key, StampId) bytes, different domain tag).
+    // narrow validation-key grant (different domain tag over the same key and stamp).
     const second = freshKeyPair();
     const stamp = freshStamp();
     const enrollSig = signAs(
       founder,
-      buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [second.publicKey, stamp]),
+      buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [second.publicKey, '', stamp]),
     );
     // Prove the signature is genuine: the rule it was minted for accepts it.
     await rawInsertOwnerKey(founder.publicKey, enrollSig, second.publicKey, stamp);
@@ -308,7 +308,7 @@ describe('CadreControl approval domain separation', () => {
     const stamp = freshStamp();
     const enrollSig = signAs(
       founder,
-      buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [second.publicKey, stamp]),
+      buildAuthorizationMessage('CadreControl.OwnerKey', 'add', node.partyId, [second.publicKey, '', stamp]),
     );
     await rawInsertOwnerKey(founder.publicKey, enrollSig, second.publicKey, stamp);
     // A CadrePeer row whose (PeerId, StampId) mirror the owner row — the shape an

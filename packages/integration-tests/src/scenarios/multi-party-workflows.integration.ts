@@ -100,6 +100,7 @@ async function setupStrandBetweenParties(
 		MemberPrivateKey: memberPrivateKey,
 		Type: opts.type ?? 'o',
 		FounderOwnerKey: null,
+		FounderPeerId: null,
 	});
 
 	// Party A FOUNDS (writes the Header — and, on a closed strand, the founding

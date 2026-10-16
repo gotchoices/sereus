@@ -412,7 +412,7 @@ describe('useCadreInternal — discovered-strand backlog', () => {
 
   /** An unclaimed row as the control network advertises it. */
   const strandRow = (id: string, type: 'o' | 'c', memberPrivateKey: string | null = null) =>
-    ({ Id: id, Type: type, MemberPrivateKey: memberPrivateKey, FounderOwnerKey: null });
+    ({ Id: id, Type: type, MemberPrivateKey: memberPrivateKey, FounderOwnerKey: null, FounderPeerId: null });
 
   /**
    * A node that is ALREADY up with `backlog` unclaimed — the restart shape. The real

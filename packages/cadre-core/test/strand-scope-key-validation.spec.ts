@@ -49,7 +49,7 @@ beforeEach(() => {
 });
 
 function createStartConfig(strandId: string, provider: (id: string) => IRawStorage): StartStrandConfig {
-  const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+  const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
   const sAppConfig: SAppConfig = {
     id: authorPublicKey,
     version: testVersion,

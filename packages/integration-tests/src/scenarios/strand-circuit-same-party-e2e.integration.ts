@@ -188,7 +188,7 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			// ── Founder strand: the per-relay supervisor's first attempt lands ───
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 			const aStrand = await A.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 				sAppConfig: sApp,
 				founder: true, // A founds: the Header it writes is what B's join below waits for
 			});
@@ -227,7 +227,7 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			// Launched without waiting for B's first sync, so the relayed connection is
 			// asserted on its own terms below before the Header's arrival is waited for.
 			const bStrand = await B.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 				sAppConfig: sApp,
 				awaitFirstSync: false,
 			});

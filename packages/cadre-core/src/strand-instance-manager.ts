@@ -142,7 +142,7 @@ export interface StartStrandConfig {
    * StrandDatabase so the founder bootstrap (Header, founding Member/Manager)
    * runs once at bring-up. Joiners leave this unset and write nothing. Callers
    * resolve it BEFORE calling `startStrand` (`CadreNode.launchStrand` derives it
-   * from the row's `FounderOwnerKey` when no explicit flag is given — see
+   * from the row's `FounderPeerId` when no explicit flag is given — see
    * {@link StrandConfig.founder}); a founder request that arrives while the
    * instance is already tracked goes through {@link StrandInstanceManager.foundExistingStrand},
    * never through a repeat `startStrand`.

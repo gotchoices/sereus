@@ -175,21 +175,23 @@ export function verifyRevocationSigner(partyId: string, row: RevocationRow): boo
 /**
  * Canonical digest an owner signs to seat a further `OwnerKey` row — the signed-add branch
  * of `OwnerKey.Authorized`, which stores the pair as `VouchOwner` / `VouchSig`. SQL mirror:
- * `digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, new.StampId)`. The removal
- * digest needs no builder here: it is the generic guarded `'remove'` digest over (Key, StampId).
+ * `digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, coalesce(new.Label, ''), new.StampId)`.
+ * The removal digest needs no builder here: it is the generic guarded `'remove'` digest over
+ * (Key, StampId).
  */
-export function ownerKeyAddDigest(partyId: string, key: string, stampId: string): string {
-  return taggedDigest('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
+export function ownerKeyAddDigest(partyId: string, key: string, label: string | null, stampId: string): string {
+  return taggedDigest('CadreControl.OwnerKey', 'add', partyId, [key, label ?? '', stampId]);
 }
 
 /**
  * Does an owner-signed `OwnerKey` row's stored voucher verify — `vouchSig` by `vouchOwner`
- * over {@link ownerKeyAddDigest} for (`partyId`, `key`, `stampId`)? Whether `vouchOwner` is
- * anchored is the caller's question, as for {@link verifyCadrePeerVoucher}. Never throws.
+ * over {@link ownerKeyAddDigest} for (`partyId`, `key`, `label`, `stampId`)? Whether
+ * `vouchOwner` is anchored is the caller's question, as for {@link verifyCadrePeerVoucher}.
+ * Never throws.
  */
-export function verifyOwnerKeyVoucher(partyId: string, key: string, stampId: string, vouchOwner: string, vouchSig: string): boolean {
+export function verifyOwnerKeyVoucher(partyId: string, key: string, label: string | null, stampId: string, vouchOwner: string, vouchSig: string): boolean {
   try {
-    return verifyB64(ownerKeyAddDigest(partyId, key, stampId), vouchSig, vouchOwner);
+    return verifyB64(ownerKeyAddDigest(partyId, key, label, stampId), vouchSig, vouchOwner);
   } catch (error) {
     log('verifyOwnerKeyVoucher failed: %o', error);
     return false;

@@ -14,6 +14,7 @@ import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowF
 import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
 import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { verifyCadreInviteRow } from './peer-authorization.js';
+import { OWNER_KEY_MAX_LABEL } from './owner-key-export.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
 import { isCohortUnreachableRead, retryControlRead } from './control-read-retry.js';
@@ -455,8 +456,24 @@ function revocationTombstoneMessage(partyId: string, ref: { tableName: string; r
  * The exact bytes an owner signs to seat a further `OwnerKey` row (the signed-add branch of
  * `OwnerKey.Authorized`); the base64url twin is `peer-authorization.ts`'s `ownerKeyAddDigest`.
  */
-function ownerKeyAddMessage(partyId: string, key: string, stampId: string): Uint8Array {
-  return buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
+function ownerKeyAddMessage(partyId: string, key: string, label: string | null, stampId: string): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, label ?? '', stampId]);
+}
+
+/**
+ * An owner key's label as its row stores it: trimmed, a blank one left out, and refused past
+ * {@link OWNER_KEY_MAX_LABEL} by name rather than by the schema's `LabelLength` check.
+ * Idempotent, so a caller that checks before opening an owner approval can pass the result on.
+ */
+export function ownerKeyLabel(label: string | null | undefined): string | null {
+  const trimmed = label?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.length > OWNER_KEY_MAX_LABEL) {
+    throw new Error(`An owner key's label must be at most ${OWNER_KEY_MAX_LABEL} characters (this one has ${trimmed.length})`);
+  }
+  return trimmed;
 }
 
 /**
@@ -717,8 +734,22 @@ function joinedStrandRow(row: Record<string, SqlValue>): StrandRow {
     MemberPrivateKey: row.MemberPrivateKey as string | null,
     Type: row.Type as 'o' | 'c',
     FounderOwnerKey: null,
+    FounderPeerId: null,
   };
 }
+
+/** A party-own `Strand` row as a {@link StrandRow}; the `Type` cast as {@link joinedStrandRow}'s. */
+function strandRow(row: Record<string, SqlValue>): StrandRow {
+  return {
+    Id: row.Id as string,
+    MemberPrivateKey: row.MemberPrivateKey as string | null,
+    Type: row.Type as 'o' | 'c',
+    FounderOwnerKey: row.FounderOwnerKey as string | null,
+    FounderPeerId: row.FounderPeerId as string | null,
+  };
+}
+
+const STRAND_COLUMNS = 'Id, MemberPrivateKey, Type, FounderOwnerKey, FounderPeerId';
 
 /** A `FormationInvite` row as {@link ControlDatabase.queryFormationInvite} reads it. */
 export interface FormationInviteRow {
@@ -1327,16 +1358,8 @@ export class ControlDatabase {
    */
   async queryStrands(): Promise<StrandRow[]> {
     this.ensureInitialized();
-    const results: StrandRow[] = [];
-    for (const row of await this.readRows('select Id, MemberPrivateKey, Type, FounderOwnerKey from CadreControl.Strand', undefined, 'strands')) {
-      results.push({
-        Id: row.Id as string,
-        MemberPrivateKey: row.MemberPrivateKey as string | null,
-        Type: row.Type as 'o' | 'c',
-        FounderOwnerKey: row.FounderOwnerKey as string | null,
-      });
-    }
-    return results;
+    const rows = await this.readRows(`select ${STRAND_COLUMNS} from CadreControl.Strand`, undefined, 'strands');
+    return rows.map(strandRow);
   }
 
   /**
@@ -1347,25 +1370,14 @@ export class ControlDatabase {
    */
   async queryStrand(strandId: string): Promise<StrandRow | null> {
     this.ensureInitialized();
-    for (const row of await this.readRows(
-      'select Id, MemberPrivateKey, Type, FounderOwnerKey from CadreControl.Strand where Id = ?',
-      [strandId],
-      'strand'
-    )) {
-      return {
-        Id: row.Id as string,
-        MemberPrivateKey: row.MemberPrivateKey as string | null,
-        Type: row.Type as 'o' | 'c',
-        FounderOwnerKey: row.FounderOwnerKey as string | null,
-      };
-    }
-    return null;
+    const rows = await this.readRows(`select ${STRAND_COLUMNS} from CadreControl.Strand where Id = ?`, [strandId], 'strand');
+    return rows.length === 0 ? null : strandRow(rows[0]!);
   }
 
   /**
    * Every strand this party joined from another party (`CadreControl.JoinedStrand`), shaped
    * as a {@link StrandRow} so a reader can treat it like one of the party's own. A joiner
-   * never founds, so `FounderOwnerKey` is always null. Read raw, like {@link queryStrands}:
+   * never founds, so `FounderOwnerKey` and `FounderPeerId` are always null. Read raw, like {@link queryStrands}:
    * no retired-stamp filter.
    */
   async queryJoinedStrands(): Promise<StrandRow[]> {
@@ -1464,15 +1476,17 @@ export class ControlDatabase {
    * Idempotent genesis: insert `key` as the founding owner key only when
    * the party has none yet. Returns true if it inserted, false if an owner
    * key already existed (so a repeat `--owner` start is a no-op).
+   *
+   * @param label - the user's name for the key ({@link insertOwnerKey}).
    */
-  async ensureOwnerKey(key: string): Promise<boolean> {
+  async ensureOwnerKey(key: string, label?: string): Promise<boolean> {
     this.ensureInitialized();
     const trimmed = requireEd25519PublicKeyB64(key, 'owner key');
     if (await this.hasOwnerKey()) {
       log('Owner key already present; skipping genesis insert');
       return false;
     }
-    await this.insertOwnerKey(trimmed);
+    await this.insertOwnerKey(trimmed, label);
     return true;
   }
 
@@ -1503,8 +1517,9 @@ export class ControlDatabase {
   }
 
   /**
-   * Every live `OwnerKey` row with its persisted proof ({@link OwnerKeyRow}) — what the
-   * trusted-owner anchor sync derives from (`CadreNode.syncOwnerAnchor`). Rows whose
+   * Every live `OwnerKey` row with its label and persisted proof ({@link OwnerKeyRow}) — what
+   * the trusted-owner anchor sync derives from (`CadreNode.syncOwnerAnchor`) and the owner-key
+   * listing shows (`CadreNode.listOwnerKeys`). Rows whose
    * `StampId` is retired in `CadreControl.Revocation` are excluded here, as
    * {@link queryCadrePeers} excludes them and for the reason on {@link getOwnerKeys}, which
    * reads through this. A row with no stamp (the schema permits it; no writer produces one)
@@ -1524,7 +1539,7 @@ export class ControlDatabase {
     this.ensureInitialized();
     const revoked = retired ?? await this.queryRevokedStamps('OwnerKey', retry);
     const rows: OwnerKeyRow[] = [];
-    const sql = 'select Key, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.OwnerKey';
+    const sql = 'select Key, Label, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.OwnerKey';
     for (const row of await this.readRows(sql, undefined, 'owner-keys', retry)) {
       const stampId = (row.StampId as string | null) ?? null;
       if (stampId === null) {
@@ -1536,6 +1551,7 @@ export class ControlDatabase {
       }
       rows.push({
         key: row.Key as string,
+        label: (row.Label as string | null) ?? null,
         stampId,
         vouchOwner: (row.VouchOwner as string | null) ?? null,
         vouchSig: (row.VouchSig as string | null) ?? null,
@@ -1990,9 +2006,13 @@ export class ControlDatabase {
 
   /**
    * Insert the initial owner key (bootstrap - no existing owners required)
+   *
+   * @param label - the user's name for the key, at most {@link OWNER_KEY_MAX_LABEL}
+   *   characters once trimmed; blank is stored as none.
    */
-  async insertOwnerKey(key: string): Promise<void> {
+  async insertOwnerKey(key: string, label?: string): Promise<void> {
     this.ensureInitialized();
+    const storedLabel = ownerKeyLabel(label);
     log('Inserting owner key: %s', key);
 
     // Bootstrap is authorized by the schema's genesis branch — `(select count(1) from
@@ -2005,10 +2025,10 @@ export class ControlDatabase {
     // optimystic `StampId()` SQL function.
     const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
     await this.execWrite(`
-      insert into CadreControl.OwnerKey (Key, StampId)
+      insert into CadreControl.OwnerKey (Key, Label, StampId)
         with context OwnerKey = null, Signature = null
-        values (?, ?)
-    `, [key, stampId], 'owner-key-insert');
+        values (?, ?, ?)
+    `, [key, storedLabel, stampId], 'owner-key-insert');
     log('Owner key inserted');
   }
 
@@ -2016,8 +2036,8 @@ export class ControlDatabase {
    * Owner-signed INSERT of a further `OwnerKey` row, notifying the membership listener once
    * it has committed. The signed-add branch of `OwnerKey.Authorized`: the signer must be an
    * owner in the pre-transaction snapshot, its signature covers the `'add'` digest over
-   * (Key, StampId), and the stored `VouchOwner`/`VouchSig` are that same pair, so a reader
-   * can later judge the add against its own anchor (`verifyOwnerKeyVoucher`).
+   * (Key, Label, StampId), and the stored `VouchOwner`/`VouchSig` are that same pair, so a
+   * reader can later judge the add against its own anchor (`verifyOwnerKeyVoucher`).
    *
    * Through {@link mutateCadrePeer}, the membership hub. The liveness read, the stamp and the
    * signature all sit inside the locked body: a {@link lockedWithRetry} re-run starts over a
@@ -2030,17 +2050,20 @@ export class ControlDatabase {
    * machine the delete reached; if re-adding removed owners becomes routine, the fix is an
    * `OwnerKey` reap branch, gated so it can never take the table below `MinOneOwner`.
    *
+   * @param label - the user's name for the key, as {@link insertOwnerKey}'s.
    * @returns `true` when this call seated the row, `false` when `key` is already a live owner
-   *   here (nothing written).
+   *   here (nothing written, whatever its label).
    * @throws when this node holds `key`'s row under a retired stamp (above), or when the
    *   schema refuses the signer.
    */
   async insertOwnerKeyVouched(
     key: string,
     ownerKey: string,
-    signMessage: ControlSign
+    signMessage: ControlSign,
+    label?: string | null
   ): Promise<boolean> {
     this.ensureInitialized();
+    const storedLabel = ownerKeyLabel(label);
     return await this.mutateCadrePeer('owner-key-add', async () => {
       // retry: false on both reads — inside the locked write body (see queryStampId's NOTE).
       const heldStamp = await this.queryStampId('OwnerKey', key, false);
@@ -2055,16 +2078,28 @@ export class ControlDatabase {
         );
       }
       const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
-      const signature = await signMessage(ownerKeyAddMessage(this.config.partyId, key, stampId));
-      // Bare `exec`: already inside the write lock, which is NOT re-entrant.
-      await this.db!.exec(`
-        insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
-          with context OwnerKey = ?, Signature = ?
-          values (?, ?, ?, ?)
-      `, [ownerKey, signature, key, stampId, ownerKey, signature]);
+      const signature = await signMessage(ownerKeyAddMessage(this.config.partyId, key, storedLabel, stampId));
+      await this.execOwnerKeyVouchedInsert({ key, label: storedLabel, stampId }, ownerKey, signature);
       log('Owner key %s added (vouched by %s)', key, ownerKey);
       return true;
     });
+  }
+
+  /**
+   * The signed-add statement of {@link insertOwnerKeyVouched} and {@link revouchOwnerKey}, the
+   * stored voucher being the signing pair. Bare `exec`: callers hold the write lock, which is
+   * NOT re-entrant.
+   */
+  private async execOwnerKeyVouchedInsert(
+    row: { key: string; label: string | null; stampId: string },
+    ownerKey: string,
+    signature: string
+  ): Promise<void> {
+    await this.db!.exec(`
+      insert into CadreControl.OwnerKey (Key, Label, StampId, VouchOwner, VouchSig)
+        with context OwnerKey = ?, Signature = ?
+        values (?, ?, ?, ?, ?)
+    `, [ownerKey, signature, row.key, row.label, row.stampId, ownerKey, signature]);
   }
 
   /**
@@ -2109,14 +2144,14 @@ export class ControlDatabase {
   /**
    * Re-vouch a live `OwnerKey` row under this owner's signature: in ONE transaction, the
    * current row's guarded delete plus tombstone ({@link deleteOwnerKey}'s body) and an insert
-   * of the same key under a fresh stamp, signed by `ownerKey` ({@link insertOwnerKeyVouched}'s
-   * body), as {@link rewritePendingJoin} re-seats a request. `OwnerKey` has `NoUpdate`, so
+   * of the same key and label under a fresh stamp, signed by `ownerKey`
+   * ({@link insertOwnerKeyVouched}'s body), as {@link rewritePendingJoin} re-seats a request. `OwnerKey` has `NoUpdate`, so
    * this is the only way to rebind a row's voucher; the anchor derivation lets the re-add
    * under a fresh stamp beat the older tombstone (`deriveOwnerAnchor`). For
    * {@link removeMachine}: the owners a machine being removed had added keep their anchor
    * place everywhere once their row stands on a remaining owner's signature.
    *
-   * Through {@link mutateCadrePeer}, the membership hub. The stamp read runs inside the locked
+   * Through {@link mutateCadrePeer}, the membership hub. The row read runs inside the locked
    * body; a row whose stamp is already retired (held without its delete) is reported as absent
    * rather than tombstoned twice.
    *
@@ -2132,24 +2167,20 @@ export class ControlDatabase {
       throw new Error(`Cannot re-vouch owner key ${key}: an owner cannot re-vouch itself`);
     }
     return await this.mutateCadrePeer('owner-key-revouch', async () => {
-      // retry: false on both reads — inside the locked write body (see queryStampId's NOTE).
-      const stampId = await this.queryStampId('OwnerKey', key, false);
-      if (stampId === null || (await this.queryRevokedStamps('OwnerKey', false)).has(stampId)) {
+      // retry: false — inside the locked write body (see queryStampId's NOTE).
+      const live = (await this.queryOwnerKeyRows(false)).find((row) => row.key === key);
+      if (live === undefined) {
         log('revouchOwnerKey: %s is not a live owner here (nothing to re-vouch)', key);
         return false;
       }
-      const removal = await signGuardedRemoval(this.config.partyId, 'OwnerKey', key, stampId, signMessage);
-      const freshStampId = generateStampId(this.config.libp2pNode.peerId.toString());
-      const signature = await signMessage(ownerKeyAddMessage(this.config.partyId, key, freshStampId));
+      const removal = await signGuardedRemoval(this.config.partyId, 'OwnerKey', key, live.stampId, signMessage);
+      const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
+      const signature = await signMessage(ownerKeyAddMessage(this.config.partyId, key, live.label, stampId));
       await this.inTransaction('revouch OwnerKey', async () => {
         await this.execGuardedRemoval(removal, ownerKey);
-        await this.db!.exec(`
-          insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
-            with context OwnerKey = ?, Signature = ?
-            values (?, ?, ?, ?)
-        `, [ownerKey, signature, key, freshStampId, ownerKey, signature]);
+        await this.execOwnerKeyVouchedInsert({ key, label: live.label, stampId }, ownerKey, signature);
       });
-      log('Owner key %s re-vouched by %s (stamp %s retired)', key, ownerKey, stampId);
+      log('Owner key %s re-vouched by %s (stamp %s retired)', key, ownerKey, live.stampId);
       this.notifyGuardedDelete(removal.ref);
       return true;
     });
@@ -2293,19 +2324,19 @@ export class ControlDatabase {
     const stampId = generateStampId(peerId);
 
     // Field order MUST match the schema's Strand `AuthorizedInsert` verify:
-    // Id, Type, MemberPrivateKey ('' when null), StampId. FounderOwnerKey is
+    // Id, Type, MemberPrivateKey ('' when null), FounderPeerId, StampId. FounderOwnerKey is
     // deliberately NOT in the digest — the schema binds it by equality to the
     // verified context.OwnerKey instead (see the constraint's comment).
-    const message = buildAuthorizationMessage('CadreControl.Strand', 'add', this.config.partyId, [strandId, type, memberPrivateKey ?? '', stampId]);
+    const message = buildAuthorizationMessage('CadreControl.Strand', 'add', this.config.partyId, [strandId, type, memberPrivateKey ?? '', peerId, stampId]);
     const signature = await signMessage(message);
 
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
     // FounderOwnerKey must equal the signing owner or the constraint rejects the row.
     await this.execWrite(`
-      insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
+      insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
         with context OwnerKey = ?, Signature = ?
-        values (?, ?, ?, ?, ?)
-    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId, ownerKey], 'strand-insert');
+        values (?, ?, ?, ?, ?, ?)
+    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId, ownerKey, peerId], 'strand-insert');
 
     log('Strand inserted: %s', strandId);
   }
@@ -3857,13 +3888,13 @@ export class ControlDatabase {
       await this.inTransaction('redemption', async () => {
         // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
         //    still carrying a fresh unique StampId for the anti-replay column.
-        //    Hard-coded open + keyless + explicit null FounderOwnerKey: the
+        //    Hard-coded open + keyless + explicit null founder columns: the
         //    consent branch admits no other shape (no signature means no
-        //    trustworthy founder machine to record — see the schema's NOTE).
+        //    trustworthy founder machine to record — see the schema's comment).
         await this.db!.exec(`
-          insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
+          insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
             with context OwnerKey = null, Signature = null
-            values (?, 'o', null, ?, null)
+            values (?, 'o', null, ?, null, null)
         `, [strandId, strandStampId]);
 
         // 2. FormationUsage row — authorised by the matching FormationInvite, and

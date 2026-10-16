@@ -42,12 +42,18 @@ declare schema CadreControl {
     -- against its node-local anchor, never against this replicated table.
     table OwnerKey (
         Key text primary key,
+        Label text null,                -- the user's name for the key ("phone", "paper backup"); bound into the
+                                        -- signed add, so a relayed approval cannot seat the key under another name
         StampId text unique,
         VouchOwner text null,
         VouchSig text null,
         VouchUsage text null,
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = new.StampId)
+        ),
+        -- Never empty: the add digest binds coalesce(Label, ''), so an empty label would sign as none.
+        constraint LabelLength check (
+            Label is null or length(Label) between 1 and 64
         ),
         -- The tombstone must name the removed row, not just its stamp (Revocation.RowKey).
         constraint RevocationRecorded check on delete (
@@ -74,15 +80,17 @@ declare schema CadreControl {
         -- written in the same transaction names this exact row (Key and stamp), and the
         -- invitation it redeemed grants ownership and was issued by the stored VouchOwner. The
         -- invitation is read from committed.CadreInvite, so an invitation cannot be seated and
-        -- redeemed in one transaction; the usage row carries the liveness conditions.
+        -- redeemed in one transaction; the usage row carries the liveness conditions. Nothing
+        -- signed names a label there, so the row carries none.
         constraint Authorized check on insert, delete (
             (old.Key is null and (select count(1) from committed.OwnerKey) = 0
                 and new.VouchOwner is null and new.VouchSig is null and new.VouchUsage is null)
-                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
+                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, coalesce(new.Label, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
                     and coalesce(new.VouchOwner, '') = context.OwnerKey
                     and coalesce(new.VouchSig, '') = context.Signature
                     and new.VouchUsage is null)
                 or (old.Key is null and new.VouchSig is null and new.VouchUsage is not null
+                    and new.Label is null
                     and exists (
                         select 1 from CadreInviteUsage U
                             where U.UsageStampId = new.VouchUsage
@@ -125,9 +133,12 @@ declare schema CadreControl {
         Id text primary key,                -- UUID
         MemberPrivateKey text null unique,  -- the strand's shared read secret; closed strands only
         Type text,                          -- 'o' open | 'c' closed: open gates writes in the sApp, only closed gates reads
-        FounderOwnerKey text null,          -- owner key of the machine that published the row, the founding machine
-                                            -- (cadre-node.ts launchStrand); null on a consent-seated strand, whose
-                                            -- insert carries no signature. Provenance, not content (strandRowMismatches).
+        FounderOwnerKey text null,          -- the owner key that signed the insert; null on a consent-seated strand,
+                                            -- whose insert carries no signature. Provenance, not content (strandRowMismatches).
+        FounderPeerId text null,            -- peer id of the machine that runs the founder bootstrap (cadre-node.ts
+                                            -- launchStrand), bound into the signed add; null on a consent-seated strand.
+                                            -- Not pinned to a CadrePeer row: a solo founder publishes before its own
+                                            -- row exists, and only an owner can name it. Provenance, as FounderOwnerKey.
         StampId text unique,
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = new.StampId)
@@ -138,9 +149,10 @@ declare schema CadreControl {
         -- The consent branch below carries no signature, so an update rule would let anyone rewrite
         -- a consent-seated strand.
         constraint NoUpdate check on update (false),
-        -- Owner-signed, with FounderOwnerKey pinned to the verified signer; or consent-seated by a
-        -- FormationUsage row naming this exact row (id and stamp), written in the same transaction
-        -- (ControlDatabase.redeemInvitation). Binding the stamp is what makes a removal stick:
+        -- Owner-signed, with FounderOwnerKey pinned to the verified signer and FounderPeerId bound
+        -- into the signature; or consent-seated by a FormationUsage row naming this exact row (id
+        -- and stamp), written in the same transaction (ControlDatabase.redeemInvitation). Binding
+        -- the stamp is what makes a removal stick:
         -- the usage row outlives the strand, and keyed on the id alone it would re-authorize an
         -- unsigned re-seat under a fresh stamp. The consent branch is narrow, each clause closing
         -- one door:
@@ -153,12 +165,14 @@ declare schema CadreControl {
         -- A standalone tombstone (no accompanying delete, Revocation.Authorized) lets an owner
         -- foreclose consent-seating of an id that never existed: owner-only, and ids are random.
         constraint AuthorizedInsert check on insert (
-            (exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Strand', 'add', party_id(), new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
-                and new.FounderOwnerKey = context.OwnerKey)
+            (exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Strand', 'add', party_id(), new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.FounderPeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+                and new.FounderOwnerKey = context.OwnerKey
+                and new.FounderPeerId is not null)
                 or (
                     new.Type = 'o'
                     and new.MemberPrivateKey is null
                     and new.FounderOwnerKey is null
+                    and new.FounderPeerId is null
                     and exists (
                         select 1 from FormationUsage FU
                             where FU.StrandId = new.Id

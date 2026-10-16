@@ -11,7 +11,7 @@ describe('softwareOwnerSigner', () => {
 		const signer = softwareOwnerSigner(privateKeyB64);
 		expect(signer.publicKey).toBe(publicKeyB64);
 
-		const message = buildAuthorizationMessage('CadreControl.OwnerKey', 'add', 'party-a', [publicKeyB64, 'stamp-1']);
+		const message = buildAuthorizationMessage('CadreControl.OwnerKey', 'add', 'party-a', [publicKeyB64, '', 'stamp-1']);
 		const signature = await signer.approve({ partyId: 'party-a', action: 'Add owner key' }, (sign) => sign(message));
 
 		// The call the schema makes: verify(digest(...), context.Signature, A.Key, 'ed25519'), the digest as bytes.

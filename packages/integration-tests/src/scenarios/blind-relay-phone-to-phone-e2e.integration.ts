@@ -408,6 +408,7 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 			MemberPrivateKey: formResult.memberPrivateKey ?? null,
 			Type: 'c',
 			FounderOwnerKey: null,
+			FounderPeerId: null,
 		};
 		// Launched without waiting for B's first sync, so the relayed connection is
 		// asserted on its own terms below before the Header's arrival is waited for.

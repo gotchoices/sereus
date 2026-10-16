@@ -69,11 +69,11 @@ export interface JoinedStrandStore {
 
 /**
  * The {@link StrandRow} a record stands for — the shape `addStrand` and `strand:discovered`
- * carry. `FounderOwnerKey` is null because a joiner never founds; `CadreNode.launchStrand`
- * reads null as "not mine" and joins.
+ * carry. The founder columns are null because a joiner never founds; `CadreNode.launchStrand`
+ * reads a null `FounderPeerId` as "not mine" and joins.
  */
 export function joinedStrandRow(record: JoinedStrandRecord): StrandRow {
-	return { Id: record.Id, Type: record.Type, MemberPrivateKey: record.MemberPrivateKey, FounderOwnerKey: null };
+	return { Id: record.Id, Type: record.Type, MemberPrivateKey: record.MemberPrivateKey, FounderOwnerKey: null, FounderPeerId: null };
 }
 
 /**
@@ -234,7 +234,7 @@ function parseRecord(strandId: string, bytes: Uint8Array): JoinedStrandRecord | 
  * key; this module sees only the seam, so it stays free of the runtime.
  */
 export interface PartyJoinedStrandLedger {
-	/** Every party-wide join, as offerable rows (`FounderOwnerKey: null`). */
+	/** Every party-wide join, as offerable rows (null founder columns). */
 	list(): Promise<StrandRow[]>;
 	/** Whether this party's control database names `strandId`, as its own strand or as a party-wide join. */
 	names(strandId: string): Promise<boolean>;

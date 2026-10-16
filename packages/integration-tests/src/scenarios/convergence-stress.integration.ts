@@ -178,7 +178,7 @@ async function setupDroneAndPhone(tag: string): Promise<TestContext> {
 	);
 
 	// Create strand on both nodes
-	const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null };
+	const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 
 	// The drone FOUNDS (writes the Header); the phone joins without waiting for its
 	// first sync, since the dial that carries the Header to it happens below — a

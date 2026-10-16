@@ -78,9 +78,9 @@ import { signPeerRecord } from '../src/peer-record.js';
 
 const log = debug('sereus:cadre:test:revocation-replay');
 
-/** The enrollment message the insert branch binds: digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, new.StampId). */
+/** The enrollment message the insert branch binds for an unlabelled row: digest('CadreControl.OwnerKey', 'add', party_id(), new.Key, coalesce(new.Label, ''), new.StampId). */
 const enrollMessage = (partyId: string, key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
+  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, '', stampId]);
 
 /** The removal message the delete branch binds: digest('CadreControl.OwnerKey', 'remove', party_id(), old.Key, old.StampId). */
 const removeMessage = (partyId: string, key: string, stampId: string): Uint8Array =>
@@ -90,6 +90,9 @@ const removeMessage = (partyId: string, key: string, stampId: string): Uint8Arra
 const validationKeyMessage = (partyId: string, action: 'add' | 'remove', key: string, stampId: string): Uint8Array =>
   buildAuthorizationMessage('CadreControl.ValidationKey', action, partyId, [key, stampId]);
 
+/** The machine every raw `Strand` insert here names as founder (`Strand.FounderPeerId`). */
+const FOUNDER_PEER_ID = 'founder-machine-peer-id';
+
 /** `Strand`'s add branch binds the whole row; MemberPrivateKey signs as '' when null. */
 const strandAddMessage = (
   partyId: string,
@@ -98,7 +101,7 @@ const strandAddMessage = (
   memberPrivateKey: string | null,
   stampId: string,
 ): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Strand', 'add', partyId, [id, type, memberPrivateKey ?? '', stampId]);
+  buildAuthorizationMessage('CadreControl.Strand', 'add', partyId, [id, type, memberPrivateKey ?? '', FOUNDER_PEER_ID, stampId]);
 
 /** `Strand`'s delete branch binds only the stored (Id, StampId) — a distinct, narrower digest. */
 const strandRemoveMessage = (partyId: string, id: string, stampId: string): Uint8Array =>
@@ -252,10 +255,10 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     // FounderOwnerKey must equal the context owner (the schema's AuthorizedInsert
     // pins the stored column to the verified signer) or the insert is rejected.
     return rawDb.exec(
-      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
+      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?, ?)`,
-      [contextOwner, signature, id, type, memberPrivateKey, stampId, contextOwner],
+         values (?, ?, ?, ?, ?, ?)`,
+      [contextOwner, signature, id, type, memberPrivateKey, stampId, contextOwner, FOUNDER_PEER_ID],
     );
   }
 
@@ -1526,7 +1529,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(added?.VouchOwner).toBe(founder.publicKey);
     expect(added?.VouchSig).toBe(signAs(founder, enrollMessage(node.partyId, second.publicKey, stamp)));
     // The read-side verifiers rebuild the digest independently of the writer's message builder.
-    expect(verifyOwnerKeyVoucher(node.partyId, second.publicKey, stamp, added?.VouchOwner as string, added?.VouchSig as string)).toBe(true);
+    expect(verifyOwnerKeyVoucher(node.partyId, second.publicKey, null, stamp, added?.VouchOwner as string, added?.VouchSig as string)).toBe(true);
 
     expect(await db.deleteOwnerKey(second.publicKey, founder.publicKey, sign)).toBe(true);
     expect(await ownerKeys()).toEqual([founder.publicKey]);

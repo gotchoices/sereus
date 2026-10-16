@@ -15,7 +15,7 @@ import {
 	type OfflinePeer
 } from './control-db-node-helpers.js';
 import { signedSApp } from './signed-sapp.js';
-import type { CadreNodeConfig, StrandInstance } from '../src/types.js';
+import type { CadreNodeConfig, StrandInstance, StrandRow } from '../src/types.js';
 
 /**
  * A device that WAS in a cadre and is now the only one left, restarting on rows
@@ -172,7 +172,7 @@ async function expectWarmState(
  *  a StrandPartyKey against, so the explicit founder supplies it). */
 function addStrand(
 	node: CadreNode,
-	strandRow: { Id: string; MemberPrivateKey: string | null; Type: 'o' | 'c'; FounderOwnerKey: string | null },
+	strandRow: StrandRow,
 	partyMemberPrivateKey?: string
 ): Promise<StrandInstance> {
 	return within(`addStrand(${strandRow.Type === 'c' ? 'closed' : 'open'})`, ADD_STRAND_TIMEOUT_MS,
@@ -210,7 +210,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				// `initializeSeedBootstrap` — `addStrand` is the next thing called, so
 				// `resolveCohortSeed`'s `queryCadrePeers()` is the first control
 				// operation of this process that the app actually awaits.
-				const instance = await addStrand(second, { Id: strandId('vanished'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
+				const instance = await addStrand(second, { Id: strandId('vanished'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null });
 
 				// The stale rows are what make this case different from the cold solo
 				// one: the seed resolution walks a real membership list and reaches
@@ -255,7 +255,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 					() => second.getControlDatabase()!.queryRevokedStamps('CadrePeer'));
 				expect(revoked.size).toBe(cohort.siblings.length);
 
-				const instance = await addStrand(second, { Id: strandId('revoked'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
+				const instance = await addStrand(second, { Id: strandId('revoked'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null });
 				// Unlike the vanished case, the seed resolution walks a membership of
 				// ONE: the revocation join above hid both sibling rows, which is the
 				// state `expectWarmState` already pinned. What is under test here is
@@ -294,7 +294,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				const memberPrivateKey = await generateStrandMemberKey();
 				const partyMemberPrivateKey = await generateStrandMemberKey();
 				const instance = await addStrand(second,
-					{ Id: strandId('closed'), MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null },
+					{ Id: strandId('closed'), MemberPrivateKey: memberPrivateKey, Type: 'c', FounderOwnerKey: null, FounderPeerId: null },
 					partyMemberPrivateKey);
 				expect(instance.status).toBe('active');
 
@@ -338,7 +338,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 					ownerPublicKey: cohort.ownerPublicKey
 				});
 
-				const instance = await addStrand(second, { Id: strandId('three'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
+				const instance = await addStrand(second, { Id: strandId('three'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null });
 				expect(instance.status).toBe('active');
 			} finally {
 				await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
@@ -361,7 +361,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				// Nothing has been written yet — this is the pre-genesis state.
 				expect(await within('hasOwnerKey() (pre-genesis)', OP_TIMEOUT_MS, () => db.hasOwnerKey())).toBe(false);
 
-				const instance = await addStrand(node, { Id: strandId('cold'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null });
+				const instance = await addStrand(node, { Id: strandId('cold'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null });
 				expect(instance.status).toBe('active');
 
 				// And genesis still works AFTER the strand launched — the out-of-order

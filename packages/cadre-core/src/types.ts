@@ -1272,16 +1272,21 @@ export interface StrandRow {
   MemberPrivateKey: string | null;
   Type: 'o' | 'c';
   /**
-   * ed25519 (base64url) owner key of the MACHINE that published this row — the
-   * signer of the owner-signed `Strand` insert (`== context.OwnerKey`, pinned by
-   * the schema's `AuthorizedInsert`). Identifies the founding machine, so a
-   * launch with no explicit `founder` flag derives "am I the founder?" by
-   * comparing it to the node's own owner key (see `CadreNode.launchStrand`).
-   * `null` on a consent-seated strand (the unsigned `FormationUsage` branch
-   * records no trustworthy signer). Provenance, not content —
-   * `strandRowMismatches` excludes it from the identical-content comparison.
+   * ed25519 (base64url) owner key that signed the owner-signed `Strand` insert
+   * (`== context.OwnerKey`, pinned by the schema's `AuthorizedInsert`). `null` on a
+   * consent-seated strand (the unsigned `FormationUsage` branch records no
+   * signer). Provenance, not content — `strandRowMismatches` excludes it from the
+   * identical-content comparison.
    */
   FounderOwnerKey: string | null;
+  /**
+   * Peer id of the machine that runs the founder bootstrap, named by the owner
+   * signature on the insert (`CadreNode.publishStrand` writes its own). A launch
+   * with no explicit `founder` flag founds iff this is its own peer id (see
+   * `CadreNode.launchStrand`), so two machines holding one owner key never both
+   * found. `null` on a consent-seated strand. Provenance, as {@link FounderOwnerKey}.
+   */
+  FounderPeerId: string | null;
 }
 
 /**
@@ -1404,7 +1409,7 @@ export interface StrandConfig {
    * unset and writes nothing — it receives those rows via Optimystic sync.
    *
    * When unset, founder-ness is DERIVED from the row: this node founds iff
-   * {@link StrandRow.FounderOwnerKey} equals its own owner key. An explicit
+   * {@link StrandRow.FounderPeerId} is its own peer id. An explicit
    * `true`/`false` wins over the derivation — the formation/responder flows pass
    * it deliberately, since a consent-seated row carries a null column.
    */
@@ -1742,7 +1747,7 @@ export interface CadreNodeEvents {
    * Also emitted for a strand this node joined from ANOTHER party, which no control
    * row names: the node remembers every such join (see
    * {@link CadreNodeConfig.joinedStrands}) and offers it here on each start, as a row
-   * with `FounderOwnerKey: null` carrying the closed strand's `MemberPrivateKey`. That
+   * with null founder columns carrying the closed strand's `MemberPrivateKey`. That
    * row is the product of the formation's consent, so claiming it needs no second one.
    *
    * **Fired once per strand per session, and it can fire before your listener is
@@ -1915,9 +1920,9 @@ export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | '
 
 /**
  * One live `CadreControl.OwnerKey` row as `ControlDatabase.queryOwnerKeyRows` reads it: the
- * key and the persisted proof of how it was seated. The three proof shapes are the schema's
- * (`OwnerKey.Authorized`): the founding row (all three null), an owner-signed add (`vouchOwner`
- * and `vouchSig`, the signer's signature over `ownerKeyAddDigest(key, stampId)`), or an
+ * key, its label and the persisted proof of how it was seated. The three proof shapes are the
+ * schema's (`OwnerKey.Authorized`): the founding row (all three null), an owner-signed add
+ * (`vouchOwner` and `vouchSig`, the signer's signature over `ownerKeyAddDigest(key, label, stampId)`), or an
  * owner-granting invitation redeemed by consent (`vouchOwner` the issuer, `vouchSig` null,
  * `vouchUsage` the `CadreInviteUsage` row). Rows whose stamp is retired in `Revocation`, and
  * the stampless row the schema permits but no writer produces, never reach a reader, so
@@ -1927,6 +1932,8 @@ export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | '
 export interface OwnerKeyRow {
   /** ed25519 public key (base64url) — the row key. */
   key: string;
+  /** The user's name for the key, bound into an owner-signed add; null when none was given, and always on an invitation-admitted row. */
+  label: string | null;
   /** Single-use anti-replay nonce the voucher signature, or the usage row, is bound to. */
   stampId: string;
   /** The owner that signed the add, or that issued the invitation that admitted it; null on the founding row. */
@@ -2018,6 +2025,25 @@ export interface CadreMachine {
   /** `CadrePeer.VouchOwner` (or `OwnerKey.VouchOwner` for an owner-only entry): the owner that vouched it, or the issuer of the invitation that admitted it. */
   vouchedBy: string | null;
 }
+
+/** One live owner key as `CadreNode.listOwnerKeys` lists it, for an app's owner-key screen. */
+export interface CadreOwnerKey {
+  /** ed25519 public key (base64url). */
+  key: string;
+  /** The user's name for the key ("phone", "paper backup"); null when none was given. */
+  label: string | null;
+  /** `OwnerKey.VouchOwner`: the owner that signed its add, or that issued the owner-granting invitation that admitted it; null on the founding key. */
+  vouchedBy: string | null;
+  /** This node's owner signer holds it. */
+  heldHere: boolean;
+  /** In this node's trusted-owner anchor, so this node accepts what it signs. */
+  trusted: boolean;
+}
+
+/** Why `CadreNode.addOwner` refuses by name (`OwnerKeyAddRefusedError.code`). */
+export type OwnerKeyAddRefusal =
+  /** No control connection while the party has other members: the row would stay on this node, and nothing re-issues an `OwnerKey` add. */
+  | 'alone';
 
 /** Why `CadreNode.removeMachine` refuses by name (`MachineRemovalRefusedError.code`). */
 export type MachineRemovalRefusal =

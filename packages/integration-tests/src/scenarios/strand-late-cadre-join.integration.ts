@@ -258,7 +258,7 @@ async function foundStrandAlone(label: string, handles: LateJoinHandles): Promis
 	// must actually found.
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 	const founderStrand = await founder.addStrand({
-		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 		sAppConfig: sApp,
 		founder: true,
 	});

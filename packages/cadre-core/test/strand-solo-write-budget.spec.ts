@@ -210,7 +210,7 @@ async function measureSoloStrand(): Promise<RunCost> {
 		let t0 = performance.now();
 		const instance = await within('addStrand()', LIFECYCLE_TIMEOUT_MS, () =>
 			node.addStrand({
-				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null },
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 				// `realtime` turns hibernation off, so no idle timer can fire mid-measurement.
 				sAppConfig: signedSApp({ latencyHint: 'realtime' }),
 				founder: true

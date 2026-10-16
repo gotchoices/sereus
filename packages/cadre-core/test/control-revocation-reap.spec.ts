@@ -50,6 +50,9 @@ const log = debug('sereus:cadre:test:revocation-reap');
 const validationKeyMessage = (partyId: string, action: 'add' | 'remove', key: string, stampId: string): Uint8Array =>
   buildAuthorizationMessage('CadreControl.ValidationKey', action, partyId, [key, stampId]);
 
+/** The machine every raw `Strand` insert here names as founder (`Strand.FounderPeerId`). */
+const FOUNDER_PEER_ID = 'founder-machine-peer-id';
+
 /** `Strand`'s add branch binds the whole row; MemberPrivateKey signs as '' when null. */
 const strandAddMessage = (
   partyId: string,
@@ -58,7 +61,7 @@ const strandAddMessage = (
   memberPrivateKey: string | null,
   stampId: string,
 ): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Strand', 'add', partyId, [id, type, memberPrivateKey ?? '', stampId]);
+  buildAuthorizationMessage('CadreControl.Strand', 'add', partyId, [id, type, memberPrivateKey ?? '', FOUNDER_PEER_ID, stampId]);
 
 /**
  * `CONTROL_SCHEMA` with EXACTLY the `Revocation.RowIsGone` constraint removed. Throws —
@@ -152,10 +155,10 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
     // FounderOwnerKey must equal the context owner (the schema's AuthorizedInsert
     // pins the stored column to the verified signer) or the insert is rejected.
     await rawDb.exec(
-      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey)
+      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?, ?)`,
-      [founder.publicKey, signAs(founder, strandAddMessage(node.partyId, id, 'c', memberPrivateKey, stamp)), id, 'c', memberPrivateKey, stamp, founder.publicKey],
+         values (?, ?, ?, ?, ?, ?)`,
+      [founder.publicKey, signAs(founder, strandAddMessage(node.partyId, id, 'c', memberPrivateKey, stamp)), id, 'c', memberPrivateKey, stamp, founder.publicKey, FOUNDER_PEER_ID],
     );
     return { stamp };
   }

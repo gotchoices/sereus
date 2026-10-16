@@ -11,6 +11,10 @@ export { CadreNode, OWNER_INVITATION_DEFAULT_TTL_MS, CADRE_INVITATION_DEFAULT_TT
 // (the listing, plan and result types are in types.ts)
 export { MachineRemovalRefusedError } from './machine-removal.js';
 
+// Adding an owner key: the by-name refusal `CadreNode.addOwner` throws (the listing type,
+// `CadreOwnerKey`, is in types.ts)
+export { OwnerKeyAddRefusedError } from './owner-keys.js';
+
 // Control database
 export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type MachineRemovalWrites, type ControlSign } from './control-database.js';
 
@@ -100,7 +104,7 @@ export {
   OwnerKeyExportError,
   OWNER_KEY_EXPORT_PREFIX,
   LOCKED_OWNER_KEY_EXPORT_PREFIX,
-  OWNER_KEY_EXPORT_MAX_LABEL,
+  OWNER_KEY_MAX_LABEL,
   type OwnerKeyExportErrorCode,
   type OwnerKeyExportContents,
   type OwnerKeyExportInput,
