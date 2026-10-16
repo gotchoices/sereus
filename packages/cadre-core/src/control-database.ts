@@ -2839,13 +2839,13 @@ export class ControlDatabase {
    *
    * NOTE: this rebinds VouchOwner to the CALLING owner's key, and the authorized-membership
    * predicate (`CadreNode.listAuthorizedMembers`) now judges rows by that column against each
-   * reader's node-local anchor. Benign today because the only caller — the write-while-alone
-   * drain — re-touches solely rows this node itself authored (`pendingPeerWrites`), so the
-   * voucher is rewritten to the key that already signed it. If a future path ever lets one
-   * owner re-touch a row a DIFFERENT owner vouched, the voucher silently flips: readers that
-   * anchor the original owner but not this one would drop a legitimate member. Such a path
-   * must re-vouch deliberately (or preserve the existing VouchOwner/VouchSig) rather than
-   * inherit this rebinding.
+   * reader's node-local anchor. The two callers rebind on purpose: the write-while-alone drain
+   * re-touches solely rows this node itself authored (`pendingPeerWrites`), so the voucher is
+   * rewritten to the key that already signed it, and `CadreNode.removeOwner` moves rows off a
+   * key it is about to remove. A new caller that re-touches a row a DIFFERENT owner vouched
+   * flips the voucher silently: readers that anchor the original owner but not this one would
+   * drop a legitimate member. It must re-vouch deliberately (or preserve the existing
+   * VouchOwner/VouchSig) rather than inherit this rebinding.
    *
    * @param peerId - the membership row to re-touch.
    * @param updatedAt - the strictly-increasing freshness stamp to write.

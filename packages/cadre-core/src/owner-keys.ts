@@ -106,8 +106,10 @@ export interface OwnerKeyRemovalPlanInput {
  *
  * `dependents` are the rows the key vouched, which every reader judges against its anchor
  * through `VouchOwner`: once the key is removed they stop passing the membership predicate on
- * every machine unless re-vouched first. This node's own rows are reported as `ownDependency`
- * instead, since it cannot re-vouch them itself.
+ * every machine unless re-vouched first. This node's own rows are not among them. Its own
+ * `CadrePeer` row is re-vouched unasked (`revouchesOwnRow`): left on the removed key, every other
+ * machine would drop the remover. Its own `OwnerKey` row is reported as `ownDependency`, since
+ * re-vouching it would mean signing its own removal.
  */
 export function planOwnerKeyRemoval(input: OwnerKeyRemovalPlanInput): OwnerKeyRemovalPlan {
 	const row = input.owners.find((owner) => owner.key === input.key) ?? null;
@@ -115,7 +117,8 @@ export function planOwnerKeyRemoval(input: OwnerKeyRemovalPlanInput): OwnerKeyRe
 		ownerKey: row === null ? null : describeOwnerKeys([row], input.selfOwnerKey, input.anchor)[0],
 		refusal: removalRefusalFor(input, row !== null),
 		dependents: dependentsOf(input),
-		ownDependency: isOwnDependency(input),
+		revouchesOwnRow: input.rows.some((own) => own.peerId === input.selfPeerId && own.vouchOwner === input.key),
+		ownDependency: input.owners.some((own) => own.key === input.selfOwnerKey && own.vouchOwner === input.key),
 	};
 }
 
@@ -146,18 +149,14 @@ function dependentsOf(input: OwnerKeyRemovalPlanInput): OwnerKeyDependents {
 	};
 }
 
-function isOwnDependency(input: OwnerKeyRemovalPlanInput): boolean {
-	const ownRow = input.rows.find((row) => row.peerId === input.selfPeerId);
-	const ownOwner = input.owners.find((owner) => owner.key === input.selfOwnerKey);
-	return ownRow?.vouchOwner === input.key || ownOwner?.vouchOwner === input.key;
-}
-
 /**
- * The re-vouch a caller asked for, checked against the plan: every key and peer must be in
- * `plan.dependents`, so a caller cannot re-vouch a row the removed key never vouched. Throws
- * naming the offenders, before `CadreNode.removeOwner` writes anything. Duplicates are dropped.
+ * The re-vouch `CadreNode.removeOwner` makes: what the caller asked for, checked against the
+ * plan, plus this node's own row (`selfPeerId`, first) when `plan.revouchesOwnRow`. Every
+ * requested key and peer must be in `plan.dependents`, so a caller cannot re-vouch a row the
+ * removed key never vouched. Throws naming the offenders, before anything is written.
+ * Duplicates are dropped.
  */
-export function revouchWithinPlan(plan: OwnerKeyRemovalPlan, revouch: RemoveOwnerOptions['revouch']): OwnerKeyDependents {
+export function revouchWithinPlan(plan: OwnerKeyRemovalPlan, revouch: RemoveOwnerOptions['revouch'], selfPeerId: string | null): OwnerKeyDependents {
 	const owners = [...new Set(revouch?.owners ?? [])];
 	const peers = [...new Set(revouch?.peers ?? [])];
 	const strayOwners = owners.filter((key) => !plan.dependents.owners.includes(key));
@@ -167,5 +166,5 @@ export function revouchWithinPlan(plan: OwnerKeyRemovalPlan, revouch: RemoveOwne
 			`removeOwner: re-vouch names rows the removed owner key did not vouch: ${[...strayOwners, ...strayPeers].join(', ')}`,
 		);
 	}
-	return { owners, peers };
+	return { owners, peers: plan.revouchesOwnRow && selfPeerId !== null ? [selfPeerId, ...peers] : peers };
 }

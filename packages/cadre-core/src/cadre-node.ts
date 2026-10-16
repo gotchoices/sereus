@@ -8657,8 +8657,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * What {@link removeOwner} would do for `ownerPublicKeyB64`, read without writing, for an
    * app's confirmation step ({@link OwnerKeyRemovalPlan}): whether this node may remove it,
-   * which rows the key vouched (so the app can offer to keep them by re-vouching), and whether
-   * this node's own rows depend on it (`planOwnerKeyRemoval` in `owner-keys.ts`).
+   * which rows the key vouched (so the app can offer to keep them by re-vouching), and how this
+   * node's own rows depend on it (`planOwnerKeyRemoval` in `owner-keys.ts`).
    */
   async planOwnerKeyRemoval(ownerPublicKeyB64: string): Promise<OwnerKeyRemovalPlan> {
     if (!this.controlDatabase) {
@@ -8679,10 +8679,10 @@ export class CadreNode implements SAppIdLookup {
    * on a refusal; check `options.revouch` against the plan's dependents and throw before any
    * write when it names anything else; refuse `alone` ({@link ownerKeyWriteAlone}) when an
    * `OwnerKey` row is to be re-vouched, since that re-add has no re-issue path; **re-vouch
-   * first**, under this node's key, the dependents the caller chose to keep
-   * (`ControlDatabase.revouchOwnerKey`, `reauthorizePeer`), so they are never untrusted in
-   * between, and stop before the removal if one fails (re-vouches already made stay,
-   * harmlessly); then the removal. The re-vouches and the removal are one owner approval. The
+   * first**, under this node's key, the dependents the caller chose to keep and this node's own
+   * row when the key vouched it (`ControlDatabase.revouchOwnerKey`, `reauthorizePeer`), so they
+   * are never untrusted in between, and stop before the removal if one fails (re-vouches
+   * already made stay, harmlessly); then the removal. The re-vouches and the removal are one owner approval. The
    * write notifies the membership hub, so the refresh it triggers has run by the time this
    * resolves.
    *
@@ -8701,7 +8701,7 @@ export class CadreNode implements SAppIdLookup {
     if (plan.refusal !== null) {
       throw new OwnerKeyRemovalRefusedError(key, plan.refusal);
     }
-    const revouch = revouchWithinPlan(plan, options.revouch);
+    const revouch = revouchWithinPlan(plan, options.revouch, this.peerId?.toString() ?? null);
     if (revouch.owners.length > 0 && await this.ownerKeyWriteAlone()) {
       throw new OwnerKeyRemovalRefusedError(key, 'alone');
     }
@@ -8750,7 +8750,11 @@ export class CadreNode implements SAppIdLookup {
    * A failure rethrows and stops the call before the removal; re-vouches already made stay
    * (the row is only re-signed by a current owner) and the caller retries. An owner re-vouch
    * is refused alone before this runs; one whose last connection drops while it runs is logged,
-   * as {@link addOwner}'s add is. The peer re-touches are re-issued by the existing drain.
+   * as {@link addOwner}'s add is.
+   *
+   * NOTE: a peer re-touch committed alone is not queued, and the drain skips self-published
+   * rows anyway, so the other machines may get the removal's tombstone without the new voucher
+   * (`tickets/backlog/bug-owner-key-removal-revouch-made-alone-is-not-reissued`).
    */
   private async revouchDependents(
     service: SeedBootstrapService,

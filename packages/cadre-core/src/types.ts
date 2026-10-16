@@ -2007,7 +2007,7 @@ export interface InvitationChain {
  */
 export interface CadreMachine {
   peerId: string;
-  /** The machine's ed25519 identity key (base64url) behind `peerId`; null when the id is not ed25519. Never an owner key. */
+  /** The machine's ed25519 identity key (base64url) behind `peerId`; null when the id is not ed25519. Not read as an owner key here, though an owner-granting invitation seats the same key as one (`listOwnerKeys` lists owner keys). */
   publicKey: string | null;
   /** This node itself. */
   isSelf: boolean;
@@ -2099,7 +2099,9 @@ export interface OwnerKeyRemovalPlan {
   refusal: Exclude<OwnerKeyRemovalRefusal, 'alone'> | null;
   /** Rows the key vouched, which stop passing the membership predicate on every machine once it is removed unless re-vouched first. */
   dependents: OwnerKeyDependents;
-  /** This node's own `OwnerKey` or `CadrePeer` row was vouched by the key. It cannot re-vouch its own rows; another owner has to re-add it afterwards. */
+  /** This node's own `CadrePeer` row was vouched by the key, so `removeOwner` re-vouches it under this node's key first, unasked: left on the removed key, every other machine would drop this node. */
+  revouchesOwnRow: boolean;
+  /** This node's own `OwnerKey` row was vouched by the key. It cannot re-vouch that row (the re-add's delete would be its own removal); it keeps its place in every anchor that already derived it, and another owner can re-vouch it afterwards. */
   ownDependency: boolean;
 }
 
@@ -2116,7 +2118,7 @@ export interface RemoveOwnerOptions {
 export interface OwnerKeyRemovalResult {
   /** The `OwnerKey` row and its tombstone were written; false only when another owner's removal reached this node between the plan and the write. */
   removed: boolean;
-  /** Dependents re-vouched under this node's key before the removal. */
+  /** Rows re-vouched under this node's key before the removal: the dependents asked for, and this node's own row when the plan's `revouchesOwnRow`. */
   revouched: OwnerKeyDependents;
 }
 
