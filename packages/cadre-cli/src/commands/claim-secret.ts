@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { parseClaimSecret } from '@serfab/cadre-core';
+import { modeOpenToOtherAccounts } from './private-file.js';
 
 /** Where a claim secret came from, as messages name it. */
 export type ClaimSecretSource = 'CADRE_CLAIM_SECRET' | `claim.secretFile (${string})`;
@@ -42,11 +43,10 @@ export function resolveClaimSecret(envSecret: string | undefined, secretFile: st
   return { secret: text.trim(), source, warnings: permissionWarnings(secretFile) };
 }
 
-/** Warn when a secret file is readable by other accounts. POSIX only; Windows has no mode bits to read. */
+/** Warn when a secret file is readable by other accounts. */
 function permissionWarnings(file: string): string[] {
-  if (process.platform === 'win32') return [];
-  const mode = fs.statSync(file).mode & 0o777;
-  return (mode & 0o077) === 0
+  const mode = modeOpenToOtherAccounts(file);
+  return mode === undefined
     ? []
     : [`${file} is readable by other accounts (mode ${mode.toString(8)}); anyone who reads it can claim this node. Run: chmod 600 ${file}`];
 }

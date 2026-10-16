@@ -13,6 +13,7 @@ import { readFile, rm } from 'node:fs/promises';
 import {
   DEFAULT_OWNER_KEY_ID,
   KeyStoreAccessError,
+  OwnerKeySlotOccupiedError,
   createOwnerKey,
   importOwnerKey,
   loadOwnerSigner,
@@ -22,7 +23,7 @@ import {
   type KeyStore,
   type OwnerSigner,
 } from '@serfab/cadre-core';
-import { writePrivateFileAtomically } from './private-file.js';
+import { createPrivateFileDurably } from './private-file.js';
 
 /** The 8 characters of an owner key the apps show for it. */
 export function ownerKeyFingerprint(publicKey: string): string {
@@ -44,9 +45,19 @@ class OwnerKeyFileStore implements KeyStore {
     }
   }
 
+  /**
+   * cadre-core sets the slot only after reading it empty, so `set` creates and never replaces:
+   * a file another process created in between (a `start --owner` beside an `owner-key import`)
+   * may hold a key that has already founded the party.
+   */
   async set(keyId: KeyId, keyMaterial: Uint8Array): Promise<void> {
     this.requireSlot(keyId);
-    await writePrivateFileAtomically(this.file, keyMaterial);
+    try {
+      await createPrivateFileDurably(this.file, keyMaterial);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      throw new OwnerKeySlotOccupiedError(keyId, `The owner key file ${this.file} was created by another process while this one was writing it; nothing was replaced`);
+    }
   }
 
   async delete(keyId: KeyId): Promise<void> {

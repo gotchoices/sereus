@@ -91,7 +91,7 @@ cadre start -c cadre.yaml --owner
 cadre start -c cadre.yaml --owner --owner-label "office server"   # founding a party: the key's label
 ```
 
-- The owner key file is `owner.keyFile` in the config (`CADRE_OWNER_KEY_FILE`, `--owner-key-file <path>`), by default `owner.key` in the node-state directory. It has the identity file's format, and it is never the identity file: a config naming the same file for both is refused. When the file is missing, `--owner` creates it and says so on stderr. **Anyone who can read that file controls the cadre**; keep it private and back it up (`cadre owner-key export`).
+- The owner key file is `owner.keyFile` in the config (`CADRE_OWNER_KEY_FILE`, `--owner-key-file <path>`), by default `owner.key` in the node-state directory. It has the identity file's format, and it is never the identity file: a config naming the same file for both is refused. When the file is missing, `--owner` creates it and says so on stderr. **Anyone who can read that file controls the cadre**; keep it private (start-up warns when other accounts can read it, as for the claim secret file) and back it up (`cadre owner-key export`).
 - On a party with no owner yet, the key founds it: the genesis `OwnerKey` row, labelled `--owner-label` (default `server <hostname>`, at most 64 characters).
 - On a party that lists the key as an owner, the node signs with it; nothing is inserted.
 - On a party whose owners do not include the key, start-up fails, naming the key's fingerprint and public key. Add it as an owner from a device that holds one of the party's owner keys, or import one of the party's owner keys here (`cadre owner-key import`), then start again.

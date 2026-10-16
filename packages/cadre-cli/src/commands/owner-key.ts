@@ -18,6 +18,7 @@ import { specifiedEnv } from '@serfab/config-check';
 import { resolveConfig } from '../config/index.js';
 import { commandEnv } from '../config/env.js';
 import { importOwnerKeyFile, loadOwnerKeyFile, ownerKeyFingerprint, readOwnerKeyFilePrivateKey } from './owner-key-file.js';
+import { modeOpenToOtherAccounts } from './private-file.js';
 
 const log = debug('cadre:cli:owner-key');
 
@@ -59,6 +60,10 @@ function resolvePassphrase(passphraseFile: string | undefined, env: NodeJS.Proce
   }
   const passphrase = text.replace(/\r?\n$/, '');
   if (passphrase.length === 0) throw new Error(`${passphraseFile} holds no passphrase`);
+  const mode = modeOpenToOtherAccounts(passphraseFile);
+  if (mode !== undefined) {
+    console.warn(`⚠ ${passphraseFile} is readable by other accounts (mode ${mode.toString(8)}); anyone who reads it can unlock the export. Run: chmod 600 ${passphraseFile}`);
+  }
   return passphrase;
 }
 

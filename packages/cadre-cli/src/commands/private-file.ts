@@ -19,10 +19,33 @@ export function writePrivateFile(file: string, data: string | Uint8Array): void 
 }
 
 /**
+ * Create a private file (mode 600; its directory, when created, 700) that must not already
+ * exist, and fsync it before returning. Unlike {@link writePrivateFileAtomically} it never
+ * replaces a file, not even one another process created a moment earlier: that fails with
+ * `EEXIST`. A crash part-way leaves a short file, which a reader must refuse rather than treat
+ * as absent; its contents were never handed out, since this had not returned. For a file that is
+ * written once and whose loss costs more than a refused start: an owner key.
+ */
+export async function createPrivateFileDurably(file: string, data: string | Uint8Array): Promise<void> {
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const handle = await open(file, 'wx', 0o600);
+  try {
+    await handle.writeFile(data);
+    await handle.sync();
+  } catch (err) {
+    await handle.close().catch(() => {});
+    // This process made the file and nothing has read a key from it: leave no short file behind.
+    await rm(file, { force: true }).catch(() => {});
+    throw err;
+  }
+  await handle.close();
+}
+
+/**
  * Write a private file (mode 600; its directory, when created, 700) atomically and durably: to a
  * sibling temp file, fsync'd, then renamed over `file`, so a crash leaves either the previous file
  * or the complete new one. For a file whose loss or tearing costs more than a retry: the claim
- * record, an owner key.
+ * record.
  *
  * NOTE: a copy of cadre-core's `writeFileAtomically` (`fs-atomic.ts`), which that package keeps
  * out of its exported surface, minus its best-effort directory fsync; cadre-host carries the
@@ -45,4 +68,14 @@ export async function writePrivateFileAtomically(file: string, data: string | Ui
     await rm(tmpPath, { force: true }).catch(() => {});
     throw err;
   }
+}
+
+/**
+ * The file's permission bits when accounts other than its owner can read or write it, else
+ * `undefined`. POSIX only; Windows has no mode bits to read, so there it is always `undefined`.
+ */
+export function modeOpenToOtherAccounts(file: string): number | undefined {
+  if (process.platform === 'win32') return undefined;
+  const mode = fs.statSync(file).mode & 0o777;
+  return (mode & 0o077) === 0 ? undefined : mode;
 }

@@ -10,6 +10,7 @@
 import os from 'node:os';
 import { OWNER_KEY_MAX_LABEL, type CadreNode, type ControlDatabase, type OwnerSigner } from '@serfab/cadre-core';
 import { loadOrCreateOwnerKeyFile, ownerKeyFingerprint } from './owner-key-file.js';
+import { modeOpenToOtherAccounts } from './private-file.js';
 
 /** The owner key a `--owner` start signs with, and the file it lives in. */
 export interface ServerOwnerKey {
@@ -41,6 +42,10 @@ export async function loadServerOwnerKey(file: string, partyId: string): Promise
   if (created) {
     console.warn(`⚠ This server now holds an owner key for party ${partyId}: ${file} (owner key ${ownerKeyFingerprint(signer.publicKey)}).`);
     console.warn('  Anyone who can read that file controls the cadre. Keep it private, and back it up with `cadre owner-key export`.');
+  }
+  const mode = modeOpenToOtherAccounts(file);
+  if (mode !== undefined) {
+    console.warn(`⚠ ${file} is readable by other accounts (mode ${mode.toString(8)}); anyone who reads it controls the cadre. Run: chmod 600 ${file}`);
   }
   return { signer, file };
 }
