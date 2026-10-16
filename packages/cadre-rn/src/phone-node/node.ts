@@ -23,13 +23,13 @@ import {
 	readStrandHoldings,
 } from '@serfab/cadre-core';
 import type {
-	BackupOwnerKey,
 	CadreInvitation,
 	CadreJoinProgress,
 	CadreNodeConfig,
 	CadreNodeEvents,
 	CadreOwnerKey,
 	CadreRemoval,
+	ExportedOwnerKey,
 	ImportedOwnerKey,
 	OwnerKeyExportOptions,
 	OwnerKeyRemovalPlan,
@@ -376,13 +376,15 @@ export interface PhoneNode {
 	 * is kept on the phone, so the app shows or saves `exportText` once. Throws cadre-core's
 	 * `OwnerKeyAddRefusedError` `alone` while the phone has no connection to a cadre with other machines.
 	 */
-	addBackupOwnerKey(options?: OwnerKeyExportOptions): Promise<BackupOwnerKey>;
+	addBackupOwnerKey(options?: OwnerKeyExportOptions): Promise<ExportedOwnerKey>;
 	/**
-	 * This app's own owner key, from the secure store's owner slot, as export text. Works with no
-	 * node running. Throws when the slot is empty: a member, or an owner through the identity key
-	 * an owner-granting invitation seated, holds no key of its own.
+	 * This app's own owner key, from the secure store's owner slot, as export text, with the key it
+	 * holds: name the export by `publicKey`, not by the key the node signs with, which on an owner
+	 * through the identity key an owner-granting invitation seated is that identity key whatever the
+	 * slot holds. Works with no node running. Throws when the slot is empty: a member, or an owner
+	 * through that identity key alone, holds no key of its own.
 	 */
-	exportOwnerKey(options?: OwnerKeyExportOptions): Promise<string>;
+	exportOwnerKey(options?: OwnerKeyExportOptions): Promise<ExportedOwnerKey>;
 	/**
 	 * Import owner-key text into the owner slot, unlocking it with `passphrase` when it is locked.
 	 * With a node running, the key is wired when the party lists it as a live owner (`wired`, and
@@ -617,11 +619,11 @@ class PhoneNodeRuntime implements PhoneNode {
 		return this.onRunningNode((node) => node.listOwnerKeys());
 	}
 
-	addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<BackupOwnerKey> {
+	addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
 		return this.onRunningNode((node) => addBackupOwnerKey(node, options));
 	}
 
-	exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<string> {
+	exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
 		return this.inTurn(() => exportOwnerKey(this.keyStore, options));
 	}
 

@@ -80,14 +80,15 @@ export function ownerKeyFacts(key: CadreOwnerKey): string {
 	return key.heldHere ? `${ownerFingerprint(key.key)} · This device` : ownerFingerprint(key.key);
 }
 
-/**
- * The key this phone signs with, as an approval prompt names it: by its listed row when there is
- * one, else by its fingerprint alone. "—" when this phone signs with no key.
- */
+/** A key by its listed row when `keys` has one ("Backup (1a2b3c4d)"), else by its fingerprint alone. */
+export function listedKeyName(keys: readonly CadreOwnerKey[], key: string): string {
+	const row = keys.find((entry) => entry.key === key);
+	return row ? ownerKeyName(row) : ownerFingerprint(key);
+}
+
+/** The key this phone signs with, as an approval prompt names it ({@link listedKeyName}); "—" when this phone signs with no key. */
 export function signingKeyText(keys: readonly CadreOwnerKey[], signerKey: string | null): string {
-	if (signerKey === null) return '—';
-	const row = keys.find((key) => key.key === signerKey);
-	return row ? ownerKeyName(row) : ownerFingerprint(signerKey);
+	return signerKey === null ? '—' : listedKeyName(keys, signerKey);
 }
 
 /** What the backup and export form holds. */
@@ -133,8 +134,7 @@ export function importOutcome(imported: ImportedOwnerKey, listed: readonly Cadre
 
 /** The alert after an import, naming the key as the list does when the cadre lists it. */
 export function importOutcomeAlert(outcome: ImportOutcome, imported: ImportedOwnerKey, listed: readonly CadreOwnerKey[]): { title: string; message: string } {
-	const row = listed.find((key) => key.key === imported.publicKey);
-	const name = row ? ownerKeyName(row) : ownerFingerprint(imported.publicKey);
+	const name = listedKeyName(listed, imported.publicKey);
 	switch (outcome) {
 		case 'owner':
 			return { title: 'Owner key imported', message: `This device is now an owner of this cadre, with ${name}.` };
@@ -178,10 +178,7 @@ export function dependentRows(plan: OwnerKeyRemovalPlan, owners: readonly CadreO
 		const machine = machines.find((entry) => entry.peerId === peerId);
 		return { kind: 'device', id: peerId, name: machine ? `${machineKind(machine)} ${machineCode(machine)}` : shortPeerId(peerId) };
 	});
-	const keys = plan.dependents.owners.map((key): DependentRow => {
-		const row = owners.find((entry) => entry.key === key);
-		return { kind: 'owner-key', id: key, name: row ? ownerKeyName(row) : ownerFingerprint(key) };
-	});
+	const keys = plan.dependents.owners.map((key): DependentRow => ({ kind: 'owner-key', id: key, name: listedKeyName(owners, key) }));
 	return [...devices, ...keys];
 }
 

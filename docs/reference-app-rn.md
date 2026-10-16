@@ -1008,7 +1008,7 @@ The list is read when the section appears, when a join replaces the node, after 
 
 **Make a backup key** (owner only) opens a form: a name (default "Backup", at most 64 characters) and **Protect with a passphrase**, on by default, with two passphrase fields. The button stays disabled while the passphrase is empty or the two differ. **Make backup key** runs `addBackupOwnerKey`: a new key is added as an owner of this cadre under that name, signed by this phone's owner key, and its export is shown once. The phone keeps no copy.
 
-**Export this device's key**, on an owner device, opens the same form with the name defaulting to this key's, then shows the export (`exportOwnerKey`). A device that is an owner only through the key an owner-granting invitation seated holds no key of its own, and the alert says so.
+**Export this device's key**, on an owner device, opens the same form with the name defaulting to this key's, then shows the export (`exportOwnerKey`), titled with the key the export holds: the owner slot's, which `exportOwnerKey` names. On a device signing with the identity key an owner-granting invitation seated, that is not the key marked "This device", and the title shows the slot key by its listed name, or by its fingerprint when this cadre does not list it. A device whose slot is empty holds no key of its own, and the alert says so.
 
 **The export** replaces the section's controls until **Done**: "Anyone who has this can control your cadre. Keep it somewhere safe and offline. This phone does not keep a copy.", then the QR code, **Copy**, **Share** (the system share sheet) and the selectable text. Done clears it, and it is not shown again.
 

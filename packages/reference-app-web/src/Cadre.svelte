@@ -2,6 +2,7 @@
 	import JoinCadre from './JoinCadre.svelte';
 	import AddDevice from './AddDevice.svelte';
 	import Machines from './Machines.svelte';
+	import OwnerKeys from './OwnerKeys.svelte';
 	import { nodeState, start } from './lib/store.svelte.js';
 	import { ownerFingerprint } from './lib/cadre-format.js';
 
@@ -49,6 +50,7 @@
 	<JoinCadre />
 	<AddDevice />
 	<Machines />
+	<OwnerKeys />
 </section>
 
 <style>

@@ -3,7 +3,9 @@
  * cadre (apps and always-on nodes) and the devices invited and not joined yet, and on an owner tab,
  * Remove (`CadreNode.removeMachine`; docs/architecture.md → "Removing a machine"). The browser
  * counterpart of the phone app's `machines-section.tsx` and `machines.ts`, with the same list,
- * confirmation and wording. Owner keys are not machines and stay when one is removed.
+ * confirmation and wording. Owner keys are not machines and stay when one is removed; removing one
+ * is a separate step under Owner keys (`owner-keys.svelte.ts`), which the confirmation offers for a
+ * lost or stolen phone.
  *
  * Module state, as `add-device.svelte.ts` is: the router unmounts the page on every route change.
  * The store forgets it when the node moves to another party (`resetMachinesCard`), and a read that
@@ -26,8 +28,12 @@ import type { Standing } from './add-device.svelte.js';
 /** Why a removal cannot go ahead: in the confirmation from the plan, and in the notice when `removeMachine` refuses. */
 export const REFUSAL_LINE: Record<MachineRemovalRefusal, string> = {
 	'not-an-owner': 'Only an owner can remove machines, and this tab is not one.',
-	self: 'To remove this tab, use another owner device.',
+	// Leaving a cadre stops the node and deletes its data, which is the tab's own flow.
+	self: 'A tab does not remove itself from its cadre: to remove this tab, use another owner device.',
 };
+
+/** Removing a machine leaves its owner key live; only removing the key locks a lost phone out. */
+export const LOST_DEVICE_LINE = 'If this was a lost or stolen phone that held an owner key, remove that key too in Owner keys; otherwise whoever has the phone can still act as an owner.';
 
 /** Why the last action did not do what was asked; replaced by the next action's. */
 export interface MachinesNotice {

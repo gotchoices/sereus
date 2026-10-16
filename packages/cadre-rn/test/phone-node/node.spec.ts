@@ -381,6 +381,7 @@ describe('createPhoneNode — its owner key', () => {
 		await phone.start(options(partyId));
 		const backup = await phone.exportOwnerKey();
 		const ownerKey = phone.ownerPublicKey();
+		expect(backup.publicKey).toBe(ownerKey);
 		await phone.stop();
 		await loseOwnerSlot(secureStore);
 
@@ -390,7 +391,7 @@ describe('createPhoneNode — its owner key', () => {
 		expect(phone.ownerPublicKey()).toBeNull();
 		expect(await new SecureStoreKeyStore(secureStore).get(DEFAULT_OWNER_KEY_ID)).toBeUndefined();
 		expect((await phone.listOwnerKeys()).map((row) => row.key)).toEqual([ownerKey]);
-		expect(await phone.importOwnerKey(backup)).toEqual({ publicKey: ownerKey, wired: true });
+		expect(await phone.importOwnerKey(backup.exportText)).toEqual({ publicKey: ownerKey, wired: true });
 		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
 		expect(phone.node).toBe(node);
 	}, LIFECYCLE_MS * 2);

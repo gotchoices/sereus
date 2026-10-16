@@ -69,8 +69,9 @@ and stored messages.
   the **strand-formation panel**: create an invitation (responder) / join via a
   pasted invitation (initiator), showing the resulting strand id + membership type.
 - `#/cadre` — **Cadre** — cadre membership: **Join my existing cadre** (see
-  [Joining an existing cadre](#joining-an-existing-cadre)) and **Add a device or app** (see
-  [Adding a device or app](#adding-a-device-or-app)).
+  [Joining an existing cadre](#joining-an-existing-cadre)), **Add a device or app** (see
+  [Adding a device or app](#adding-a-device-or-app)), **Devices and nodes** (see
+  [Devices and nodes](#devices-and-nodes)) and **Owner keys** (see [Owner keys](#owner-keys)).
 - `#/messages` — compose / list chat messages backed by the strand's
   `App.Participant` / `App.Message` tables (Quereus SQL). The chat sApp is
   append-only — there is no edit/delete (that belonged to the old demo app).
@@ -146,12 +147,14 @@ party: a key may own several cadres.
   (`existing`); otherwise the tab is a `member` and no key is created, since a new one could
   not be seated without another owner's signature.
 - **Joined party:** see [Joining an existing cadre](#joining-an-existing-cadre).
-- **Backup, export, import** (`lib/cadre-web.ts`): `addBackupOwnerKey` seats a new key as an
-  owner under a label and returns its export, keeping nothing; `exportOwnerKey` exports the
-  tab's own key; `importOwnerKey` stores an exported key in the slot (refused when the slot
-  holds a different one) and wires it when the party lists it. All three are cadre-core's
-  `owner-key-flows.ts`, optionally passphrase-locked. Listing and removal are the node's own
-  `listOwnerKeys`, `planOwnerKeyRemoval` and `removeOwner`.
+- **Backup, export, import** (`lib/cadre-web.ts`, behind the Cadre page's [Owner keys](#owner-keys)
+  card): `addBackupOwnerKey` seats a new key as an owner under a label and returns it with its
+  export, keeping nothing; `exportOwnerKey` exports the tab's own key and names the key it
+  exported; `importOwnerKey` stores an exported key in the slot (refused when the slot holds a
+  different one) and wires it when the party lists it, and the store's `importOwnerKey` then
+  pulls the owner state in. All three are cadre-core's `owner-key-flows.ts`, optionally
+  passphrase-locked. Listing and removal are the node's own `listOwnerKeys`,
+  `planOwnerKeyRemoval` and `removeOwner`.
 - **Exposure** is the peer key's: origin-scoped IndexedDB. Clearing the site's data loses the
   owner key with the identity, and the tab is then no owner of the party it founded unless it
   imports a backup of the key. Non-extractable WebCrypto keys were weighed and declined,
@@ -303,15 +306,20 @@ with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
   removal or withdrawal here, after *Add a device or app* makes an invitation, and on
   *Refresh*; it is not polled. A read that finishes after the node was replaced is dropped.
 - **Who can remove.** On an owner tab every row has *Remove* except the tab's own, under which
-  "To remove this tab, use another owner device": a machine does not remove itself (`self`);
-  another machine removes it, and the tab then learns of it ([When this tab is removed](#when-this-tab-is-removed)).
+  "A tab does not remove itself from its cadre: to remove this tab, use another owner device."
+  (`self`): leaving a cadre is the tab's own flow, and another machine removes it, which the tab
+  then learns ([When this tab is removed](#when-this-tab-is-removed)).
   A member sees the list with one line saying only an owner can remove machines.
 - **The confirmation** reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or
   machine›?" in the card, with the machine's key, what happens (it leaves the cadre, and the
-  invitations it could join again with are withdrawn; owner keys stay, including one the machine
-  held), and what removal does not do. *Remove* runs `removeMachine`. One another owner removed
-  meanwhile says "Already removed". The confirmation stays open across a visit to another page;
-  a join, or this tab's own removal, closes it.
+  invitations it could join again with are withdrawn), and what removal does not do. *Remove*
+  runs `removeMachine`. One another owner removed meanwhile says "Already removed". The
+  confirmation stays open across a visit to another page; a join, or this tab's own removal,
+  closes it.
+- **A lost phone's owner key stays.** Removing a machine leaves every owner key live, so the
+  confirmation also says "If this was a lost or stolen phone that held an owner key, remove that
+  key too in Owner keys; otherwise whoever has the phone can still act as an owner.", with
+  *Go to Owner keys*, which closes it and scrolls to [Owner keys](#owner-keys).
 
 ### When this tab is removed
 
@@ -342,6 +350,64 @@ It is best-effort, as the report is: a tab removed while it was closed is not to
 next load, and runs that cadre while its machines refuse it. Two narrower gaps are `NOTE:`s in
 `lib/store.svelte.ts`: a report from the node a join is leaving is dropped, and a failure
 rewriting the start record leaves the store in `error` with the storage in place.
+
+## Owner keys
+
+The Cadre page's **Owner keys** card lists this cadre's owner keys, makes a backup key, exports
+this tab's key, imports a key, and removes one
+([architecture.md → Owner Keys](../../docs/architecture.md#owner-keys)). It has the phone app's
+list, forms, prompt and wording ([reference-app-rn.md → Owner Keys](../../docs/reference-app-rn.md#owner-keys)),
+with "this tab" for "this device", Download for Share, and paste only for Import, since a tab
+has no scanner (`lib/owner-keys.svelte.ts`, `OwnerKeys.svelte`, `OwnerKeyExportForm.svelte`).
+
+- **The list** has one row per live owner key `listOwnerKeys` reports: the name it was added
+  under ("browser" for the key the tab founded its cadre with), or "Unnamed key"; its fingerprint
+  (first 8 characters), with "This tab" on the key this tab signs with; and **Not trusted here**
+  when this tab's trusted-owner anchor lacks it. It is read when the node reaches `running` and
+  its owner step settles, after each action here, and on *Refresh*; a read that finishes after
+  the node was replaced is dropped. A member sees the list, one line saying only an owner can add
+  or remove owner keys, and Import.
+- **Make a backup key** (owner only): a name (default "Backup", at most 64 characters) and
+  **Protect with a passphrase**, on by default, with the passphrase typed twice; the button stays
+  disabled and says why while the passphrase is empty or the two differ. `addBackupOwnerKey`
+  seats the key as an owner, and the card shows its export once, the only copy.
+- **Export this tab's key** (owner, when the list marks a key "This tab"): the same form, the
+  name defaulting to that key's, then `exportOwnerKey`, which exports the key in the tab's owner
+  slot and names it, and the export is titled with that key. On a tab that is an owner through
+  the identity key an owner-granting invitation seated, that is not the key it signs with: the
+  slot holds the key the tab founded its own cadre with, which this cadre does not list, so the
+  title shows its fingerprint alone.
+- **The export** stays on the card until *Done*, including across visits to other pages:
+  "Anyone who has this can control your cadre. Keep it somewhere safe and offline. This tab does
+  not keep a copy.", the QR code, the text with a copy button, and *Download*, which saves it as
+  `sereus-owner-key-‹fingerprint›.txt` through a `Blob` URL revoked a second after the click.
+  Nothing of it is written to `localStorage` or IndexedDB. A join, its rollback or a restart
+  replaces the node, and the card's next read forgets the export with the rest of the card.
+- **Keep a backup: this tab's own key is site data.** The tab's owner key lives in its origin's
+  IndexedDB ([The tab's owner key](#the-tabs-owner-key)), so clearing the site's data loses it
+  with the tab's identity. A backup key, or an export of this tab's key, kept outside the browser
+  is what makes the tab an owner again after that.
+- **Import an owner key** takes pasted export text; a locked one
+  (`sereus-owner-key-locked:1.…`) shows a passphrase field. The outcomes are the phone's: an owner
+  of this cadre ("This tab is now an owner of this cadre, with ‹name› (‹fingerprint›)."); an owner
+  this tab takes from its next start, when it already signs with the identity key an
+  owner-granting invitation seated; and "This key is not an owner of this cadre. An owner can add
+  it.", the key kept in the slot. The last two both come back `wired: false`, and the card reads
+  the owner keys again to tell them apart. A tab already holding a different key, a wrong
+  passphrase and text that is not an owner key are refused by name. A wired key changes the
+  owner state with the node still `running`, so Add a device or app and Devices and nodes read
+  their standing again.
+- **Remove** (owner only, on every row but this tab's own, under which "A tab cannot remove its
+  own owner key; use another owner key."): `planOwnerKeyRemoval`, then "Remove owner key
+  ‹name› (‹fingerprint›)?" in the card, with one **Keep** box per device or owner key the removed
+  key added (checked by default; a device named as Devices and nodes names it), the line about
+  this tab's own key when the removed key added it (`ownDependency`), and the `last-owner`
+  refusal ("It cannot be removed: it is the only owner key of this cadre.") with only *Close*.
+  *Remove* runs `removeOwner(key, { revouch })` with the kept rows, then both cards re-read.
+
+**Uses.** A lost or stolen phone that held an owner key: remove its machine under Devices and
+nodes, then its key here. A backup to keep offline: make a backup key, then download or print the
+QR code. A new browser or phone: join the cadre, then import a backup key there.
 
 ## Joining an existing cadre
 
@@ -523,6 +589,8 @@ src/
   JoinCadre.svelte       # /cadre's "Join my existing cadre" card
   AddDevice.svelte       # /cadre's "Add a device or app" card
   Machines.svelte        # /cadre's "Devices and nodes" card
+  OwnerKeys.svelte       # /cadre's "Owner keys" card
+  OwnerKeyExportForm.svelte # the Owner keys card's backup and export form
   Messages.svelte        # /messages — chat strand send / list
   Activity.svelte        # /log — CadreNode lifecycle event log
   Diagnostics.svelte     # /diag — cadre + libp2p diagnostic surface
@@ -542,6 +610,7 @@ src/
     network.svelte.ts        # strand-formation panel state (create / join invitation)
     add-device.svelte.ts     # "Add a device or app" state: request, approval, mint, list and withdraw open ones
     machines.svelte.ts       # "Devices and nodes" state: the cadre's machines, the devices invited, removing one
+    owner-keys.svelte.ts     # "Owner keys" state: the cadre's owner keys, backup, export, import, removing one
     join-cadre.svelte.ts     # "Join my existing cadre" state: the request, the join and its steps
     join-flow.ts             # the join's steps, their words, and the words for each failure
     cadre-format.ts          # peer-id code, key fingerprint, expiry and error text shared by the Cadre page's cards
@@ -578,7 +647,9 @@ yarn workspace @serfab/reference-app-web test:e2e
   prove: the formation panel renders, the dialability guard rejects *Create
   invitation* with no relay, a malformed invitation is rejected on join, the
   **owner gate** rejects an unauthorized control write, and the authorization
-  surface reflects the genesis owner + zero formation rows.
+  surface reflects the genesis owner + zero formation rows. `owner-keys.spec.ts`
+  makes a passphrase-locked backup key on the Cadre page, checks the export shown
+  once and the downloaded file's text, and removes the key again.
 - **Tier 2 — formation → convergence** (`e2e/distributed/formation-convergence.spec.ts`)
   — the live two-party tier. The dialable second party is an **in-process headless
   cadre responder** (`e2e/fixtures/formation-responder.ts`), booted in the spec's
@@ -610,7 +681,8 @@ yarn workspace @serfab/reference-app-web test:e2e
   self-skip as the formation tier.
 
 Devices and nodes, and this tab's own removal, have no tier: removing a machine needs a second
-owner machine, which neither fixture runs.
+owner machine, which neither fixture runs. Neither has importing an owner key, since a solo tab's
+slot already holds the key it founded its cadre with, nor removing a key that added other rows.
 
 Wiring this suite into CI is out of scope for the current ticket — it stops at
 "runs cleanly locally."

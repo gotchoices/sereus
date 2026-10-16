@@ -7,6 +7,7 @@
 		cancelRemoval,
 		confirmRemoval,
 		lastSeenText,
+		LOST_DEVICE_LINE,
 		machineCode,
 		machineKind,
 		machinesState,
@@ -16,6 +17,7 @@
 		withdrawDeviceInvitation,
 	} from './lib/machines.svelte.js';
 	import { peerCode, validUntilText } from './lib/cadre-format.js';
+	import { OWNER_KEYS_CARD_ID } from './lib/owner-keys.svelte.js';
 
 	const node = nodeState();
 	const list = machinesState();
@@ -46,6 +48,12 @@
 		return `${peerCode(invite.peerId ?? '')} · ${invite.grantsOwner ? 'owner' : 'member'} · ${validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}`;
 	}
 
+	/** Close the confirmation and bring the Owner keys card, further down the page, into view. */
+	function showOwnerKeys(): void {
+		cancelRemoval();
+		document.getElementById(OWNER_KEYS_CARD_ID)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
+
 	function confirmWithdraw(status: CadreInviteStatus): void {
 		if (confirm('Withdraw this invitation? Nobody can join with it afterwards.')) {
 			void withdrawDeviceInvitation(status.invite.key);
@@ -73,10 +81,12 @@
 				{:else}
 					<p class="text">{removalEffects(removal.plan)}</p>
 					<p class="hint">{KEEPS_LINE}</p>
+					<p class="hint warn" data-testid="lost-device-line">{LOST_DEVICE_LINE}</p>
 				{/if}
 				<div class="buttons">
 					{#if refusal === null}
 						<button class="danger" onclick={() => void confirmRemoval()} data-testid="btn-confirm-remove-machine">Remove</button>
+						<button onclick={showOwnerKeys} data-testid="btn-show-owner-keys">Go to Owner keys</button>
 					{/if}
 					<button onclick={cancelRemoval} data-testid="btn-cancel-remove-machine">{refusal === null ? 'Cancel' : 'Close'}</button>
 				</div>
@@ -179,6 +189,10 @@
 
 	.hint.self {
 		margin: 0.25rem 0 0 0;
+	}
+
+	.hint.warn {
+		color: #6b4d00;
 	}
 
 	.text {

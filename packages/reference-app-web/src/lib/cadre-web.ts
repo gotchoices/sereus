@@ -51,8 +51,8 @@ import {
 	resolveStunServers,
 } from '@serfab/cadre-core';
 import type {
-	BackupOwnerKey,
 	CadreNodeConfig,
+	ExportedOwnerKey,
 	ImportedOwnerKey,
 	KeyStore,
 	OwnerKeyExportOptions,
@@ -726,19 +726,24 @@ async function wireJoinedOwner(cadre: CadreNode, held: OwnerSigner | undefined):
  * return its export (cadre-core's `addBackupOwnerKey`). Nothing is kept in the tab, so the page
  * shows or saves `exportText` once.
  */
-export async function addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<BackupOwnerKey> {
+export async function addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
 	if (!node) throw new Error('CadreNode not started');
 	return await addBackupOwnerKeyTo(node, options);
 }
 
-/** This tab's own owner key as export text; throws when the tab holds none of its own. */
-export async function exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<string> {
+/**
+ * This tab's own owner key as export text, with the key it holds, which is not the key the node
+ * signs with on a tab signing with the identity key an owner-granting invitation seated; throws
+ * when the tab holds none of its own.
+ */
+export async function exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
 	return await exportOwnerKeyFrom(requireOwnerKeys(), options);
 }
 
 /**
  * Import owner-key text into the tab's owner slot, wiring the key when the running party lists
- * it (cadre-core's `importOwnerKeyInto`); the owner state then reads as the key being wired.
+ * it (cadre-core's `importOwnerKeyInto`); the owner state then reads as the key being wired. The
+ * page imports through `store.svelte.ts` `importOwnerKey`, which pulls that state into the store.
  */
 export async function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
 	if (!node) throw new Error('CadreNode not started');

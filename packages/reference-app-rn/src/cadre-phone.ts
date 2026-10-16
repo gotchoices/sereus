@@ -22,8 +22,8 @@ import type {
   CreateCadreInvitationResult,
   ControlNetworkSeed,
   ApplySeedResult,
-  BackupOwnerKey,
   CadreOwnerKey,
+  ExportedOwnerKey,
   ImportedOwnerKey,
   OwnerKeyExportOptions,
   OwnerKeyRemovalPlan,
@@ -438,12 +438,12 @@ export function listOwnerKeys(): Promise<CadreOwnerKey[]> {
 }
 
 /** Seat a new owner key and return its only export. Thin pass-through to the kit's `addBackupOwnerKey`. */
-export function addBackupOwnerKey(options: OwnerKeyExportOptions): Promise<BackupOwnerKey> {
+export function addBackupOwnerKey(options: OwnerKeyExportOptions): Promise<ExportedOwnerKey> {
   return phone.addBackupOwnerKey(options);
 }
 
-/** This app's own owner key as export text. Thin pass-through to the kit's `exportOwnerKey`. */
-export function exportOwnerKey(options: OwnerKeyExportOptions): Promise<string> {
+/** This app's own owner key as export text, with the key it holds. Thin pass-through to the kit's `exportOwnerKey`. */
+export function exportOwnerKey(options: OwnerKeyExportOptions): Promise<ExportedOwnerKey> {
   return phone.exportOwnerKey(options);
 }
 

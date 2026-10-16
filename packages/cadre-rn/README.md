@@ -86,7 +86,7 @@ The owner-key calls run in turn with start, stop and join, and those that name t
 
 - **`listOwnerKeys()`**: cadre-core's `CadreOwnerKey` rows, with label, voucher, `heldHere` and `trusted`.
 - **`addBackupOwnerKey({ label?, passphrase? })`**: seats a new key as an owner, signed by this app's key, and returns `{ publicKey, exportText }`; the phone keeps nothing, so the app shows or saves the text once. Refused `alone` (cadre-core's `OwnerKeyAddRefusedError`) while the phone has no connection to a cadre with other machines.
-- **`exportOwnerKey({ label?, passphrase? })`**: the slot's key as export text; works with no node running; throws when the slot is empty.
+- **`exportOwnerKey({ label?, passphrase? })`**: the slot's key as `{ publicKey, exportText }`; name the export by `publicKey`, since a phone signing with the identity key an owner-granting invitation seated keeps signing with it whatever the slot holds. Works with no node running; throws when the slot is empty.
 - **`importOwnerKey(text, passphrase?)`**: stores the key in the slot and, with a node running, wires it when the party lists it (`{ wired: true }`, and `status.owner` becomes `enrolled`). Refused with `OwnerKeySlotOccupiedError` when the slot holds a different key, and with `OwnerKeyExportError` for text that is not an owner key (an invitation or join request is named), a locked export with no passphrase (`passphrase-required`) or a wrong one. A node already signing with the identity key keeps it until its next start.
 - **`planOwnerKeyRemoval(key)`**, **`removeOwner(key, { revouch })`**: cadre-core's, for the removal prompt and its keep-switches.
 

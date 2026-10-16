@@ -29,6 +29,7 @@ import {
 	getPartyId,
 	getOwnerState,
 	getRelayState,
+	importOwnerKey as importOwnerKeyIntoTab,
 	noRelayState,
 	type OwnerState,
 	type RelayState,
@@ -47,7 +48,7 @@ import {
 	type JoinOutcome,
 } from './web-join.js';
 import type { StrandMoveOutcome } from './web-strand-move.js';
-import type { CadreNode, CadreRemoval, StrandStatus } from '@serfab/cadre-core';
+import type { CadreNode, CadreRemoval, ImportedOwnerKey, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
 import { markDelivered } from './messages.svelte.js';
 import { resetAddDeviceCard } from './add-device.svelte.js';
@@ -466,6 +467,17 @@ export async function retryStrandMove(): Promise<StrandMoveOutcome | undefined> 
 		record('move:retried', outcome?.state ?? 'nothing waiting');
 		return outcome;
 	});
+}
+
+/**
+ * Import owner-key text into the tab's owner slot (`cadre-web.ts` `importOwnerKey`). A key the
+ * import wires changes the owner state with the node still `running`, so the state is pulled in
+ * here, and the cards that follow it read their standing again.
+ */
+export async function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
+	const imported = await importOwnerKeyIntoTab(text, passphrase);
+	if (imported.wired) syncOwner();
+	return imported;
 }
 
 /**

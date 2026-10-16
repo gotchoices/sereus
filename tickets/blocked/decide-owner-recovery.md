@@ -16,6 +16,18 @@ Owner keys belong to the user, not to any machine, and a user may hold backups (
 
 The same thing happens when the last owner app is uninstalled while the host keeps running.
 
+## What exists now: backup owner keys
+
+Both reference apps can make a **backup owner key** (phone: Settings → Owner keys; browser: the Cadre page's Owner keys card; `docs/architecture.md` → Owner Keys → Exporting and importing an owner key). It is a new key added as an owner of the cadre, shown once as a QR code and text (the browser also saves it as a file), optionally locked with a passphrase, and kept by nobody but the user. Importing it on a new phone or browser makes that device an owner again.
+
+- **Option A without a second device.** A backup key is the "second owner" of option A, held on paper or in a file instead of on another device, so a single-device user has one too.
+- **Most of option B.** It covers what the printed recovery invitation was for, with the differences B listed: the backup key is a standing owner from the moment it is made (B's paper is not until used), it is withdrawn by removing that key under Owner keys rather than by withdrawing an invitation, and it needs no always-on member to redeem at, since importing it needs no network.
+
+**Still open:**
+
+- Whether the apps nudge the user to make a backup key when they found a cadre, or later (neither app does today).
+- Options C and D below.
+
 ## Options
 
 **A. A second owner device (recommended as the baseline).** Onboarding nudges the user to add a second owner: another phone, a tablet, a laptop app, or a hardware key once supported. This needs no new mechanism beyond tickets 5 and 11. It fails for single-device users.

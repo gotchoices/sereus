@@ -32,6 +32,7 @@ import {
 	importOutcomeAlert,
 	isLockedOwnerKeyText,
 	isOwnerKeyText,
+	listedKeyName,
 	OWN_KEY_LINE,
 	ownerKeyFacts,
 	ownerKeyName,
@@ -129,15 +130,13 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 		}
 	});
 
-	// NOTE: the kit exports the owner slot's key, and `ownKey` is the key this device signs with. They
-	// differ on a device signing with the identity key an owner-granting invitation seated after an
-	// import stored another key, and the title then names the wrong key; `exportOwnerKey` naming the
-	// key it exported is an arm of `reference-app-web-owner-keys`.
-	const exportOwn = (ownKey: CadreOwnerKey, form: ExportForm) => void exclusive(async () => {
+	// Titled from the key the kit exported, the owner slot's, which is not the key this device signs
+	// with on one signing with the identity key an owner-granting invitation seated.
+	const exportOwn = (form: ExportForm) => void exclusive(async () => {
 		try {
-			const text = await cadre.exportOwnerKey(exportOptions(form));
-			console.info(`[settings] exported this device's owner key ${ownerFingerprint(ownKey.key)}`);
-			setPanel({ kind: 'export', title: `Owner key ${ownerKeyName(ownKey)}`, text });
+			const { publicKey, exportText } = await cadre.exportOwnerKey(exportOptions(form));
+			console.info(`[settings] exported this device's owner key ${ownerFingerprint(publicKey)}`);
+			setPanel({ kind: 'export', title: `Owner key ${listedKeyName(keys, publicKey)}`, text: exportText });
 		} catch (err) {
 			console.warn('[settings] exporting this device\'s owner key failed:', err);
 			showAlert('Could not export this device\'s key', describeOwnerKeyFailure(err));
@@ -259,7 +258,7 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 					defaultLabel={panel.ownKey.label ?? ''}
 					submitLabel="Export"
 					busy={busy}
-					onSubmit={(form) => exportOwn(panel.ownKey, form)}
+					onSubmit={exportOwn}
 					onCancel={() => setPanel(null)}
 				/>
 			) : (

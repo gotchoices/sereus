@@ -10,7 +10,7 @@
  */
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { CadreNode } from './cadre-node.js';
-import { ed25519KeyPairFromLibp2p } from './ed25519-key.js';
+import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate } from './ed25519-key.js';
 import type { KeyStore } from './key-store.js';
 import {
 	decodeOwnerKeyExport,
@@ -30,11 +30,11 @@ export interface OwnerKeyExportOptions {
 	passphrase?: string;
 }
 
-/** {@link addBackupOwnerKey}'s answer. */
-export interface BackupOwnerKey {
-	/** The new owner key (base64url), now a live `OwnerKey` row. */
+/** An owner key's export and the key it holds: {@link addBackupOwnerKey}'s and {@link exportOwnerKey}'s answer. */
+export interface ExportedOwnerKey {
+	/** The exported key (base64url); for a backup key, a live `OwnerKey` row now. */
 	publicKey: string;
-	/** The only copy of its private key: the app shows or saves it once. */
+	/** The private key as export text; for a backup key, its only copy, which the app shows or saves once. */
 	exportText: string;
 }
 
@@ -55,7 +55,7 @@ export interface ImportedOwnerKey {
  *   any write.
  * @throws `CadreNode.addOwner`'s errors: `OwnerKeyAddRefusedError` `alone`, or no owner signer wired.
  */
-export async function addBackupOwnerKey(node: CadreNode, options: OwnerKeyExportOptions = {}): Promise<BackupOwnerKey> {
+export async function addBackupOwnerKey(node: CadreNode, options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
 	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(await generateKeyPair('Ed25519'));
 	// Encoded before the add, so an export the encoder refuses never seats a key nobody holds.
 	const exportText = await encodeOwnerKeyExport({ privateKeyB64, ...exportFields(options) });
@@ -64,18 +64,22 @@ export async function addBackupOwnerKey(node: CadreNode, options: OwnerKeyExport
 }
 
 /**
- * Export the key in `keyStore`'s owner slot, the device's own owner key.
+ * Export the key in `keyStore`'s owner slot, the device's own owner key. The answer names the key,
+ * since it can differ from the one the node signs with: a node signing with the identity key an
+ * owner-granting invitation seated keeps signing with it whatever the slot holds (typically the key
+ * the device founded its own cadre with, or one imported since).
  *
  * @throws when the slot is empty: a device signing with no key of its own (a member, or one an
  *   owner-granting invitation made an owner through its identity key) has none to export.
  * @throws {OwnerKeyExportError} `malformed` for an over-long label or an empty passphrase.
  */
-export async function exportOwnerKey(keyStore: KeyStore, options: OwnerKeyExportOptions = {}): Promise<string> {
+export async function exportOwnerKey(keyStore: KeyStore, options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
 	const privateKeyB64 = await readOwnerPrivateKey(keyStore);
 	if (privateKeyB64 === undefined) {
 		throw new Error('This device holds no owner key of its own to export');
 	}
-	return await encodeOwnerKeyExport({ privateKeyB64, ...exportFields(options) });
+	const exportText = await encodeOwnerKeyExport({ privateKeyB64, ...exportFields(options) });
+	return { publicKey: ed25519PublicKeyFromPrivate(privateKeyB64), exportText };
 }
 
 /**

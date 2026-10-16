@@ -114,7 +114,7 @@ export {
   addBackupOwnerKey,
   exportOwnerKey,
   importOwnerKeyInto,
-  type BackupOwnerKey,
+  type ExportedOwnerKey,
   type ImportedOwnerKey,
   type OwnerKeyExportOptions
 } from './owner-key-flows.js';

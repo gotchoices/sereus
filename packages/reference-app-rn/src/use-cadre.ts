@@ -20,8 +20,8 @@ import type {
   CreateCadreInvitationResult,
   MachineRemovalPlan,
   MachineRemovalResult,
-  BackupOwnerKey,
   CadreOwnerKey,
+  ExportedOwnerKey,
   ImportedOwnerKey,
   OwnerKeyExportOptions,
   OwnerKeyRemovalPlan,
@@ -291,9 +291,12 @@ export interface UseCadreResult extends JoinFlowActions {
    * export, the only copy. Throws `OwnerKeyAddRefusedError` `alone` while this phone has no
    * connection to a cadre that has other machines.
    */
-  addBackupOwnerKey: (options: OwnerKeyExportOptions) => Promise<BackupOwnerKey>;
-  /** This app's own owner key as export text; throws when it holds none of its own. */
-  exportOwnerKey: (options: OwnerKeyExportOptions) => Promise<string>;
+  addBackupOwnerKey: (options: OwnerKeyExportOptions) => Promise<ExportedOwnerKey>;
+  /**
+   * This app's own owner key as export text, with the key it holds, which can differ from
+   * {@link ownerPublicKey} (the kit's `exportOwnerKey`); throws when it holds none of its own.
+   */
+  exportOwnerKey: (options: OwnerKeyExportOptions) => Promise<ExportedOwnerKey>;
   /**
    * Store an exported owner key in this app's owner slot, and sign with it at once when the cadre
    * lists it (`wired`, and {@link ownerPublicKey} follows). Throws the kit's refusals:
