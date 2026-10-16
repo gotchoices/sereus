@@ -201,10 +201,11 @@ through an explicit host→invitee consent handshake. The Settings screen's
 
 1. **FormationInvite issuance (host).** *"Create Closed Strand + Invite"*:
    - mints a `MemberPrivateKey` and creates a closed strand in one resumable call
-     (`foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig })`, which
-     publishes the `Strand` row and attaches as founder); the key it carries onward
-     is the one that call *resolved*, which on a repeat of an already-published
-     strand id is the stored key rather than the freshly minted one,
+     (`foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig }, { background: true })`,
+     which publishes the `Strand` row and returns, then attaches as founder in the
+     background); the key it carries onward is the one that call *resolved*, which
+     on a repeat of an already-published strand id is the stored key rather than
+     the freshly minted one,
    - mints an `OpenInvitation` (`createOpenInvitation(CHAT_SAPP_ID, …)`) and
      **persists** the matching `FormationInvite` row under the host's owner,
      **bound to that strand** (`publishFormationInvite(token, sApp, { strandId })`),
@@ -225,7 +226,9 @@ through an explicit host→invitee consent handshake. The Settings screen's
    phone that means a held relay reservation, since the invitee dials the host's
    control node and then its strand nodes at the addresses the invitation carried. So
    it correctly fails on a single device with no peer — you cannot join a closed
-   strand without the host's consent.
+   strand without the host's consent. A join made while the host's strand is still
+   starting is refused with the retryable `host-strand-unavailable` and the token
+   stays unspent; *Join via Invite* again.
 
 3. **Schema-gated join.** After consent, the invitee attaches the host's closed
    strand using the id + membership key the `FormStrandResult` now carries

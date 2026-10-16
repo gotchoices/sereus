@@ -831,8 +831,9 @@ async function createClosedChatStrand(
  * (copy/paste) delivery. Mirrors RN's `createClosedStrandWithInvite`
  * (`reference-app-rn/src/use-cadre.ts`):
  *
- *   1. create the host closed strand (mint member key + publish `Type:'c'` row +
- *      attach the local instance) so the invite has a real strand to bind to,
+ *   1. create the host closed strand (mint member key + publish `Type:'c'` row;
+ *      the local instance starts in the background) so the invite has a real
+ *      strand to bind to,
  *   2. mint the `OpenInvitation`, then
  *   3. publish a `FormationInvite` **bound to that strand id** so a redeeming
  *      `formStrand` resolves the host strand and returns its real membership key

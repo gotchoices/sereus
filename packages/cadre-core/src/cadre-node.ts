@@ -5984,7 +5984,7 @@ export class CadreNode implements SAppIdLookup {
       // Without a handler here, a caller that only wanted the row would get an unhandled
       // rejection. The caller still sees the rejection on `ready` itself.
       void ready.catch((error: unknown) => {
-        log('foundStrand(%s): background start failed; the strand stays published and the watcher retries it: %o',
+        log('foundStrand(%s): background start did not complete; the strand stays published: %o',
           strandRow.Id, error);
       });
       logTotal();
