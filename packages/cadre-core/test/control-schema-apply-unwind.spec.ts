@@ -6,7 +6,7 @@ import { ControlDatabase } from '../src/control-database.js';
 import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
 
 /**
- * `ControlDatabase.loadSchema` retries its whole `apply schema CadreControl` statement when it
+ * `ControlDatabase.applyControlSchema` retries its whole `apply schema CadreControl` statement when it
  * fails transiently, and the safety of that re-run rests on a property of the engine pair
  * underneath: when a migration step fails, Quereus unwinds every step it ran and checks the
  * resulting catalog against a fingerprint taken before the apply, and the optimystic plugin's

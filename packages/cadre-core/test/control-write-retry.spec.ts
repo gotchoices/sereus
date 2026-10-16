@@ -413,7 +413,7 @@ describe('isRetriableControlWriteFailure', () => {
 });
 
 /**
- * The widened classifier `ControlDatabase.loadSchema` opts into — the default plus optimystic's
+ * The widened classifier `ControlDatabase.applyControlSchema` opts into — the default plus optimystic's
  * self-coordination grace refusal, and nothing else.
  *
  * Message literals again, and here the load-bearing one is CAPTURED rather than reconstructed: the

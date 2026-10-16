@@ -35,7 +35,7 @@ import type { ControlRetryOptions } from './control-retry.js';
  * TWO policies ship from here, and the split is deliberate: the default
  * ({@link isRetriableControlWriteFailure}, {@link CONTROL_WRITE_ATTEMPTS}) sits under every
  * control write, and {@link SCHEMA_INIT_RETRY_POLICY} is opted into by
- * `ControlDatabase.loadSchema` alone. The widened one absorbs one extra failure class whose
+ * `ControlDatabase.applyControlSchema` alone. The widened one absorbs one extra failure class whose
  * re-run safety holds for schema DDL and NOT for writes in general; anything added to the default
  * list must be safe for all ~19 callers.
  *
@@ -459,7 +459,7 @@ export function isRetriableControlWriteFailure(error: unknown): boolean {
 
 /**
  * {@link isRetriableControlWriteFailure} widened by exactly one class — the self-coordination
- * grace refusal ({@link RETRIABLE_SCHEMA_INIT_MATCHERS}) — for `ControlDatabase.loadSchema`.
+ * grace refusal ({@link RETRIABLE_SCHEMA_INIT_MATCHERS}) — for `ControlDatabase.applyControlSchema`.
  *
  * Opt-in per call site, via {@link SCHEMA_INIT_RETRY_POLICY}. Every other control write keeps the
  * default classifier untouched.
@@ -510,7 +510,7 @@ function matchesRetriableFailure(
 export type ControlWriteRetryOptions = ControlRetryOptions;
 
 /**
- * The one non-default retry policy: `ControlDatabase.loadSchema`'s distributed DDL, which
+ * The one non-default retry policy: `ControlDatabase.applyControlSchema`'s distributed DDL, which
  * additionally absorbs optimystic's self-coordination grace refusal and gets more attempts over a
  * longer backoff to do it (see {@link SCHEMA_INIT_ATTEMPTS} and
  * {@link SCHEMA_INIT_RETRY_DELAYS_MS}). Still bounded by the shared
