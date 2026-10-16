@@ -79,9 +79,9 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 	beforeAll(async () => {
 		pair = await bootConnectedPair('same-pk-race');
 
-		// Case 3 publishes from BOTH nodes, and `publishStrand` signs with the node's OWN
-		// identity-derived owner key (`getSelfSigningKey`), which for B is not the key
-		// `bootConnectedPair` seated. Enroll B's key as a second owner, signed by A under
+		// Case 3 publishes from BOTH nodes, and `publishStrand` signs through the node's
+		// wired owner signer (`requireOwnerSigner`). `bootConnectedPair` wires one only on A,
+		// over A's key. Enroll B's identity-derived key as a second owner, signed by A under
 		// the `OwnerKey.Authorized` "a pre-existing owner authorizes by signing over THIS
 		// row" branch — there is no cadre-core writer for a second owner (`insertOwnerKey`
 		// only rides the empty-owner-set bootstrap branch), so the digest is built here
@@ -111,6 +111,9 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 			intervalMs: 250,
 			description: "both nodes converge on B's enrolled owner key",
 		});
+
+		// Wired only once B's own view enrolls the key, as `makeOwnOwner` does for A.
+		await pair.B.initializeSeedBootstrap(pair.B.getIdentityOwnerKey().privateKeyB64);
 	}, 120_000);
 
 	afterAll(async () => {

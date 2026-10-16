@@ -13,7 +13,7 @@
  */
 
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
-import type { BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
+import type { BlockMetadata, FlushOptions, IRawStorage, StoreDurability } from '@optimystic/db-p2p';
 
 /**
  * The commit proof `IRawStorage` stores, derived from the interface rather than imported by
@@ -66,9 +66,12 @@ type OptionalMethodForwarded = 'getApproximateBytesUsed' | 'listBlockIds';
 /**
  * `getStoreIdentity`: see the accepted tradeoff on `LazyNsRawStorage`. `readCached`: a
  * marker set only by a storage with a read cache beneath it, which `SqliteRawStorage`
- * does not have.
+ * does not have. `close`: the `SqliteRawStorage` behind a proxy is shared through
+ * `openByDbName` with every later proxy over the same database, and is unusable once
+ * closed; the proxy does not own it, and nothing in cadre-core closes a store its
+ * provider returned.
  */
-type OptionalMemberOmitted = 'getStoreIdentity' | 'readCached';
+type OptionalMemberOmitted = 'getStoreIdentity' | 'readCached' | 'close';
 
 type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never }[keyof T];
 type MustBeNever<T extends never> = T;
@@ -189,6 +192,20 @@ class LazyNsRawStorage
 	async promotePendingTransaction(blockId: BlockId, actionId: ActionId): Promise<void> {
 		return (await this.storage()).promotePendingTransaction(blockId, actionId);
 	}
+
+	async flush(options?: FlushOptions): Promise<void> {
+		return (await this.storage()).flush(options);
+	}
+
+	async whenDurable(): Promise<void> {
+		return (await this.storage()).whenDurable();
+	}
+
+	/**
+	 * Read synchronously, before the open has produced the `SqliteRawStorage` to ask, so it
+	 * states the value that backend fixes for every instance (`SqliteBatchBackend.durability`).
+	 */
+	readonly durability: StoreDurability = 'power-loss';
 
 	async getApproximateBytesUsed(): Promise<number> {
 		return (await this.storage()).getApproximateBytesUsed();
