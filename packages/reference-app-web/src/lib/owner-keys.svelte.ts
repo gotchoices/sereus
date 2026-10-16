@@ -237,8 +237,9 @@ export function cancelRemoval(): void {
 /** Remove the key the confirmation is for, re-vouching the rows kept, then re-read. */
 export async function confirmRemoval(): Promise<void> {
 	const removal = state.confirming;
+	// Kept open while another action runs: `exclusive` would drop the removal unsaid.
+	if (!removal || state.busy) return;
 	state.confirming = null;
-	if (!removal) return;
 	await exclusive(async (node) => {
 		await remove(node, removal);
 		changed();

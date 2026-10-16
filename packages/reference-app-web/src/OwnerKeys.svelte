@@ -124,7 +124,7 @@
 				{/if}
 				<div class="buttons">
 					{#if refusal === null}
-						<button class="danger" onclick={() => void confirmRemoval()} data-testid="btn-confirm-remove-owner-key">Remove</button>
+						<button class="danger" onclick={() => void confirmRemoval()} disabled={card.busy} data-testid="btn-confirm-remove-owner-key">Remove</button>
 					{/if}
 					<button onclick={cancelRemoval} data-testid="btn-cancel-remove-owner-key">{refusal === null ? 'Cancel' : 'Close'}</button>
 				</div>
