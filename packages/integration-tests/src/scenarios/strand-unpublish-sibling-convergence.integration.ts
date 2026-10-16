@@ -139,10 +139,12 @@ describe('Two-node strand-unpublish sibling convergence', () => {
 			});
 			expect(events.discovered).toEqual([strandId]);
 			const strandRow = events.discoveredRows[0]!;
-			// FounderOwnerKey is A's owner key (any non-null string suffices here); it is
-			// also what keeps B's flagless addStrand below a JOIN rather than a founding.
+			// FounderOwnerKey is A's owner key (any non-null string suffices here);
+			// FounderPeerId names A, which is what keeps B's flagless addStrand below a
+			// JOIN rather than a founding.
 			expect(strandRow).toEqual({
 				Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: expect.any(String),
+				FounderPeerId: A.peerId!.toString(),
 			});
 
 			const instance = await B.addStrand({

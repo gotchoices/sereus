@@ -350,9 +350,11 @@ describe('Topology builder harness', () => {
 			expect(openInstances.map((i) => i.status)).toEqual(['active', 'active']);
 			const published = (await owner.node.getControlDatabase()!.queryStrands())
 				.find((row) => row.Id === openId);
-			// FounderOwnerKey records the publishing machine's owner key (owner-signed insert).
+			// FounderOwnerKey records the publishing machine's owner key (owner-signed insert);
+			// FounderPeerId names that machine as the strand's founder.
 			expect(published).toEqual({
 				Id: openId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: expect.any(String),
+				FounderPeerId: owner.peerId,
 			});
 
 			// Closed strand: the founder derives its Member/Manager keypair from the

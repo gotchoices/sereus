@@ -346,7 +346,7 @@ async function enrollNewcomer(founded: FoundedStrand, handles: LateJoinHandles):
  * mesh asserted in BOTH directions.
  */
 async function joinDiscoveredStrand(fx: LateJoinFixture): Promise<JoinedStrand> {
-	const { founder, newcomer, strandId, sApp, events } = fx;
+	const { founder, founderPeerId, newcomer, strandId, sApp, events } = fx;
 
 	// The newcomer holds no sApp config for the id, so its watcher's first sighting
 	// of the row (read over the network) emits `strand:discovered` with the full row.
@@ -356,9 +356,11 @@ async function joinDiscoveredStrand(fx: LateJoinFixture): Promise<JoinedStrand> 
 	});
 	const discoveredRow = events.discoveredRows[events.discovered.indexOf(strandId)]!;
 	// FounderOwnerKey carries the FOUNDER machine's owner key (any non-null string here);
-	// it is what keeps the newcomer's flagless addStrand below a JOIN, not a founding.
+	// FounderPeerId names the founder machine, which is what keeps the newcomer's flagless
+	// addStrand below a JOIN, not a founding.
 	expect(discoveredRow).toEqual({
 		Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: expect.any(String),
+		FounderPeerId: founderPeerId,
 	});
 
 	// Join with THAT row — never a test-side copy, and never a hand-dial (rule 2).
