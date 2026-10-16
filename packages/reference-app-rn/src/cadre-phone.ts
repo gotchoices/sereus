@@ -305,8 +305,8 @@ export function getNoiseCryptoMode(): NoiseCryptoMode | null {
 }
 
 /**
- * The node's owner public key (base64url) for out-of-band pairing; null unless running,
- * and for a member of a joined cadre that is not an owner. Never private material.
+ * The public key (base64url) of the owner key this phone's node signs with, for out-of-band
+ * pairing and approval prompts; null unless running with one wired. Never private material.
  */
 export function getOwnerPublicKey(): string | null {
   return phone.ownerPublicKey();

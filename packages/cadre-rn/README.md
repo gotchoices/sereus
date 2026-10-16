@@ -24,7 +24,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 
 ## Phone node
 
-`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity in the secure store, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by invitation, deletes the cadre it left once that cadre is empty, and deletes a cadre whose owner removed the app. Call it once, at module scope; a second call over the same storage names throws while the first is running.
+`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity and the app's owner key in the secure store, each in its own slot, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by invitation, deletes the cadre it left once that cadre is empty, and deletes a cadre whose owner removed the app. Call it once, at module scope; a second call over the same storage names throws while the first is running.
 
 ```ts
 import * as SecureStore from 'expo-secure-store';           // or an adapter over the app's own secure store
@@ -62,7 +62,8 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`, and during a removal after the removal has replaced it. |
 | `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
 | `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the invitation's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), `removed` (an owner removed the app from `partyId`; see [Removed from the cadre](#removed-from-the-cadre)), or `failed` (with the error). |
-| `ownerPublicKey()` | The identity's public key for pairing; null unless running, and for a `member`. |
+| `ownerPublicKey()` | The public key of the owner key the running node signs with, for pairing and approval prompts; null unless running with one wired (a `member` has none). |
+| `listOwnerKeys()`, `addBackupOwnerKey(options?)`, `exportOwnerKey(options?)`, `importOwnerKey(text, passphrase?)`, `planOwnerKeyRemoval(key)`, `removeOwner(key, options?)` | The owner-key screen's calls; see [The phone's owner key](#the-phones-owner-key). |
 
 Platform options with defaults:
 
@@ -70,6 +71,26 @@ Platform options with defaults:
 - **`allowPrivateDial`**: `true`. Dials loopback, private and plain `ws://` addresses, which libp2p's React Native gater refuses. Without it an emulator cannot reach `10.0.2.2`, and a relay on the home network or without TLS is unreachable.
 - **`ownerGenesisTimeoutMs`**: 60 s. Also bounds wiring the owner key of a joined party.
 - **`configure(config)`**: none. The last word on the generated `CadreNodeConfig`: strand filter, `requireSignedSchemas`, `linkRoundTripMs`.
+
+### The phone's owner key
+
+The app holds at most one owner key, apart from its identity ([architecture.md → Owner Keys](../../docs/architecture.md#owner-keys)): in the same `SecureStoreKeyStore` as the identity, in the owner slot (`DEFAULT_OWNER_KEY_ID`, `cadre/owner`), with the same `secureStoreOptions`. Keep those ungated (`AFTER_FIRST_UNLOCK`, no `requireAuthentication`): background owner writes sign with no user present. Biometric gating belongs with prompting signers (`tickets/backlog/feat-owner-key-on-a-hardware-key.md`).
+
+How a start settles it (`status.owner`):
+
+- **Founded party with no `OwnerKey` row yet:** the slot's key becomes the founding row under `PhoneNodeOptions.ownerKeyLabel` (default `phone`) and is wired. It is created now unless the slot already holds one (a key imported before founding, or one an iOS reinstall kept in the Keychain); the kit creates a key nowhere else. `enrolled`.
+- **Founded party that has owners:** the slot's key is wired when it is a live owner (`enrolled`). Otherwise, the slot empty or its key not an owner, the app is a `member` and no key is created, since a new one could not be seated without another owner's signature. A lost slot is recovered by importing a backup.
+- **Joined party:** the slot's key is wired when it is a live owner; otherwise the identity key is, when the party lists it, which is what an owner-granting invitation seats until owner grants seat a key of their own. Otherwise `member`.
+
+The owner-key calls run in turn with start, stop and join, and those that name the node throw while none is running:
+
+- **`listOwnerKeys()`**: cadre-core's `CadreOwnerKey` rows, with label, voucher, `heldHere` and `trusted`.
+- **`addBackupOwnerKey({ label?, passphrase? })`**: seats a new key as an owner, signed by this app's key, and returns `{ publicKey, exportText }`; the phone keeps nothing, so the app shows or saves the text once. Refused `alone` (cadre-core's `OwnerKeyAddRefusedError`) while the phone has no connection to a cadre with other machines.
+- **`exportOwnerKey({ label?, passphrase? })`**: the slot's key as export text; works with no node running; throws when the slot is empty.
+- **`importOwnerKey(text, passphrase?)`**: stores the key in the slot and, with a node running, wires it when the party lists it (`{ wired: true }`, and `status.owner` becomes `enrolled`). Refused with `OwnerKeySlotOccupiedError` when the slot holds a different key, and with `OwnerKeyExportError` for text that is not an owner key (an invitation or join request is named), a locked export with no passphrase (`passphrase-required`) or a wrong one. A node already signing with the identity key keeps it until its next start.
+- **`planOwnerKeyRemoval(key)`**, **`removeOwner(key, { revouch })`**: cadre-core's, for the removal prompt and its keep-switches.
+
+One key imported on two devices signs on both; their concurrent writes conflict as any two owners' do.
 
 ### Joining another cadre
 
@@ -91,7 +112,7 @@ const joined = await phone.joinCadre(decodeCadreInvitation(pasted), {
 
 The saved start records how the app came to its party:
 
-- **`origin`**: `'founded'` (or absent) runs owner genesis on every start; `'joined'`, which `joinCadre` saves, never does, and wires the identity key only when the party lists it as an owner, so the app reports `owner: 'member'` otherwise. A start that names no `origin` takes the saved start's when it is for the same party.
+- **`origin`**: `'founded'` (or absent) runs owner genesis on every start; `'joined'`, which `joinCadre` saves, never does, and wires a key only when the party lists it as an owner ([The phone's owner key](#the-phones-owner-key)), so the app reports `owner: 'member'` otherwise. A start that names no `origin` takes the saved start's when it is for the same party.
 - **`formerPartyId`**: the party this app founded and left. Its data stays on disk under its own names until `dissolveFormerParty()` deletes it, which also drops this field.
 
 Nothing is saved until a member admits the app, so a kill while waiting relaunches into the party it left. `stop()` cancels a join in progress.
@@ -327,7 +348,7 @@ const result = await rentNode(node, client);        // the app records the conta
 
 ## Key store and node-local records
 
-cadre-core asks its host for durable storage: a `KeyStore` for the node identity (`keyStore` in `CadreNodeConfig`, never `privateKey` on a phone) and a `DurableSlot` behind each node-local store (`trustedOwners`, `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`). Left out, each falls back to memory, and a phone that restarts before it reconnects loses its dial hints and its trusted owners. These two subpaths are the phone's answer.
+cadre-core asks its host for durable storage: a `KeyStore` for the node identity (`keyStore` in `CadreNodeConfig`, never `privateKey` on a phone) and, in a slot of its own, the owner key and a `DurableSlot` behind each node-local store (`trustedOwners`, `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`). Left out, each falls back to memory, and a phone that restarts before it reconnects loses its dial hints and its trusted owners. These two subpaths are the phone's answer.
 
 Both talk to the secure store through `SecureStoreApi`, three async methods (`getItemAsync`, `setItemAsync`, `deleteItemAsync`) over string values. `expo-secure-store` is structurally assignable to it. A bare React Native app passes an adapter over its own secure-storage module that keeps the same contract: `null` for an absent key, a throw for a denied or failed read. Neither subpath imports a native module.
 
@@ -347,7 +368,7 @@ const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
 
 The trust-bearing anchor goes in the secure store; the dial hints, the enrolled-machine count and the strand network state go in a LevelDB database of the app's own (`nodeLocalKv` above is a `LevelDBKVStore` over it), because they grant no authority and outgrow the secure store's value limit. The module headers give the reasoning. A `LevelDBKVStore` holds each write in memory until it is flushed, so keep one per open database for every slot to share, and `close()` it before the database; `kvStoreSlot` flushes on each save. `createPhoneNode` (above) wires all of this; these subpaths are for an app that builds its node another way.
 
-Use the same options object for the key store and the anchor slot. `keychainAccessible: AFTER_FIRST_UNLOCK` lets iOS read the identity while the device is locked, which a background or push-wake start needs. `secureStoreSlot` refuses a gated (`requireAuthentication`) slot, because it reads `null` as absent.
+Use the same options object for the key store and the anchor slot. `keychainAccessible: AFTER_FIRST_UNLOCK` lets iOS read the identity and the owner key while the device is locked, which a background or push-wake start needs. `secureStoreSlot` refuses a gated (`requireAuthentication`) slot, because it reads `null` as absent.
 
 ### What the app must install
 

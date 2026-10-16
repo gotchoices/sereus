@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { rmSync } from 'node:fs';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
+import { createOwnerKey } from '../src/owner-key-store.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import {
 	controlNodeConfig,
@@ -135,17 +136,17 @@ async function foundCohort(node: CadreNode, siblingCount: number): Promise<{
 	selfPeerId: string;
 	ownerPublicKey: string;
 }> {
-	const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
+	const owner = await createOwnerKey(new InMemoryKeyStore());
 	const db = node.getControlDatabase()!;
-	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64))).toBe(true);
-	await node.initializeSeedBootstrap(privateKeyB64);
+	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(owner.publicKey))).toBe(true);
+	await node.useOwnerSigner(owner);
 	expect(await within('registerSelf() (genesis)', OP_TIMEOUT_MS, () => node.registerSelf())).toBe('inserted');
 
 	const siblings: OfflinePeer[] = [];
 	for (let n = 1; n <= siblingCount; n++) {
 		siblings.push(await mintBlackholePeer(node, within, n, OP_TIMEOUT_MS));
 	}
-	return { siblings, selfPeerId: node.peerId!.toString(), ownerPublicKey: publicKeyB64 };
+	return { siblings, selfPeerId: node.peerId!.toString(), ownerPublicKey: owner.publicKey };
 }
 
 /**
@@ -207,7 +208,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				});
 
 				// From here on: the EMBEDDER's order. No genesis re-run, no
-				// `initializeSeedBootstrap` — `addStrand` is the next thing called, so
+				// `useOwnerSigner` — `addStrand` is the next thing called, so
 				// `resolveCohortSeed`'s `queryCadrePeers()` is the first control
 				// operation of this process that the app actually awaits.
 				const instance = await addStrand(second, { Id: strandId('vanished'), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null });
@@ -367,10 +368,10 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				// And genesis still works AFTER the strand launched — the out-of-order
 				// read must not have left the control DB in a state that refuses the
 				// owner-key write it never saw coming.
-				const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
+				const owner = await createOwnerKey(new InMemoryKeyStore());
 				expect(await within('ensureOwnerKey() (post-addStrand)', OP_TIMEOUT_MS,
-					() => db.ensureOwnerKey(publicKeyB64))).toBe(true);
-				await node.initializeSeedBootstrap(privateKeyB64);
+					() => db.ensureOwnerKey(owner.publicKey))).toBe(true);
+				await node.useOwnerSigner(owner);
 				expect(await within('registerSelf() (post-addStrand)', OP_TIMEOUT_MS, () => node.registerSelf()))
 					.toBe('inserted');
 			} finally {

@@ -110,6 +110,14 @@ export {
   type OwnerKeyExportInput,
   type DecodedOwnerKeyExport
 } from './owner-key-export.js';
+export {
+  addBackupOwnerKey,
+  exportOwnerKey,
+  importOwnerKeyInto,
+  type BackupOwnerKey,
+  type ImportedOwnerKey,
+  type OwnerKeyExportOptions
+} from './owner-key-flows.js';
 
 // Node-local trusted-owner anchor: the NON-replicated, per-party record of
 // out-of-band-established owner keys (the trust anchor the replicated OwnerKey

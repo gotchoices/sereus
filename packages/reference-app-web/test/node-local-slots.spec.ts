@@ -18,6 +18,8 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
+	createOwnerKey,
+	loadOwnerSigner,
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
@@ -25,6 +27,8 @@ import {
 import type { OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
 import {
 	kvSlot,
+	ownerKeyStore,
+	OWNER_KEY_KV_KEY,
 	TRUSTED_OWNERS_KV_KEY,
 	BOOTSTRAP_PEERS_KV_KEY,
 	ENROLLED_MACHINES_KV_KEY,
@@ -57,6 +61,19 @@ class FakeKvHandle {
 		if (this.putError) throw this.putError;
 		this.store.set(key, value);
 		return key;
+	}
+
+	/** The one-store write transaction `ownerKeyStore` opens; its durability option is not modelled. */
+	transaction(_storeName: 'kv', _mode: 'readwrite', _options?: unknown) {
+		return {
+			store: {
+				put: (value: string | Uint8Array, key: string) => this.put('kv', value, key),
+				delete: async (key: string) => {
+					this.store.delete(key);
+				},
+			},
+			done: Promise.resolve(),
+		};
 	}
 }
 
@@ -126,6 +143,7 @@ describe('node-local stores over kvSlot', () => {
 		expect(BOOTSTRAP_PEERS_KV_KEY).toBe('bootstrap-peers');
 		expect(ENROLLED_MACHINES_KV_KEY).toBe('enrolled-machines');
 		expect(STRAND_NETWORK_KV_KEY).toBe('strand-network');
+		expect(OWNER_KEY_KV_KEY).toBe('owner-private-key');
 	});
 
 	it('gives every record a key of its own, so no snapshot write clobbers another', () => {
@@ -219,5 +237,25 @@ describe('node-local stores over kvSlot', () => {
 			PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1')
 		).rejects.toThrow('IndexedDB blocked');
 		expect(fake.store.size).toBe(0);
+	});
+});
+
+// ── ownerKeyStore ──────────────────────────────────────────────────────────────
+
+describe('ownerKeyStore', () => {
+	it('keeps the owner key as bytes under its own kv key, read back by a fresh store over the database', async () => {
+		const { fake, handle } = fakeHandle();
+		const created = await createOwnerKey(ownerKeyStore(handle));
+
+		expect(fake.store.get(OWNER_KEY_KV_KEY)).toBeInstanceOf(Uint8Array);
+		expect((await loadOwnerSigner(ownerKeyStore(handle)))?.publicKey).toBe(created.publicKey);
+	});
+
+	it('reports text under the key as a fault, not an empty slot genesis would fill with a new key', async () => {
+		const { fake, handle } = fakeHandle();
+		fake.store.set(OWNER_KEY_KV_KEY, 'not key bytes');
+
+		await expect(createOwnerKey(ownerKeyStore(handle))).rejects.toMatchObject({ name: 'KeyStoreAccessError' });
+		expect(fake.store.get(OWNER_KEY_KV_KEY)).toBe('not key bytes');
 	});
 });

@@ -12,6 +12,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	adoptStrandBundle,
 	controlStorageScope,
+	DEFAULT_OWNER_KEY_ID,
+	ed25519PublicKeyB64FromPeerId,
 	ed25519PublicKeyFromPrivate,
 	exportStrandBundle,
 	type CadreInvitation,
@@ -19,7 +21,7 @@ import {
 	type SAppConfig,
 } from '@serfab/cadre-core';
 import { FakeWriteBatch, lockingFakeRNLevelDB } from '../../../../test-harness/fake-rn-leveldb.js';
-import { secureStoreKeySegment } from '../../src/key-store.js';
+import { SecureStoreKeyStore, secureStoreKeySegment } from '../../src/key-store.js';
 import { anchorSlotKey } from '../../src/node-local.js';
 import {
 	createPhoneNode,
@@ -161,16 +163,16 @@ describe('createPhoneNode — start and stop', () => {
 		expect(phone.status.state).toBe('running');
 	}, LIFECYCLE_MS * 2);
 
-	it('keeps its identity across a stop and a start: it lives in the secure store', async () => {
+	it('keeps its identity and its owner key across a stop and a start: both live in the secure store', async () => {
 		const { platform, partyId } = device();
 		const phone = phoneNode(platform);
 
 		await phone.start(options(partyId));
-		const before = phone.ownerPublicKey();
+		const before = { peerId: phone.node?.peerId?.toString(), ownerKey: phone.ownerPublicKey() };
 		await phone.stop();
 		await phone.start(options(partyId));
 
-		expect(phone.ownerPublicKey()).toBe(before);
+		expect({ peerId: phone.node?.peerId?.toString(), ownerKey: phone.ownerPublicKey() }).toEqual(before);
 	}, LIFECYCLE_MS * 2);
 
 	it('reports the identity\'s peer id before any start, and the first start uses it', async () => {
@@ -354,6 +356,62 @@ describe('createPhoneNode — restart and subscriptions', () => {
 
 		expect(handler).not.toHaveBeenCalled();
 	}, LIFECYCLE_MS);
+});
+
+describe('createPhoneNode — its owner key', () => {
+	/** The phone's owner slot, emptied as a lost Keychain or Keystore entry would be. */
+	async function loseOwnerSlot(secureStore: FakeSecureStore): Promise<void> {
+		await new SecureStoreKeyStore(secureStore).delete(DEFAULT_OWNER_KEY_ID);
+	}
+
+	it('founds its party with an owner key of its own, under its label, apart from the identity', async () => {
+		const { platform, partyId } = device();
+		const phone = phoneNode(platform);
+
+		await phone.start({ ...options(partyId), ownerKeyLabel: 'Ann\'s phone' });
+
+		const ownerKey = phone.ownerPublicKey();
+		expect(ownerKey).not.toBe(ed25519PublicKeyB64FromPeerId(await phone.identityPeerId()));
+		expect(await phone.listOwnerKeys()).toEqual([{ key: ownerKey, label: 'Ann\'s phone', vouchedBy: null, heldHere: true, trusted: true }]);
+	}, LIFECYCLE_MS);
+
+	it('is a member, founding nothing, when its owner slot was lost, and an owner again once it imports its backup', async () => {
+		const { platform, secureStore, partyId } = device();
+		const phone = phoneNode(platform);
+		await phone.start(options(partyId));
+		const backup = await phone.exportOwnerKey();
+		const ownerKey = phone.ownerPublicKey();
+		await phone.stop();
+		await loseOwnerSlot(secureStore);
+
+		const node = await phone.start(options(partyId));
+
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'member' });
+		expect(phone.ownerPublicKey()).toBeNull();
+		expect(await new SecureStoreKeyStore(secureStore).get(DEFAULT_OWNER_KEY_ID)).toBeUndefined();
+		expect((await phone.listOwnerKeys()).map((row) => row.key)).toEqual([ownerKey]);
+		expect(await phone.importOwnerKey(backup)).toEqual({ publicKey: ownerKey, wired: true });
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+		expect(phone.node).toBe(node);
+	}, LIFECYCLE_MS * 2);
+
+	it('wires the owner slot\'s key ahead of the identity key on a party it joined', async () => {
+		// Both are owners: the identity as an owner-granting invitation seats it, the slot's key as
+		// a backup the user imported. The slot's is this app's own owner key.
+		const { platform, secureStore, partyId } = device();
+		const phone = phoneNode(platform);
+		const founded = await phone.start(options(partyId));
+		const backup = await phone.addBackupOwnerKey({ label: 'backup' });
+		await founded.addOwner(ed25519PublicKeyB64FromPeerId(await phone.identityPeerId())!);
+		await phone.stop();
+		await loseOwnerSlot(secureStore);
+		expect(await phone.importOwnerKey(backup.exportText)).toEqual({ publicKey: backup.publicKey, wired: false });
+
+		await phone.start({ ...options(partyId), origin: 'joined' });
+
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+		expect(phone.ownerPublicKey()).toBe(backup.publicKey);
+	}, LIFECYCLE_MS * 2);
 });
 
 describe('createPhoneNode — joining another party', () => {

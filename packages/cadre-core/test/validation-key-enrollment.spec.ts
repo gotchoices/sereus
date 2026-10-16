@@ -5,7 +5,6 @@ import {
   sign as cryptoSign,
 } from '@optimystic/quereus-plugin-crypto';
 import type { CadreNode } from '../src/cadre-node.js';
-import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { formationVouchMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { mintJoiner, mintConsent } from './formation-consent-helper.js';
@@ -129,9 +128,10 @@ describe('CadreNode validation-key enrollment', () => {
     // The schema's approval CHECKs run at write time, so removing an approver key narrows
     // who may approve FUTURE redemptions only. If someone later "fixes" removal into a
     // retroactive revocation, this test fails — which is the point.
-    ({ node } = await startSelfOwnerNode('validation-key-'));
+    const started = await startSelfOwnerNode('validation-key-');
+    node = started.node;
     const db = node.getControlDatabase()!;
-    const nodeOwner = ed25519KeyPairFromLibp2p((node as unknown as { identityKey: Parameters<typeof ed25519KeyPairFromLibp2p>[0] }).identityKey);
+    const nodeOwner = started.ownerKey;
     const signAsOwner = (message: Uint8Array): string =>
       cryptoSign(message, nodeOwner.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 

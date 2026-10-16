@@ -95,7 +95,10 @@ function reportImportFailure(err) {
 
 let CadreNode;
 let InMemoryKeyStore;
+let createOwnerKey;
+let loadOwnerSigner;
 let ed25519KeyPairFromLibp2p;
+let ed25519PublicKeyB64FromPeerId;
 let signPeerRecord;
 let signSchema;
 let MemoryRawStorage;
@@ -106,7 +109,7 @@ let peerIdFromPrivateKey;
 try {
 	// Dynamic rather than static so an ERR_MODULE_NOT_FOUND is catchable and reportable
 	// here; a static import would abort the process before any of this file ran.
-	({ CadreNode, InMemoryKeyStore, ed25519KeyPairFromLibp2p, signPeerRecord, signSchema } = await import('@serfab/cadre-core'));
+	({ CadreNode, InMemoryKeyStore, createOwnerKey, loadOwnerSigner, ed25519KeyPairFromLibp2p, ed25519PublicKeyB64FromPeerId, signPeerRecord, signSchema } = await import('@serfab/cadre-core'));
 	({ MemoryRawStorage } = await import('@optimystic/db-p2p'));
 	// The warm-start cases restart across real files rather than a shared heap object.
 	({ FileRawStorage } = await import('@optimystic/db-p2p-storage-fs'));
@@ -201,9 +204,10 @@ async function soloWriteAndReadBack(profile) {
 		await within('node.start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
 		assertNotListening(node);
 
-		// Mirrors the reference apps' `runOwnerGenesis`: the node's own libp2p identity,
-		// bridged to a base64url owner pair, is the founding owner.
-		const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
+		// Mirrors the reference apps' owner genesis: an owner key created in the key store's
+		// owner slot, beside the identity, is the founding owner.
+		const owner = await createOwnerKey(keyStore);
+		const publicKeyB64 = owner.publicKey;
 		const db = node.getControlDatabase();
 		assert.notEqual(db, null, 'control database is null');
 
@@ -227,7 +231,7 @@ async function soloWriteAndReadBack(profile) {
 		assert.equal(await within('ensureOwnerKey() (re-run)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64)), false);
 
 		// --- A normal solo write (not the genesis branch) --------------------
-		node.initializeSeedBootstrap(privateKeyB64);
+		await node.useOwnerSigner(owner);
 		assert.deepEqual(await within('queryCadrePeers() (pre-write)', OP_TIMEOUT_MS, () => db.queryCadrePeers()), []);
 		assert.equal(await within('registerSelf()', OP_TIMEOUT_MS, () => node.registerSelf()), 'inserted');
 
@@ -239,7 +243,8 @@ async function soloWriteAndReadBack(profile) {
 
 		const record = await within('queryPeerRecord()', OP_TIMEOUT_MS, () => db.queryPeerRecord(selfPeerId));
 		assert.notEqual(record, null, 'peer record is null');
-		assert.equal(record.publicKey, publicKeyB64);
+		// The record is signed by the identity, not the owner key.
+		assert.equal(record.publicKey, ed25519PublicKeyB64FromPeerId(selfPeerId));
 	} finally {
 		await within('node.stop()', LIFECYCLE_TIMEOUT_MS, () => node.stop());
 	}
@@ -256,20 +261,18 @@ async function restartAndReRead() {
 
 	const first = new CadreNode(config());
 	let ownerPublicKey;
-	let ownerPrivateKey;
 	let peerId;
 	try {
 		await within('first.start()', LIFECYCLE_TIMEOUT_MS, () => first.start());
 		assertNotListening(first);
-		const owner = first.getIdentityOwnerKey();
-		ownerPublicKey = owner.publicKeyB64;
-		ownerPrivateKey = owner.privateKeyB64;
+		const owner = await createOwnerKey(keyStore);
+		ownerPublicKey = owner.publicKey;
 		peerId = first.peerId.toString();
 
 		const db = first.getControlDatabase();
 		assert.notEqual(db, null, 'control database is null');
 		assert.equal(await within('first ensureOwnerKey()', OP_TIMEOUT_MS, () => db.ensureOwnerKey(ownerPublicKey)), true);
-		first.initializeSeedBootstrap(ownerPrivateKey);
+		await first.useOwnerSigner(owner);
 		assert.equal(await within('first registerSelf()', OP_TIMEOUT_MS, () => first.registerSelf()), 'inserted');
 	} finally {
 		await within('first.stop()', LIFECYCLE_TIMEOUT_MS, () => first.stop());
@@ -279,7 +282,7 @@ async function restartAndReRead() {
 	try {
 		await within('second.start()', LIFECYCLE_TIMEOUT_MS, () => second.start());
 		assertNotListening(second);
-		// Same key store ⇒ same libp2p identity ⇒ same PeerId across the restart.
+		// Same key store ⇒ same libp2p identity ⇒ same PeerId, and the same owner key, across the restart.
 		assert.equal(second.peerId.toString(), peerId);
 
 		const db = second.getControlDatabase();
@@ -301,7 +304,7 @@ async function restartAndReRead() {
 		assert.deepEqual(peers.map((p) => p.peerId), [peerId]);
 
 		// And a write still works after the warm start (refresh, not insert).
-		second.initializeSeedBootstrap(ownerPrivateKey);
+		await second.useOwnerSigner(await loadOwnerSigner(keyStore));
 		assert.equal(await within('second registerSelf()', OP_TIMEOUT_MS, () => second.registerSelf()), 'refreshed');
 	} finally {
 		await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
@@ -378,7 +381,7 @@ async function startNode(node, label) {
  * answers), then assert it RESOLVES. Without that anti-vacuity check an unsigned or
  * stale row would resolve to `[]` and the case would be testing nothing.
  *
- * Requires seed bootstrap to be wired on `node` (`initializeSeedBootstrap`).
+ * Requires seed bootstrap to be wired on `node` (`useOwnerSigner`).
  */
 async function mintBlackholePeer(node, n) {
 	const key = await generateKeyPair('Ed25519');
@@ -401,17 +404,17 @@ async function mintBlackholePeer(node, n) {
  * has to be founded somehow before it can be abandoned.
  */
 async function foundCohort(node, siblingCount) {
-	const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
+	const owner = await createOwnerKey(new InMemoryKeyStore());
 	const db = node.getControlDatabase();
-	assert.equal(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64)), true);
-	node.initializeSeedBootstrap(privateKeyB64);
+	assert.equal(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(owner.publicKey)), true);
+	await node.useOwnerSigner(owner);
 	assert.equal(await within('registerSelf() (genesis)', OP_TIMEOUT_MS, () => node.registerSelf()), 'inserted');
 
 	const siblings = [];
 	for (let n = 1; n <= siblingCount; n++) {
 		siblings.push(await mintBlackholePeer(node, n));
 	}
-	return { siblings, selfPeerId: node.peerId.toString(), ownerPublicKey: publicKeyB64 };
+	return { siblings, selfPeerId: node.peerId.toString(), ownerPublicKey: owner.publicKey };
 }
 
 /**
@@ -467,7 +470,7 @@ async function warmStartVanishedCohort() {
 			});
 
 			// From here on: the EMBEDDER's order. No genesis re-run, no
-			// `initializeSeedBootstrap` — `addStrand` is the next thing called, so the
+			// `useOwnerSigner` — `addStrand` is the next thing called, so the
 			// cohort seed's `queryCadrePeers()` is the first control operation of this
 			// process that the app actually awaits.
 			const instance = await addStrand(second, 'vanished');
@@ -503,10 +506,10 @@ async function coldBootInEmbedderOrder() {
 			// And genesis still works AFTER the strand launched — the out-of-order read
 			// must not have left the control DB in a state that refuses the owner-key
 			// write it never saw coming.
-			const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
+			const owner = await createOwnerKey(new InMemoryKeyStore());
 			assert.equal(await within('ensureOwnerKey() (post-addStrand)', OP_TIMEOUT_MS,
-				() => db.ensureOwnerKey(publicKeyB64)), true);
-			node.initializeSeedBootstrap(privateKeyB64);
+				() => db.ensureOwnerKey(owner.publicKey)), true);
+			await node.useOwnerSigner(owner);
 			assert.equal(await within('registerSelf() (post-addStrand)', OP_TIMEOUT_MS, () => node.registerSelf()), 'inserted');
 		} finally {
 			await within('node.stop()', LIFECYCLE_TIMEOUT_MS, () => node.stop());

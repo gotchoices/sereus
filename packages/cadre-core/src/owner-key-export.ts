@@ -76,6 +76,8 @@ export type OwnerKeyExportErrorCode =
 	| 'malformed'
 	/** The passphrase does not open a locked export, or the locked text was altered. */
 	| 'wrong-passphrase'
+	/** A locked export given with no passphrase (`importOwnerKeyInto` in `owner-key-flows.ts`). */
+	| 'passphrase-required'
 	/** Not owner-key text; the message names an invitation, join request or join code. */
 	| 'not-an-owner-key'
 	/** A locked export asks for more scrypt work than {@link MAX_SCRYPT_N} and {@link MAX_SCRYPT_R_TIMES_P} allow. */

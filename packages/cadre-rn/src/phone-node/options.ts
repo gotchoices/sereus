@@ -32,6 +32,11 @@ export interface PhoneNodeOptions {
 	 */
 	origin?: PhoneNodeOrigin;
 	/**
+	 * The name the founding owner key gets on its `OwnerKey` row when this start founds the party
+	 * ("phone", "Ann's iPhone"). Read only by genesis; default `'phone'`.
+	 */
+	ownerKeyLabel?: string;
+	/**
 	 * The party this app founded and left by joining another (`PhoneNode.joinCadre`). Its data
 	 * stays on disk under its own names, for moving its strands and dissolving the old cadre.
 	 */
@@ -87,12 +92,13 @@ interface StartRecord {
 	noiseCryptoMode?: NoiseCryptoMode;
 	origin?: PhoneNodeOrigin;
 	formerPartyId?: string;
+	ownerKeyLabel?: string;
 	autoStart: boolean;
 	writtenBy?: string;
 }
 
 export function serializeSavedStart(saved: SavedStart): string {
-	const { partyId, bootstrapAddrs, relayAddrs, noiseCryptoMode, origin, formerPartyId } = saved.options;
+	const { partyId, bootstrapAddrs, relayAddrs, noiseCryptoMode, origin, formerPartyId, ownerKeyLabel } = saved.options;
 	const record: StartRecord = {
 		version: RECORD_VERSION,
 		partyId,
@@ -101,6 +107,7 @@ export function serializeSavedStart(saved: SavedStart): string {
 		noiseCryptoMode,
 		origin,
 		formerPartyId,
+		ownerKeyLabel,
 		autoStart: saved.autoStart,
 		writtenBy: saved.writtenBy,
 	};
@@ -112,7 +119,7 @@ export function serializeSavedStart(saved: SavedStart): string {
  *
  * Only the party id is worth discarding a record over. A malformed optional field falls back to
  * its default — `[]` for an address list, the build default for the Noise mode, absent for
- * `origin` and `formerPartyId`, `false` for `autoStart` — so a damaged record still keeps the
+ * `origin`, `formerPartyId` and `ownerKeyLabel`, `false` for `autoStart` — so a damaged record still keeps the
  * phone in its party, at worst needing the user to start the node by hand.
  */
 export function parseSavedStart(text: string | undefined): SavedStart | undefined {
@@ -134,6 +141,7 @@ export function parseSavedStart(text: string | undefined): SavedStart | undefine
 	if (typeof record.formerPartyId === 'string' && record.formerPartyId.trim().length > 0) {
 		options.formerPartyId = record.formerPartyId;
 	}
+	if (typeof record.ownerKeyLabel === 'string') options.ownerKeyLabel = record.ownerKeyLabel;
 	const saved: SavedStart = { options, autoStart: record.autoStart === true };
 	if (typeof record.writtenBy === 'string') saved.writtenBy = record.writtenBy;
 	return saved;

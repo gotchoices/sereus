@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
+import { createOwnerKey } from '../src/owner-key-store.js';
 import { controlStorageScope } from '../src/storage-scope.js';
 import { StrandWatcher, type StrandQueryable } from '../src/strand-watcher.js';
 import type { CadreNodeConfig, SAppConfig, StrandRow } from '../src/types.js';
@@ -147,10 +148,10 @@ async function waitForOffered(node: CadreNode, id: string): Promise<void> {
 
 /** Genesis on a fresh party: seat this node's own owner key and wire it as its owner signer, the production calls. */
 async function runGenesis(node: CadreNode): Promise<void> {
-	const { publicKeyB64, privateKeyB64 } = node.getIdentityOwnerKey();
+	const owner = await createOwnerKey(new InMemoryKeyStore());
 	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS,
-		() => node.getControlDatabase()!.ensureOwnerKey(publicKeyB64))).toBe(true);
-	await within('initializeSeedBootstrap() (genesis)', OP_TIMEOUT_MS, () => node.initializeSeedBootstrap(privateKeyB64));
+		() => node.getControlDatabase()!.ensureOwnerKey(owner.publicKey))).toBe(true);
+	await within('useOwnerSigner() (genesis)', OP_TIMEOUT_MS, () => node.useOwnerSigner(owner));
 }
 
 /** Publish an OPEN strand's row and start it locally, as the founding app does. */

@@ -777,10 +777,10 @@ export interface CadreNodeConfig {
    * when set, else libp2p generates an ephemeral key.
    *
    * The node signs owner writes through whatever owner signer the embedder wires
-   * (`CadreNode.useOwnerSigner`). The single-key reference model wires the key
-   * derived from this identity ({@link CadreNode.getIdentityOwnerKey}), so
-   * protecting the identity in a secure enclave protects that owner key too; a
-   * separate owner key has its own slot (`owner-key-store.ts`).
+   * (`CadreNode.useOwnerSigner`). An owner key has its own slot
+   * (`owner-key-store.ts`), which may be in this same store; this identity is an
+   * owner key only where an owner-granting invitation seated it (the interim
+   * default of `CadreNode.wireOwnKeyIfOwner`).
    */
   keyStore?: KeyStore;
 

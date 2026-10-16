@@ -87,11 +87,12 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 	}
 
 	beforeAll(async () => {
+		const keyStore = new InMemoryKeyStore();
 		const cadre = new CadreNode(phoneConfig({
 			partyId,
 			bootstrapAddrs: [],
 			relayAddrs: [],
-			keyStore: new InMemoryKeyStore(),
+			keyStore,
 			storageProvider: phoneStorageOverFakeNative(),
 			transports: [webSockets(), circuitRelayTransport()],
 			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
@@ -101,7 +102,7 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 		}));
 		node = cadre;
 		await within('node.start()', LIFECYCLE_DEADLINE_MS, () => cadre.start());
-		await within('runOwnerGenesis()', LIFECYCLE_DEADLINE_MS, () => runOwnerGenesis(cadre));
+		await within('runOwnerGenesis()', LIFECYCLE_DEADLINE_MS, () => runOwnerGenesis(cadre, { keyStore }));
 		// runOwnerGenesis is fail-soft (it logs and returns), so check its effect here: a
 		// genesis failure should fail as itself, not later as a refused strand publish.
 		expect(await cadre.getControlDatabase()?.hasOwnerKey()).toBe(true);
@@ -181,11 +182,12 @@ describe('solo phone founding with a relay configured but unreachable', () => {
 	}
 
 	beforeAll(async () => {
+		const keyStore = new InMemoryKeyStore();
 		const cadre = new CadreNode(phoneConfig({
 			partyId,
 			bootstrapAddrs: [],
 			relayAddrs: [UNREACHABLE_RELAY],
-			keyStore: new InMemoryKeyStore(),
+			keyStore,
 			storageProvider: phoneStorageOverFakeNative(),
 			transports: [webSockets(), circuitRelayTransport()],
 			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
@@ -196,7 +198,7 @@ describe('solo phone founding with a relay configured but unreachable', () => {
 		node = cadre;
 		await within('node.start() with a dead relay', RELAY_LIFECYCLE_DEADLINE_MS, () => cadre.start());
 		postureAfterStart = cadre.getRelayReservationState();
-		await within('runOwnerGenesis()', LIFECYCLE_DEADLINE_MS, () => runOwnerGenesis(cadre));
+		await within('runOwnerGenesis()', LIFECYCLE_DEADLINE_MS, () => runOwnerGenesis(cadre, { keyStore }));
 	}, RELAY_LIFECYCLE_DEADLINE_MS * 2);
 
 	afterAll(async () => {

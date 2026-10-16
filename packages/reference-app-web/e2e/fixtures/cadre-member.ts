@@ -4,8 +4,8 @@
  *
  * Boots a real cadre-core `CadreNode` inside the Playwright **worker** process (the spec's
  * `beforeAll`, for the reason `formation-responder.ts` gives: `global-setup` runs in another
- * process and could not share the live handle). The node founds a party of its own
- * (owner genesis, as `cadre-web.ts` runs it for a founded tab) and listens on a loopback
+ * process and could not share the live handle). The node founds a party of its own under a
+ * generated owner key (owner genesis, as `cadre-web.ts` runs it for a founded tab) and listens on a loopback
  * WebSocket address, so it is the one always-on machine of that party: the owner that mints a
  * cadre invitation, and the member a device redeems it at (`CadreNode.start` registers the
  * redemption handler on every node). The browser only dials out, so it needs no relay.
@@ -17,7 +17,7 @@
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { webSockets } from '@libp2p/websockets';
 import { MemoryRawStorage, type Libp2pTransports } from '@optimystic/db-p2p';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, createOwnerKey, InMemoryKeyStore } from '@serfab/cadre-core';
 import type { CadreInvitationReach, CadreNodeConfig } from '@serfab/cadre-core';
 
 /** A live handle to the in-process cadre, consumed by the spec. */
@@ -67,20 +67,20 @@ function buildMemberConfig(privateKey: CadreNodeConfig['privateKey'], partyId: s
 }
 
 /**
- * Genesis-seed the node's own owner, as `cadre-web.ts` does for a founded tab: the idempotent
- * `OwnerKey` insert, then seed bootstrap, which also anchors the key in the node-local
- * trusted-owner store that `createCadreInvitation` hands out as the device's pins. Unlike the
- * browser's fail-soft path this throws on failure: a party with no owner can mint nothing, so
- * there is nothing to test.
+ * Genesis-seed the node's own owner, as `cadre-web.ts` does for a founded tab: an owner key
+ * of its own (in memory, since the party lasts one spec run), the idempotent `OwnerKey` insert,
+ * then the signer wired, which also anchors the key in the node-local trusted-owner store that
+ * `createCadreInvitation` hands out as the device's pins. Unlike the browser's fail-soft path
+ * this throws on failure: a party with no owner can mint nothing, so there is nothing to test.
  */
-async function runOwnerGenesis(node: CadreNode, privateKey: NonNullable<CadreNodeConfig['privateKey']>): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(privateKey);
+async function runOwnerGenesis(node: CadreNode): Promise<void> {
+	const owner = await createOwnerKey(new InMemoryKeyStore());
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) {
 		throw new Error('control database unavailable after start; cannot run the member’s owner genesis');
 	}
-	await controlDb.ensureOwnerKey(publicKeyB64);
-	await node.initializeSeedBootstrap(privateKeyB64);
+	await controlDb.ensureOwnerKey(owner.publicKey);
+	await node.useOwnerSigner(owner);
 }
 
 /** Boot the in-process cadre and return a live handle. */
@@ -91,7 +91,7 @@ export async function startCadreMember(): Promise<CadreMemberHandle> {
 	const node = new CadreNode(buildMemberConfig(identityKey, partyId));
 	await node.start();
 	try {
-		await runOwnerGenesis(node, identityKey);
+		await runOwnerGenesis(node);
 		const peerId = node.peerId?.toString();
 		if (!peerId) throw new Error('the member node has no peer id after start');
 		return {

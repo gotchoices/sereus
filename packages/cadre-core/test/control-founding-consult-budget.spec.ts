@@ -3,6 +3,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
+import { createOwnerKey } from '../src/owner-key-store.js';
 import type { StrandWatcher } from '../src/strand-watcher.js';
 import type { PendingJoinRunner } from '../src/pending-join-runner.js';
 import { controlNodeConfig, freshPartyId, memoryStorageProvider, scopedWithin } from './control-db-node-helpers.js';
@@ -48,8 +49,8 @@ import {
  *
  * **Phases**, on one solo `CadreNode` (`profile: 'transaction'`, one `MemoryRawStorage`
  * per storage id), each measured from a zeroed counter: cold `start()`; genesis
- * (`ensureOwnerKey` with the identity key and `initializeSeedBootstrap` to wire it as the
- * owner signer, the production calls); `foundStrand`, with the
+ * (`ensureOwnerKey` with a generated owner key and `useOwnerSigner` to wire it, the
+ * production calls); `foundStrand`, with the
  * control network's and the strand's consults reported separately by which
  * `CoordinatorRepo` issued them; six back-to-back calls each of
  * `queryRevokedStamps('CadrePeer')` and `queryCadrePeers()`; one idle
@@ -512,10 +513,10 @@ async function measureFounding(counter: ConsultCounter): Promise<FoundingRun> {
 
 		const db = node.getControlDatabase();
 		expect(db).not.toBeNull();
-		const owner = node.getIdentityOwnerKey();
+		const owner = await createOwnerKey(new InMemoryKeyStore());
 		const genesis = await measurePhase(counter, runStart, 'genesis', undefined, async () => {
-			expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(owner.publicKeyB64))).toBe(true);
-			await within('initializeSeedBootstrap() (genesis)', OP_TIMEOUT_MS, () => node.initializeSeedBootstrap(owner.privateKeyB64));
+			expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(owner.publicKey))).toBe(true);
+			await within('useOwnerSigner() (genesis)', OP_TIMEOUT_MS, () => node.useOwnerSigner(owner));
 		});
 
 		const strandId = `${SCOPE}-${Math.random().toString(36).slice(2)}`;
@@ -707,9 +708,9 @@ async function measureMarker(counter: ConsultCounter): Promise<MarkerRun> {
 		});
 		const db = node.getControlDatabase();
 		expect(db).not.toBeNull();
-		const owner = node.getIdentityOwnerKey();
-		expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(owner.publicKeyB64))).toBe(true);
-		await node.initializeSeedBootstrap(owner.privateKeyB64);
+		const owner = await createOwnerKey(new InMemoryKeyStore());
+		expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(owner.publicKey))).toBe(true);
+		await node.useOwnerSigner(owner);
 		const first = await freshPeerId();
 		await within('authorizePeer() (first member)', OP_TIMEOUT_MS, () => node.authorizePeer(first));
 

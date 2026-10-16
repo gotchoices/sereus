@@ -418,8 +418,8 @@ identity. The team explicitly accepts this for now rather than hardening, becaus
 - the key sits behind the same app-storage boundary (mobile LevelDB) as the rest of
   the control DB's strand data, so encrypting only this column is partial hardening;
 - the keys that are hard to rotate and single-point-of-compromise — the node's
-  libp2p peer identity and the owner key derived from it — are **already** in the
-  platform enclave via the `KeyStore` seam;
+  libp2p peer identity and its owner key, each in a slot of its own — are **already**
+  in the platform enclave via the `KeyStore` seam;
 - member keys are per-strand, intentionally replicated, and rotatable by re-forming
   the strand;
 - every fungibility-preserving fix (envelope-encrypting the column under a

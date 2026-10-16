@@ -3,7 +3,7 @@
  * (iOS Keychain / Android Keystore-encrypted storage).
  *
  * This is the mobile secure-enclave backend for the cadre-core key-material seam:
- * the phone node's libp2p identity (and the owner key derived from it) lives
+ * the phone node's libp2p identity, and its owner key in a slot of its own, live
  * here instead of plaintext LevelDB. The class is platform-agnostic — it talks to
  * an injected {@link SecureStoreApi}, the three async methods it needs. The
  * `expo-secure-store` module is structurally assignable to it, so an Expo app

@@ -58,7 +58,7 @@ import type {
 } from './types.js';
 import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS, DEFAULT_CONNECTION_MONITOR } from './types.js';
 import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
-import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
+import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
 import {
   assertScopeKeyCharset,
@@ -3307,33 +3307,6 @@ export class CadreNode implements SAppIdLookup {
    */
   private isSelfFoundedRow(strand: StrandRow): boolean {
     return strand.FounderPeerId !== null && strand.FounderPeerId === this.peerId?.toString();
-  }
-
-  /**
-   * The owner keypair (base64url Ed25519) derived from this node's resolved
-   * identity key. In the single-key reference model the owner signing key is
-   * *derived from* the node identity (see {@link ed25519KeyPairFromLibp2p}), so the
-   * same key material protected in a secure enclave backs both.
-   *
-   * Exposed so the hosting app retains control of owner genesis: cadre-core
-   * resolves + protects the identity, then the app sources this pair to drive
-   * `ensureOwnerKey(pub)` + `initializeSeedBootstrap(priv)` itself — cadre-core
-   * never silently runs genesis. An app holding a separate owner key wires it with
-   * {@link useOwnerSigner} instead and never calls this.
-   *
-   * @returns The base64url seed/public-key owner pair.
-   * @throws If called before {@link start} has resolved the identity, or when the
-   *   node runs on an ephemeral libp2p key (no `keyStore`/`privateKey` configured),
-   *   since that key is internal to libp2p and not exposed.
-   */
-  getIdentityOwnerKey(): Ed25519KeyPair {
-    if (!this.identityKey) {
-      throw new Error(
-        'getIdentityOwnerKey: node identity not resolved — call start() first, and ' +
-        'configure `keyStore` or `privateKey` (an ephemeral libp2p identity exposes no owner key)'
-      );
-    }
-    return ed25519KeyPairFromLibp2p(this.identityKey);
   }
 
   /**
@@ -7844,12 +7817,11 @@ export class CadreNode implements SAppIdLookup {
     // it: a `genesis` entry is base, kept whether or not a live `OwnerKey` row
     // vouches it. A machine that joined by invitation reaches this only through
     // `wireOwnKeyIfOwner`, which checks the row first, so a joined non-owner never
-    // self-anchors. Two callers still wire unconditionally on every start, so a
-    // node of theirs started for a party founded elsewhere does: the phone kit's
-    // `runOwnerGenesis` (cadre-rn; only for a party its saved start does not record
-    // as joined, whose starts call `wireOwnKeyIfOwner` instead) and the web reference
-    // app's start (`cadre-web.ts`); `cadre start --owner` refuses a key the party's
-    // owners do not include (cadre-cli `start-owner.ts`). Contained while the store does
+    // self-anchors. The founded-party starts (cadre-cli `start-owner.ts`, the phone
+    // kit's `runOwnerGenesis`, the web app's `cadre-web.ts`) wire a key only after
+    // inserting it as the founding row or finding it a live owner, but they judge
+    // "founding" on local rows, so one started on a store that has not synced a party
+    // founded elsewhere genesis-inserts and self-anchors its key. Contained while the store does
     // not replicate and such a node cannot mint: `createCadreInvitation` hands out
     // the anchor as the device's pins, but the `CadreInvite` insert needs a live
     // owner as issuer. If anything hands out the anchor without that check, gate

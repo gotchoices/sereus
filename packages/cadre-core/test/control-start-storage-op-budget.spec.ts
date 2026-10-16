@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
+import { createOwnerKey } from '../src/owner-key-store.js';
 import { controlNodeConfig, freshPartyId, scopedWithin } from './control-db-node-helpers.js';
 import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, type OpSnapshot } from './storage-op-counter.js';
 
@@ -238,8 +239,7 @@ describe('control database start, raw-storage operation budget', () => {
 			// purpose is the warm run below: without a written row, a warm start that
 			// silently came up on an empty database would be indistinguishable from one
 			// that hydrated, and the warm budget would be measuring the wrong path.
-			const owner = first.getIdentityOwnerKey();
-			ownerPublicKey = owner.publicKeyB64;
+			ownerPublicKey = (await createOwnerKey(new InMemoryKeyStore())).publicKey;
 			const db = first.getControlDatabase();
 			expect(db).not.toBeNull();
 			expect(await within('ensureOwnerKey() (genesis)', LIFECYCLE_TIMEOUT_MS, () => db!.ensureOwnerKey(ownerPublicKey)))

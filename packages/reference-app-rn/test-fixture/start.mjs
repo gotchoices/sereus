@@ -10,11 +10,11 @@
  *   node packages/reference-app-rn/test-fixture/start.mjs
  */
 
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CadreNode, ed25519PublicKeyFromPrivate } from '@serfab/cadre-core';
+import { CadreNode, createOwnerKey, InMemoryKeyStore } from '@serfab/cadre-core';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
@@ -56,8 +56,9 @@ const CHAT_SAPP_CONFIG = {
 async function main() {
 	console.log('Starting drone test fixture...');
 
-	// Generate owner keypair — raw 32-byte Ed25519 seed, base64url-encoded.
-	const ownerPrivateKey = randomBytes(32).toString('base64url');
+	// The drone's owner key, made in an owner slot as an app makes one; in memory, since the
+	// party lasts one fixture run.
+	const owner = await createOwnerKey(new InMemoryKeyStore());
 
 	// Pre-generate strand ID for deterministic test data
 	const strandId = randomUUID();
@@ -97,16 +98,15 @@ async function main() {
 	console.log(`  Peer ID: ${node.peerId.toString()}`);
 
 	// Seed bootstrap — allows creating + delivering seeds
-	await node.initializeSeedBootstrap(ownerPrivateKey);
+	await node.useOwnerSigner(owner);
 
 	// Enroll the drone's own owner key into the replicated OwnerKey table: the
 	// member that redeems the invitation below checks the row's issuer against it.
 	// The invitation's `ownerKeys` come from the node-local anchor, which
-	// `initializeSeedBootstrap` above already seeded with this same key.
-	const ownerPublicKey = ed25519PublicKeyFromPrivate(ownerPrivateKey);
+	// `useOwnerSigner` above already seeded with this same key.
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) throw new Error('Control database unavailable; cannot enroll drone owner');
-	await controlDb.ensureOwnerKey(ownerPublicKey);
+	await controlDb.ensureOwnerKey(owner.publicKey, 'drone');
 
 	// Mint the cadre invitation the phone redeems at this drone (`_setup.yaml`
 	// pastes it into `input-cadre-invitation`). Its member address is the ws

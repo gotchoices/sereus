@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
+import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import type { JoinedStrandSession } from '../src/joined-strand-store.js';
 import { softwareOwnerSigner, type OwnerSigner, type OwnerSigningRequest } from '../src/owner-signer.js';
 import type { FormStrandResult } from '../src/types.js';
@@ -51,7 +52,7 @@ describe('CadreNode signs every owner write through the one signer it was given'
 		await node.start();
 		db = node.getControlDatabase()!;
 		owner = freshKeyPair();
-		expect(owner.publicKey).not.toBe(node.getIdentityOwnerKey().publicKeyB64);
+		expect(owner.publicKey).not.toBe(ed25519PublicKeyB64FromPeerId(node.peerId!.toString()));
 		expect(await db.ensureOwnerKey(owner.publicKey)).toBe(true);
 		await node.useOwnerSigner(countingSigner(softwareOwnerSigner(owner.privateKey)));
 	}, 60_000);

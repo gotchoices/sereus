@@ -9,16 +9,17 @@
  *   - WebSocket + circuit-relay + WebRTC(+direct) transports (no TCP in a tab).
  *   - IndexedDB-backed raw storage via `strand-storage.ts` (per-scope handles
  *     pre-opened before the synchronous cadre-core storage provider is hit).
- *   - Ed25519 identity + the start record (`party-start.ts`: the party and how the tab
- *     came to it) persisted in the node-local IndexedDB database across reloads,
- *     alongside the per-party durable trusted-owner anchor and bootstrap-peer store
- *     (`node-local-slots.ts`) — same database, shared fate. That database is
+ *   - Ed25519 identity, the tab's owner key (in a slot of its own) and the start record
+ *     (`party-start.ts`: the party and how the tab came to it) persisted in the node-local
+ *     IndexedDB database across reloads, alongside the per-party durable trusted-owner
+ *     anchor and bootstrap-peer store (`node-local-slots.ts`) — same database, shared
+ *     fate. That database is
  *     deliberately NOT the control block store: cadre-core scopes the control blocks
  *     by party id, and the party id is read out of this one.
  *   - Transaction profile — the browser is an edge node, like the phone.
  *
- * A tab founds a party on its first load and self-seeds as its owner (mirroring
- * `cadre-cli start --owner`); the solo chat strand coordinates its own writes, so DML
+ * A tab founds a party on its first load and self-seeds as its owner, under an owner key
+ * of its own; the solo chat strand coordinates its own writes, so DML
  * lands on the strand's IndexedDB without any peers. A tab can then join the user's
  * existing cadre by invitation, which moves its one node to that party, carrying the
  * founded party's strands along, and later remove the party it left. The web app has no
@@ -35,8 +36,13 @@
  */
 
 import {
+	addBackupOwnerKey as addBackupOwnerKeyTo,
 	CadreNode,
+	createOwnerKey,
+	exportOwnerKey as exportOwnerKeyFrom,
 	generateStrandMemberKey,
+	importOwnerKeyInto,
+	loadOwnerSigner,
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
@@ -45,7 +51,12 @@ import {
 	resolveStunServers,
 } from '@serfab/cadre-core';
 import type {
+	BackupOwnerKey,
 	CadreNodeConfig,
+	ImportedOwnerKey,
+	KeyStore,
+	OwnerKeyExportOptions,
+	OwnerSigner,
 	StrandInstance,
 	OpenInvitation,
 	FormStrandResult,
@@ -81,6 +92,7 @@ import {
 } from './strand-storage.js';
 import {
 	kvSlot,
+	ownerKeyStore,
 	partyKvKey,
 	TRUSTED_OWNERS_KV_KEY,
 	BOOTSTRAP_PEERS_KV_KEY,
@@ -102,9 +114,10 @@ import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-
 
 /**
  * How the start settled this tab's owner key. A party the tab founded runs owner genesis:
- * `genesis` (this start inserted the founding `OwnerKey` row) or `existing` (it was there).
- * A party the tab joined never does: `enrolled` when the party lists the tab's key as an
- * owner and it is wired for signing, `member` when it does not.
+ * `genesis` (this start inserted the founding `OwnerKey` row) or `existing` (the party
+ * already lists the tab's owner key). A party the tab joined never does: `enrolled` when
+ * the party lists a key the tab holds and it is wired for signing. `member` when the party
+ * lists none (on a founded party: the tab's owner key was lost, or removed).
  */
 export type OwnerState = 'pending' | 'genesis' | 'existing' | 'enrolled' | 'member' | 'error';
 
@@ -189,6 +202,9 @@ const IDENTITY_FIRST_SEEN_KEY = 'identity-first-seen';
 const GRANTED_OWNER_RECHECK_MS = 2_000;
 const GRANTED_OWNER_WAIT_MS = 60_000;
 
+/** The founding owner key's name on its `OwnerKey` row; the phone kit's default is `phone`. */
+const TAB_OWNER_KEY_LABEL = 'browser';
+
 let node: CadreNode | null = null;
 let controlStorage: IRawStorage | null = null;
 /**
@@ -211,6 +227,8 @@ let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
 let ownerState: OwnerState = 'pending';
 let ownerError: string | null = null;
+/** The tab's owner-key slot, over the node-local database; open while a node runs. */
+let ownerKeys: KeyStore | null = null;
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let enrolledMachineStore: EnrolledMachineStore | null = null;
@@ -464,6 +482,7 @@ export async function bringUp(start?: PartyStart, purpose: BringUpPurpose = 'run
 		partyId,
 	);
 	moveRecords = new StrandMoveRecords(nodeLocalHandle);
+	ownerKeys = ownerKeyStore(nodeLocalHandle);
 
 	const config: CadreNodeConfig = {
 		privateKey,
@@ -575,6 +594,12 @@ export function requireMoveRecords(): StrandMoveRecords {
 	return moveRecords;
 }
 
+/** The tab's owner-key slot, over the node-local database; throws while no node runs. */
+function requireOwnerKeys(): KeyStore {
+	if (!ownerKeys) throw new Error('CadreNode not started');
+	return ownerKeys;
+}
+
 // ── Owner step ────────────────────────────────────────────────────────────────
 
 /**
@@ -592,11 +617,15 @@ export function ownerKeyWired(): boolean {
 
 /**
  * Solo owner self-genesis, for a party this tab founded. A single-node cadre must
- * seed itself as the owner before it can author control-network writes. This
- * reproduces the `cadre-cli start --owner` path: take the identity-derived owner
- * keypair, run the idempotent genesis `OwnerKey` insert, then initialize
- * seed-bootstrap. Never for a party the tab joined: genesis on a party whose
- * control store has not arrived would seat the tab's key as a founding owner.
+ * seed itself as the owner before it can author control-network writes. The phone
+ * kit's founded-party rule (`cadre-rn` `phone-node/config.ts` → `enrollFoundedOwner`;
+ * one shared copy is `plan/1.20-edge-node-bring-up-shared-by-every-kit`): on a party
+ * with no `OwnerKey` row, the owner slot's key (created now unless the slot holds one)
+ * is inserted as the founding row and wired; on a party that has owners, the slot's
+ * key is wired only when it is a live owner, and no key is created, since a new one
+ * could not be seated without another owner's signature. Never for a party the tab
+ * joined: genesis on a party whose control store has not arrived would seat the tab's
+ * key as a founding owner.
  *
  * Fail-soft: the Phase-1 chat round-trip needs no peers and does not
  * depend on owner, so a genesis failure is captured for diagnostics rather
@@ -614,14 +643,7 @@ export function ownerKeyWired(): boolean {
  */
 async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
 	try {
-		const { privateKeyB64, publicKeyB64 } = cadre.getIdentityOwnerKey();
-		const controlDb = cadre.getControlDatabase();
-		if (!controlDb) {
-			throw new Error('control database unavailable after start; cannot run owner genesis');
-		}
-		const inserted = await controlDb.ensureOwnerKey(publicKeyB64);
-		await cadre.initializeSeedBootstrap(privateKeyB64);
-		ownerState = inserted ? 'genesis' : 'existing';
+		ownerState = await settleFoundedOwnerKey(cadre, requireOwnerKeys());
 		ownerError = null;
 	} catch (err) {
 		ownerState = 'error';
@@ -630,11 +652,35 @@ async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
 	}
 }
 
+async function settleFoundedOwnerKey(cadre: CadreNode, keyStore: KeyStore): Promise<OwnerState> {
+	const controlDb = cadre.getControlDatabase();
+	if (!controlDb) {
+		throw new Error('control database unavailable after start; cannot run owner genesis');
+	}
+	const held = await loadOwnerSigner(keyStore);
+	if (await controlDb.hasOwnerKey()) {
+		return held ? existingIfOwner(cadre, held) : 'member';
+	}
+	const founding = held ?? (await createOwnerKey(keyStore));
+	if (!(await controlDb.ensureOwnerKey(founding.publicKey, TAB_OWNER_KEY_LABEL))) {
+		// A row arrived between the two reads: the party has an owner now, so judge the key as above.
+		return existingIfOwner(cadre, founding);
+	}
+	await cadre.useOwnerSigner(founding);
+	return 'genesis';
+}
+
+async function existingIfOwner(cadre: CadreNode, signer: OwnerSigner): Promise<OwnerState> {
+	return (await cadre.wireOwnKeyIfOwner(signer)) ? 'existing' : 'member';
+}
+
 /**
- * The owner step of a party this tab joined: wire the identity key for signing only when
- * the party lists it as a live owner (`CadreNode.wireOwnKeyIfOwner`), never insert an
- * `OwnerKey` row, so a joined tab can neither seat itself as a founder nor anchor a key that
- * is no owner's. `enrolled` when wired, `member` otherwise. Fail-soft as genesis is.
+ * The owner step of a party this tab joined: wire a key only when the party lists it as a
+ * live owner, never insert an `OwnerKey` row, so a joined tab can neither seat itself as a
+ * founder nor anchor a key that is no owner's. The owner slot's key is tried first (a backup
+ * imported here), then `CadreNode.wireOwnKeyIfOwner`'s default, the identity key, which an
+ * owner-granting invitation seats until owner grants seat a key of their own. `enrolled` when
+ * wired, `member` otherwise. Fail-soft as genesis is.
  *
  * `granted`: a redemption has just made this key an owner, so a key not listed yet means
  * the row has not reached this node, not that it is no owner. It is asked again every 2 s
@@ -643,7 +689,8 @@ async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
 export async function wireJoinedOwnerKey(cadre: CadreNode, granted: boolean): Promise<void> {
 	try {
 		const deadline = Date.now() + GRANTED_OWNER_WAIT_MS;
-		while (!(await cadre.wireOwnKeyIfOwner())) {
+		const held = await loadOwnerSigner(requireOwnerKeys());
+		while (!(await wireJoinedOwner(cadre, held))) {
 			if (!granted || Date.now() >= deadline) {
 				ownerState = 'member';
 				ownerError = null;
@@ -658,6 +705,49 @@ export async function wireJoinedOwnerKey(cadre: CadreNode, granted: boolean): Pr
 		ownerError = err instanceof Error ? err.message : String(err);
 		console.warn('[reference-app-web] wiring the joined owner key failed:', err);
 	}
+}
+
+/**
+ * Wire `held`, the owner slot's key, when the party lists it, else `wireOwnKeyIfOwner`'s
+ * default: the signer already wired, else the identity key. A node takes one owner signer, so
+ * `held` is tried only while none is wired.
+ */
+async function wireJoinedOwner(cadre: CadreNode, held: OwnerSigner | undefined): Promise<boolean> {
+	if (held && cadre.getOwnerSigner() === null && (await cadre.wireOwnKeyIfOwner(held))) return true;
+	return await cadre.wireOwnKeyIfOwner();
+}
+
+// ── Owner keys (the Cadre page's owner-key section) ───────────────────────────
+// Listing and removal are the node's own calls (`listOwnerKeys`, `planOwnerKeyRemoval`,
+// `removeOwner`), as the machine list calls the node; these three also need the tab's owner slot.
+
+/**
+ * Make a backup owner key: seat a new key as an owner, signed by this tab's owner key, and
+ * return its export (cadre-core's `addBackupOwnerKey`). Nothing is kept in the tab, so the page
+ * shows or saves `exportText` once.
+ */
+export async function addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<BackupOwnerKey> {
+	if (!node) throw new Error('CadreNode not started');
+	return await addBackupOwnerKeyTo(node, options);
+}
+
+/** This tab's own owner key as export text; throws when the tab holds none of its own. */
+export async function exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<string> {
+	return await exportOwnerKeyFrom(requireOwnerKeys(), options);
+}
+
+/**
+ * Import owner-key text into the tab's owner slot, wiring the key when the running party lists
+ * it (cadre-core's `importOwnerKeyInto`); the owner state then reads as the key being wired.
+ */
+export async function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
+	if (!node) throw new Error('CadreNode not started');
+	const imported = await importOwnerKeyInto(requireOwnerKeys(), node, text, passphrase);
+	if (imported.wired && !ownerKeyWired()) {
+		ownerState = requireStart().origin === 'founded' ? 'existing' : 'enrolled';
+		ownerError = null;
+	}
+	return imported;
 }
 
 // ── Strand formation (consent / invitation flow) ──────────────────────────────
@@ -838,8 +928,8 @@ export async function joinViaInvitation(
 // ── Cadre invitations (adding a device or app) ────────────────────────────────
 
 /**
- * Whether this tab can act as an owner of its cadre (`CadreNode.isOwner`: its identity key
- * wired for signing and enrolled in `OwnerKey`): only an owner can mint a cadre invitation.
+ * Whether this tab can act as an owner of its cadre (`CadreNode.isOwner`: an owner key wired
+ * for signing and enrolled in `OwnerKey`): only an owner can mint a cadre invitation.
  */
 export async function isOwner(): Promise<boolean> {
 	if (!node) throw new Error('CadreNode not started');
@@ -1033,6 +1123,7 @@ export async function stopCadre(): Promise<void> {
 		bootstrapPeerStore = null;
 		enrolledMachineStore = null;
 		moveRecords = null;
+		ownerKeys = null;
 	}
 }
 

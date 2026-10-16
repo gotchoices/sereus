@@ -26,8 +26,11 @@ export {
 export {
 	buildPhoneNodeConfig,
 	DEFAULT_OWNER_GENESIS_TIMEOUT_MS,
+	DEFAULT_OWNER_KEY_LABEL,
 	runOwnerGenesis,
 	wireJoinedOwnerKey,
+	type JoinedOwnerKeyOptions,
+	type OwnerGenesisOptions,
 	type OwnerGenesisResult,
 	type PhoneNodeConfigInputs,
 } from './config.js';

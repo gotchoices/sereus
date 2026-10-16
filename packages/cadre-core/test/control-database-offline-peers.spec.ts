@@ -9,7 +9,9 @@ import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
-import { InMemoryKeyStore } from '../src/key-store.js';
+import { InMemoryKeyStore, type KeyStore } from '../src/key-store.js';
+import { createOwnerKey, loadOwnerSigner } from '../src/owner-key-store.js';
+import type { OwnerSigner } from '../src/owner-signer.js';
 import {
 	controlNodeConfig,
 	expectNotListening,
@@ -128,29 +130,34 @@ function pendingRevocations(node: CadreNode): Map<string, { tableName: string; r
 
 interface OwnerNode {
 	node: CadreNode;
+	owner: OwnerSigner;
 	ownerPublicKey: string;
 	selfPeerId: string;
 }
 
-/** Start a node in the non-listening posture and assert it really came up that way. */
-async function startControlNode(node: CadreNode): Promise<OwnerNode> {
+/**
+ * Start a node in the non-listening posture and assert it really came up that way. Its owner key
+ * is the one in `keyStore`'s owner slot, created there on first boot, as an embedding app keeps it.
+ */
+async function startControlNode(node: CadreNode, keyStore: KeyStore): Promise<OwnerNode> {
 	await within('node.start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
 	expectNotListening(node);
 	expect(node.getControlDatabase()).not.toBeNull();
+	const owner = (await loadOwnerSigner(keyStore)) ?? (await createOwnerKey(keyStore));
 	return {
 		node,
-		ownerPublicKey: node.getIdentityOwnerKey().publicKeyB64,
+		owner,
+		ownerPublicKey: owner.publicKey,
 		selfPeerId: node.peerId!.toString()
 	};
 }
 
-/** First boot: anchor the node's own identity as the founding owner, then publish self. */
+/** First boot: seat the node's owner key as the founding owner, then publish self. */
 async function genesisOwner(owner: OwnerNode): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = owner.node.getIdentityOwnerKey();
 	const db = owner.node.getControlDatabase()!;
-	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64)))
+	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(owner.ownerPublicKey)))
 		.toBe(true);
-	await owner.node.initializeSeedBootstrap(privateKeyB64);
+	await owner.node.useOwnerSigner(owner.owner);
 	expect(await within('registerSelf() (genesis)', OP_TIMEOUT_MS, () => owner.node.registerSelf()))
 		.toBe('inserted');
 }
@@ -161,12 +168,11 @@ async function genesisOwner(owner: OwnerNode): Promise<void> {
  * exactly as an embedding app does on every launch.
  */
 async function rejoinOwner(owner: OwnerNode): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = owner.node.getIdentityOwnerKey();
 	const db = owner.node.getControlDatabase()!;
 	expect(await within('hasOwnerKey() (warm start)', OP_TIMEOUT_MS, () => db.hasOwnerKey())).toBe(true);
-	expect(await within('ensureOwnerKey() (warm start)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64)))
+	expect(await within('ensureOwnerKey() (warm start)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(owner.ownerPublicKey)))
 		.toBe(false);
-	await owner.node.initializeSeedBootstrap(privateKeyB64);
+	await owner.node.useOwnerSigner(owner.owner);
 }
 
 /**
@@ -181,14 +187,15 @@ async function bootOwnerNode(
 	tag: string,
 	transports?: NetworkConfig['transports']
 ): Promise<OwnerNode> {
+	const keyStore = new InMemoryKeyStore();
 	const owner = await startControlNode(new CadreNode(controlNodeConfig({
 		partyId: freshPartyId(`offline-${tag}`),
 		profile,
-		keyStore: new InMemoryKeyStore(),
+		keyStore,
 		storage: new MemoryRawStorage(),
 		controlCohort: { dialTimeoutMs: DIAL_TIMEOUT_MS },
 		...(transports ? { transports } : {})
-	})));
+	})), keyStore);
 	await genesisOwner(owner);
 	return owner;
 }
@@ -567,7 +574,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 	// membership table and only add siblings afterwards.
 	it('re-boots on stored rows and still serves every control read/write with a BLACKHOLE sibling', async () => {
 		const partyId = freshPartyId('offline-warm-restart');
-		// Shared across both runs: same identity slot, same block storage.
+		// Shared across both runs: same identity and owner slots, same block storage.
 		const keyStore = new InMemoryKeyStore();
 		const storage = new MemoryRawStorage();
 		const config = () => controlNodeConfig({
@@ -576,7 +583,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		});
 
 		let blackhole: OfflinePeer;
-		const first = await startControlNode(new CadreNode(config()));
+		const first = await startControlNode(new CadreNode(config()), keyStore);
 		try {
 			await genesisOwner(first);
 			blackhole = await mintBlackholePeer(first, 41);
@@ -584,7 +591,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 			await within('first.stop()', LIFECYCLE_TIMEOUT_MS, () => first.node.stop());
 		}
 
-		const second = await startControlNode(new CadreNode(config()));
+		const second = await startControlNode(new CadreNode(config()), keyStore);
 		try {
 			// Same key store ⇒ same identity ⇒ the stored rows are this node's own.
 			expect(second.selfPeerId).toBe(first.selfPeerId);

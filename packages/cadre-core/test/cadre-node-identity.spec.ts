@@ -165,27 +165,8 @@ describe('CadreNode identity resolution', () => {
 	});
 });
 
-describe('CadreNode.getIdentityOwnerKey', () => {
-	it('throws before the identity is resolved (not started)', () => {
-		const node = new CadreNode(makeConfig({ keyStore: new InMemoryKeyStore() }));
-		expect(() => node.getIdentityOwnerKey()).toThrow(/not resolved/i);
-	});
-
-	it('throws on the ephemeral path even after resolve (no exposed owner key)', async () => {
-		const node = new CadreNode(makeConfig());
-		await resolve(node);
-		expect(() => node.getIdentityOwnerKey()).toThrow();
-	});
-
-	it('returns the same pair as ed25519KeyPairFromLibp2p(identityKey)', async () => {
-		const node = new CadreNode(makeConfig({ keyStore: new InMemoryKeyStore() }));
-		await resolve(node);
-		expect(node.getIdentityOwnerKey()).toEqual(ed25519KeyPairFromLibp2p(identityOf(node)!));
-	});
-});
-
 describe('CadreNode identity path: no key-material leak in logs', () => {
-	it('never logs the stored protobuf bytes or the owner seed across resolve + sign', async () => {
+	it('never logs the stored protobuf bytes or the identity seed across resolve + sign', async () => {
 		const store = new InMemoryKeyStore();
 		const node = new CadreNode(makeConfig({ keyStore: store }));
 
@@ -208,7 +189,6 @@ describe('CadreNode identity path: no key-material leak in logs', () => {
 			(node as unknown as { controlNode: unknown }).controlNode = { peerId: peerIdFromPrivateKey(ik) };
 			const signing = (node as unknown as { getSelfSigningKey(): unknown }).getSelfSigningKey();
 			expect(signing).not.toBeNull();
-			node.getIdentityOwnerKey();
 		} finally {
 			createDebug.log = origLog;
 			createDebug.enable(prevNamespaces);
@@ -218,12 +198,11 @@ describe('CadreNode identity path: no key-material leak in logs', () => {
 		expect(captured.length).toBeGreaterThan(0);
 
 		const bytes = (await store.get(DEFAULT_IDENTITY_KEY_ID))!;
-		const owner = node.getIdentityOwnerKey();
 		const secrets = [
 			u8ToString(bytes, 'base64'),
 			u8ToString(bytes, 'base64url'),
 			u8ToString(bytes, 'hex'),
-			owner.privateKeyB64
+			ed25519KeyPairFromLibp2p(identityOf(node)!).privateKeyB64
 		];
 
 		const blob = captured.join('\n');

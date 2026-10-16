@@ -13,9 +13,8 @@ CadreNode → control network (CadreControl) → signed open chat strand (chat s
 
 - **Control network** — an Optimystic network named `control-<partyId>` carrying
   the `CadreControl` schema (owner keys, cadre peers, strands).
-- **Owner self-genesis** — a solo node seeds itself as its own owner (bridge
-  the libp2p identity into a base64url owner key, idempotent genesis
-  `OwnerKey` insert, then `initializeSeedBootstrap`).
+- **Owner self-genesis** — a solo node seeds itself as its own owner under an
+  owner key of its own, never its libp2p identity (see [The tab's owner key](#the-tabs-owner-key)).
 - **Signed chat strand** — an open strand whose chat sApp schema is **signed**;
   `StrandInstanceManager` verifies the signature on start
   (`assertSchemaSignature`), so the browser exercises the schema-signature gate
@@ -93,9 +92,9 @@ every key is known ahead of time — and the provider returns a cached
 
 ### Two databases, not one
 
-The tab's **node-local** `kv` records — its Ed25519 identity, its start record, the
-trusted-owner anchor, the bootstrap peers, the enrolled-machine count, the strand network
-state — stay in the database historically named `sereus-strand-control`
+The tab's **node-local** `kv` records — its Ed25519 identity, its owner key, its start
+record, the trusted-owner anchor, the bootstrap peers, the enrolled-machine count, the strand
+network state — stay in the database historically named `sereus-strand-control`
 (`NODE_LOCAL_STORE_KEY`). They cannot move into the party-scoped control database, because
 the party id that names it is one of the records read out of them. So `startCadre` opens
 the node-local database first, reads the start record, and only then opens
@@ -131,6 +130,32 @@ current coverage, plus the schema-signature gate.
 Owner genesis is **fail-soft**: the chat round-trip runs on the solo node
 and does not depend on owner, so a genesis failure is surfaced on Home /
 Diagnostics rather than aborting startup.
+
+### The tab's owner key
+
+The tab keeps one owner key, apart from its identity, under the node-local `kv` key
+`owner-private-key` (the libp2p protobuf bytes of an Ed25519 private key, the peer key's
+stored form, written strict where the browser supports it), read through a one-slot
+cadre-core `KeyStore` (`ownerKeyStore` in `lib/node-local-slots.ts`). One per tab, not per
+party: a key may own several cadres.
+
+- **Founded party, no `OwnerKey` row yet:** the slot's key (created now unless the slot
+  already holds one) becomes the founding row, labelled `browser`, and is wired
+  (`useOwnerSigner`). Home's **Owner** row reads `genesis`.
+- **Founded party that has owners:** the slot's key is wired only when it is a live owner
+  (`existing`); otherwise the tab is a `member` and no key is created, since a new one could
+  not be seated without another owner's signature.
+- **Joined party:** see [Joining an existing cadre](#joining-an-existing-cadre).
+- **Backup, export, import** (`lib/cadre-web.ts`): `addBackupOwnerKey` seats a new key as an
+  owner under a label and returns its export, keeping nothing; `exportOwnerKey` exports the
+  tab's own key; `importOwnerKey` stores an exported key in the slot (refused when the slot
+  holds a different one) and wires it when the party lists it. All three are cadre-core's
+  `owner-key-flows.ts`, optionally passphrase-locked. Listing and removal are the node's own
+  `listOwnerKeys`, `planOwnerKeyRemoval` and `removeOwner`.
+- **Exposure** is the peer key's: origin-scoped IndexedDB. Clearing the site's data loses the
+  owner key with the identity, and the tab is then no owner of the party it founded unless it
+  imports a backup of the key. Non-extractable WebCrypto keys were weighed and declined,
+  because a file or QR backup needs an exportable key.
 
 The chat strand's database can only be opened with the chat schema that
 created it. A build whose `CHAT_SCHEMA` changes an existing table (a column
@@ -348,11 +373,12 @@ sequence itself, over `lib/cadre-web.ts`'s lifecycle ([An app joins an existing 
   empty and a member invitation is fine; the chat strand keeps working in the joined party
   as the same local strand.
 - **After admission** the start record names the joined party (`origin: 'joined'`, the
-  founded party as `formerPartyId`), and the tab's key is wired for signing only when the
-  party lists it as an owner (`wireOwnKeyIfOwner`; after an owner grant it is asked again
-  every 2 s for up to a minute while the row arrives). Home's **Owner** row reads `enrolled`
-  or `member`. A joined party never runs owner genesis, so a reload cannot seat the tab's key
-  as a founding `OwnerKey` row of a cadre it merely joined.
+  founded party as `formerPartyId`), and a key is wired for signing only when the party lists
+  it as an owner (`wireOwnKeyIfOwner`; after an owner grant it is asked again every 2 s for up
+  to a minute while the row arrives): the tab's owner key first, else its identity key, which
+  an owner-granting invitation seats until owner grants seat a key of their own. Home's
+  **Owner** row reads `enrolled` or `member`. A joined party never runs owner genesis, so a
+  reload cannot seat the tab's key as a founding `OwnerKey` row of a cadre it merely joined.
 - **Every start adopts** the move records naming its party, once the tab's key is wired as
   an owner there, before it reports `running`: a tab closed after admission finishes the
   move on its next load, and a member whose owner grant arrived late finishes it at the

@@ -1,15 +1,16 @@
 /**
- * The phone node's `CadreNodeConfig` and its owner genesis, with no native imports, so a Node
- * test can build the node shape a phone runs.
+ * The phone node's `CadreNodeConfig` and how a start settles its owner key, with no native
+ * imports, so a Node test can build the node shape a phone runs.
  */
 
-import { DEFAULT_IDENTITY_KEY_ID } from '@serfab/cadre-core';
+import { createOwnerKey, DEFAULT_IDENTITY_KEY_ID, loadOwnerSigner } from '@serfab/cadre-core';
 import type {
 	BootstrapPeerStore,
 	CadreNode,
 	CadreNodeConfig,
 	EnrolledMachineStore,
 	KeyStore,
+	OwnerSigner,
 	StrandNetworkStateStore,
 	TrustedOwnerStore,
 } from '@serfab/cadre-core';
@@ -20,7 +21,10 @@ import type { PhoneNodeOptions } from './options.js';
 export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
 	/** `undefined` keeps libp2p-noise's pure-JavaScript crypto. */
 	noiseCrypto?: NoiseCryptoInterface;
-	/** Holds the node identity; the node loads it on start, generating it on first run. */
+	/**
+	 * Holds the node identity, which the node loads on start, generating it on first run, and the
+	 * owner key in its own slot (`DEFAULT_OWNER_KEY_ID`), which only {@link runOwnerGenesis} creates.
+	 */
 	keyStore: KeyStore;
 	/**
 	 * Raw block storage per cadre-core storage scope: `controlStorageScope(partyId)` for the
@@ -103,25 +107,50 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 }
 
 /**
- * How the start settled this node's owner key: `PhoneNodeStatus.owner`. `'enrolled'`: the key
- * is an owner and wired for signing. `'member'`: a party this app joined does not list the key
- * as an owner. `'failed'` and `'timed-out'`: see {@link runOwnerGenesis}.
+ * How the start settled this node's owner key: `PhoneNodeStatus.owner`. `'enrolled'`: a key is
+ * an owner and wired for signing. `'member'`: the party lists no key this app holds (a party it
+ * joined, or one it founded whose owner slot was lost). `'failed'` and `'timed-out'`: see
+ * {@link runOwnerGenesis}.
  */
 export type OwnerGenesisResult = 'enrolled' | 'member' | 'failed' | 'timed-out';
 
 /** Default bound on {@link runOwnerGenesis} and {@link wireJoinedOwnerKey}. */
 export const DEFAULT_OWNER_GENESIS_TIMEOUT_MS = 60_000;
 
+/** Default `PhoneNodeOptions.ownerKeyLabel`: the founding owner key's name on its `OwnerKey` row. */
+export const DEFAULT_OWNER_KEY_LABEL = 'phone';
+
+/** What {@link runOwnerGenesis} takes. */
+export interface OwnerGenesisOptions {
+	/** The key store whose owner slot holds this app's owner key: the one the identity is in. */
+	keyStore: KeyStore;
+	/** The founding row's label; default {@link DEFAULT_OWNER_KEY_LABEL}. */
+	label?: string;
+	/** Default {@link DEFAULT_OWNER_GENESIS_TIMEOUT_MS}. */
+	timeoutMs?: number;
+}
+
+/** What {@link wireJoinedOwnerKey} takes. */
+export interface JoinedOwnerKeyOptions {
+	/** The key store whose owner slot holds this app's owner key, if it holds one. */
+	keyStore: KeyStore;
+	/** Default {@link DEFAULT_OWNER_GENESIS_TIMEOUT_MS}. */
+	timeoutMs?: number;
+	/** A redemption has just granted owner: keep asking until the row arrives. */
+	granted?: boolean;
+}
+
 /** How often {@link wireJoinedOwnerKey} asks again for an owner key a redemption just granted. */
 const GRANTED_OWNER_RECHECK_MS = 2_000;
 
 /**
- * Self-genesis the phone as its own party's owner: enroll the identity's owner key in the control
- * database, then bring up seed bootstrap (which lets the node author its own `CadrePeer` row). A
- * node must be an enrolled owner to publish strands, and `CadreNode.requestJoin` works only on one.
- * The first node to enroll becomes the founding owner; for a later joiner that has already synced
- * one, `ensureOwnerKey` is a no-op. Only for a party this app founded: a joined party's start
- * runs {@link wireJoinedOwnerKey} instead.
+ * The owner step of a party this app founded. On a party with no `OwnerKey` row yet, the owner
+ * slot's key (created there now unless the slot already holds one) becomes the founding owner
+ * under `label` and is wired for signing, which also lets the node author its own `CadrePeer` row.
+ * On a party that has owners, the slot's key is wired only when it is a live owner, and no key is
+ * created: a new one could not be seated without another owner's signature. A node must be an
+ * enrolled owner to publish strands, and `CadreNode.requestJoin` works only on one. A joined
+ * party's start runs {@link wireJoinedOwnerKey} instead.
  *
  * Fail-soft and bounded: a failure or a genesis that has not settled within `timeoutMs` is logged
  * and returned, and the start stands — the phone can still join discovered strands and sync. A
@@ -131,30 +160,28 @@ const GRANTED_OWNER_RECHECK_MS = 2_000;
  * write against an unresponsive member can hold the write lock for about 84 s, so an unbounded wait
  * here is a real stall. Move the bound into cadre-core and drop `timeoutMs` when it has one.
  */
-export function runOwnerGenesis(
-	node: CadreNode,
-	timeoutMs: number = DEFAULT_OWNER_GENESIS_TIMEOUT_MS,
-): Promise<OwnerGenesisResult> {
-	return withinBound('owner self-genesis', enrollOwner(node).then((): OwnerGenesisResult => 'enrolled'), timeoutMs);
+export function runOwnerGenesis(node: CadreNode, options: OwnerGenesisOptions): Promise<OwnerGenesisResult> {
+	const label = options.label ?? DEFAULT_OWNER_KEY_LABEL;
+	return withinBound('owner self-genesis', enrollFoundedOwner(node, options.keyStore, label), options.timeoutMs ?? DEFAULT_OWNER_GENESIS_TIMEOUT_MS);
 }
 
 /**
- * The owner step of a party this app joined: wire the identity key for signing only when the
- * party lists it as a live owner (`CadreNode.wireOwnKeyIfOwner`), never insert an `OwnerKey` row,
- * so a joined app can neither seat itself as a founder nor anchor a key that is no owner's.
- * Fail-soft and bounded as {@link runOwnerGenesis} is.
+ * The owner step of a party this app joined: wire a key only when the party lists it as a live
+ * owner, never insert an `OwnerKey` row, so a joined app can neither seat itself as a founder nor
+ * anchor a key that is no owner's. The owner slot's key is tried first (a backup imported here);
+ * then `CadreNode.wireOwnKeyIfOwner`'s default, the identity key, which is the key an
+ * owner-granting invitation seats until owner grants seat one of their own. Fail-soft and bounded
+ * as {@link runOwnerGenesis} is.
  *
- * `granted`: a redemption has just made this key an owner, so a key not listed yet means the row
+ * `granted`: a redemption has just made this app an owner, so a key not listed yet means the row
  * has not reached this node, not that it is no owner. It is asked again every 2 s until it is
  * wired or the bound passes; a start that timed out wires it on the next start.
  */
-export function wireJoinedOwnerKey(
-	node: CadreNode,
-	options: { timeoutMs?: number; granted?: boolean } = {},
-): Promise<OwnerGenesisResult> {
+export function wireJoinedOwnerKey(node: CadreNode, options: JoinedOwnerKeyOptions): Promise<OwnerGenesisResult> {
 	let expired = false;
 	const wiring = async (): Promise<OwnerGenesisResult> => {
-		while (!(await node.wireOwnKeyIfOwner())) {
+		const held = await loadOwnerSigner(options.keyStore);
+		while (!(await wireJoinedOwner(node, held))) {
 			if (!options.granted) return 'member';
 			await new Promise((resolve) => setTimeout(resolve, GRANTED_OWNER_RECHECK_MS));
 			// Past the bound the start has gone on as `'timed-out'`, and may have stopped the node.
@@ -193,13 +220,36 @@ async function withinBound(
 	}
 }
 
-async function enrollOwner(node: CadreNode): Promise<void> {
-	// The owner pair comes from the node's resolved (secure-stored) identity.
-	const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
+async function enrollFoundedOwner(node: CadreNode, keyStore: KeyStore, label: string): Promise<OwnerGenesisResult> {
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) {
 		throw new Error('control database unavailable after start; cannot run owner genesis');
 	}
-	await controlDb.ensureOwnerKey(publicKeyB64);
-	await node.initializeSeedBootstrap(privateKeyB64);
+	const held = await loadOwnerSigner(keyStore);
+	if (await controlDb.hasOwnerKey()) {
+		return held ? wiredIfOwner(node, held) : 'member';
+	}
+	// Loaded rather than created when the slot already holds a key: one imported before founding,
+	// or one an iOS reinstall kept in the Keychain while the app's data went.
+	const founding = held ?? (await createOwnerKey(keyStore));
+	if (!(await controlDb.ensureOwnerKey(founding.publicKey, label))) {
+		// A row arrived between the two reads: the party has an owner now, so judge the key as above.
+		return wiredIfOwner(node, founding);
+	}
+	await node.useOwnerSigner(founding);
+	return 'enrolled';
+}
+
+async function wiredIfOwner(node: CadreNode, signer: OwnerSigner): Promise<OwnerGenesisResult> {
+	return (await node.wireOwnKeyIfOwner(signer)) ? 'enrolled' : 'member';
+}
+
+/**
+ * Wire `held`, the owner slot's key, when the party lists it, else `wireOwnKeyIfOwner`'s default:
+ * the signer already wired, else the identity key. A node takes one owner signer, so `held` is
+ * tried only while none is wired.
+ */
+async function wireJoinedOwner(node: CadreNode, held: OwnerSigner | undefined): Promise<boolean> {
+	if (held && node.getOwnerSigner() === null && (await node.wireOwnKeyIfOwner(held))) return true;
+	return await node.wireOwnKeyIfOwner();
 }

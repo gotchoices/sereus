@@ -37,8 +37,9 @@ import { webSockets } from '@libp2p/websockets';
 import { MemoryRawStorage, type Libp2pTransports } from '@optimystic/db-p2p';
 import {
 	CadreNode,
-	ed25519KeyPairFromLibp2p,
+	createOwnerKey,
 	generateStrandMemberKey,
+	InMemoryKeyStore,
 } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
@@ -152,20 +153,20 @@ function buildResponderConfig(privateKey: CadreNodeConfig['privateKey'], partyId
 }
 
 /**
- * Genesis-seed the node's own owner, mirroring `cadre-web.ts` `runOwnerGenesis`
- * — bridge the libp2p identity into a base64url owner keypair, run the idempotent
- * `OwnerKey` insert, then initialize seed-bootstrap. Unlike the browser's fail-soft
- * path this throws on failure: a responder with no owner cannot sign the invite or
- * the host Strand row, so there is nothing to test.
+ * Genesis-seed the node's own owner, mirroring `cadre-web.ts` `runOwnerGenesis` — an owner
+ * key of its own (in memory, since the party lasts one spec run), the idempotent `OwnerKey`
+ * insert, then the signer wired. Unlike the browser's fail-soft path this throws on failure: a
+ * responder with no owner cannot sign the invite or the host Strand row, so there is nothing
+ * to test.
  */
-async function runOwnerGenesis(node: CadreNode, privateKey: NonNullable<CadreNodeConfig['privateKey']>): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(privateKey);
+async function runOwnerGenesis(node: CadreNode): Promise<void> {
+	const owner = await createOwnerKey(new InMemoryKeyStore());
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) {
 		throw new Error('control database unavailable after start; cannot run responder owner genesis');
 	}
-	await controlDb.ensureOwnerKey(publicKeyB64);
-	await node.initializeSeedBootstrap(privateKeyB64);
+	await controlDb.ensureOwnerKey(owner.publicKey);
+	await node.useOwnerSigner(owner);
 }
 
 /**
@@ -195,7 +196,7 @@ export async function startFormationResponder(opts?: {
 	await node.start();
 
 	try {
-		await runOwnerGenesis(node, identityKey);
+		await runOwnerGenesis(node);
 		const controlDb = node.getControlDatabase();
 		if (!controlDb) {
 			throw new Error('control database unavailable after start; cannot read formation usage');

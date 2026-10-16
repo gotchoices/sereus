@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
+import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
+import { createOwnerKey, loadOwnerSigner } from '../src/owner-key-store.js';
 import {
 	controlNodeConfig,
 	expectNotListening,
@@ -66,9 +68,10 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 					await within('node.start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
 					expectNotListening(node);
 
-					// Mirrors the reference apps' `runOwnerGenesis`: the node's own libp2p
-					// identity, bridged to a base64url owner pair, is the founding owner.
-					const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
+					// Mirrors the reference apps' owner genesis: an owner key created in the
+					// key store's owner slot, beside the identity, is the founding owner.
+					const owner = await createOwnerKey(keyStore);
+					const publicKeyB64 = owner.publicKey;
 					const db = node.getControlDatabase();
 					expect(db).not.toBeNull();
 
@@ -93,7 +96,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 					// --- A normal solo write (not the genesis branch) --------------------
 					// registerSelf needs seed-bootstrap wired, exactly as the reference
 					// apps do immediately after genesis.
-					await node.initializeSeedBootstrap(privateKeyB64);
+					await node.useOwnerSigner(owner);
 					expect(await within('queryCadrePeers() (pre-write)', OP_TIMEOUT_MS, () => db!.queryCadrePeers()))
 						.toEqual([]);
 					expect(await within('registerSelf()', OP_TIMEOUT_MS, () => node.registerSelf()))
@@ -108,7 +111,8 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 					const record = await within('queryPeerRecord()', OP_TIMEOUT_MS,
 						() => db!.queryPeerRecord(selfPeerId));
 					expect(record).not.toBeNull();
-					expect(record!.publicKey).toBe(publicKeyB64);
+					// The record is signed by the identity, not the owner key.
+					expect(record!.publicKey).toBe(ed25519PublicKeyB64FromPeerId(selfPeerId));
 				} finally {
 					await within('node.stop()', LIFECYCLE_TIMEOUT_MS, () => node.stop());
 				}
@@ -134,21 +138,19 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 
 		const first = new CadreNode(config());
 		let ownerPublicKey: string;
-		let ownerPrivateKey: string;
 		let peerId: string;
 		try {
 			await within('first.start()', LIFECYCLE_TIMEOUT_MS, () => first.start());
 			expectNotListening(first);
-			const owner = first.getIdentityOwnerKey();
-			ownerPublicKey = owner.publicKeyB64;
-			ownerPrivateKey = owner.privateKeyB64;
+			const owner = await createOwnerKey(keyStore);
+			ownerPublicKey = owner.publicKey;
 			peerId = first.peerId!.toString();
 
 			const db = first.getControlDatabase();
 			expect(db).not.toBeNull();
 			expect(await within('first ensureOwnerKey()', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(ownerPublicKey)))
 				.toBe(true);
-			await first.initializeSeedBootstrap(owner.privateKeyB64);
+			await first.useOwnerSigner(owner);
 			expect(await within('first registerSelf()', OP_TIMEOUT_MS, () => first.registerSelf()))
 				.toBe('inserted');
 		} finally {
@@ -159,7 +161,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 		try {
 			await within('second.start()', LIFECYCLE_TIMEOUT_MS, () => second.start());
 			expectNotListening(second);
-			// Same key store ⇒ same libp2p identity ⇒ same PeerId across the restart.
+			// Same key store ⇒ same libp2p identity ⇒ same PeerId, and the same owner key, across the restart.
 			expect(second.peerId!.toString()).toBe(peerId);
 
 			const db = second.getControlDatabase();
@@ -177,7 +179,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 			expect(peers.map((p) => p.peerId)).toEqual([peerId]);
 
 			// And a write still works after the warm start (refresh, not insert).
-			await second.initializeSeedBootstrap(ownerPrivateKey);
+			await second.useOwnerSigner((await loadOwnerSigner(keyStore))!);
 			expect(await within('second registerSelf()', OP_TIMEOUT_MS, () => second.registerSelf()))
 				.toBe('refreshed');
 		} finally {

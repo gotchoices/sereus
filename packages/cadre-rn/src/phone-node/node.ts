@@ -1,17 +1,20 @@
 /**
  * `createPhoneNode` — build, start, stop and rebuild a phone's `CadreNode` the prescribed way:
- * identity in the secure store, the four node-local stores durable and party-scoped, LevelDB
- * storage per scope, owner genesis, the last start remembered for unattended starts, and the
- * switch to another party's cadre by invitation.
+ * identity and owner key in the secure store, the four node-local stores durable and
+ * party-scoped, LevelDB storage per scope, owner genesis, the last start remembered for
+ * unattended starts, and the switch to another party's cadre by invitation.
  *
  * Nothing native is imported here. The app passes in its secure store, `rn-leveldb`'s two
  * constructors and its transports, so a Node test runs this code over fakes.
  */
 
 import {
+	addBackupOwnerKey,
 	CadreNode,
 	DEFAULT_IDENTITY_KEY_ID,
+	exportOwnerKey,
 	exportStrandBundle,
+	importOwnerKeyInto,
 	loadOrCreateIdentityKey,
 	PersistentBootstrapPeerStore,
 	PersistentEnrolledMachineStore,
@@ -20,13 +23,20 @@ import {
 	readStrandHoldings,
 } from '@serfab/cadre-core';
 import type {
+	BackupOwnerKey,
 	CadreInvitation,
 	CadreJoinProgress,
 	CadreNodeConfig,
 	CadreNodeEvents,
+	CadreOwnerKey,
 	CadreRemoval,
+	ImportedOwnerKey,
+	OwnerKeyExportOptions,
+	OwnerKeyRemovalPlan,
+	OwnerKeyRemovalResult,
 	RedeemCadreInvitationOptions,
 	RedeemCadreInvitationResult,
+	RemoveOwnerOptions,
 	StrandMoveReport,
 } from '@serfab/cadre-core';
 import type { Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
@@ -90,12 +100,16 @@ export interface LevelDBNative {
 
 /** What the app's platform provides. Fixed for the app's lifetime. */
 export interface PhoneNodePlatform {
-	/** `expo-secure-store`, or an adapter over the app's own secure store (see `/key-store`). */
+	/**
+	 * `expo-secure-store`, or an adapter over the app's own secure store (see `/key-store`). Holds
+	 * the identity, the owner key (in its own slot) and the trusted-owner anchor.
+	 */
 	secureStore: SecureStoreApi;
 	/**
-	 * One options object for the identity and the trusted-owner anchor, so they cannot drift into
-	 * different gating. `{ keychainAccessible: AFTER_FIRST_UNLOCK }` lets a background or push-wake
-	 * start read the identity while the device is locked.
+	 * One options object for the identity, the owner key and the trusted-owner anchor, so they
+	 * cannot drift into different gating. `{ keychainAccessible: AFTER_FIRST_UNLOCK }` lets a
+	 * background or push-wake start read them while the device is locked; leave
+	 * `requireAuthentication` off, since background owner writes sign with no user present.
 	 */
 	secureStoreOptions?: SecureStoreKeyStoreOptions;
 	/** `rn-leveldb`'s two constructors, through which every database is opened, and its `destroyDB`. */
@@ -345,10 +359,45 @@ export interface PhoneNode {
 	on<K extends keyof CadreNodeEvents>(event: K, handler: (data: CadreNodeEvents[K]) => void): () => void;
 	onStatus(listener: (status: PhoneNodeStatus) => void): () => void;
 	/**
-	 * The owner public key (base64url) for pairing; null unless running, and for a member of a
-	 * joined party that does not list it as an owner. Never private material.
+	 * The public key (base64url) of the owner key the running node signs with, for pairing and
+	 * approval prompts: the owner slot's, or on a joined party the identity key an owner-granting
+	 * invitation seated. Null unless running with one wired. Never private material.
 	 */
 	ownerPublicKey(): string | null;
+	/**
+	 * The cadre's live owner keys (cadre-core's `CadreNode.listOwnerKeys`): label, voucher, whether
+	 * this app holds it and whether this phone trusts it. In turn with start, stop and join, as are
+	 * the calls below; this one and every other that names the node throws while none is running.
+	 */
+	listOwnerKeys(): Promise<CadreOwnerKey[]>;
+	/**
+	 * Make a backup owner key: seat a new key as an owner under `options.label`, signed by this
+	 * app's owner key, and return its export, optionally locked with `options.passphrase`. Nothing
+	 * is kept on the phone, so the app shows or saves `exportText` once. Throws cadre-core's
+	 * `OwnerKeyAddRefusedError` `alone` while the phone has no connection to a cadre with other machines.
+	 */
+	addBackupOwnerKey(options?: OwnerKeyExportOptions): Promise<BackupOwnerKey>;
+	/**
+	 * This app's own owner key, from the secure store's owner slot, as export text. Works with no
+	 * node running. Throws when the slot is empty: a member, or an owner through the identity key
+	 * an owner-granting invitation seated, holds no key of its own.
+	 */
+	exportOwnerKey(options?: OwnerKeyExportOptions): Promise<string>;
+	/**
+	 * Import owner-key text into the owner slot, unlocking it with `passphrase` when it is locked.
+	 * With a node running, the key is wired when the party lists it as a live owner (`wired`, and
+	 * `status.owner` becomes `enrolled`); stored otherwise, and wired by a later start once an owner
+	 * adds it. Works with no node running. Refused with `OwnerKeySlotOccupiedError` when the slot
+	 * holds a different key (one owner key per app), and with `OwnerKeyExportError` for text that
+	 * is not an owner key, a locked one with no passphrase (`passphrase-required`) or the wrong
+	 * passphrase. A strand move waiting on an owner key is adopted by the next start or
+	 * `finishStrandMove()`.
+	 */
+	importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey>;
+	/** What `removeOwner(key)` would do, for the confirmation step (cadre-core's `CadreNode.planOwnerKeyRemoval`). */
+	planOwnerKeyRemoval(key: string): Promise<OwnerKeyRemovalPlan>;
+	/** Remove an owner key, re-vouching first the dependents `options.revouch` keeps (cadre-core's `CadreNode.removeOwner`). */
+	removeOwner(key: string, options?: RemoveOwnerOptions): Promise<OwnerKeyRemovalResult>;
 }
 
 /** One handler, closed over its event, so re-applying it to a new node needs no cast. */
@@ -525,9 +574,7 @@ class PhoneNodeRuntime implements PhoneNode {
 			if (record?.targetPartyId !== node.partyId) return undefined;
 			const report = await adoptMoveRecord(node, this.moves, record);
 			// The adoption wires the key or throws, so a start that settled as a member is an owner now.
-			if (this.currentStatus.state === 'running' && this.currentStatus.owner !== 'enrolled') {
-				this.setStatus({ state: 'running', node, owner: 'enrolled' });
-			}
+			this.reportEnrolled(node);
 			return report;
 		});
 	}
@@ -559,14 +606,55 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	ownerPublicKey(): string | null {
-		const node = this.node;
-		if (!node || (this.currentStatus.state === 'running' && this.currentStatus.owner === 'member')) return null;
-		try {
-			return node.getIdentityOwnerKey().publicKeyB64;
-		} catch (err) {
-			// Reachable only without a key store, which a phone node always has.
-			console.warn('[cadre-rn/phone-node] owner public key unavailable:', err);
-			return null;
+		return this.node?.getOwnerSigner()?.publicKey ?? null;
+	}
+
+	// ── owner keys ───────────────────────────────────────────────────────────
+	// In turn with the transitions: genesis creates the owner slot's key inside a start, and the
+	// slot's check-then-set must not race an import.
+
+	listOwnerKeys(): Promise<CadreOwnerKey[]> {
+		return this.onRunningNode((node) => node.listOwnerKeys());
+	}
+
+	addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<BackupOwnerKey> {
+		return this.onRunningNode((node) => addBackupOwnerKey(node, options));
+	}
+
+	exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<string> {
+		return this.inTurn(() => exportOwnerKey(this.keyStore, options));
+	}
+
+	importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
+		return this.inTurn(async () => {
+			const node = this.node?.isRunning ? this.node : null;
+			const imported = await importOwnerKeyInto(this.keyStore, node, text, passphrase);
+			if (imported.wired && node) this.reportEnrolled(node);
+			return imported;
+		});
+	}
+
+	planOwnerKeyRemoval(key: string): Promise<OwnerKeyRemovalPlan> {
+		return this.onRunningNode((node) => node.planOwnerKeyRemoval(key));
+	}
+
+	removeOwner(key: string, options: RemoveOwnerOptions = {}): Promise<OwnerKeyRemovalResult> {
+		return this.onRunningNode((node) => node.removeOwner(key, options));
+	}
+
+	/** Run `op` on the running node, in turn with start, stop and join; throws when none is running. */
+	private onRunningNode<T>(op: (node: CadreNode) => Promise<T>): Promise<T> {
+		return this.inTurn(async () => {
+			const node = this.node;
+			if (!node?.isRunning) throw new Error('The phone node is not running; start it first');
+			return await op(node);
+		});
+	}
+
+	/** A key was wired after the start settled: a start reported as a member is an owner now. */
+	private reportEnrolled(node: CadreNode): void {
+		if (this.currentStatus.state === 'running' && this.currentStatus.owner !== 'enrolled') {
+			this.setStatus({ state: 'running', node, owner: 'enrolled' });
 		}
 	}
 
@@ -667,8 +755,13 @@ class PhoneNodeRuntime implements PhoneNode {
 
 	/** A founded party runs owner genesis; a joined one only wires a key the party already lists. */
 	private settleOwnerKey(node: CadreNode, options: PhoneNodeOptions): Promise<OwnerGenesisResult> {
-		const timeoutMs = this.platform.ownerGenesisTimeoutMs;
-		return options.origin === 'joined' ? wireJoinedOwnerKey(node, { timeoutMs }) : runOwnerGenesis(node, timeoutMs);
+		if (options.origin === 'joined') return this.wireJoinedOwner(node, false);
+		return runOwnerGenesis(node, { keyStore: this.keyStore, label: options.ownerKeyLabel, timeoutMs: this.platform.ownerGenesisTimeoutMs });
+	}
+
+	/** `granted`: a redemption has just granted owner, so wait for the row. */
+	private wireJoinedOwner(node: CadreNode, granted: boolean): Promise<OwnerGenesisResult> {
+		return wireJoinedOwnerKey(node, { keyStore: this.keyStore, timeoutMs: this.platform.ownerGenesisTimeoutMs, granted });
 	}
 
 	/** Report a node that came up, saving its options only now, so a failed start never replaces the last one that came up. */
@@ -738,9 +831,10 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	// ── join ─────────────────────────────────────────────────────────────────
-	// NOTE: this file is about 1170 lines (`wc -l`), the join and its strand move the largest part,
-	// the dissolve's and the removal's transitions next (the storage they delete is in `dissolve.ts`).
-	// If any of them grows further, move it to a module of its own over a narrow view of this runtime.
+	// NOTE: this file is about 1300 lines (`wc -l`), the join and its strand move the largest part,
+	// the dissolve's and the removal's transitions next (the storage they delete is in `dissolve.ts`),
+	// then the owner-key pass-throughs. If any of them grows further, move it to a module of its own
+	// over a narrow view of this runtime.
 
 	private async join(invitation: CadreInvitation, options: JoinCadreOptions, signal: AbortSignal): Promise<JoinCadreResult> {
 		signal.throwIfAborted();
@@ -761,7 +855,7 @@ class PhoneNodeRuntime implements PhoneNode {
 	): Promise<JoinCadreResult> {
 		const redemption = await node.redeemCadreInvitation(invitation, redeemOptions(options, signal));
 		reportProgress(options, { state: 'admitted', grantsOwner: redemption.grantsOwner });
-		const owner = await wireJoinedOwnerKey(node, { timeoutMs: this.platform.ownerGenesisTimeoutMs, granted: redemption.grantsOwner });
+		const owner = await this.wireJoinedOwner(node, redemption.grantsOwner);
 		// An owner grant arriving by a second invitation finishes a move an earlier join deferred.
 		const strandMove = await this.settleJoinMove(node, running.formerPartyId, owner);
 		if (owner === 'enrolled') this.setStatus({ state: 'running', node, owner });
@@ -840,7 +934,7 @@ class PhoneNodeRuntime implements PhoneNode {
 		this.setStatus({ state: 'joining', node });
 		const redemption = await node.redeemCadreInvitation(invitation, redeemOptions(options, signal));
 		reportProgress(options, { state: 'admitted', grantsOwner: redemption.grantsOwner });
-		const owner = await wireJoinedOwnerKey(node, { timeoutMs: this.platform.ownerGenesisTimeoutMs, granted: redemption.grantsOwner });
+		const owner = await this.wireJoinedOwner(node, redemption.grantsOwner);
 		await this.saveRunningStart(resolved);
 		if (movingFrom !== undefined && owner === 'enrolled') reportProgress(options, { state: 'moving-strands' });
 		const strandMove = await this.settleJoinMove(node, resolved.formerPartyId, owner);

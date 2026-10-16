@@ -7,9 +7,10 @@ import type { CadreNodeConfig, StrandFilter } from '../src/types.js';
 
 /**
  * Shared boot for the "self-owner node" starting point several node-level specs need: a
- * `CadreNode` whose libp2p identity key is also its owner key (`ed25519KeyPairFromLibp2p`),
- * optionally started with that key wired as its owner signer and enrolled as an `OwnerKey`
- * so the writes it signs pass the control schema's authorization constraints.
+ * `CadreNode` that holds an owner key of its own, generated apart from its libp2p identity as
+ * an embedding app's is, optionally started with that key wired as its owner signer and
+ * enrolled as an `OwnerKey` so the writes it signs pass the control schema's authorization
+ * constraints.
  *
  * Lifted out of `publish-strand.spec.ts`, `strand-unpublish.spec.ts`,
  * `publish-formation-invite.spec.ts` and `validation-key-enrollment.spec.ts`, which each
@@ -69,7 +70,7 @@ export async function newUnstartedNode(
     strandFilter: config.strandFilter,
     storage: config.storage,
   });
-  return { node, ownerKey: ed25519KeyPairFromLibp2p(nodeKey) };
+  return { node, ownerKey: ed25519KeyPairFromLibp2p(await generateKeyPair('Ed25519')) };
 }
 
 /**

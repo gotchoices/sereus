@@ -4,15 +4,16 @@
  * trusted-owner anchor (`@serfab/cadre-core/trusted-owner-store`), the
  * cold-start bootstrap-peer store (`@serfab/cadre-core/bootstrap-peer-store`),
  * the enrolled-machine count (`@serfab/cadre-core/enrolled-machine-store`) and
- * the strand network state, each under its own key, per party.
+ * the strand network state, each under its own key, per party. And the tab's
+ * owner key, one per tab, as a cadre-core `KeyStore` ({@link ownerKeyStore}).
  *
  * Every record goes in the SAME database as the tab's Ed25519 identity and
  * start record (`strand-storage.ts`'s `NODE_LOCAL_STORE_KEY` database, `kv` store) —
  * not a separate one. The decisive property is shared fate: "Clear site data"
- * must wipe identity, anchor, and dial targets together so the tab cold-starts
- * as a genuinely fresh node, rather than leaving a half-cleared state where a
- * regenerated identity inherits a stale anchor, or a retained identity loses
- * its anchor silently. See `cadre-web.ts` (`startCadre`) for the wiring.
+ * must wipe identity, owner key, anchor, and dial targets together so the tab
+ * cold-starts as a genuinely fresh node, rather than leaving a half-cleared state
+ * where a regenerated identity inherits a stale anchor, or a retained identity
+ * loses its anchor silently. See `cadre-web.ts` (`startCadre`) for the wiring.
  *
  * That database is NOT cadre-core's control block store, which is keyed by party
  * id (`controlStorageScope`). These records are read BEFORE the party id is known
@@ -26,8 +27,8 @@
  * cross-party bleed the block-store scoping fixed. Records under the old,
  * party-less keys are orphaned, unread (development builds only; no compatibility).
  */
-import type { DurableSlot } from '@serfab/cadre-core';
-import type { OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
+import { DEFAULT_OWNER_KEY_ID, KeyStoreAccessError, type DurableSlot, type KeyId, type KeyStore } from '@serfab/cadre-core';
+import { supportsStrictDurability, transactionDurability, type OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
 
 /** `kv` key stem for the persisted trusted-owner anchor snapshot. */
 export const TRUSTED_OWNERS_KV_KEY = 'trusted-owners';
@@ -48,6 +49,13 @@ export const STRAND_NETWORK_KV_KEY = 'strand-network';
  * control node is built before the database holding the membership rows exists.
  */
 export const ENROLLED_MACHINES_KV_KEY = 'enrolled-machines';
+
+/**
+ * `kv` key of the tab's owner key: the libp2p protobuf bytes of an Ed25519 private key, the
+ * stored form of the peer key beside it (`peer-private-key`). One per tab and dot-free, like the
+ * peer key, rather than per party: one owner key may own several cadres.
+ */
+export const OWNER_KEY_KV_KEY = 'owner-private-key';
 
 /** Every per-party record's key stem, so a party's records can be found and removed together. */
 export const PARTY_KV_KEYS: readonly string[] = [
@@ -93,4 +101,51 @@ export function kvSlot(handle: OptimysticWebDBHandle, key: string): DurableSlot 
 			await handle.put('kv', text, key);
 		},
 	};
+}
+
+/**
+ * The tab's owner-key slot as a cadre-core `KeyStore`, holding `DEFAULT_OWNER_KEY_ID` alone, so
+ * cadre-core's owner-key slot functions and flows (`createOwnerKey`, `importOwnerKeyInto`, ...)
+ * run over it unchanged; any other slot id is refused. A value that is not bytes is reported as
+ * `KeyStoreAccessError`, never as an empty slot, which genesis would fill with a new key.
+ *
+ * A write is strict where the browser supports it, as the peer key's first write is
+ * (`loadOrCreateBrowserPeerKey`): the key may found a party, and one lost to a power cut after
+ * that would leave the party with an owner nobody holds.
+ *
+ * Exposure is the peer key's: origin-scoped IndexedDB, readable by any script on the origin.
+ * Non-extractable WebCrypto Ed25519 keys were weighed and declined, because an exportable key is
+ * what a file or QR backup needs.
+ */
+export function ownerKeyStore(handle: OptimysticWebDBHandle): KeyStore {
+	const durability = transactionDurability(supportsStrictDurability());
+	const write = async (value: Uint8Array | undefined): Promise<void> => {
+		const tx = handle.transaction('kv', 'readwrite', { durability });
+		await Promise.all([value === undefined ? tx.store.delete(OWNER_KEY_KV_KEY) : tx.store.put(value, OWNER_KEY_KV_KEY), tx.done]);
+	};
+	return {
+		async get(keyId) {
+			requireOwnerSlot(keyId);
+			const stored = await handle.get('kv', OWNER_KEY_KV_KEY);
+			if (stored === undefined || stored instanceof Uint8Array) return stored;
+			throw new KeyStoreAccessError(keyId, 'The tab\'s owner-key slot holds text, not key bytes');
+		},
+		async set(keyId, keyMaterial) {
+			requireOwnerSlot(keyId);
+			await write(keyMaterial);
+		},
+		async delete(keyId) {
+			requireOwnerSlot(keyId);
+			await write(undefined);
+		},
+		async list() {
+			return (await handle.get('kv', OWNER_KEY_KV_KEY)) === undefined ? [] : [DEFAULT_OWNER_KEY_ID];
+		},
+	};
+}
+
+function requireOwnerSlot(keyId: KeyId): void {
+	if (keyId !== DEFAULT_OWNER_KEY_ID) {
+		throw new Error(`The tab's owner-key store holds only ${DEFAULT_OWNER_KEY_ID}, not ${keyId}`);
+	}
 }
