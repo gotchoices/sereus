@@ -57,7 +57,7 @@ export interface EnrollAddReport {
   signerKey: string;
   /**
    * Every address of every preferred peer in the seed (the owner node that minted it and the
-   * party's always-on machines): what the new machine dials first.
+   * party's always-on machines) other than the new machine itself: what it dials first.
    */
   seedAddrs: string[];
   encodedSeed: string;
@@ -145,7 +145,11 @@ export async function mintSeed(
  * what `cadre start --seed` on the new machine checks its config against.
  */
 export function buildEnrollAddReport(minted: DroneInitResult, peerId: string, addrsGiven: boolean): EnrollAddReport {
-  const seedAddrs = minted.seed.peers.filter((peer) => peer.preferred).flatMap((peer) => peer.multiaddrs);
+  // A re-run for a machine that has since published the `storage` profile finds it preferred in
+  // its own seed; its addresses are not ones it can dial.
+  const seedAddrs = minted.seed.peers
+    .filter((peer) => peer.preferred && peer.peerId !== peerId)
+    .flatMap((peer) => peer.multiaddrs);
   return {
     peerId,
     partyId: minted.seed.partyId,

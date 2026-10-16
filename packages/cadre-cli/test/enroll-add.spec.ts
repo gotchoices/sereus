@@ -16,7 +16,8 @@ function minted(peers: SeedPeer[]): DroneInitResult {
 }
 
 describe('buildEnrollAddReport', () => {
-  const newPeer: SeedPeer = { peerId: NEW_PEER, multiaddrs: ['/ip4/10.0.0.9/tcp/4001'], preferred: false };
+  // Preferred, as on a re-run for a machine that has since published the `storage` profile.
+  const newPeer: SeedPeer = { peerId: NEW_PEER, multiaddrs: ['/ip4/10.0.0.9/tcp/4001'], preferred: true };
   const unaddressedOwner: SeedPeer = { peerId: '12D3KooWOwner', multiaddrs: [], preferred: true };
 
   // The one real branch in the report: a seed whose preferred peers carry no address, with no
