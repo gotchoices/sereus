@@ -246,7 +246,7 @@ Gating: the store is opened **ungated** (no `requireAuthentication`) with `keych
 
 ### Owner key (secure enclave)
 
-The phone's owner key, when it holds one, sits in the same `SecureStoreKeyStore` as the identity, in a slot of its own (`cadre/owner`), with the same ungated options: background owner writes sign with no user present. It is never derived from the identity. The kit creates it only when this app founds a party that has no owner yet; otherwise it arrives by import ([kit README → The phone's owner key](../packages/cadre-rn/README.md#the-phones-owner-key)). One per install, not per party. An iOS reinstall keeps it with the identity, so a fresh install that founds a party founds it with the surviving key; an Android uninstall loses it, and the phone is then an owner of nothing until it imports a backup.
+The phone's owner key, when it holds one, sits in the same `SecureStoreKeyStore` as the identity, in a slot of its own (`cadre/owner`), with the same ungated options: background owner writes sign with no user present. It is never derived from the identity. The kit creates it only when this app founds a party that has no owner yet; otherwise it arrives by import under Settings → [Owner Keys](#owner-keys) ([kit README → The phone's owner key](../packages/cadre-rn/README.md#the-phones-owner-key)). One per install, not per party. An iOS reinstall keeps it with the identity, so a fresh install that founds a party founds it with the surviving key; an Android uninstall loses it, and the phone is then an owner of nothing until it imports a backup.
 
 ### Trusted-owner anchor (secure enclave)
 

@@ -8,6 +8,7 @@
  */
 
 import {
+	LOCKED_OWNER_KEY_EXPORT_PREFIX,
 	OWNER_KEY_EXPORT_STEM,
 	OWNER_KEY_MAX_LABEL,
 	OwnerKeyAddRefusedError,
@@ -57,6 +58,11 @@ export const OWNER_KEY_SCANNED_LINE = 'That is an owner key, which is private. I
 /** Whether scanned or pasted text is an owner key's export, plain or locked, of any version. */
 export function isOwnerKeyText(text: string): boolean {
 	return text.trim().startsWith(OWNER_KEY_EXPORT_STEM);
+}
+
+/** Whether owner-key text is a locked export, which asks for its passphrase. */
+export function isLockedOwnerKeyText(text: string): boolean {
+	return text.trim().startsWith(LOCKED_OWNER_KEY_EXPORT_PREFIX);
 }
 
 /** A listed key's title: the name it was added under, or "Unnamed key". */

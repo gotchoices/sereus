@@ -12,7 +12,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal, ScrollView, Share, Switch, Text, View } from 'react-native';
 import {
 	decodeOwnerKeyExport,
-	LOCKED_OWNER_KEY_EXPORT_PREFIX,
 	OwnerKeyRemovalRefusedError,
 	type CadreMachine,
 	type CadreOwnerKey,
@@ -31,6 +30,7 @@ import {
 	exportOptions,
 	importOutcome,
 	importOutcomeAlert,
+	isLockedOwnerKeyText,
 	isOwnerKeyText,
 	OWN_KEY_LINE,
 	ownerKeyFacts,
@@ -108,6 +108,10 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 		void refresh();
 	}, [cadre.node, cadre.ownerPublicKey]);
 
+	const showAlreadyRemoved = (ownerKey: CadreOwnerKey) => {
+		showAlert('Already removed', `${ownerKeyName(ownerKey)} is no longer an owner key of this cadre.`);
+	};
+
 	const changed = () => {
 		onOwnerKeysChanged();
 		void refresh();
@@ -125,6 +129,10 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 		}
 	});
 
+	// NOTE: the kit exports the owner slot's key, and `ownKey` is the key this device signs with. They
+	// differ on a device signing with the identity key an owner-granting invitation seated after an
+	// import stored another key, and the title then names the wrong key; `exportOwnerKey` naming the
+	// key it exported is an arm of `reference-app-web-owner-keys`.
 	const exportOwn = (ownKey: CadreOwnerKey, form: ExportForm) => void exclusive(async () => {
 		try {
 			const text = await cadre.exportOwnerKey(exportOptions(form));
@@ -171,7 +179,7 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 		const machines = plan.dependents.peers.length > 0 ? await readMachinesQuietly(cadre.listMachines) : [];
 		if (nodeRef.current !== node) return;
 		if (plan.ownerKey === null) {
-			showAlert('Already removed', `${ownerKeyName(ownerKey)} is no longer an owner key of this cadre.`);
+			showAlreadyRemoved(ownerKey);
 			void refresh();
 			return;
 		}
@@ -186,7 +194,7 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 			if (result.removed) {
 				console.info(`[settings] removed owner key ${ownerFingerprint(ownerKey.key)} (kept ${revouch.peers.length} devices, ${revouch.owners.length} keys)`);
 			} else {
-				showAlert('Already removed', `${ownerKeyName(ownerKey)} is no longer an owner key of this cadre.`);
+				showAlreadyRemoved(ownerKey);
 			}
 		} catch (err) {
 			console.warn(`[settings] removing owner key ${ownerFingerprint(ownerKey.key)} failed:`, err);
@@ -346,6 +354,8 @@ function ExportFormView({ title, intro, defaultLabel, submitLabel, busy, onSubmi
 // NOTE: the export is not hidden from screenshots, screen recording or the app switcher's
 // snapshot: Android's FLAG_SECURE and iOS's app-switcher cover need `expo-screen-capture`, a native
 // module this app does not include (tickets/backlog/feat-rn-owner-key-export-hidden-from-screen-capture.md).
+// NOTE: Copy leaves the key on the system clipboard until something else is copied; if that is
+// judged an exposure, clear the clipboard on Done when it still holds this text.
 /** The export, the one time it is shown: the warning, the QR code, Copy, Share and the text, until Done. */
 function ExportView({ title, text, onDone }: { title: string; text: string; onDone: () => void }) {
 	const share = () => {
@@ -372,7 +382,7 @@ function ImportForm({ busy, onImport }: {
 	const [text, setText] = useState('');
 	const [passphrase, setPassphrase] = useState('');
 	const [scannerOpen, setScannerOpen] = useState(false);
-	const locked = text.trim().startsWith(LOCKED_OWNER_KEY_EXPORT_PREFIX);
+	const locked = isLockedOwnerKeyText(text);
 
 	const clear = () => {
 		setText('');
@@ -380,14 +390,14 @@ function ImportForm({ busy, onImport }: {
 	};
 
 	const handleImport = (pasted: string) => {
-		onImport(pasted, pasted.trim().startsWith(LOCKED_OWNER_KEY_EXPORT_PREFIX) ? passphrase : undefined, clear);
+		onImport(pasted, isLockedOwnerKeyText(pasted) ? passphrase : undefined, clear);
 	};
 
 	// A plain export is imported at once; a locked one waits for its passphrase.
 	const handleScanned = (scanned: string) => {
 		setScannerOpen(false);
 		setText(scanned);
-		if (!scanned.trim().startsWith(LOCKED_OWNER_KEY_EXPORT_PREFIX)) handleImport(scanned);
+		if (!isLockedOwnerKeyText(scanned)) handleImport(scanned);
 	};
 
 	return (
