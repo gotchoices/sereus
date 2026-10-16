@@ -101,3 +101,7 @@ The copies come from `../optimystic/packages/*/node_modules/` and `../Fret/packa
 ## Status at triage (2026-09-28, after 1.7.0)
 
 Typecheck no longer fails: 3c3ce8dc silenced it with `as unknown as PrivateKey` casts, which this ticket calls the wrong fix. What remains is about 1.6 MiB of duplicate packages in the bundle and removing the casts; a skewed `@libp2p/interface` copy is still in optimystic db-core.
+
+### Note from planning `edge-node-bring-up-shared-by-every-kit`
+
+`implement/1.22-reference-app-web-runs-the-edge-node` deletes the `loadOrCreateBrowserPeerKey` call whose result is the `PrivateKey` these two errors are about: the tab's identity moves into a cadre-core `KeyStore`. Its handoff says whether `svelte-check` is clean afterwards. If it is, this ticket's symptom is gone and only the duplicate install remains, which may not be worth fixing on its own.
