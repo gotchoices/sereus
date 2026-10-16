@@ -52,7 +52,7 @@ export type {
 export { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, type ControlDomain, type BoundControlDomain, type UnboundControlDomain, type ControlAction, type CadreInviteSignedFields } from './control-authorization.js';
 
 // Ed25519 key bridge (libp2p Ed25519 -> base64url keypair)
-export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
+export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64, requireEd25519PrivateKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 
 // Pluggable key store (backend-agnostic identity/owner key material seam).
 // Dependency-free: the interface, error, default slot id, and in-memory backend
@@ -63,6 +63,7 @@ export {
   InMemoryKeyStore,
   KeyStoreAccessError,
   DEFAULT_IDENTITY_KEY_ID,
+  DEFAULT_OWNER_KEY_ID,
   type KeyStore,
   type KeyId
 } from './key-store.js';
@@ -74,6 +75,37 @@ export { encodeFileSafeComponent } from './file-safe-name.js';
 // The KeyStore-backed identity rule, shared with embedding apps that need the
 // node key BEFORE `CadreNode` exists.
 export { loadOrCreateIdentityKey } from './identity-key.js';
+
+// Owner keys (`docs/architecture.md` → Owner Keys): the one interface owner signatures go
+// through, the key-store slot an owner key lives in apart from the identity slot, and the
+// text form a key is exported and imported in. Cross-platform: pure JS crypto only.
+export {
+  softwareOwnerSigner,
+  OwnerSigningDeclinedError,
+  type OwnerSigner,
+  type OwnerSign,
+  type OwnerSigningRequest
+} from './owner-signer.js';
+export {
+  createOwnerKey,
+  loadOwnerSigner,
+  importOwnerKey,
+  readOwnerPrivateKey,
+  OwnerKeySlotOccupiedError
+} from './owner-key-store.js';
+export {
+  encodeOwnerKeyExport,
+  decodeOwnerKeyExport,
+  unlockOwnerKeyExport,
+  OwnerKeyExportError,
+  OWNER_KEY_EXPORT_PREFIX,
+  LOCKED_OWNER_KEY_EXPORT_PREFIX,
+  OWNER_KEY_EXPORT_MAX_LABEL,
+  type OwnerKeyExportErrorCode,
+  type OwnerKeyExportContents,
+  type OwnerKeyExportInput,
+  type DecodedOwnerKeyExport
+} from './owner-key-export.js';
 
 // Node-local trusted-owner anchor: the NON-replicated, per-party record of
 // out-of-band-established owner keys (the trust anchor the replicated OwnerKey
@@ -599,6 +631,7 @@ export {
   requireCadreJoinReply,
   CADRE_JOIN_REQUEST_PREFIX,
   CADRE_INVITATION_PREFIX,
+  OWNER_KEY_EXPORT_STEM,
   CADRE_JOIN_REQUEST_MAX_APP_NAME,
   type CadreJoinReply,
   type CadreJoinRequest

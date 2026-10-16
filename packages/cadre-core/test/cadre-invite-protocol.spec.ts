@@ -16,7 +16,7 @@ import {
   type CadreInviteRedeemReply,
   type CadreInviteStore
 } from '../src/cadre-invite-protocol.js';
-import { CADRE_INVITATION_PREFIX, encodeCadreJoinRequest } from '../src/cadre-join-request.js';
+import { CADRE_INVITATION_PREFIX, OWNER_KEY_EXPORT_STEM, encodeCadreJoinRequest } from '../src/cadre-join-request.js';
 import { writeFrame, type ControlStream } from '../src/control-stream.js';
 import type { CadreInviteRow } from '../src/types.js';
 import { freshKeyPair, freshStamp, signAs, type KeyPair } from './control-constraint-helpers.js';
@@ -332,7 +332,7 @@ describe('cadre invitation redemption protocol', () => {
     expect((failure as CadreInviteUnreachableError).retryable).toBe(true);
   });
 
-  it('encodes and decodes a bundle behind its prefix, refusing another version, a malformed one, no prefix, or a join request', async () => {
+  it('encodes and decodes a bundle behind its prefix, refusing another version, a malformed one, no prefix, a join request or an owner key', async () => {
     const invitation = await mint();
     const encoded = encodeCadreInvitation(invitation);
     expect(encoded.startsWith(CADRE_INVITATION_PREFIX)).toBe(true);
@@ -343,5 +343,6 @@ describe('cadre invitation redemption protocol', () => {
     expect(() => decodeCadreInvitation(encoded.slice(CADRE_INVITATION_PREFIX.length))).toThrow(/must start with/);
     const request = encodeCadreJoinRequest({ v: 1, peerId: (await mintContactJoiner()).partyId, appName: 'New app' });
     expect(() => decodeCadreInvitation(request)).toThrow(/join request, not a cadre invitation/);
+    expect(() => decodeCadreInvitation(`${OWNER_KEY_EXPORT_STEM}-locked:1.e30`)).toThrow(/owner key, not a cadre invitation/);
   });
 });

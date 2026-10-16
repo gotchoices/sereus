@@ -39,7 +39,7 @@ import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed2
 import { dialAddr, nextMacrotask, trailingPeerId } from './peer-dial.js';
 import { chainMessages } from './control-retry.js';
 import { isRetriableControlWriteFailure } from './control-write-retry.js';
-import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX } from './cadre-join-request.js';
+import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX, OWNER_KEY_EXPORT_STEM } from './cadre-join-request.js';
 import type { CadreInviteRow, CadreJoinProgress, SeedPeer } from './types.js';
 
 const log = debug('sereus:cadre:invite-proto');
@@ -131,11 +131,14 @@ export function encodeCadreInvitation(invitation: CadreInvitation): string {
  * without a node (a settings screen that wants to show which cadre an invitation joins) can
  * decode one.
  *
- * @throws on a join request, a string without the prefix or that is not base64url JSON after
+ * @throws on an owner key or a join request, a string without the prefix or that is not base64url JSON after
  *   it, or one that decodes to another shape or version.
  */
 export function decodeCadreInvitation(encoded: string): CadreInvitation {
   const trimmed = encoded.trim();
+  if (trimmed.startsWith(OWNER_KEY_EXPORT_STEM)) {
+    throw new Error('This is an owner key, not a cadre invitation; it is private, so import it only where the app asks for an owner key');
+  }
   if (trimmed.startsWith(CADRE_JOIN_REQUEST_PREFIX)) {
     throw new Error('This is a join request, not a cadre invitation; paste it into the app that manages your cadre');
   }

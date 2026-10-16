@@ -101,6 +101,7 @@
     "@libp2p/tcp": "^11.0.28",
     "@libp2p/websockets": "^10.1.21",
     "@multiformats/multiaddr": "^13.0.3",
+    "@noble/ciphers": "^2.0.1",
     "@noble/hashes": "^2.0.0",
     "@optimystic/db-core": "^1.15.0",
     "@optimystic/db-p2p": "^1.15.0",

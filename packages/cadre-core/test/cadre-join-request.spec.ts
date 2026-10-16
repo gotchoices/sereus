@@ -6,6 +6,7 @@ import { toString as uint8ArrayToString } from 'uint8arrays';
 import {
 	CADRE_INVITATION_PREFIX,
 	CADRE_JOIN_REQUEST_PREFIX,
+	OWNER_KEY_EXPORT_STEM,
 	decodeCadreJoinRequest,
 	encodeCadreJoinRequest,
 } from '../src/cadre-join-request.js';
@@ -20,7 +21,7 @@ function handEncoded(body: Record<string, unknown>): string {
  * identity, and the decoder refuses by name what would make a useless invitation.
  */
 describe('cadre join request', () => {
-	it('round-trips, and refuses a missing prefix, a pasted invitation, a non-Ed25519 peer id and an over-long name', async () => {
+	it('round-trips, and refuses a missing prefix, a pasted invitation or owner key, a non-Ed25519 peer id and an over-long name', async () => {
 		const peerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
 		const encoded = encodeCadreJoinRequest({ v: 1, peerId, appName: '  Chat on Ana\'s phone ' });
 		expect(encoded.startsWith(CADRE_JOIN_REQUEST_PREFIX)).toBe(true);
@@ -28,6 +29,7 @@ describe('cadre join request', () => {
 
 		expect(() => decodeCadreJoinRequest(encoded.slice(CADRE_JOIN_REQUEST_PREFIX.length))).toThrow(/must start with/);
 		expect(() => decodeCadreJoinRequest(`${CADRE_INVITATION_PREFIX}eyJ2IjoxfQ`)).toThrow(/cadre invitation, not a join request/);
+		expect(() => decodeCadreJoinRequest(`${OWNER_KEY_EXPORT_STEM}:1.eyJ2IjoxfQ`)).toThrow(/owner key, not a join request/);
 		// A targeted invitation names the requester's key, which only an Ed25519 peer id embeds.
 		const secp = peerIdFromPrivateKey(await generateKeyPair('secp256k1')).toString();
 		expect(() => decodeCadreJoinRequest(handEncoded({ v: 1, peerId: secp, appName: 'App' }))).toThrow(/must be an Ed25519 peer id/);

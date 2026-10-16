@@ -71,6 +71,28 @@ export function ed25519PublicKeyFromPrivate(privateKeyB64: string): string {
 }
 
 /**
+ * Reject a value that isn't a base64url-encoded 32-byte Ed25519 seed, the private-key form
+ * {@link ed25519PublicKeyFromPrivate} and the crypto plugin's `sign` take. Unlike
+ * {@link requireEd25519PublicKeyB64}, no message names the value: it is a private key.
+ *
+ * @param value - Candidate base64url-encoded Ed25519 seed; surrounding whitespace is ignored.
+ * @param label - Human-readable name of the field, used in error messages.
+ * @returns The seed re-encoded as canonical base64url, so two spellings of one key compare equal.
+ */
+export function requireEd25519PrivateKeyB64(value: string, label: string): string {
+  let decoded: Uint8Array;
+  try {
+    decoded = uint8ArrayFromString(value.trim(), 'base64url');
+  } catch (error) {
+    throw new Error(`The ${label} must be a base64url-encoded Ed25519 private key (it does not decode as base64url)`, { cause: error });
+  }
+  if (decoded.length !== 32) {
+    throw new Error(`The ${label} must be a base64url-encoded 32-byte Ed25519 private key (it decoded to ${decoded.length} bytes)`);
+  }
+  return uint8ArrayToString(decoded, 'base64url');
+}
+
+/**
  * Derive the base64url ed25519 public key embedded in an Ed25519 libp2p PeerId.
  *
  * An Ed25519 PeerId is an identity multihash of the public key, so
