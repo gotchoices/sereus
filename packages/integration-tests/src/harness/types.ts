@@ -5,6 +5,7 @@
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { ControlDatabase } from '@serfab/cadre-core';
+import type { TestOwnerKey } from './owner-key.js';
 
 /**
  * Represents a party (person/organization) in the Sereus network.
@@ -17,13 +18,10 @@ export interface TestParty {
   /** Human-readable name for test output */
   name: string;
 
-  /** Ed25519 private key for signing owner operations */
-  ownerPrivateKey: Uint8Array;
+  /** The party's owner key, generated apart from every node's libp2p identity */
+  ownerKey: TestOwnerKey;
 
-  /** Ed25519 public key (base64 encoded) for verification */
-  ownerPublicKey: string;
-
-  /** The owner node ("phone") - has the signing keys */
+  /** The owner node ("phone") - the node the owner key signs from */
   ownerNode: TestCadreNode;
 
   /** Additional drone nodes (provider-hosted) */

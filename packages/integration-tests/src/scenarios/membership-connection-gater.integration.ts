@@ -69,7 +69,7 @@ async function establishedReceiver(partyId: string, memberPeerId: string): Promi
 	const rxKey = await generateKeyPair('Ed25519');
 	const Rx = new CadreNode(nodeConfig(partyId, rxKey));
 	await Rx.start();
-	await makeOwnOwner(Rx, rxKey);
+	await makeOwnOwner(Rx);
 	// Owner-signed local write: the row carries a voucher by Rx's own genesis-anchored
 	// key, so Rx's authorized set becomes non-empty and strangers stop being admitted
 	// outright by the cold-start carve-out.

@@ -207,11 +207,10 @@ describe('a phone-shaped requester claims a provider container from its node cod
   }
 
   it('step 1: the requester is up and listens on nothing', async () => {
-    const built = await buildPhoneOwner(partyId);
-    requester = built.node;
+    requester = await buildPhoneOwner(partyId);
     await requester.start();
     requesterPeerId = requester.peerId!.toString();
-    requesterOwnerKey = await makeOwnOwner(requester, built.key);
+    requesterOwnerKey = (await makeOwnOwner(requester)).publicKey;
     // The requester's own `CadrePeer` row is what step 5 looks for on the node. Published now
     // rather than left to the self-registration timer, which may fire before the owner key
     // above is in place and then wait for the next heartbeat.
@@ -353,10 +352,9 @@ describe('a phone-shaped requester claims a provider container from its node cod
   }, 3 * STARTUP_MS + 2 * OP_MS);
 
   it('step 6: an owner of another cadre presenting the same secret is refused as already-claimed', async () => {
-    const built = await buildPhoneOwner(`provider-claim-rival-${Math.random().toString(36).slice(2)}`);
-    rival = built.node;
+    rival = await buildPhoneOwner(`provider-claim-rival-${Math.random().toString(36).slice(2)}`);
     await rival.start();
-    await makeOwnOwner(rival, built.key);
+    await makeOwnOwner(rival);
 
     // The rival is no member, so the claimed node's connection gate admits it provisionally, and
     // the seed stream completes well inside the provisional deadline.

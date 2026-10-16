@@ -290,7 +290,7 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
 	handles.A = A;
 	await atStage('A starts', () => A.start());
-	const aOwnerKey = await atStage('A becomes its own owner', () => makeOwnOwner(A, aKey));
+	const { publicKey: aOwnerKey } = await atStage('A becomes its own owner', () => makeOwnOwner(A));
 	const aPeerId = A.peerId!.toString();
 
 	// A's self-publish rides the ~1s start timer; the seeds minted below are only

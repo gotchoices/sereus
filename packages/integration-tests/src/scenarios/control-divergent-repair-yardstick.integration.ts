@@ -124,7 +124,7 @@ describe('control writes across members that declare different repair yardsticks
 				enrolledMachines: await enrolledMachineStoreWith(partyId, A_REMEMBERED_MACHINES)
 			}));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 
 			const bKey = await generateKeyPair('Ed25519');
 			B = new CadreNode(controlNodeConfig({

@@ -35,10 +35,10 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
-import { CadreNode, ed25519KeyPairFromLibp2p, type CadreInviteRow } from '@serfab/cadre-core';
+import { CadreNode, type CadreInviteRow } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectionsTo, waitUntil, readCohort, peerDialGate, captureRawStorage, awaitBlockCoverage,
-	startPinningMember, admitMember, redeemWaitingForMember, type InviteMember,
+	startPinningMember, admitMember, redeemWaitingForMember, ownerKeySeatedByInvitation, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -67,7 +67,7 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 				storageProvider: captureA.provider,
 			}));
 			await A.start();
-			const aOwnerKey = await makeOwnOwner(A, aKey);
+			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 			M = await startPinningMember(partyId, aOwnerKey, { storageProvider: captureM.provider });
 			const member = M;
 			await admitMember(A, member, STARTUP_MS);
@@ -132,7 +132,7 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			// M seated the bundle's row and wrote P's rows on it.
 			expect(await member.node.getControlDatabase()!.queryCadreInvite(key)).toEqual(invitation.invite);
 			expect(await member.node.isAuthorizedMember(pPeerId)).toBe(true);
-			expect((await member.node.getControlDatabase()!.getOwnerKeys()).has(ed25519KeyPairFromLibp2p(pKey).publicKeyB64)).toBe(true);
+			expect((await member.node.getControlDatabase()!.getOwnerKeys()).has(ownerKeySeatedByInvitation(pPeerId))).toBe(true);
 			// P holds M's control tables: the push before the seat landed, and the rows that make M
 			// a member in P's eyes (A's vouch, judged against the key P pinned) read there.
 			// The row is waited for, not read once: P's storage holds the seat before the

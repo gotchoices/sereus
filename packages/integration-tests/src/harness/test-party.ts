@@ -6,14 +6,12 @@
  */
 
 import debug from 'debug';
-import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
-import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { toString as uint8ArrayToString } from 'uint8arrays';
 import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
 import { ControlDatabase, CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH } from '@serfab/cadre-core';
-import type { Libp2p, PrivateKey } from '@libp2p/interface';
+import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { allocatePort, releasePorts } from './port-allocator.js';
+import { createTestOwnerKey } from './owner-key.js';
 import type { TestParty, TestCadreNode, CreatePartyOptions } from './types.js';
 
 const log = debug('sereus:integration:party');
@@ -31,8 +29,7 @@ interface Libp2pNodeWithRepo extends Libp2p {
 async function createTestNode(
   networkName: string,
   bootstrapNodes: string[],
-  profile: 'transaction' | 'storage',
-  privateKey?: PrivateKey
+  profile: 'transaction' | 'storage'
 ): Promise<TestCadreNode> {
   const port = await allocatePort();
 
@@ -42,7 +39,6 @@ async function createTestNode(
     port,
     bootstrapNodes,
     networkName,
-    privateKey,
     storage: () => new MemoryRawStorage(),
     fretProfile: profile === 'storage' ? 'core' : 'edge',
     // These are CONTROL-network nodes (networkName `control-<partyId>`), so they must
@@ -98,25 +94,11 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   
   log('Creating test party: %s (id: %s)', name, partyId);
   
-  // Generate owner keypair
-  const ownerKey = await generateKeyPair('Ed25519');
-  const ownerPrivateKey = privateKeyToProtobuf(ownerKey);
-  const ownerPeerId = peerIdFromPrivateKey(ownerKey);
-  // Extract raw Ed25519 public key (32 bytes after 4-byte header and 32-byte seed)
-  // and encode as base64url for use with crypto functions
-  const rawPublicKey = ownerPrivateKey.slice(36, 68);
-  const ownerPublicKey = uint8ArrayToString(rawPublicKey, 'base64url');
+  const ownerKey = createTestOwnerKey();
+  log('Generated owner key: %s', ownerKey.publicKey);
 
-  log('Generated owner key: %s (peerId: %s)', ownerPublicKey, ownerPeerId.toString());
-
-  // Create owner node first (no bootstrap - it IS the bootstrap).
-  // The owner node MUST adopt the owner keypair as its libp2p identity:
-  // seed/CadrePeer owner marking derives each peer's ed25519 key from its
-  // transport PeerId and checks it against the OwnerKey table
-  // (see seed-bootstrap.ts `ed25519PublicKeyB64FromPeerId` / `queryPeers`). A
-  // fresh random node key would never match, so the owner would never be
-  // marked `isOwner` in its own seeds.
-  const ownerNode = await createTestNode(networkName, [], 'transaction', ownerKey);
+  // Create owner node first (no bootstrap - it IS the bootstrap)
+  const ownerNode = await createTestNode(networkName, [], 'transaction');
   
   // Get bootstrap addresses from owner node
   const bootstrapAddrs = ownerNode.multiaddrs;
@@ -144,14 +126,13 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   log('ControlDatabase initialized for party %s', name);
 
   // Bootstrap: insert the owner key
-  await controlDatabase.insertOwnerKey(ownerPublicKey);
+  await controlDatabase.insertOwnerKey(ownerKey.publicKey);
   log('Owner key inserted for party %s', name);
 
   return {
     partyId,
     name,
-    ownerPrivateKey,
-    ownerPublicKey,
+    ownerKey,
     ownerNode,
     droneNodes,
     bootstrapAddrs,

@@ -110,7 +110,7 @@ describe('E2E relay-only control node circuit address', () => {
 				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none',
 			}));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 
 			// ── B: an ordinary member, directly reachable, never dials C ────────────
 			const bKey = await generateKeyPair('Ed25519');
@@ -208,7 +208,7 @@ describe('E2E relay-only control node circuit address', () => {
 				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none',
 			}));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 			// One member row, so A's authorized set is non-empty and the cold-start
 			// admit-everyone carve-out no longer applies.
 			const memberKey = await generateKeyPair('Ed25519');
@@ -269,7 +269,7 @@ describe('E2E relay-only control node circuit address', () => {
 				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none',
 			}));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 			const memberKey = await generateKeyPair('Ed25519');
 			await A.authorizePeer(peerIdFromPrivateKey(memberKey).toString());
 
@@ -322,7 +322,7 @@ describe('E2E relay-only control node circuit address', () => {
 				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none', linkRoundTripMs,
 			}));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 			await A.authorizePeer(peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString());
 
 			const aAddr = A.getControlNode()!.getMultiaddrs()[0]!;
@@ -400,7 +400,7 @@ describe('E2E relay-only control node circuit address', () => {
 				unauthorizedRelayReservationCap: 1,
 			}));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 			await A.authorizePeer(peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString());
 			const relayAddr = relayDialAddr(A);
 

@@ -27,7 +27,6 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import {
 	CadreNode,
-	ed25519KeyPairFromLibp2p,
 	generateStrandMemberKey,
 	isStrandMember,
 	strandMemberKeyPair,
@@ -36,10 +35,12 @@ import type { PendingJoinStatus, SAppConfig, StrandInstance } from '@serfab/cadr
 import {
 	controlNodeConfig,
 	createSignedSAppConfig,
+	createTestOwnerKey,
 	captureRawStorage,
 	sameListenAddr,
 	waitUntil,
 	type RawStorageCapture,
+	type TestOwnerKey,
 } from '../harness/index.js';
 
 const SIMPLE_SCHEMA = `
@@ -55,10 +56,11 @@ const LINK_ROUND_TRIP_MS = 100;
 const STRAND_WATCH_MS = 1_000;
 const CONVERGE_BUDGET_MS = 90_000;
 
-/** What one machine keeps across a restart. */
+/** What one machine keeps across a restart: its identity, its owner key and its stores. */
 interface Machine {
 	partyId: string;
 	key: PrivateKey;
+	ownerKey: TestOwnerKey;
 	capture: RawStorageCapture;
 	listenAddrs?: string[];
 }
@@ -83,9 +85,8 @@ async function startOwner(machine: Machine, running: Set<CadreNode>, beforeStart
 	beforeStart?.(node);
 	running.add(node);
 	await node.start();
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(machine.key);
-	await node.getControlDatabase()!.ensureOwnerKey(publicKeyB64);
-	await node.initializeSeedBootstrap(privateKeyB64);
+	await node.getControlDatabase()!.ensureOwnerKey(machine.ownerKey.publicKey);
+	await node.useOwnerSigner(machine.ownerKey.signer);
 	return node;
 }
 
@@ -108,8 +109,8 @@ describe('Pending join across a restart', () => {
 		const runTag = Date.now();
 		const running = new Set<CadreNode>();
 		try {
-			const host: Machine = { partyId: `host-${runTag}`, key: await generateKeyPair('Ed25519'), capture: captureRawStorage() };
-			const joiner: Machine = { partyId: `joiner-${runTag}`, key: await generateKeyPair('Ed25519'), capture: captureRawStorage() };
+			const host: Machine = { partyId: `host-${runTag}`, key: await generateKeyPair('Ed25519'), ownerKey: createTestOwnerKey(), capture: captureRawStorage() };
+			const joiner: Machine = { partyId: `joiner-${runTag}`, key: await generateKeyPair('Ed25519'), ownerKey: createTestOwnerKey(), capture: captureRawStorage() };
 			const strandId = `strand-pending-join-${runTag}`;
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 

@@ -849,7 +849,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// during boot is reported by the FIRST case's afterEach, the earliest check there is.
 		watchAbandonedWrites('A', A);
 		await A.start();
-		const aOwnerKey = await makeOwnOwner(A, aKey);
+		const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 		const aPeerId = A.peerId!.toString();
 
 		// A's self-publish rides the ~1 s start timer; the seeds minted below are

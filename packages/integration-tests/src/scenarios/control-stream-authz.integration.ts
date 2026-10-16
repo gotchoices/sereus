@@ -195,7 +195,7 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 
 			// Authorize M BEFORE it dials: `authorizePeer` refreshes the stream
 			// gate's materialized snapshot inline, so both gates know M at once —
@@ -357,7 +357,7 @@ describe('E2E per-stream control-DB stream authorization', () => {
 				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, linkRoundTripMs: A_LINK_ROUND_TRIP_MS,
 			}));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 
 			// The announcing member exists only as an authorized peerId — the grant
 			// path needs an announcer identity, not a live sibling node.

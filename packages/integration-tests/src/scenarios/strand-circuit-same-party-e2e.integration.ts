@@ -135,7 +135,7 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 				relayAddrs: [relay.dialAddr],
 			}));
 			await A.start();
-			const aOwnerPub = await makeOwnOwner(A, aKey);
+			const { publicKey: aOwnerPub } = await makeOwnOwner(A);
 			const aPeerId = A.peerId!.toString();
 
 			// Every address A has is a circuit address — the relay-only posture.

@@ -218,7 +218,7 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
 			relayAddrs: [relay.dialAddr],
 		}));
 		await A.start();
-		await makeOwnOwner(A, aKey);
+		await makeOwnOwner(A);
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
 		const aDb = founded.instance.database!.getDatabase();
@@ -237,7 +237,7 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
 			relayAddrs: [relay.dialAddr],
 		}));
 		await B.start();
-		await makeOwnOwner(B, bKey);
+		await makeOwnOwner(B);
 		const formResult = await B.formStrand(B.decodeInvitation(encoded), {
 			partyId: `first-commit-b-${runTag}`,
 			purpose: 'joiner first commit over a slow relay',
@@ -381,7 +381,7 @@ async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void
 		const bHome = await partyHome(`restart-b-${runTag}`);
 
 		A = await startPartyNode(aHome, relay);
-		await makeOwnOwner(A, aHome.key);
+		await makeOwnOwner(A);
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey: await generateStrandMemberKey(), sAppConfig: sApp });
 		const aDb = founded.instance.database!.getDatabase();
 		await aDb.exec(seatBatch('S', 'sid-a', 'key-a', 'Founder'), undefined, { transaction: true });
@@ -389,7 +389,7 @@ async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void
 		await A.publishFormationInvite(invitation.token, SAPP_ID, { strandId, expiresAtMs: Date.now() + YEAR_MS, totalUses: 1 });
 
 		B = await startPartyNode(bHome, relay);
-		await makeOwnOwner(B, bHome.key);
+		await makeOwnOwner(B);
 		const formResult = await B.formStrand(B.decodeInvitation(A.encodeInvitation(invitation)), {
 			partyId: bHome.partyId,
 			purpose: 'joiner restart delivers a write made alone',
@@ -457,7 +457,7 @@ async function runWriteMadeAloneReportedThenHeld(): Promise<void> {
 		const bHome = await partyHome(`held-b-${runTag}`);
 
 		A = await startPartyNode(aHome, relay);
-		await makeOwnOwner(A, aHome.key);
+		await makeOwnOwner(A);
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey: await generateStrandMemberKey(), sAppConfig: sApp });
 		const aStrand = founded.instance.database!;
 		const aDb = aStrand.getDatabase();
@@ -466,7 +466,7 @@ async function runWriteMadeAloneReportedThenHeld(): Promise<void> {
 		await A.publishFormationInvite(invitation.token, SAPP_ID, { strandId, expiresAtMs: Date.now() + YEAR_MS, totalUses: 1 });
 
 		B = await startPartyNode(bHome, relay);
-		await makeOwnOwner(B, bHome.key);
+		await makeOwnOwner(B);
 		const formResult = await B.formStrand(B.decodeInvitation(A.encodeInvitation(invitation)), {
 			partyId: bHome.partyId,
 			purpose: 'a write made alone is reported, then reported held',

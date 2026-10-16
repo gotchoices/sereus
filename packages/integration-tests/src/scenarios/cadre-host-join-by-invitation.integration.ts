@@ -36,7 +36,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 
-import { CadreNode, MemoryBootstrapPeerStore, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, MemoryBootstrapPeerStore } from '@serfab/cadre-core';
 import type { HostedNodeView } from '@serfab/cadre-host';
 
 import {
@@ -48,6 +48,7 @@ import {
   waitUntil,
   type TestCadreHost,
   type TestEventStream,
+  type TestOwnerKey,
 } from '../harness/index.js';
 
 /** Generous budget for a real `cadre-cli` child to start and settle its redemption. */
@@ -65,7 +66,7 @@ describe('cadre-host joins a cadre by invitation (real cadre-host, real cadre-cl
 
   let aKey: PrivateKey;
   let aPeerId: string;
-  let aOwnerKey: string;
+  let aOwnerKey: TestOwnerKey;
   /** A's WebSocket listen address, bound again by the restart in step 2. */
   let aListenAddr: string;
   const captureA = captureRawStorage();
@@ -127,7 +128,7 @@ describe('cadre-host joins a cadre by invitation (real cadre-host, real cadre-cl
     aPeerId = peerIdFromPrivateKey(aKey).toString();
     A = buildA();
     await A.start();
-    aOwnerKey = await makeOwnOwner(A, aKey);
+    aOwnerKey = await makeOwnOwner(A);
     aListenAddr = A.getMultiaddrs()[0]!.replace(/\/p2p\/[^/]+$/, '');
     laterInvitation = await mint();
 
@@ -150,7 +151,7 @@ describe('cadre-host joins a cadre by invitation (real cadre-host, real cadre-cl
     const node = await joinWith(await mint());
 
     firstNode = await settled(node.id);
-    expect(firstNode).toMatchObject({ status: 'joined', partyId, memberPeerId: aPeerId, ownerKey: aOwnerKey });
+    expect(firstNode).toMatchObject({ status: 'joined', partyId, memberPeerId: aPeerId, ownerKey: aOwnerKey.publicKey });
     expect(firstNode.peerId).toBeDefined();
     await events.next((e) => e.type === 'hosted-nodes-changed' && e.nodeId === node.id && e.kind === 'joined');
     expect(await A!.isAuthorizedMember(firstNode.peerId!)).toBe(true);
@@ -167,7 +168,7 @@ describe('cadre-host joins a cadre by invitation (real cadre-host, real cadre-cl
 
     A = buildA([aListenAddr]);
     await A.start();
-    await A.initializeSeedBootstrap(ed25519KeyPairFromLibp2p(aKey).privateKeyB64);
+    await A.useOwnerSigner(aOwnerKey.signer);
     expect(A.getMultiaddrs()[0]).toBe(`${aListenAddr}/p2p/${aPeerId}`);
     // The admission is a control write A's cohort agrees on, and step 1's node is in that
     // cohort: wait for the two to find each other again before asking.
@@ -181,7 +182,7 @@ describe('cadre-host joins a cadre by invitation (real cadre-host, real cadre-cl
     expect((retry.body as { data: { node: HostedNodeView } }).data.node).toMatchObject({ status: 'joining' });
 
     const joined = await settled(node.id);
-    expect(joined).toMatchObject({ status: 'joined', memberPeerId: aPeerId, ownerKey: aOwnerKey });
+    expect(joined).toMatchObject({ status: 'joined', memberPeerId: aPeerId, ownerKey: aOwnerKey.publicKey });
     expect(joined.retryable).toBeUndefined();
     expect(await A.isAuthorizedMember(joined.peerId!)).toBe(true);
   }, 3 * STARTUP_MS + OP_MS);

@@ -9,10 +9,11 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import {
-	CadreNode, ed25519KeyPairFromLibp2p,
+	CadreNode, ed25519PublicKeyB64FromPeerId,
 	type CadreInvitation, type CadreJoinProgress, type RawStorageProvider, type RedeemCadreInvitationResult,
 } from '@serfab/cadre-core';
 import { controlNodeConfig, controlAddrs, hasOutboundTo } from './node-fixtures.js';
+import type { TestOwnerKey } from './owner-key.js';
 import { waitUntil } from './wait-utils.js';
 
 export interface InviteMember { node: CadreNode; peerId: string; key: PrivateKey }
@@ -25,13 +26,13 @@ export interface PinningMemberOptions {
 	/** Lets a scenario look inside the member's raw stores. */
 	storageProvider?: RawStorageProvider;
 	/**
-	 * Wire the member's own key for owner signing (`initializeSeedBootstrap`) in place of the
+	 * Wire this owner key as the member's owner signer (`useOwnerSigner`) in place of the
 	 * listener-only seed service, for a machine an owner will make a second owner
-	 * (`CadreNode.addOwner`). A node registers one seed handler, so this has to replace the
-	 * listener rather than follow it; the owner-capable service answers the admitting owner's
-	 * seed the same way. It anchors the member's own key on the member alone.
+	 * (`CadreNode.addOwner(ownerKey.publicKey)`). A node registers one seed handler, so this has
+	 * to replace the listener rather than follow it; the owner-capable service answers the
+	 * admitting owner's seed the same way. It anchors the key on the member alone.
 	 */
-	ownerCapable?: boolean;
+	ownerKey?: TestOwnerKey;
 	/** The member's `network.controlCohort.reconcileMs`; on a pinning member that timer is what runs its membership refresh. */
 	reconcileMs?: number;
 	/**
@@ -61,12 +62,24 @@ export async function startPinningMember(partyId: string, ownerKey: string, opti
 		...(options.strandWatchMs !== undefined ? { strandWatchMs: options.strandWatchMs } : {}),
 	}));
 	await node.start();
-	if (options.ownerCapable) {
-		await node.initializeSeedBootstrap(ed25519KeyPairFromLibp2p(key).privateKeyB64);
+	if (options.ownerKey) {
+		await node.useOwnerSigner(options.ownerKey.signer);
 	} else {
 		await node.enableSeedListener();
 	}
 	return { node, peerId: peerIdFromPrivateKey(key).toString(), key };
+}
+
+/**
+ * The owner key an owner-granting invitation seats for the machine `peerId`: the key behind its
+ * peer id (the redemption's `peerKey`), which `wireOwnKeyIfOwner()` wires with no signer given.
+ * The one place a test owner key is a machine identity, and cadre-core's rule rather than the
+ * harness's; `owner-grant-separate-from-machine-invitation` replaces it with a generated key.
+ */
+export function ownerKeySeatedByInvitation(peerId: string): string {
+	const key = ed25519PublicKeyB64FromPeerId(peerId);
+	if (!key) throw new Error(`${peerId} is not an Ed25519 peer id`);
+	return key;
 }
 
 /** The owner-online path: `owner` vouches the member, delivers the seed, and dials it from the retained address. */

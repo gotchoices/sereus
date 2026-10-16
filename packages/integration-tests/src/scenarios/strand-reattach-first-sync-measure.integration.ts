@@ -174,7 +174,7 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 			listenAddrs: [], relayAddrs: [relay.dialAddr],
 		})));
 		await A.start();
-		await makeOwnOwner(A, aKey);
+		await makeOwnOwner(A);
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
 		const aStrandPeerId = founded.instance.libp2pNode!.peerId.toString();
@@ -194,7 +194,7 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 			strandFirstSync: { timeoutMs: WRITABLE_WAIT_MS },
 		})));
 		await B.start();
-		await makeOwnOwner(B, bKey);
+		await makeOwnOwner(B);
 		const formResult = await B.formStrand(B.decodeInvitation(A.encodeInvitation(invitation)), {
 			partyId: `reattach-b-${runTag}`, purpose: 'strand re-attach first-sync measurement',
 		});

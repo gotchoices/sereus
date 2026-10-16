@@ -321,7 +321,7 @@ async function runInProcess(persistentNetworkState: boolean, oneSidedMemory = fa
 
 		// ── First incarnation: found, invite, form, attach (the blind-relay flow) ──
 		A = await startPartyNode(aHome, relay);
-		await makeOwnOwner(A, aHome.key);
+		await makeOwnOwner(A);
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
 		const aStrandPeerId = founded.instance.libp2pNode!.peerId.toString();
@@ -329,7 +329,7 @@ async function runInProcess(persistentNetworkState: boolean, oneSidedMemory = fa
 		await A.publishFormationInvite(invitation.token, SAPP_ID, { strandId, expiresAtMs: Date.now() + YEAR_MS, totalUses: 1 });
 
 		B = await startPartyNode(bHome, relay);
-		await makeOwnOwner(B, bHome.key);
+		await makeOwnOwner(B);
 		const formResult = await B.formStrand(B.decodeInvitation(A.encodeInvitation(invitation)), {
 			partyId: bHome.partyId,
 			purpose: 'relay-only restart re-convergence',

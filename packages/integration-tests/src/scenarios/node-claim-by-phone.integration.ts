@@ -251,11 +251,10 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
     nodeAddrs = status.multiaddrs;
     expect(nodeAddrs.some((a) => a.includes('/ws'))).toBe(true);
 
-    const built = await buildPhoneOwner(partyId, claimantPeerStore);
-    claimant = built.node;
+    claimant = await buildPhoneOwner(partyId, claimantPeerStore);
     await claimant.start();
     claimantPeerId = claimant.peerId!.toString();
-    claimantOwnerKey = await makeOwnOwner(claimant, built.key);
+    claimantOwnerKey = (await makeOwnOwner(claimant)).publicKey;
     // The claimant's own `CadrePeer` row is what step 3 looks for in the node's authorized
     // set. Published now rather than left to the self-registration timer, which may fire
     // before the owner key above is in place and then wait for the next heartbeat.
@@ -327,10 +326,9 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
   }, 3 * STARTUP_MS + 2 * OP_MS);
 
   it('step 4: an owner of another cadre presenting the same secret is refused as already-claimed', async () => {
-    const built = await buildPhoneOwner(`node-claim-rival-${Math.random().toString(36).slice(2)}`);
-    rival = built.node;
+    rival = await buildPhoneOwner(`node-claim-rival-${Math.random().toString(36).slice(2)}`);
     await rival.start();
-    await makeOwnOwner(rival, built.key);
+    await makeOwnOwner(rival);
 
     // The rival is no member, so the claimed node's connection gate admits it provisionally, and
     // the seed stream completes well inside the provisional deadline.

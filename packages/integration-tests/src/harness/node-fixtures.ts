@@ -9,13 +9,13 @@
 
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
-import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import type { ConnectionGater, PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { CadreNode, ed25519KeyPairFromLibp2p, signSchema, MemoryEnrolledMachineStore } from '@serfab/cadre-core';
+import { CadreNode, ed25519PublicKeyB64FromPeerId, signSchema, MemoryEnrolledMachineStore } from '@serfab/cadre-core';
 import type {
   BootstrapPeerStore,
   CadreNodeConfig,
@@ -29,7 +29,8 @@ import type {
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
 import { readCohort } from './control-cohort.js';
-import { signMessageEd25519 } from './test-network.js';
+import { createTestOwnerKey, signMessageEd25519 } from './owner-key.js';
+import type { TestOwnerKey } from './owner-key.js';
 
 /**
  * WebSocket + circuit-relay transports every control node gets. Since the last private
@@ -275,21 +276,25 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
 }
 
 /**
- * Make a freshly-started node its own control owner (genesis): enroll its derived
- * public key in `OwnerKey` and wire seed-bootstrap with the matching private key, so
- * it can owner-sign `CadrePeer` inserts (and mint seeds). Returns the owner PUBLIC key
- * (base64url) — the key an enrollee pins into its node-local trusted-owner anchor
- * (`trustOwnerKeys`) so this owner's membership vouchers pass its authorized-member
- * predicate. Callers that don't need the anchor key (most current callers) simply
- * discard the return value.
+ * Make a freshly-started node its own control owner (genesis): generate an owner key of its
+ * own, apart from the node's libp2p identity, enroll it in `OwnerKey` under `label`, and wire
+ * it as the node's owner signer, so the node can owner-sign `CadrePeer` inserts (and mint
+ * seeds). Returns the key: its `publicKey` is what an enrollee pins into its node-local
+ * trusted-owner anchor (`trustOwnerKeys`) so this owner's membership vouchers pass its
+ * authorized-member predicate, and a scenario that restarts the node over its store wires
+ * `signer` again with `useOwnerSigner` (the row survives on the store; the key does not).
  */
-export async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<string> {
-  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
+export async function makeOwnOwner(node: CadreNode, label?: string): Promise<TestOwnerKey> {
   const db = node.getControlDatabase();
   if (!db) throw new Error('control database missing after start');
-  await db.insertOwnerKey(publicKeyB64);
-  await node.initializeSeedBootstrap(privateKeyB64);
-  return publicKeyB64;
+  const ownerKey = createTestOwnerKey();
+  // A derivation from the node identity creeping back into the harness would make these equal.
+  if (ownerKey.publicKey === ed25519PublicKeyB64FromPeerId(node.peerId!.toString())) {
+    throw new Error('makeOwnOwner: the owner key is the key behind the peer id of the node; test owner keys must be independent of node identities');
+  }
+  await db.insertOwnerKey(ownerKey.publicKey, label);
+  await node.useOwnerSigner(ownerKey.signer);
+  return ownerKey;
 }
 
 /**
@@ -302,24 +307,22 @@ const PHONE_RECONCILE_MS = 2_000;
  * A phone-shaped owner node of its own party, not yet started: `listenAddrs: []`, the WebSocket
  * and circuit-relay transports every control node gets (no TCP), `profile: 'transaction'` — the
  * shape `reference-app-rn` runs, minus WebRTC. Start it, then make it its own owner with
- * {@link makeOwnOwner} and the returned key. Pass `bootstrapPeerStore` to read what `addDrone`
+ * {@link makeOwnOwner}. Pass `bootstrapPeerStore` to read what `addDrone`
  * or `claimNode` retained as a dial target.
  */
 export async function buildPhoneOwner(
   partyId: string,
   bootstrapPeerStore?: BootstrapPeerStore,
-): Promise<{ node: CadreNode; key: PrivateKey }> {
-  const key = await generateKeyPair('Ed25519');
-  const node = new CadreNode(controlNodeConfig({
+): Promise<CadreNode> {
+  return new CadreNode(controlNodeConfig({
     partyId,
-    privateKey: key,
+    privateKey: await generateKeyPair('Ed25519'),
     profile: 'transaction',
     // Nothing can dial a phone: whatever connects the two, the phone opened it.
     listenAddrs: [],
     reconcileMs: PHONE_RECONCILE_MS,
     ...(bootstrapPeerStore ? { bootstrapPeerStore } : {}),
   }));
-  return { node, key };
 }
 
 /** A real Ed25519 peer id for a peer that is NEVER started (a pure row subject). */
@@ -423,8 +426,8 @@ export interface StartedPairNodes {
   aKey: PrivateKey;
   B: CadreNode;
   bKey: PrivateKey;
-  /** A's derived owner PUBLIC key — present only under `'genesis-before-b'`. */
-  ownerPublicKey?: string;
+  /** The owner key A was made owner with — present only under `'genesis-before-b'`. */
+  ownerKey?: TestOwnerKey;
 }
 
 /**
@@ -452,14 +455,14 @@ export async function startPairNodes(
 
   // Under 'genesis-before-b' this is the write-while-alone moment: A is its own owner
   // before B exists, so its owner-key row commits to a one-member cohort.
-  const ownerPublicKey = ordering === 'genesis-before-b' ? await makeOwnOwner(A, aKey) : undefined;
+  const ownerKey = ordering === 'genesis-before-b' ? await makeOwnOwner(A) : undefined;
 
   const bKey = await generateKeyPair('Ed25519');
   const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
   await B.start();
   started?.push(B);
 
-  return { A, aKey, B, bKey, ...(ownerPublicKey !== undefined ? { ownerPublicKey } : {}) };
+  return { A, aKey, B, bKey, ...(ownerKey !== undefined ? { ownerKey } : {}) };
 }
 
 /**
@@ -509,7 +512,7 @@ export async function bootPair(
 export interface ConnectedPair {
   A: CadreNode;
   B: CadreNode;
-  /** The party's enrolled owner PUBLIC key (A's derived key, base64url). */
+  /** The party's enrolled owner PUBLIC key (base64url), the key A was made owner with. */
   ownerPublicKey: string;
   /**
    * Sign control-row authorization bytes with the pair's owner key — pass as the
@@ -554,7 +557,7 @@ export async function bootConnectedPair(
   const started: CadreNode[] = [];
 
   try {
-    const { A, aKey, B } = await startPairNodes(pairPartyId(tag, partyIdPrefix), 'genesis-deferred', {
+    const { A, B } = await startPairNodes(pairPartyId(tag, partyIdPrefix), 'genesis-deferred', {
       strandWatchMs: opts.strandWatchMs,
       started,
     });
@@ -571,15 +574,14 @@ export async function bootConnectedPair(
       });
     }
 
-    const ownerPublicKey = await makeOwnOwner(A, aKey);
+    const ownerKey = await makeOwnOwner(A);
     await A.authorizePeer(B.peerId!.toString());
 
-    const ownerPrivateKeyProtobuf = privateKeyToProtobuf(aKey);
     return {
       A,
       B,
-      ownerPublicKey,
-      ownerSign: (message) => signMessageEd25519(message, ownerPrivateKeyProtobuf),
+      ownerPublicKey: ownerKey.publicKey,
+      ownerSign: (message) => signMessageEd25519(message, ownerKey.privateKeyB64),
     };
   } catch (error) {
     await stopStartedNodes(started);

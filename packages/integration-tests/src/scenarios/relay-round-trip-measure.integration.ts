@@ -370,7 +370,7 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 			...(proxy === undefined ? {} : { connectionGater: denyDirectPortGate(relayPort) }),
 		}));
 		await A.start();
-		await makeOwnOwner(A, aKey);
+		await makeOwnOwner(A);
 
 		const memberPrivateKey = await generateStrandMemberKey();
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig: sApp });
@@ -398,7 +398,7 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 			strandFirstSync: { timeoutMs: GATE.timeoutMs },
 		}));
 		await B.start();
-		await makeOwnOwner(B, bKey);
+		await makeOwnOwner(B);
 
 		const formResult = await B.formStrand(B.decodeInvitation(A.encodeInvitation(invitation)), {
 			partyId: `rrt-b-${runTag}`, purpose: 'relay round-trip measurement',

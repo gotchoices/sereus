@@ -242,7 +242,7 @@ async function foundStrandAlone(label: string, handles: LateJoinHandles): Promis
 	}));
 	handles.founder = founder;
 	await founder.start();
-	const ownerPublicKey = await makeOwnOwner(founder, founderKey);
+	const { publicKey: ownerPublicKey } = await makeOwnOwner(founder);
 	const founderPeerId = founder.peerId!.toString();
 
 	// The founder's self-publish rides the ~1s start timer; the newcomer's seed and the

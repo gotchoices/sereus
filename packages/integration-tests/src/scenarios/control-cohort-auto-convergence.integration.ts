@@ -32,7 +32,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { CadreNode, ed25519KeyPairFromLibp2p, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
+import { CadreNode, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import { waitUntil, waitForCadrePeerConverged, controlNodeConfig, makeOwnOwner, randomPeerId } from '../harness/index.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -48,7 +48,7 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 			const aPeerId = A.peerId!.toString();
 
 			// B: a plain reader (NOT its own owner) with a short reconcile cadence
@@ -76,7 +76,6 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 			// Production cold-start: B applies A's seed (pinned-key trust, the
 			// CadreInvite.ownerKeys cold-start path). This populates B's peerStore
 			// and best-effort dials A — NOT a raw test-side getControlNode().dial().
-			const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
 			const seed = await A.createSeed();
 			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aOwnerKey]) });
 			expect(applied.success).toBe(true);

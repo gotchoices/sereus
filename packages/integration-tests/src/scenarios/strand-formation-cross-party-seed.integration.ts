@@ -110,7 +110,7 @@ describe('Cross-party strand seed carried by formation', () => {
 				enableRelay: true,
 			}));
 			await host.start();
-			await makeOwnOwner(host, hostKey);
+			await makeOwnOwner(host);
 
 			// The host strand is founded BEFORE the invite is published, so it is live and
 			// dialable at redemption time. This is the whole precondition for the feature:
@@ -278,7 +278,7 @@ describe('Cross-party strand seed carried by formation', () => {
 				enableRelay: true,
 			}));
 			await host.start();
-			await makeOwnOwner(host, hostKey);
+			await makeOwnOwner(host);
 
 			// Found the CLOSED host strand: the shared read secret gates attach; the
 			// founder's own identity (StrandPartyKey, minted by publish) signs the
@@ -316,7 +316,7 @@ describe('Cross-party strand seed carried by formation', () => {
 				// shortening the revocation enforcer's 30 s refresh.
 			}));
 			await joiner.start();
-			await makeOwnOwner(joiner, joinerKey);
+			await makeOwnOwner(joiner);
 
 			// ── The formation result carries the read secret AND the membership invitation ──
 			const formResult = await joiner.formStrand(invitation, {

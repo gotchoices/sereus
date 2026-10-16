@@ -27,7 +27,7 @@
  * ever dominates a suite.
  */
 
-import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '@serfab/cadre-core';
@@ -35,7 +35,8 @@ import type { RawStorageProvider, StrandReactivityConfig } from '@serfab/cadre-c
 import {
 	controlNodeConfig, makeOwnOwner, connectControlNodes, hasOutboundTo, stopStartedNodes
 } from './node-fixtures.js';
-import { signMessageEd25519 } from './test-network.js';
+import { signMessageEd25519 } from './owner-key.js';
+import type { TestOwnerKey } from './owner-key.js';
 import { waitForCohortOn } from './control-cohort.js';
 import { waitUntil } from './wait-utils.js';
 
@@ -123,7 +124,7 @@ export interface TopologyMachine {
 export interface TopologyParty {
 	name: string;
 	partyId: string;
-	/** The owner's derived owner PUBLIC key (base64url), as `makeOwnOwner` returns. */
+	/** The party's owner PUBLIC key (base64url): the key `makeOwnOwner` made machine 0 owner with. */
 	ownerPublicKey: string;
 	/** Sign control-row authorization bytes with this party's owner key
 	 *  (same shape as `ConnectedPair.ownerSign`). */
@@ -212,8 +213,8 @@ function machineConfig(
  * assertions between these exact steps — folding it onto the builder would either
  * contort its phase structure or grow this module callback hooks it doesn't need.
  */
-async function ownerGenesis(owner: CadreNode, key: PrivateKey, label: string): Promise<string> {
-	const ownerPublicKey = await atStage(`${label}: owner genesis`, () => makeOwnOwner(owner, key));
+async function ownerGenesis(owner: CadreNode, label: string): Promise<TestOwnerKey> {
+	const ownerKey = await atStage(`${label}: owner genesis`, () => makeOwnOwner(owner));
 	const ownerPeerId = owner.peerId!.toString();
 	await waitUntil(async () => {
 		const rec = await owner.getControlDatabase()!.queryPeerRecord(ownerPeerId);
@@ -222,7 +223,7 @@ async function ownerGenesis(owner: CadreNode, key: PrivateKey, label: string): P
 		timeoutMs: OWNER_SELF_PUBLISH_TIMEOUT_MS, intervalMs: 250,
 		description: `${label}: owner self-registers a CadrePeer row with addrs`,
 	});
-	return ownerPublicKey;
+	return ownerKey;
 }
 
 /**
@@ -274,6 +275,14 @@ async function meshAndBarrier(
 	}
 }
 
+/** The {@link TopologyParty} a boot hands back, signing with the party's owner key. */
+function partyOf(name: string, partyId: string, ownerKey: TestOwnerKey, machines: TopologyMachine[]): TopologyParty {
+	return {
+		name, partyId, ownerPublicKey: ownerKey.publicKey, machines,
+		ownerSign: (message) => signMessageEd25519(message, ownerKey.privateKeyB64),
+	};
+}
+
 /**
  * Bring up one party under `'genesis-first'` — the production seed-enrollment
  * ordering, `foundStrandAlone` + `enrollNewcomer` generalized to M machines.
@@ -287,13 +296,13 @@ async function bootPartyGenesisFirst(
 	const machines: TopologyMachine[] = [];
 
 	// 1. Owner starts, becomes its own owner, and its self-published row gains addrs.
-	const ownerKey = await generateKeyPair('Ed25519');
-	const owner = new CadreNode(machineConfig(partyId, spec, partySpec.machines[0]!, 0, ownerKey));
+	const ownerMachineKey = await generateKeyPair('Ed25519');
+	const owner = new CadreNode(machineConfig(partyId, spec, partySpec.machines[0]!, 0, ownerMachineKey));
 	await atStage(`party ${name}: owner starts`, () => owner.start());
 	pushStarted(owner);
 	const ownerPeerId = owner.peerId!.toString();
-	machines.push({ node: owner, key: ownerKey, peerId: ownerPeerId, party: name, index: 0 });
-	const ownerPublicKey = await ownerGenesis(owner, ownerKey, `party ${name}`);
+	machines.push({ node: owner, key: ownerMachineKey, peerId: ownerPeerId, party: name, index: 0 });
+	const ownerKey = await ownerGenesis(owner, `party ${name}`);
 
 	// 2. Members, sequentially: vouch BEFORE start (so the owner's inbound gate admits
 	//    the cold-start dial), pin the owner key, start, seed, settled connection.
@@ -304,7 +313,7 @@ async function bootPartyGenesisFirst(
 		await atStage(`${label}: owner vouches member`, () => owner.authorizePeer(peerId));
 
 		const member = new CadreNode(
-			machineConfig(partyId, spec, partySpec.machines[k]!, k, key, [ownerPublicKey]));
+			machineConfig(partyId, spec, partySpec.machines[k]!, k, key, [ownerKey.publicKey]));
 		await atStage(`${label}: member starts`, () => member.start());
 		pushStarted(member);
 		machines.push({ node: member, key, peerId, party: name, index: k });
@@ -316,11 +325,7 @@ async function bootPartyGenesisFirst(
 	//      the owner), then barrier every machine to M (owner only, under 'star').
 	await meshAndBarrier(name, machines, controlMesh);
 
-	const ownerPrivateKeyProtobuf = privateKeyToProtobuf(ownerKey);
-	return {
-		name, partyId, ownerPublicKey, machines,
-		ownerSign: (message) => signMessageEd25519(message, ownerPrivateKeyProtobuf),
-	};
+	return partyOf(name, partyId, ownerKey, machines);
 }
 
 /**
@@ -361,19 +366,14 @@ async function bootPartyGenesisAfterCohort(
 	await meshAndBarrier(name, machines, controlMesh);
 
 	// 3. Genesis and vouches land on the already-spanning cohort.
-	const ownerKey = machines[0]!.key;
-	const ownerPublicKey = await ownerGenesis(machines[0]!.node, ownerKey, `party ${name}`);
+	const ownerKey = await ownerGenesis(machines[0]!.node, `party ${name}`);
 	for (let k = 1; k < machines.length; k++) {
 		await atStage(
 			`party ${name} machine ${k}: owner vouches member`,
 			() => machines[0]!.node.authorizePeer(machines[k]!.peerId));
 	}
 
-	const ownerPrivateKeyProtobuf = privateKeyToProtobuf(ownerKey);
-	return {
-		name, partyId, ownerPublicKey, machines,
-		ownerSign: (message) => signMessageEd25519(message, ownerPrivateKeyProtobuf),
-	};
+	return partyOf(name, partyId, ownerKey, machines);
 }
 
 /**

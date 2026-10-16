@@ -180,7 +180,7 @@ async function bringUpHost(runTag: number): Promise<HostSide> {
 	}));
 	await host.start();
 	try {
-		await makeOwnOwner(host, hostKey);
+		await makeOwnOwner(host);
 
 		const founded = await host.foundStrand({
 			strandId,
@@ -245,7 +245,7 @@ async function redeemOnJoiner(
 	}));
 	await joiner.start();
 	try {
-		await makeOwnOwner(joiner, joinerKey);
+		await makeOwnOwner(joiner);
 
 		const formResult = await joiner.formStrand(side.invitation, {
 			partyId: `joiner-chat-${runTag}`,

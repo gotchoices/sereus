@@ -145,7 +145,7 @@ async function startHost(runTag: number, handles: Handles): Promise<Host> {
 	}));
 	handles.host = node;
 	await node.start();
-	await makeOwnOwner(node, key);
+	await makeOwnOwner(node);
 	const strandId = `strand-always-on-cross-party-${runTag}`;
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 	// Founded before the invitation is published, so the formation result carries live
@@ -182,7 +182,7 @@ async function startPhone(runTag: number, capture: RawStorageCapture, handles: H
 	}));
 	handles.phone = node;
 	await node.start();
-	const publicKey = await makeOwnOwner(node, key);
+	const { publicKey } = await makeOwnOwner(node);
 	const peerId = node.peerId!.toString();
 	await waitUntil(async () => {
 		const rec = await node.getControlDatabase()!.queryPeerRecord(peerId);

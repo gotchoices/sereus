@@ -8,8 +8,9 @@
  * The party is a relay-only `CadreNode` (`listenAddrs: []`, one relay, `enableRelay: false`)
  * whose kept state lives on disk under `stateDir`, the way cadre-cli keeps it:
  *
- *   - `keys/`     `FileKeyStore` — the identity key, and (as the node's default
- *                 `joinedStrands` store over its `keyStore`) the strands joined from another party;
+ *   - `keys/`     `FileKeyStore` — the identity key, the owner key in its own slot beside it,
+ *                 and (as the node's default `joinedStrands` store over its `keyStore`) the
+ *                 strands joined from another party;
  *   - `node/`     `FileStrandNetworkStateStore` — each strand node's saved network state;
  *   - `storage/`  one `FileRawStorage` directory per storage scope, cadre-cli's layout.
  *
@@ -26,9 +27,9 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import {
 	CadreNode,
-	ed25519KeyPairFromLibp2p,
+	createOwnerKey,
 	generateStrandMemberKey,
-	loadOrCreateIdentityKey,
+	loadOwnerSigner,
 	summarizeConnectionPaths,
 } from '@serfab/cadre-core';
 import { FileKeyStore } from '@serfab/cadre-core/key-store-file';
@@ -61,11 +62,11 @@ const node = new CadreNode({
 	hibernation: { enabled: false },
 });
 
-/** Owner genesis, as `makeOwnOwner` does: the node's own key is the party's owner key. */
+/** Owner genesis, as `makeOwnOwner` does, over an owner key this party keeps in its key store's owner slot. */
 async function makeOwnOwner() {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(await loadOrCreateIdentityKey(keyStore));
-	await node.getControlDatabase().insertOwnerKey(publicKeyB64);
-	await node.initializeSeedBootstrap(privateKeyB64);
+	const signer = await loadOwnerSigner(keyStore) ?? await createOwnerKey(keyStore);
+	await node.getControlDatabase().insertOwnerKey(signer.publicKey);
+	await node.useOwnerSigner(signer);
 }
 
 function strandOf(strandId) {

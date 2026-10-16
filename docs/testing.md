@@ -574,6 +574,17 @@ An integration assertion about a value that has to reach a second machine is mad
 
 A control write still committing when a member of its cohort stops is torn, and a node restarted over that store can then have its next write refused (`CoordinatorStaleLossError … stale conflict`; the upstream class is `tickets/blocked/forked-control-collection-sync-livelocks`). A scenario that stops nodes within seconds of starting them must let each node's first address-record publish land first, because that publish is a background `CadrePeer` write: an owner makes it about a second after `start()`, and a node without an owner key makes it on its first control-cohort reconcile pass after its row has replicated in ([architecture.md → Cadre Node](architecture.md#cadre-node), item 4). Wait for `await node.registerSelf()` to return something other than `skipped`; it joins a publish already in flight, or makes it. `control-delete-while-alone-convergence.integration.ts` does this for its non-owner before stopping the pair.
 
+## Owner keys in integration scenarios
+
+A test owner key is generated on its own and is never the key behind a node's peer id, the model [architecture.md → Owner Keys](architecture.md#owner-keys) describes. `createTestOwnerKey()` (`packages/integration-tests/src/harness/owner-key.ts`) returns a `TestOwnerKey`: the public key, the 32-byte seed, and a software signer over it. `TestParty.ownerKey`, the pair fixtures, `bootControlTrio` and `bootTopology` parties all hold keys made this way.
+
+- **`makeOwnOwner(node, label?)`** generates a key, inserts it as the party's genesis `OwnerKey` row under `label`, wires it with `useOwnerSigner`, and returns it. It throws if the key it generated is the key behind the node's peer id, so a derivation added back to the harness fails the first scenario that runs.
+- **An owner restarted over its store keeps the key in the test.** The store keeps the `OwnerKey` row but not the private key, so the scenario holds the returned `TestOwnerKey` and wires its `signer` again after `start()` (`control-delete-while-alone-convergence`, `cadre-invite-any-member`, `pending-join-survives-restart`). The cross-process restart child (`fixtures/strand-restart-party.mjs`) keeps its owner key in its key store's owner slot beside its identity, as a phone does.
+- **A second owner machine** gets its own key: `startPinningMember(…, { ownerKey })` wires it, and the owner adds it with `addOwner(ownerKey.publicKey)`.
+- **The one exception is an owner-granting cadre invitation**, which seats the redeeming machine's identity key as an owner, and which `wireOwnKeyIfOwner()` wires ([architecture.md → Invitation-granted owners](architecture.md#what-an-owner-key-decides-and-what-it-does-not)). Scenarios name that key with `ownerKeySeatedByInvitation(peerId)` (`harness/cadre-invite.ts`), so it has one site to remove when `owner-grant-separate-from-machine-invitation` lands.
+
+Deriving a machine's peer-record key from its libp2p key is an identity binding, not an owner key, and stays (`push-wake-e2e`'s `seedReceiverRecord`, `control-write-degraded-cohort-member`'s hand-signed self-record).
+
 ## Topology coverage map
 
 Which network shapes the integration suite (`packages/integration-tests/src/scenarios/`)

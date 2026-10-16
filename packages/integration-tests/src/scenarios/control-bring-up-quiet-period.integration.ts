@@ -102,7 +102,7 @@ describe('E2E control-database bring-up holds no control connections', () => {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, strandFilter: 'none' }));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			await makeOwnOwner(A);
 			// One member row, so A's authorized set is non-empty and its gates no
 			// longer take the cold-start admit-everyone carve-out. Without this A
 			// would happily serve C and there would be no refusal to order around.

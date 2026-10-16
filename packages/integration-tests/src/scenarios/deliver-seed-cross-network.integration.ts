@@ -23,23 +23,16 @@ import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
-import { toString as uint8ArrayToString } from 'uint8arrays';
 import { multiaddr } from '@multiformats/multiaddr';
 import { TestCadreNetwork } from '../harness/index.js';
-import { SeedBootstrapService, SEED_PROTOCOL, pinnedKeyTrustPolicy, softwareOwnerSigner } from '@serfab/cadre-core';
+import { SeedBootstrapService, SEED_PROTOCOL, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import type { TestParty } from '../harness/types.js';
 import type { Libp2p, Stream, Connection } from '@libp2p/interface';
 
-function extractPrivateKeyBase64(privateKey: Uint8Array): string {
-	const rawKey = privateKey.slice(4, 36);
-	return uint8ArrayToString(rawKey, 'base64url');
-}
-
 async function createSeedService(party: TestParty): Promise<SeedBootstrapService> {
-	const privateKeyBase64 = extractPrivateKeyBase64(party.ownerPrivateKey);
 	const service = new SeedBootstrapService({
 		partyId: party.partyId,
-		ownerSigner: softwareOwnerSigner(privateKeyBase64),
+		ownerSigner: party.ownerKey.signer,
 	});
 	await service.initialize(party.ownerNode.libp2p, party.controlDatabase);
 	return service;
@@ -380,8 +373,8 @@ describe('deliverSeed cross-network stream negotiation', () => {
 			// The receiver self-registers its own peer (registerOwnerPeer below),
 			// which requires its own owner key for signing — independent of the
 			// pinned trust anchor used to accept the *sender's* delivered seed.
-			ownerSigner: softwareOwnerSigner(extractPrivateKeyBase64(receiverParty.ownerPrivateKey)),
-			trustPolicy: pinnedKeyTrustPolicy([senderParty.ownerPublicKey]),
+			ownerSigner: receiverParty.ownerKey.signer,
+			trustPolicy: pinnedKeyTrustPolicy([senderParty.ownerKey.publicKey]),
 		});
 		await receiverService.initialize(receiverParty.ownerNode.libp2p, receiverParty.controlDatabase);
 		// Register the receiver's own handler + peer entry.

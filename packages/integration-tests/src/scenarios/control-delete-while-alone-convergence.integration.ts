@@ -33,18 +33,20 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode } from '@serfab/cadre-core';
 import {
 	waitUntil,
 	waitForCadrePeerConverged,
 	connectControlNodes,
 	randomPeerId,
 	controlNodeConfig,
+	makeOwnOwner,
 	awaitBlockCoverage,
 	readBlockIndex,
 	compareBlockCoverage,
 	blockCoverageIsComplete,
 	formatBlockCoverageGap,
+	type TestOwnerKey,
 } from '../harness/index.js';
 
 /**
@@ -64,7 +66,8 @@ function nodeOn(
 interface AloneRemoval {
 	partyId: string;
 	aKey: PrivateKey;
-	privateKeyB64: string;
+	/** The party's owner key: A wires it again after each restart, since the store keeps only its row. */
+	ownerKey: TestOwnerKey;
 	storeA: MemoryRawStorage;
 	storeB: MemoryRawStorage;
 	bKey: PrivateKey;
@@ -82,7 +85,7 @@ interface AloneRemoval {
  *
  * Phase order matters: A vouches B BEFORE `connectControlNodes(B, A)` so A's
  * inbound gate admits B's dial, and after every A restart
- * `initializeSeedBootstrap` runs BEFORE any sibling connects — the growth-edge
+ * `useOwnerSigner` runs BEFORE any sibling connects — the growth-edge
  * drain is owner-gated (`canAuthorize()`), so a drain fired before the seed
  * bootstrap re-wire would drop the queued tombstone instead of re-issuing it.
  * A also stops BEFORE B, so a background control write still in its commit
@@ -95,7 +98,6 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 	const bKey = await generateKeyPair('Ed25519');
 	const storeA = new MemoryRawStorage();
 	const storeB = new MemoryRawStorage();
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(aKey);
 	const xPeerId = await randomPeerId();
 
 	// ── Phase 1: A + B up, X authorized, X converged on B ────────────────────
@@ -103,8 +105,7 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 	let B: CadreNode | undefined;
 	try {
 		await A.start();
-		await A.getControlDatabase()!.insertOwnerKey(publicKeyB64);
-		await A.initializeSeedBootstrap(privateKeyB64);
+		const ownerKey = await makeOwnOwner(A);
 
 		B = nodeOn(partyId, bKey, storeB, 'transaction');
 		await B.start();
@@ -164,9 +165,9 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 		B = undefined;
 		A = nodeOn(partyId, aKey, storeA, 'storage');
 		await A.start();
-		// OwnerKey row survived on storeA — only the seed-bootstrap wiring is
+		// OwnerKey row survived on storeA — only the owner signer wiring is
 		// per-process. No re-insert.
-		await A.initializeSeedBootstrap(privateKeyB64);
+		await A.useOwnerSigner(ownerKey.signer);
 		expect(await A.isMember(xPeerId)).toBe(true);
 		expect(A.getControlNode()!.getConnections().length).toBe(0);
 
@@ -179,7 +180,7 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 		expect(await A.isMember(xPeerId)).toBe(false);
 		expect(A.getControlNode()!.getConnections().length).toBe(0);
 
-		return { partyId, aKey, privateKeyB64, storeA, storeB, bKey, xPeerId, xStampId: xStampId!, A };
+		return { partyId, aKey, ownerKey, storeA, storeB, bKey, xPeerId, xStampId: xStampId!, A };
 	} catch (error) {
 		await A.stop();
 		throw error;
@@ -242,7 +243,7 @@ describe('Control-DB delete-while-alone re-replication', () => {
 			await ctx.A.stop();
 			ctx.A = nodeOn(ctx.partyId, ctx.aKey, ctx.storeA, 'storage');
 			await ctx.A.start();
-			await ctx.A.initializeSeedBootstrap(ctx.privateKeyB64);
+			await ctx.A.useOwnerSigner(ctx.ownerKey.signer);
 			expect(await ctx.A.isMember(ctx.xPeerId)).toBe(false);
 			expect(ctx.A.getControlNode()!.getConnections().length).toBe(0);
 

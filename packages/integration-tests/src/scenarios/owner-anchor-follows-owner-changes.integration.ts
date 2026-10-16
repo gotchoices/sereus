@@ -8,10 +8,10 @@
  * - **M**, an always-on member pinning A's key and nothing else, admitted the owner-online way
  *   (`addDrone` plus seed delivery). M's anchor is the one under test: every other key M
  *   trusts it has to derive from the replicated `OwnerKey` table.
- * - **B**, a second machine with its own identity key, admitted like M and then made an owner
- *   by A (`addOwner`). It is wired to sign from the start (`ownerCapable`), because a node
- *   registers one seed handler and the owner-capable service has to be that one; this anchors
- *   B's own key on B alone.
+ * - **B**, a second machine holding an owner key of its own (not its identity key), admitted
+ *   like M and then made an owner by A (`addOwner`). It is wired to sign with that key from the
+ *   start (`startPinningMember`'s `ownerKey`), because a node registers one seed handler and the
+ *   owner-capable service has to be that one; this anchors B's owner key on B alone.
  * - **C**, a device B vouches: a bare peer id with no node, because what is asserted is the
  *   membership predicate on M and A, not a connection.
  *
@@ -31,9 +31,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode } from '@serfab/cadre-core';
 import {
-	controlNodeConfig, makeOwnOwner, waitUntil, randomPeerId,
+	controlNodeConfig, makeOwnOwner, createTestOwnerKey, waitUntil, randomPeerId,
 	startPinningMember, admitMember, type InviteMember,
 } from '../harness/index.js';
 
@@ -64,16 +64,17 @@ describe('E2E the trusted-owner anchor follows owner additions and removals', ()
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none' }));
 			await A.start();
 			const owner = A;
-			const aOwnerKey = await makeOwnOwner(owner, aKey);
+			const { publicKey: aOwnerKey } = await makeOwnOwner(owner);
 			const aPeerId = owner.peerId!.toString();
 
 			M = await startPinningMember(partyId, aOwnerKey, { reconcileMs: M_RECONCILE_MS });
 			const member = M.node;
 			await admitMember(owner, M, STARTUP_MS);
-			B = await startPinningMember(partyId, aOwnerKey, { ownerCapable: true });
+			const bOwner = createTestOwnerKey();
+			const bOwnerKey = bOwner.publicKey;
+			B = await startPinningMember(partyId, aOwnerKey, { ownerKey: bOwner });
 			const second = B.node;
 			await admitMember(owner, B, STARTUP_MS);
-			const bOwnerKey = ed25519KeyPairFromLibp2p(B.key).publicKeyB64;
 			for (const [label, node] of [['M', member], ['B', second]] as const) {
 				await waitUntil(async () => (await node.getControlDatabase()!.getOwnerKeys()).has(aOwnerKey)
 					&& (await node.listAuthorizedMembers()).some((row) => row.peerId === aPeerId), {

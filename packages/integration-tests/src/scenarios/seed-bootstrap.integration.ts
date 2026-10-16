@@ -11,20 +11,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { toString as uint8ArrayToString } from 'uint8arrays';
 import { TestCadreNetwork } from '../harness/index.js';
-import { SeedBootstrapService, softwareOwnerSigner } from '@serfab/cadre-core';
-
-/**
- * Extract raw Ed25519 private key from libp2p protobuf format and encode as base64url.
- * The protobuf format is: type (1 byte) + length (1 byte) + type2 (1 byte) + length2 (1 byte) + 32-byte seed + ...
- */
-function extractPrivateKeyBase64(privateKey: Uint8Array): string {
-  // Skip 4-byte protobuf header to get raw 32-byte Ed25519 seed
-  const rawKey = privateKey.slice(4, 36);
-  // Convert to base64url without multiformat prefix
-  return uint8ArrayToString(rawKey, 'base64url');
-}
+import { SeedBootstrapService } from '@serfab/cadre-core';
 
 describe('Seed Bootstrap', () => {
   let network: TestCadreNetwork;
@@ -41,14 +29,11 @@ describe('Seed Bootstrap', () => {
     // Create owner party (server with signing keys)
     const alice = await network.createParty({ name: 'alice-owner' });
 
-    // Extract the raw Ed25519 private key for the service
-    const privateKeyBase64 = extractPrivateKeyBase64(alice.ownerPrivateKey);
-
     // Create SeedBootstrapService
     // Use the same public key format that was inserted into OwnerKey table
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      ownerSigner: softwareOwnerSigner(privateKeyBase64)
+      ownerSigner: alice.ownerKey.signer
     });
 
     // Initialize with the party's libp2p and control database
@@ -84,11 +69,9 @@ describe('Seed Bootstrap', () => {
   it('should encode and decode seeds for out-of-band delivery', async () => {
     const alice = await network.createParty({ name: 'alice-encode' });
 
-    const privateKeyBase64 = extractPrivateKeyBase64(alice.ownerPrivateKey);
-
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      ownerSigner: softwareOwnerSigner(privateKeyBase64)
+      ownerSigner: alice.ownerKey.signer
     });
     
     await seedService.initialize(
@@ -114,11 +97,9 @@ describe('Seed Bootstrap', () => {
   it('should validate seed signature from owner', async () => {
     const alice = await network.createParty({ name: 'alice-validate' });
 
-    const privateKeyBase64 = extractPrivateKeyBase64(alice.ownerPrivateKey);
-
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      ownerSigner: softwareOwnerSigner(privateKeyBase64)
+      ownerSigner: alice.ownerKey.signer
     });
     
     await seedService.initialize(
@@ -141,11 +122,9 @@ describe('Seed Bootstrap', () => {
   it('should use addDrone helper to authorize drone and create seed', async () => {
     const alice = await network.createParty({ name: 'alice-drone' });
 
-    const privateKeyBase64 = extractPrivateKeyBase64(alice.ownerPrivateKey);
-
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      ownerSigner: softwareOwnerSigner(privateKeyBase64)
+      ownerSigner: alice.ownerKey.signer
     });
     
     await seedService.initialize(

@@ -79,7 +79,7 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { ConnectionGater } from '@libp2p/interface';
-import { CadreNode, ed25519KeyPairFromLibp2p, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
+import { CadreNode, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import {
 	waitUntil, waitForCadrePeerConverged,
 	controlNodeConfig, makeOwnOwner, randomPeerId, connectionsTo,
@@ -107,7 +107,7 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', connectionGater: refuseB }));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 			const aPeer = A.peerId!;
 			const aPeerId = aPeer.toString();
 
@@ -140,7 +140,6 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			//    accepted (signature + pinned owner key), but its one dial to A cannot
 			//    survive A's refusal — the state an owner that is momentarily
 			//    unreachable when the seed lands leaves behind.
-			const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
 			const seed = await A.createSeed();
 			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aOwnerKey]) });
 			expect(applied.success).toBe(true);

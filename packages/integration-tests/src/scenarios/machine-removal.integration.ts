@@ -29,10 +29,10 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Connection } from '@libp2p/interface';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, waitUntil, randomPeerId,
-	startPinningMember, admitMember, type InviteMember,
+	startPinningMember, admitMember, ownerKeySeatedByInvitation, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment and the first sync over loopback; each hides a CadreNode start or a reconcile pass. */
@@ -58,7 +58,7 @@ describe('E2E an owner removes a machine from the cadre', () => {
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none' }));
 			await A.start();
 			const owner = A;
-			const aOwnerKey = await makeOwnOwner(owner, aKey);
+			const { publicKey: aOwnerKey } = await makeOwnOwner(owner);
 			const aPeerId = owner.peerId!.toString();
 			M = await startPinningMember(partyId, aOwnerKey, { reconcileMs: M_RECONCILE_MS });
 			const member = M.node;
@@ -71,7 +71,7 @@ describe('E2E an owner removes a machine from the cadre', () => {
 			await B.start();
 			const removed = B;
 			const bPeerId = removed.peerId!.toString();
-			const bOwnerKey = ed25519KeyPairFromLibp2p(bKey).publicKeyB64;
+			const bOwnerKey = ownerKeySeatedByInvitation(bPeerId);
 			const joined = await removed.redeemCadreInvitation(invitation);
 			expect(joined).toMatchObject({ peerId: aPeerId, grantsOwner: true });
 			// A wrote B's rows itself and is the invitation's issuer, so its anchor derived B's key

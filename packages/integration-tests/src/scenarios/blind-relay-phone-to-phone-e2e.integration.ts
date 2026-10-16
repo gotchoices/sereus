@@ -273,7 +273,7 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 			relayAddrs: [relayA.dialAddr],
 		}));
 		await A.start();
-		await makeOwnOwner(A, aKey);
+		await makeOwnOwner(A);
 		const aPeerId = A.peerId!.toString();
 
 		// Every address A has is a circuit address — the relay-only posture.
@@ -330,7 +330,7 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		// joiner persist its OWN membership identity (`StrandPartyKey`) into its own
 		// control DB, which is an owner-signed write. Without genesis that insert is
 		// refused and `formStrand` fails the whole join.
-		await makeOwnOwner(B, bKey);
+		await makeOwnOwner(B);
 		const bPeerId = B.peerId!.toString();
 		for (const addr of controlAddrs(B)) {
 			expect(addr).toContain('/p2p-circuit');

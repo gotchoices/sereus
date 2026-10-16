@@ -91,7 +91,7 @@ describe('Happy Path - Cadre bring-up & intra-cadre control records', () => {
     });
 
     expect(strand.strandId).toBeDefined();
-    expect(strand.sAppId).toBe(alice.ownerPublicKey);
+    expect(strand.sAppId).toBe(alice.ownerKey.publicKey);
     expect(strand.type).toBe('o');
 
     // Real control-DB read: the owner's CadreControl.Strand now holds the row

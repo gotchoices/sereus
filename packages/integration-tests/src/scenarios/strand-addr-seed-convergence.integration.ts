@@ -86,7 +86,7 @@ describe('E2E strand-addr seed convergence', () => {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
 			await A.start();
-			const aOwnerPub = await makeOwnOwner(A, aKey);
+			const { publicKey: aOwnerPub } = await makeOwnOwner(A);
 			const aPeerId = A.peerId!.toString();
 			const aControlAddrList = controlAddrs(A);
 			expect(aControlAddrList.length).toBeGreaterThan(0);
@@ -102,8 +102,8 @@ describe('E2E strand-addr seed convergence', () => {
 
 			// ENROLLMENT: B was enrolled by A's owner, so it pins that owner key into its
 			// node-local trusted-owner anchor (as redeeming a real CadreInvite does). A
-			// itself self-anchors its own key with `genesis` provenance inside
-			// `initializeSeedBootstrap` — no trustOwnerKeys call needed on A.
+			// itself self-anchors its owner key with `genesis` provenance inside
+			// `useOwnerSigner` (`makeOwnOwner`) — no trustOwnerKeys call needed on A.
 			await B.trustOwnerKeys([aOwnerPub], 'invite');
 
 			// CONNECT BEFORE WRITE: both-sides-confirmed {A, B} link, so every gated

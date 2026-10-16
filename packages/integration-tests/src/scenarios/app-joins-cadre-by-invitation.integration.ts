@@ -31,9 +31,8 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
-import { sign } from '@optimystic/quereus-plugin-crypto';
 import {
-	CadreNode, decodeCadreInvitation, decodeCadreJoinRequest, encodeCadreJoinRequest, ed25519KeyPairFromLibp2p,
+	CadreNode, decodeCadreInvitation, decodeCadreJoinRequest, encodeCadreJoinRequest,
 	type CadreJoinProgress,
 } from '@serfab/cadre-core';
 import {
@@ -57,16 +56,14 @@ function buildDevice(partyId: string, key: PrivateKey): CadreNode {
 }
 
 /**
- * Write an owner-signed `JoinedStrand` row from `device`, signed as the party ledger signs it,
- * and wait until `member` holds it: a write the device could make only as an owner.
+ * Write an owner-signed `JoinedStrand` row from `device` with the owner signer it wired, as the
+ * party ledger signs it, and wait until `member` holds it: a write the device could make only as
+ * an owner.
  */
-async function ownerWriteReaches(device: CadreNode, key: PrivateKey, member: InviteMember, strandId: string): Promise<void> {
-	const { publicKeyB64, privateKeyB64 } = ed25519KeyPairFromLibp2p(key);
-	await device.getControlDatabase()!.insertJoinedStrand(
-		{ Id: strandId, Type: 'o', MemberPrivateKey: null },
-		publicKeyB64,
-		(message) => sign(message, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string,
-	);
+async function ownerWriteReaches(device: CadreNode, member: InviteMember, strandId: string): Promise<void> {
+	const signer = device.getOwnerSigner()!;
+	await signer.approve({ partyId: device.partyId, action: `Record ${strandId} as joined` }, (sign) =>
+		device.getControlDatabase()!.insertJoinedStrand({ Id: strandId, Type: 'o', MemberPrivateKey: null }, signer.publicKey, sign));
 	await waitUntil(async () => (await member.node.getControlDatabase()!.queryJoinedStrand(strandId)) !== null, {
 		timeoutMs: OP_MS, intervalMs: 500, description: `M holds ${strandId}`,
 	});
@@ -87,7 +84,7 @@ describe('E2E an app joins a cadre by invitation', () => {
 			// ── A founds the cadre; M is admitted the owner-online way ──────────────
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none', listenAddrs: [] }));
 			await A.start();
-			const aOwnerKey = await makeOwnOwner(A, aKey);
+			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 			M = await startPinningMember(partyId, aOwnerKey, { storageProvider: captureM.provider });
 			const mKey = M.key;
 			const mPeerId = M.peerId;
@@ -133,7 +130,7 @@ describe('E2E an app joins a cadre by invitation', () => {
 			expect(joined.peerId).toBe(mPeerId);
 			expect(joined.grantsOwner).toBe(true);
 			expect(await B.wireOwnKeyIfOwner()).toBe(true);
-			await ownerWriteReaches(B, bKey, restarted, `joined-by-b-${runTag}`);
+			await ownerWriteReaches(B, restarted, `joined-by-b-${runTag}`);
 
 			// ── Open: B, now an owner, invites C ──────────────────────────────────
 			await waitUntil(async () => (await B!.resolvePeerAddrs(mPeerId)).length > 0, {
@@ -149,7 +146,7 @@ describe('E2E an app joins a cadre by invitation', () => {
 			expect(cJoined.peerId).toBe(mPeerId);
 			expect(cJoined.grantsOwner).toBe(true);
 			expect(await C.wireOwnKeyIfOwner()).toBe(true);
-			await ownerWriteReaches(C, cKey, restarted, `joined-by-c-${runTag}`);
+			await ownerWriteReaches(C, restarted, `joined-by-c-${runTag}`);
 		} finally {
 			await Promise.allSettled([C?.stop(), B?.stop(), A?.stop(), M?.node.stop()]);
 		}

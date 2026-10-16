@@ -41,11 +41,11 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { CadreNode, CadreInviteRejectedError, MemoryBootstrapPeerStore, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, CadreInviteRejectedError, MemoryBootstrapPeerStore } from '@serfab/cadre-core';
 import type { PrivateKey } from '@libp2p/interface';
 import {
 	controlNodeConfig, makeOwnOwner, hasOutboundTo, waitUntil, captureRawStorage, readCohort,
-	startPinningMember, admitMember, redeemWaitingForMember, type InviteMember,
+	startPinningMember, admitMember, redeemWaitingForMember, ownerKeySeatedByInvitation, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -82,7 +82,7 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			// ── A founds the cadre; M is admitted the owner-online way ──────────────
 			A = buildA();
 			await A.start();
-			const aOwnerKey = await makeOwnOwner(A, aKey);
+			const { publicKey: aOwnerKey, signer: aOwnerSigner } = await makeOwnOwner(A);
 
 			M = await startPinningMember(partyId, aOwnerKey);
 			const member = M;
@@ -130,7 +130,7 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			// an owner there.
 			expect(await member.node.isAuthorizedMember(pPeerId)).toBe(true);
 			expect((await member.node.listAuthorizedMembers()).map((row) => row.peerId)).toContain(pPeerId);
-			const pOwnerKey = ed25519KeyPairFromLibp2p(pKey).publicKeyB64;
+			const pOwnerKey = ownerKeySeatedByInvitation(pPeerId);
 			expect((await member.node.getControlDatabase()!.getOwnerKeys()).has(pOwnerKey)).toBe(true);
 			// M's anchor followed the row it wrote: P's key is derived there through the invitation
 			// chain (the membership refresh the write triggered runs the anchor sync first), under
@@ -148,7 +148,7 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			// ── A returns, syncs, and sees the device it never vouched for ──────────
 			A = buildA();
 			await A.start();
-			await A.initializeSeedBootstrap(ed25519KeyPairFromLibp2p(aKey).privateKeyB64);
+			await A.useOwnerSigner(aOwnerSigner);
 			await A.reconcileControlCohort();
 			await waitUntil(() => hasOutboundTo(A!, member.peerId), {
 				timeoutMs: STARTUP_MS, intervalMs: 250, description: 'the restarted A reconnects to M',

@@ -37,12 +37,13 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import type { IRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode } from '@serfab/cadre-core';
 import {
 	waitForCadrePeerConverged,
 	connectControlNodes,
 	randomPeerId,
 	controlNodeConfig,
+	makeOwnOwner,
 	captureRawStorage,
 	awaitBlockCoverage,
 	readBlockIndex,
@@ -77,7 +78,6 @@ describe('Control-network peer-join block catch-up', () => {
 		const bKey = await generateKeyPair('Ed25519');
 		const captureA = captureRawStorage();
 		const captureB = captureRawStorage();
-		const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(aKey);
 		const xPeerId = await randomPeerId();
 
 		// ── Phase 1: founder A up alone — its genesis writes the collection headers
@@ -86,8 +86,7 @@ describe('Control-network peer-join block catch-up', () => {
 		let B: CadreNode | undefined;
 		try {
 			await A.start();
-			await A.getControlDatabase()!.insertOwnerKey(publicKeyB64);
-			await A.initializeSeedBootstrap(privateKeyB64);
+			const ownerKey = await makeOwnOwner(A);
 
 			// ── Phase 2: B joins; a third peer X is authorized and converges onto B ──
 			B = nodeOn(partyId, bKey, captureB, 'transaction');
@@ -138,7 +137,7 @@ describe('Control-network peer-join block catch-up', () => {
 			// ── The property: two control tables answer from B's own storage ──
 			expect(await B.isMember(xPeerId)).toBe(true);
 			const ownerKeys = await B.getControlDatabase()!.getOwnerKeys();
-			expect(ownerKeys.has(publicKeyB64)).toBe(true);
+			expect(ownerKeys.has(ownerKey.publicKey)).toBe(true);
 		} finally {
 			await B?.stop();
 			await A?.stop();

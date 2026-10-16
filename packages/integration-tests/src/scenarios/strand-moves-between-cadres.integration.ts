@@ -47,13 +47,13 @@ import type { PrivateKey } from '@libp2p/interface';
 import type { Database } from '@quereus/quereus';
 import {
 	CadreNode, InMemoryKeyStore, KeyStoreJoinedStrandStore, MemoryStrandNetworkStateStore,
-	adoptStrandBundle, decodeCadreInvitation, ed25519KeyPairFromLibp2p, exportStrandBundle,
+	adoptStrandBundle, decodeCadreInvitation, exportStrandBundle,
 	generateStrandMemberKey, strandMemberKeyPair,
 	type SAppConfig, type StrandBundle,
 } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, createSignedSAppConfig, makeOwnOwner, waitUntil, captureRawStorage, sameListenAddr,
-	startPinningMember, admitMember, redeemWaitingForMember, readCohort, peerDialGate, readBlockIndex,
+	startPinningMember, admitMember, redeemWaitingForMember, ownerKeySeatedByInvitation, readCohort, peerDialGate, readBlockIndex,
 	awaitBlockCoverage, stopStartedNodes,
 	type InviteMember, type PeerDialGate, type RawStorageCapture,
 } from '../harness/index.js';
@@ -133,7 +133,7 @@ async function startOwnParty(partyId: string, profile: 'storage' | 'transaction'
 	const node = new CadreNode(controlNodeConfig({ partyId, privateKey: key, profile }));
 	started.push(node);
 	await node.start();
-	await makeOwnOwner(node, key);
+	await makeOwnOwner(node);
 	return node;
 }
 
@@ -268,7 +268,7 @@ async function startPartyA(
 	const O = new CadreNode(controlNodeConfig({ partyId, privateKey: oKey, profile: 'transaction', strandFilter: 'none', listenAddrs: [] }));
 	started.push(O);
 	await O.start();
-	const oOwnerKey = await makeOwnOwner(O, oKey);
+	const { publicKey: oOwnerKey } = await makeOwnOwner(O);
 	const M = await startPinningMember(partyId, oOwnerKey, {
 		hostUnclaimedStrands: true, strandWatchMs: STRAND_WATCH_MS, storageProvider: mStorage.provider,
 	});
@@ -337,7 +337,7 @@ async function expectSeatedOnce(N: CadreNode, bundle: StrandBundle, s: InvitedSt
 	const control = N.getControlDatabase()!;
 	const strands = (await control.queryStrands()).filter((row) => row.Id === S);
 	expect(strands).toHaveLength(1);
-	// The founder rule: the row names the app's key, the key that founded S in B.
+	// Adoption re-signs the row with N's owner key in A, not the key that founded S in B.
 	expect(strands[0]!.FounderOwnerKey).toBe(nOwnerKey);
 	expect((await control.queryJoinedStrands()).filter((row) => row.Id === T)).toHaveLength(1);
 	expect((await control.queryFormationInvites()).filter((row) => row.token === s.token)).toHaveLength(1);
@@ -382,7 +382,7 @@ describe('E2E an app\'s strands move between cadres', () => {
 		const home: AppHome = {
 			key: nKey, peerId: peerIdFromPrivateKey(nKey).toString(), storage: captureRawStorage(), secureStore: new InMemoryKeyStore(),
 		};
-		const nOwnerKey = ed25519KeyPairFromLibp2p(nKey).publicKeyB64;
+		const nOwnerKey = ownerKeySeatedByInvitation(home.peerId);
 		const mStorage = captureRawStorage();
 		const started: CadreNode[] = [];
 		try {
@@ -391,7 +391,7 @@ describe('E2E an app\'s strands move between cadres', () => {
 			const nB = buildAppNode(home, partyB, { gate, reconcileMs: RECONCILE_PARKED_MS });
 			started.push(nB);
 			await nB.start();
-			await makeOwnOwner(nB, nKey);
+			await makeOwnOwner(nB);
 			const P = await startOwnParty(`strand-move-p-${runTag}`, 'storage', started);
 
 			const sMemberPrivateKey = await generateStrandMemberKey();

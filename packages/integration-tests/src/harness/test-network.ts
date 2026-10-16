@@ -11,6 +11,7 @@ import { toString as uint8ArrayToString } from 'uint8arrays';
 import { formationConsentMessage } from '@serfab/cadre-core';
 import type { ControlDatabase, ControlTable } from '@serfab/cadre-core';
 import { createTestParty, shutdownTestParty } from './test-party.js';
+import { signMessageEd25519 } from './owner-key.js';
 import { releaseAllPorts } from './port-allocator.js';
 import { waitForCount, waitUntil, type WaitOptions } from './wait-utils.js';
 import type {
@@ -20,29 +21,6 @@ import type {
   CreatePartyOptions,
   CreateStrandOptions
 } from './types.js';
-
-/**
- * Ed25519-sign the canonical authorization message bytes and return a base64url signature.
- *
- * The control schema's authorization constraints bind the signature to a domain-tagged
- * field vector — ('CadreControl.<Table>', <action>, row fields...) built by
- * `buildAuthorizationMessage` in cadre-core — so an approval verifies only against the
- * one rule it was minted for. The signer receives the raw message bytes and signs them
- * DIRECTLY — no SHA-256 pre-hash and no re-encode, since ed25519 hashes internally and
- * the bytes are already canonical.
- *
- * Exported so scenarios that insert their own owner-signed control rows
- * (e.g. bespoke `FormationInvite`s) sign through the SAME proven path the harness
- * uses for {@link TestCadreNetwork.createOpenInvitation}, rather than re-deriving it.
- */
-export function signMessageEd25519(message: Uint8Array, privateKey: Uint8Array): string {
-  // Ed25519 private key from libp2p is in protobuf format, extract the raw 32-byte seed.
-  // The protobuf format is: type (1 byte) + length (1 byte) + key data (32 bytes) + public key...
-  const rawPrivateKey = privateKey.slice(4, 36); // Skip protobuf header
-  const signature = ed25519.sign(message, rawPrivateKey);
-  // Use uint8ArrayToString to get raw base64url without multiformat prefix
-  return uint8ArrayToString(signature, 'base64url');
-}
 
 const log = debug('sereus:integration:network');
 
@@ -103,7 +81,7 @@ export class TestCadreNetwork {
    */
   async createStrand(party: TestParty, options: CreateStrandOptions): Promise<TestStrand> {
     const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const sAppId = options.sAppId ?? party.ownerPublicKey;
+    const sAppId = options.sAppId ?? party.ownerKey.publicKey;
     const strandType = options.type ?? 'o';
 
     log('Creating strand %s for party %s', strandId, party.name);
@@ -114,8 +92,8 @@ export class TestCadreNetwork {
     await party.controlDatabase.insertStrand(
       strandId,
       strandType,
-      party.ownerPublicKey,
-      (message: Uint8Array) => signMessageEd25519(message, party.ownerPrivateKey)
+      party.ownerKey.publicKey,
+      (message: Uint8Array) => signMessageEd25519(message, party.ownerKey.privateKeyB64)
     );
 
     // Track locally for test assertions
@@ -155,8 +133,8 @@ export class TestCadreNetwork {
     await party.controlDatabase.insertFormationInvite(
       token,
       strand.sAppId,
-      party.ownerPublicKey,
-      (message: Uint8Array) => signMessageEd25519(message, party.ownerPrivateKey),
+      party.ownerKey.publicKey,
+      (message: Uint8Array) => signMessageEd25519(message, party.ownerKey.privateKeyB64),
       { expiresAtMs: Date.now() + expirationMs }
     );
 

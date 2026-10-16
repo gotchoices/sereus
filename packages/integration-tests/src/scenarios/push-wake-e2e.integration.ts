@@ -111,7 +111,6 @@ import {
 	ed25519KeyPairFromLibp2p,
 	signPeerRecord,
 	ed25519PublicKeyB64FromPeerId,
-	softwareOwnerSigner,
 } from '@serfab/cadre-core';
 import type { WakeAck, PeerAddressRecord } from '@serfab/cadre-core';
 import {
@@ -219,10 +218,9 @@ describe('E2E push-wake over the control network', () => {
 			// identity — so S never self-publishes an addr-bearing CadrePeer row that would
 			// pollute Rx's strand-resume cohort seed, exactly as scenario 4). Genesis ALONE
 			// before forming a cohort so the lone OwnerKey commits with no collision.
-			const sKey = await generateKeyPair('Ed25519');
 			S = new CadreNode(controlNodeConfig({ partyId, profile: 'storage' }));
 			await S.start();
-			const sOwnerPub = await makeOwnOwner(S, sKey);
+			const { publicKey: sOwnerPub } = await makeOwnOwner(S);
 			const sPeerId = S.peerId!.toString();
 
 			// Receiver Rx: hibernating plain member — NOT its own owner, so every
@@ -304,10 +302,9 @@ describe('E2E push-wake over the control network', () => {
 			// hub. Genesis ALONE (cohort {L}, before S/Rx connect) so its lone OwnerKey
 			// commits with no shared-owner collision. Storage profile so it holds the
 			// CadrePeer blocks the readers pull.
-			const lKey = await generateKeyPair('Ed25519');
 			L = new CadreNode(controlNodeConfig({ partyId, profile: 'storage', enableRelay: true }));
 			await L.start();
-			const lOwnerPub = await makeOwnOwner(L, lKey);
+			const { publicKey: lOwnerPub } = await makeOwnOwner(L);
 			const lAddrs = controlAddrs(L);
 			expect(lAddrs.length).toBeGreaterThan(0);
 			const lAddr = lAddrs[0]!; // /ip4/127.0.0.1/tcp/<port>/ws/p2p/<L>
@@ -462,11 +459,10 @@ describe('E2E push-wake over the control network', () => {
 
 			// Outsider O: its own owner so it can seed Rx's record and thus RESOLVE
 			// + dial Rx (the default trust policy trusts any peer with a row).
-			const oKey = await generateKeyPair('Ed25519');
-			const { privateKeyB64: oOwnerPriv, publicKeyB64: oOwnerPub } = ed25519KeyPairFromLibp2p(oKey);
-			O = new CadreNode(controlNodeConfig({ partyId, privateKey: oKey }));
+			O = new CadreNode(controlNodeConfig({ partyId, privateKey: await generateKeyPair('Ed25519') }));
 			await O.start();
-			await makeOwnOwner(O, oKey);
+			const oOwner = await makeOwnOwner(O);
+			const oOwnerPub = oOwner.publicKey;
 			const oPeerId = O.peerId!.toString();
 
 			const rxAddrs = controlAddrs(Rx);
@@ -479,7 +475,7 @@ describe('E2E push-wake over the control network', () => {
 			// trust), and O's self-vouched CadrePeer row follows, satisfying every
 			// replicated-schema constraint. Nothing here touches Rx's node-local anchor.
 			await Rx.getControlDatabase()!.insertOwnerKey(oOwnerPub);
-			const pollution = new SeedBootstrapService({ partyId, ownerSigner: softwareOwnerSigner(oOwnerPriv) });
+			const pollution = new SeedBootstrapService({ partyId, ownerSigner: oOwner.signer });
 			await pollution.initialize(Rx.getControlNode()!, Rx.getControlDatabase()!, { registerHandler: false });
 			await pollution.authorizePeer({ peerId: oPeerId, multiaddrs: controlAddrs(O) });
 
@@ -593,10 +589,9 @@ describe('E2E push-wake over the control network', () => {
 			// is enrolled explicitly (independent of the node's ephemeral identity). Genesis
 			// BEFORE forming a cohort so its lone OwnerKey commits without a shared-owner
 			// collision. NOT a relay (see the design note) — direct dials keep the cohort stable.
-			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({ partyId, profile: 'storage' }));
 			await A.start();
-			const aOwnerPub = await makeOwnOwner(A, aKey);
+			const { publicKey: aOwnerPub } = await makeOwnOwner(A);
 			const aAddrs = controlAddrs(A);
 			expect(aAddrs.length).toBeGreaterThan(0);
 			const aAddr = aAddrs[0]!; // /ip4/127.0.0.1/tcp/<port>/ws/p2p/<A>

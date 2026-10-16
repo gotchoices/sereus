@@ -91,7 +91,7 @@ const SAPP_CONFIG_B = createSignedSAppConfig(SIMPLE_SCHEMA, '0.2.0');
  * `insertFormationInvite` here is byte-identical to the harness's own invites.
  */
 function ownerSigner(party: TestParty): (message: Uint8Array) => string {
-	return (message) => signMessageEd25519(message, party.ownerPrivateKey);
+	return (message) => signMessageEd25519(message, party.ownerKey.privateKeyB64);
 }
 
 /**
@@ -866,7 +866,7 @@ describe('E2E Strand Formation', () => {
 
 			// Owner-signed UNBOUND single-use invite (no strandId → responder-provisions).
 			const token = `invite-unbound-${Date.now()}`;
-			await alice.controlDatabase.insertFormationInvite(token, 'sapp-consent', alice.ownerPublicKey, sign, {
+			await alice.controlDatabase.insertFormationInvite(token, 'sapp-consent', alice.ownerKey.publicKey, sign, {
 				totalUses: 1,
 				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
 			});
@@ -907,7 +907,7 @@ describe('E2E Strand Formation', () => {
 			// Invite binds a strand id that is NEVER inserted as a Strand row (unconverged host).
 			const missingStrandId = `strand-unconverged-${Date.now()}`;
 			const token = `invite-missing-${Date.now()}`;
-			await alice.controlDatabase.insertFormationInvite(token, 'sapp-missing', alice.ownerPublicKey, sign, {
+			await alice.controlDatabase.insertFormationInvite(token, 'sapp-missing', alice.ownerKey.publicKey, sign, {
 				totalUses: 1,
 				strandId: missingStrandId,
 				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
@@ -940,7 +940,7 @@ describe('E2E Strand Formation', () => {
 			const sign = ownerSigner(alice);
 
 			const token = `invite-consent-sig-${Date.now()}`;
-			await alice.controlDatabase.insertFormationInvite(token, 'sapp-consent-sig', alice.ownerPublicKey, sign, {
+			await alice.controlDatabase.insertFormationInvite(token, 'sapp-consent-sig', alice.ownerKey.publicKey, sign, {
 				totalUses: 1,
 				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
 			});
@@ -1027,7 +1027,7 @@ describe('E2E Strand Formation', () => {
 		 * strengthen it.
 		 */
 		function enrollApprover(party: TestParty, validationKey: string): Promise<void> {
-			return party.controlDatabase.insertValidationKey(validationKey, party.ownerPublicKey, ownerSigner(party));
+			return party.controlDatabase.insertValidationKey(validationKey, party.ownerKey.publicKey, ownerSigner(party));
 		}
 
 		/**
@@ -1043,7 +1043,7 @@ describe('E2E Strand Formation', () => {
 		function publishGatedInvite(
 			party: TestParty, token: string, sAppId: string, validationUrl: string, strandId?: string,
 		): Promise<void> {
-			return party.controlDatabase.insertFormationInvite(token, sAppId, party.ownerPublicKey, ownerSigner(party), {
+			return party.controlDatabase.insertFormationInvite(token, sAppId, party.ownerKey.publicKey, ownerSigner(party), {
 				totalUses: 1,
 				validationUrl,
 				...(strandId ? { strandId } : {}),
@@ -1202,7 +1202,7 @@ describe('E2E Strand Formation', () => {
 				// It returns false — a silent no-op — when no row matched, so asserting the true keeps
 				// a mis-typed key from making this case pass for the wrong reason.
 				const removed = await alice.controlDatabase.deleteValidationKey(
-					hook.validationKey, alice.ownerPublicKey, ownerSigner(alice),
+					hook.validationKey, alice.ownerKey.publicKey, ownerSigner(alice),
 				);
 				expect(removed).toBe(true);
 
@@ -1419,7 +1419,7 @@ describe('E2E Strand Formation', () => {
 				const strandId = `strand-hook-bound-${Date.now()}`;
 				const memberPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 				await alice.controlDatabase.insertStrand(
-					strandId, 'c', alice.ownerPublicKey, ownerSigner(alice), memberPrivateKey,
+					strandId, 'c', alice.ownerKey.publicKey, ownerSigner(alice), memberPrivateKey,
 				);
 
 				const token = `invite-hook-bound-${Date.now()}`;
@@ -1536,14 +1536,14 @@ describe('E2E Strand Formation', () => {
 
 		/** Owner-signed open host strand — the row a bound invite's `StrandId` must resolve to. */
 		function insertHostStrand(party: TestParty, strandId: string): Promise<void> {
-			return party.controlDatabase.insertStrand(strandId, 'o', party.ownerPublicKey, ownerSigner(party));
+			return party.controlDatabase.insertStrand(strandId, 'o', party.ownerKey.publicKey, ownerSigner(party));
 		}
 
 		/** Owner-signed single-use invite BOUND to `strandId`, optionally gated on an approval hook. */
 		function publishBoundInvite(
 			party: TestParty, token: string, sAppId: string, strandId: string, validationUrl?: string,
 		): Promise<void> {
-			return party.controlDatabase.insertFormationInvite(token, sAppId, party.ownerPublicKey, ownerSigner(party), {
+			return party.controlDatabase.insertFormationInvite(token, sAppId, party.ownerKey.publicKey, ownerSigner(party), {
 				totalUses: 1,
 				strandId,
 				...(validationUrl ? { validationUrl } : {}),
@@ -1599,7 +1599,7 @@ describe('E2E Strand Formation', () => {
 				formationConfig: { provisionTimeoutMs: RESPONDER_PROVISION_MS },
 			});
 			try {
-				await alice.controlDatabase.insertValidationKey(hook.validationKey, alice.ownerPublicKey, ownerSigner(alice));
+				await alice.controlDatabase.insertValidationKey(hook.validationKey, alice.ownerKey.publicKey, ownerSigner(alice));
 
 				const hostStrandId = `strand-abort-cancel-${Date.now()}`;
 				await insertHostStrand(alice, hostStrandId);

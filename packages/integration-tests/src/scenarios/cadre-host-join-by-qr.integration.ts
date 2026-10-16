@@ -188,10 +188,9 @@ describe('a phone claims a cadre-host node from its QR payload (real cadre-host,
   }, STARTUP_MS);
 
   it('step 3: the claimant claims it; the record goes joined with the claimant\'s party and owner, and the claimant DIALS IN', async () => {
-    const built = await buildPhoneOwner(partyId, claimantPeerStore);
-    claimant = built.node;
+    claimant = await buildPhoneOwner(partyId, claimantPeerStore);
     await claimant.start();
-    claimantOwnerKey = await makeOwnOwner(claimant, built.key);
+    claimantOwnerKey = (await makeOwnOwner(claimant)).publicKey;
     expect(await claimant.registerSelf()).not.toBe('skipped');
     // The premise: every connection below is one the claimant opened.
     expect(claimant.getMultiaddrs()).toEqual([]);

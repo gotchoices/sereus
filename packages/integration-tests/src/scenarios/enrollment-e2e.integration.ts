@@ -15,10 +15,9 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { toString as uint8ArrayToString } from 'uint8arrays';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { TestCadreNetwork, waitUntil, controlNodeConfig, makeOwnOwner } from '../harness/index.js';
-import { CadreNode, SeedBootstrapService, pinnedKeyTrustPolicy, CadreInviteRejectedError, softwareOwnerSigner } from '@serfab/cadre-core';
+import { CadreNode, SeedBootstrapService, pinnedKeyTrustPolicy, CadreInviteRejectedError } from '@serfab/cadre-core';
 import type { TestParty, TestCadreNode } from '../harness/types.js';
 import type { ControlNetworkSeed } from '@serfab/cadre-core';
 
@@ -30,7 +29,7 @@ async function startOwner(partyId: string): Promise<{ owner: CadreNode; ownerKey
 	const key = await generateKeyPair('Ed25519');
 	const owner = new CadreNode(controlNodeConfig({ partyId, privateKey: key, strandFilter: 'none' }));
 	await owner.start();
-	return { owner, ownerKey: await makeOwnOwner(owner, key) };
+	return { owner, ownerKey: (await makeOwnOwner(owner)).publicKey };
 }
 
 /** A phone-shaped device: no listen address, dials only, a stable identity to sign the redemption with. */
@@ -43,21 +42,12 @@ async function startDevice(partyId: string): Promise<CadreNode> {
 }
 
 /**
- * Extract raw Ed25519 private key from libp2p protobuf format as base64url.
- */
-function extractPrivateKeyBase64(privateKey: Uint8Array): string {
-	const rawKey = privateKey.slice(4, 36);
-	return uint8ArrayToString(rawKey, 'base64url');
-}
-
-/**
  * Create a SeedBootstrapService for a test party's owner node.
  */
 async function createSeedService(party: TestParty): Promise<SeedBootstrapService> {
-	const privateKeyBase64 = extractPrivateKeyBase64(party.ownerPrivateKey);
 	const service = new SeedBootstrapService({
 		partyId: party.partyId,
-		ownerSigner: softwareOwnerSigner(privateKeyBase64),
+		ownerSigner: party.ownerKey.signer,
 	});
 	await service.initialize(party.ownerNode.libp2p, party.controlDatabase);
 	return service;
@@ -133,7 +123,7 @@ describe('E2E Enrollment', () => {
 		expect(seed.partyId).toBe(owner.partyId);
 		expect(seed.peers.length).toBeGreaterThanOrEqual(2);
 		expect(seed.signature).toBeDefined();
-		expect(seed.signerKey).toBe(owner.ownerPublicKey);
+		expect(seed.signerKey).toBe(owner.ownerKey.publicKey);
 
 		const minterPeer = seed.peers.find(p => p.peerId === owner.ownerNode.peerId);
 		expect(minterPeer?.preferred).toBe(true);
@@ -145,7 +135,7 @@ describe('E2E Enrollment', () => {
 		// pins the owner key out-of-band (as a CadreInvite would carry it);
 		// otherwise the default anchored policy would reject the seed.
 		const result = await droneService.applySeed(seed, {
-			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([owner.ownerKey.publicKey]),
 		});
 		expect(result.success).toBe(true);
 		expect(result.peersAdded).toBeGreaterThanOrEqual(1);
@@ -199,7 +189,7 @@ describe('E2E Enrollment', () => {
 
 		// Drone applies the decoded seed (cold-start → pin the owner key).
 		const applyResult = await droneService.applySeed(decoded, {
-			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([owner.ownerKey.publicKey]),
 		});
 		expect(applyResult.success).toBe(true);
 		expect(applyResult.peersAdded).toBeGreaterThanOrEqual(1);
@@ -273,7 +263,7 @@ describe('E2E Enrollment', () => {
 		});
 		const seed1 = await authService.createSeed();
 		const result1 = await drone1Service.applySeed(seed1, {
-			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([owner.ownerKey.publicKey]),
 		});
 		expect(result1.success).toBe(true);
 
@@ -284,7 +274,7 @@ describe('E2E Enrollment', () => {
 		});
 		const seed2 = await authService.createSeed();
 		const result2 = await drone2Service.applySeed(seed2, {
-			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([owner.ownerKey.publicKey]),
 		});
 		expect(result2.success).toBe(true);
 
@@ -359,7 +349,7 @@ describe('E2E Enrollment', () => {
 
 			// With the owner key pinned out-of-band, the same seed is accepted.
 			const pinned = await droneService.applySeed(seed, {
-				trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
+				trustPolicy: pinnedKeyTrustPolicy([owner.ownerKey.publicKey]),
 			});
 			expect(pinned.success).toBe(true);
 		});

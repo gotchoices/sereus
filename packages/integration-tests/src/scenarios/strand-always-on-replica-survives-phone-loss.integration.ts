@@ -138,7 +138,7 @@ async function startAlwaysOn(capture: RawStorageCapture): Promise<Owner & { disc
 	}));
 	const discovered = collectDiscovered(node);
 	await node.start();
-	const publicKey = await makeOwnOwner(node, key);
+	const { publicKey } = await makeOwnOwner(node);
 	const peerId = node.peerId!.toString();
 	// Enrollment seeds and the strand-addr RPC target selection both stand on this row
 	// carrying a dialable address.

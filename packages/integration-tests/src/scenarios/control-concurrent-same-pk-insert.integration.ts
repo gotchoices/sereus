@@ -42,12 +42,9 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import {
-	buildAuthorizationMessage,
-	isRetriableControlWriteFailure,
-} from '@serfab/cadre-core';
+import { isRetriableControlWriteFailure } from '@serfab/cadre-core';
 import type { CadreNode, ControlDatabase, StrandRow } from '@serfab/cadre-core';
-import { bootConnectedPair, describeOutcomes, errorChainText, waitUntil } from '../harness/index.js';
+import { bootConnectedPair, createTestOwnerKey, describeOutcomes, errorChainText, waitUntil } from '../harness/index.js';
 import type { ConnectedPair } from '../harness/index.js';
 
 /** Cross-node pull-on-read convergence budget; the wait's timeout is the failure. */
@@ -81,27 +78,9 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 
 		// Case 3 publishes from BOTH nodes, and `publishStrand` signs through the node's
 		// wired owner signer (`requireOwnerSigner`). `bootConnectedPair` wires one only on A,
-		// over A's key. Enroll B's identity-derived key as a second owner, signed by A under
-		// the `OwnerKey.Authorized` "a pre-existing owner authorizes by signing over THIS
-		// row" branch — there is no cadre-core writer for a second owner (`insertOwnerKey`
-		// only rides the empty-owner-set bootstrap branch), so the digest is built here
-		// through the one shared builder every signer must use.
-		//
-		// NOTE: deliberately not a new cadre-core writer. Seating a second owner has no
-		// production caller today (owner rotation is unbuilt), so a public
-		// `insertSecondOwnerKey` would be trust-path API exercised only by this test. If a
-		// SECOND scenario ever needs one, it belongs in `src/harness/` beside `makeOwnOwner`.
-		const bOwnerKey = pair.B.getIdentityOwnerKey().publicKeyB64;
-		const stampId = `owner-${randomUUID()}`;
-		const signature = pair.ownerSign(
-			buildAuthorizationMessage('CadreControl.OwnerKey', 'add', pair.A.partyId, [bOwnerKey, '', stampId]),
-		);
-		// VouchOwner/VouchSig store the context pair: the owner-signed branch pins them equal.
-		await dbA().execWrite(`
-			insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
-				with context OwnerKey = ?, Signature = ?
-				values (?, ?, ?, ?)
-		`, [pair.ownerPublicKey, signature, bOwnerKey, stampId, pair.ownerPublicKey, signature], 'second-owner-enroll');
+		// so A adds an owner key of B's own as a second owner.
+		const bOwner = createTestOwnerKey();
+		expect(await pair.A.addOwner(bOwner.publicKey)).toBe(true);
 
 		// B validates its own writes against ITS view, so B must see the row before case 3
 		// signs anything with that key.
@@ -113,7 +92,7 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 		});
 
 		// Wired only once B's own view enrolls the key, as `makeOwnOwner` does for A.
-		await pair.B.initializeSeedBootstrap(pair.B.getIdentityOwnerKey().privateKeyB64);
+		await pair.B.useOwnerSigner(bOwner.signer);
 	}, 120_000);
 
 	afterAll(async () => {
@@ -255,11 +234,10 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 			description: `both nodes hold exactly one ${strandId} row after the publishStrand race`,
 		});
 
-		// Exactly one machine's key is on the row, and both views agree on WHICH — the founder
-		// derivation (`isSelfFoundedRow`) reads this column, so a race that left the two views
-		// naming different publishers would make both machines bootstrap the same strand.
+		// Exactly one machine's owner key is on the row, and both views agree on WHICH, so a
+		// race that left the two views naming different publishers would show here.
 		const founders = await Promise.all(dbs().map(async (db) => (await strandRowsFor(db, strandId))[0]!.FounderOwnerKey));
-		const nodeKeys = nodes.map((node) => node.getIdentityOwnerKey().publicKeyB64);
+		const nodeKeys = nodes.map((node) => node.getOwnerSigner()!.publicKey);
 		expect(new Set(founders).size, `both views must agree on one founder; saw ${founders.join(', ')}`).toBe(1);
 		expect(nodeKeys, `the founder must be one of the two racing machines; saw ${founders[0]}`).toContain(founders[0]);
 	}, CASE_TIMEOUT_MS);
