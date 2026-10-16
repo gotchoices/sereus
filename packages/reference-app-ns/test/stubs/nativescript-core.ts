@@ -24,8 +24,13 @@
  * `test.server.deps.inline: [/@nativescript\/core/]` to `vitest.config.ts` (it
  * works, and is not needed today) — do not replace the real class with a double.
  *
- * Scope is deliberately these two modules. Widen it only for a class a view model
- * actually imports.
+ * Scope is deliberately these two modules, plus `isAndroid` and `Utils` for
+ * `src/ns-db-path.ts`, which `cadre-phone.ts` and `ns-storage.ts` call before every
+ * database open. `isAndroid` is false under Node, so that helper passes names through
+ * unchanged — the names the specs assert on — and never reaches `Utils`. The real
+ * `utils` module cannot stand in: it ships only `index.android.js` / `index.ios.js`,
+ * which only the NativeScript bundler resolves. Widen it only for what a
+ * unit-targeted module actually imports.
  *
  * NOTE: importing this file makes every `vitest run` print three Vite warnings —
  * "Sourcemap for .../data/observable/index.js points to a source file outside its
@@ -40,3 +45,13 @@
 export { Observable, WrappedValue } from '@nativescript/core/data/observable/index.js';
 export type { EventData, PropertyChangeData } from '@nativescript/core/data/observable/index.js';
 export { ObservableArray } from '@nativescript/core/data/observable-array/index.js';
+
+export const isAndroid = false;
+
+export const Utils = {
+	android: {
+		getApplicationContext(): never {
+			throw new Error('Utils.android is not available under the Node unit suite');
+		},
+	},
+};

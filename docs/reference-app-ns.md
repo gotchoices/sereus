@@ -66,7 +66,10 @@ scope: `sereus-<strandId>` for each strand, and `sereus-control-<hex party id>`
 for the party's control database — the control key carries the party id, so switching
 parties on one device lands on a different database rather than sharing one. The peer
 identity (Ed25519 key, producing a stable PeerId across cold launches) lives in
-`sereus-peer-identity`. Because `openOptimysticNSDb` is async but
+`sereus-peer-identity`. On Android each database is opened by its full path under the
+app's databases directory (`src/ns-db-path.ts`), so opening one needs no Activity and
+works before the first screen exists; it is the same file the plugin uses for a bare
+name. Because `openOptimysticNSDb` is async but
 `CadreNodeConfig.storage.provider` is a sync factory, `src/ns-storage.ts` returns a
 lazy `IRawStorage` proxy that awaits a cached open before delegating each call. Its
 `durability` is read before any open, so it states `'power-loss'`, the value

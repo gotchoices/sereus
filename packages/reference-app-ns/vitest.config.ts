@@ -11,7 +11,8 @@ import { defineConfig } from 'vitest/config';
  * `test/stubs/nativescript-core.ts`, which re-exports the real classes from the
  * submodules that load here. Everything else collected here
  * (`src/node-local-slots.ts`, `src/cadre-phone.ts`, `src/ns-storage.ts`) is plain
- * module logic once `@optimystic/db-p2p-storage-ns` is mocked.
+ * module logic once `@optimystic/db-p2p-storage-ns` is mocked; the last two reach
+ * `@nativescript/core` only for `isAndroid`, which the stub fixes at false.
  *
  * `globalSetup` runs the stale-build guard because these suites execute real,
  * non-mocked compiled output from `@serfab/cadre-core` (and, through it, the

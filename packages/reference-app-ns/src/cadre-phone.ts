@@ -41,6 +41,7 @@ import {
 	type OptimysticNSDBHandle,
 } from '@optimystic/db-p2p-storage-ns';
 import { makeLazyNsStorage } from './ns-storage';
+import { nsDbPath } from './ns-db-path';
 import {
 	anchorSlotKey,
 	bootstrapPeersSlotKey,
@@ -124,7 +125,7 @@ let identityDbOpening: Promise<IdentityDb> | null = null;
 
 function openIdentityDb(): Promise<IdentityDb> {
 	if (identityDbOpening) return identityDbOpening;
-	const opening = openOptimysticNSDb(PEER_IDENTITY_DB_NAME).then(
+	const opening = openOptimysticNSDb(nsDbPath(PEER_IDENTITY_DB_NAME)).then(
 		(db): IdentityDb => ({ db, nodeLocalKv: new SqliteKVStore(db, '') }),
 	);
 	identityDbOpening = opening;

@@ -26,6 +26,7 @@ import type { BlockMetadata, FlushOptions, IRawStorage, StoreDurability } from '
  */
 type StoredBlockProof = Parameters<IRawStorage['saveBlockProof']>[2];
 import { openOptimysticNSDb, SqliteRawStorage } from '@optimystic/db-p2p-storage-ns';
+import { nsDbPath } from './ns-db-path';
 
 /**
  * One open promise per database name. cadre-core calls a strand's provider once per
@@ -53,7 +54,7 @@ const openByDbName = new Map<string, Promise<SqliteRawStorage>>();
 function openStorage(dbName: string): Promise<SqliteRawStorage> {
 	const cached = openByDbName.get(dbName);
 	if (cached) return cached;
-	const opening = openOptimysticNSDb(dbName).then((db) => new SqliteRawStorage(db));
+	const opening = openOptimysticNSDb(nsDbPath(dbName)).then((db) => new SqliteRawStorage(db));
 	openByDbName.set(dbName, opening);
 	// The rejection itself reaches every caller awaiting `opening`; this only forgets it.
 	void opening.catch(() => {
