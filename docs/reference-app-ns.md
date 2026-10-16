@@ -394,7 +394,9 @@ The second is the two `Observable` view models behind the Settings screen —
 refuses). `resolve.alias` therefore redirects that exact specifier — anchored
 regex, so the subpaths are untouched — to `test/stubs/nativescript-core.ts`,
 which re-exports the **real** `Observable` and `ObservableArray` from the
-submodules that do load (`data/observable`, `data/observable-array`). Both suites
+submodules that do load (`data/observable`, `data/observable-array`). The stub
+also fixes `isAndroid` at false, so `src/ns-db-path.ts` hands the storage and
+identity suites the plain database names they assert on. Both suites
 drive one shared fake `CadreNode`
 (`test/stubs/fake-cadre-node.ts`) that records every call into a single ordered
 array, because the behaviours under test are orderings: a pasted invitation is
