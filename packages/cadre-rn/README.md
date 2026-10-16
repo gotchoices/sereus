@@ -374,7 +374,7 @@ Use the same options object for the key store and the anchor slot. `keychainAcce
 
 ### What the app must install
 
-`@serfab/cadre-core` (an optional peer, needed by every subpath that builds or persists a node: these two, `/phone-node` and `/lifecycle`), and the secure-store module it passes in: `expo-secure-store` under Expo, or the bare app's own choice. The LevelDB store is the app's `@optimystic/db-p2p-storage-rn`, which it already has for strand storage.
+`@serfab/cadre-core` (an optional peer, needed by every subpath that builds or persists a node, or files its records: `/phone-node`, `/lifecycle` and `/node-local`, whose record keys and key-value slot are the edge node's), and the secure-store module it passes in: `expo-secure-store` under Expo, or the bare app's own choice. The LevelDB store is the app's `@optimystic/db-p2p-storage-rn`, which it already has for strand storage.
 
 ## Polyfills and boot check
 

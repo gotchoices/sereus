@@ -37,8 +37,14 @@ export type UnclassifiedOptionalMember = MustBeNever<
  * one this proxy leaves out reads as "not supported". The `implements` clause names the optional
  * methods the proxy forwards, so dropping one is a compile error, and `UnclassifiedOptionalMember`
  * rejects one added upstream later. The two forwarded ones delegate when the opened storage has
- * them and otherwise answer as an omission would (0 bytes; no block ids), which is what their
- * callers do with a missing method.
+ * them and otherwise answer as an omission would (0 bytes; no block ids).
+ *
+ * NOTE: those two are always present on the proxy, a stub when the opened storage lacks them,
+ * which `IRawStorage` asks backends not to do (feature detection should see the true capability:
+ * the peer-join backfill is inert without `listBlockIds` and runs an empty scan with the stub).
+ * The proxy cannot know before opening, and every storage a platform opens behind it (IndexedDB,
+ * SQLite) has both. If a platform ever opens one without them, let it declare the capability
+ * beside `durability` and omit the method here.
  *
  * NOTE: accepted tradeoff — `getStoreIdentity` is omitted although the opened storage may have it.
  * It is synchronous and must return a string fixed at construction, but the real identity exists

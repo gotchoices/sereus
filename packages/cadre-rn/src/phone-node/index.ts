@@ -44,4 +44,5 @@ export {
 	type PendingStrandMove,
 	type SavedStart,
 	type StrandMoveOutcome,
+	type UnfinishedRemoval,
 } from '@serfab/cadre-core/edge-node';

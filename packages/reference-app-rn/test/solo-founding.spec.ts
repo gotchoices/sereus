@@ -165,7 +165,7 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
  * this package puts the phone's config on a wire against a real relay.
  * `packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts`
  * proves the behaviour for a node of this shape (`listenAddrs: []` + `relayAddrs`), and
- * `cadre-rn/test/phone-node/config.spec.ts` proves the phone's config resolves to that shape —
+ * `cadre-core/test/edge-node/config.spec.ts` proves the edge config resolves to that shape —
  * but the two are joined by inspection, not by a test.
  */
 describe('solo phone founding with a relay configured but unreachable', () => {
