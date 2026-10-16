@@ -37,7 +37,7 @@ src/
   chat-strand.ts    create/join chat strand (ported from reference-app-rn)
   chat-operations.ts insert/query participants + messages (ported)
   solo-smoke.ts     startSolo → createChatStrand → insertMessage → queryMessages (programmatic)
-webpack.config.js   node shims + react-native/browser conditions + @libp2p/crypto browser rewrite
+webpack.config.js   node shims + react-native/browser conditions + named-package browser rewrite
 nativescript.config.ts
 ```
 

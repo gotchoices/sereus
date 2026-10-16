@@ -179,7 +179,7 @@ src/
   chat-strand.ts    create/join chat strand (ported from reference-app-rn)
   chat-operations.ts insert/query participants + messages (ported)
   solo-smoke.ts     startSolo → createChatStrand → insertMessage → queryMessages (programmatic helper, no UI)
-webpack.config.js   node shims + react-native/browser conditions + @libp2p/crypto browser rewrite + esbuild downlevel
+webpack.config.js   node shims + react-native/browser conditions + named-package browser rewrite + esbuild downlevel
 nativescript.config.ts   id: org.gotchoices.sereus.chat.ns
 ```
 
@@ -310,26 +310,16 @@ unhandled URI scheme (`UnhandledSchemeError`). A `NormalModuleReplacementPlugin`
 rewrites `node:foo → foo` so it flows through `resolve.fallback`, matching the RN
 Metro handling of both `node:os` and `os`.
 
-### `@libp2p/crypto` Node → browser rewrite
+### Named-package Node → browser rewrite
 
-`@libp2p/crypto` ships parallel `*.browser.js` variants (ed25519 / secp256k1 / rsa
-/ ecdh keys, webcrypto, hmac, aes-gcm) using `@noble/curves` + WebCrypto instead
-of Node's `crypto`. The mapping is declared in the package's top-level `browser`
-field — **not** in `exports`, so `conditionNames` cannot select it, and (verified)
-the `browser` alias field does not apply it to the package's *internal* relative
-imports either. Without the rewrite the bundle picks `ed25519/index.js`, which
-does `import crypto from 'crypto'` and calls Node key APIs the `createHash`-only
-shim lacks — so `generateKeyPair('Ed25519')` (peer identity) throws
-`undefined cannot be used as a constructor`.
+Some packages ship parallel `*.browser.js` files and select them only through their top-level `browser` map — **not** `exports`, so `conditionNames` cannot select them, and (verified) the `browser` alias field does not apply the map to the package's *internal* relative imports either. For each package on an explicit list (`BROWSER_MAP_PACKAGES` in `webpack.config.js`), a `NormalModuleReplacementPlugin` applies the map itself, like the RN Metro `resolveRequest` rewrite ([`reference-app-rn.md` § Why the browser rewrite matters](reference-app-rn.md#metro-configuration)): an internal relative `.js` import whose package-relative path is a map key is redirected to the mapped file. The owning package is taken from the last `node_modules` segment of the import's resolved path, and each installed copy (local + nested optimystic) is rewritten from its own `package.json`.
 
-A `NormalModuleReplacementPlugin` therefore applies the `browser` map explicitly,
-exactly like the RN Metro `resolveRequest` rewrite
-([`reference-app-rn.md` § Why the browser rewrite matters](reference-app-rn.md#metro-configuration)):
-for any internal `.js` import resolving under an `@libp2p/crypto` package whose
-package-relative path is a `browser`-map key, the request is redirected to the
-absolute `*.browser.js` variant. The map is loaded from whichever copy is
-installed (local + nested optimystic), so every `@libp2p/crypto` in the tree is
-covered.
+The listed packages:
+
+- **`@libp2p/crypto`** — its Node files (ed25519 / secp256k1 / rsa / ecdh keys, hmac, aes-gcm) call Node key APIs that the `createHash`-only crypto shim lacks, so `generateKeyPair('Ed25519')` (peer identity) throws `undefined cannot be used as a constructor`; the browser files use `@noble/curves` + WebCrypto.
+- **`main-event`** — its Node `events.js` calls the static `setMaxListeners` from `node:events`, which the npm `events` package does not have, so every call throws a `TypeError` that the package swallows; libp2p calls it for every abort signal it creates. The browser `events.browser.js` is a no-op.
+
+A package joins the list only when its Node variant is measured to break or cost something. Other packages' Node variants are bundled too (`mortice`, `weald`, parts of `libp2p` and `@libp2p/utils`, `multiformats`' sha2) and none is known to matter; libp2p's user agent has its own shim instead, because its browser variant reads `navigator.userAgent`.
 
 ### ES2022 downlevel + modern output
 

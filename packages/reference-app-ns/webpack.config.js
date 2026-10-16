@@ -11,26 +11,40 @@ const webpack = require('@nativescript/webpack');
 const webpackCore = require('webpack');
 
 /**
- * Load @libp2p/crypto's own `browser` map (relative key → relative value) from
- * any installed copy — the local one and the nested
- * optimystic/packages/db-p2p/node_modules one share the same structure. Used to
- * rewrite the package's internal Node-crypto modules to their `*.browser.js`
- * variants (see the plugin below).
+ * Packages whose own `browser` file map is applied to their internal relative
+ * imports (see the browser-map rewrite plugin below). Explicit rather than every
+ * package: most bundled Node variants are harmless, so a package joins only once
+ * its Node variant is measured to break or cost something on NativeScript.
  */
-function loadLibp2pCryptoBrowserMap() {
-	const roots = [
-		path.resolve(__dirname, 'node_modules'),
-		path.resolve(__dirname, '../../node_modules'),
-		path.resolve(__dirname, '../../../optimystic/packages/db-p2p/node_modules'),
-		path.resolve(__dirname, '../../../optimystic/node_modules'),
-	];
-	for (const root of roots) {
-		const pkgJson = path.join(root, '@libp2p', 'crypto', 'package.json');
-		if (!fs.existsSync(pkgJson)) continue;
-		const map = JSON.parse(fs.readFileSync(pkgJson, 'utf8')).browser;
-		if (map && typeof map === 'object') return map;
+const BROWSER_MAP_PACKAGES = new Set(['@libp2p/crypto', 'main-event']);
+
+/**
+ * The installed package that owns `file` — its name and root directory, taken
+ * from the last `node_modules` segment of the path (scoped names span two
+ * segments) — or null when `file` is not under any `node_modules`.
+ */
+function owningPackage(file) {
+	const nm = `${path.sep}node_modules${path.sep}`;
+	const i = file.lastIndexOf(nm);
+	if (i === -1) return null;
+	const [first, second] = file.slice(i + nm.length).split(path.sep);
+	const name = first.startsWith('@') ? `${first}/${second}` : first;
+	return { name, root: path.join(file.slice(0, i + nm.length), ...name.split('/')) };
+}
+
+const browserMapCache = new Map();
+
+/**
+ * The `browser` object map (package-relative key → package-relative value) from
+ * `<pkgRoot>/package.json`, or null. Read per installed copy, so each copy in the
+ * tree (local + nested optimystic) uses its own version's map.
+ */
+function loadBrowserMap(pkgRoot) {
+	if (!browserMapCache.has(pkgRoot)) {
+		const map = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8')).browser;
+		browserMapCache.set(pkgRoot, map && typeof map === 'object' ? map : null);
 	}
-	return null;
+	return browserMapCache.get(pkgRoot);
 }
 
 /**
@@ -44,7 +58,8 @@ function loadLibp2pCryptoBrowserMap() {
  *   - `node:`-scheme stripping (webpack's `externalsPresets.node:false` leaves
  *     `node:` URIs unhandled, so map them to bare specifiers → fallback)
  *   - `react-native` + `browser` export conditions (db-p2p → rn.js, no TCP)
- *   - @libp2p/crypto Node → browser file rewrite (via the `browser` alias field)
+ *   - named packages' `browser` file maps applied to their internal imports
+ *     (@libp2p/crypto, main-event)
  *   - esbuild downlevel of ES2022 (private methods) in node_modules — NS 8.x's
  *     toolchain parses bundled deps below ES2022 and rejects `async #method`
  *   - `exportsPresence: 'warn'` so upstream version-skew "export not found"
@@ -74,50 +89,35 @@ module.exports = (env) => {
 			'default',
 		]);
 
-		// ── @libp2p/crypto Node → browser rewrite ───────────────────────────
-		// @libp2p/crypto ships parallel `*.browser.js` variants (ed25519 /
-		// secp256k1 / rsa / ecdh keys, webcrypto, hmac, aes-gcm) that use
-		// @noble/curves + WebCrypto instead of Node's `crypto`. The package
-		// declares the mapping in its top-level `browser` field — NOT in
-		// `exports`, so `conditionNames` cannot select it, and (verified) the
-		// `browser` alias field does NOT apply it to the package's internal
-		// relative imports either: the bundle picks `ed25519/index.js`, which
-		// does `import crypto from 'crypto'` and calls Node key APIs our
-		// createHash-only shim lacks — so generateKeyPair('Ed25519') (peer
-		// identity) would throw "undefined cannot be used as a constructor".
-		//
-		// So apply the map explicitly, exactly like the RN Metro `resolveRequest`
-		// rewrite (metro.config.js / docs/reference-app-rn.md § "Why the browser
-		// rewrite matters"): for any internal `.js` import resolving under an
-		// @libp2p/crypto package whose package-relative path is a `browser`-map
-		// key, redirect the request to the absolute `*.browser.js` variant. Keyed
-		// off the resolved package root, so every @libp2p/crypto copy in the tree
-		// (local + nested optimystic) is covered. `browser` is also kept as an
-		// alias field for any other package that relies on its `browser` map.
+		// ── Named-package Node → browser rewrite ────────────────────────────
+		// Some packages pick their browser files only through a top-level
+		// `browser` map — NOT `exports`, so `conditionNames` cannot select it,
+		// and (verified) the `browser` alias field does NOT apply it to the
+		// package's internal relative imports either. For each package in
+		// BROWSER_MAP_PACKAGES the map is applied explicitly, like the RN Metro
+		// `resolveRequest` rewrite (metro.config.js / docs/reference-app-rn.md §
+		// "Why the browser rewrite matters"): an internal relative `.js` import
+		// whose package-relative path is a map key is redirected to the mapped
+		// file. Reasons per package are in docs/reference-app-ns.md § "Named-
+		// package Node → browser rewrite". `browser` stays an alias field for
+		// packages whose map covers bare specifiers.
 		config.resolve.set('aliasFields', ['browser']);
-		const cryptoBrowserMap = loadLibp2pCryptoBrowserMap();
-		if (cryptoBrowserMap) {
-			const cryptoSeg = `@libp2p${path.sep}crypto${path.sep}`;
-			config
-				.plugin('libp2p-crypto-browser-rewrite')
-				.use(webpackCore.NormalModuleReplacementPlugin, [
-					/\.js$/,
-					(resource) => {
-						const ctx = resource.context;
-						if (!ctx || !resource.request.startsWith('.')) return;
-						const i = ctx.indexOf(cryptoSeg);
-						if (i === -1) return;
-						let abs = path.resolve(ctx, resource.request);
-						if (!abs.endsWith('.js')) abs += '.js';
-						const pkgRoot = abs.slice(0, abs.indexOf(cryptoSeg) + cryptoSeg.length - 1);
-						const rel = `./${path.relative(pkgRoot, abs).split(path.sep).join('/')}`;
-						const mapped = cryptoBrowserMap[rel];
-						if (mapped) {
-							resource.request = path.resolve(pkgRoot, mapped);
-						}
-					},
-				]);
-		}
+		config
+			.plugin('browser-map-rewrite')
+			.use(webpackCore.NormalModuleReplacementPlugin, [
+				/\.js$/,
+				(resource) => {
+					if (!resource.context || !resource.request.startsWith('.')) return;
+					const target = path.resolve(resource.context, resource.request);
+					const pkg = owningPackage(target);
+					if (!pkg || !BROWSER_MAP_PACKAGES.has(pkg.name)) return;
+					const rel = `./${path.relative(pkg.root, target).split(path.sep).join('/')}`;
+					const mapped = loadBrowserMap(pkg.root)?.[rel];
+					if (typeof mapped === 'string') {
+						resource.request = path.resolve(pkg.root, mapped);
+					}
+				},
+			]);
 
 		// ── node: scheme → bare specifier ───────────────────────────────────
 		// NS sets `externalsPresets.node:false` (built-ins are bundled, not
