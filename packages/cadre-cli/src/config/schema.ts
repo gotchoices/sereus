@@ -111,7 +111,7 @@ const storage = refine(
     },
     { required: ['type'] },
   ),
-  // Cross-field: a file store needs somewhere to put the files. `resolveStorageConfig` checks
+  // Cross-field: a file store needs somewhere to put the files. `openNodeStorage` checks
   // this too, without naming the file; this check runs first.
   (value, keyPath, ctx) =>
     value.type === 'file' && value.path === undefined

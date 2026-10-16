@@ -19,6 +19,7 @@ import { commandEnv } from '../config/env.js';
 import { claimRecordPath, partyOnRecord, type ClaimRecord } from './claim-record.js';
 import { resolveClaimSecret } from './claim-secret.js';
 import { afterClaimSeedSettles, buildClaimedNode, buildConfiguredNode, claimConfigFor, stopWhenRemoved, warnRemoved } from './start-node.js';
+import { openNodeStorage } from './node-session.js';
 import { readRemovalMarker } from './removal-marker.js';
 import {
   decodeInvitationFor,
@@ -337,11 +338,13 @@ export const startCommand = new Command('start')
       }
       const noteRemoval = (reported: CadreRemoval): void => { removal = reported; };
 
+      // The raw stores of every node this process runs; closed after each node stops.
+      const storage = openNodeStorage(config.storage);
       // The current node. Reassigned once, by the restart into the claimed party below; the
       // servers and the shutdown handler go through this variable so they follow it.
       let node = claimOnRecord
-        ? await buildClaimedNode(config, claimOnRecord, claimConfig)
-        : await buildConfiguredNode(config, pinnedKeys, seedTrustPolicy, claimConfig);
+        ? await buildClaimedNode(config, storage, claimOnRecord, claimConfig)
+        : await buildConfiguredNode(config, storage, pinnedKeys, seedTrustPolicy, claimConfig);
       // NOTE: a removal noticed before the steps after `node.start()` below finish stops the node
       // under them, and one that throws exits 1; the marker is already written, so the respawn
       // starts removed. If that exit is ever seen, skip those steps once `removal` is set.
@@ -363,6 +366,7 @@ export const startCommand = new Command('start')
           await healthServer.stop();
         }
         await node.stop();
+        await storage.close();
         console.log('Cadre node stopped.');
         process.exit(0);
       };
@@ -381,7 +385,8 @@ export const startCommand = new Command('start')
       const restartIntoClaimedParty = async (accepted: NodeClaimRecord): Promise<void> => {
         console.log(`• Restarting into party ${accepted.partyId}`);
         await node.stop();
-        node = await buildClaimedNode(config, accepted, claimConfig);
+        await storage.close();
+        node = await buildClaimedNode(config, storage, accepted, claimConfig);
         stopWhenRemoved(node, config.nodeStateDir, noteRemoval);
         healthServer?.attach(node);
         adminServer?.attach(node);

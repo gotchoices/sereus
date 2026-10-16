@@ -345,7 +345,7 @@ const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
 	kvStoreSlot(nodeLocalKv, bootstrapPeersKvKey(partyId)), partyId);
 ```
 
-The trust-bearing anchor goes in the secure store; the dial hints, the enrolled-machine count and the strand network state go in a LevelDB database of the app's own (`nodeLocalKv` above is a `LevelDBKVStore` over it), because they grant no authority and outgrow the secure store's value limit. The module headers give the reasoning. `createPhoneNode` (above) wires all of this; these subpaths are for an app that builds its node another way.
+The trust-bearing anchor goes in the secure store; the dial hints, the enrolled-machine count and the strand network state go in a LevelDB database of the app's own (`nodeLocalKv` above is a `LevelDBKVStore` over it), because they grant no authority and outgrow the secure store's value limit. The module headers give the reasoning. A `LevelDBKVStore` holds each write in memory until it is flushed, so keep one per open database for every slot to share, and `close()` it before the database; `kvStoreSlot` flushes on each save. `createPhoneNode` (above) wires all of this; these subpaths are for an app that builds its node another way.
 
 Use the same options object for the key store and the anchor slot. `keychainAccessible: AFTER_FIRST_UNLOCK` lets iOS read the identity while the device is locked, which a background or push-wake start needs. `secureStoreSlot` refuses a gated (`requireAuthentication`) slot, because it reads `null` as absent.
 

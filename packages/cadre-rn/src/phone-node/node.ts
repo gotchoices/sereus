@@ -399,6 +399,12 @@ class PhoneNodeRuntime implements PhoneNode {
 	private currentStatus: PhoneNodeStatus = { state: 'stopped' };
 	/** Every database this node opened, by name, so `stop` can close them all. */
 	private readonly databases = new Map<string, LevelDbHandle>();
+	/**
+	 * The one key-value store over the open node-local database. A write resolves into the store's
+	 * write group before it reaches the database, so a second store over the same handle would
+	 * neither read it back nor flush it. Closed, which flushes it, before the database is.
+	 */
+	private nodeLocalStore: LevelDBKVStore | null = null;
 	private readonly subscriptions = new Set<Subscription>();
 	private readonly statusListeners = new Set<(status: PhoneNodeStatus) => void>();
 
@@ -499,6 +505,7 @@ class PhoneNodeRuntime implements PhoneNode {
 		return {
 			get: async (key) => (await kv()).get(key),
 			set: async (key, value) => (await kv()).set(key, value),
+			flush: async () => (await kv()).flush(),
 		};
 	}
 
@@ -998,7 +1005,7 @@ class PhoneNodeRuntime implements PhoneNode {
 		if (saved?.options.partyId !== partyId) return undefined;
 		const next = startAfterRemoval(saved);
 		if (next) await this.nodeLocalSlot(this.names.savedStartKey).save(serializeSavedStart(next));
-		else await this.nodeLocalKv().delete(this.names.savedStartKey);
+		else await this.deleteSavedStart();
 		return next?.options.partyId;
 	}
 
@@ -1051,8 +1058,15 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	private async closeDatabases(): Promise<void> {
+		const store = this.nodeLocalStore;
+		this.nodeLocalStore = null;
 		const open = [...this.databases.values()];
 		this.databases.clear();
+		try {
+			await store?.close();
+		} catch (err) {
+			console.warn('[cadre-rn/phone-node] closing the node-local store failed:', err);
+		}
 		for (const db of open) {
 			try {
 				await db.close();
@@ -1076,7 +1090,8 @@ class PhoneNodeRuntime implements PhoneNode {
 	}
 
 	private nodeLocalKv(): LevelDBKVStore {
-		return new LevelDBKVStore(this.database(this.names.nodeLocalDb), this.names.nodeLocalKvPrefix);
+		this.nodeLocalStore ??= new LevelDBKVStore(this.database(this.names.nodeLocalDb), this.names.nodeLocalKvPrefix);
+		return this.nodeLocalStore;
 	}
 
 	private nodeLocalSlot(key: string): DurableSlot {
@@ -1100,6 +1115,13 @@ class PhoneNodeRuntime implements PhoneNode {
 	/** The saved start, read directly: inside a transition, `loadSavedStart` would wait on a stop queued behind it. */
 	private async readSavedStart(): Promise<SavedStart | undefined> {
 		return parseSavedStart(await this.nodeLocalSlot(this.names.savedStartKey).load());
+	}
+
+	/** Delete the saved start, durably; a failed write throws. */
+	private async deleteSavedStart(): Promise<void> {
+		const kv = this.nodeLocalKv();
+		await kv.delete(this.names.savedStartKey);
+		await kv.flush();
 	}
 
 	/** Best-effort: a failed write is logged and changes nothing about the node. */

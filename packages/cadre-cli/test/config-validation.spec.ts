@@ -59,7 +59,7 @@ describe('config file validation', () => {
     expect(message).toContain("unknown key network.listenAddr (did you mean 'listenAddrs'?)");
   });
 
-  // Used to fall through `resolveStorageConfig` and start the node with no storage at all.
+  // Used to fall through `openNodeStorage` and start the node with no storage at all.
   it('rejects a value outside the accepted set, naming the key and the accepted values', async () => {
     const message = await rejection(loadValidatedConfig(writeConfig({ ...VALID, storage: { type: 'fs' } }), {}));
 

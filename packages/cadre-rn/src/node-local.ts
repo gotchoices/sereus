@@ -128,7 +128,10 @@ export function rentalsKvKey(partyId: string): string {
 export interface KvStoreApi {
 	/** The key's text, or `undefined` when absent. Throws on a read fault. */
 	get(key: string): Promise<string | undefined>;
+	/** Resolves once `get` on this store reads `value`; durable only after a later {@link flush}. */
 	set(key: string, value: string): Promise<void>;
+	/** Make every write that resolved before this call durable. */
+	flush(): Promise<void>;
 }
 
 /**
@@ -180,14 +183,18 @@ export function secureStoreSlot(
  * non-trust-bearing record (the bootstrap-peer store, the enrolled-machine count and
  * the strand network state, and any of the app's own), each over its own key.
  *
- * A direct pass-through: the KV store already deals in text and already reports
- * an absent key as `undefined`, and a read fault throws out of `get`, which is
+ * A pass-through but for the flush: the KV store already deals in text and already
+ * reports an absent key as `undefined`, and a read fault throws out of `get`, which is
  * exactly the "present but unreadable ⇒ throw" contract {@link DurableSlot} asks
- * for.
+ * for. A `set` resolves into the store's write group, so `save` flushes after it to
+ * be durable when it resolves, as {@link DurableSlot.save} requires.
  */
 export function kvStoreSlot(kv: KvStoreApi, key: string): DurableSlot {
 	return {
 		load: () => kv.get(key),
-		save: (text) => kv.set(key, text),
+		save: async (text) => {
+			await kv.set(key, text);
+			await kv.flush();
+		},
 	};
 }

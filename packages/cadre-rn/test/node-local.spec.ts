@@ -55,6 +55,8 @@ class FakeKvStore implements KvStoreApi {
 	async set(key: string, value: string): Promise<void> {
 		this.map.set(key, value);
 	}
+
+	async flush(): Promise<void> {}
 }
 
 // ── secureStoreSlot ───────────────────────────────────────────────────────────

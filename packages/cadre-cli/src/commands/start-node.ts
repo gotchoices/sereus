@@ -26,7 +26,7 @@ import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
 import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 import type { ResolvedConfig } from '../config/index.js';
-import { resolveStorageConfig } from './node-session.js';
+import type { NodeStorage } from './node-session.js';
 import { writeClaimRecord, type ClaimRecord } from './claim-record.js';
 import { removalMarkerPath, writeRemovalMarker } from './removal-marker.js';
 
@@ -66,8 +66,17 @@ async function openNodeStores(nodeStateDir: string, partyId: string): Promise<No
 /** The cold-start trust a node is built with, chosen by the start path (`buildNodeConfig`). */
 type ColdStartTrust = Pick<CadreNodeConfig, 'trustedOwners' | 'seedTrustPolicy' | 'claim'>;
 
-/** The `CadreNodeConfig` for `partyId` over `stores`: everything in the resolved config, plus `trust`. */
-function buildNodeConfig(config: ResolvedConfig, partyId: string, stores: NodeStores, trust: ColdStartTrust): CadreNodeConfig {
+/**
+ * The `CadreNodeConfig` for `partyId` over `stores` and `storage`: everything in the resolved
+ * config, plus `trust`.
+ */
+function buildNodeConfig(
+  config: ResolvedConfig,
+  partyId: string,
+  stores: NodeStores,
+  storage: NodeStorage,
+  trust: ColdStartTrust,
+): CadreNodeConfig {
   return {
     privateKey: config.privateKey,
     ...trust,
@@ -82,7 +91,7 @@ function buildNodeConfig(config: ResolvedConfig, partyId: string, stores: NodeSt
     // announce-only on an always-on node, surface the field in the CLI config.
     strandFilter: config.strandFilter,
     strandReactivity: config.strandReactivity,
-    storage: resolveStorageConfig(config.storage),
+    storage: storage.config,
     // `defaultTransports` from the Node-only subpath: a node with `relayAddrs` is built from an
     // explicit transport list (libp2p's relay discovery off), and this keeps that list the one
     // db-p2p would build. See `NetworkConfig.defaultTransports`.
@@ -139,10 +148,15 @@ export function claimConfigFor(
  * owner reachable only through a relay the node must initiate to), re-apply the claim seed
  * after the restart; `seed:applied` does not carry it today.
  */
-export async function buildClaimedNode(config: ResolvedConfig, claim: NodeClaimRecord, claimConfig: CadreNodeConfig['claim']): Promise<CadreNode> {
+export async function buildClaimedNode(
+  config: ResolvedConfig,
+  storage: NodeStorage,
+  claim: NodeClaimRecord,
+  claimConfig: CadreNodeConfig['claim'],
+): Promise<CadreNode> {
   const stores = await openNodeStores(config.nodeStateDir, claim.partyId);
   await stores.trustedOwnerStore.trust(claim.ownerKey, 'claim');
-  const node = new CadreNode(buildNodeConfig(config, claim.partyId, stores, {
+  const node = new CadreNode(buildNodeConfig(config, claim.partyId, stores, storage, {
     trustedOwners: { store: stores.trustedOwnerStore },
     claim: claimConfig,
   }));
@@ -157,13 +171,14 @@ export async function buildClaimedNode(config: ResolvedConfig, claim: NodeClaimR
  */
 export async function buildConfiguredNode(
   config: ResolvedConfig,
+  storage: NodeStorage,
   pinnedKeys: string[],
   seedTrustPolicy: SeedTrustPolicy | undefined,
   claimConfig: CadreNodeConfig['claim'],
 ): Promise<CadreNode> {
   const partyId = config.controlNetwork.partyId;
   const stores = await openNodeStores(config.nodeStateDir, partyId);
-  const node = new CadreNode(buildNodeConfig(config, partyId, stores, {
+  const node = new CadreNode(buildNodeConfig(config, partyId, stores, storage, {
     trustedOwners: { store: stores.trustedOwnerStore, pinnedKeys, pinnedSource: 'operator' },
     seedTrustPolicy,
     claim: claimConfig,

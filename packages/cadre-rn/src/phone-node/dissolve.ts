@@ -134,6 +134,8 @@ const MARKER_VERSION = 1;
 /** Mark `partyId` as being removed, then remove its local storage. Only once removing it is decided: a dissolve's check passed, or an owner removed this app. */
 export async function removeParty(storage: PartyStorage, partyId: string): Promise<void> {
 	await storage.nodeLocal.set(storage.markerKey, JSON.stringify({ v: MARKER_VERSION, partyId }));
+	// On disk before the first deletion, so a crash during the removal leaves the marker that finishes it.
+	await storage.nodeLocal.flush();
 	await finishRemoving(storage, partyId);
 }
 
@@ -194,6 +196,8 @@ async function finishRemoving(storage: PartyStorage, partyId: string): Promise<v
 	await storage.moves.remove(partyId);
 	await dropFromSavedStart(storage, partyId);
 	await storage.nodeLocal.delete(storage.markerKey);
+	// One batch: the saved start stops naming the party in the same write that deletes the marker.
+	await storage.nodeLocal.flush();
 }
 
 async function forgetJoinedStrands(keyStore: KeyStore, partyId: string): Promise<void> {

@@ -45,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode, type CadreNodeConfig, type StrandRow } from '@serfab/cadre-core';
-import { resolveStorageConfig } from '../src/commands/node-session.js';
+import { openNodeStorage, type NodeStorage } from '../src/commands/node-session.js';
 
 /** The compiled entry the `cadre` bin points at — what an operator actually runs. */
 const CLI_ENTRY = fileURLToPath(new URL('../dist/bin/cadre.js', import.meta.url));
@@ -151,18 +151,18 @@ async function writeIdentity(dir: string): Promise<{ keyPath: string; privateKey
  * The seed node's config: the same party, identity and storage the spawned CLI resolves for
  * itself, built in this process so the test can perform genesis and publish a row.
  *
- * Storage goes through the CLI's own {@link resolveStorageConfig} rather than being hand-rolled:
+ * Storage goes through the CLI's own {@link openNodeStorage} rather than being hand-rolled:
  * that helper composes the per-strand directory as `` `${path}/${strandId}` `` — a
  * forward-slash template, not `path.join` — so restating it here would risk a Windows-only
  * mismatch, and would drift the moment the template changes.
  */
-function seedNodeConfig(partyId: string, blocksDir: string, privateKey: PrivateKey): CadreNodeConfig {
+function seedNodeConfig(partyId: string, storage: NodeStorage, privateKey: PrivateKey): CadreNodeConfig {
   return {
     privateKey,
     controlNetwork: { partyId, bootstrapNodes: [] },
     profile: 'storage',
     strandFilter: { mode: 'none' },
-    storage: resolveStorageConfig({ type: 'file', path: blocksDir }),
+    storage: storage.config,
     network: { listenAddrs: [] },
   };
 }
@@ -174,19 +174,26 @@ async function strandRows(node: CadreNode): Promise<StrandRow[]> {
   return await db.queryStrands();
 }
 
-/** Boot a solo node on `blocksDir`, run `body` against it, and stop it however `body` ends. */
+/**
+ * Boot a solo node on `blocksDir`, run `body` against it, and stop it however `body` ends.
+ *
+ * Its stores are closed after the stop, as the CLI closes its own: a store left open holds its
+ * directory's lock for the life of this process, and the spawned CLI could not open it.
+ */
 async function withSoloNode(
   partyId: string,
   blocksDir: string,
   privateKey: PrivateKey,
   body: (node: CadreNode) => Promise<void>,
 ): Promise<void> {
-  const node = new CadreNode(seedNodeConfig(partyId, blocksDir, privateKey));
+  const storage = openNodeStorage({ type: 'file', path: blocksDir });
+  const node = new CadreNode(seedNodeConfig(partyId, storage, privateKey));
   try {
     await node.start();
     await body(node);
   } finally {
     await node.stop();
+    await storage.close();
   }
 }
 
@@ -383,7 +390,7 @@ describe('one-shot command config failures', () => {
       const result = await runCli(['strand', 'list', '-c', configPath], dir);
 
       expect(result.code).toBe(1);
-      // The config validator reaches this before `resolveStorageConfig`'s own check, and names the file.
+      // The config validator reaches this before `openNodeStorage`'s own check, and names the file.
       expect(result.stderr).toContain("storage.path is required when storage.type is 'file'");
     });
   }, CONFIG_TEST_TIMEOUT_MS);

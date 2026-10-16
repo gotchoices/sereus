@@ -17,10 +17,11 @@
  *
  * Every method delegates; the sleep is the only behaviour added. The three
  * streaming methods sleep once and then hand back the underlying iterable, since
- * per-ITEM latency is not what bring-up duration is made of.
+ * per-ITEM latency is not what bring-up duration is made of. `whenDurable` waits on
+ * the inner storage without sleeping: it issues no operation of its own.
  */
 
-import type { BlockCommitProof, BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability } from '@optimystic/db-p2p';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 
@@ -116,6 +117,19 @@ export class SlowRawStorage implements IRawStorage {
 	async promotePendingTransaction(blockId: BlockId, actionId: ActionId): Promise<void> {
 		await this.slow();
 		return this.inner.promotePendingTransaction(blockId, actionId);
+	}
+
+	async flush(options?: FlushOptions): Promise<void> {
+		await this.slow();
+		return this.inner.flush(options);
+	}
+
+	whenDurable(): Promise<void> {
+		return this.inner.whenDurable();
+	}
+
+	get durability(): StoreDurability {
+		return this.inner.durability;
 	}
 
 	async getApproximateBytesUsed(): Promise<number> {
