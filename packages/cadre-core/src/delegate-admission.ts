@@ -42,6 +42,7 @@
 import debug from 'debug';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
+import type { StrandAddrOutcome } from './strand-addr-protocol.js';
 
 const log = debug('sereus:cadre:delegate-admission');
 
@@ -236,6 +237,42 @@ export function dueRelayAnnounces(
   return relays.filter(
     (relay) => now - (announceAt.get(peerStrandKey(relay.relayPeerId, strandId)) ?? 0) >= ttlMs / 2
   );
+}
+
+/**
+ * Fold one announce pass's outcomes into `refusing`, the relay peerIds remembered
+ * as refusing the strand-addr protocol. A relay whose negotiation refused it
+ * (`unsupported`) is added; one that replied with any status is removed, because
+ * it serves the protocol now. A relay that did not reply (`unreachable`) is left
+ * as it was: being down says nothing about what it serves. Only `relayPeerIds`
+ * are read, so a sibling asked in the same pass is never recorded. Mutates in
+ * place.
+ */
+export function recordRelayRefusals(
+  refusing: Set<string>,
+  relayPeerIds: readonly string[],
+  outcomes: ReadonlyMap<string, StrandAddrOutcome>
+): void {
+  for (const relayPeerId of relayPeerIds) {
+    switch (outcomes.get(relayPeerId)) {
+      case 'unsupported':
+        refusing.add(relayPeerId);
+        break;
+      case 'answered':
+      case 'empty':
+      case 'unavailable':
+        refusing.delete(relayPeerId);
+        break;
+    }
+  }
+}
+
+/** Of `relays`, the ones not remembered in `refusing` (see {@link recordRelayRefusals}). */
+export function relaysNotRefusing(
+  relays: readonly CircuitRelayTarget[],
+  refusing: ReadonlySet<string>
+): CircuitRelayTarget[] {
+  return relays.filter((relay) => !refusing.has(relay.relayPeerId));
 }
 
 /**

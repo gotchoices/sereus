@@ -5,6 +5,8 @@ import {
   DelegateAdmissionStore,
   extractCircuitRelayTargets,
   dueRelayAnnounces,
+  recordRelayRefusals,
+  relaysNotRefusing,
   prunePeerStrandKeys,
   peerStrandKey,
   DELEGATE_GRANT_TTL_MS,
@@ -164,6 +166,32 @@ describe('dueRelayAnnounces', () => {
     const announceAt = new Map([[peerStrandKey('relay-A', 'strand-other'), T0]]);
 
     expect(dueRelayAnnounces(announceAt, [RELAY_A], 'strand-1', T0)).toEqual([RELAY_A]);
+  });
+});
+
+describe('recordRelayRefusals', () => {
+  it('remembers a refusing relay until it replies, ignores silence and siblings, and filters it out', () => {
+    const RELAY_A: CircuitRelayTarget = { relayPeerId: 'relay-A', relayAddr: '/ip4/1.2.3.4/tcp/4001/p2p/relay-A' };
+    const RELAY_B: CircuitRelayTarget = { relayPeerId: 'relay-B', relayAddr: '/ip4/5.6.7.8/tcp/4001/p2p/relay-B' };
+    const relayIds = ['relay-A', 'relay-B'];
+    const refusing = new Set<string>();
+
+    recordRelayRefusals(refusing, relayIds, new Map([
+      ['relay-A', 'unsupported'], ['relay-B', 'unreachable'], ['sibling', 'unsupported']
+    ]));
+    expect([...refusing]).toEqual(['relay-A']);
+    expect(relaysNotRefusing([RELAY_A, RELAY_B], refusing)).toEqual([RELAY_B]);
+
+    // Down is not a reply: the refusal stands.
+    recordRelayRefusals(refusing, relayIds, new Map([['relay-A', 'unreachable']]));
+    expect([...refusing]).toEqual(['relay-A']);
+
+    // Any reply means it serves the protocol now.
+    for (const reply of ['answered', 'empty', 'unavailable'] as const) {
+      refusing.add('relay-A');
+      recordRelayRefusals(refusing, relayIds, new Map([['relay-A', reply]]));
+      expect(refusing.size).toBe(0);
+    }
   });
 });
 

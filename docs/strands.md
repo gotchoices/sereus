@@ -146,6 +146,11 @@ relays, and is never locked out of its first address by replication ordering.
     the backstop for a grant that lapses while the reservation itself survives. If relay
     restarts become routine, the durable attestation below is still the better fix than
     leaning harder on re-announcing.
+  - A relay whose protocol negotiation refuses `/sereus/strand-addr/1.0.0` is remembered as
+    a dedicated relay (it needs no grant) and left out of the founding, resume and periodic
+    announcements, so starting a strand spends no round trip on it. The re-drive announce
+    still asks it, and any reply forgets the refusal, because a party-run relay refuses the
+    protocol while it is still starting, until it registers the handler.
   - Mostly landed: a **durable** attestation — a replicated, signed `MemberPeer(MemberKey,
     PeerId)` row binding a member to its strand transport peerIds. The attestation is now
     **written automatically**: every machine of a party registers its own `MemberPeer` row

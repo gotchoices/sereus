@@ -294,11 +294,14 @@ export interface CollectStrandAddrsOptions {
  * - `empty` — status `ok` with no address: the sibling does not run the strand
  *   right now, a normal steady state.
  * - `unavailable` — the sibling replied that it could not answer.
+ * - `unsupported` — the peer was reached and its protocol negotiation refused
+ *   strand-addr: it registers no handler for it (a dedicated relay, an older
+ *   build) or has not registered one yet (a node still starting).
  * - `unreachable` — no reply at all: every dial target failed or timed out, the
  *   reply was malformed, or the sibling's protocol guard reset the stream because
  *   it does not (yet) count the asker as an authorized member.
  */
-export type StrandAddrOutcome = 'answered' | 'empty' | 'unavailable' | 'unreachable';
+export type StrandAddrOutcome = 'answered' | 'empty' | 'unavailable' | 'unsupported' | 'unreachable';
 
 /** Result of {@link collectStrandAddrs}. */
 export interface StrandAddrCollection {
@@ -371,8 +374,9 @@ export async function collectStrandAddrs(
  * is `unreachable`, so a single dead sibling never aborts the collection. Never
  * throws.
  *
- * A reply of any status ends the loop: every target reaches the same responder,
- * so asking it again by another address would get the same answer.
+ * A reply of any status, or a refused protocol negotiation (`unsupported`), ends
+ * the loop: every target reaches the same responder, so asking it again by another
+ * address would get the same answer.
  *
  * A total failure logs ONE line naming every target and its cause, because
  * per-target lines scattered through a concurrent fan-out do not reassemble into
@@ -414,6 +418,11 @@ async function dialOneSibling(
       return siblingAnswer(response);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
+      // Matched by name, as libp2p's own error classes are compared across package copies.
+      if (error.name === 'UnsupportedProtocolError') {
+        log('Strand-addr refused by %s via %s: it does not serve %s', peer.peerId, describeTarget(target), protocolId);
+        return { outcome: 'unsupported', multiaddrs: [] };
+      }
       failures.push(`${describeTarget(target)} — ${error.message}`);
       log('Strand-addr dial to %s via %s failed: %o', peer.peerId, describeTarget(target), err);
     }

@@ -173,6 +173,8 @@ import {
   dueRelayAnnounces,
   prunePeerStrandKeys,
   peerStrandKey,
+  recordRelayRefusals,
+  relaysNotRefusing,
   type CircuitRelayTarget
 } from './delegate-admission.js';
 import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, RelayReservationFailedError } from './relay-addrs.js';
@@ -689,6 +691,26 @@ export class CadreNode implements SAppIdLookup {
    * strand is no longer running are pruned on each reconcile pass.
    */
   private readonly delegateAnnounceAt = new Map<string, number>();
+
+  /**
+   * Relay peerIds whose protocol negotiation refused the delegate announcement
+   * (strand-addr outcome `unsupported`), recorded and cleared by
+   * {@link recordDelegateAnnounces} from every announce pass's outcomes. Only a
+   * party-run relay has a membership gate that needs a grant, and it serves
+   * strand-addr, so a refusal marks a dedicated relay: {@link circuitRelayTargets}
+   * leaves it out of the founding/resume and periodic announcements, which would
+   * otherwise spend a protocol negotiation on it every time (gotchoices/sereus#49). Not
+   * pruned: one entry per relay this node ever named.
+   *
+   * {@link announceDelegateToRelay} still asks every relay, remembered or not, and
+   * its reply is what clears an entry. A party-run relay registers its strand-addr
+   * handler late in its own `start()`, after its libp2p node and relay server are
+   * up, so an announcement landing in that window is refused by a relay that serves
+   * the protocol a moment later. If the re-drive hook skipped remembered relays too,
+   * that relay would stay skipped until this node restarts and its gate would deny
+   * every reservation through it.
+   */
+  private readonly relaysRefusingStrandAddr = new Set<string>();
 
   /**
    * When each connected sibling is next due a strand-addr RPC for each running
@@ -5242,9 +5264,11 @@ export class CadreNode implements SAppIdLookup {
     // Drop delegate-admission state: the grants are scoped to the session that
     // recorded them, so a stop()/start() cycle on this object must not keep
     // admitting delegates announced under the previous one, nor carry stale
-    // announce timestamps that would suppress the next session's refresh.
+    // announce timestamps or relay refusals that would suppress the next
+    // session's announcements.
     this.delegateAdmission.clear();
     this.delegateAnnounceAt.clear();
+    this.relaysRefusingStrandAddr.clear();
 
     // Control backfill first — before the database closes and the control node
     // stops — so no NEW catch-up push is issued against a torn-down transport.
@@ -6623,10 +6647,11 @@ export class CadreNode implements SAppIdLookup {
    * receiver records an admission grant BEFORE `libp2p.start()` (re-)dials the
    * relay reservation — the gate denial there is fatal, not degraded. A
    * party-member relay answers the RPC (its control node admits us as a
-   * member); a dedicated ops/ relay does not speak the protocol and the
-   * per-peer failure comes back `unreachable` — harmless, it has no membership gate and
-   * needs no grant. The relay's direct addr rides along as the dial fallback
-   * for a relay we are not yet connected to.
+   * member); a dedicated ops/ relay does not speak the protocol, comes back
+   * `unsupported`, and is left out of later passes
+   * ({@link relaysRefusingStrandAddr}) — it has no membership gate and needs no
+   * grant. The relay's direct addr rides along as the dial fallback for a relay
+   * we are not yet connected to.
    */
   private async resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<string[]> {
     const siblings = await this.resolveSiblingSeed(strandId, delegatePeerId);
@@ -6654,16 +6679,17 @@ export class CadreNode implements SAppIdLookup {
         targets.push(relayStrandAddrPeer(relay));
       }
     }
-    const bootstrapNodes = targets.length
-      ? (await this.collectSiblingStrandAddrs(this.controlNode, targets, strandId, delegatePeerId)).addrs
-      : [];
+    if (targets.length === 0) {
+      return [];
+    }
+    const { addrs, outcomes } = await this.collectSiblingStrandAddrs(this.controlNode, targets, strandId, delegatePeerId);
     // Throttle state for the RELAY targets only — refreshDelegateGrants never
     // looks up a sibling key, so recording one would only be dead weight. The
     // siblings' refresh due times are deliberately left alone too: stamping here
     // would race the refresh pass's pruning while the strand node is still coming
     // up, and all it would save is one extra RPC per sibling on the first tick.
-    this.recordDelegateAnnounces(relays.map((r) => r.relayPeerId), strandId);
-    return bootstrapNodes;
+    this.recordDelegateAnnounces(relays.map((r) => r.relayPeerId), strandId, outcomes);
+    return addrs;
   }
 
   /**
@@ -6730,35 +6756,47 @@ export class CadreNode implements SAppIdLookup {
    * `libp2p.start()`. Kept because it costs one spread and this is the one place
    * that would silently stop announcing if that rejection is ever relaxed.
    *
+   * Less the relays remembered as refusing the strand-addr protocol
+   * ({@link relaysRefusingStrandAddr}): both callers are announcement passes, and
+   * those relays hold no grant.
+   *
    * NOTE: a relay the STRAND node discovers on its own (autorelay — in neither
    * source) gets no announcement, and a membership-gated one will deny it; fine
    * now, every realistic topology feeds one of the two sources.
    */
   private circuitRelayTargets(): CircuitRelayTarget[] {
-    return extractCircuitRelayTargets([
+    const relays = extractCircuitRelayTargets([
       ...relayCircuitAddrs(this.config.network?.relayAddrs ?? []),
       ...(this.config.network?.listenAddrs ?? []),
       ...(this.controlNode?.getMultiaddrs().map(String) ?? [])
     ]);
+    return relaysNotRefusing(relays, this.relaysRefusingStrandAddr);
   }
 
   /**
-   * Record the announce timestamps {@link refreshDelegateGrants} throttles on,
-   * for every relay a delegate-carrying announce pass dialed.
+   * Record what a delegate-carrying announce pass learned about the relays it
+   * dialed: the announce timestamps {@link refreshDelegateGrants} throttles on,
+   * and from `outcomes` which relays refuse the strand-addr protocol
+   * ({@link relaysRefusingStrandAddr}). Every announce site records through here.
    *
-   * Recorded OPTIMISTICALLY at announce time, whatever `collectStrandAddrs`
-   * reports per peer: a dedicated `ops/` relay never speaks the strand-addr
-   * protocol, so recording only on success would re-announce to it on every
-   * reconcile tick, one wasted protocol negotiation each. A failed INITIAL announce
-   * costs the strand supervisor its first attempt only (the relay denies the
+   * Timestamps are recorded OPTIMISTICALLY, whatever `collectStrandAddrs` reports
+   * per peer: recording only on success would re-announce to an unreachable relay
+   * on every reconcile tick, one dial timeout each. A failed INITIAL announce costs
+   * the strand supervisor its first attempt only (the relay denies the
    * reservation; every re-drive re-announces first through
    * {@link announceDelegateToRelay}); a failed REFRESH retries within
    * `DELEGATE_GRANT_TTL_MS / 2` (15 min), still inside the 30 min TTL.
    */
-  private recordDelegateAnnounces(relayPeerIds: readonly string[], strandId: string, now = Date.now()): void {
+  private recordDelegateAnnounces(
+    relayPeerIds: readonly string[],
+    strandId: string,
+    outcomes: ReadonlyMap<string, StrandAddrOutcome>,
+    now = Date.now()
+  ): void {
     for (const relayPeerId of relayPeerIds) {
       this.delegateAnnounceAt.set(peerStrandKey(relayPeerId, strandId), now);
     }
+    recordRelayRefusals(this.relaysRefusingStrandAddr, relayPeerIds, outcomes);
   }
 
   /**
@@ -6815,11 +6853,12 @@ export class CadreNode implements SAppIdLookup {
    * The throttle map is updated afterwards, so the periodic pass does not announce
    * again right away.
    *
-   * Against a dedicated ops relay (no strand-addr RPC) the request fails per-peer
-   * and `collectStrandAddrs` reports it `unreachable`: one wasted protocol negotiation per
-   * re-drive attempt, bounded by the supervisor's backoff. Never throws on that
-   * path; a relay addr that names no peer id is logged and skipped (the hook's
-   * caller runs the drive regardless).
+   * Unlike the other announce passes, this asks a relay remembered in
+   * {@link relaysRefusingStrandAddr} too, and its reply clears the entry — see
+   * there for why. Against a dedicated ops relay (no strand-addr RPC) that costs
+   * one refused protocol negotiation (`unsupported`) per re-drive attempt, bounded
+   * by the supervisor's backoff. Never throws on that path; a relay addr that names
+   * no peer id is logged and skipped (the hook's caller runs the drive regardless).
    *
    * NOTE: against a relay that is DOWN this hook costs up to two strand-addr
    * timeouts (dial by peer id, then by addr; 28.5 s each at the default declared link round trip)
@@ -6841,13 +6880,13 @@ export class CadreNode implements SAppIdLookup {
       log('announceDelegateToRelay: relay addr %s names no peer id; strand %s not announced', relayAddr, strandId);
       return;
     }
-    await this.collectSiblingStrandAddrs(
+    const { outcomes } = await this.collectSiblingStrandAddrs(
       controlNode,
       [{ peerId: relayPeerId, addrs: [multiaddr(relayAddr)] }],
       strandId,
       delegatePeerId
     );
-    this.recordDelegateAnnounces([relayPeerId], strandId);
+    this.recordDelegateAnnounces([relayPeerId], strandId, outcomes);
   }
 
   /** One strand's share of {@link refreshDelegateGrants}: announce to the relays whose grant is due. */
@@ -6865,8 +6904,8 @@ export class CadreNode implements SAppIdLookup {
     if (due.length === 0) {
       return;
     }
-    await this.collectSiblingStrandAddrs(controlNode, due.map(relayStrandAddrPeer), strandId, delegatePeerId);
-    this.recordDelegateAnnounces(due.map((relay) => relay.relayPeerId), strandId, now);
+    const { outcomes } = await this.collectSiblingStrandAddrs(controlNode, due.map(relayStrandAddrPeer), strandId, delegatePeerId);
+    this.recordDelegateAnnounces(due.map((relay) => relay.relayPeerId), strandId, outcomes, now);
   }
 
   /**

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { multiaddr } from '@multiformats/multiaddr';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { Libp2p } from '@libp2p/interface';
+import { UnsupportedProtocolError, type Libp2p } from '@libp2p/interface';
 import {
   StrandAddrService,
   collectStrandAddrs,
@@ -401,6 +401,29 @@ describe('collectStrandAddrs — client union/dedup', () => {
     expect(result).toEqual(['/ip4/4.4.4.4/tcp/4/p2p/strand']);
     // peerId dialed first (and failed), then the explicit addr fallback.
     expect(dialed).toEqual([sib, addr.toString()]);
+  });
+
+  it('reports a refused protocol negotiation as unsupported without trying the address fallback', async () => {
+    // A dedicated relay answers negotiation this way; every target reaches the same
+    // responder, so the fallback would only spend a second negotiation on the refusal.
+    const [self, relay] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const dialed: string[] = [];
+    const node = {
+      peerId: { toString: () => self },
+      dialProtocol: async (target: unknown) => {
+        dialed.push((target as { toString(): string }).toString());
+        throw new UnsupportedProtocolError('Protocol selection failed');
+      }
+    } as unknown as Libp2p;
+
+    const result = await collectStrandAddrs(
+      node,
+      [{ peerId: relay, addrs: [multiaddr(`/ip4/5.5.5.5/tcp/5/p2p/${relay}`)] }],
+      'strand-x'
+    );
+
+    expect(result.outcomes).toEqual(new Map([[relay, 'unsupported']]));
+    expect(dialed).toEqual([relay]);
   });
 
   it('carries the delegatePeerId to every receiver, which records the announce', async () => {
