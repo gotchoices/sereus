@@ -43,7 +43,7 @@ import {
   anchoredTrustPolicy,
 } from './seed-trust-policy.js';
 import type { TrustedOwnerStore } from './trusted-owner-store.js';
-import type { OwnerSign, OwnerSigner } from './owner-signer.js';
+import { withinOwnerApproval, type OwnerSign, type OwnerSigner } from './owner-signer.js';
 
 const log = debug('sereus:cadre:seed-bootstrap');
 
@@ -112,6 +112,14 @@ export function canonicalSeedPayload(
  */
 export function seedDigest(seed: Pick<ControlNetworkSeed, 'partyId' | 'peers'>): string {
   return digest([canonicalSeedPayload(seed)], 'sha256', 'base64url') as string;
+}
+
+/** Add `relayAddr` to the entry for `selfPeerId` in `peers`, when that entry exists and lacks it. */
+function addSelfRelayAddr(peers: SeedPeer[], selfPeerId: string, relayAddr: string): void {
+  const self = peers.find((peer) => peer.peerId === selfPeerId);
+  if (self && !self.multiaddrs.includes(relayAddr)) {
+    self.multiaddrs.push(relayAddr);
+  }
 }
 
 /**
@@ -568,10 +576,7 @@ export class SeedBootstrapService {
    * signer for `action`, the plain-words description a prompting signer shows.
    */
   private async withOwnerSign<T>(action: string, sign: OwnerSign | undefined, body: (sign: OwnerSign) => Promise<T>): Promise<T> {
-    if (sign) {
-      return await body(sign);
-    }
-    return await this.requireOwnerSigner().approve({ partyId: this.config.partyId, action }, body);
+    return await withinOwnerApproval(this.requireOwnerSigner(), { partyId: this.config.partyId, action }, sign, body);
   }
 
   /**
@@ -803,6 +808,15 @@ export class SeedBootstrapService {
    * owner signer's key.
    */
   async createSeed(sign?: OwnerSign): Promise<ControlNetworkSeed> {
+    return await this.mintSeed(sign, null);
+  }
+
+  /**
+   * {@link createSeed}, with `selfRelayAddr` added to this node's own peer entry before the
+   * seed is signed: the signature covers every address ({@link seedDigest}), so nothing may
+   * be added after it.
+   */
+  private async mintSeed(sign: OwnerSign | undefined, selfRelayAddr: string | null): Promise<ControlNetworkSeed> {
     const signer = this.config.ownerSigner;
     if (!signer) {
       throw new Error('Owner key required to create seeds');
@@ -816,6 +830,9 @@ export class SeedBootstrapService {
 
     // Query all peers from the control database
     const peers = await this.queryPeers();
+    if (selfRelayAddr !== null) {
+      addSelfRelayAddr(peers, this.libp2pNode.peerId.toString(), selfRelayAddr);
+    }
 
     // Create the seed data (without signature)
     const seedData = {
@@ -1415,24 +1432,13 @@ export class SeedBootstrapService {
   async addPhoneWithRelay(phonePeerId: string, sign?: OwnerSign): Promise<DroneInitResult> {
     log('Adding phone with relay: %s', phonePeerId);
 
+    const relayAddr = await this.getRelayAddress();
     const seed = await this.withOwnerSign(`Add the phone ${phonePeerId} to the cadre`, sign, async (approved) => {
       // 1. Authorize the new phone peer (no multiaddrs - NAT'd)
       await this.authorizePeer({ peerId: phonePeerId }, approved);
-      // 2. Create seed - will include our relay address if available
-      return await this.createSeed(approved);
+      // 2. Create seed - with our relay address in our own entry, when we have one
+      return await this.mintSeed(approved, relayAddr);
     });
-
-    // 3. Get relay address for this node
-    const relayAddr = await this.getRelayAddress();
-
-    // If we have a relay address, make sure it's in our peer entry
-    if (relayAddr && this.libp2pNode) {
-      const ourPeerId = this.libp2pNode.peerId.toString();
-      const ourPeer = seed.peers.find(p => p.peerId === ourPeerId);
-      if (ourPeer && !ourPeer.multiaddrs.includes(relayAddr)) {
-        ourPeer.multiaddrs.push(relayAddr);
-      }
-    }
 
     const encodedSeed = this.encodeSeed(seed);
 

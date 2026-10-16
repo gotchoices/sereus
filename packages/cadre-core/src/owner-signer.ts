@@ -46,6 +46,21 @@ export interface OwnerSigner {
 	approve<T>(request: OwnerSigningRequest, body: (sign: OwnerSign) => Promise<T>): Promise<T>;
 }
 
+/**
+ * Run `body` inside the caller's open approval when it passes `sign`, else inside one new
+ * approval of `signer` for `request`. An owner write that is sometimes a whole action and
+ * sometimes one step of a larger one takes an optional `sign` and goes through this, so the
+ * larger action still asks once.
+ */
+export async function withinOwnerApproval<T>(
+	signer: OwnerSigner,
+	request: OwnerSigningRequest,
+	sign: OwnerSign | undefined,
+	body: (sign: OwnerSign) => Promise<T>
+): Promise<T> {
+	return sign ? await body(sign) : await signer.approve(request, body);
+}
+
 /** Thrown by a prompting backend when the user declines or the prompt times out. */
 export class OwnerSigningDeclinedError extends Error {
 	readonly request: OwnerSigningRequest;

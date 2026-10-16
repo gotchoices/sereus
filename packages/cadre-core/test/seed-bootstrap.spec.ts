@@ -31,6 +31,7 @@ import type {
   DroneInitResult
 } from '../src/types.js';
 import { CapturingStream, decodeFrames, duplexPair, frameMessage, NeverEndingStream, PausableStream } from './wake-stream-helpers.js';
+import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Test-only window into the private SeedBootstrapService surface these specs
@@ -1177,6 +1178,29 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
       // Exactly one CadrePeer row for self resulted from the two calls.
       const seed = await node.createSeed();
       expect(seed.peers.filter((p) => p.peerId === selfPeerId)).toHaveLength(1);
+    } finally {
+      await node.stop();
+    }
+  }, 60_000);
+});
+
+describe('addPhoneWithRelay — the relay address is signed', () => {
+  /** The relay address goes into the owner's own entry before the seed is signed; added after, it would break the signature the phone verifies. */
+  it('mints a seed whose signature covers the relay address it adds', async () => {
+    const { node } = await startSelfOwnerNode('relay-seed-');
+    try {
+      await node.registerSelf();
+      const service = node.getSeedBootstrapService()!;
+      const selfPeerId = node.peerId!.toString();
+      const relayPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+      const relayAddr = `/ip4/192.0.2.1/tcp/4001/p2p/${relayPeerId}/p2p-circuit/p2p/${selfPeerId}`;
+      vi.spyOn(service, 'getRelayAddress').mockResolvedValue(relayAddr);
+      const phonePeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+
+      const { seed } = await service.addPhoneWithRelay(phonePeerId);
+
+      expect(seed.peers.find((peer) => peer.peerId === selfPeerId)?.multiaddrs).toContain(relayAddr);
+      expect(service.validateSeedSignature(seed)).toBe(true);
     } finally {
       await node.stop();
     }

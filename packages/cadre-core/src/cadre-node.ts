@@ -70,7 +70,7 @@ import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
-import { softwareOwnerSigner, type OwnerSign, type OwnerSigner } from './owner-signer.js';
+import { softwareOwnerSigner, withinOwnerApproval, type OwnerSign, type OwnerSigner } from './owner-signer.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
 import { MemoryStrandNetworkStateStore, type StrandNetworkStateStore } from './strand-network-state.js';
 import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
@@ -3015,21 +3015,6 @@ export class CadreNode implements SAppIdLookup {
     return this.seedBootstrapService?.ownerSigner ?? null;
   }
 
-  /**
-   * Run `body` inside one approval of `signer` for `action`, or inside the caller's approval
-   * when it passes `sign`, so an owner action made of several writes asks the user once.
-   */
-  private async withOwnerApproval<T>(
-    signer: OwnerSigner,
-    action: string,
-    sign: OwnerSign | undefined,
-    body: (sign: OwnerSign) => Promise<T>
-  ): Promise<T> {
-    if (sign) {
-      return await body(sign);
-    }
-    return await signer.approve({ partyId: this.partyId, action }, body);
-  }
 
   /**
    * Schedule the node's initial self-record publish + ongoing refresh shortly
@@ -5899,7 +5884,7 @@ export class CadreNode implements SAppIdLookup {
       return matched;
     }
 
-    return await this.withOwnerApproval(signer, `Publish the strand ${trimmed} to the cadre`, sign,
+    return await withinOwnerApproval(signer, { partyId: this.partyId, action: `Publish the strand ${trimmed} to the cadre` }, sign,
       (approved) => this.insertStrandRow(desired, signer, approved));
   }
 
@@ -6192,7 +6177,7 @@ export class CadreNode implements SAppIdLookup {
     }
     const key = partyMemberPrivateKey ?? await generateStrandMemberKey();
     try {
-      await this.withOwnerApproval(signer, `Seat this cadre's membership key for the strand ${trimmed}`, sign,
+      await withinOwnerApproval(signer, { partyId: this.partyId, action: `Seat this cadre's membership key for the strand ${trimmed}` }, sign,
         (approved) => this.controlDatabase!.insertStrandPartyKey(trimmed, key, signer.publicKey, approved));
     } catch (error) {
       // The read and the insert are not atomic; a concurrent seat of the same strand's
@@ -6278,7 +6263,7 @@ export class CadreNode implements SAppIdLookup {
     sign?: OwnerSign
   ): Promise<void> {
     const signer = this.requireOwnerSigner(`publish formation invite ${token}`);
-    await this.withOwnerApproval(signer, `Publish an invitation to the app ${sAppId}`, sign,
+    await withinOwnerApproval(signer, { partyId: this.partyId, action: `Publish an invitation to the app ${sAppId}` }, sign,
       (approved) => this.controlDatabase!.insertFormationInvite(token, sAppId, signer.publicKey, approved, options));
     // A host may publish an invite whose token was minted elsewhere; registering
     // it locally opens the connection gate's formation exemption immediately
