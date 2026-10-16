@@ -1,4 +1,4 @@
-import type { BlockCommitProof, BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability } from '@optimystic/db-p2p';
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 
 /**
@@ -20,11 +20,17 @@ export interface MethodCount {
 }
 
 export interface OpSnapshot {
-	/** Every call into `IRawStorage`, whatever the method. */
+	/** Every block-store call into `IRawStorage` — every method except the durability barriers. */
 	total: number;
 	/** Distinct block ids touched across all methods — the denominator of the redundancy ratio. */
 	distinctBlocks: number;
 	byMethod: MethodCount[];
+	/**
+	 * Durability barriers (`flush`, `whenDurable`), by method. Kept out of {@link total}: a barrier
+	 * reads or writes no block, it orders the writes already issued, so it is a different cost from
+	 * the per-block operations the budgets count, and folding it in would hide a change in either.
+	 */
+	barriers: MethodCount[];
 }
 
 /**
@@ -40,6 +46,7 @@ export class StorageOpCounter {
 	private readonly calls = new Map<string, number>();
 	private readonly blocksByMethod = new Map<string, Set<BlockId>>();
 	private readonly blocks = new Set<BlockId>();
+	private readonly barrierCalls = new Map<string, number>();
 
 	/** `blockId` omitted for the whole-store methods (`listBlockIds`, `getApproximateBytesUsed`). */
 	record(method: string, blockId?: BlockId): void {
@@ -54,7 +61,13 @@ export class StorageOpCounter {
 		seen.add(blockId);
 	}
 
+	/** A durability barrier — tallied apart from {@link record}; see {@link OpSnapshot.barriers}. */
+	recordBarrier(method: string): void {
+		this.barrierCalls.set(method, (this.barrierCalls.get(method) ?? 0) + 1);
+	}
+
 	reset(): void {
+		this.barrierCalls.clear();
 		this.calls.clear();
 		this.blocksByMethod.clear();
 		this.blocks.clear();
@@ -67,14 +80,20 @@ export class StorageOpCounter {
 		return {
 			total: byMethod.reduce((sum, m) => sum + m.calls, 0),
 			distinctBlocks: this.blocks.size,
-			byMethod
+			byMethod,
+			barriers: [...this.barrierCalls].map(([method, calls]) => ({ method, calls, blocks: 0 }))
 		};
 	}
 }
 
-/** Per-method `calls/distinct-blocks`, busiest first — the measurement table on one line. */
+/**
+ * Per-method `calls/distinct-blocks`, busiest first — the measurement table on one line — then
+ * the barrier counts, which are not part of the total.
+ */
 export function formatBreakdown(snapshot: OpSnapshot): string {
-	return snapshot.byMethod.map((m) => `${m.method} ${m.calls}/${m.blocks}`).join(', ');
+	const ops = snapshot.byMethod.map((m) => `${m.method} ${m.calls}/${m.blocks}`).join(', ');
+	if (snapshot.barriers.length === 0) return ops;
+	return `${ops}; barriers (not in total): ${snapshot.barriers.map((m) => `${m.method} ${m.calls}`).join(', ')}`;
 }
 
 /**
@@ -204,5 +223,20 @@ export class CountingRawStorage implements IRawStorage {
 	promotePendingTransaction(blockId: BlockId, actionId: ActionId): Promise<void> {
 		this.counter.record('promotePendingTransaction', blockId);
 		return this.inner.promotePendingTransaction(blockId, actionId);
+	}
+
+	flush(options?: FlushOptions): Promise<void> {
+		this.counter.recordBarrier('flush');
+		return this.inner.flush(options);
+	}
+
+	whenDurable(): Promise<void> {
+		this.counter.recordBarrier('whenDurable');
+		return this.inner.whenDurable();
+	}
+
+	/** A wrapper reports the durability of the storage it fronts (the `IRawStorage` contract). */
+	get durability(): StoreDurability {
+		return this.inner.durability;
 	}
 }

@@ -88,7 +88,11 @@ function makeStorage(blocks: Record<string, FakeBlock>, opts: { listBlockIds?: b
     },
     saveBlockProof: refuse('saveBlockProof'),
     saveMaterializedBlock: refuse('saveMaterializedBlock'),
-    promotePendingTransaction: refuse('promotePendingTransaction')
+    promotePendingTransaction: refuse('promotePendingTransaction'),
+    // Nothing to make durable: the store is a read-only literal map.
+    flush: async () => {},
+    whenDurable: async () => {},
+    durability: 'none'
   };
   if (opts.listBlockIds !== false) {
     storage.listBlockIds = async function* () {
