@@ -619,7 +619,7 @@ export function ownerKeyWired(): boolean {
  * Solo owner self-genesis, for a party this tab founded. A single-node cadre must
  * seed itself as the owner before it can author control-network writes. The phone
  * kit's founded-party rule (`cadre-rn` `phone-node/config.ts` → `enrollFoundedOwner`;
- * one shared copy is `plan/1.20-edge-node-bring-up-shared-by-every-kit`): on a party
+ * one shared copy is `edge-node-bring-up-shared-by-every-kit`): on a party
  * with no `OwnerKey` row, the owner slot's key (created now unless the slot holds one)
  * is inserted as the founding row and wired; on a party that has owners, the slot's
  * key is wired only when it is a live owner, and no key is created, since a new one

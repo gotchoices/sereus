@@ -33,7 +33,8 @@ export interface PhoneNodeOptions {
 	origin?: PhoneNodeOrigin;
 	/**
 	 * The name the founding owner key gets on its `OwnerKey` row when this start founds the party
-	 * ("phone", "Ann's iPhone"). Read only by genesis; default `'phone'`.
+	 * ("phone", "Ann's iPhone"). Read only by genesis; default `'phone'`. Trimmed, at most 64
+	 * characters (`OWNER_KEY_MAX_LABEL`); a longer one fails the start.
 	 */
 	ownerKeyLabel?: string;
 	/**

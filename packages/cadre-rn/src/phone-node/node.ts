@@ -62,7 +62,7 @@ import {
 } from '../node-local.js';
 // Type-only: the noise-crypto module loads react-native-quick-crypto at runtime.
 import type { NoiseCryptoMode } from '../noise-crypto.js';
-import { buildPhoneNodeConfig, runOwnerGenesis, wireJoinedOwnerKey, type OwnerGenesisResult } from './config.js';
+import { buildPhoneNodeConfig, requireOwnerKeyLabel, runOwnerGenesis, wireJoinedOwnerKey, type OwnerGenesisResult } from './config.js';
 import {
 	finishMarkedRemoval,
 	finishRemovalAtStart,
@@ -786,6 +786,7 @@ class PhoneNodeRuntime implements PhoneNode {
 	 * party this app joined, started again from a hand-typed party id, does not run owner genesis.
 	 */
 	private async resolveOptions(options: PhoneNodeOptions): Promise<PhoneNodeOptions> {
+		requireOwnerKeyLabel(options.ownerKeyLabel);
 		const resolved = { ...options };
 		const defaultMode = this.platform.noiseCrypto?.defaultMode;
 		if (resolved.noiseCryptoMode === undefined && defaultMode !== undefined) resolved.noiseCryptoMode = defaultMode;

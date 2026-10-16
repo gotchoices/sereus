@@ -3,7 +3,7 @@
  * imports, so a Node test can build the node shape a phone runs.
  */
 
-import { createOwnerKey, DEFAULT_IDENTITY_KEY_ID, loadOwnerSigner } from '@serfab/cadre-core';
+import { createOwnerKey, DEFAULT_IDENTITY_KEY_ID, loadOwnerSigner, OWNER_KEY_MAX_LABEL } from '@serfab/cadre-core';
 import type {
 	BootstrapPeerStore,
 	CadreNode,
@@ -119,6 +119,17 @@ export const DEFAULT_OWNER_GENESIS_TIMEOUT_MS = 60_000;
 
 /** Default `PhoneNodeOptions.ownerKeyLabel`: the founding owner key's name on its `OwnerKey` row. */
 export const DEFAULT_OWNER_KEY_LABEL = 'phone';
+
+/**
+ * Refuses an `ownerKeyLabel` the founding `OwnerKey` row would refuse, so a start naming one
+ * fails outright: fail-soft genesis would only log it, on that start and every later one.
+ */
+export function requireOwnerKeyLabel(label: string | undefined): void {
+	const length = label?.trim().length ?? 0;
+	if (length > OWNER_KEY_MAX_LABEL) {
+		throw new Error(`ownerKeyLabel must be at most ${OWNER_KEY_MAX_LABEL} characters (this one has ${length})`);
+	}
+}
 
 /** What {@link runOwnerGenesis} takes. */
 export interface OwnerGenesisOptions {

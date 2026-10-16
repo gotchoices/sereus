@@ -348,7 +348,7 @@ const result = await rentNode(node, client);        // the app records the conta
 
 ## Key store and node-local records
 
-cadre-core asks its host for durable storage: a `KeyStore` for the node identity (`keyStore` in `CadreNodeConfig`, never `privateKey` on a phone) and, in a slot of its own, the owner key and a `DurableSlot` behind each node-local store (`trustedOwners`, `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`). Left out, each falls back to memory, and a phone that restarts before it reconnects loses its dial hints and its trusted owners. These two subpaths are the phone's answer.
+cadre-core asks its host for durable storage: a `KeyStore` for the node identity (`keyStore` in `CadreNodeConfig`, never `privateKey` on a phone) and the owner key, each in a slot of its own, and a `DurableSlot` behind each node-local store (`trustedOwners`, `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`). Left out, each falls back to memory, and a phone that restarts before it reconnects loses its dial hints and its trusted owners. These two subpaths are the phone's answer.
 
 Both talk to the secure store through `SecureStoreApi`, three async methods (`getItemAsync`, `setItemAsync`, `deleteItemAsync`) over string values. `expo-secure-store` is structurally assignable to it. A bare React Native app passes an adapter over its own secure-storage module that keeps the same contract: `null` for an absent key, a throw for a denied or failed read. Neither subpath imports a native module.
 
