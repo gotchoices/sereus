@@ -180,6 +180,7 @@ src/
   chat-operations.ts insert/query participants + messages (ported)
   solo-smoke.ts     startSolo → createChatStrand → insertMessage → queryMessages (programmatic helper, no UI)
 webpack.config.js   node shims + react-native/browser conditions + named-package browser rewrite + esbuild downlevel
+browser-map.js      the named packages and their `browser` file maps, shared by webpack.config.js and scripts/bundle-check.js
 nativescript.config.ts   id: org.gotchoices.sereus.chat.ns
 ```
 
@@ -312,7 +313,7 @@ Metro handling of both `node:os` and `os`.
 
 ### Named-package Node → browser rewrite
 
-Some packages ship parallel `*.browser.js` files and select them only through their top-level `browser` map — **not** `exports`, so `conditionNames` cannot select them, and (verified) the `browser` alias field does not apply the map to the package's *internal* relative imports either. For each package on an explicit list (`BROWSER_MAP_PACKAGES` in `webpack.config.js`), a `NormalModuleReplacementPlugin` applies the map itself, like the RN Metro `resolveRequest` rewrite ([`reference-app-rn.md` § Why the browser rewrite matters](reference-app-rn.md#metro-configuration)): an internal relative `.js` import whose package-relative path is a map key is redirected to the mapped file. The owning package is taken from the last `node_modules` segment of the import's resolved path, and each installed copy (local + nested optimystic) is rewritten from its own `package.json`.
+Some packages ship parallel `*.browser.js` files and select them only through their top-level `browser` map — **not** `exports`, so `conditionNames` cannot select them, and (verified) the `browser` alias field does not apply the map to the package's *internal* relative imports either. For each package on an explicit list (`BROWSER_MAP_PACKAGES` in `browser-map.js`), a `NormalModuleReplacementPlugin` applies the map itself, like the RN Metro `resolveRequest` rewrite ([`reference-app-rn.md` § Why the browser rewrite matters](reference-app-rn.md#metro-configuration)): an internal relative `.js` import whose package-relative path is a map key is redirected to the mapped file. The owning package is taken from the last `node_modules` segment of the import's resolved path, and each installed copy (local + nested optimystic) is rewritten from its own `package.json`. `test:bundle` fails if any bundled file is one the rewrite should have replaced, since a stopped rewrite still compiles cleanly and fails only on a device.
 
 The listed packages:
 
@@ -365,7 +366,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
 | Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the join and seed paths in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database, and the open cache behind the lazy storage proxy (`src/ns-storage.ts`). Guarded by the shared stale-build check (`test/global-setup.ts`). The pages are **not** covered here. |
-| Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of RN's `expo export`. |
+| Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, the named-package browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
 
@@ -430,7 +431,7 @@ that hand-written target list against the package's actual dependencies.
 
 `scripts/bundle-check.js` runs the webpack compile and asserts the whole graph
 resolves with 0 errors **and 0 warnings** (see `exportsPresence: 'warn'` above for
-why warnings are fatal). It is the only gate without an Android device that reaches
+why warnings are fatal), and that no listed package's Node file was bundled in place of its browser file (see [Named-package Node → browser rewrite](#named-package-node--browser-rewrite)). It is the only gate without an Android device that reaches
 the *whole* import graph — the unit suite above loads a few modules and mocks the
 native seams — and everything that requires the native SQLite / WebSocket plugins
 stays device-only. A green bundle proves resolution and parse, **not** execution.

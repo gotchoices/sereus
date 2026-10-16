@@ -4,10 +4,14 @@
  * Runs the NativeScript webpack compile for android WITHOUT the native device
  * build — the analog of reference-app-rn's `expo export`. It resolves and parses
  * the whole cadre / db-p2p / Quereus / Optimystic import graph (db-p2p → rn.js,
- * no @libp2p/tcp, @libp2p/crypto browser variants, ES2022 downlevel) and fails
+ * no @libp2p/tcp, named-package browser variants, ES2022 downlevel) and fails
  * if webpack reports any error OR warning. `ns prepare android` additionally
  * drives a gradle native-plugin build that needs the Android SDK / gradle and is
  * out-of-band.
+ *
+ * It also fails if any bundled file is one the named-package browser rewrite
+ * (browser-map.js) should have replaced — a stopped rewrite still compiles
+ * cleanly, and only fails at runtime on a device.
  *
  * Warnings are fatal on purpose: webpack.config.js downgrades missing-export
  * errors to warnings (`exportsPresence: 'warn'`) for a known upstream version
@@ -18,6 +22,7 @@
 
 const webpack = require('webpack');
 const nsConfigFactory = require('../webpack.config.js');
+const { browserVariantOf } = require('../browser-map.js');
 
 // Mirror the env the NS CLI passes for `ns prepare android`, minus native build.
 const config = nsConfigFactory({
@@ -27,6 +32,17 @@ const config = nsConfigFactory({
 	production: false,
 	sourceMap: false,
 });
+
+/** Absolute paths of every file in the compiled graph, inside concatenated modules too. */
+function bundledFiles(modules) {
+	const files = [];
+	for (const m of modules) {
+		if (m.modules) files.push(...bundledFiles(m.modules));
+		const file = m.resourceResolveData?.path ?? m.resource;
+		if (file) files.push(file);
+	}
+	return files;
+}
 
 webpack(config, (err, stats) => {
 	if (err) {
@@ -54,6 +70,14 @@ webpack(config, (err, stats) => {
 					? ' Warnings are fatal: see the header comment — an unallowlisted' +
 						' warning means a genuinely new resolution/export problem.'
 					: ''),
+		);
+		process.exit(1);
+	}
+	const unrewritten = bundledFiles(stats.compilation.modules).filter((file) => browserVariantOf(file));
+	if (unrewritten.length > 0) {
+		console.error(
+			'\nbundle-check: FAILED — bundled Node files the browser-map rewrite should have replaced:\n  ' +
+				unrewritten.join('\n  '),
 		);
 		process.exit(1);
 	}

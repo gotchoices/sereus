@@ -38,6 +38,7 @@ src/
   chat-operations.ts insert/query participants + messages (ported)
   solo-smoke.ts     startSolo → createChatStrand → insertMessage → queryMessages (programmatic)
 webpack.config.js   node shims + react-native/browser conditions + named-package browser rewrite
+browser-map.js      the named packages and their `browser` file maps (webpack.config.js + scripts/bundle-check.js)
 nativescript.config.ts
 ```
 
@@ -47,7 +48,7 @@ nativescript.config.ts
 |--------|--------------|-----------------|
 | `yarn workspace @serfab/reference-app-ns typecheck` | `tsc --noEmit` across the new package + cadre-core/db-p2p/storage-ns/quereus types | yes |
 | `yarn workspace @serfab/reference-app-ns test` | `vitest run` — unit suite over `test/**/*.spec.ts` (node-local slots, the `cadre-phone` lifecycle, and the cadre, settings and chat view models), preceded by the shared stale-build check on cadre-core and the linked `@optimystic`/`@quereus` siblings | yes |
-| `yarn workspace @serfab/reference-app-ns test:bundle` | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of reference-app-rn's `expo export`. | yes |
+| `yarn workspace @serfab/reference-app-ns test:bundle` | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, the named-package browser variants). The analog of reference-app-rn's `expo export`. | yes |
 | `yarn workspace @serfab/reference-app-ns test:bundle:native` | `ns prepare android` — the same webpack compile plus the gradle native-plugin build | **no** — needs local Android SDK / gradle |
 | `yarn workspace @serfab/reference-app-ns test:e2e` | `node scripts/run-e2e.mjs` — spawns the RN drone fixture, `adb reverse`, runs the reused RN Maestro flows against the NS app | **no** — needs emulator + built APK + Maestro + adb (see Automated e2e) |
 | `ns build android` / `ns build ios` | full native device build | **no** — needs local Android SDK / Xcode, out-of-band / CI |

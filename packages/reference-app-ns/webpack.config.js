@@ -1,5 +1,4 @@
 const path = require('path');
-const fs = require('fs');
 const webpack = require('@nativescript/webpack');
 // NOTE: `webpack` is not a declared dependency of this package (scripts/bundle-check.js
 // requires it too). It resolves only because @nativescript/webpack lists it under
@@ -9,43 +8,7 @@ const webpack = require('@nativescript/webpack');
 // it, declare it here explicitly and reuse its exact range string so yarn dedupes onto the
 // existing lock entry rather than installing a second webpack.
 const webpackCore = require('webpack');
-
-/**
- * Packages whose own `browser` file map is applied to their internal relative
- * imports (see the browser-map rewrite plugin below). Explicit rather than every
- * package: most bundled Node variants are harmless, so a package joins only once
- * its Node variant is measured to break or cost something on NativeScript.
- */
-const BROWSER_MAP_PACKAGES = new Set(['@libp2p/crypto', 'main-event']);
-
-/**
- * The installed package that owns `file` — its name and root directory, taken
- * from the last `node_modules` segment of the path (scoped names span two
- * segments) — or null when `file` is not under any `node_modules`.
- */
-function owningPackage(file) {
-	const nm = `${path.sep}node_modules${path.sep}`;
-	const i = file.lastIndexOf(nm);
-	if (i === -1) return null;
-	const [first, second] = file.slice(i + nm.length).split(path.sep);
-	const name = first.startsWith('@') ? `${first}/${second}` : first;
-	return { name, root: path.join(file.slice(0, i + nm.length), ...name.split('/')) };
-}
-
-const browserMapCache = new Map();
-
-/**
- * The `browser` object map (package-relative key → package-relative value) from
- * `<pkgRoot>/package.json`, or null. Read per installed copy, so each copy in the
- * tree (local + nested optimystic) uses its own version's map.
- */
-function loadBrowserMap(pkgRoot) {
-	if (!browserMapCache.has(pkgRoot)) {
-		const map = JSON.parse(fs.readFileSync(path.join(pkgRoot, 'package.json'), 'utf8')).browser;
-		browserMapCache.set(pkgRoot, map && typeof map === 'object' ? map : null);
-	}
-	return browserMapCache.get(pkgRoot);
-}
+const { browserVariantOf } = require('./browser-map.js');
 
 /**
  * NativeScript (webpack 5) build config for @serfab/reference-app-ns.
@@ -94,8 +57,8 @@ module.exports = (env) => {
 		// `browser` map — NOT `exports`, so `conditionNames` cannot select it,
 		// and (verified) the `browser` alias field does NOT apply it to the
 		// package's internal relative imports either. For each package in
-		// BROWSER_MAP_PACKAGES the map is applied explicitly, like the RN Metro
-		// `resolveRequest` rewrite (metro.config.js / docs/reference-app-rn.md §
+		// BROWSER_MAP_PACKAGES (browser-map.js) the map is applied explicitly,
+		// like the RN Metro `resolveRequest` rewrite (metro.config.js / docs/reference-app-rn.md §
 		// "Why the browser rewrite matters"): an internal relative `.js` import
 		// whose package-relative path is a map key is redirected to the mapped
 		// file. Reasons per package are in docs/reference-app-ns.md § "Named-
@@ -108,14 +71,8 @@ module.exports = (env) => {
 				/\.js$/,
 				(resource) => {
 					if (!resource.context || !resource.request.startsWith('.')) return;
-					const target = path.resolve(resource.context, resource.request);
-					const pkg = owningPackage(target);
-					if (!pkg || !BROWSER_MAP_PACKAGES.has(pkg.name)) return;
-					const rel = `./${path.relative(pkg.root, target).split(path.sep).join('/')}`;
-					const mapped = loadBrowserMap(pkg.root)?.[rel];
-					if (typeof mapped === 'string') {
-						resource.request = path.resolve(pkg.root, mapped);
-					}
+					const mapped = browserVariantOf(path.resolve(resource.context, resource.request));
+					if (mapped) resource.request = mapped;
 				},
 			]);
 
@@ -134,15 +91,6 @@ module.exports = (env) => {
 				},
 			]);
 
-		// ── Node built-in shims / stubs ─────────────────────────────────────
-		// crypto/os/tty: custom shims (createHash via @noble/hashes;
-		// networkInterfaces stub; tty.isatty → false so debug/weald's eager
-		// useColors() check doesn't crash). stream → readable-stream. buffer/events/util/process/
-		// string_decoder resolve directly to their installed npm packages
-		// (externalsPresets.node:false). net/tls/http/… : `false` (empty module) —
-		// imported by transitive libp2p / debug / @multiformats/dns deps on
-		// Node-only branches never reached on the TCP-free, browser-transport rn
-		// path, but must resolve so the bundle builds.
 		// ── libp2p user-agent → NativeScript-safe shim ──────────────────────
 		// libp2p.js imports `./user-agent.js` relatively, so its react-native/
 		// browser export conditions never select a variant — webpack bundles the
@@ -186,6 +134,15 @@ module.exports = (env) => {
 				},
 			]);
 
+		// ── Node built-in shims / stubs ─────────────────────────────────────
+		// crypto/os/tty: custom shims (createHash via @noble/hashes;
+		// networkInterfaces stub; tty.isatty → false so debug/weald's eager
+		// useColors() check doesn't crash). stream → readable-stream. buffer/events/util/process/
+		// string_decoder resolve directly to their installed npm packages
+		// (externalsPresets.node:false). net/tls/http/… : `false` (empty module) —
+		// imported by transitive libp2p / debug / @multiformats/dns deps on
+		// Node-only branches never reached on the TCP-free, browser-transport rn
+		// path, but must resolve so the bundle builds.
 		config.resolve.merge({
 			fallback: {
 				os: nodeOs,
