@@ -6225,6 +6225,9 @@ export class CadreNode implements SAppIdLookup {
     if (!this.isSelfFoundedRow(strand)) {
       return undefined;
     }
+    // NOTE: founder-ness no longer waits for the owner signer, so a founding machine's launch
+    // that runs before the embedder wires it throws here and the watcher retries on its backoff;
+    // if that shows up as restart noise, skip the heal until `getOwnerSigner()` is set.
     return await this.ensureStrandPartyKey(strand.Id);
   }
 
@@ -8606,7 +8609,7 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     const key = requireEd25519PublicKeyB64(ownerPublicKeyB64, 'owner key');
-    this.refuseOwnerKeyWriteAlone(key);
+    await this.refuseOwnerKeyWriteAlone(key);
     const added = await this.seedBootstrapService.addOwner(key, options.label);
     // NOTE: the refusal is checked before the approval, and a connection can drop while the
     // user approves; an add that still commits alone is logged. If that window ever loses an
@@ -8624,8 +8627,12 @@ export class CadreNode implements SAppIdLookup {
    * nothing re-issues it on cohort growth, and a row written now would fork this node's
    * history. A party with no other members cannot fork, so a solo founder adding its backup
    * key is not refused.
+   *
+   * Waits out an in-flight membership refresh first: until `start`'s first one lands the
+   * member snapshot is empty, which would read as a party with no other members.
    */
-  private refuseOwnerKeyWriteAlone(key: string): void {
+  private async refuseOwnerKeyWriteAlone(key: string): Promise<void> {
+    await this.membershipGateDrain;
     if (this.committedAlone() && this.authorizedControlPeers.size > 0) {
       throw new OwnerKeyAddRefusedError(key, 'alone');
     }
