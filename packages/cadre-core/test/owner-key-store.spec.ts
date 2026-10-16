@@ -26,4 +26,15 @@ describe('owner-key slot', () => {
 		await importOwnerKey(elsewhere, privateKeyB64);
 		expect((await loadOwnerSigner(elsewhere))!.publicKey).toBe(created.publicKey);
 	});
+
+	it('refuses create and import over bytes that do not read as a key, leaving them in place', async () => {
+		const store = new InMemoryKeyStore();
+		const unreadable = new Uint8Array([1, 2, 3]);
+		await store.set(DEFAULT_OWNER_KEY_ID, unreadable);
+		const key = ed25519KeyPairFromLibp2p(await generateKeyPair('Ed25519')).privateKeyB64;
+
+		await expect(createOwnerKey(store)).rejects.toBeInstanceOf(OwnerKeySlotOccupiedError);
+		await expect(importOwnerKey(store, key)).rejects.toBeInstanceOf(OwnerKeySlotOccupiedError);
+		expect(await store.get(DEFAULT_OWNER_KEY_ID)).toEqual(unreadable);
+	});
 });

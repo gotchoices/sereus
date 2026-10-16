@@ -204,7 +204,7 @@ cadre-core needs owner signatures, never an owner private key. An embedder gives
 - **Software** (`softwareOwnerSigner`) signs with a private key held in memory. Tests use it directly; the other backends are built on it.
 - **Key store** (`createOwnerKey`, `importOwnerKey`, `loadOwnerSigner`; `owner-key-store.ts`) keeps the key in a `KeyStore` slot separate from the identity slot (`cadre/owner` beside `cadre/identity`), in the identity slot's stored form (libp2p protobuf bytes of an Ed25519 private key). Unlike the identity slot, an empty owner slot is never filled on read: an owner key exists because the user made or imported one. On a phone the store is the platform vault (`SecureStoreKeyStore`); on a server, `FileKeyStore`.
 
-  Nothing replaces a key the slot holds, since losing it loses every cadre that lists it: creating over an occupied slot and importing a different key both refuse with `OwnerKeySlotOccupiedError`, and importing the key already there changes nothing.
+  Nothing replaces a key the slot holds, since losing it loses every cadre that lists it: creating over an occupied slot and importing a different key both refuse with `OwnerKeySlotOccupiedError` (as does either over bytes that do not read as a key), and importing the key already there changes nothing.
 - **Hardware** keys, and keys that never leave a phone's secure hardware, are `tickets/backlog/feat-owner-key-on-a-hardware-key.md`. The algorithm stays Ed25519: the iOS Secure Enclave signs only P-256, so an iPhone keeps the Ed25519 key in the Keychain under hardware-backed encryption instead of changing the owner-key algorithm.
 
 #### Exporting and importing an owner key

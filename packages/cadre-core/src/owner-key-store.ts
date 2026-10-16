@@ -14,7 +14,7 @@
  * Callers run one owner-key action at a time; if one ever can race another, serialize them here.
  */
 import { generateKeyPair, generateKeyPairFromSeed, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys';
-import { fromString as uint8ArrayFromString } from 'uint8arrays';
+import { equals as uint8ArrayEquals, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { DEFAULT_OWNER_KEY_ID, type KeyId, type KeyStore } from './key-store.js';
 import { ed25519KeyPairFromLibp2p, requireEd25519PrivateKeyB64 } from './ed25519-key.js';
 import { softwareOwnerSigner, type OwnerSigner } from './owner-signer.js';
@@ -58,17 +58,17 @@ export async function loadOwnerSigner(keyStore: KeyStore, keyId: KeyId = DEFAULT
  * Keep an imported owner key (its 32-byte Ed25519 seed, base64url) in the slot. Importing the key
  * the slot already holds changes nothing.
  *
- * @throws {OwnerKeySlotOccupiedError} when the slot holds a different key.
+ * @throws {OwnerKeySlotOccupiedError} when the slot holds anything else, unreadable bytes included.
  */
 export async function importOwnerKey(keyStore: KeyStore, privateKeyB64: string, keyId: KeyId = DEFAULT_OWNER_KEY_ID): Promise<OwnerSigner> {
 	const imported = requireEd25519PrivateKeyB64(privateKeyB64, 'owner private key');
-	const stored = await readOwnerPrivateKey(keyStore, keyId);
-	if (stored !== undefined && stored !== imported) {
-		throw new OwnerKeySlotOccupiedError(keyId, `The owner-key slot "${keyId}" already holds a different key`);
-	}
+	// The stored form is deterministic for a given seed, so equal bytes mean the same key.
+	const importedBytes = privateKeyToProtobuf(await generateKeyPairFromSeed('Ed25519', uint8ArrayFromString(imported, 'base64url')));
+	const stored = await keyStore.get(keyId);
 	if (stored === undefined) {
-		const key = await generateKeyPairFromSeed('Ed25519', uint8ArrayFromString(imported, 'base64url'));
-		await keyStore.set(keyId, privateKeyToProtobuf(key));
+		await keyStore.set(keyId, importedBytes);
+	} else if (!uint8ArrayEquals(stored, importedBytes)) {
+		throw new OwnerKeySlotOccupiedError(keyId, `The owner-key slot "${keyId}" already holds a different key`);
 	}
 	return softwareOwnerSigner(imported);
 }
