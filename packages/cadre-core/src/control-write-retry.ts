@@ -405,14 +405,16 @@ const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[
  * failed apply is taken back whole — Quereus unwinds every step it ran and verifies the catalog
  * against a pre-apply fingerprint — so a re-run emits exactly the DDL the live catalog is missing.
  * The full argument, including the plugin-side dependency that unwind carries, is at the
- * `loadSchema` call site in `control-database.ts`.
+ * `applyControlSchema` call site in `control-database.ts`.
  *
  * RETRIED DELIBERATELY, not by oversight: the failures Quereus cannot take back. When the unwind
  * does not complete — an undo statement threw, the post-unwind catalog did not match the pre-apply
  * fingerprint, that catalog could not be re-collected to check, or a step the differ marks
  * irreversible because it discards data (dropping a table or a column, narrowing a column's type —
- * none of which a `CadreControl` diff generates today) poisoned the journal before it ran, leaving
- * nothing unwound — Quereus keeps the failing step's own message, APPENDS the reason the
+ * none of which reaches a `CadreControl` apply: a cold store's diff is all creates, and
+ * `refuseIncompatibleControlStore` in `control-schema-version.ts` refuses a warm store whose diff
+ * holds anything but creates and tag changes before the apply runs) poisoned the journal before it
+ * ran, leaving nothing unwound — Quereus keeps the failing step's own message, APPENDS the reason the
  * schema could not be restored, and carries the original as `cause`. So a transient cause
  * underneath still matches here, and neither veto ({@link reportsPossiblyStoredWrite},
  * {@link reportsIndeterminateCommit}) looks for that reason text. Retrying over a partially migrated
@@ -516,8 +518,8 @@ export type ControlWriteRetryOptions = ControlRetryOptions;
  *
  * NOTE: exactly one call site opts in today, and the re-run safety this policy assumes is that
  * site's, not a general property — `apply schema` is a diff, and a failed apply is unwound whole
- * and verified against the pre-apply catalog (full argument at the `loadSchema` call site in
- * `control-database.ts`). A second opt-in must re-derive that argument for its own write body
+ * and verified against the pre-apply catalog (full argument at the `applyControlSchema` call site
+ * in `control-database.ts`). A second opt-in must re-derive that argument for its own write body
  * first; if this policy ever grows a third consumer, rename it for what the callers share rather
  * than widening it by default.
  */

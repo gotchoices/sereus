@@ -1,15 +1,37 @@
+import { Parser } from '@quereus/quereus';
+
 /**
- * Embedded control schema for cross-platform compatibility.
+ * The version of the declared control schema, carried in the schema text as the
+ * {@link CONTROL_SCHEMA_VERSION_TAG} tag on the `OwnerKey` table. A warm start compares
+ * it with the version the store records before applying anything
+ * (`control-schema-version.ts`, which also says why that is the version the store was
+ * created under).
  *
- * This is the authoritative runtime copy of the CadreControl authorization
- * schema. It is duplicated from `schemas/control.qsql` so that React Native and
- * other filesystem-less environments get the schema without a runtime file read.
+ * Bump it on EVERY edit to the declared control schema, additive or not. The drift
+ * spec pins this number together with the `explain schema CadreControl` hash, which
+ * Quereus computes with tags stripped, so a schema edit without a bump fails
+ * `control-schema-drift.spec.ts`; a comment-only edit moves neither.
+ */
+export const CONTROL_SCHEMA_VERSION = 1;
+
+/** The `OwnerKey` table tag that records {@link CONTROL_SCHEMA_VERSION} in the schema and in every store. */
+export const CONTROL_SCHEMA_VERSION_TAG = 'sereus.controlSchemaVersion';
+
+/**
+ * The `declare schema CadreControl { … }` statement, with its header comment.
+ *
+ * Together with {@link APPLY_CONTROL_SCHEMA} this is the authoritative runtime copy of
+ * the CadreControl authorization schema ({@link CONTROL_SCHEMA}). It is duplicated from
+ * `schemas/control.qsql` so that React Native and other filesystem-less environments
+ * get the schema without a runtime file read. Held apart from the apply because
+ * `ControlDatabase.loadSchema` declares, checks the pending changes, and only then
+ * applies.
  *
  * The two copies MUST stay identical — `control-schema-drift.spec.ts` fails the
  * build if they drift. Any edit here must be mirrored in `schemas/control.qsql`
  * and vice versa.
  */
-export const CONTROL_SCHEMA = `-- A Sereus party's cadre (its nodes) and their participation in strands (networks).
+export const CONTROL_SCHEMA_DECLARATION = `-- A Sereus party's cadre (its nodes) and their participation in strands (networks).
 --
 -- Every write is authorized by a check: an owner signs an action-tagged digest of the row
 -- (cadre-core control-authorization.ts), or a peer signs its own record. Each digest leads
@@ -111,7 +133,9 @@ declare schema CadreControl {
                     ))
                 or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'remove', party_id(), old.Key, old.StampId), context.Signature, A.Key, 'ed25519')))
         )
-    ) with context (OwnerKey text null, Signature text null);
+    -- The tag is the version of this whole schema (cadre-core CONTROL_SCHEMA_VERSION): every edit
+    -- to the schema bumps it, and a warm start reads the store's copy before applying anything.
+    ) with tags ("${CONTROL_SCHEMA_VERSION_TAG}" = ${CONTROL_SCHEMA_VERSION}) with context (OwnerKey text null, Signature text null);
 
     -- A key that can validate a strand formation disclosure (FormationUsage.Authorized).
     table ValidationKey (
@@ -836,7 +860,46 @@ declare schema CadreControl {
                            context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text, Signature text);
+}`;
+
+/** The name the control schema is declared under; Quereus compares schema names without regard to case. */
+export const CONTROL_SCHEMA_NAME = 'CadreControl';
+
+/** The statement that applies {@link CONTROL_SCHEMA_DECLARATION}, run only after the store has been checked against it. */
+export const APPLY_CONTROL_SCHEMA = `apply schema ${CONTROL_SCHEMA_NAME};`;
+
+/** The whole control schema as `schemas/control.qsql` holds it: the declaration, then the apply. */
+export const CONTROL_SCHEMA = `${CONTROL_SCHEMA_DECLARATION}
+
+${APPLY_CONTROL_SCHEMA}
+`;
+
+/**
+ * The declaration statement of a control schema file (`ControlDatabaseConfig.schemaPath`),
+ * cut from the file's own text.
+ *
+ * Refuses a file that is anything other than one `declare schema CadreControl { … }`
+ * followed by one plain `apply schema CadreControl` — the shape of {@link CONTROL_SCHEMA}.
+ * `loadSchema` runs its own {@link APPLY_CONTROL_SCHEMA} once the store has been checked,
+ * so any other statement in the file, or an option on its apply, would be dropped or run
+ * unchecked.
+ */
+export function controlSchemaFileDeclaration(source: string): string {
+	const statements = new Parser().parseAll(source);
+	const [declaration, apply] = statements;
+	if (statements.length !== 2
+		|| declaration.type !== 'declareSchema' || !isControlSchemaName(declaration.schemaName)
+		|| apply.type !== 'applySchema' || !isControlSchemaName(apply.schemaName)
+		|| apply.options !== undefined || apply.toVersion !== undefined || apply.withSeed === true
+		|| declaration.loc === undefined) {
+		throw new Error(
+			`A control schema file must hold exactly \`declare schema ${CONTROL_SCHEMA_NAME} { … }\` ` +
+			`followed by \`${APPLY_CONTROL_SCHEMA}\`, the shape of schemas/control.qsql.`
+		);
+	}
+	return source.slice(declaration.loc.start.offset, declaration.loc.end.offset);
 }
 
-apply schema CadreControl;
-`;
+function isControlSchemaName(name: string | undefined): boolean {
+	return name?.toLowerCase() === CONTROL_SCHEMA_NAME.toLowerCase();
+}

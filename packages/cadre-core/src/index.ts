@@ -18,6 +18,11 @@ export { OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-ke
 // Control database
 export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type ControlSign } from './control-database.js';
 
+// What `start()` throws when the control store was written with a control schema this build
+// cannot apply to it (recreate procedure: docs/architecture.md)
+export { CONTROL_SCHEMA_VERSION } from './control-schema.js';
+export { ControlStoreIncompatibleError } from './control-schema-version.js';
+
 // Bounded retry for transient control-write failures (classifier + loop behind
 // ControlDatabase.lockedWithRetry; exported so the integration package can drive the
 // classifier against real engine errors)

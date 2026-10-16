@@ -35,6 +35,7 @@ files: schemas/control.qsql, packages/cadre-core/src/control-schema.ts, packages
 - `removeMachine` withdraws machine invitations the removed machine could redeem; it has nothing to withdraw among owner grants, since none target a machine.
 - The connection gate's "do I expect a stranger?" input (`hasLiveCadreInvite`): an owner-grant holder with no machine in the cadre still has to connect to a member to redeem; decide whether a live owner grant counts as expecting a stranger.
 - Seed / anchor: the redeemer's anchor (`ownerKeys` from the issuer's node-local anchor) applies to the owner-grant bundle as it does to machine invitations.
+- The schema change bumps `CONTROL_SCHEMA_VERSION` (`control-schema.ts`) and re-pins the hash beside it in `control-schema-drift.spec.ts`. Changing existing `CadreInvite`/`OwnerKey` constraints is not additive, so a store from the release before refuses to start with `ControlStoreIncompatibleError` until it is recreated or versioned migrations land (docs/architecture.md, "Control schema changes and incompatible stores").
 
 ## TODO (plan stage)
 

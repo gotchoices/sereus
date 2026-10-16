@@ -989,28 +989,27 @@ function captureRetryLog(body: () => Promise<void>): Promise<string[]> {
 }
 
 /**
- * Test-only window onto `ControlDatabase.loadSchema` and the two private fields it needs:
- * the `Database` handle `initialize` would have built, and `lockedWithRetry`'s pacing seams.
- * Same cast pattern `control-write-lock.spec.ts` uses for the same seams.
+ * Test-only window onto `ControlDatabase.applyControlSchema` and the two private fields it
+ * needs: the `Database` handle `initialize` would have built, and `lockedWithRetry`'s pacing
+ * seams. Same cast pattern `control-write-lock.spec.ts` uses for the same seams.
  *
- * Driving `loadSchema` directly (rather than `initialize`) is deliberate: the subject is
- * whether the DDL `exec` is re-presented after a transient cohort failure, and everything
- * `initialize` does before it — plugin registration, libp2p injection, catalog hydration —
- * is irrelevant to that and would cost a real node bring-up to reproduce.
+ * Driving the apply step directly (rather than `initialize` or `loadSchema`) is deliberate: the
+ * subject is whether the apply `exec` is re-presented after a transient cohort failure, and
+ * everything before it — plugin registration, libp2p injection, catalog hydration, the declare
+ * and the store check — is irrelevant to that and would cost a real node bring-up to reproduce.
  */
 interface SchemaInitHarness {
 	db: { exec: (sql: string) => Promise<void> };
 	controlWriteRetryPacing: ControlWriteRetryOptions;
-	loadSchema: () => Promise<void>;
+	applyControlSchema: () => Promise<void>;
 	/** Public on the real class; named here so the cast can reach it. */
 	setControlWriteAbandonedListener: (listener: ((a: ControlRetryAbandonment) => void) | null) => void;
 }
 
 /**
  * A `ControlDatabase` with `initialize`'s output faked: `exec` is the supplied stub, pacing
- * never sleeps. The config is never read on this path (`schemaPath` is absent, so
- * `loadSchema` takes the embedded-schema branch), hence the cast rather than a real libp2p
- * node.
+ * never sleeps. The config is never read on this path, hence the cast rather than a real
+ * libp2p node.
  */
 function schemaInitHarness(exec: (sql: string) => Promise<void>): SchemaInitHarness {
 	const database = new ControlDatabase({ partyId: 'schema-init-spec' } as ControlDatabaseConfig);
@@ -1029,14 +1028,14 @@ function schemaInitHarness(exec: (sql: string) => Promise<void>): SchemaInitHarn
  * Re-running the whole `exec` is safe because `apply schema` is a diff, not a replay, and a
  * failed apply is unwound whole and verified against the pre-apply catalog — so attempt 2
  * emits exactly the DDL the live catalog is missing. The reasoning lives at the call site
- * (`ControlDatabase.loadSchema`); these cases pin the RETRY LOOP over a stubbed `exec`, and
+ * (`ControlDatabase.applyControlSchema`); these cases pin the RETRY LOOP over a stubbed `exec`, and
  * `control-schema-apply-unwind.spec.ts` pins the unwind property itself against real storage.
  *
  * It is also the ONE caller on a non-default policy ({@link SCHEMA_INIT_RETRY_POLICY}): same
  * classifier plus optimystic's self-coordination grace refusal, over more attempts and a longer
  * backoff. That re-run safety argument is why the extra class is safe HERE and nowhere else.
  */
-describe('ControlDatabase.loadSchema — transient-failure retry', () => {
+describe('ControlDatabase.applyControlSchema — transient-failure retry', () => {
 	/**
 	 * Driven from both faces of the shortfall: the bare sentence, and the pend-phase aggregate
 	 * that actually carries it on the wire. The aggregate form is the one that matters — the
@@ -1054,7 +1053,7 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 				}
 			});
 
-			await harness.loadSchema();
+			await harness.applyControlSchema();
 
 			expect(runs).toBe(2);
 			// The retry re-presents the SAME schema text: Quereus diffs it against the live
@@ -1086,7 +1085,7 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 			}
 		});
 
-		await harness.loadSchema();
+		await harness.applyControlSchema();
 
 		expect(runs).toBe(2);
 		expect(executed[1]).toBe(executed[0]);
@@ -1115,7 +1114,7 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 				throw failure;
 			});
 
-			await expect(harness.loadSchema()).rejects.toBe(failure);
+			await expect(harness.applyControlSchema()).rejects.toBe(failure);
 			expect(runs).toBe(1);
 		}
 	});
@@ -1135,14 +1134,14 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 		const harness = schemaInitHarness(async () => { throw failure; });
 		harness.setControlWriteAbandonedListener((abandonment) => { seen.push(abandonment); });
 
-		await expect(harness.loadSchema()).rejects.toBe(failure);
+		await expect(harness.applyControlSchema()).rejects.toBe(failure);
 		expect(seen).toHaveLength(1);
-		// `loadSchema`'s own label, not the policy's or the pacing's — it is what attributes
+		// `applyControlSchema`'s own label, not the policy's or the pacing's — it is what attributes
 		// the loss among the writes a real party runs concurrently.
 		expect(seen[0]).toMatchObject({ label: 'schema-init', reason: 'declined', attemptsMade: 1 });
 
 		harness.setControlWriteAbandonedListener(null);
-		await expect(harness.loadSchema()).rejects.toBe(failure);
+		await expect(harness.applyControlSchema()).rejects.toBe(failure);
 		expect(seen).toHaveLength(1);
 	});
 
@@ -1156,7 +1155,7 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 
 		let caught: unknown;
 		try {
-			await harness.loadSchema();
+			await harness.applyControlSchema();
 		} catch (error) {
 			caught = error;
 		}

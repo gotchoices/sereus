@@ -8,7 +8,8 @@ import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer, MachineRemovalResult } from './types.js';
-import { CONTROL_SCHEMA } from './control-schema.js';
+import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, controlSchemaFileDeclaration } from './control-schema.js';
+import { refuseIncompatibleControlStore } from './control-schema-version.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
@@ -908,6 +909,30 @@ export type GuardedDeleteListener = (revocation: RevokedRowRef) => void;
  */
 export type ControlWriteAbandonedListener = (abandonment: ControlRetryAbandonment) => void;
 
+/** The text of a {@link ControlDatabaseConfig.schemaPath} file; Node.js only. */
+async function readSchemaFile(schemaPath: string): Promise<string> {
+  if (typeof process === 'undefined' || !process.versions?.node) {
+    throw new Error(
+      'Loading schema from file is not supported in React Native. ' +
+      'Remove the schemaPath option to use the embedded schema instead.'
+    );
+  }
+  try {
+    // Use require to conditionally load fs only in Node.js.
+    // This won't be bundled by React Native's Metro bundler — a dynamic
+    // import() would be statically picked up by Metro, so require is
+    // intentional here (cross-platform constraint, not lazy CommonJS).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs/promises');
+    return await fs.readFile(schemaPath, 'utf-8');
+  } catch (error) {
+    throw new Error(
+      `Failed to load schema from ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
+}
+
 export interface ControlDatabaseConfig {
   /**
    * Party ID for the control network. Also the party every owner and peer signature over a
@@ -920,6 +945,8 @@ export interface ControlDatabaseConfig {
    * Optional path to the control schema file.
    * If not provided, uses the embedded schema for cross-platform compatibility.
    * Only use this if you need to override the default schema (e.g., for testing).
+   * The file has the shape of `schemas/control.qsql`: one `declare schema CadreControl`
+   * followed by one plain `apply schema CadreControl` ({@link controlSchemaFileDeclaration}).
    */
   schemaPath?: string;
   /** Libp2p node for the control network (injected) */
@@ -1075,49 +1102,36 @@ export class ControlDatabase {
   }
 
   private async loadSchema(): Promise<void> {
-    let schemaContent: string;
-
+    let declaration: string;
     if (this.config.schemaPath) {
-      // Load from file if explicitly provided (for testing or custom schemas)
-      // This only works in Node.js environments
       log('Loading schema from file: %s', this.config.schemaPath);
-
-      // Check if we're in a Node.js environment
-      if (typeof process !== 'undefined' && process.versions?.node) {
-        try {
-          // Use require to conditionally load fs only in Node.js.
-          // This won't be bundled by React Native's Metro bundler — a dynamic
-          // import() would be statically picked up by Metro, so require is
-          // intentional here (cross-platform constraint, not lazy CommonJS).
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const fs = require('fs/promises');
-          schemaContent = await fs.readFile(this.config.schemaPath, 'utf-8');
-        } catch (error) {
-          throw new Error(
-            `Failed to load schema from ${this.config.schemaPath}: ${error instanceof Error ? error.message : String(error)}`,
-            { cause: error }
-          );
-        }
-      } else {
-        throw new Error(
-          'Loading schema from file is not supported in React Native. ' +
-          'Remove the schemaPath option to use the embedded schema instead.'
-        );
-      }
+      declaration = controlSchemaFileDeclaration(await readSchemaFile(this.config.schemaPath));
     } else {
-      // Use embedded schema for cross-platform compatibility
       log('Using embedded control schema');
-      schemaContent = CONTROL_SCHEMA;
+      declaration = CONTROL_SCHEMA_DECLARATION;
     }
 
+    // Declaring runs no DDL; it only records the declaration the check and the apply both read.
+    await this.db!.exec(declaration);
+    // A warm store this build cannot apply to without losing data is refused HERE, before the
+    // apply runs anything: the optimystic module refuses most changes to an existing table
+    // part-way through an apply, and a dropped table takes its rows. The apply is where
+    // versioned migrations will go (plan/control-schema-versioned-migrations).
+    await refuseIncompatibleControlStore(this.db!, this.config.partyId);
+    await this.applyControlSchema();
+    log('Schema loaded and executed');
+  }
+
+  /** Apply the declared control schema, retrying transient cohort failures. */
+  private async applyControlSchema(): Promise<void> {
     // Schema init is a DISTRIBUTED write, so it gets the same bounded transient-failure
     // retry every other control write does ({@link lockedWithRetry}). Every CadreControl
-    // table is optimystic-backed (the default vtab was routed to optimystic just above),
+    // table is optimystic-backed (`initialize` routes the default vtab to optimystic),
     // so each `create table` needs a super-majority of the party's peers to answer. On a
     // node joining a party that already has two live members a single unanswered peer
     // during any one create otherwise kills startup outright.
     //
-    // Re-running the WHOLE `exec` after a partial failure is safe, and this is the
+    // Re-running the apply after a partial failure is safe, and this is the
     // non-obvious part:
     //
     //  - `apply schema` is a DIFF, not a replay. Quereus collects the live catalog, diffs
@@ -1125,11 +1139,6 @@ export class ControlDatabase {
     //    exactly why `initialize` hydrates persisted optimystic schemas BEFORE getting here.
     //    A table the live catalog already lists generates no statements at all, which is what
     //    makes an apply over an already-complete schema (a warm start) a no-op.
-    //    NOTE: a table the catalog lists with DIFFERENT constraint text diffs to
-    //    `alter table ... drop constraint`, which the optimystic module refuses, so a store
-    //    written by a build with older constraint text fails here on every start (policy:
-    //    recreate, docs/architecture.md after the Control Network table). If backwards
-    //    compatibility becomes a requirement, this apply is the migration site.
     //  - a failed apply is taken back WHOLE (Quereus 4.20.0). The migration loop keeps an
     //    undo journal; when a step fails it runs that journal in reverse, re-renders the
     //    catalog, compares it against a fingerprint taken BEFORE the apply, and only then
@@ -1162,8 +1171,7 @@ export class ControlDatabase {
     // also what lets schema init absorb optimystic's self-coordination grace refusal, which
     // is unsafe for control writes in general. Why, on
     // `RETRIABLE_SCHEMA_INIT_MATCHERS` in `control-write-retry.ts`.
-    await this.lockedWithRetry(() => this.db!.exec(schemaContent), SCHEMA_INIT_RETRY_POLICY, 'schema-init');
-    log('Schema loaded and executed');
+    await this.lockedWithRetry(() => this.db!.exec(APPLY_CONTROL_SCHEMA), SCHEMA_INIT_RETRY_POLICY, 'schema-init');
   }
 
   /**
@@ -3571,7 +3579,7 @@ export class ControlDatabase {
    * backoff never stalls the other local writers queued behind it. Safe because every
    * locked body is atomic and re-runnable (the contract on {@link withWriteLock}).
    *
-   * Also carries {@link loadSchema}'s distributed DDL, the one caller that runs BEFORE
+   * Also carries {@link applyControlSchema}'s distributed DDL, the one caller that runs BEFORE
    * `initialized` is set — so it reaches this method directly rather than through
    * {@link execWrite}, whose {@link ensureInitialized} would reject it. The write queue is
    * necessarily empty at that point, so the lock is uncontended there; it is taken anyway

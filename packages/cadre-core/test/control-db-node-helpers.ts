@@ -21,14 +21,15 @@ import { webSockets } from '@libp2p/websockets';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
+import type { IRawStorage, OptimysticNode } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import type { CadreNode } from '../src/cadre-node.js';
 import { withTimeout } from '../src/control-stream.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import type { InMemoryKeyStore } from '../src/key-store.js';
 import { signPeerRecord } from '../src/peer-record.js';
+import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH } from '../src/types.js';
 import type { CadreNodeConfig, NetworkConfig, NodeProfile, RawStorageProvider } from '../src/types.js';
 
 /**
@@ -86,6 +87,29 @@ export async function readColumn(node: CadreNode, sql: string, column: string): 
 /** A collision-proof partyId; pass the full tag (e.g. `solo-transaction-write`). */
 export function freshPartyId(tag: string): string {
 	return `${tag}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * A control database's libp2p node, for a spec that builds `ControlDatabase` directly, the way
+ * `CadreNode` builds its own: WebSockets-only with no listen address (so it opens no connections
+ * and binds no port), this party's control network name, and the control cluster policy — that
+ * last because the schema apply's writes commit through it. Nothing checks that these stay in
+ * step with `CadreNode.buildControlNodeOptions`; what such a spec tests is the schema apply over
+ * optimystic storage, not how a node is configured.
+ */
+export function createControlNode(partyId: string, storage: IRawStorage): Promise<OptimysticNode> {
+	return createLibp2pNode({
+		port: 0,
+		bootstrapNodes: [],
+		networkName: `control-${partyId}`,
+		storage,
+		fretProfile: 'edge',
+		clusterSize: CONTROL_REPLICATION_BREADTH,
+		clusterPolicy: CONTROL_CLUSTER_POLICY,
+		transports: [webSockets()],
+		listenAddrs: [],
+		arachnode: { enableRingZulu: false }
+	});
 }
 
 export interface ControlNodeConfigOpts {

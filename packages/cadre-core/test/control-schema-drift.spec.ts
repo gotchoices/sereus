@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { CONTROL_SCHEMA } from '../src/control-schema.js';
+import { Database } from '@quereus/quereus';
+import { CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, CONTROL_SCHEMA_VERSION } from '../src/control-schema.js';
 
 /**
  * Drift guard for the security-critical CadreControl authorization schema.
@@ -9,9 +10,9 @@ import { CONTROL_SCHEMA } from '../src/control-schema.js';
  * The schema exists as two hand-maintained copies:
  *   - `schemas/control.qsql`                  — the on-disk reference artifact
  *   - `CONTROL_SCHEMA` in `control-schema.ts` — the embedded copy that actually
- *     runs in production / React Native (`ControlDatabase.loadSchema()` uses it by
- *     default; the `.qsql` file is only read when an explicit `schemaPath` is set,
- *     which no runtime code path does).
+ *     runs in production / React Native (`ControlDatabase.loadSchema()` runs its two
+ *     parts, the declaration and the apply, by default; the `.qsql` file is only read
+ *     when an explicit `schemaPath` is set, which no runtime code path does).
  *
  * Because this schema gates every control-plane mutation (the `verify(...)` checks
  * for OwnerKey / ValidationKey / Strand / CadrePeer / FormationInvite /
@@ -86,5 +87,18 @@ describe('control schema drift guard', () => {
       expect(third.trim() === 'party_id()', `CadreControl.${table} '${action}' third argument is ${JSON.stringify(third.trim())}`).toBe(bound);
     }
     expect(digests.filter(([, table]) => table === 'FormationUsage').map(([, , action]) => action).sort()).toEqual(['consent', 'vouch']);
+  });
+
+  it('CONTROL_SCHEMA_VERSION is pinned to the declared schema', async () => {
+    // Every edit to the declared control schema bumps CONTROL_SCHEMA_VERSION; this pair is what
+    // fails an edit made without one. Quereus hashes the declaration with comments and tags
+    // stripped, so a comment-only edit moves nothing and the version tag does not feed its own
+    // hash. After a schema edit: bump the version, then pin the new hash beside it. A Quereus
+    // upgrade that changes how it renders a schema for hashing moves the hash with no schema
+    // edit; re-pin it then without a bump.
+    const db = new Database();
+    await db.exec(CONTROL_SCHEMA_DECLARATION);
+    const explained = await db.get('explain schema CadreControl');
+    expect({ version: CONTROL_SCHEMA_VERSION, schema: explained?.info }).toEqual({ version: 1, schema: 'hash:ceU-1DFc' });
   });
 });

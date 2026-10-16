@@ -1,11 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
-import type { IRawStorage, OptimysticNode } from '@optimystic/db-p2p';
+import { MemoryRawStorage } from '@optimystic/db-p2p';
+import type { IRawStorage } from '@optimystic/db-p2p';
 import type { Database } from '@quereus/quereus';
 import { ControlDatabase } from '../src/control-database.js';
-import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH } from '../src/types.js';
-import { freshPartyId } from './control-db-node-helpers.js';
+import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
 
 /**
  * `ControlDatabase.loadSchema` retries its whole `apply schema CadreControl` statement when it
@@ -14,8 +12,8 @@ import { freshPartyId } from './control-db-node-helpers.js';
  * resulting catalog against a fingerprint taken before the apply, and the optimystic plugin's
  * schema batch hooks carry that unwind through to STORAGE. Without the plugin half, storage
  * would be left holding objects the catalog no longer lists and the re-run would diff against a
- * catalog that disagrees with the blocks. The argument in full is at the `loadSchema` call site;
- * this file pins the property it rests on.
+ * catalog that disagrees with the blocks. The argument in full is at the `applyControlSchema` call
+ * site; this file pins the property it rests on.
  *
  * NOTE: those batch hooks are unreleased — `../optimystic` HEAD calls itself 1.5.0, the same
  * version the registry serves without them, so `@optimystic/quereus-plugin-optimystic: ^1.5.0`
@@ -46,10 +44,8 @@ import { freshPartyId } from './control-db-node-helpers.js';
  * pass while the unwind had left stale state behind in the live plugin — the shape optimystic's
  * own `schema-batch.spec.ts` covers for a two-table fixture, and the shape this file would lose.
  * `CadreNode` cannot give it: it discards its `ControlDatabase` when `start()` fails. So the node
- * options below are hand-built rather than taken from `CadreNode.buildControlNodeOptions`, naming
- * the subset the apply depends on (control network name, storage, control cluster policy).
- * Nothing checks that they stay in step with `CadreNode`, and nothing needs to — what is under
- * test is the schema apply over optimystic storage, not how a node is configured.
+ * is hand-built ({@link createControlNode}) rather than taken from
+ * `CadreNode.buildControlNodeOptions`, naming the subset the apply depends on.
  */
 
 /** The fifteen `CadreControl` tables `schemas/control.qsql` declares, in name order. */
@@ -124,30 +120,10 @@ function gateBlock(inner: IRawStorage, blockId: string): StorageGate {
 	return { storage, refusals: () => refused, heal: () => { shut = false; } };
 }
 
-/**
- * The control node's libp2p node, the way `CadreNode` builds its own: WebSockets-only with no
- * listen address (so it opens no connections and binds no port), this party's control network
- * name, and the control cluster policy — that last because the apply's writes commit through it.
- */
-function createControlNode(partyId: string, storage: IRawStorage): Promise<OptimysticNode> {
-	return createLibp2pNode({
-		port: 0,
-		bootstrapNodes: [],
-		networkName: `control-${partyId}`,
-		storage,
-		fretProfile: 'edge',
-		clusterSize: CONTROL_REPLICATION_BREADTH,
-		clusterPolicy: CONTROL_CLUSTER_POLICY,
-		transports: [webSockets()],
-		listenAddrs: [],
-		arachnode: { enableRingZulu: false }
-	});
-}
-
 /** `ControlDatabase`'s private apply seam, named so the cast below can reach it. */
 interface SchemaApplyInternals {
 	db: Database | null;
-	loadSchema: () => Promise<void>;
+	applyControlSchema: () => Promise<void>;
 }
 
 /** Every `cadrecontrol` object the live catalog lists, as `type` -> names in name order. */
@@ -211,7 +187,7 @@ describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 			// Exactly what `lockedWithRetry` re-runs, minus the classifier that (rightly)
 			// declines this particular failure.
 			gate.heal();
-			await internals.loadSchema();
+			await internals.applyControlSchema();
 
 			// The WHOLE `cadrecontrol` catalog, so a table or index that went missing and one
 			// that appeared uninvited both fail here: the fifteen tables and the two indexes

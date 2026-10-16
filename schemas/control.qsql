@@ -100,7 +100,9 @@ declare schema CadreControl {
                     ))
                 or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'remove', party_id(), old.Key, old.StampId), context.Signature, A.Key, 'ed25519')))
         )
-    ) with context (OwnerKey text null, Signature text null);
+    -- The tag is the version of this whole schema (cadre-core CONTROL_SCHEMA_VERSION): every edit
+    -- to the schema bumps it, and a warm start reads the store's copy before applying anything.
+    ) with tags ("sereus.controlSchemaVersion" = 1) with context (OwnerKey text null, Signature text null);
 
     -- A key that can validate a strand formation disclosure (FormationUsage.Authorized).
     table ValidationKey (
