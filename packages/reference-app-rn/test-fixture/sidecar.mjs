@@ -38,10 +38,7 @@ export function createSidecar(node, sAppConfig) {
 			if (method === 'POST' && url.pathname === '/strand/create') {
 				const body = await readBody(req);
 				const strandId = body.strandId || randomUUID();
-				const strand = await node.addStrand({
-					strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
-					sAppConfig,
-				});
+				const { instance: strand } = await node.foundStrand({ strandId, sAppConfig });
 				return send(res, 200, { strandId, status: strand.status });
 			}
 

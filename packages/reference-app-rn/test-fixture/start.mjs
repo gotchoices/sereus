@@ -114,11 +114,10 @@ async function main() {
 	// owner, because the phone then creates a strand; an hour covers a slow device run.
 	const { encoded: cadreInvitation } = await node.createCadreInvitation({ grantsOwner: true, expiresInMs: 60 * 60_000 });
 
-	// Create pre-configured chat strand
-	const strand = await node.addStrand({
-		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
-		sAppConfig: CHAT_SAPP_CONFIG,
-	});
+	// Found the pre-configured chat strand: publish its row naming this machine as founder
+	// and launch it. A bare `addStrand` of an unpublished row would launch as a joiner and
+	// wait for a first sync from a member that does not exist.
+	const { instance: strand } = await node.foundStrand({ strandId, sAppConfig: CHAT_SAPP_CONFIG });
 	console.log(`  Strand created: ${strandId}`);
 
 	// Register the drone as a chat participant
