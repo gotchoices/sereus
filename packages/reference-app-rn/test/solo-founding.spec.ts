@@ -138,7 +138,10 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 		const strandId = uuid();
 
 		const { instance, memberPrivateKey } = await within('createClosedChatStrand()', FOUNDING_DEADLINE_MS,
-			() => createClosedChatStrand(cadre, strandId));
+			async () => {
+				const created = await createClosedChatStrand(cadre, strandId);
+				return { ...created, instance: await created.ready };
+			});
 
 		expect(instance.strandId).toBe(strandId);
 		expect(instance.status).toBe('active');

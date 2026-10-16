@@ -789,6 +789,12 @@ export interface CreatedInvitation {
  * ever passes a stable id — but going through the one entry point is what keeps
  * this call site off the pattern that bricks when they do.
  *
+ * It returns once the row is published (`{ background: true }`), because the
+ * invitation needs only the strand id and key; the attach continues behind it. A
+ * failed attach only warns: the node keeps retrying the start, and the invitation
+ * stays valid, since a joiner redeeming it before the strand runs is refused
+ * retryably.
+ *
  * The strand's raw storage is pre-opened before founding (the provider is
  * synchronous), mirroring the Phase-1 chat-strand bring-up in {@link addChatStrand}.
  *
@@ -801,11 +807,14 @@ async function createClosedChatStrand(
 ): Promise<{ strandId: string; memberPrivateKey: string }> {
 	const strandId = crypto.randomUUID();
 	await openStores([strandId]);
-	const { strandRow } = await cadre.foundStrand({
+	const { strandRow, ready } = await cadre.foundStrand({
 		strandId,
 		type: 'c',
 		memberPrivateKey: await generateStrandMemberKey(),
 		sAppConfig: getChatSAppConfig(),
+	}, { background: true });
+	void ready.catch((err: unknown) => {
+		console.warn(`[reference-app-web] closed strand ${strandId} did not start; the node keeps retrying it:`, err);
 	});
 	if (!strandRow.MemberPrivateKey) {
 		throw new Error(

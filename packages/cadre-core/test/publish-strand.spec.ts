@@ -592,6 +592,24 @@ describe('CadreNode.foundStrand (publish + found in one resumable call)', () => 
     ).rejects.toThrow(/must be started/i);
   });
 
+  it('background form: resolves once published; a failed start rejects only `ready` and the row stays', async () => {
+    ({ node } = await startSelfOwnerNode('found-strand-', { enrollOwner: true }));
+    const controlDb = node.getControlDatabase()!;
+    const strandId = 'found-background-' + rand3();
+    // A schema that no longer matches its signature: the publish never reads the sApp, and
+    // the start refuses it, so the start fails after the row has committed.
+    const tampered = { ...signedSApp(), schema: 'table Other (Id text primary key);' };
+
+    const { strandRow, founded, ready } = await node.foundStrand(
+      { strandId, type: 'o', sAppConfig: tampered },
+      { background: true },
+    );
+
+    expect(founded).toBe(true);
+    await expect(ready).rejects.toThrow(/schema verification failed/);
+    expect(await controlDb.queryStrand(strandId)).toEqual(strandRow);
+  }, 60_000);
+
   // Guards the FIX for what used to be a known gap: `launchStrand` used to return an
   // already-tracked instance and silently drop the `founder` flag, so whoever launched
   // the strand first decided whether the bootstrap ran. Now a founder request against a

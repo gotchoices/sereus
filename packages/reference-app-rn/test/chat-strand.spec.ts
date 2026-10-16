@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { FoundStrandResult, StrandInstance, StrandRow } from '@serfab/cadre-core';
+import type { FoundStrandBackgroundResult, FoundStrandOptions, FoundStrandResult, StrandInstance, StrandRow } from '@serfab/cadre-core';
 import { createChatStrand, createClosedChatStrand } from '../src/chat-strand.js';
 
 /**
@@ -37,12 +37,14 @@ function makeStubNode(memberPrivateKey: string | null = null) {
 	});
 	return {
 		foundStrand: vi
-			.fn<(config: { strandId: string; type?: 'o' | 'c' }) => Promise<FoundStrandResult>>()
-			.mockImplementation(async (config) => ({
-				instance: stubInstance,
-				strandRow: stubRow(config.strandId, config.type ?? 'o'),
-				founded: true,
-			})),
+			.fn<(config: { strandId: string; type?: 'o' | 'c' }, options?: FoundStrandOptions) =>
+				Promise<FoundStrandResult | FoundStrandBackgroundResult>>()
+			.mockImplementation(async (config, options) => {
+				const strandRow = stubRow(config.strandId, config.type ?? 'o');
+				return options?.background
+					? { strandRow, founded: true, ready: Promise.resolve(stubInstance) }
+					: { instance: stubInstance, strandRow, founded: true };
+			}),
 		addStrand: vi.fn<() => Promise<StrandInstance>>().mockResolvedValue(stubInstance),
 		peerId: { toString: () => 'p' },
 	};
@@ -59,7 +61,7 @@ describe('chat-strand caller: creation founds rather than attaches', () => {
 		expect(node.addStrand).not.toHaveBeenCalled();
 	});
 
-	it('createClosedChatStrand founds the closed strand with a minted member key', async () => {
+	it('createClosedChatStrand founds the closed strand with a minted member key, returning after the publish', async () => {
 		const node = makeStubNode('stored-member-key');
 		await createClosedChatStrand(node as never, 'closed-strand-id');
 		expect(node.foundStrand).toHaveBeenCalledWith(
@@ -68,6 +70,7 @@ describe('chat-strand caller: creation founds rather than attaches', () => {
 				type: 'c',
 				memberPrivateKey: expect.any(String),
 			}),
+			{ background: true },
 		);
 		expect(node.addStrand).not.toHaveBeenCalled();
 	});

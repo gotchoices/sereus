@@ -202,8 +202,9 @@ export async function startFormationResponder(opts?: {
 			throw new Error('control database unavailable after start; cannot read formation usage');
 		}
 
-		// Host CLOSED chat strand, founded the way the browser's `createClosedChatStrand`
-		// founds its own: one `foundStrand` call with the shared signed config.
+		// Host CLOSED chat strand, founded with the call the browser's `createClosedChatStrand`
+		// makes and the shared signed config, but awaiting the start, since the fixture needs
+		// the strand's libp2p node.
 		const strandId = crypto.randomUUID();
 		const { instance: strand, founded } = await node.foundStrand({
 			strandId,

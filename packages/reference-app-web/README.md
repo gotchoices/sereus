@@ -174,12 +174,17 @@ end-to-end. The flow is between two parties; in a browser-only demo that means
 **two tabs** (a relayed second cadre), with the invitation moved out-of-band by
 copy/paste:
 
-1. **Responder** clicks *Create invitation* → `node.createOpenInvitation(sAppId)`
-   mints a `FormationInvite` token, and `encodeInvitation` base64url-encodes it.
-   Copy the encoded blob.
+1. **Responder** clicks *Create invitation* → `foundStrand(…, { background: true })`
+   publishes the closed host strand the invitation is bound to and continues its
+   start in the background, `node.createOpenInvitation(sAppId)` mints a
+   `FormationInvite` token, and `encodeInvitation` base64url-encodes it. Copy the
+   encoded blob.
 2. **Initiator** pastes it and clicks *Form strand* → `decodeInvitation` →
    `formStrand(invitation, { partyId })` runs the formation protocol against the
-   responder's cadre and returns `{ memberKey, invitePrivateKey, strandId }`.
+   responder's cadre and returns `{ memberKey, invitePrivateKey, strandId }`. While
+   the responder's host strand is still starting, `formStrand` throws the retryable
+   `host-strand-unavailable` refusal and the token stays unspent; *Form strand*
+   again.
 3. The initiator then launches the resulting **closed** strand against the same
    signed chat schema: `addStrand({ strandRow: { Id: strandId, MemberPrivateKey:
    invitePrivateKey, Type: 'c' }, sAppConfig })`.

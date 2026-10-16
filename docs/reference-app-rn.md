@@ -1211,6 +1211,8 @@ D ReactNativeJS: 'sereus:cadre:timing [buildStrandRuntime:%s] createLibp2pNode: 
 
 The trailing `+<n>ms` is `debug`'s time since that namespace's previous line. The last line shows how the older timing lines print on the device: they pass their values as `%s`/`%d` arguments, and React Native's console prints the placeholders unfilled with the values after them, rather than substituting them as a browser console does.
 
+**Create Closed Strand + Invite** succeeds once the strand is published and the invitation made, because `createClosedChatStrand` founds with `foundStrand`'s background form. The strand keeps starting after the handler's `succeeded` line, so the start's timing lines, ending with `[foundStrand:<id>] addStrand: <n>ms`, can follow it, while `[foundStrand:<id>] total` covers only the publish. A start that fails logs `W ReactNativeJS: [chat-strand] closed strand <id> did not start; no owner role was written:` with the error, and the node retries the start.
+
 The headless counterpart is `test/solo-founding.spec.ts`: it builds the node from the kit's `buildPhoneNodeConfig`, with this app's override, over the rn-leveldb adapter (with an in-memory fake of the native module) and founds an open and a closed strand under a 10 s deadline. It runs library code as published, so it cannot catch a stall that only occurs in Metro's Babel-compiled bundle; Maestro flow 4 covers the device. The one such stall found so far, the Babel helper defect under Key Dependencies, has its own headless guard in `test/metro-babel/async-generator-cleanup.spec.ts`.
 
 ## Testing Strategy

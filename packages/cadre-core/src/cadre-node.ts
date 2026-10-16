@@ -14,6 +14,8 @@ import type {
   StrandConfig,
   FoundStrandConfig,
   FoundStrandResult,
+  FoundStrandOptions,
+  FoundStrandBackgroundResult,
   SAppConfig,
   CadreNodeEvents,
   ControlNetworkSeed,
@@ -5946,20 +5948,66 @@ export class CadreNode implements SAppIdLookup {
    * `Type` is compared, not adopted: a stored row of the other type means the caller and
    * the control plane disagree about what this strand IS, so it throws.
    *
+   * **Returning after the publish.** `foundStrand(config, { background: true })` resolves
+   * once the row is published and continues the local start in
+   * {@link FoundStrandBackgroundResult.ready}, for a caller that needs only the row (an
+   * invitation reads just its id and membership key). Publish errors still reject the call
+   * itself. A joiner that redeems an invitation to a closed strand before its start finishes
+   * is refused with the retryable `host-strand-unavailable` and the token stays unspent:
+   * {@link requestJoin} retries that on its backoff, while {@link formStrand} throws it to its
+   * caller once every machine the invitation names has refused.
+   *
    * @returns The instance AND the row the strand actually runs under — read the membership
    *   key from the returned row, not from a freshly minted one ({@link FoundStrandResult}).
    * @throws if the node is not started, the id is blank, a published row of the same id has
    *   a different `Type`, or either half rejects.
    */
-  async foundStrand(config: FoundStrandConfig): Promise<FoundStrandResult> {
-    const { strandId, type = 'o', memberPrivateKey, sAppConfig, awaitFirstSync } = config;
+  foundStrand(config: FoundStrandConfig): Promise<FoundStrandResult>;
+  /**
+   * Publish the strand's row as {@link foundStrand} does, and resolve once it is published;
+   * the local start continues in {@link FoundStrandBackgroundResult.ready}.
+   *
+   * @throws as the default form does for the publish half; the start's own failure rejects
+   *   `ready` instead.
+   */
+  foundStrand(config: FoundStrandConfig, options: FoundStrandOptions): Promise<FoundStrandBackgroundResult>;
+  async foundStrand(
+    config: FoundStrandConfig,
+    options?: FoundStrandOptions
+  ): Promise<FoundStrandResult | FoundStrandBackgroundResult> {
+    const tTotal = performance.now();
+    const published = await this.publishFoundingRow(config);
+    const { strandRow, founded } = published;
+    const logTotal = () => timing(`[foundStrand:${strandRow.Id}] total: ${Math.round(performance.now() - tTotal)}ms`);
+    if (options?.background) {
+      const ready = this.attachFoundingRow(published, config);
+      // Without a handler here, a caller that only wanted the row would get an unhandled
+      // rejection. The caller still sees the rejection on `ready` itself.
+      void ready.catch((error: unknown) => {
+        log('foundStrand(%s): background start failed; the strand stays published and the watcher retries it: %o',
+          strandRow.Id, error);
+      });
+      logTotal();
+      return { strandRow, founded, ready };
+    }
+    const instance = await this.attachFoundingRow(published, config);
+    logTotal();
+    return { instance, strandRow, founded };
+  }
+
+  /**
+   * The publish half of {@link foundStrand}: adopt the stored row or publish a new one, and
+   * derive whether this machine founds it. Every check that can refuse the founding is here,
+   * so both forms of `foundStrand` reject on it before returning.
+   */
+  private async publishFoundingRow(config: FoundStrandConfig): Promise<Pick<FoundStrandResult, 'strandRow' | 'founded'>> {
+    const { strandId, type = 'o', memberPrivateKey } = config;
     if (!this._running || !this.controlDatabase) {
       throw new Error(`CadreNode must be started before attempting to found strand ${strandId}`);
     }
     const controlDatabase = this.controlDatabase;
     const trimmed = requireNonBlank(strandId, 'strand id');
     const timed = <T>(step: string, op: () => Promise<T>) => timedStep('foundStrand', trimmed, step, op);
-    const tTotal = performance.now();
     const published = await timed('queryStrand', () => controlDatabase.queryStrand(trimmed));
     const strandRow = published
       ? this.adoptPublishedStrand(published, type, memberPrivateKey)
@@ -5972,10 +6020,20 @@ export class CadreNode implements SAppIdLookup {
         '(FounderPeerId is not this node\'s peer id) — attaching as a joiner; ' +
         'the founder bootstrap runs on that machine', trimmed);
     }
-    const instance = await timed('addStrand',
+    return { strandRow, founded };
+  }
+
+  /**
+   * The start half of {@link foundStrand}. Its timing lines (`addStrand: start`, then the
+   * duration or `failed after`) are logged when the start settles, also in the background
+   * form, so a start that hangs still shows as a start line with no end line.
+   */
+  private attachFoundingRow(
+    { strandRow, founded }: Pick<FoundStrandResult, 'strandRow' | 'founded'>,
+    { sAppConfig, awaitFirstSync }: FoundStrandConfig
+  ): Promise<StrandInstance> {
+    return timedStep('foundStrand', strandRow.Id, 'addStrand',
       () => this.addStrand({ strandRow, sAppConfig, founder: founded, awaitFirstSync }));
-    timing(`[foundStrand:${trimmed}] total: ${Math.round(performance.now() - tTotal)}ms`);
-    return { instance, strandRow, founded };
   }
 
   /**

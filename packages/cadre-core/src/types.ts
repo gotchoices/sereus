@@ -1498,6 +1498,37 @@ export interface FoundStrandResult {
 }
 
 /**
+ * Options for {@link CadreNode.foundStrand}. Passing them selects the form that returns once
+ * the row is published ({@link FoundStrandBackgroundResult}), for a caller that needs only the
+ * row: minting an invitation reads just its id and membership key.
+ *
+ * An invitation redeemed before the start finishes is refused, retryably: a closed host
+ * strand answers `host-strand-unavailable` and leaves the token unspent. For an open host
+ * strand the approval is sent, but carries no strand addresses, because the strand node does
+ * not exist yet.
+ */
+export interface FoundStrandOptions {
+  /** Return once the row is published; the start continues in {@link FoundStrandBackgroundResult.ready}. */
+  background: true;
+}
+
+/** What {@link CadreNode.foundStrand} returns with `{ background: true }`: the row is published; the local start continues. */
+export interface FoundStrandBackgroundResult {
+  /** The live control-plane row: freshly published, or the one already there. Same as {@link FoundStrandResult.strandRow}. */
+  strandRow: StrandRow;
+  /** Same as {@link FoundStrandResult.founded}. */
+  founded: boolean;
+  /**
+   * Settles when the local start does. Resolves with the instance `addStrand` returns.
+   * Rejects with the start's own error. After a launch failure the strand stays published
+   * and the strand watcher keeps retrying it. After a first-sync timeout (only an adopted,
+   * not-founded row waits for one) the instance stays up and still syncing, so wait with
+   * {@link CadreNode.whenStrandWritable}.
+   */
+  ready: Promise<StrandInstance>;
+}
+
+/**
  * Result of creating a new cadre peer
  */
 export interface CreatePeerResult {

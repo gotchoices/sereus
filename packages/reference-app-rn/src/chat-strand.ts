@@ -121,20 +121,27 @@ export async function joinChatStrand(
 
 // ── Closed-strand creation + join (trust model) ───────────────────────────────
 
-/** Result of creating a closed strand: the live instance + its membership key. */
+/** Result of creating a closed strand: its id and membership key, and the local start still in flight. */
 export interface CreateClosedStrandResult {
-  instance: StrandInstance;
-  /** Generated ed25519 member private key (base64 protobuf) gating the strand. */
+  strandId: string;
+  /** Ed25519 member private key (base64 protobuf) gating the strand. */
   memberPrivateKey: string;
+  /**
+   * Settles once the local instance has started and the creator's `owner` role is written.
+   * Rejects with the start's error; the strand stays published and the node keeps retrying
+   * the start.
+   */
+  ready: Promise<StrandInstance>;
 }
 
 /**
  * Create a new **closed** chat strand (`Type:'c'`) on the given cadre node.
  *
  * Mirrors {@link createChatStrand} but mints a `MemberPrivateKey` so the strand
- * is invitation-only rather than open, publishes the row with `type:'c'` + that
- * key under this node's owner, starts the instance, and assigns the creator
- * the app-level `owner` role.
+ * is invitation-only rather than open, and publishes the row with `type:'c'` + that
+ * key under this node's owner. It returns once the row is published, because an
+ * invitation needs only the strand id and key; starting the instance and assigning
+ * the creator the app-level `owner` role continue in the result's `ready`.
  *
  * The key returned is the one `foundStrand` resolved, NOT necessarily the one
  * minted here: re-founding a strand id that is already published adopts the
@@ -149,12 +156,12 @@ export async function createClosedChatStrand(
   cadreNode: CadreNode,
   strandId: string,
 ): Promise<CreateClosedStrandResult> {
-  const { instance, strandRow } = await cadreNode.foundStrand({
+  const { strandRow, ready: started } = await cadreNode.foundStrand({
     strandId,
     type: 'c', // closed — invitation-only
     memberPrivateKey: await generateStrandMemberKey(),
     sAppConfig: getChatSAppConfig(),
-  });
+  }, { background: true });
 
   if (!strandRow.MemberPrivateKey) {
     throw new Error(
@@ -163,9 +170,20 @@ export async function createClosedChatStrand(
     );
   }
 
-  await assignLocalParticipantRole(cadreNode, instance, 'owner');
+  // NOTE: accepted tradeoff — a failed start writes no owner role, and the node's later
+  // retry of the start writes none either. The role write also no longer finishes before
+  // the caller selects the strand, so `useChat`'s default-`member` insert-or-ignore can
+  // land first. `Participant.Role` is display-only and the write was already best-effort.
+  // Revisit if `Participant.Role` ever gates anything.
+  const ready = started.then(async (instance) => {
+    await assignLocalParticipantRole(cadreNode, instance, 'owner');
+    return instance;
+  });
+  void ready.catch((err: unknown) => {
+    console.warn(`[chat-strand] closed strand ${strandRow.Id} did not start; no owner role was written:`, err);
+  });
 
-  return { instance, memberPrivateKey: strandRow.MemberPrivateKey };
+  return { strandId: strandRow.Id, memberPrivateKey: strandRow.MemberPrivateKey, ready };
 }
 
 /**
