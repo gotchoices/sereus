@@ -331,7 +331,7 @@ async function switchToA(
 	return nA;
 }
 
-/** A holds each moved row once, under the key and founder the move preserves. */
+/** A holds each moved row once, the strand row under N's owner key in A. */
 async function expectSeatedOnce(N: CadreNode, bundle: StrandBundle, s: InvitedStrand, T: string, nOwnerKey: string): Promise<void> {
 	const S = s.strandId;
 	const control = N.getControlDatabase()!;

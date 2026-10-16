@@ -234,11 +234,15 @@ describe('Concurrent same-primary-key control insert across two machines', () =>
 			description: `both nodes hold exactly one ${strandId} row after the publishStrand race`,
 		});
 
-		// Exactly one machine's owner key is on the row, and both views agree on WHICH, so a
-		// race that left the two views naming different publishers would show here.
-		const founders = await Promise.all(dbs().map(async (db) => (await strandRowsFor(db, strandId))[0]!.FounderOwnerKey));
-		const nodeKeys = nodes.map((node) => node.getOwnerSigner()!.publicKey);
+		// Exactly one machine is on the row, its peer id and its owner key together, and both
+		// views agree on WHICH: the founder derivation (`isSelfFoundedRow`) reads `FounderPeerId`,
+		// so views naming different founders would make both machines bootstrap the same strand.
+		const founders = await Promise.all(dbs().map(async (db) => {
+			const row = (await strandRowsFor(db, strandId))[0]!;
+			return `${row.FounderPeerId} ${row.FounderOwnerKey}`;
+		}));
+		const machines = nodes.map((node) => `${node.peerId!.toString()} ${node.getOwnerSigner()!.publicKey}`);
 		expect(new Set(founders).size, `both views must agree on one founder; saw ${founders.join(', ')}`).toBe(1);
-		expect(nodeKeys, `the founder must be one of the two racing machines; saw ${founders[0]}`).toContain(founders[0]);
+		expect(machines, `the founder must be one of the two racing machines; saw ${founders[0]}`).toContain(founders[0]);
 	}, CASE_TIMEOUT_MS);
 });
