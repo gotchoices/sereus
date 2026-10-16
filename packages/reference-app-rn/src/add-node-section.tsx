@@ -16,7 +16,8 @@ import { Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { NodeClaimPayload } from '@serfab/cadre-core';
 import { useCadre } from './cadre-context';
 import { CodeScanner } from './code-scanner';
-import { describeClaimFailure, NODE_CODE_SCHEME, nodeReach, ownerFingerprint, readNodeCode, type NodeReach } from './node-claim';
+import { describeClaimFailure, NODE_CODE_SCHEME, nodeReach, readNodeCode, type NodeReach } from './node-claim';
+import { SigningKeyFact } from './owner-keys-section';
 import { Btn, controlStyles, Fact, LabelledInput, Section, shortPeerId, useLaterThan } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
@@ -157,7 +158,6 @@ export function AddNodeSection({ showAlert, linkedCode, onLinkedCodeTaken }: {
 			<ApprovalPrompt
 				payload={pending}
 				partyId={cadre.node?.partyId ?? '—'}
-				ownerPublicKey={cadre.ownerPublicKey}
 				onApprove={handleApprove}
 				onCancel={() => setPending(null)}
 			/>
@@ -165,11 +165,10 @@ export function AddNodeSection({ showAlert, linkedCode, onLinkedCodeTaken }: {
 	);
 }
 
-/** Nothing is claimed until the user agrees, because the prompt is where they see which cadre the node joins. */
-function ApprovalPrompt({ payload, partyId, ownerPublicKey, onApprove, onCancel }: {
+/** Nothing is claimed until the user agrees, because the prompt is where they see which cadre the node joins, under which owner key. */
+function ApprovalPrompt({ payload, partyId, onApprove, onCancel }: {
 	payload: NodeClaimPayload | null;
 	partyId: string;
-	ownerPublicKey: string | null;
 	onApprove: () => void;
 	onCancel: () => void;
 }) {
@@ -180,11 +179,7 @@ function ApprovalPrompt({ payload, partyId, ownerPublicKey, onApprove, onCancel 
 					<Text style={controlStyles.modalTitle}>Add this node to your cadre?</Text>
 					<ScrollView>
 						<Fact label="Cadre" value={partyId} />
-						<Fact
-							label="Owner"
-							value={ownerPublicKey ? ownerFingerprint(ownerPublicKey) : '—'}
-							note="The machine shows the same fingerprint once the node joins."
-						/>
+						<SigningKeyFact note="The machine shows the same fingerprint once the node joins." />
 						<Fact label="Node" value={payload ? shortPeerId(payload.peerId) : ''} />
 						<Fact label="Reach" value={payload ? REACH_TEXT[nodeReach(payload.multiaddrs)] : ''} />
 					</ScrollView>

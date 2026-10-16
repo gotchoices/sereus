@@ -133,6 +133,37 @@ export const TEST_IDS = {
 		/** The removal prompt's buttons: Remove, and Cancel (Close when the removal is refused). */
 		confirmRemoveMachineBtn: 'btn-confirm-remove-machine',
 		cancelRemoveMachineBtn: 'btn-cancel-remove-machine',
+		/** The removal prompt's lost-phone line: close it and scroll to Owner keys. */
+		showOwnerKeysBtn: 'btn-show-owner-keys',
+		/** Owner keys: one listed key; pass the key. Not `ownerKeyRow`, the Node card's row. */
+		ownerKeyListRow: (key: string) => `row-owner-keys-${key}`,
+		/** Per-row Remove; pass the key. Not on this device's own key, nor for a member. */
+		removeOwnerKeyBtn: (key: string) => `btn-remove-owner-key-${key}`,
+		/** Re-reads the owner keys and this app's standing. */
+		refreshOwnerKeysBtn: 'btn-refresh-owner-keys',
+		/** Open the form for a backup key, or for exporting this device's key. */
+		makeBackupKeyBtn: 'btn-make-backup-key',
+		exportOwnKeyBtn: 'btn-export-own-key',
+		/** That form: the name, Protect with a passphrase, the passphrase twice, then Make backup key (or Export) and Cancel. */
+		ownerKeyLabelInput: 'input-owner-key-label',
+		ownerKeyPassphraseSwitch: 'switch-owner-key-passphrase',
+		ownerKeyPassphraseInput: 'input-owner-key-passphrase',
+		ownerKeyPassphraseRepeatInput: 'input-owner-key-passphrase-repeat',
+		confirmOwnerKeyExportBtn: 'btn-confirm-owner-key-export',
+		cancelOwnerKeyExportBtn: 'btn-cancel-owner-key-export',
+		/** The `ShareCode` prefix of an owner key's export; see `shareCodeText` and `shareCodeCopyBtn`. Then Share, and Done. */
+		ownerKeyExportShare: 'owner-key-export',
+		shareOwnerKeyExportBtn: 'btn-share-owner-key-export',
+		ownerKeyExportDoneBtn: 'btn-owner-key-export-done',
+		/** Import an owner key: the pasted text, Scan, a locked export's passphrase, and Import. */
+		importOwnerKeyInput: 'input-import-owner-key',
+		scanOwnerKeyBtn: 'btn-scan-owner-key',
+		importOwnerKeyPassphraseInput: 'input-import-owner-key-passphrase',
+		importOwnerKeyBtn: 'btn-import-owner-key',
+		/** The owner-key removal prompt: one Keep switch per row the key added (pass a peer id or a key), Remove, and Cancel (Close when refused). */
+		keepDependentSwitch: (id: string) => `switch-keep-dependent-${id}`,
+		confirmRemoveOwnerKeyBtn: 'btn-confirm-remove-owner-key',
+		cancelRemoveOwnerKeyBtn: 'btn-cancel-remove-owner-key',
 		/** Rent an always-on node: Subscribe and add node, the approval prompt's buttons, and the progress line while renting runs. */
 		rentNodeBtn: 'btn-rent-node',
 		approveRentNodeBtn: 'btn-approve-rent-node',

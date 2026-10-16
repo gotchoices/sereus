@@ -22,6 +22,13 @@ import type {
   CreateCadreInvitationResult,
   ControlNetworkSeed,
   ApplySeedResult,
+  BackupOwnerKey,
+  CadreOwnerKey,
+  ImportedOwnerKey,
+  OwnerKeyExportOptions,
+  OwnerKeyRemovalPlan,
+  OwnerKeyRemovalResult,
+  RemoveOwnerOptions,
   StrandInstance,
   StrandConfig,
   ConnectionPathSummary,
@@ -419,6 +426,40 @@ export async function planMachineRemoval(peerId: string): Promise<MachineRemoval
 /** Remove a machine. Thin pass-through to {@link CadreNode.removeMachine}. */
 export async function removeMachine(peerId: string): Promise<MachineRemovalResult> {
   return running().removeMachine(peerId);
+}
+
+// ── Owner-key helpers (Settings → Owner keys) ─────────────────────────────────
+// Through the kit, not the node: its calls run in turn with start, stop and join, and an import
+// writes the secure store's owner slot.
+
+/** The cadre's live owner keys. Thin pass-through to the kit's `listOwnerKeys`. */
+export function listOwnerKeys(): Promise<CadreOwnerKey[]> {
+  return phone.listOwnerKeys();
+}
+
+/** Seat a new owner key and return its only export. Thin pass-through to the kit's `addBackupOwnerKey`. */
+export function addBackupOwnerKey(options: OwnerKeyExportOptions): Promise<BackupOwnerKey> {
+  return phone.addBackupOwnerKey(options);
+}
+
+/** This app's own owner key as export text. Thin pass-through to the kit's `exportOwnerKey`. */
+export function exportOwnerKey(options: OwnerKeyExportOptions): Promise<string> {
+  return phone.exportOwnerKey(options);
+}
+
+/** Store an exported owner key in this app's owner slot, wiring it when the cadre lists it. Thin pass-through to the kit's `importOwnerKey`. */
+export function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
+  return phone.importOwnerKey(text, passphrase);
+}
+
+/** What removing owner key `key` would do, read without writing. Thin pass-through to the kit's `planOwnerKeyRemoval`. */
+export function planOwnerKeyRemoval(key: string): Promise<OwnerKeyRemovalPlan> {
+  return phone.planOwnerKeyRemoval(key);
+}
+
+/** Remove an owner key, re-vouching first the rows `options.revouch` keeps. Thin pass-through to the kit's `removeOwner`. */
+export function removeOwner(key: string, options: RemoveOwnerOptions): Promise<OwnerKeyRemovalResult> {
+  return phone.removeOwner(key, options);
 }
 
 // ── Formation helpers (closed-strand consent flow) ────────────────────────────

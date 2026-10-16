@@ -484,6 +484,8 @@ packages/reference-app-rn/
     machines-section.tsx      # Settings → Devices and nodes: the cadre's machines and the devices invited; an owner removes one
     machine-removal.tsx       # Removing a machine: the plan, the confirmation, removeMachine; shared with the provider section
     machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, a rented node's provider
+    owner-keys-section.tsx    # Settings → Owner keys: the cadre's owner keys; make a backup, export, import, remove one
+    owner-keys.ts             # What Owner keys shows: a key's name and facts, the export form's check, an import's outcome, the removal's Keep switches, the refusals' words
     provider-store-section.tsx # Settings → Rent an always-on node: the provider, sign-in in the browser, rent, the rows for rented nodes
     use-rental-poll.ts        # The rows' re-read from the provider every few seconds, only while Settings is in front and the app is in the foreground
     provider-session.ts       # One provider's descriptor, tokens and client; sign-in again, once, when the provider refuses the tokens
@@ -793,7 +795,7 @@ The phone dials the node on the PC's LAN address, so the phone must be on the **
 
 1. Connect the phone solo (Settings → Connect, no bootstrap address). The device must be an owner of the cadre it is connected to; a phone that founded its own party is one.
 2. Settings → **Add an always-on node** → **Scan code**, and point the camera at the code. Or copy the code's text to the phone, paste it into the field and tap **Use code**. The first scan asks for camera permission.
-3. The approval prompt names the cadre the node will join (the full Party ID, as the Node card shows it), this device's owner fingerprint (the first 8 characters of its owner key), the node's peer id, and whether the node is reachable from anywhere or only on the machine's home network. Nothing is claimed until **Add to this cadre**.
+3. The approval prompt names the cadre the node will join (the full Party ID, as the Node card shows it), the owner key that signs the claim by its name and fingerprint (the first 8 characters of the key, as [Owner Keys](#owner-keys) lists it), the node's peer id, and whether the node is reachable from anywhere or only on the machine's home network. Nothing is claimed until **Add to this cadre**.
 4. The progress line reads "Reaching the node and adding it to this cadre…". After 20 seconds it adds that some addresses are not answering: each address the phone cannot reach costs up to 21.5 seconds before the next is tried, so a code none of whose addresses answer takes about two minutes to fail.
 
 Expected result: the alert "Node added" with the node's peer id, and the host's page for the node reading "Claimed by owner `<fingerprint>` into cadre `<party>`", with the fingerprint and Party ID the prompt showed. The node then restarts itself once under the cadre, which drops the connection the claim used; the phone's next reconcile pass (within 15 seconds) connects again, and the host then reports the node connected. "Node added" means the node accepted the claim, not that a connection is open.
@@ -842,7 +844,7 @@ The third way to get an always-on node is to rent one from a hosting provider ru
 
 **Sign-in.** The first Subscribe and add node, and any action after Sign out, opens the provider's authorize page in the system browser (`expo-web-browser`'s `openAuthSessionAsync`, through the kit's `signInWithProvider` in `@serfab/cadre-rn/provider`, which mints the PKCE pair and the state, reads the redirect and exchanges the code). The browser comes back to `<own scheme>://provider-auth?code=…&state=…`; the session that opened it takes that URL, and `app/+native-intent.tsx` rewrites the same link, which the OS also delivers to the app, to `/settings` with no query, so the single-use code never sits in navigation state. Closing the browser is a cancel: nothing is created and nothing is stored. The tokens go in the secure store ([Provider tokens](#provider-tokens-secure-enclave)); a token the provider refuses to refresh is dropped, the user signs in again, and the step they asked for runs once more, never in a loop. "Signed in to ‹name›. Sign out" under the section clears the tokens; the rentals stay, their rows read "Sign in to see its status", and **Sign in to ‹name›** is offered.
 
-**The approval.** Only an owner can rent (the node is claimed or invited under this device's owner key); a member sees one line saying so. Subscribe and add node opens "Rent a node from ‹name›?", naming the cadre (the full Party ID) and the provider, and nothing is created until **Subscribe and add node** in the prompt. The approval, then sign-in, then `useCadre`'s `rentProviderNode`, which is cadre-core's `rentNode` with the rental recorded ([Provider rentals](#provider-rentals-app-private-leveldb)) as soon as the provider creates the container and marked finished when `rentNode` returns.
+**The approval.** Only an owner can rent (the node is claimed or invited under this device's owner key); a member sees one line saying so. Subscribe and add node opens "Rent a node from ‹name›?", naming the cadre (the full Party ID), the owner key that signs the claim or the invitation (its name and fingerprint) and the provider, and nothing is created until **Subscribe and add node** in the prompt. The approval, then sign-in, then `useCadre`'s `rentProviderNode`, which is cadre-core's `rentNode` with the rental recorded ([Provider rentals](#provider-rentals-app-private-leveldb)) as soon as the provider creates the container and marked finished when `rentNode` returns.
 
 **The two join paths**, chosen by cadre-core from `CadreNode.invitationReach()`:
 
@@ -953,24 +955,25 @@ Below **Copy invitation**, the owner can recommend another Sereus app, so that i
 - **Facts**: "Last seen" from its last self-signed record (just now, or minutes, hours or days ago; "never" when this phone holds none it can verify); and "Key", the first 8 characters of its identity key, in the fingerprint form cadre-host uses. A running machine re-stamps its record every 7.5 minutes, so "Last seen 3 minutes ago" means it is running, and over about 15 minutes means it is stopped or cannot reach the cadre.
 - **Not trusted here** (warning colour): its row no longer passes this phone's membership check, as for a device whose owner key was removed without keeping the device.
 
-Owner keys are not machines and are not listed here ([architecture.md → Owner Keys](architecture.md#owner-keys)).
+Owner keys are not machines and are not listed here; [Owner Keys](#owner-keys) lists them ([architecture.md → Owner Keys](architecture.md#owner-keys)).
 
 Below the machines, each live invitation made for one app that has not joined is a row "Invited, not joined yet", with the app's shortened peer id, owner or member, and expiry, and **Withdraw** (asks once). Open invitations stay under Add a device or app.
 
 The list is read when the section appears, when a join replaces the node, after each removal or withdrawal here, after Add a device or app makes or withdraws an invitation, and on **Refresh**; it is not polled. A read that finishes after the node was replaced is dropped.
 
-**Who can remove.** On an owner device every row has **Remove** except this device's, under which a line says "To remove this device, use another owner device": a machine does not remove itself (`self`); another machine removes it, and this app then learns of it and forgets the cadre ([When this app is removed](#when-this-app-is-removed)). A member sees the list with one line saying only an owner can remove machines, and no buttons.
+**Who can remove.** On an owner device every row has **Remove** except this device's, under which a line says "A device does not remove itself from its cadre: to remove this device, use another owner device." A machine does not remove itself (`self`), because leaving a cadre stops the node and deletes its data; another machine removes it, and this app then learns of it and forgets the cadre ([When this app is removed](#when-this-app-is-removed)). A member sees the list with one line saying only an owner can remove machines, and no buttons.
 
 **The confirmation.** Remove reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or machine›?" with the machine's key and:
 
 - **What happens**: it is removed from this cadre, and the invitations it could join again with are withdrawn, counted. Owner keys stay, including one the machine held.
+- **A lost or stolen phone**: "If this was a lost or stolen phone that held an owner key, remove that key too in Owner keys; otherwise whoever has the phone can still act as an owner.", with **Go to Owner keys**, which closes the prompt and scrolls Settings to [Owner Keys](#owner-keys). Rent an always-on node's removal of a node its provider stopped shows neither, since a rented node never holds an owner key.
 - **What removal does not do**: the machine keeps whatever it already copied, including the cadre's shared data, and removing it stops it syncing with this cadre's machines. It also keeps the strands' member keys (`tickets/blocked/decide-removed-machine-strand-access.md`), which is why the prompt says "this cadre's machines" and not more.
 
 **Remove** runs `removeMachine` and the list refreshes; **Cancel**, or the system back button, does nothing. A machine another owner removed meanwhile shows "Already removed", whether the plan or the removal finds it gone, and the list refreshes. Any other failure shows its error in an alert.
 
 **Uses.**
 
-- **An uninstalled app, or a lost or stolen phone**: remove it from another owner device. Its push token goes with it, so the cadre stops waking it.
+- **An uninstalled app, or a lost or stolen phone**: remove it from another owner device. Its push token goes with it, so the cadre stops waking it. A lost phone's owner key is removed separately, under [Owner Keys](#owner-keys).
 - **A dead always-on node, or a replaced host**: remove the old node here, then add the new one with [Add an always-on node](#adding-a-home-machines-node-cadre-host) (the QR claim). [cadre-host.md → Remove, reset and a lost host](cadre-host.md#remove-reset-and-a-lost-host) links here.
 - **Leaving the cadre from an owner device**: another owner device removes it.
 
@@ -987,6 +990,60 @@ The status reads idle, not an error. Connected sections, a prompt open in them, 
 It is best-effort, as the report is: a phone removed while the app was not running is not told, and keeps that cadre's data while the cadre's machines refuse it.
 
 The card is screen state, since the kit keeps no record of the removal: after a restart the app shows the Connect form filled from the saved start, or the first-launch question, without saying why.
+
+
+## Owner Keys
+
+**Settings → Owner keys** lists this cadre's owner keys, makes a backup key, exports this device's key, imports a key from another device, and removes a key ([architecture.md → Owner Keys](architecture.md#owner-keys)). It is `src/owner-keys-section.tsx`, with its words in `src/owner-keys.ts`, shown below Devices and nodes while the node is connected, and has not had a device run yet.
+
+**The list** has one row per live owner key `listOwnerKeys` reports:
+
+- **Title**: the name the key was added under ("phone" for the key this app made when it founded the cadre), or "Unnamed key".
+- **Facts**: the key's fingerprint, its first 8 characters as the approval prompts and cadre-host show it; and "This device" on the key this phone signs with.
+- **Not trusted here** (warning colour): the key is not in this phone's trusted-owner anchor, so this phone does not accept what it signs.
+
+The list is read when the section appears, when a join replaces the node, after each backup, import or removal here, and on **Refresh**; it is not polled. A read that finishes after the node was replaced is dropped. A member sees the list, one line saying only an owner can add or remove owner keys, and Import, since importing a key is how a member becomes an owner.
+
+### Making a backup key, and exporting this device's key
+
+**Make a backup key** (owner only) opens a form: a name (default "Backup", at most 64 characters) and **Protect with a passphrase**, on by default, with two passphrase fields. The button stays disabled while the passphrase is empty or the two differ. **Make backup key** runs `addBackupOwnerKey`: a new key is added as an owner of this cadre under that name, signed by this phone's owner key, and its export is shown once. The phone keeps no copy.
+
+**Export this device's key**, on an owner device, opens the same form with the name defaulting to this key's, then shows the export (`exportOwnerKey`). A device that is an owner only through the key an owner-granting invitation seated holds no key of its own, and the alert says so.
+
+**The export** replaces the section's controls until **Done**: "Anyone who has this can control your cadre. Keep it somewhere safe and offline. This phone does not keep a copy.", then the QR code, **Copy**, **Share** (the system share sheet) and the selectable text. Done clears it, and it is not shown again.
+
+- **Refused while alone.** A backup made while this phone has no connection and the cadre has other machines would reach no other machine (`alone`): "Connect to your cadre first; a new owner key made now would not reach your other machines."
+- **Screen capture is a known exposure.** The export screen is not hidden from screenshots, screen recording or the app switcher's snapshot. Android's `FLAG_SECURE` and iOS's app-switcher cover come from `expo-screen-capture`, a native module this app does not include (`tickets/backlog/feat-rn-owner-key-export-hidden-from-screen-capture.md`).
+
+### Importing an owner key
+
+**Import an owner key** takes the export's text, pasted or read with **Scan**; a locked export (`sereus-owner-key-locked:1.…`) shows a passphrase field. **Import** runs `importOwnerKey`, which stores the key in this phone's owner slot ([Owner key](#owner-key-secure-enclave)) and, when the cadre lists it, signs with it from then on.
+
+| Outcome | Alert |
+|---|---|
+| The key is an owner of this cadre | "This device is now an owner of this cadre, with ‹name› (‹fingerprint›)." |
+| The key is an owner, but this device already signs with another key (the one an owner-granting invitation seated) | The key is kept and used from the next start. |
+| The key is not an owner of this cadre | "This key is not an owner of this cadre. An owner can add it." The key stays in this phone's owner slot. |
+| This phone already holds a different owner key | Refused: a phone holds one owner key. |
+| The passphrase does not open it | Refused, with the decoder's message. |
+
+The field and the scanner refuse an invitation, a join request and a node code by name, with the owner-key decoder's message. The other way round, Join my existing cadre and Add a device or app refuse a pasted owner key with their decoders' message, and a scanned one with "That is an owner key, which is private. Import it only under Owner keys."
+
+### Removing an owner key
+
+On an owner device every row has **Remove** except this device's own key, under which a line says "A device cannot remove its own owner key; use another owner key." Remove reads `planOwnerKeyRemoval` and opens "Remove owner key ‹name› (‹fingerprint›)?":
+
+- **Keep switches**: one per device or owner key the removed key added (the plan's `dependents`), on by default. A device is named as Devices and nodes names it, an owner key by its name and fingerprint. A kept row is re-vouched with this phone's key before the removal; a device switched off stops counting as a member of the cadre, and a key switched off keeps its place only on machines that already trust it.
+- **This device's own key**, when the removed key added it (`ownDependency`): a line says it stays an owner on the machines that already trust it, and that another owner key can vouch for it again later. This device's own machine row, when the removed key added it, is re-vouched without asking (`revouchesOwnRow`).
+- **Refusals**: "It cannot be removed: it is the only owner key of this cadre." (`last-owner`), and the own-key line for `self`, with only **Close**.
+
+**Remove** runs `removeOwner(key, { revouch })` with the kept rows, and this list and Devices and nodes refresh; **Cancel**, or the system back button, does nothing. A key another owner removed meanwhile shows "Already removed". Keeping an owner key while alone is refused like a backup (`alone`). Any other failure shows its error in an alert.
+
+**Uses.**
+
+- **A lost or stolen phone that held an owner key**: remove its machine under Devices and nodes, then its key here. The machine removal prompt says so and scrolls here.
+- **A backup to keep offline**: make a backup key, print or save the QR code or the text, then Done.
+- **A new phone**: join the cadre, then import a backup key there.
 
 
 ## Joining an Existing Cadre

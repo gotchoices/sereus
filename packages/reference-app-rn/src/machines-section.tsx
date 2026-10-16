@@ -32,10 +32,12 @@ interface Listing {
 // NOTE: screen state, as in AddDeviceSection: the tab navigator keeps Settings mounted. The
 // section unmounts with the connected view, so a prompt open when this phone is itself removed
 // closes with it.
-export function MachinesSection({ showAlert, refreshKey }: {
+export function MachinesSection({ showAlert, refreshKey, onShowOwnerKeys }: {
 	showAlert: ShowAlert;
-	/** Bumped by Add a device or app after it makes or withdraws an invitation, and by Rent an always-on node after a rental changes. */
+	/** Bumped by Add a device or app after it makes or withdraws an invitation, by Rent an always-on node after a rental changes, and by Owner keys after a key is added or removed. */
 	refreshKey: number;
+	/** Takes the user to Owner keys, from the removal prompt's lost-phone line. */
+	onShowOwnerKeys: () => void;
 }) {
 	const cadre = useCadre();
 	// Refresh re-reads the standing too, so an unreadable one is not stuck until the next join.
@@ -68,7 +70,7 @@ export function MachinesSection({ showAlert, refreshKey }: {
 		void refresh();
 	}, [cadre.node, refreshKey]);
 
-	const removal = useMachineRemoval({ showAlert, onRemoved: () => void refresh() });
+	const removal = useMachineRemoval({ showAlert, onRemoved: () => void refresh(), onShowOwnerKeys });
 
 	const withdraw = async (key: string) => {
 		try {

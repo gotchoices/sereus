@@ -3,7 +3,7 @@
  * share. Here rather than in `app/settings.tsx` because every file under `app/` is a route.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { TEST_IDS } from './test-ids';
 
@@ -21,7 +21,7 @@ export function Section({ title, children }: { title: string; children: React.Re
 	);
 }
 
-export function LabelledInput(props: { label: string; value: string; onChangeText: (t: string) => void; placeholder?: string; multiline?: boolean; testID?: string }) {
+export function LabelledInput(props: { label: string; value: string; onChangeText: (t: string) => void; placeholder?: string; multiline?: boolean; secureTextEntry?: boolean; testID?: string }) {
 	return (
 		<View style={{ marginBottom: 8 }}>
 			<Text style={controlStyles.label}>{props.label}</Text>
@@ -31,7 +31,7 @@ export function LabelledInput(props: { label: string; value: string; onChangeTex
 				would upper-case the first character and offer word substitutions, which
 				silently turns a pasted code into one that no longer decodes. Off for all of them.
 			*/}
-			<TextInput style={controlStyles.input} value={props.value} onChangeText={props.onChangeText} placeholder={props.placeholder} placeholderTextColor="#666" multiline={props.multiline} autoCapitalize="none" autoCorrect={false} testID={props.testID} />
+			<TextInput style={controlStyles.input} value={props.value} onChangeText={props.onChangeText} placeholder={props.placeholder} placeholderTextColor="#666" multiline={props.multiline} secureTextEntry={props.secureTextEntry} autoCapitalize="none" autoCorrect={false} testID={props.testID} />
 		</View>
 	);
 }
@@ -107,6 +107,29 @@ export function WithdrawPrompt({ open, onConfirm, onCancel }: { open: boolean; o
 			cancelTestID={TEST_IDS.settings.cancelWithdrawBtn}
 		/>
 	);
+}
+
+/**
+ * One action at a time: `exclusive(action)` runs `action` unless another is running, and `busy` is
+ * true while one runs.
+ */
+export function useExclusive(): { busy: boolean; exclusive: (action: () => Promise<void>) => Promise<void> } {
+	const [busy, setBusy] = useState(false);
+	// Catches the same-frame double tap that `disabled` cannot: the prop only takes effect after the
+	// re-render `setBusy` schedules.
+	const busyRef = useRef(false);
+	const exclusive = async (action: () => Promise<void>): Promise<void> => {
+		if (busyRef.current) return;
+		busyRef.current = true;
+		setBusy(true);
+		try {
+			await action();
+		} finally {
+			busyRef.current = false;
+			setBusy(false);
+		}
+	};
+	return { busy, exclusive };
 }
 
 /** True once `active` has stayed true for `ms`; false again as soon as it is not. For a slow hint under a progress line. */

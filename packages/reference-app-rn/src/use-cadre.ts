@@ -20,6 +20,13 @@ import type {
   CreateCadreInvitationResult,
   MachineRemovalPlan,
   MachineRemovalResult,
+  BackupOwnerKey,
+  CadreOwnerKey,
+  ImportedOwnerKey,
+  OwnerKeyExportOptions,
+  OwnerKeyRemovalPlan,
+  OwnerKeyRemovalResult,
+  RemoveOwnerOptions,
   ProviderClient,
   RentalFailed,
   RentNodeResult,
@@ -49,6 +56,12 @@ import {
   listMachines as listMachinesImpl,
   planMachineRemoval as planMachineRemovalImpl,
   removeMachine as removeMachineImpl,
+  listOwnerKeys as listOwnerKeysImpl,
+  addBackupOwnerKey as addBackupOwnerKeyImpl,
+  exportOwnerKey as exportOwnerKeyImpl,
+  importOwnerKey as importOwnerKeyImpl,
+  planOwnerKeyRemoval as planOwnerKeyRemovalImpl,
+  removeOwner as removeOwnerImpl,
   identityPeerId,
   joinRequestText,
   type PhoneNodeOptions,
@@ -271,6 +284,26 @@ export interface UseCadreResult extends JoinFlowActions {
    * on a refusal; all false when it was already removed.
    */
   removeMachine: (peerId: string) => Promise<MachineRemovalResult>;
+  /** The cadre's live owner keys (`CadreNode.listOwnerKeys`). */
+  listOwnerKeys: () => Promise<CadreOwnerKey[]>;
+  /**
+   * Seat a new owner key under `options.label`, signed by this device's owner key, and return its
+   * export, the only copy. Throws `OwnerKeyAddRefusedError` `alone` while this phone has no
+   * connection to a cadre that has other machines.
+   */
+  addBackupOwnerKey: (options: OwnerKeyExportOptions) => Promise<BackupOwnerKey>;
+  /** This app's own owner key as export text; throws when it holds none of its own. */
+  exportOwnerKey: (options: OwnerKeyExportOptions) => Promise<string>;
+  /**
+   * Store an exported owner key in this app's owner slot, and sign with it at once when the cadre
+   * lists it (`wired`, and {@link ownerPublicKey} follows). Throws the kit's refusals:
+   * `OwnerKeyExportError`, and `OwnerKeySlotOccupiedError` when this app holds another key.
+   */
+  importOwnerKey: (text: string, passphrase?: string) => Promise<ImportedOwnerKey>;
+  /** What removing an owner key would do, read without writing (`CadreNode.planOwnerKeyRemoval`). */
+  planOwnerKeyRemoval: (key: string) => Promise<OwnerKeyRemovalPlan>;
+  /** Remove an owner key, re-vouching first the rows `options.revouch` keeps (`CadreNode.removeOwner`). Throws `OwnerKeyRemovalRefusedError` on a refusal. */
+  removeOwner: (key: string, options: RemoveOwnerOptions) => Promise<OwnerKeyRemovalResult>;
   /**
    * Rent a node from the provider `client` talks to and add it to this cadre (cadre-core's
    * `rentNode`, by claim or by invitation as the cadre's reach decides). The rental is recorded for
@@ -844,6 +877,40 @@ export function useCadreInternal(): UseCadreResult {
     return await removeMachineImpl(peerId);
   }, []);
 
+  // ── Owner keys ─────────────────────────────────────────────────────────
+
+  const listOwnerKeys = useCallback(async () => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await listOwnerKeysImpl();
+  }, []);
+
+  const addBackupOwnerKey = useCallback(async (options: OwnerKeyExportOptions) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await addBackupOwnerKeyImpl(options);
+  }, []);
+
+  const exportOwnerKey = useCallback(async (options: OwnerKeyExportOptions) => {
+    return await exportOwnerKeyImpl(options);
+  }, []);
+
+  // A wired key changes what this device signs with, and every owner-only section re-reads its
+  // standing when `ownerPublicKey` changes.
+  const importOwnerKey = useCallback(async (text: string, passphrase?: string) => {
+    const imported = await importOwnerKeyImpl(text, passphrase);
+    setOwnerPublicKey(getOwnerPublicKey());
+    return imported;
+  }, []);
+
+  const planOwnerKeyRemoval = useCallback(async (key: string) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await planOwnerKeyRemovalImpl(key);
+  }, []);
+
+  const removeOwner = useCallback(async (key: string, options: RemoveOwnerOptions) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await removeOwnerImpl(key, options);
+  }, []);
+
   // ── Renting a node from a hosting provider ─────────────────────────────
 
   /** The running node, for a rental step; `claimingRef` is shared with `claimHostNode`, since both may claim. */
@@ -917,6 +984,7 @@ export function useCadreInternal(): UseCadreResult {
     createClosedStrandWithInvite, joinViaInvite, isOwnerDevice, claimHostNode,
     isMemberPeer, createCadreInvitation, listCadreInvitations, withdrawCadreInvitation,
     listMachines, planMachineRemoval, removeMachine,
+    listOwnerKeys, addBackupOwnerKey, exportOwnerKey, importOwnerKey, planOwnerKeyRemoval, removeOwner,
     rentProviderNode, finishProviderRental, listRentals, noteRentalPeer, forgetRental,
   };
 }

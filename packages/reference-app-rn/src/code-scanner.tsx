@@ -1,7 +1,8 @@
 /**
  * code-scanner.tsx — a full-screen camera that reads a QR code and hands back its text,
- * once it is a code the caller accepts: a cadre-host node code (Add an always-on node) or
- * another app's join request (Add a device or app).
+ * once it is a code the caller accepts: a cadre-host node code (Add an always-on node), another
+ * app's join request (Add a device or app), an invitation (Join my existing cadre) or an owner
+ * key's export (Owner keys).
  *
  * `expo-camera` is a native module: a dev client built before it was added throws
  * "Cannot find native module 'ExpoCamera'" as this file loads, which is when Settings loads
@@ -19,8 +20,8 @@ interface ScannerProps {
 	accepts: (text: string) => boolean;
 	/** The line under the camera: what to point it at. */
 	hint: string;
-	/** The line shown instead once a code `accepts` refused was in view. */
-	otherCodeHint: string;
+	/** The line shown instead once a code `accepts` refused was in view; given the code, it can say what that code is. */
+	otherCodeHint: string | ((text: string) => string);
 	/** The scanned text, which `accepts` took; the scanner has closed. */
 	onScanned: (text: string) => void;
 	onClose: () => void;
@@ -37,7 +38,8 @@ export function CodeScanner({ visible, ...props }: ScannerProps & { visible: boo
 
 function ScannerBody({ accepts, hint, otherCodeHint, onScanned, onClose }: ScannerProps) {
 	const [permission, requestPermission] = useCameraPermissions();
-	const [sawOtherCode, setSawOtherCode] = useState(false);
+	// What the last refused code in view was, in words; null until one was.
+	const [otherCodeLine, setOtherCodeLine] = useState<string | null>(null);
 	// `onBarcodeScanned` fires many times a second while a code is in view: the first
 	// accepted code wins, and the ones queued behind it are dropped.
 	const latched = useRef(false);
@@ -49,7 +51,7 @@ function ScannerBody({ accepts, hint, otherCodeHint, onScanned, onClose }: Scann
 	const handleScan = ({ data }: BarcodeScanningResult) => {
 		if (latched.current) return;
 		if (!accepts(data)) {
-			setSawOtherCode(true);
+			setOtherCodeLine(typeof otherCodeHint === 'string' ? otherCodeHint : otherCodeHint(data));
 			return;
 		}
 		latched.current = true;
@@ -73,7 +75,7 @@ function ScannerBody({ accepts, hint, otherCodeHint, onScanned, onClose }: Scann
 				/>
 			)}
 			<View style={styles.footer}>
-				<Text style={controlStyles.hint}>{sawOtherCode ? otherCodeHint : hint}</Text>
+				<Text style={controlStyles.hint}>{otherCodeLine ?? hint}</Text>
 				<Btn label="Cancel" onPress={onClose} color="#444" testID={TEST_IDS.settings.scannerCloseBtn} />
 			</View>
 		</SafeAreaView>

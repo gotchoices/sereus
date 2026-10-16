@@ -34,6 +34,7 @@ import { useCadre } from './cadre-context';
 import { recommendations } from './cadre-phone';
 import { CodeScanner } from './code-scanner';
 import { answerJoinRequest, isAnswerable, OWN_REQUEST_LINE, type AnswerableJoinRequest } from './join-link';
+import { isOwnerKeyText, OWNER_KEY_SCANNED_LINE } from './owner-keys';
 import { RecommendAppSection } from './recommend-app-section';
 import { Btn, controlStyles, errorMessage, Fact, LabelledInput, OwnerSwitch, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
 import { ShareCode } from './share-code';
@@ -156,10 +157,11 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 		await refreshInvitations();
 	};
 
-	// A join replaces the node, and the owner standing may change with it.
+	// A join replaces the node, and an owner key imported under Owner keys changes what it signs
+	// with; the owner standing may change with either.
 	useEffect(() => {
 		void refresh();
-	}, [cadre.node]);
+	}, [cadre.node, cadre.ownerPublicKey]);
 
 	/** A pasted or scanned request. */
 	const handleRequestText = (text: string) => {
@@ -430,7 +432,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 				visible={scannerOpen}
 				accepts={isJoinRequest}
 				hint="Point the camera at the request the other app shows under Join my existing cadre."
-				otherCodeHint="That is not a join request. Point the camera at the request the other app shows under Join my existing cadre."
+				otherCodeHint={(text) => isOwnerKeyText(text) ? OWNER_KEY_SCANNED_LINE : 'That is not a join request. Point the camera at the request the other app shows under Join my existing cadre.'}
 				onScanned={handleScanned}
 				onClose={() => setScannerOpen(false)}
 			/>

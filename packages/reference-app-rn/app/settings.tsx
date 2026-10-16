@@ -1,8 +1,8 @@
 /**
  * Settings screen — connect to cadre, join an existing cadre (the app that recommended this one
- * among them), add a device or app, list and remove the cadre's devices and nodes, apply seed,
- * create strand, add an always-on node, rent one from a hosting provider; and what this app shows
- * after an owner removed it.
+ * among them), add a device or app, list and remove the cadre's devices and nodes and its owner
+ * keys, apply seed, create strand, add an always-on node, rent one from a hosting provider; and
+ * what this app shows after an owner removed it.
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -22,6 +22,7 @@ import { AddDeviceSection } from '../src/add-device-section';
 import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
 import { MachinesSection } from '../src/machines-section';
+import { OwnerKeysSection } from '../src/owner-keys-section';
 import { ownerFingerprint } from '../src/node-claim';
 import { PROVIDERS, ProviderStoreSection } from '../src/provider-store-section';
 import type { RemovedFrom } from '../src/use-cadre';
@@ -143,9 +144,16 @@ export default function SettingsScreen() {
   useEffect(() => {
     setJoinAfterRemoval(false);
   }, [removedFrom]);
-  // Bumped by Add a device or app so Devices and nodes reads the invitations made for one app, and
-  // by Rent an always-on node so it reads which nodes are rented.
+  // Bumped by Add a device or app so Devices and nodes reads the invitations made for one app, by
+  // Rent an always-on node so it reads which nodes are rented, and by Owner keys so it reads which
+  // machines are still trusted.
   const [machinesRead, setMachinesRead] = useState(0);
+  // Where Owner keys sits in the scrolled content, for the machine removal prompt's lost-phone button.
+  const scrollRef = useRef<ScrollView>(null);
+  const ownerKeysY = useRef(0);
+  const showOwnerKeys = useCallback(() => {
+    scrollRef.current?.scrollTo({ y: ownerKeysY.current, animated: true });
+  }, []);
 
   const showAlert = useCallback((title: string, message: string, detail?: string) => {
     setModal({ title, message, detail });
@@ -325,7 +333,7 @@ export default function SettingsScreen() {
   return (
     // `handled`: a tap on a button while the keyboard is up presses it, instead of only
     // dismissing the keyboard (Android swallowed the first Connect tap after typing).
-    <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <ScrollView ref={scrollRef} style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       {/* Node info */}
       <Section title="Node">
         {connected ? (
@@ -453,7 +461,14 @@ export default function SettingsScreen() {
       )}
 
       {/* Devices and nodes (list the cadre's machines; an owner removes one) */}
-      {connected && <MachinesSection showAlert={showAlert} refreshKey={machinesRead} />}
+      {connected && <MachinesSection showAlert={showAlert} refreshKey={machinesRead} onShowOwnerKeys={showOwnerKeys} />}
+
+      {/* Owner keys (list; an owner makes a backup, exports or removes one; any device imports one) */}
+      {connected && (
+        <View onLayout={(event) => { ownerKeysY.current = event.nativeEvent.layout.y; }}>
+          <OwnerKeysSection showAlert={showAlert} onOwnerKeysChanged={() => setMachinesRead((n) => n + 1)} />
+        </View>
+      )}
 
       {/* Strand */}
       {connected && (

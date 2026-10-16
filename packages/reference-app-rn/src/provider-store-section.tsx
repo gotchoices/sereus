@@ -19,6 +19,7 @@ import type { Rental } from '@serfab/cadre-rn/provider';
 import { useCadre } from './cadre-context';
 import { ownScheme, providerTokens } from './cadre-phone';
 import { useMachineRemoval } from './machine-removal';
+import { SigningKeyFact } from './owner-keys-section';
 import { standingLine, useOwnerStanding } from './owner-standing';
 import { openProviderSession, type ProviderSession } from './provider-session';
 import { configuredProviders, fetchPlans, planPriceText, providerRedirectUri, type ConfiguredProvider, type ProviderPlan } from './providers';
@@ -414,7 +415,7 @@ function RentalRowView({ rental, reading, listed, busy, onAction }: {
 	);
 }
 
-/** Nothing is rented until the user agrees, because the prompt is where they see which cadre the node joins and where they pay. */
+/** Nothing is rented until the user agrees, because the prompt is where they see which cadre the node joins, under which owner key, and where they pay. */
 function ApprovalPrompt({ open, providerName, partyId, onApprove, onCancel }: {
 	open: boolean;
 	providerName: string;
@@ -432,6 +433,7 @@ function ApprovalPrompt({ open, providerName, partyId, onApprove, onCancel }: {
 							{`Rent a node from ${providerName} and add it to cadre ${partyId}? You will sign in and pay on ${providerName}'s site.`}
 						</Text>
 						<Fact label="Cadre" value={partyId} />
+						<SigningKeyFact />
 						<Fact label="Provider" value={providerName} note="The node joins this cadre as an always-on member, not as an owner." />
 					</ScrollView>
 					<Btn label="Subscribe and add node" onPress={onApprove} testID={TEST_IDS.settings.approveRentNodeBtn} />

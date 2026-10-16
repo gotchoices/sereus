@@ -21,6 +21,7 @@ import { CodeScanner } from './code-scanner';
 import { joinFailureAlert } from './join-failure';
 import { joinFlowText, type JoinFlow } from './join-flow';
 import { COPY_REQUEST_LINE, installedOwnerApps } from './join-link';
+import { isOwnerKeyText, OWNER_KEY_SCANNED_LINE } from './owner-keys';
 import { Btn, controlStyles, Fact, LabelledInput, Section, shortPeerId } from './settings-controls';
 import { ShareCode } from './share-code';
 import { TEST_IDS } from './test-ids';
@@ -90,7 +91,7 @@ export function JoinCadreSection({ showAlert, firstLaunch = false }: {
 				visible={scannerOpen}
 				accepts={isInvitation}
 				hint={SCAN_HINT}
-				otherCodeHint={SCAN_OTHER_CODE_HINT}
+				otherCodeHint={(text) => isOwnerKeyText(text) ? OWNER_KEY_SCANNED_LINE : SCAN_OTHER_CODE_HINT}
 				onScanned={handleScanned}
 				onClose={() => setScannerOpen(false)}
 			/>
