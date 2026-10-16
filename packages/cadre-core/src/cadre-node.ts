@@ -822,7 +822,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Dial targets learned out of band, keyed by peer id, valued by the multiaddr
    * strings this node was handed (parsed lazily, at dial time). Two writers:
-   * {@link recordSeedBootstrapPeers} retains the owner-flagged peers of every seed
+   * {@link recordSeedBootstrapPeers} retains the preferred peers of every seed
    * this node applies, and {@link addDrone} retains the addresses of every node
    * this node adds. Two readers: {@link dialColdStartBootstrap} dials every entry
    * while the control database still has no siblings, and
@@ -1363,6 +1363,7 @@ export class CadreNode implements SAppIdLookup {
       // After the control database is up, since the handler seats and redeems against it.
       this.cadreInviteHandler = new CadreInviteHandler({
         partyId: this.config.controlNetwork.partyId,
+        peerId: this.controlNode.peerId.toString(),
         store: this.controlDatabase,
         admitDevice: (peerId) => this.admitRedeemingDevice(peerId),
       });
@@ -3853,23 +3854,14 @@ export class CadreNode implements SAppIdLookup {
       return { dialed: [] };
     }
 
-    // 2. Classify backbone (owner) members and select a bounded dial set.
-    // NOTE: deliberately the REPLICATED table, not the node-local anchor — this
-    // only *prefers* owner peers as dial targets, so pollution costs a wasted
-    // dial while anchoring would drop legitimate co-owners this node never
-    // pinned. Same call as `SeedPeer.isOwner` in seed-bootstrap.ts. Move it to
-    // the anchor if owner status here ever gates something trusted.
-    const ownerKeys = await this.controlDatabase.getOwnerKeys();
-    if (!this._running || !this.controlNode) {
-      return { dialed: [] };
-    }
+    // 2. Classify backbone (always-on) members and select a bounded dial set.
     const targetDegree = this.config.network?.controlCohort?.targetDegree
       ?? DEFAULT_CONTROL_COHORT_TARGET_DEGREE;
-    const { dials, cappedNonOwner } = selectControlCohortDials(siblings, ownerKeys, targetDegree);
-    if (cappedNonOwner > 0) {
+    const { dials, cappedNonBackbone } = selectControlCohortDials(siblings, targetDegree);
+    if (cappedNonBackbone > 0) {
       // Don't silently bound coverage — surface what the out-degree cap dropped.
-      log('reconcileControlCohort: capped %d non-owner sibling(s) at targetDegree=%d',
-        cappedNonOwner, targetDegree);
+      log('reconcileControlCohort: capped %d non-backbone sibling(s) at targetDegree=%d',
+        cappedNonBackbone, targetDegree);
     }
 
     // 3. Warm the libp2p address book with EVERY sibling's verified addresses,
@@ -4227,8 +4219,8 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Retain a just-applied seed's owner-flagged peers as cold-start bootstrap
-   * dial targets (see {@link bootstrapPeerStore}).
+   * Retain a just-applied seed's preferred peers (`SeedPeer.preferred`) as cold-start
+   * bootstrap dial targets (see {@link bootstrapPeerStore}).
    *
    * Called for every seed this node accepts, on BOTH intake paths — the
    * {@link applySeed} wrapper (which may run on a throwaway service, so the
@@ -4236,7 +4228,7 @@ export class CadreNode implements SAppIdLookup {
    * `/sereus/seed/1.0.0` handler via `onSeedApplied`. Peers with no address are
    * skipped: there is nothing to dial.
    *
-   * `isOwner` is the seed's own claim about its peers, exactly as
+   * `preferred` is the seed's own claim about its peers, exactly as
    * `SeedBootstrapService.applySeed` uses it to choose its dial targets. That is
    * sound here for the same reason it is sound there — the whole seed is
    * signature-checked against a trust-anchored signer before this runs, and the
@@ -4246,7 +4238,7 @@ export class CadreNode implements SAppIdLookup {
    */
   private recordSeedBootstrapPeers(seed: ControlNetworkSeed): void {
     for (const peer of seed.peers) {
-      if (peer.isOwner) {
+      if (peer.preferred) {
         this.retainDialTarget(peer.peerId, peer.multiaddrs, 'recordSeedBootstrapPeers');
       }
     }
@@ -4290,12 +4282,12 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Cold-start branch of the reconcile pass: re-dial every retained out-of-band
-   * dial target (see {@link bootstrapPeerStore}) — in practice the owner peers of
-   * the seeds this node applied — while the control database still has no
+   * dial target (see {@link bootstrapPeerStore}) — in practice the preferred peers
+   * of the seeds this node applied — while the control database still has no
    * siblings to dial.
    *
-   * `SeedBootstrapService.applySeed` dials those owners exactly ONCE, best-effort.
-   * When that single dial fails — owner momentarily down, relay reservation not
+   * `SeedBootstrapService.applySeed` dials those peers exactly ONCE, best-effort.
+   * When that single dial fails — peer momentarily down, relay reservation not
    * up yet, NAT traversal lost the race — the joining node has an empty
    * `CadrePeer` table and no connection, and the steady-state pass above cannot
    * help: it dials only siblings enumerated from that very table. Retrying here
@@ -4305,9 +4297,10 @@ export class CadreNode implements SAppIdLookup {
    * gated by "the control database has no siblings", so it stops the moment the
    * node is actually in the party, and a node that is stranded MUST keep trying —
    * a give-up rule would turn a transient outage into a permanent one. The steady
-   * cost is one dial per bootstrap peer per pass (seeds nominate one or a few
-   * owners), each failing fast against an unreachable address.
-   * NOTE: if seeds ever carry many owner peers, or the reconcile cadence tightens
+   * cost is one dial per bootstrap peer per pass (a seed prefers its minter and the
+   * party's always-on machines, a few at most), each failing fast against an
+   * unreachable address.
+   * NOTE: if seeds ever carry many preferred peers, or the reconcile cadence tightens
    * well below its 15 s default, add per-peer backoff here.
    *
    * Best-effort per peer, exactly like {@link dialControlSibling}: one dead
@@ -7972,12 +7965,12 @@ export class CadreNode implements SAppIdLookup {
    * never reach here: {@link ControlDatabase.queryCadrePeers} excludes them, so a
    * revoked peer is not addressable either.
    *
-   * NOTE: answers the whole `CadrePeerRow`, past the two fields declared; the integration
+   * NOTE: answers the whole `CadrePeerRow`, past the fields declared; the integration
    * harness (`owner-cli-node.ts`, `OwnerCliMemberRow.sig`) reads `sig` off it through the admin
    * channel to tell a row another member seated from one the subject published itself. Narrow
    * this to the declared fields only together with that reader.
    */
-  async listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+  async listMembers(): Promise<CohortPeerRow[]> {
     if (!this.controlDatabase) {
       throw new Error('CadreNode must be started before listing members');
     }
@@ -8394,7 +8387,7 @@ export class CadreNode implements SAppIdLookup {
    * and the listener-only one ({@link enableSeedListener}) so the two cannot drift.
    *
    * A seed applied by the INBOUND protocol handler writes no `CadrePeer` row of
-   * its own (it merges the libp2p peer store and dials owners), so the automatic
+   * its own (it merges the libp2p peer store and dials the seed's preferred peers), so the automatic
    * write-driven refresh never fires for it — yet applying it can ANCHOR a new
    * owner key, which flips rows already present from unauthorized to authorized.
    * Hence the explicit refresh here; without it a peer the freshly anchored owner
@@ -8406,7 +8399,7 @@ export class CadreNode implements SAppIdLookup {
       onSeedApplied: (partyId, peersAdded, seed) => {
         this.emit('seed:applied', { partyId, peersAdded });
         // A wire-delivered seed never passes through the `applySeed` wrapper, so
-        // this is where its owner peers become cold-start bootstrap targets.
+        // this is where its preferred peers become cold-start bootstrap targets.
         this.recordSeedBootstrapPeers(seed);
         void this.refreshMembershipGate('seed-applied');
       },
@@ -8945,9 +8938,9 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Post-process an {@link applySeed} outcome: retain the seed's owner peers as
+   * Post-process an {@link applySeed} outcome: retain the seed's preferred peers as
    * cold-start bootstrap targets, and surface a seed that was accepted but whose
-   * every owner dial failed — the node is now seeded yet unconnected, and the
+   * every dial failed — the node is now seeded yet unconnected, and the
    * cold-start reconcile branch is what gets it out of that state.
    */
   private noteAppliedSeed(result: ApplySeedResult, seed: ControlNetworkSeed): void {
@@ -8955,9 +8948,9 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     this.recordSeedBootstrapPeers(seed);
-    if (result.ownerDialsAttempted > 0 && result.ownerDialsFailed === result.ownerDialsAttempted) {
-      log('applySeed: seeded but no owner reachable (%d/%d dial(s) failed) — cold-start reconcile will retry',
-        result.ownerDialsFailed, result.ownerDialsAttempted);
+    if (result.preferredDialsAttempted > 0 && result.preferredDialsFailed === result.preferredDialsAttempted) {
+      log('applySeed: seeded but no preferred peer reachable (%d/%d dial(s) failed) — cold-start reconcile will retry',
+        result.preferredDialsFailed, result.preferredDialsAttempted);
     }
   }
 
@@ -9085,7 +9078,7 @@ export class CadreNode implements SAppIdLookup {
    * timed reconcile pass; a caller that wants to wait for the connection awaits
    * {@link reconcileControlCohort} itself, with `addDrone`'s caveat that a pass already
    * in flight is joined rather than restarted. The claimed node dials this one back too,
-   * from the seed's owner list, when this node has a listen or relay address; a phone
+   * as the seed's minter, when this node has a listen or relay address; a phone
    * with neither is reached by its own reconcile pass alone.
    *
    * @throws {ClaimRefusedError} when the node was reached and refused the claim.

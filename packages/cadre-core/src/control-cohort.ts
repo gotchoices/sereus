@@ -5,23 +5,22 @@
  * connected (and thus replicating), without devolving into an N² mesh.
  *
  * FRET only needs a *connected* graph with the block clusters reachable, not a
- * full mesh. Storage/owner nodes are the stable, publicly-dialable backbone
- * that hold the control blocks, so the policy is **backbone-preferential with a
- * bounded out-degree**:
+ * full mesh. Always-on (`storage` profile) machines are the stable, dialable
+ * backbone that hold the control blocks, so the policy is **backbone-preferential
+ * with a bounded out-degree**:
  *
- * - **Always dial every backbone (owner) member** — the owner set is
- *   small by design, and routing cohort formation through publicly-dialable
- *   owner nodes keeps the cohort ≥2 where owner-signed writes originate.
- * - **Fill the remainder** up to `targetDegree` with non-owner members,
- *   ordered deterministically (peerId sort) so every node makes the same stable
- *   choice across passes and load spreads predictably.
+ * - **Always dial every backbone (always-on) member** — a party runs few of them,
+ *   and they are the machines that stay reachable while phones sleep or roam.
+ * - **Fill the remainder** up to `targetDegree` with the other members (phones,
+ *   and machines that have not yet published a profile), ordered
+ *   deterministically (peerId sort) so every node makes the same stable choice
+ *   across passes and load spreads predictably.
  *
  * For a small party (members ≤ degree) this degenerates to a full mesh, which is
  * correct, cheap, and matches what the convergence tests do by hand; for a large
  * party it bounds out-degree to `backbone + targetDegree`.
  */
 
-import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 
 /**
@@ -38,8 +37,8 @@ import type { CohortPeerRow } from './strand-cohort.js';
 export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 15_000;
 
 /**
- * Default cap on the number of **non-owner** members a single reconcile pass
- * proactively dials. Backbone (owner) members are always dialed and do NOT
+ * Default cap on the number of **non-backbone** members a single reconcile pass
+ * proactively dials. Backbone (always-on) members are always dialed and do NOT
  * count against this cap.
  */
 export const DEFAULT_CONTROL_COHORT_TARGET_DEGREE = 6;
@@ -52,14 +51,14 @@ export const DEFAULT_CONTROL_COHORT_TARGET_DEGREE = 6;
 /** Outcome of {@link selectControlCohortDials}: who to dial + what the cap dropped. */
 export interface ControlCohortSelection {
   /**
-   * Siblings to dial this pass, backbone first then the bounded non-owner
+   * Siblings to dial this pass, backbone first then the bounded non-backbone
    * fill. Already self-excluded (the caller must pass self-excluded `siblings`).
    * Still includes peers that may turn out to be already-connected — the caller
    * diffs against live connections separately.
    */
   dials: CohortPeerRow[];
-  /** Non-owner members dropped by the `targetDegree` cap (0 when none). */
-  cappedNonOwner: number;
+  /** Non-backbone members dropped by the `targetDegree` cap (0 when none). */
+  cappedNonBackbone: number;
 }
 
 /** What one {@link CadreNode.reconcileControlCohort} pass did. */
@@ -87,28 +86,28 @@ function byPeerId(a: CohortPeerRow, b: CohortPeerRow): number {
  * Backbone-preferential, bounded-out-degree selection of control-cohort siblings
  * to dial.
  *
- * A member is **backbone** iff the ed25519 key derived from its peerId
- * (see {@link ed25519PublicKeyB64FromPeerId}) is in `ownerKeys`. All backbone
- * members are selected; non-owner members fill up to `targetDegree` in
- * deterministic peerId order.
+ * A member is **backbone** iff its `CadrePeer` row declares the `storage` profile
+ * (an always-on machine). All backbone members are selected; the rest fill up to
+ * `targetDegree` in deterministic peerId order. A member whose profile is still
+ * unknown (it has not self-published) is not backbone until it publishes one.
+ * A profile is a dial preference only: it is self-declared, and a machine
+ * misdeclaring one costs extra dials, never access.
  *
  * @param siblings - cadre members EXCLUDING self (the caller filters self out).
- * @param ownerKeys - the converged `OwnerKey` set; may be empty/partial
- *   before owner convergence, in which case no member classifies as backbone
- *   yet and the bounded fill still makes progress (preference sharpens later).
- * @param targetDegree - cap on non-owner dials (negative is treated as 0).
+ * @param targetDegree - cap on non-backbone dials (negative is treated as 0).
  */
 export function selectControlCohortDials(
   siblings: CohortPeerRow[],
-  ownerKeys: ReadonlySet<string>,
   targetDegree: number,
 ): ControlCohortSelection {
   const backbone: CohortPeerRow[] = [];
   const rest: CohortPeerRow[] = [];
 
+  // NOTE: the backbone is uncapped, so out-degree grows with the number of always-on
+  // machines (and with any sibling that declares `storage` without being one); if a party
+  // ever runs more than a handful, cap the backbone too.
   for (const peer of siblings) {
-    const pubKey = ed25519PublicKeyB64FromPeerId(peer.peerId);
-    if (pubKey !== null && ownerKeys.has(pubKey)) {
+    if (peer.profile === 'storage') {
       backbone.push(peer);
     } else {
       rest.push(peer);
@@ -123,6 +122,6 @@ export function selectControlCohortDials(
 
   return {
     dials: [...backbone, ...fill],
-    cappedNonOwner: rest.length - fill.length,
+    cappedNonBackbone: rest.length - fill.length,
   };
 }

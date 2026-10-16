@@ -2377,7 +2377,7 @@ export interface ApnsCredentials {
 // ============================================================================
 
 /**
- * A peer entry in a control network seed.
+ * A peer entry in a control network seed, or in a cadre invitation redemption reply.
  * Contains connection information for a cadre peer.
  */
 export interface SeedPeer {
@@ -2385,10 +2385,12 @@ export interface SeedPeer {
   peerId: string;
   /** Multiaddrs for connecting to this peer */
   multiaddrs: string[];
-  /** Whether this peer holds an owner key */
-  isOwner: boolean;
-  /** ed25519 public key (base64url) — present on owner peers for signerKey verification */
-  publicKey?: string;
+  /**
+   * Dial this peer first: the machine that minted the seed (or answered the redemption) and
+   * every always-on machine (`CadrePeer.Profile = 'storage'`). A dial hint only — it grants
+   * nothing, and says nothing about owner keys (`projectSeedPeers`).
+   */
+  preferred: boolean;
 }
 
 /**
@@ -2601,15 +2603,15 @@ export interface ApplySeedResult {
   /** Machine-readable refusal cause, when the refusing trust policy supplied one. */
   code?: SeedRefusalCode;
   /**
-   * Owner-flagged seed peers this apply attempted to dial. Zero when the seed
-   * carried no owner peer with an address, or when the seed was rejected before
+   * Preferred seed peers (`SeedPeer.preferred`) this apply attempted to dial. Zero when the
+   * seed carried no preferred peer with an address, or when the seed was rejected before
    * the dial loop ran.
    */
-  ownerDialsAttempted: number;
+  preferredDialsAttempted: number;
   /**
-   * How many of those dials threw. `ownerDialsAttempted > 0 && ownerDialsFailed
-   * === ownerDialsAttempted` means "seeded but stranded": the seed itself was
-   * accepted (`success: true`) but no owner could be reached, so this node has
+   * How many of those dials threw. `preferredDialsAttempted > 0 && preferredDialsFailed
+   * === preferredDialsAttempted` means "seeded but stranded": the seed itself was
+   * accepted (`success: true`) but no preferred peer could be reached, so this node has
    * no connection to bootstrap its control database from. The node retries those
    * addresses on every control-cohort reconcile pass (see
    * `CadreNode.dialColdStartBootstrap`), so this is a signal, not a fatal error.
@@ -2621,7 +2623,7 @@ export interface ApplySeedResult {
    * down. Treat a non-zero value as certain failure and zero as "no failure
    * observed".
    */
-  ownerDialsFailed: number;
+  preferredDialsFailed: number;
 }
 
 // ============================================================================

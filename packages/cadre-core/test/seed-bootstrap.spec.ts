@@ -11,7 +11,6 @@ import {
 } from '../src/seed-bootstrap.js';
 import { claimProof, parseClaimSecret } from '../src/claim-proof.js';
 import { projectSeedPeers } from '../src/control-database.js';
-import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import {
   anchoredTrustPolicy,
   pinnedKeyTrustPolicy,
@@ -104,7 +103,7 @@ describe('SeedBootstrapService', () => {
           {
             peerId: '12D3KooWTestPeer1',
             multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
-            isOwner: true
+            preferred: true
           }
         ],
         signature: 'test-signature',
@@ -131,7 +130,7 @@ describe('SeedBootstrapService', () => {
           {
             peerId: '12D3KooWTestPeer1',
             multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
-            isOwner: true
+            preferred: true
           }
         ]
       };
@@ -223,8 +222,7 @@ describe('SeedBootstrapService', () => {
       const peerA: SeedPeer = {
         peerId: '12D3KooWTestPeer1',
         multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
-        isOwner: true,
-        publicKey: ownerPublicKey,
+        preferred: true,
       };
       const seed = signSeed(ownerPrivateKey, ownerPublicKey, { partyId, peers: [peerA] });
 
@@ -232,8 +230,7 @@ describe('SeedBootstrapService', () => {
       const reordered: ControlNetworkSeed = {
         ...seed,
         peers: [{
-          publicKey: ownerPublicKey,
-          isOwner: true,
+          preferred: true,
           multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
           peerId: '12D3KooWTestPeer1',
         }],
@@ -315,30 +312,6 @@ describe('SeedBootstrapService', () => {
 });
 
 describe('Seed Types', () => {
-  describe('SeedPeer', () => {
-    it('should have required fields', () => {
-      const peer: SeedPeer = {
-        peerId: '12D3KooWTestPeer',
-        multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
-        isOwner: true
-      };
-
-      expect(peer.peerId).toBe('12D3KooWTestPeer');
-      expect(peer.multiaddrs).toHaveLength(1);
-      expect(peer.isOwner).toBe(true);
-    });
-
-    it('should allow empty multiaddrs', () => {
-      const peer: SeedPeer = {
-        peerId: '12D3KooWTestPeer',
-        multiaddrs: [],
-        isOwner: false
-      };
-
-      expect(peer.multiaddrs).toHaveLength(0);
-    });
-  });
-
   describe('ControlNetworkSeed', () => {
     it('should have required fields', () => {
       const seed: ControlNetworkSeed = {
@@ -360,7 +333,7 @@ describe('Seed Types', () => {
       const message: SeedMessage = {
         partyId: 'test-party',
         peers: [
-          { peerId: 'peer1', multiaddrs: [], isOwner: true }
+          { peerId: 'peer1', multiaddrs: [], preferred: true }
         ],
         signature: 'sig',
         signerKey: 'key'
@@ -473,8 +446,8 @@ describe('Seed trust policy', () => {
 	}
 
 	it('rejects a forged self-asserting seed against an empty anchor (default policy)', async () => {
-		// The regression: attacker signs a seed that names its own key as an
-		// owner peer. Signature is valid, but the receiver has no anchor.
+		// The regression: attacker signs a seed with its own key. Signature is
+		// valid, but the receiver has no anchor.
 		const service = new SeedBootstrapService({ partyId });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
 		// No anchor → empty known-owner set, default anchoredTrustPolicy.
@@ -483,8 +456,7 @@ describe('Seed trust policy', () => {
 			{
 				peerId: '12D3KooWAttacker',
 				multiaddrs: ['/ip4/1.2.3.4/tcp/4001'],
-				isOwner: true,
-				publicKey: attackerPublicKey,
+				preferred: true,
 			},
 		];
 
@@ -764,83 +736,38 @@ describe('Seed trust policy', () => {
 		})).toMatchObject({ trusted: false });
 	});
 
-	it('SeedPeer should support publicKey field for owner peers', () => {
-		const peer: SeedPeer = {
-			peerId: '12D3KooWTestPeer',
-			multiaddrs: [],
-			isOwner: true,
-			publicKey: ownerPublicKey,
-		};
-
-		expect(peer.publicKey).toBe(ownerPublicKey);
-	});
 });
 
-describe('projectSeedPeers — owner identity from the OwnerKey table', () => {
-	/** `CadrePeer` rows as `ControlDatabase.queryCadrePeers` returns them (already revocation-filtered). */
-	function rows(cadrePeers: Array<{ PeerId: string; Multiaddr: string | null }>): CadrePeerRow[] {
-		return cadrePeers.map((p) => ({
-			peerId: p.PeerId,
+describe('projectSeedPeers — dial preference', () => {
+	function row(peerId: string, profile: CadrePeerRow['profile'], multiaddr: string | null = null): CadrePeerRow {
+		return {
+			peerId,
 			publicKey: null,
-			multiaddr: p.Multiaddr,
+			multiaddr,
 			updatedAt: 0,
-			profile: null,
+			profile,
 			sig: null,
 			stampId: null,
 			vouchOwner: null,
 			vouchSig: null,
 			vouchUsage: null,
-		}));
+		};
 	}
 
-	async function peerIdFor(): Promise<{ id: string; keyB64: string }> {
-		const key = await generateKeyPair('Ed25519');
-		const id = peerIdFromPrivateKey(key).toString();
-		const keyB64 = ed25519PublicKeyB64FromPeerId(id);
-		expect(keyB64).not.toBeNull();
-		return { id, keyB64: keyB64 as string };
-	}
+	it('prefers the minter and every always-on machine, and no one else', () => {
+		const peers = projectSeedPeers([
+			row('minter-phone', 'transaction', '/ip4/1.1.1.1/tcp/4001,/ip4/1.1.1.2/tcp/4001'),
+			row('server', 'storage'),
+			row('other-phone', 'transaction'),
+			row('unpublished', null),
+		], 'minter-phone');
 
-	it('derives the same ed25519 key from a PeerId as the libp2p public key bytes', async () => {
-		const { id, keyB64 } = await peerIdFor();
-		// Round-trip stability: parsing the string twice yields the same key.
-		expect(ed25519PublicKeyB64FromPeerId(id)).toBe(keyB64);
-	});
-
-	it('marks two distinct owner peers, even though only one could match a local peerId', async () => {
-		const a = await peerIdFor();
-		const b = await peerIdFor();
-
-		const peers: SeedPeer[] = projectSeedPeers(
-			rows([
-				{ PeerId: a.id, Multiaddr: '/ip4/1.1.1.1/tcp/4001' },
-				{ PeerId: b.id, Multiaddr: '/ip4/2.2.2.2/tcp/4001' },
-			]),
-			new Set([a.keyB64, b.keyB64])
-		);
-		expect(peers).toHaveLength(2);
-		const byId = new Map(peers.map((p) => [p.peerId, p]));
-		expect(byId.get(a.id)).toMatchObject({ isOwner: true, publicKey: a.keyB64 });
-		expect(byId.get(b.id)).toMatchObject({ isOwner: true, publicKey: b.keyB64 });
-	});
-
-	it('marks a peer whose key is absent from OwnerKey as non-owner with no publicKey', async () => {
-		const owner = await peerIdFor();
-		const plain = await peerIdFor();
-
-		// plain's key is NOT present
-		const peers: SeedPeer[] = projectSeedPeers(rows([{ PeerId: plain.id, Multiaddr: '/ip4/3.3.3.3/tcp/4001' }]), new Set([owner.keyB64]));
-		expect(peers).toHaveLength(1);
-		expect(peers[0].isOwner).toBe(false);
-		expect(peers[0].publicKey).toBeUndefined();
-	});
-
-	it('treats a non-Ed25519 / unparsable peerId as non-owner without throwing', () => {
-		const peers: SeedPeer[] = projectSeedPeers(rows([{ PeerId: 'not-a-valid-peer-id', Multiaddr: null }]), new Set(['some-owner-key']));
-		expect(peers).toHaveLength(1);
-		expect(peers[0].isOwner).toBe(false);
-		expect(peers[0].publicKey).toBeUndefined();
-		expect(peers[0].multiaddrs).toEqual([]);
+		expect(peers).toEqual([
+			{ peerId: 'minter-phone', multiaddrs: ['/ip4/1.1.1.1/tcp/4001', '/ip4/1.1.1.2/tcp/4001'], preferred: true },
+			{ peerId: 'server', multiaddrs: [], preferred: true },
+			{ peerId: 'other-phone', multiaddrs: [], preferred: false },
+			{ peerId: 'unpublished', multiaddrs: [], preferred: false },
+		]);
 	});
 });
 
@@ -1061,16 +988,10 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
   /**
    * The CLI `--owner` shape: the node's libp2p identity key IS its owner
    * key (ed25519KeyPairFromLibp2p), so it can owner-sign the INSERT of its OWN
-   * self-signed address record. This is the gap the implement ticket closes —
-   * before registerSelf the owner is absent from the seed it mints; after,
-   * the seed carries it as an owner peer, and a receiver that trusts the
-   * signer accepts it.
-   *
-   * NOTE: the ticket described the receiver check as a literal
-   * `seed.peers.some(p => p.isOwner && p.publicKey === seed.signerKey)` gate.
-   * That inline gate was superseded by the pluggable trust-policy design (see
-   * `applySeed`); this test asserts the still-true contract — the owner is
-   * present in the seed AND a signer-trusting receiver applies it successfully.
+   * self-signed address record. Before registerSelf the owner node is absent
+   * from the seed it mints; after, the seed carries it as its preferred minter,
+   * and a receiver that trusts the signer accepts it. Trust rests on the signer
+   * key alone (`applySeed`'s trust policy), never on what the seed's peers say.
    */
   it('inserts the owner into CadrePeer so seeds include it, and a receiver accepts the seed', async () => {
     const nodeKey = await generateKeyPair('Ed25519');
@@ -1112,17 +1033,14 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
       const outcome = await node.registerSelf();
       expect(outcome).toBe('inserted');
 
-      // The seed now carries the owner as an owner peer whose key is the
-      // seed's own signer.
+      // The seed now carries the owner node, preferred as the seed's minter.
       const after = await node.createSeed();
       const selfPeer = after.peers.find((p) => p.peerId === selfPeerId);
       expect(selfPeer).toBeDefined();
-      expect(selfPeer!.isOwner).toBe(true);
+      expect(selfPeer!.preferred).toBe(true);
       expect(after.signerKey).toBe(publicKeyB64);
-      expect(selfPeer!.publicKey).toBe(after.signerKey);
 
-      // A second node accepts the seed once it trusts the signer (pinned key) —
-      // the signer is now backed by an owner peer the seed carries.
+      // A second node accepts the seed once it trusts the signer (pinned key).
       const receiver = new SeedBootstrapService({ partyId: after.partyId });
       serviceInternals(receiver).libp2pNode = makeReceiverLibp2p();
       const applied = await receiver.applySeed(after, {
@@ -1352,19 +1270,19 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
     expect(ack.accepted).toBe(true);
   });
 
-  it('gets the ack while the receiver is still dialing the seed owners', async () => {
-    // The sender's delivery deadline counts link round trips only, and an unreachable owner
+  it('gets the ack while the receiver is still dialing the seed\'s preferred peers', async () => {
+    // The sender's delivery deadline counts link round trips only, and an unreachable peer
     // can hold the receiver's dial for its whole per-peer budget. Pre-fix the ack waited for
-    // the owner dials, so a dial the test holds open made the delivery time out.
-    const ownerPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
-    const ownerAddr = '/ip4/5.6.7.8/tcp/4001';
+    // those dials, so a dial the test holds open made the delivery time out.
+    const seedPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+    const peerAddr = '/ip4/5.6.7.8/tcp/4001';
     const { seed, ownerPublicKey } = makeSignedSeed('ack-first-party', [
-      { peerId: ownerPeerId, multiaddrs: [ownerAddr], isOwner: true },
+      { peerId: seedPeerId, multiaddrs: [peerAddr], preferred: true },
     ]);
 
-    let releaseOwnerDial = (): void => {};
-    const ownerDialHeld = new Promise<void>((resolve) => { releaseOwnerDial = resolve; });
-    const ownerDials: string[] = [];
+    let releasePeerDial = (): void => {};
+    const peerDialHeld = new Promise<void>((resolve) => { releasePeerDial = resolve; });
+    const peerDials: string[] = [];
     const applied: number[] = [];
     const receiver = new SeedBootstrapService({
       partyId: 'ack-first-party',
@@ -1375,8 +1293,8 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
       peerId: { toString: () => 'receiver-peer' },
       peerStore: { merge: async () => {} },
       dial: async (addr: { toString(): string }) => {
-        ownerDials.push(addr.toString());
-        await ownerDialHeld;
+        peerDials.push(addr.toString());
+        await peerDialHeld;
         return {};
       },
     };
@@ -1395,10 +1313,10 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
     expect(ack.accepted).toBe(true);
     expect(applied).toEqual([]);
 
-    releaseOwnerDial();
+    releasePeerDial();
     await handled;
-    // The seed's address carries no peer id; the dial binds it to the owner's.
-    expect(ownerDials).toEqual([`${ownerAddr}/p2p/${ownerPeerId}`]);
+    // The seed's address carries no peer id; the dial binds it to the peer's.
+    expect(peerDials).toEqual([`${peerAddr}/p2p/${seedPeerId}`]);
     expect(applied).toEqual([1]);
   });
 

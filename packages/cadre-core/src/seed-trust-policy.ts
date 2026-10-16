@@ -3,10 +3,10 @@
  *
  * A seed carries an ed25519 signature over its body and the `signerKey` that
  * produced it. Verifying that signature only proves the seed is internally
- * consistent — it does NOT prove the signer is an owner, because both the
- * signer key and the seed's own `isOwner` peer flags are attacker-supplied.
- * The trust decision must therefore rest on an anchor that does not come from
- * the seed body:
+ * consistent — it does NOT prove the signer is an owner, because the signer
+ * key is attacker-supplied, and nothing else in a seed claims anyone is an
+ * owner (its peers' `preferred` flags are dial hints). The trust decision must
+ * therefore rest on an anchor that does not come from the seed body:
  *
  *  1. Anchored — keys in the receiver's NODE-LOCAL `TrustedOwnerStore`: the
  *     non-replicated, per-party record of owner keys established out of band

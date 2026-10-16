@@ -394,7 +394,7 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	await atStage('A vouches C', () => A.authorizePeer(cPeerId));
 	const seedC = await atStage('A mints C\'s seed', () => A.createSeed());
 	// seedC legitimately names B (createSeed snapshots the whole CadrePeer table).
-	// Harmless: B's row carries no address, and applySeed only dials owner peers.
+	// Harmless: B's row carries no address, and applySeed dials only addressed preferred peers.
 	const appliedC = await atStage('C applies A\'s seed', () => C.applySeed(seedC));
 	if (!appliedC.success) {
 		throw new Error(`bootControlTrio: C failed to apply A's seed: ${JSON.stringify(appliedC)}`);

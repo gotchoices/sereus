@@ -3,10 +3,10 @@
  *
  * The acceptance proof for `cold-start-control-redial`. The sibling scenario
  * (`control-cohort-auto-convergence.integration.ts`) proves the happy cold start:
- * `applySeed`'s single owner dial lands, and the in-node reconcile keeps the
+ * `applySeed`'s single dial of the seed's minter lands, and the in-node reconcile keeps the
  * cohort connected from there. This one removes that luck.
  *
- * `SeedBootstrapService.applySeed` dials the seed's owner peers exactly ONCE,
+ * `SeedBootstrapService.applySeed` dials the seed's preferred peers exactly ONCE,
  * best-effort — a throw is logged and swallowed, and the seed still reports
  * success. Before the fix nothing ever dialed again: `reconcileControlCohort`
  * enumerates siblings from the REPLICATED `CadrePeer` table, which is empty at
@@ -120,7 +120,7 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			await B.start();
 
 			// Wait for A to self-register its own CadrePeer row WITH a dialable address,
-			// so the seed it mints carries A's owner address for B to dial.
+			// so the seed it mints carries A's address for B to dial.
 			await waitUntil(
 				async () => {
 					const rec = await A!.getControlDatabase()!.queryPeerRecord(aPeerId);
@@ -137,17 +137,17 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			await A.authorizePeer(decoyPeerId);
 
 			// 2. B applies A's seed while still UNVOUCHED and refused. The seed itself is
-			//    accepted (signature + pinned owner key), but its one owner dial cannot
+			//    accepted (signature + pinned owner key), but its one dial to A cannot
 			//    survive A's refusal — the state an owner that is momentarily
 			//    unreachable when the seed lands leaves behind.
 			const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
 			const seed = await A.createSeed();
 			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aOwnerKey]) });
 			expect(applied.success).toBe(true);
-			// A is the seed's only owner peer with an address, so exactly one dial is
-			// attempted. `ownerDialsFailed` is deliberately NOT asserted: A's refusal lands
-			// AFTER the dialer's upgrade completes, so the dial may or may not throw.
-			expect(applied.ownerDialsAttempted).toBe(1);
+			// A, the seed's minter, is its only preferred peer with an address, so exactly one
+			// dial is attempted. `preferredDialsFailed` is deliberately NOT asserted: A's refusal
+			// lands AFTER the dialer's upgrade completes, so the dial may or may not throw.
+			expect(applied.preferredDialsAttempted).toBe(1);
 
 			// 3. Confirm the first dial really did not stick. A's refusal lands AFTER the
 			//    dialer's upgrade completes (noise negotiates the muxer in the security

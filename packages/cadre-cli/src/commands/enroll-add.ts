@@ -23,7 +23,7 @@ const log = debug('cadre:cli:enroll-add');
  */
 
 const UNREACHABLE_WARNING =
-  'No owner in this seed has an address and no --addr was given, so neither machine can dial the other. '
+  'No machine this seed tells the new one to dial has an address, and no --addr was given, so neither machine can dial the other. '
   + 'Make the owner reachable (set network.appendAnnounceAddrs to a forwarded address, or network.relayAddrs '
   + 'to a relay) and restart it before re-running, or re-run with --addr <the new machine\'s dialable address> '
   + 'so the owner dials it.';
@@ -55,8 +55,11 @@ export interface EnrollAddReport {
   partyId: string;
   /** The owner key that signed the seed — what the new machine pins with `--pin-owner-key`. */
   signerKey: string;
-  /** Every address of every owner peer in the seed: what the new machine can dial. */
-  ownerAddrs: string[];
+  /**
+   * Every address of every preferred peer in the seed (the owner node that minted it and the
+   * party's always-on machines): what the new machine dials first.
+   */
+  seedAddrs: string[];
   encodedSeed: string;
   warnings: string[];
 }
@@ -142,26 +145,26 @@ export async function mintSeed(
  * what `cadre start --seed` on the new machine checks its config against.
  */
 export function buildEnrollAddReport(minted: DroneInitResult, peerId: string, addrsGiven: boolean): EnrollAddReport {
-  const ownerAddrs = minted.seed.peers.filter((peer) => peer.isOwner).flatMap((peer) => peer.multiaddrs);
+  const seedAddrs = minted.seed.peers.filter((peer) => peer.preferred).flatMap((peer) => peer.multiaddrs);
   return {
     peerId,
     partyId: minted.seed.partyId,
     signerKey: minted.seed.signerKey,
-    ownerAddrs,
+    seedAddrs,
     encodedSeed: minted.encodedSeed,
-    warnings: ownerAddrs.length === 0 && !addrsGiven ? [UNREACHABLE_WARNING] : [],
+    warnings: seedAddrs.length === 0 && !addrsGiven ? [UNREACHABLE_WARNING] : [],
   };
 }
 
 /** The human-mode stderr text: everything the operator carries to the new machine but the seed. */
 export function formatEnrollAddReport(report: EnrollAddReport): string {
-  const addrs = report.ownerAddrs.length === 0
+  const addrs = report.seedAddrs.length === 0
     ? ['    (none)']
-    : report.ownerAddrs.map((addr) => `    - ${addr}`);
+    : report.seedAddrs.map((addr) => `    - ${addr}`);
   return [
     `✓ Authorized ${report.peerId} to join party ${report.partyId}`,
     `  Owner key to pin:  ${report.signerKey}`,
-    '  Owner addresses in this seed:',
+    '  Addresses in this seed:',
     ...addrs,
     `On the new machine (its config must set controlNetwork.partyId: ${report.partyId}):`,
     `  cadre start -c cadre.yaml --identity-file <its key> --pin-owner-key ${report.signerKey} --seed <this seed>`,
@@ -221,7 +224,7 @@ export const enrollAddCommand = new Command('add')
   .option('--admin-port <port>', 'The owner node\'s admin port (env: CADRE_ADMIN_PORT)')
   .option('--token-file <path>', 'File holding the admin token, as `cadre start --startup-token-file` writes it (env: CADRE_STARTUP_TOKEN)')
   .option('--timeout <ms>', 'Per-request timeout in milliseconds', DEFAULT_ADMIN_TIMEOUT_MS)
-  .option('--json', 'Print { peerId, partyId, signerKey, ownerAddrs, encodedSeed, warnings } on stdout instead of the bare seed')
+  .option('--json', 'Print { peerId, partyId, signerKey, seedAddrs, encodedSeed, warnings } on stdout instead of the bare seed')
   .action(async (rawPeerId: string, options: EnrollAddOptions) => {
     await runEnrollAdd(rawPeerId, options, fetch);
   });

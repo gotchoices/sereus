@@ -16,20 +16,20 @@ function minted(peers: SeedPeer[]): DroneInitResult {
 }
 
 describe('buildEnrollAddReport', () => {
-  const newPeer: SeedPeer = { peerId: NEW_PEER, multiaddrs: ['/ip4/10.0.0.9/tcp/4001'], isOwner: false };
-  const unaddressedOwner: SeedPeer = { peerId: '12D3KooWOwner', multiaddrs: [], isOwner: true };
+  const newPeer: SeedPeer = { peerId: NEW_PEER, multiaddrs: ['/ip4/10.0.0.9/tcp/4001'], preferred: false };
+  const unaddressedOwner: SeedPeer = { peerId: '12D3KooWOwner', multiaddrs: [], preferred: true };
 
-  // The one real branch in the report: a seed whose owners carry no address, with no --addr
-  // for the owner to dial out on, leaves neither machine able to reach the other. The new
-  // machine's own address must not count as an owner address.
-  it('lists owner addresses, and warns only when neither side has anything to dial', () => {
+  // The one real branch in the report: a seed whose preferred peers carry no address, with no
+  // --addr for the owner to dial out on, leaves neither machine able to reach the other. The new
+  // machine's own address must not count as one to dial.
+  it('lists the preferred peers\' addresses, and warns only when neither side has anything to dial', () => {
     const reachable = buildEnrollAddReport(
       minted([{ ...unaddressedOwner, multiaddrs: [OWNER_ADDR] }, newPeer]), NEW_PEER, false
     );
-    expect(reachable).toMatchObject({ partyId: 'party-a', signerKey: 'owner-key', ownerAddrs: [OWNER_ADDR], warnings: [] });
+    expect(reachable).toMatchObject({ partyId: 'party-a', signerKey: 'owner-key', seedAddrs: [OWNER_ADDR], warnings: [] });
 
     const stranded = buildEnrollAddReport(minted([unaddressedOwner, newPeer]), NEW_PEER, false);
-    expect(stranded.ownerAddrs).toEqual([]);
+    expect(stranded.seedAddrs).toEqual([]);
     expect(stranded.warnings).toHaveLength(1);
     expect(stranded.warnings[0]).toMatch(/appendAnnounceAddrs/);
     expect(stranded.warnings[0]).toMatch(/--addr/);

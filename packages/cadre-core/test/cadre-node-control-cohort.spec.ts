@@ -101,7 +101,6 @@ function injectCohort(
   node: CadreNode,
   opts: {
     members: Array<{ peerId: string; multiaddr: string | null }>;
-    ownerKeys?: Set<string>;
     connections?: string[];
     selfPeerId?: string;
     running?: boolean;
@@ -157,7 +156,6 @@ function injectCohort(
     queryCadrePeers: async () => { queries++; return opts.members; },
     // Consulted by the per-stream authz snapshot refresh that rides each pass.
     queryRevokedStamps: async () => new Set<string>(),
-    getOwnerKeys: async () => opts.ownerKeys ?? new Set<string>(),
     // The connectivity-gated reap sweep the pass runs before the sibling enumeration.
     reapRevokedRows: async (selfPeerId: string) => {
       reapCalls.push(selfPeerId);
@@ -289,8 +287,7 @@ describe('CadreNode.reconcileControlCohort', () => {
       queryCadrePeers: async () => [
         { peerId: 'self-peer', multiaddr: null },
         { peerId: siblingPeerId, multiaddr: null }
-      ],
-      getOwnerKeys: async () => new Set<string>()
+      ]
     };
     // Signed-record resolution yields nothing → must consult the peerStore fallback.
     (node as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs =
@@ -347,8 +344,7 @@ describe('CadreNode.reconcileControlCohort', () => {
         { peerId: 'self-peer', multiaddr: null },
         { peerId: SIBLING_A, multiaddr: null },
         { peerId: SIBLING_B, multiaddr: null }
-      ],
-      getOwnerKeys: async () => new Set<string>()
+      ]
     };
     (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
       async (id: string) => { resolvedFor.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
@@ -389,8 +385,7 @@ describe('CadreNode.reconcileControlCohort', () => {
         { peerId: 'self-peer', multiaddr: null },
         { peerId: SIBLING_A, multiaddr: null },
         { peerId: SIBLING_B, multiaddr: null }
-      ],
-      getOwnerKeys: async () => new Set<string>()
+      ]
     };
     (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
       async (id: string) => { dialedPeers.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
@@ -444,15 +439,14 @@ describe('CadreNode.reconcileControlCohort', () => {
     (node as unknown as { _running: boolean })._running = true;
     (node as unknown as { controlNode: unknown }).controlNode = null;
     (node as unknown as { controlDatabase: unknown }).controlDatabase = {
-      queryCadrePeers: async () => { throw new Error('should not query'); },
-      getOwnerKeys: async () => new Set<string>()
+      queryCadrePeers: async () => { throw new Error('should not query'); }
     };
 
     await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
   });
 
   it('honors the configured targetDegree cap end-to-end', async () => {
-    // Self + 4 non-owner siblings, targetDegree 2 → only 2 dials, whichever two
+    // Self + 4 non-backbone siblings, targetDegree 2 → only 2 dials, whichever two
     // the backbone preference picks (that ordering is covered by control-cohort.spec.ts).
     const node = new CadreNode(createConfig({ network: { controlCohort: { targetDegree: 2 } } }));
     const { dialCalls } = injectCohort(node, {
@@ -606,7 +600,7 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
 
 describe('CadreNode.reconcileControlCohort — address-book warming', () => {
   it('merges every sibling, including already-connected ones and ones the dial cap dropped', async () => {
-    // targetDegree 1 with three non-owner siblings, one of them connected: one
+    // targetDegree 1 with three non-backbone siblings, one of them connected: one
     // dial, but all three must reach the address book.
     const node = new CadreNode(createConfig({ network: { controlCohort: { targetDegree: 1 } } }));
     const [a, b, c] = [await realPeerId(), await realPeerId(), await realPeerId()];
@@ -944,7 +938,7 @@ describe('CadreNode.reconcileControlCohort — revocation ledger marker', () => 
 // Cold-start bootstrap retry
 //
 // The branch reconcileControlCohort takes when the CadrePeer table holds no
-// siblings: re-dial the owner peers of the seeds this node applied. The
+// siblings: re-dial the preferred peers of the seeds this node applied. The
 // end-to-end proof is control-cohort-cold-start-retry.integration.ts; these
 // cover the pieces that scenario cannot isolate (skip-connected, peer-id
 // binding, mid-loop shutdown, what a seed does and does not retain).
@@ -977,23 +971,23 @@ function dialedAddrs(dialCalls: Array<unknown>): string[] {
 describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () => {
   it('dials a retained bootstrap peer when the control DB has no siblings', async () => {
     const node = new CadreNode(createConfig());
-    const owner = await realPeerId();
-    const addr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`;
+    const seedPeer = await realPeerId();
+    const addr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${seedPeer}`;
     const { dialCalls } = injectCohort(node, { members: [] });
-    recordSeed(node, seedWith([{ peerId: owner, multiaddrs: [addr], isOwner: true }]));
+    recordSeed(node, seedWith([{ peerId: seedPeer, multiaddrs: [addr], preferred: true }]));
 
     // The cold-start branch reports its bootstrap dials the same way.
-    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [owner] });
+    await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [seedPeer] });
 
     expect(dialedAddrs(dialCalls)).toEqual([addr]);
   });
 
   it('skips a bootstrap peer that is already connected', async () => {
     const node = new CadreNode(createConfig());
-    const owner = await realPeerId();
-    const { dialCalls } = injectCohort(node, { members: [], connections: [owner] });
+    const seedPeer = await realPeerId();
+    const { dialCalls } = injectCohort(node, { members: [], connections: [seedPeer] });
     recordSeed(node, seedWith([
-      { peerId: owner, multiaddrs: [`/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`], isOwner: true }
+      { peerId: seedPeer, multiaddrs: [`/ip4/1.2.3.4/tcp/4001/ws/p2p/${seedPeer}`], preferred: true }
     ]));
 
     await node.reconcileControlCohort();
@@ -1003,12 +997,12 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
 
   it('leaves bootstrap peers alone once the table has a sibling to dial', async () => {
     const node = new CadreNode(createConfig());
-    const owner = await realPeerId();
-    const bootstrapAddr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`;
+    const seedPeer = await realPeerId();
+    const bootstrapAddr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${seedPeer}`;
     const { dialCalls } = injectCohort(node, {
       members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: SIBLING_1, multiaddr: null }]
     });
-    recordSeed(node, seedWith([{ peerId: owner, multiaddrs: [bootstrapAddr], isOwner: true }]));
+    recordSeed(node, seedWith([{ peerId: seedPeer, multiaddrs: [bootstrapAddr], preferred: true }]));
 
     await node.reconcileControlCohort();
 
@@ -1020,42 +1014,42 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
     // A record published through `addressOverrides` can lack the /p2p/ suffix;
     // dialing it bare would accept whoever answers.
     const node = new CadreNode(createConfig());
-    const owner = await realPeerId();
+    const seedPeer = await realPeerId();
     const { dialCalls } = injectCohort(node, { members: [] });
     recordSeed(node, seedWith([
-      { peerId: owner, multiaddrs: ['/ip4/1.2.3.4/tcp/4001/ws'], isOwner: true }
+      { peerId: seedPeer, multiaddrs: ['/ip4/1.2.3.4/tcp/4001/ws'], preferred: true }
     ]));
 
     await node.reconcileControlCohort();
 
-    expect(dialedAddrs(dialCalls)).toEqual([`/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`]);
+    expect(dialedAddrs(dialCalls)).toEqual([`/ip4/1.2.3.4/tcp/4001/ws/p2p/${seedPeer}`]);
   });
 
   it('completes a bootstrap relay hop whose destination is missing', async () => {
-    // `…/p2p/<relay>/p2p-circuit` terminates in the RELAY's id, not the owner's.
+    // `…/p2p/<relay>/p2p-circuit` terminates in the RELAY's id, not the seed peer's.
     // Binding by "does the LAST component name a peer" — libp2p's own rule —
-    // completes the circuit to the owner; the older "does any /p2p/ match" rule
+    // completes the circuit to the seed peer; the older "does any /p2p/ match" rule
     // read the relay's id as a mismatch and dropped the only way in.
     const node = new CadreNode(createConfig());
-    const owner = await realPeerId();
+    const seedPeer = await realPeerId();
     const { dialCalls } = injectCohort(node, { members: [] });
     recordSeed(node, seedWith([
-      { peerId: owner, multiaddrs: [`/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit`], isOwner: true }
+      { peerId: seedPeer, multiaddrs: [`/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit`], preferred: true }
     ]));
 
     await node.reconcileControlCohort();
 
     expect(dialedAddrs(dialCalls)).toEqual([
-      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${owner}`
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${seedPeer}`
     ]);
   });
 
   it('drops a bootstrap address that names a different peer, and skips the dial', async () => {
     const node = new CadreNode(createConfig());
-    const [owner, other] = [await realPeerId(), await realPeerId()];
+    const [seedPeer, other] = [await realPeerId(), await realPeerId()];
     const { dialCalls } = injectCohort(node, { members: [] });
     recordSeed(node, seedWith([
-      { peerId: owner, multiaddrs: [`/ip4/1.2.3.4/tcp/4001/ws/p2p/${other}`], isOwner: true }
+      { peerId: seedPeer, multiaddrs: [`/ip4/1.2.3.4/tcp/4001/ws/p2p/${other}`], preferred: true }
     ]));
 
     await node.reconcileControlCohort();
@@ -1074,8 +1068,8 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
         throw new Error('dial boom');
       };
     recordSeed(node, seedWith([
-      { peerId: first, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${first}`], isOwner: true },
-      { peerId: second, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${second}`], isOwner: true }
+      { peerId: first, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${first}`], preferred: true },
+      { peerId: second, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${second}`], preferred: true }
     ]));
 
     await expect(node.reconcileControlCohort()).resolves.toEqual({ dialed: [] });
@@ -1093,8 +1087,8 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
         (node as unknown as { _running: boolean })._running = false;
       };
     recordSeed(node, seedWith([
-      { peerId: first, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${first}`], isOwner: true },
-      { peerId: second, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${second}`], isOwner: true }
+      { peerId: first, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${first}`], preferred: true },
+      { peerId: second, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${second}`], preferred: true }
     ]));
 
     // A stop mid-loop still reports the dial that resolved before it.
@@ -1109,13 +1103,13 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
     // after a connection succeeds), so an in-memory-only retry set stranded a
     // seeded-but-unconnected node permanently across a restart. A shared
     // BootstrapPeerStore instance stands in for the file surviving the process.
-    const owner = await realPeerId();
-    const addr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`;
+    const seedPeer = await realPeerId();
+    const addr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${seedPeer}`;
     const shared = new MemoryBootstrapPeerStore('p');
 
     const first = new CadreNode(createConfig());
     injectCohort(first, { members: [], bootstrapStore: shared });
-    recordSeed(first, seedWith([{ peerId: owner, multiaddrs: [addr], isOwner: true }]));
+    recordSeed(first, seedWith([{ peerId: seedPeer, multiaddrs: [addr], preferred: true }]));
 
     // A fresh node — no second seed — hydrating the same store.
     const restarted = new CadreNode(createConfig());
@@ -1128,17 +1122,17 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
 });
 
 describe('CadreNode seed bootstrap-peer retention', () => {
-  it('retains only owner peers that carry an address', async () => {
+  it('retains only preferred peers that carry an address', async () => {
     const node = new CadreNode(createConfig());
-    const [owner, plain, addressless] = [await realPeerId(), await realPeerId(), await realPeerId()];
+    const [seedPeer, plain, addressless] = [await realPeerId(), await realPeerId(), await realPeerId()];
     injectCohort(node, { members: [] });
     recordSeed(node, seedWith([
-      { peerId: owner, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${owner}`], isOwner: true },
-      { peerId: plain, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${plain}`], isOwner: false },
-      { peerId: addressless, multiaddrs: [], isOwner: true }
+      { peerId: seedPeer, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${seedPeer}`], preferred: true },
+      { peerId: plain, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${plain}`], preferred: false },
+      { peerId: addressless, multiaddrs: [], preferred: true }
     ]));
 
-    expect([...bootstrapPeers(node).keys()]).toEqual([owner]);
+    expect([...bootstrapPeers(node).keys()]).toEqual([seedPeer]);
   });
 
   it('never retains self (createSeed projects every row, including this node)', async () => {
@@ -1146,7 +1140,7 @@ describe('CadreNode seed bootstrap-peer retention', () => {
     const self = await realPeerId();
     injectCohort(node, { members: [], selfPeerId: self });
     recordSeed(node, seedWith([
-      { peerId: self, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${self}`], isOwner: true }
+      { peerId: self, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${self}`], preferred: true }
     ]));
 
     expect(bootstrapPeers(node).size).toBe(0);
@@ -1154,26 +1148,26 @@ describe('CadreNode seed bootstrap-peer retention', () => {
 
   it('replaces a peer\'s addresses on re-seed rather than accumulating stale ones', async () => {
     const node = new CadreNode(createConfig());
-    const owner = await realPeerId();
+    const seedPeer = await realPeerId();
     injectCohort(node, { members: [] });
     recordSeed(node, seedWith([
-      { peerId: owner, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${owner}`], isOwner: true }
+      { peerId: seedPeer, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${seedPeer}`], preferred: true }
     ]));
     recordSeed(node, seedWith([
-      { peerId: owner, multiaddrs: [`/ip4/9.9.9.9/tcp/9/ws/p2p/${owner}`], isOwner: true }
+      { peerId: seedPeer, multiaddrs: [`/ip4/9.9.9.9/tcp/9/ws/p2p/${seedPeer}`], preferred: true }
     ]));
 
-    expect(bootstrapPeers(node).get(owner)?.addrs).toEqual([`/ip4/9.9.9.9/tcp/9/ws/p2p/${owner}`]);
+    expect(bootstrapPeers(node).get(seedPeer)?.addrs).toEqual([`/ip4/9.9.9.9/tcp/9/ws/p2p/${seedPeer}`]);
   });
 
   it('retains from the inbound /sereus/seed/1.0.0 path too (onSeedApplied)', async () => {
     // A wire-delivered seed is applied INSIDE SeedBootstrapService, below the
     // CadreNode.applySeed wrapper, so the callback is its only retention seam.
     const node = new CadreNode(createConfig());
-    const owner = await realPeerId();
+    const seedPeer = await realPeerId();
     injectCohort(node, { members: [] });
     const seed = seedWith([
-      { peerId: owner, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${owner}`], isOwner: true }
+      { peerId: seedPeer, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${seedPeer}`], preferred: true }
     ]);
 
     (node as unknown as {
@@ -1182,7 +1176,7 @@ describe('CadreNode seed bootstrap-peer retention', () => {
       };
     }).seedEventCallbacks().onSeedApplied?.('p', 1, seed);
 
-    expect([...bootstrapPeers(node).keys()]).toEqual([owner]);
+    expect([...bootstrapPeers(node).keys()]).toEqual([seedPeer]);
   });
 });
 

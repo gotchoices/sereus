@@ -123,12 +123,12 @@ export const sentinels = {
 
 /** A seed the node accepted. */
 export function acceptance(): ApplySeedResult {
-	return { success: true, peersAdded: 2, ownerDialsAttempted: 0, ownerDialsFailed: 0 };
+	return { success: true, peersAdded: 2, preferredDialsAttempted: 0, preferredDialsFailed: 0 };
 }
 
 /** A seed the node refused, with the reason it would give (or none at all). */
 export function refusal(error?: string): ApplySeedResult {
-	return { success: false, peersAdded: 0, ownerDialsAttempted: 0, ownerDialsFailed: 0, ...(error ? { error } : {}) };
+	return { success: false, peersAdded: 0, preferredDialsAttempted: 0, preferredDialsFailed: 0, ...(error ? { error } : {}) };
 }
 
 /** An invitation a member accepted, naming itself. */

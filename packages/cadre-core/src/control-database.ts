@@ -12,7 +12,7 @@ import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
-import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed25519-key.js';
+import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { verifyCadreInviteRow } from './peer-authorization.js';
 import { OWNER_KEY_MAX_LABEL } from './owner-key-export.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
@@ -617,32 +617,22 @@ function errorChainMatches(error: unknown, pattern: RegExp): boolean {
 
 /**
  * Project `CadrePeer` rows into the {@link SeedPeer} list a seed, or a cadre invitation
- * redemption reply, carries.
+ * redemption reply, carries. `minterPeerId` is the machine minting the seed or answering the
+ * redemption; it contributes an entry only through its own `CadrePeer` row.
  *
- * Owner identity is sourced from the `OwnerKey` table, not from the transport peer id. An
- * Ed25519 libp2p peer id embeds its public key (identity multihash), so each peer's ed25519
- * key is derivable from its `PeerId`; a peer is an owner iff that derived key is in
- * `ownerKeys`. This makes any owner node markable — not just the local one. A non-Ed25519
- * or unparsable id yields a non-owner rather than failing the whole projection.
- *
- * NOTE: this is the one owner lookup deliberately left on the REPLICATED table rather than
- * the node-local anchor. `SeedPeer.isOwner` is a dial hint — the receiver dials owner-flagged
- * peers first — not a trust decision, and the receiver re-derives real trust from its own
- * anchor. So a polluted table costs at most a wasted dial, while anchoring here would
- * silently drop legitimate co-owners this node never pinned. If `isOwner` ever gates
- * anything the receiver TRUSTS, move it to the anchor.
+ * A peer is `preferred` when it is the minter, the one machine certain to be reachable by the
+ * receiver at that moment, since it is delivering the seed or the reply, or an always-on
+ * machine (`Profile = 'storage'`), the ones that stay dialable. Preference is a dial hint and
+ * reads no `OwnerKey` row: owner keys are not machines, and a receiver derives trust from its
+ * own anchor, never from this list. A `Profile` is self-declared and not checked here, so a
+ * machine misdeclaring one costs the receiver a wasted dial at most.
  */
-export function projectSeedPeers(rows: readonly CadrePeerRow[], ownerKeys: ReadonlySet<string>): SeedPeer[] {
-  return rows.map(({ peerId, multiaddr }) => {
-    const pubKeyB64 = ed25519PublicKeyB64FromPeerId(peerId);
-    const isOwner = pubKeyB64 !== null && ownerKeys.has(pubKeyB64);
-    return {
-      peerId,
-      multiaddrs: multiaddr ? multiaddr.split(',') : [],
-      isOwner,
-      ...(isOwner ? { publicKey: pubKeyB64 } : {}),
-    };
-  });
+export function projectSeedPeers(rows: readonly CadrePeerRow[], minterPeerId: string): SeedPeer[] {
+  return rows.map(({ peerId, multiaddr, profile }) => ({
+    peerId,
+    multiaddrs: multiaddr ? multiaddr.split(',') : [],
+    preferred: peerId === minterPeerId || profile === 'storage',
+  }));
 }
 
 /**
@@ -1625,16 +1615,16 @@ export class ControlDatabase {
 
   /**
    * The cadre's peers as a seed or a redemption reply carries them: every live `CadrePeer`
-   * row with its addresses, each flagged `isOwner` when the key behind its peer id is in
-   * the replicated `OwnerKey` table ({@link projectSeedPeers}).
+   * row with its addresses, the minter and every always-on machine marked preferred
+   * ({@link projectSeedPeers}).
    *
    * Read through {@link queryCadrePeers}, never a raw `CadrePeer` select, so a removed
    * member's addresses are never packed into a seed or handed to a redeeming device as a
    * dial hint: a revoked peer is off the addressable surface everywhere, and this is one of
    * its exits.
    */
-  async querySeedPeers(): Promise<SeedPeer[]> {
-    return projectSeedPeers(await this.queryCadrePeers(), await this.getOwnerKeys());
+  async querySeedPeers(minterPeerId: string): Promise<SeedPeer[]> {
+    return projectSeedPeers(await this.queryCadrePeers(), minterPeerId);
   }
 
   /**

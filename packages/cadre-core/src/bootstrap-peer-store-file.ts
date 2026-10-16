@@ -2,7 +2,7 @@
  * Node-only file-backed {@link BootstrapPeerStore}: one JSON file per party under
  * a configured directory (the node's state directory — `cadre-cli` passes
  * `ResolvedConfig.nodeStateDir`), holding the node-local, non-replicated dial
- * targets learned out of band (a seed's owner peers, and nodes this node added).
+ * targets learned out of band (a seed's preferred peers, and nodes this node added).
  *
  * Nothing but the file itself lives here: the envelope, load policy, per-entry
  * validation (shape only — never signatures; see the `bootstrap-peer-store.ts`

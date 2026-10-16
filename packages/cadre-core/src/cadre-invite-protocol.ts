@@ -248,8 +248,9 @@ export interface CadreInviteRedeemReply {
   invite?: CadreInviteRow;
   /**
    * Dial hints for the rest of the cadre, unsigned: the member's own projection of its
-   * `CadrePeer` rows (`ControlDatabase.querySeedPeers`). `isOwner` is a dial hint only, as
-   * the seed's NOTE says; the device derives trust from its anchor, never from this.
+   * `CadrePeer` rows (`ControlDatabase.querySeedPeers`), the answering member and every
+   * always-on machine marked `preferred`. The device derives trust from its anchor, never
+   * from this.
    */
   peers?: SeedPeer[];
 }
@@ -420,14 +421,9 @@ function sanitizePeers(peers: unknown): SeedPeer[] {
   for (const entry of peers) {
     if (out.length >= MAX_REPLY_PEERS) break;
     if (typeof entry !== 'object' || entry === null) continue;
-    const { peerId, multiaddrs, isOwner, publicKey } = entry as Record<string, unknown>;
+    const { peerId, multiaddrs, preferred } = entry as Record<string, unknown>;
     if (!isBoundedString(peerId)) continue;
-    out.push({
-      peerId,
-      multiaddrs: sanitizeAddrs(multiaddrs),
-      isOwner: isOwner === true,
-      ...(isEd25519KeyB64(publicKey) ? { publicKey } : {})
-    });
+    out.push({ peerId, multiaddrs: sanitizeAddrs(multiaddrs), preferred: preferred === true });
   }
   return out;
 }
@@ -527,6 +523,8 @@ export type CadreInviteStore = Pick<ControlDatabase, 'seatCadreInvite' | 'isCadr
 export interface CadreInviteHandlerOptions {
   /** This member's party id; a request for another party is refused by name. */
   partyId: string;
+  /** This member's peer id: the reply's peer list marks it preferred, since the device just reached it. */
+  peerId: string;
   store: CadreInviteStore;
   /**
    * Push this member's control store to the device, resolving once the push has finished, and
@@ -780,7 +778,7 @@ export class CadreInviteHandler {
   /** Dial hints are an optimization; a failed read costs the device its hints, not its membership. */
   private async peersBestEffort(): Promise<SeedPeer[]> {
     try {
-      return await this.options.store.querySeedPeers();
+      return await this.options.store.querySeedPeers(this.options.peerId);
     } catch (error) {
       log('peer projection for the reply failed (continuing without hints): %o', error);
       return [];

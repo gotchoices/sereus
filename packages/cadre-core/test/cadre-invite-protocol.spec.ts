@@ -141,6 +141,7 @@ describe('cadre invitation redemption protocol', () => {
     memberAddr = `/ip4/127.0.0.1/tcp/4001/p2p/${memberPeerId}`;
     handler = new CadreInviteHandler({
       partyId,
+      peerId: memberPeerId,
       store: db,
       admitDevice: async (peerId) => {
         const push: (typeof pushes)[number] = { peerId, admittedAtPush: await rowWritten(peerId) };
@@ -226,6 +227,7 @@ describe('cadre invitation redemption protocol', () => {
     // `ControlDatabase.seatCadreInvite` does; the handler maps it to the retryable code.
     const unknownIssuer = new CadreInviteHandler({
       partyId,
+      peerId: memberPeerId,
       store: {
         ...untouchable,
         seatCadreInvite: async (row) => { throw new CadreInviteIssuerUnknownError(row.key, row.issuerKey); }
@@ -244,7 +246,7 @@ describe('cadre invitation redemption protocol', () => {
     const device = await mintContactJoiner();
     const impostor = await mintContactJoiner();
     const invitation = await mint({}, [memberAddr, `${memberAddr}-second`]);
-    const strict = new CadreInviteHandler({ partyId, store: untouchable });
+    const strict = new CadreInviteHandler({ partyId, peerId: memberPeerId, store: untouchable });
     // The request is the device's, signed by the device, but the connection is the impostor's.
     const { node, dials } = dialerOver({ [memberAddr]: memberAs(impostor, strict), [`${memberAddr}-second`]: memberAs(device) });
 

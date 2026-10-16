@@ -162,7 +162,7 @@ export interface ControlNodeOpts {
   pinnedOwnerKeys?: string[];
   /**
    * Becomes `bootstrapPeers.store` verbatim — the node-local, never-replicated
-   * store of out-of-band dial targets (a seed's owner peers, and the addresses
+   * store of out-of-band dial targets (a seed's preferred peers, and the addresses
    * handed to `CadreNode.addDrone`). Left unset the node gets the cadre-core
    * default, a fresh `MemoryBootstrapPeerStore` that dies with the node.
    *

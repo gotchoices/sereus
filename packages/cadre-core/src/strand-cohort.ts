@@ -1,3 +1,5 @@
+import type { NodeProfile } from './types.js';
+
 /**
  * A single CadrePeer membership row, as returned by
  * `ControlDatabase.queryCadrePeers()`.
@@ -6,6 +8,8 @@ export interface CohortPeerRow {
   peerId: string;
   /** Comma-joined list of multiaddr strings; `''` when no addrs were recorded. */
   multiaddr: string | null;
+  /** The machine's self-declared profile; null or absent until it self-publishes. */
+  profile?: NodeProfile | null;
 }
 
 /**

@@ -74,8 +74,8 @@ async function createReceiverService(partyId: string, node: TestCadreNode, contr
 }
 
 /**
- * Register the owner's own peer in CadrePeer so seeds include it
- * with isOwner=true and publicKey for signature validation.
+ * Register the owner's own peer in CadrePeer so the seeds it mints include it,
+ * preferred as their minter.
  */
 async function registerOwnerPeer(service: SeedBootstrapService, party: TestParty): Promise<void> {
 	await service.authorizePeer({
@@ -117,7 +117,7 @@ describe('E2E Enrollment', () => {
 		const authService = await createSeedService(owner);
 		const droneService = await createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
-		// Owner must be in CadrePeer so the seed includes it as owner peer
+		// Owner must be in CadrePeer so the seed includes it as its minter
 		await registerOwnerPeer(authService, owner);
 
 		// Authorize the drone peer
@@ -135,9 +135,8 @@ describe('E2E Enrollment', () => {
 		expect(seed.signature).toBeDefined();
 		expect(seed.signerKey).toBe(owner.ownerPublicKey);
 
-		const ownerPeer = seed.peers.find(p => p.peerId === owner.ownerNode.peerId);
-		expect(ownerPeer?.isOwner).toBe(true);
-		expect(ownerPeer?.publicKey).toBe(owner.ownerPublicKey);
+		const minterPeer = seed.peers.find(p => p.peerId === owner.ownerNode.peerId);
+		expect(minterPeer?.preferred).toBe(true);
 
 		// Validate seed signature before applying
 		expect(authService.validateSeedSignature(seed)).toBe(true);
@@ -349,8 +348,8 @@ describe('E2E Enrollment', () => {
 
 			await registerOwnerPeer(authService, owner);
 
-			// A fully valid, untampered seed — its signature verifies and it names the
-			// owner as an owner peer with a matching publicKey.
+			// A fully valid, untampered seed — its signature verifies and it carries the
+			// owner node as its minter.
 			const seed = await authService.createSeed();
 			expect(authService.validateSeedSignature(seed)).toBe(true);
 

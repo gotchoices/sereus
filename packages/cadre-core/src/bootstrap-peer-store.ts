@@ -3,10 +3,10 @@
  * out of band, kept so it can dial those peers when nothing better is known.
  * Two sources feed it:
  *
- *  - **A seed's owner peers.** A newcomer applies a signed seed nominating the
- *    party's owner machines and the addresses they answer on.
- *    `SeedBootstrapService.applySeed` dials those owners exactly once,
- *    best-effort; when that dial fails (owner briefly down, relay reservation not
+ *  - **A seed's preferred peers.** A newcomer applies a signed seed nominating
+ *    the machine that minted it and the party's always-on machines, with the
+ *    addresses they answer on. `SeedBootstrapService.applySeed` dials those peers
+ *    exactly once, best-effort; when that dial fails (peer briefly down, relay reservation not
  *    up, not yet vouched) the node has an empty `CadrePeer` table and no
  *    connection, and `CadreNode.reconcileControlCohort`'s cold-start branch is
  *    the only way back — it re-dials these retained addresses every pass.
@@ -53,7 +53,7 @@ import { NodeLocalSnapshot, type DurableSlot, type NodeLocalSnapshotSpec } from 
 const log = debug('sereus:cadre:bootstrap-peer-store');
 
 /**
- * One retained dial target learned out of band: an owner peer a seed nominated,
+ * One retained dial target learned out of band: a preferred peer a seed nominated,
  * or a node this node added.
  */
 export interface BootstrapPeerEntry {

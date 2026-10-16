@@ -442,8 +442,8 @@ export const startCommand = new Command('start')
         // Write the owner's own signed CadrePeer row up-front, before any
         // seed can be minted. The background heartbeat keeps it fresh, but it
         // fires too late for the first invite/seed — without this, createSeed()
-        // would omit the owner peer, so a freshly-seeded node would have no
-        // owner multiaddr to dial (applySeed dials the seed's isOwner
+        // would omit this node, so a freshly-seeded node would have no address
+        // for the seed's minter to dial (applySeed dials the seed's preferred
         // peers) until the ~7.5 min heartbeat first published the row.
         const selfReg = await node.registerSelf();
         const selfRegMessage: Record<typeof selfReg, string> = {

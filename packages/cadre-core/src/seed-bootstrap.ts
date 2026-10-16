@@ -125,7 +125,7 @@ function addSelfRelayAddr(peers: SeedPeer[], selfPeerId: string, relayAddr: stri
 }
 
 /**
- * An {@link ApplySeedResult} for a seed refused before the owner-dial loop ran,
+ * An {@link ApplySeedResult} for a seed refused before the dial loop ran,
  * so the dial counters read zero rather than being absent.
  */
 function seedRejected(error: string, code?: SeedRefusalCode): ApplySeedResult {
@@ -134,8 +134,8 @@ function seedRejected(error: string, code?: SeedRefusalCode): ApplySeedResult {
     peersAdded: 0,
     error,
     ...(code !== undefined ? { code } : {}),
-    ownerDialsAttempted: 0,
-    ownerDialsFailed: 0,
+    preferredDialsAttempted: 0,
+    preferredDialsFailed: 0,
   };
 }
 
@@ -149,8 +149,8 @@ interface SeedApplyOptions {
   remotePeerId?: string;
 }
 
-/** What dialing a seed's owner peers produced — the owner-dial half of an {@link ApplySeedResult}. */
-type OwnerDialCounts = Pick<ApplySeedResult, 'ownerDialsAttempted' | 'ownerDialsFailed'>;
+/** What dialing a seed's preferred peers produced — the dial half of an {@link ApplySeedResult}. */
+type PreferredDialCounts = Pick<ApplySeedResult, 'preferredDialsAttempted' | 'preferredDialsFailed'>;
 
 /**
  * Parse each address, dropping (and logging) any that is malformed, so one bad
@@ -282,7 +282,7 @@ export interface SeedBootstrapConfig {
    * sized for the forms that dial inside it. Delivery does not set `runOnLimitedConnection`,
    * so it does not use a limited relayed connection today; the relayed-dial count is the upper
    * bound on the dial it can use, the same choice `CadreNode.controlDialBudget` makes for every
-   * address. It holds only link work because the receiver acks before its owner dials.
+   * address. It holds only link work because the receiver acks before it dials the seed's peers.
    *
    * NOTE: no transfer allowance — a seed is a peer list of a few KB, and `MAX_SEED_SIZE` (1 MiB)
    * is a defensive cap. If seeds ever grow toward that cap, add an allowance the way
@@ -291,7 +291,7 @@ export interface SeedBootstrapConfig {
   seedDeliverTimeoutMs?: number;
   /**
    * Time limits for each peer this service dials from a list of addresses —
-   * {@link SeedBootstrapService.applySeed}'s owner dials and
+   * {@link SeedBootstrapService.applySeed}'s dials of the seed's preferred peers and
    * {@link SeedBootstrapService.deliverSeed}'s dial of a peer id with addresses — per
    * address and per peer (see `peer-dial.ts`). Defaults to {@link DEFAULT_PEER_DIAL_BUDGET}; a `CadreNode`
    * passes its `network.controlCohort` limits.
@@ -311,7 +311,7 @@ export interface SeedEventCallbacks {
    * `seed` is the applied seed itself: the inbound protocol handler applies it
    * INSIDE the service, so this callback is the only seam through which a
    * `CadreNode` sees a wire-delivered seed's contents — which it needs to
-   * retain the owner-flagged peers as cold-start bootstrap dial targets.
+   * retain the preferred peers as cold-start bootstrap dial targets.
    */
   onSeedApplied?: (partyId: string, peersAdded: number, seed: ControlNetworkSeed) => void;
   /** Called when seed application fails */
@@ -834,9 +834,10 @@ export class SeedBootstrapService {
     log('Creating seed for party: %s', this.config.partyId);
 
     // Query all peers from the control database
-    const peers = await this.queryPeers();
+    const selfPeerId = this.libp2pNode.peerId.toString();
+    const peers = await this.queryPeers(selfPeerId);
     if (selfRelayAddr !== null) {
-      addSelfRelayAddr(peers, this.libp2pNode.peerId.toString(), selfRelayAddr);
+      addSelfRelayAddr(peers, selfPeerId, selfRelayAddr);
     }
 
     // Create the seed data (without signature)
@@ -866,9 +867,8 @@ export class SeedBootstrapService {
    * `signerKey` that does NOT come from the seed body: the receiver's
    * node-local {@link SeedBootstrapConfig.trustedOwners} anchor, optionally
    * augmented by pinned keys or TOFU via the configured/overriding
-   * `SeedTrustPolicy`. A forged self-asserting seed — one that merely lists its
-   * own signer as an owner peer — no longer passes, and neither does one signed
-   * by a key a stranger genesis-inserted into the replicated `OwnerKey` table.
+   * `SeedTrustPolicy`. A forged self-signed seed does not pass, and neither does
+   * one signed by a key a stranger genesis-inserted into the replicated `OwnerKey` table.
    *
    * A key accepted via a pin/TOFU is persisted into the anchor (the policy says
    * so via `SeedTrustDecision.anchorAs`), so the next seed from that owner is
@@ -887,13 +887,13 @@ export class SeedBootstrapService {
     if (!merged.success) {
       return merged;
     }
-    return { ...merged, ...await this.dialSeedOwners(seed) };
+    return { ...merged, ...await this.dialPreferredPeers(seed) };
   }
 
   /**
    * The first half of {@link applySeed}: check the signature and the signer's trust, then merge
    * the seed's peer addresses into the peer store. Every rejection happens here, so this result is
-   * what the inbound handler acks with; the owner dials that follow cannot change it.
+   * what the inbound handler acks with; the dials that follow cannot change it.
    */
   private async verifyAndMergeSeed(
     seed: ControlNetworkSeed,
@@ -933,7 +933,7 @@ export class SeedBootstrapService {
       partyId: seed.partyId,
       signerKey: seed.signerKey,
       knownOwnerKeys,
-      // Optional-chained like `dialSeedOwners`: partial libp2p handles (unit-test doubles)
+      // Optional-chained like `dialPreferredPeers`: partial libp2p handles (unit-test doubles)
       // omit `peerId`. A real node always has one, and a proof bound to a real peer id can
       // only fail against '' — the safe direction.
       localPeerId: this.libp2pNode.peerId?.toString() ?? '',
@@ -948,55 +948,56 @@ export class SeedBootstrapService {
 
     const peersAdded = await mergeSeedPeers(this.libp2pNode, seed.peers);
     log('Merged seed: %d peers added', peersAdded);
-    return { success: true, peersAdded, ownerDialsAttempted: 0, ownerDialsFailed: 0 };
+    return { success: true, peersAdded, preferredDialsAttempted: 0, preferredDialsFailed: 0 };
   }
 
   /**
-   * The second half of {@link applySeed}: dial the seed's owner peers to establish connections.
+   * The second half of {@link applySeed}: dial the seed's preferred peers (`SeedPeer.preferred`:
+   * the machine that minted it and every always-on machine) to establish connections.
    *
-   * Best-effort and COUNTED: an owner that is momentarily down leaves this node seeded but
+   * Best-effort and COUNTED: a peer that is momentarily down leaves this node seeded but
    * unconnected, which the caller can only see if the outcome is reported (see
-   * `ApplySeedResult.ownerDialsFailed`). Recovery is not this loop's job —
+   * `ApplySeedResult.preferredDialsFailed`). Recovery is not this loop's job —
    * `CadreNode.dialColdStartBootstrap` retries these same addresses on every control-cohort
    * reconcile pass until the control database has siblings.
    *
    * The inbound handler runs this AFTER it has acked and closed the stream
-   * ({@link handleSeedStream}), because an unreachable owner can take `dialBudget.totalMs`.
+   * ({@link handleSeedStream}), because an unreachable peer can take `dialBudget.totalMs`.
    */
-  private async dialSeedOwners(seed: ControlNetworkSeed): Promise<OwnerDialCounts> {
+  private async dialPreferredPeers(seed: ControlNetworkSeed): Promise<PreferredDialCounts> {
     const node = this.libp2pNode;
     if (!node) {
-      log('Seed service shut down before its owner dials; none attempted');
-      return { ownerDialsAttempted: 0, ownerDialsFailed: 0 };
+      log('Seed service shut down before its dials; none attempted');
+      return { preferredDialsAttempted: 0, preferredDialsFailed: 0 };
     }
-    // `createSeed` projects every non-revoked CadrePeer row, so an owner applying
-    // a seed minted after it joined finds ITSELF in the owner list. Dialing self always
-    // throws, which would report a healthy owner as "seeded but stranded".
+    // `createSeed` projects every non-revoked CadrePeer row, so a preferred machine applying
+    // a seed minted after it joined finds ITSELF in the list. Dialing self always throws,
+    // which would report a healthy node as "seeded but stranded".
     // Optional-chained: partial libp2p handles (unit-test doubles) omit `peerId`,
     // and an undefined self simply matches nothing.
-    // Every one of an owner's addresses is a candidate, each on its own time limit
-    // (`dialPeerAddrs`), so an owner whose first address never answers neither
+    // Every one of a peer's addresses is a candidate, each on its own time limit
+    // (`dialPeerAddrs`), so a peer whose first address never answers neither
     // stalls seed application nor goes undialed at its other addresses. The seed's
-    // addresses carry no peer id; the dial binds each to the owner's.
+    // addresses carry no peer id; the dial binds each to the peer's.
     const selfPeerId = node.peerId?.toString();
-    let ownerDialsAttempted = 0;
-    let ownerDialsFailed = 0;
-    for (const peer of seed.peers.filter(p => p.isOwner)) {
+    let preferredDialsAttempted = 0;
+    let preferredDialsFailed = 0;
+    for (const peer of seed.peers.filter(p => p.preferred)) {
       if (peer.multiaddrs.length === 0 || peer.peerId === selfPeerId) {
         continue;
       }
-      ownerDialsAttempted++;
+      preferredDialsAttempted++;
       try {
         const addrs = parseDialAddrs(peer.multiaddrs);
 
-        log('Dialing owner peer: %s (%d addr(s))', peer.peerId, addrs.length);
-        await dialPeerAddrs(node, peer.peerId, addrs, this.dialBudget, `Owner dial of ${peer.peerId}`);
+        log('Dialing preferred seed peer: %s (%d addr(s))', peer.peerId, addrs.length);
+        await dialPeerAddrs(node, peer.peerId, addrs, this.dialBudget, `Seed dial of ${peer.peerId}`);
       } catch (error) {
-        // Counted even when the owner reaches us only through our own relay: this node is still
-        // not connected to it, and `ownerDialsFailed` is how the caller learns that.
-        ownerDialsFailed++;
+        // Counted even when the peer reaches us only through our own relay: this node is still
+        // not connected to it, and `preferredDialsFailed` is how the caller learns that.
+        preferredDialsFailed++;
         if (error instanceof SelfRelayOnlyError) {
-          log('Owner peer %s is reachable only by relaying through this node; waiting for it to reconnect', peer.peerId);
+          log('Seed peer %s is reachable only by relaying through this node; waiting for it to reconnect', peer.peerId);
         } else {
           log('Failed to dial peer %s: %o', peer.peerId, error);
         }
@@ -1004,8 +1005,8 @@ export class SeedBootstrapService {
       }
     }
 
-    log('Dialed seed owners: %d/%d owner dial(s) failed', ownerDialsFailed, ownerDialsAttempted);
-    return { ownerDialsAttempted, ownerDialsFailed };
+    log('Dialed preferred seed peers: %d/%d dial(s) failed', preferredDialsFailed, preferredDialsAttempted);
+    return { preferredDialsAttempted, preferredDialsFailed };
   }
 
   /**
@@ -1122,7 +1123,7 @@ export class SeedBootstrapService {
     }
     const peerId = peerIdFromString(target.peerId);
     const addrs = deliveryDialAddrs(target.peerId, target.multiaddrs);
-    await mergeSeedPeers(node, [{ peerId: target.peerId, multiaddrs: target.multiaddrs, isOwner: false }]);
+    await mergeSeedPeers(node, [{ peerId: target.peerId, multiaddrs: target.multiaddrs, preferred: false }]);
     if (addrs.length === 0) {
       return (signal) => node.dialProtocol(peerId, SEED_PROTOCOL, { signal });
     }
@@ -1252,16 +1253,16 @@ export class SeedBootstrapService {
   }
 
   /**
-   * The peers a seed carries: the control database's own projection
+   * The peers a seed `minterPeerId` mints carries: the control database's own projection
    * ({@link ControlDatabase.querySeedPeers}, shared with the cadre invitation redemption
-   * reply), which reads through the revocation filter and flags owners from the replicated
-   * `OwnerKey` table — a dial hint, not a trust decision (the NOTE at `projectSeedPeers`).
+   * reply), which reads through the revocation filter and marks the minter and every
+   * always-on machine preferred — a dial hint, not a trust decision.
    */
-  private async queryPeers(): Promise<SeedPeer[]> {
+  private async queryPeers(minterPeerId: string): Promise<SeedPeer[]> {
     if (!this.controlDatabase) {
       return [];
     }
-    return await this.controlDatabase.querySeedPeers();
+    return await this.controlDatabase.querySeedPeers(minterPeerId);
   }
 
   /**
@@ -1280,14 +1281,14 @@ export class SeedBootstrapService {
 
   /**
    * Read one inbound seed frame, verify and merge it, write the ack and close the
-   * stream, then dial the seed's owners.
+   * stream, then dial the seed's preferred peers.
    *
-   * The ack and the close come BEFORE the owner dials: an unreachable owner can hold
+   * The ack and the close come BEFORE those dials: an unreachable peer can hold
    * a dial for `dialBudget.totalMs` (86 s at the default declared link), which is not
    * link time and does not belong inside the sender's delivery deadline. The close is
    * what releases the sender, which reads the ack to end-of-stream. The stream stays
    * counted in {@link activeStreams} through the dials, so {@link maxConcurrentSeeds}
-   * still bounds concurrent owner-dial phases.
+   * still bounds concurrent dial phases.
    *
    * Hardened against a buggy/compromised own-cadre node: a concurrency cap (over
    * {@link maxConcurrentSeeds}, reply without applying), a read timeout (a peer
@@ -1324,7 +1325,7 @@ export class SeedBootstrapService {
       );
 
       if (merged.success) {
-        await this.dialSeedOwners(seed);
+        await this.dialPreferredPeers(seed);
         this.eventCallbacks.onSeedApplied?.(seed.partyId, merged.peersAdded, seed);
       } else {
         this.eventCallbacks.onSeedError?.(seed.partyId, merged.error ?? 'Unknown error');
