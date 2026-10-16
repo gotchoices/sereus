@@ -145,11 +145,12 @@ async function waitForOffered(node: CadreNode, id: string): Promise<void> {
 	}
 }
 
-/** Genesis on a fresh party: seat this node's own owner key, the production call. */
+/** Genesis on a fresh party: seat this node's own owner key and wire it as its owner signer, the production calls. */
 async function runGenesis(node: CadreNode): Promise<void> {
-	const { publicKeyB64 } = node.getIdentityOwnerKey();
+	const { publicKeyB64, privateKeyB64 } = node.getIdentityOwnerKey();
 	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS,
 		() => node.getControlDatabase()!.ensureOwnerKey(publicKeyB64))).toBe(true);
+	await within('initializeSeedBootstrap() (genesis)', OP_TIMEOUT_MS, () => node.initializeSeedBootstrap(privateKeyB64));
 }
 
 /** Publish an OPEN strand's row and start it locally, as the founding app does. */

@@ -63,6 +63,11 @@ vi.mock('@serfab/cadre-core', async (importOriginal) => {
       fake.stopCalls += 1;
       await fake.stop();
     }
+
+    /** A node whose key is no owner here: nothing wired, as for a member machine. */
+    async wireOwnKeyIfOwner(): Promise<boolean> {
+      return false;
+    }
   }
 
   return { ...actual, CadreNode: FakeCadreNode };

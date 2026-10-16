@@ -21,9 +21,9 @@
  * Built over `CadreNode`'s public surface, so `cadre-node.ts` does not grow by the feature.
  */
 import debug from 'debug';
-import { sign } from '@optimystic/quereus-plugin-crypto';
 import type { PersistedNetworkState } from '@optimystic/db-p2p';
 import type { CadreNode } from './cadre-node.js';
+import type { OwnerSign } from './owner-signer.js';
 import {
 	isPendingJoinConflict,
 	isStrandIdConflict,
@@ -98,10 +98,10 @@ export interface StrandMoveReport {
 	pendingJoinsMoved: number;
 }
 
-/** {@link adoptStrandBundle} refused before any write: the running node's key is not an owner of its party. */
+/** {@link adoptStrandBundle} refused before any write: the running node's owner key is not an owner of its party. */
 export class StrandMoveNotOwnerError extends Error {
 	constructor(readonly partyId: string) {
-		super(`Cannot adopt strands into party ${partyId}: this node's key is not one of its owners, and every re-seated row is owner-signed`);
+		super(`Cannot adopt strands into party ${partyId}: this node's owner key is not one of its owners, and every re-seated row is owner-signed`);
 		this.name = 'StrandMoveNotOwnerError';
 	}
 }
@@ -201,10 +201,11 @@ async function exportFormationInvites(database: ControlDatabase, now: number): P
 }
 
 /**
- * Seat `bundle` in the running node's party, every row owner-signed by the node's own identity
- * key. Refuses up front, with a typed error and no write, when that key is not an owner of the
- * party ({@link StrandMoveNotOwnerError}) or the bundle came from this very party
- * ({@link StrandMoveSamePartyError}).
+ * Seat `bundle` in the running node's party, every row owner-signed through the node's owner
+ * signer (`CadreNode.getOwnerSigner`, wired here by `wireOwnKeyIfOwner` when it is not yet),
+ * in one approval for the whole bundle. Refuses up front, with a typed error and no write, when
+ * that signer's key is not an owner of the party ({@link StrandMoveNotOwnerError}) or the
+ * bundle came from this very party ({@link StrandMoveSamePartyError}).
  *
  * Strands first, then the invitations, then the pending joins. Every write is idempotent (a row
  * already present with the same content is skipped and counted as moved), so the same bundle
@@ -221,11 +222,28 @@ export async function adoptStrandBundle(node: CadreNode, bundle: StrandBundle): 
 	if (bundle.partyId === node.partyId) {
 		throw new StrandMoveSamePartyError(node.partyId);
 	}
-	if (!(await node.wireOwnKeyIfOwner())) {
+	const owner = (await node.wireOwnKeyIfOwner()) ? node.getOwnerSigner() : null;
+	if (owner === null) {
 		throw new StrandMoveNotOwnerError(node.partyId);
 	}
-	const owner = node.getIdentityOwnerKey();
-	const signer: OwnerSigner = { ownerKey: owner.publicKeyB64, signMessage: signMessageWith(owner.privateKeyB64) };
+	const action = `Move ${bundle.strands.length} strand(s) from the cadre ${bundle.partyId} into this one`;
+	return await owner.approve({ partyId: node.partyId, action }, (sign) =>
+		adoptUnderApproval(node, database, bundle, { ownerKey: owner.publicKey, sign }));
+}
+
+/** An open owner approval: the key every row is written under, and the approval's `sign`. */
+interface OwnerApproval {
+	ownerKey: string;
+	sign: OwnerSign;
+}
+
+/** {@link adoptStrandBundle}'s writes, every one signed inside the one approval `approval`. */
+async function adoptUnderApproval(
+	node: CadreNode,
+	database: ControlDatabase,
+	bundle: StrandBundle,
+	approval: OwnerApproval
+): Promise<StrandMoveReport> {
 	const report: StrandMoveReport = {
 		fromPartyId: bundle.partyId,
 		moved: [],
@@ -236,25 +254,20 @@ export async function adoptStrandBundle(node: CadreNode, bundle: StrandBundle): 
 		pendingJoinsMoved: 0
 	};
 	for (const entry of bundle.strands) {
-		await adoptStrand(node, database, signer, entry, report);
+		await adoptStrand(node, database, approval, entry, report);
 	}
 	const settled = settledStrands(report);
 	const now = Date.now();
 	for (const invite of bundle.formationInvites) {
-		await adoptFormationInvite(node, database, invite, settled, report, now);
+		await adoptFormationInvite(node, database, approval.sign, invite, settled, report, now);
 	}
 	for (const join of bundle.pendingJoins) {
-		await adoptPendingJoin(database, signer, join, report);
+		await adoptPendingJoin(database, approval, join, report);
 	}
 	log('adopt(%s ← %s): %d moved, %d refused, %d failed; %d invitation(s) moved, %d dropped; %d pending join(s)',
 		node.partyId, bundle.partyId, report.moved.length, report.refused.length, report.failed.length,
 		report.invitationsMoved, report.invitationsDropped, report.pendingJoinsMoved);
 	return report;
-}
-
-interface OwnerSigner {
-	ownerKey: string;
-	signMessage: (message: Uint8Array) => string;
 }
 
 /** The strands an adoption has decided on, by outcome, for the invitations bound to them. */
@@ -282,7 +295,7 @@ function settledStrands(report: StrandMoveReport): SettledStrands {
 async function adoptStrand(
 	node: CadreNode,
 	database: ControlDatabase,
-	signer: OwnerSigner,
+	approval: OwnerApproval,
 	entry: StrandBundleEntry,
 	report: StrandMoveReport
 ): Promise<void> {
@@ -297,12 +310,12 @@ async function adoptStrand(
 		}
 		await seatStrandPeers(node, entry);
 		if (entry.partyKey !== null) {
-			await node.ensureStrandPartyKey(strandId, entry.partyKey);
+			await node.ensureStrandPartyKey(strandId, entry.partyKey, approval.sign);
 		}
 		if (entry.kind === 'own') {
-			await node.publishStrand(strandId, entry.row.Type, entry.row.MemberPrivateKey ?? undefined);
+			await node.publishStrand(strandId, entry.row.Type, entry.row.MemberPrivateKey ?? undefined, approval.sign);
 		} else {
-			await seatJoinedStrand(database, signer, entry.row, live.joined);
+			await seatJoinedStrand(database, approval, entry.row, live.joined);
 		}
 		report.moved.push(strandId);
 	} catch (error) {
@@ -377,7 +390,7 @@ async function seatStrandPeers(node: CadreNode, entry: StrandBundleEntry): Promi
  */
 async function seatJoinedStrand(
 	database: ControlDatabase,
-	signer: OwnerSigner,
+	approval: OwnerApproval,
 	row: StrandBundleEntry['row'],
 	existing: StrandRow | null
 ): Promise<void> {
@@ -385,7 +398,7 @@ async function seatJoinedStrand(
 		return;
 	}
 	try {
-		await database.insertJoinedStrand(row, signer.ownerKey, signer.signMessage);
+		await database.insertJoinedStrand(row, approval.ownerKey, approval.sign);
 	} catch (error) {
 		if (!isStrandIdConflict(error, 'JoinedStrand')) {
 			throw error;
@@ -412,6 +425,7 @@ async function seatJoinedStrand(
 async function adoptFormationInvite(
 	node: CadreNode,
 	database: ControlDatabase,
+	sign: OwnerSign,
 	invite: FormationInviteEntry,
 	settled: SettledStrands,
 	report: StrandMoveReport,
@@ -434,7 +448,7 @@ async function adoptFormationInvite(
 				expiresAtMs: invite.expiresAtMs ?? undefined,
 				totalUses: invite.usesLeft ?? undefined,
 				strandId: invite.strandId ?? undefined
-			});
+			}, sign);
 		}
 		report.invitationsMoved += 1;
 	} catch (error) {
@@ -464,15 +478,15 @@ async function adoptFormationInvite(
  */
 async function adoptPendingJoin(
 	database: ControlDatabase,
-	signer: OwnerSigner,
+	approval: OwnerApproval,
 	join: PendingJoin,
 	report: StrandMoveReport
 ): Promise<void> {
 	const { StampId: _stampId, outcome, ...request } = join;
 	try {
-		const live = await seatJoinRequest(database, signer, request);
+		const live = await seatJoinRequest(database, approval, request);
 		if (live !== null && outcome !== null && live.outcome === null) {
-			await database.recordJoinOutcome(live, outcome, signer.ownerKey, signer.signMessage);
+			await database.recordJoinOutcome(live, outcome, approval.ownerKey, approval.sign);
 		}
 		report.pendingJoinsMoved += 1;
 	} catch (error) {
@@ -487,9 +501,9 @@ async function adoptPendingJoin(
  * own ask, left alone) or a dismissed one whose retired stamp is still held until the reap
  * pass (the party chose not to have it).
  */
-async function seatJoinRequest(database: ControlDatabase, signer: OwnerSigner, request: JoinRequestFields): Promise<PendingJoin | null> {
+async function seatJoinRequest(database: ControlDatabase, approval: OwnerApproval, request: JoinRequestFields): Promise<PendingJoin | null> {
 	try {
-		return await database.insertJoinRequest(request, signer.ownerKey, signer.signMessage);
+		return await database.insertJoinRequest(request, approval.ownerKey, approval.sign);
 	} catch (error) {
 		if (!isPendingJoinConflict(error)) {
 			throw error;
@@ -573,11 +587,6 @@ function requireControlDatabase(node: CadreNode, action: string): ControlDatabas
 		throw new Error(`CadreNode must be started before it can ${action}`);
 	}
 	return database;
-}
-
-function signMessageWith(privateKeyB64: string): (message: Uint8Array) => string {
-	return (message: Uint8Array): string =>
-		sign(message, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
 
 function errorText(error: unknown): string {

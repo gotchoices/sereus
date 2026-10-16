@@ -459,18 +459,30 @@ function ownerKeyAddMessage(partyId: string, key: string, stampId: string): Uint
   return buildAuthorizationMessage('CadreControl.OwnerKey', 'add', partyId, [key, stampId]);
 }
 
-function signGuardedRemoval(
+/**
+ * Signs one owner digest's raw bytes (no pre-hash) and returns a base64url Ed25519 signature:
+ * the callback every owner-signed writer takes. An `OwnerSign` from an open
+ * `OwnerSigner.approve` fits it, and so does a synchronous signer.
+ *
+ * NOTE: writers that read the stamp they sign do so inside the write lock, so the lock is held
+ * across these calls, and a `lockedWithRetry` re-run signs again inside the same approval.
+ * Free for a software signer. If a prompting signer ever holds the lock long enough to stall
+ * other control writes, sign outside the lock and re-check the stamp inside it.
+ */
+export type ControlSign = (message: Uint8Array) => string | Promise<string>;
+
+async function signGuardedRemoval(
   partyId: string,
   tableName: RemovableTable,
   rowKey: string,
   stampId: string,
-  signMessage: (message: Uint8Array) => string
-): GuardedRemoval {
+  signMessage: ControlSign
+): Promise<GuardedRemoval> {
   const ref = { tableName, rowKey, stampId };
   return {
     ref,
-    signature: signMessage(buildAuthorizationMessage(`CadreControl.${tableName}`, 'remove', partyId, [rowKey, stampId])),
-    revocationSignature: signMessage(revocationTombstoneMessage(partyId, ref)),
+    signature: await signMessage(buildAuthorizationMessage(`CadreControl.${tableName}`, 'remove', partyId, [rowKey, stampId])),
+    revocationSignature: await signMessage(revocationTombstoneMessage(partyId, ref)),
   };
 }
 
@@ -805,13 +817,13 @@ interface SignedStatement {
  * `JoinSuccess` / `JoinFailure` row and the signature its `AuthorizedInsert` verifies, over the
  * row's columns in the schema's order (a null column signs as `''`, an integer as its text).
  */
-function signJoinOutcomeInsert(
+async function signJoinOutcomeInsert(
   partyId: string,
   requestStampId: string,
   outcome: JoinOutcome,
   ownerKey: string,
-  signMessage: (message: Uint8Array) => string
-): SignedStatement {
+  signMessage: ControlSign
+): Promise<SignedStatement> {
   const at = String(outcome.RecordedAt);
   const { table, sql, fields, values } = outcome.kind === 'joined'
     ? {
@@ -824,7 +836,7 @@ function signJoinOutcomeInsert(
         fields: [requestStampId, at, outcome.Code, outcome.Reason],
         values: [requestStampId, outcome.RecordedAt, outcome.Code, outcome.Reason],
       };
-  const signature = signMessage(buildAuthorizationMessage(`CadreControl.${table}`, 'add', partyId, fields));
+  const signature = await signMessage(buildAuthorizationMessage(`CadreControl.${table}`, 'add', partyId, fields));
   return { sql, params: [ownerKey, signature, ...values] };
 }
 
@@ -2026,7 +2038,7 @@ export class ControlDatabase {
   async insertOwnerKeyVouched(
     key: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     this.ensureInitialized();
     return await this.mutateCadrePeer('owner-key-add', async () => {
@@ -2043,7 +2055,7 @@ export class ControlDatabase {
         );
       }
       const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
-      const signature = signMessage(ownerKeyAddMessage(this.config.partyId, key, stampId));
+      const signature = await signMessage(ownerKeyAddMessage(this.config.partyId, key, stampId));
       // Bare `exec`: already inside the write lock, which is NOT re-entrant.
       await this.db!.exec(`
         insert into CadreControl.OwnerKey (Key, StampId, VouchOwner, VouchSig)
@@ -2075,7 +2087,7 @@ export class ControlDatabase {
   async deleteOwnerKey(
     key: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     if (key === ownerKey) {
       throw new Error(`Cannot remove owner key ${key}: an owner cannot remove itself`);
@@ -2114,7 +2126,7 @@ export class ControlDatabase {
   async revouchOwnerKey(
     key: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     if (key === ownerKey) {
       throw new Error(`Cannot re-vouch owner key ${key}: an owner cannot re-vouch itself`);
@@ -2126,9 +2138,9 @@ export class ControlDatabase {
         log('revouchOwnerKey: %s is not a live owner here (nothing to re-vouch)', key);
         return false;
       }
-      const removal = signGuardedRemoval(this.config.partyId, 'OwnerKey', key, stampId, signMessage);
+      const removal = await signGuardedRemoval(this.config.partyId, 'OwnerKey', key, stampId, signMessage);
       const freshStampId = generateStampId(this.config.libp2pNode.peerId.toString());
-      const signature = signMessage(ownerKeyAddMessage(this.config.partyId, key, freshStampId));
+      const signature = await signMessage(ownerKeyAddMessage(this.config.partyId, key, freshStampId));
       await this.inTransaction('revouch OwnerKey', async () => {
         await this.execGuardedRemoval(removal, ownerKey);
         await this.db!.exec(`
@@ -2167,7 +2179,7 @@ export class ControlDatabase {
   async removeMachine(
     target: { peerId: string; ownerKey: string | null; inviteKeys: readonly string[] },
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<MachineRemovalWrites> {
     if (target.ownerKey === ownerKey) {
       throw new Error(`Cannot remove owner key ${ownerKey}: an owner cannot remove itself`);
@@ -2212,7 +2224,7 @@ export class ControlDatabase {
    */
   private async signMachineRemovals(
     target: { peerId: string; ownerKey: string | null },
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<GuardedRemoval[]> {
     const retiredByTable = new Map<RevocableTable, Set<string>>();
     for (const tombstone of await this.queryRevocations(false)) {
@@ -2228,7 +2240,7 @@ export class ControlDatabase {
     const removals: GuardedRemoval[] = [];
     const peerStamp = await liveStamp('CadrePeer', target.peerId);
     if (peerStamp !== null) {
-      removals.push(signGuardedRemoval(this.config.partyId, 'CadrePeer', target.peerId, peerStamp, signMessage));
+      removals.push(await signGuardedRemoval(this.config.partyId, 'CadrePeer', target.peerId, peerStamp, signMessage));
     }
     if (target.ownerKey !== null) {
       const ownerStamp = await liveStamp('OwnerKey', target.ownerKey);
@@ -2237,12 +2249,12 @@ export class ControlDatabase {
         if (owners.length <= 1) {
           throw new Error(`Cannot remove owner key ${target.ownerKey}: cannot remove the last owner`);
         }
-        removals.push(signGuardedRemoval(this.config.partyId, 'OwnerKey', target.ownerKey, ownerStamp, signMessage));
+        removals.push(await signGuardedRemoval(this.config.partyId, 'OwnerKey', target.ownerKey, ownerStamp, signMessage));
       }
     }
     const tokenStamp = await liveStamp('DeviceToken', target.peerId);
     if (tokenStamp !== null) {
-      removals.push(signGuardedRemoval(this.config.partyId, 'DeviceToken', target.peerId, tokenStamp, signMessage));
+      removals.push(await signGuardedRemoval(this.config.partyId, 'DeviceToken', target.peerId, tokenStamp, signMessage));
     }
     return removals;
   }
@@ -2270,7 +2282,7 @@ export class ControlDatabase {
     strandId: string,
     type: 'o' | 'c',
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string,
+    signMessage: ControlSign,
     memberPrivateKey?: string
   ): Promise<void> {
     this.ensureInitialized();
@@ -2285,7 +2297,7 @@ export class ControlDatabase {
     // deliberately NOT in the digest — the schema binds it by equality to the
     // verified context.OwnerKey instead (see the constraint's comment).
     const message = buildAuthorizationMessage('CadreControl.Strand', 'add', this.config.partyId, [strandId, type, memberPrivateKey ?? '', stampId]);
-    const signature = signMessage(message);
+    const signature = await signMessage(message);
 
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
     // FounderOwnerKey must equal the signing owner or the constraint rejects the row.
@@ -2328,7 +2340,7 @@ export class ControlDatabase {
   deleteStrand(
     strandId: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     return this.lockedWithRetry(() => this.deleteStrandAndPartyKey(strandId, ownerKey, signMessage), {}, 'strand-delete');
   }
@@ -2348,7 +2360,7 @@ export class ControlDatabase {
   private async deleteStrandAndPartyKey(
     strandId: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     this.ensureInitialized();
     // retry: false — these reads run inside the locked write body (see queryStampId's NOTE).
@@ -2359,10 +2371,10 @@ export class ControlDatabase {
     }
     const partyKeyStamp = await this.queryStampId('StrandPartyKey', strandId, false);
 
-    const strandRemoval = signGuardedRemoval(this.config.partyId, 'Strand', strandId, strandStamp, signMessage);
+    const strandRemoval = await signGuardedRemoval(this.config.partyId, 'Strand', strandId, strandStamp, signMessage);
     const partyKeyRemoval = partyKeyStamp === null
       ? null
-      : signGuardedRemoval(this.config.partyId, 'StrandPartyKey', strandId, partyKeyStamp, signMessage);
+      : await signGuardedRemoval(this.config.partyId, 'StrandPartyKey', strandId, partyKeyStamp, signMessage);
 
     await this.inTransaction('delete Strand', async () => {
       await this.execGuardedRemoval(strandRemoval, ownerKey);
@@ -2400,7 +2412,7 @@ export class ControlDatabase {
     strandId: string,
     privateKey: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<void> {
     this.ensureInitialized();
     log('Inserting strand party key for strand: %s', strandId);
@@ -2411,7 +2423,7 @@ export class ControlDatabase {
     // Field order MUST match the schema's StrandPartyKey `AuthorizedInsert` verify:
     // Id, PrivateKey, StampId.
     const message = buildAuthorizationMessage('CadreControl.StrandPartyKey', 'add', this.config.partyId, [strandId, privateKey, stampId]);
-    const signature = signMessage(message);
+    const signature = await signMessage(message);
 
     await this.execWrite(`
       insert into CadreControl.StrandPartyKey (Id, PrivateKey, StampId)
@@ -2437,7 +2449,7 @@ export class ControlDatabase {
   deleteStrandPartyKey(
     strandId: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     return this.lockedWithRetry(() => this.deleteGuardedRow('StrandPartyKey', strandId, ownerKey, signMessage), {}, 'strand-party-key-delete');
   }
@@ -2457,7 +2469,7 @@ export class ControlDatabase {
   async insertJoinedStrand(
     row: Pick<StrandRow, 'Id' | 'Type' | 'MemberPrivateKey'>,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<void> {
     this.ensureInitialized();
     log('Inserting joined strand: %s (type: %s)', row.Id, row.Type);
@@ -2467,7 +2479,7 @@ export class ControlDatabase {
     // Field order MUST match the schema's JoinedStrand `AuthorizedInsert` verify:
     // Id, Type, MemberPrivateKey ('' when null), StampId.
     const message = buildAuthorizationMessage('CadreControl.JoinedStrand', 'add', this.config.partyId, [row.Id, row.Type, row.MemberPrivateKey ?? '', stampId]);
-    const signature = signMessage(message);
+    const signature = await signMessage(message);
 
     await this.execWrite(`
       insert into CadreControl.JoinedStrand (Id, Type, MemberPrivateKey, StampId)
@@ -2487,7 +2499,7 @@ export class ControlDatabase {
   deleteJoinedStrand(
     strandId: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     return this.lockedWithRetry(() => this.deleteGuardedRow('JoinedStrand', strandId, ownerKey, signMessage), {}, 'joined-strand-delete');
   }
@@ -2502,10 +2514,10 @@ export class ControlDatabase {
   async insertJoinRequest(
     request: JoinRequestFields,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<PendingJoin> {
     this.ensureInitialized();
-    const { written, insert } = this.signJoinRequestInsert(request, ownerKey, signMessage);
+    const { written, insert } = await this.signJoinRequestInsert(request, ownerKey, signMessage);
     await this.execWrite(insert.sql, insert.params, 'join-request-insert');
     log('Join request inserted: %s', request.Id);
     return { ...written, outcome: null };
@@ -2528,10 +2540,10 @@ export class ControlDatabase {
     expected: PendingJoin,
     outcome: JoinOutcome,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<PendingJoin> {
     this.ensureInitialized();
-    const insert = signJoinOutcomeInsert(this.config.partyId, expected.StampId, outcome, ownerKey, signMessage);
+    const insert = await signJoinOutcomeInsert(this.config.partyId, expected.StampId, outcome, ownerKey, signMessage);
     return this.lockedWithRetry(async () => {
       const live = await this.readPendingJoin(expected.Id, false);
       if (live === null || live.StampId !== expected.StampId || live.outcome?.kind !== expected.outcome?.kind) {
@@ -2566,13 +2578,13 @@ export class ControlDatabase {
     expectedStampId: string,
     next: PendingJoinFields,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<PendingJoin> {
     this.ensureInitialized();
     const { outcome, ...request } = next;
-    const removal = signGuardedRemoval(this.config.partyId, 'JoinRequest', next.Id, expectedStampId, signMessage);
-    const { written, insert } = this.signJoinRequestInsert(request, ownerKey, signMessage);
-    const outcomeInsert = outcome === null ? null : signJoinOutcomeInsert(this.config.partyId, written.StampId, outcome, ownerKey, signMessage);
+    const removal = await signGuardedRemoval(this.config.partyId, 'JoinRequest', next.Id, expectedStampId, signMessage);
+    const { written, insert } = await this.signJoinRequestInsert(request, ownerKey, signMessage);
+    const outcomeInsert = outcome === null ? null : await signJoinOutcomeInsert(this.config.partyId, written.StampId, outcome, ownerKey, signMessage);
 
     return this.lockedWithRetry(async () => {
       // retry: false — this runs inside the locked write body (see queryStampId's NOTE).
@@ -2603,7 +2615,7 @@ export class ControlDatabase {
   deletePendingJoin(
     id: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     return this.lockedWithRetry(
       () => this.deleteGuardedRow('JoinRequest', id, ownerKey, signMessage, (stampId) => this.deleteJoinOutcomes(stampId)),
@@ -2614,13 +2626,13 @@ export class ControlDatabase {
    * Mint a fresh stamp for `request` and the owner signature `JoinRequest.AuthorizedInsert`
    * verifies, returning the row as it will be written and its insert.
    */
-  private signJoinRequestInsert(
+  private async signJoinRequestInsert(
     request: JoinRequestFields,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
-  ): { written: JoinRequestRow; insert: SignedStatement } {
+    signMessage: ControlSign
+  ): Promise<{ written: JoinRequestRow; insert: SignedStatement }> {
     const written: JoinRequestRow = { ...request, StampId: generateStampId(this.config.libp2pNode.peerId.toString()) };
-    const signature = signMessage(buildAuthorizationMessage('CadreControl.JoinRequest', 'add', this.config.partyId, joinRequestAddFields(written)));
+    const signature = await signMessage(buildAuthorizationMessage('CadreControl.JoinRequest', 'add', this.config.partyId, joinRequestAddFields(written)));
     const params = [ownerKey, signature, written.Id, written.Invitation, written.Disclosure, written.RequestedAt, written.ExpiresAt, written.StampId];
     return { written, insert: { sql: JOIN_REQUEST_INSERT_SQL, params } };
   }
@@ -2660,7 +2672,7 @@ export class ControlDatabase {
   async insertValidationKey(
     key: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<void> {
     this.ensureInitialized();
     log('Inserting validation key: %s', key);
@@ -2670,7 +2682,7 @@ export class ControlDatabase {
 
     // Field order MUST match the schema's ValidationKey `AuthorizedInsert` verify: Key, StampId.
     const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'add', this.config.partyId, [key, stampId]);
-    const signature = signMessage(message);
+    const signature = await signMessage(message);
 
     await this.execWrite(`
       insert into CadreControl.ValidationKey (Key, StampId)
@@ -2700,7 +2712,7 @@ export class ControlDatabase {
   deleteValidationKey(
     key: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     return this.lockedWithRetry(() => this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage), {}, 'validation-key-delete');
   }
@@ -2752,13 +2764,13 @@ export class ControlDatabase {
       profile: NodeProfile | null;
     },
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     this.ensureInitialized();
     // Stamp is minted from the ADMITTED peer's id, not this node's — the nonce names the
     // row it vouches.
     const stampId = generateStampId(row.peerId);
-    const signature = signMessage(
+    const signature = await signMessage(
       buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', this.config.partyId, [row.peerId, stampId])
     );
     return await this.mutateCadrePeer('peer-insert', async () => {
@@ -2840,7 +2852,7 @@ export class ControlDatabase {
     peerId: string,
     updatedAt: number,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     this.ensureInitialized();
     const stampId = await this.queryStampId('CadrePeer', peerId);
@@ -2848,7 +2860,7 @@ export class ControlDatabase {
       log('reauthorizeCadrePeer: no CadrePeer row for %s (nothing to re-touch)', peerId);
       return false;
     }
-    const signature = signMessage(
+    const signature = await signMessage(
       buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', this.config.partyId, [peerId, stampId])
     );
     await this.mutateCadrePeer('peer-reauthorize', async () => {
@@ -2886,7 +2898,7 @@ export class ControlDatabase {
   deleteCadrePeer(
     peerId: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     return this.mutateCadrePeer('peer-remove', () =>
       this.deleteGuardedRow('CadrePeer', peerId, ownerKey, signMessage));
@@ -2908,7 +2920,7 @@ export class ControlDatabase {
   deleteDeviceToken(
     peerId: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     return this.lockedWithRetry(() => this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage), {}, 'device-token-delete');
   }
@@ -2944,7 +2956,7 @@ export class ControlDatabase {
     table: RemovableTable,
     keyValue: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string,
+    signMessage: ControlSign,
     alongside?: (stampId: string) => Promise<void>
   ): Promise<boolean> {
     this.ensureInitialized();
@@ -2955,7 +2967,7 @@ export class ControlDatabase {
       return false;
     }
 
-    const removal = signGuardedRemoval(this.config.partyId, table, keyValue, stampId, signMessage);
+    const removal = await signGuardedRemoval(this.config.partyId, table, keyValue, stampId, signMessage);
     await this.inTransaction(`delete ${table}`, async () => {
       await alongside?.(stampId);
       await this.execGuardedRemoval(removal, ownerKey);
@@ -3243,25 +3255,28 @@ export class ControlDatabase {
    *
    * Returns how many UPDATE statements ran (`rows.length` on success).
    */
-  reissueRevocations(
+  async reissueRevocations(
     rows: readonly RevocationRow[],
     reissuedAt: number,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<number> {
     this.ensureInitialized();
     // Signatures minted OUTSIDE the locked body: a retried attempt must re-present the
     // exact signed message, never re-mint (the contract on withWriteLock). ReissuedAt
     // rides in the digest as a string — SQL-side it is cast(new.ReissuedAt as text),
     // and every digest field is TEXT on both sides (see buildAuthorizationMessage).
-    const signed = rows.map((row) => ({
-      row,
-      signature: signMessage(buildAuthorizationMessage(
-        'CadreControl.Revocation', 'reissue', this.config.partyId,
-        [row.tableName, row.rowKey, row.stampId, String(reissuedAt)]
-      )),
-    }));
-    return this.lockedWithRetry(async () => {
+    const signed: Array<{ row: RevocationRow; signature: string }> = [];
+    for (const row of rows) {
+      signed.push({
+        row,
+        signature: await signMessage(buildAuthorizationMessage(
+          'CadreControl.Revocation', 'reissue', this.config.partyId,
+          [row.tableName, row.rowKey, row.stampId, String(reissuedAt)]
+        )),
+      });
+    }
+    return await this.lockedWithRetry(async () => {
       // Counter lives INSIDE the locked body so a lockedWithRetry re-run (which
       // re-executes the whole body) starts from zero instead of double-counting.
       let executed = 0;
@@ -3326,10 +3341,10 @@ export class ControlDatabase {
    */
   async openRevocationLedger(
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<RevocationLedgerOpenResult> {
     this.ensureInitialized();
-    const signature = signMessage(revocationTombstoneMessage(this.config.partyId, REVOCATION_LEDGER_MARKER));
+    const signature = await signMessage(revocationTombstoneMessage(this.config.partyId, REVOCATION_LEDGER_MARKER));
     try {
       return await this.lockedWithRetry<RevocationLedgerOpenResult>(async () => {
         if (await this.revocationLedgerFiled()) {
@@ -3707,7 +3722,7 @@ export class ControlDatabase {
     token: string,
     sAppId: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string,
+    signMessage: ControlSign,
     options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string } = {}
   ): Promise<void> {
     this.ensureInitialized();
@@ -3734,7 +3749,7 @@ export class ControlDatabase {
     const message = buildAuthorizationMessage('CadreControl.FormationInvite', 'add', this.config.partyId, [
       token, sAppId, expiresAtField, totalUsesField, validationUrlField, strandIdField, stampId,
     ]);
-    const signature = signMessage(message);
+    const signature = await signMessage(message);
 
     // Persist the canonical ExpiresAt string (datetime parse is idempotent on it) so the
     // signed source-of-truth and the stored value are produced once. StampId is a real,
@@ -4196,7 +4211,7 @@ export class ControlDatabase {
       totalUses?: number | null;
     },
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<CadreInviteRow> {
     this.ensureInitialized();
     const key = requireEd25519PublicKeyB64(invite.key, 'cadre invitation key');
@@ -4211,7 +4226,7 @@ export class ControlDatabase {
     const row: CadreInviteRow = {
       ...signed,
       issuerKey: ownerKey,
-      issuerSig: signMessage(cadreInviteAddMessage(this.config.partyId, signed)),
+      issuerSig: await signMessage(cadreInviteAddMessage(this.config.partyId, signed)),
     };
     await this.lockedWithRetry(() => this.execCadreInviteInsert(row), {}, 'cadre-invite-insert');
     log('Cadre invitation inserted: %s (peer=%s owner=%s)', key, row.peerId ?? 'any', row.grantsOwner);
@@ -4447,7 +4462,7 @@ export class ControlDatabase {
   async withdrawCadreInvite(
     key: string,
     ownerKey: string,
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<boolean> {
     this.ensureInitialized();
     const filed = await this.lockedWithRetry(async (): Promise<RevokedRowRef | null> => {
@@ -4475,7 +4490,7 @@ export class ControlDatabase {
    */
   private async signCadreInviteWithdrawals(
     keys: readonly string[],
-    signMessage: (message: Uint8Array) => string
+    signMessage: ControlSign
   ): Promise<Array<{ ref: RevokedRowRef; signature: string }>> {
     if (keys.length === 0) {
       return [];
@@ -4493,7 +4508,7 @@ export class ControlDatabase {
         continue;
       }
       const ref: RevokedRowRef = { tableName: 'CadreInvite', rowKey: key, stampId };
-      withdrawals.push({ ref, signature: signMessage(revocationTombstoneMessage(this.config.partyId, ref)) });
+      withdrawals.push({ ref, signature: await signMessage(revocationTombstoneMessage(this.config.partyId, ref)) });
     }
     return withdrawals;
   }

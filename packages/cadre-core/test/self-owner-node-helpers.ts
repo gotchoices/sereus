@@ -7,9 +7,9 @@ import type { CadreNodeConfig, StrandFilter } from '../src/types.js';
 
 /**
  * Shared boot for the "self-owner node" starting point several node-level specs need: a
- * `CadreNode` whose libp2p identity key is also its own signing key
- * (`ed25519KeyPairFromLibp2p`), optionally started and enrolled as an `OwnerKey` so the
- * writes it self-signs pass the control schema's authorization constraints.
+ * `CadreNode` whose libp2p identity key is also its owner key (`ed25519KeyPairFromLibp2p`),
+ * optionally started with that key wired as its owner signer and enrolled as an `OwnerKey`
+ * so the writes it signs pass the control schema's authorization constraints.
  *
  * Lifted out of `publish-strand.spec.ts`, `strand-unpublish.spec.ts`,
  * `publish-formation-invite.spec.ts` and `validation-key-enrollment.spec.ts`, which each
@@ -38,7 +38,11 @@ export interface SelfOwnerNodeConfig {
 }
 
 export interface SelfOwnerNodeOptions extends SelfOwnerNodeConfig {
-  /** Enroll the node's own key in `OwnerKey` so its self-signed writes are authorised. Default true. */
+  /**
+   * Enroll the node's own key in `OwnerKey` so its signed writes are authorised. Default true.
+   * The key is wired as the owner signer either way, so an unenrolled node's writes reach the
+   * schema and are refused there.
+   */
   enrollOwner?: boolean;
 }
 
@@ -69,7 +73,8 @@ export async function newUnstartedNode(
 }
 
 /**
- * Start a self-owner node, enrolling its own key in `OwnerKey` unless told otherwise.
+ * Start a self-owner node and wire its own key as its owner signer, enrolling the key in
+ * `OwnerKey` first unless told otherwise.
  *
  * @param partyIdPrefix - See {@link newUnstartedNode}.
  */
@@ -87,6 +92,7 @@ export async function startSelfOwnerNode(
       expect(db).not.toBeNull();
       await db!.insertOwnerKey(started.ownerKey.publicKeyB64);
     }
+    await started.node.initializeSeedBootstrap(started.ownerKey.privateKeyB64);
   } catch (error) {
     // The caller never receives the node, so nothing else can stop it — a leaked libp2p
     // node keeps handles open and can hang the whole vitest run.

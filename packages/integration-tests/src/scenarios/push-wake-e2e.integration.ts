@@ -111,6 +111,7 @@ import {
 	ed25519KeyPairFromLibp2p,
 	signPeerRecord,
 	ed25519PublicKeyB64FromPeerId,
+	softwareOwnerSigner,
 } from '@serfab/cadre-core';
 import type { WakeAck, PeerAddressRecord } from '@serfab/cadre-core';
 import {
@@ -478,7 +479,7 @@ describe('E2E push-wake over the control network', () => {
 			// trust), and O's self-vouched CadrePeer row follows, satisfying every
 			// replicated-schema constraint. Nothing here touches Rx's node-local anchor.
 			await Rx.getControlDatabase()!.insertOwnerKey(oOwnerPub);
-			const pollution = new SeedBootstrapService({ partyId, ownerPrivateKey: oOwnerPriv, ownerPublicKey: oOwnerPub });
+			const pollution = new SeedBootstrapService({ partyId, ownerSigner: softwareOwnerSigner(oOwnerPriv) });
 			await pollution.initialize(Rx.getControlNode()!, Rx.getControlDatabase()!, { registerHandler: false });
 			await pollution.authorizePeer({ peerId: oPeerId, multiaddrs: controlAddrs(O) });
 

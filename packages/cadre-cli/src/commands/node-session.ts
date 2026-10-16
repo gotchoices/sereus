@@ -113,6 +113,10 @@ export async function withConnectedNode(
     // timeout's rejection with no handler attached, and Node turns an unhandled rejection into
     // a process crash — losing the very message the timeout exists to print.
     await Promise.all([node.start(), connected]);
+    // The owner-signed commands (`strand remove`, `validation-key add|remove`) sign through the
+    // node's owner signer, so a node whose identity key is a live owner gets it wired here; any
+    // other node is left unwired and its owner writes refuse.
+    await node.wireOwnKeyIfOwner();
     await action(node);
   } finally {
     clearTimeout(timer);

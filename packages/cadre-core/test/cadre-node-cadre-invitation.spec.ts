@@ -30,7 +30,6 @@ describe('CadreNode.createCadreInvitation', () => {
 
   beforeAll(async () => {
     owner = await startSelfOwnerNode('cadre-invitation-owner-');
-    await owner.node.initializeSeedBootstrap(owner.ownerKey.privateKeyB64);
   }, 60_000);
 
   afterAll(async () => {
@@ -113,7 +112,6 @@ describe('CadreNode.redeemCadreInvitation', () => {
       profile: 'transaction'
     });
     try {
-      await member.node.initializeSeedBootstrap(member.ownerKey.privateKeyB64);
       const { invitation } = await member.node.createCadreInvitation({ grantsOwner: true });
       await device.start();
 

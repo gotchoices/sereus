@@ -54,7 +54,7 @@ import type {
   PendingJoinStatus
 } from './types.js';
 import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS, DEFAULT_CONNECTION_MONITOR } from './types.js';
-import { generatePrivateKey, sign } from '@optimystic/quereus-plugin-crypto';
+import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
 import {
@@ -70,6 +70,7 @@ import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
+import { softwareOwnerSigner, type OwnerSign, type OwnerSigner } from './owner-signer.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
 import { MemoryStrandNetworkStateStore, type StrandNetworkStateStore } from './strand-network-state.js';
 import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
@@ -271,11 +272,6 @@ function unionAddrs(primary: readonly string[], extra: readonly string[]): strin
 }
 
 /**
- * Build the signing callback the `ControlDatabase` writers expect: they hand it the
- * canonical row-bound message BYTES (see `buildAuthorizationMessage`), and it ed25519-signs
- * them directly (no pre-hash) with the owner private key, returning a base64url signature.
- */
-/**
  * One membership refresh's invitation chain ({@link InvitationChain}), loaded at most once
  * and shared by the anchor sync (`OwnerKey` rows) and the membership read (`CadrePeer`
  * rows), each of which calls it only when some row it judges is invitation-admitted.
@@ -292,11 +288,6 @@ type RevocationSource = () => Promise<RevocationRow[]>;
 /** Whether a `CadrePeer` or `OwnerKey` row's proof is an invitation admission rather than an owner voucher (`types.ts` → `CadrePeerRow`, `OwnerKeyRow`). */
 function isInvitationAdmitted(row: { vouchSig: string | null; vouchUsage: string | null }): boolean {
   return row.vouchSig === null && row.vouchUsage !== null;
-}
-
-function signMessageWith(privateKeyB64: string): (message: Uint8Array) => string {
-  return (message: Uint8Array): string =>
-    sign(message, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
 
 /**
@@ -1577,7 +1568,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Construct (or adopt) the node-local trusted-owner anchor and seed the
    * out-of-band pinned keys from `config.trustedOwners`. The anchor's BASE comes
-   * only from out of band — genesis self-trust ({@link initializeSeedBootstrap}),
+   * only from out of band — genesis self-trust ({@link useOwnerSigner}),
    * config pins (here), runtime enrollment pins ({@link trustOwnerKeys}) and a
    * claim; everything else in it is derived from that base along verifiable
    * chains through the replicated `OwnerKey` table ({@link syncOwnerAnchor}),
@@ -1892,7 +1883,7 @@ export class CadreNode implements SAppIdLookup {
    * holds the pins when the reply and the rows that follow are judged), and an
    * embedder calls it with an operator-supplied pin. Idempotent. ('genesis'
    * provenance is reserved for the node's own founding key, seeded internally by
-   * {@link initializeSeedBootstrap}; 'chain' is written only by {@link syncOwnerAnchor}.)
+   * {@link useOwnerSigner}; 'chain' is written only by {@link syncOwnerAnchor}.)
    *
    * Validates every key's shape before trusting any of them (all-or-nothing):
    * a malformed entry anywhere in `keys` rejects the whole call before a
@@ -2947,14 +2938,15 @@ export class CadreNode implements SAppIdLookup {
       list: () => database().queryJoinedStrands(),
       names: async (strandId) => (await database().queryStrand(strandId)) !== null
         || (await database().queryJoinedStrand(strandId)) !== null,
-      canSign: async () => (await this.enrolledOwnerSigningKey()) !== null,
+      canSign: async () => (await this.enrolledOwnerSigner()) !== null,
       publish: async (record) => {
-        const signingKey = await this.enrolledOwnerSigningKey();
-        if (!signingKey) {
+        const signer = await this.enrolledOwnerSigner();
+        if (!signer) {
           throw new Error(`Cannot publish joined strand ${record.Id}: this machine is not an enrolled owner`);
         }
         try {
-          await database().insertJoinedStrand(record, signingKey.publicKeyB64, signMessageWith(signingKey.privateKeyB64));
+          await signer.approve({ partyId: this.partyId, action: `Record the joined strand ${record.Id} for the whole cadre` },
+            (sign) => database().insertJoinedStrand(record, signer.publicKey, sign));
         } catch (error) {
           // Another machine of the party published this join first; its row wins.
           if (!isStrandIdConflict(error, 'JoinedStrand')) {
@@ -2963,9 +2955,10 @@ export class CadreNode implements SAppIdLookup {
         }
       },
       remove: async (strandId) => {
-        const signingKey = await this.enrolledOwnerSigningKey();
-        if (signingKey) {
-          return database().deleteJoinedStrand(strandId, signingKey.publicKeyB64, signMessageWith(signingKey.privateKeyB64));
+        const signer = await this.enrolledOwnerSigner();
+        if (signer) {
+          return await signer.approve({ partyId: this.partyId, action: `Leave the joined strand ${strandId} for the whole cadre` },
+            (sign) => database().deleteJoinedStrand(strandId, signer.publicKey, sign));
         }
         if (await database().queryJoinedStrand(strandId)) {
           throw new Error(
@@ -2980,40 +2973,62 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * This machine's owner signing key when it can make owner-gated control writes: its seed
-   * bootstrap holds an owner key (`SeedBootstrapService.canAuthorize`) and the party's
-   * `OwnerKey` table enrolls it. A phone that ran self-genesis after another machine
-   * founded the party passes the first test and not the second (`runOwnerGenesis` in the
-   * reference apps), and a write it signed would only be refused.
+   * This machine's owner signer when it can make owner-gated control writes: one is wired
+   * ({@link useOwnerSigner}) and the party's `OwnerKey` table enrolls its key. A phone that
+   * ran self-genesis after another machine founded the party passes the first test and not
+   * the second (`runOwnerGenesis` in the reference apps), and a write it signed would only
+   * be refused.
    */
-  private async enrolledOwnerSigningKey(): Promise<Ed25519KeyPair | null> {
-    const signingKey = this.ownerSigningKeyCandidate();
-    if (!signingKey || !this.controlDatabase) {
+  private async enrolledOwnerSigner(): Promise<OwnerSigner | null> {
+    const signer = this.getOwnerSigner();
+    if (!signer || !this.controlDatabase) {
       return null;
     }
-    return (await this.controlDatabase.getOwnerKeys()).has(signingKey.publicKeyB64) ? signingKey : null;
+    return (await this.controlDatabase.getOwnerKeys()).has(signer.publicKey) ? signer : null;
   }
 
   /**
-   * Whether this node can act as an owner of its cadre: its identity key is wired as its
-   * owner signing key ({@link initializeSeedBootstrap}) and enrolled in the live `OwnerKey`
-   * set ({@link enrolledOwnerSigningKey}). What the owner-only flows (`createCadreInvitation`,
-   * `claimNode`, `rentNode`) need; false before `start()`, and on a machine that joined as a
-   * member. The reference apps' "is this device an owner" check.
+   * Whether this node can act as an owner of its cadre: an owner signer is wired
+   * ({@link useOwnerSigner}) and its key is in the live `OwnerKey` set. What the owner-only
+   * flows (`createCadreInvitation`, `claimNode`, `rentNode`) need; false before `start()`,
+   * and on a machine that joined as a member. The reference apps' "is this device an owner"
+   * check.
    */
   async isOwner(): Promise<boolean> {
-    return (await this.enrolledOwnerSigningKey()) !== null;
+    return (await this.enrolledOwnerSigner()) !== null;
   }
 
-  /** {@link enrolledOwnerSigningKey} judged against an owner set the caller has already read. */
-  private ownerSigningKeyEnrolledIn(ownerKeys: ReadonlySet<string>): Ed25519KeyPair | null {
-    const signingKey = this.ownerSigningKeyCandidate();
-    return signingKey !== null && ownerKeys.has(signingKey.publicKeyB64) ? signingKey : null;
+  /** {@link enrolledOwnerSigner} judged against an owner set the caller has already read. */
+  private ownerSignerEnrolledIn(ownerKeys: ReadonlySet<string>): OwnerSigner | null {
+    const signer = this.getOwnerSigner();
+    return signer !== null && ownerKeys.has(signer.publicKey) ? signer : null;
   }
 
-  /** This machine's identity key as an owner signing key, when its seed bootstrap is wired to sign; enrollment not yet checked. */
-  private ownerSigningKeyCandidate(): Ed25519KeyPair | null {
-    return this.seedBootstrapService?.canAuthorize() ? this.getSelfSigningKey() : null;
+  /**
+   * The owner signer {@link useOwnerSigner} wired, or null: every owner signature this node
+   * makes goes through it. Enrollment is not checked ({@link isOwner} does). A caller that
+   * makes several owner writes as one action opens one `approve` on it and hands the
+   * resulting `sign` to the methods that take one (`publishStrand`, `ensureStrandPartyKey`,
+   * `publishFormationInvite`), as `adoptStrandBundle` does.
+   */
+  getOwnerSigner(): OwnerSigner | null {
+    return this.seedBootstrapService?.ownerSigner ?? null;
+  }
+
+  /**
+   * Run `body` inside one approval of `signer` for `action`, or inside the caller's approval
+   * when it passes `sign`, so an owner action made of several writes asks the user once.
+   */
+  private async withOwnerApproval<T>(
+    signer: OwnerSigner,
+    action: string,
+    sign: OwnerSign | undefined,
+    body: (sign: OwnerSign) => Promise<T>
+  ): Promise<T> {
+    if (sign) {
+      return await body(sign);
+    }
+    return await signer.approve({ partyId: this.partyId, action }, body);
   }
 
   /**
@@ -3293,26 +3308,24 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Does the `Strand` row name THIS machine as its founder — i.e. is its
-   * `FounderOwnerKey` this node's own owner key (the key behind its PeerId)?
+   * `FounderOwnerKey` the key of this node's owner signer ({@link getOwnerSigner})?
    * A null/absent column (a consent-seated strand, or a hand-built row) and a
-   * node with no owner key both derive `false`: without a positive match this
-   * machine must attach, never bootstrap. Pure key derivation, no I/O — cheap
+   * node with no owner signer wired both derive `false`: without a positive match this
+   * machine must attach, never bootstrap. Pure key comparison, no I/O — cheap
    * enough for {@link launchStrand}'s tracked-instance early return.
    *
-   * NOTE: reads "one owner key per machine" — the reference model, where the owner
-   * key IS the key behind the PeerId. Two machines running the SAME identity key
+   * NOTE: reads "one owner key per machine". Two machines wired with the SAME owner key
    * would both derive `true` and each bootstrap on its own replica, which is the
-   * double-`Header` hazard this derivation exists to avoid. Unreachable today: that
-   * configuration also gives both machines one PeerId, which already breaks control
-   * networking well before any strand launches. Revisit if machines ever share an
-   * owner key while holding distinct transport identities — the derivation would
-   * then need a per-machine discriminator (the `CadrePeer` PeerId) on the row.
+   * double-`Header` hazard this derivation exists to avoid; `owner-key-label-and-founder-machine`
+   * replaces the key comparison with a per-machine signal. Until then, a strand whose watcher
+   * launch runs before the embedder wires the signer comes up as a joiner, and the
+   * embedder's later `foundStrand` founds the tracked instance in place.
    */
   private isSelfFoundedRow(strand: StrandRow): boolean {
     if (strand.FounderOwnerKey == null) {
       return false;
     }
-    return strand.FounderOwnerKey === this.getSelfSigningKey()?.publicKeyB64;
+    return strand.FounderOwnerKey === this.getOwnerSigner()?.publicKey;
   }
 
   /**
@@ -3324,8 +3337,8 @@ export class CadreNode implements SAppIdLookup {
    * Exposed so the hosting app retains control of owner genesis: cadre-core
    * resolves + protects the identity, then the app sources this pair to drive
    * `ensureOwnerKey(pub)` + `initializeSeedBootstrap(priv)` itself — cadre-core
-   * never silently runs genesis. A future separate-owner slot would return a
-   * distinct key here instead of the identity-derived one.
+   * never silently runs genesis. An app holding a separate owner key wires it with
+   * {@link useOwnerSigner} instead and never calls this.
    *
    * @returns The base64url seed/public-key owner pair.
    * @throws If called before {@link start} has resolved the identity, or when the
@@ -5811,9 +5824,8 @@ export class CadreNode implements SAppIdLookup {
    * fresh publish also clears it for an OPEN strand, but is destructive for a closed one
    * (the key exists nowhere else). No app-data wipe is needed for either.
    *
-   * The insert is signed with the ed25519 key behind this node's PeerId — which
-   * {@link ed25519KeyPairFromLibp2p} also exposes as the node's owner keypair,
-   * so peer identity and owner key are one and the same. That key is also persisted on the
+   * The insert is signed through this node's owner signer ({@link getOwnerSigner}), in one
+   * approval with a closed strand's party-key mint. The signer's key is also persisted on the
    * row as `FounderOwnerKey` (the schema pins the column to the verified signer), which is
    * what later lets any launch derive "this machine is the founder" from the row alone.
    * The key must be enrolled in `OwnerKey` (e.g. via {@link ControlDatabase.ensureOwnerKey}
@@ -5831,16 +5843,18 @@ export class CadreNode implements SAppIdLookup {
    *   {@link addStrand}).
    * @param type - `'o'` for open (default) or `'c'` for closed.
    * @param memberPrivateKey - Optional shared membership (read) key for a closed strand.
+   * @param sign - The `sign` of an owner approval the caller already holds
+   *   ({@link getOwnerSigner}), so a larger action asks once; omitted, this asks for its own.
    * @returns The live `Strand` row — the one just inserted, or the matching one already
    *   there. A closed strand's caller should carry THIS row's `MemberPrivateKey` forward:
    *   on a repeat it is the stored key, not the argument.
-   * @throws if the node is not started, exposes no owner signing key, the id is blank or
+   * @throws if the node is not started, has no owner signer wired, the id is blank or
    *   unusable as a storage scope key (`InvalidStrandIdError` — see `storage-scope.ts`), a
    *   row with the same id holds different content, or the control DB rejects the
    *   (unauthorized) insert.
    */
-  async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string): Promise<StrandRow> {
-    const signingKey = this.requireOwnerSigningKey(`publish strand ${strandId}`);
+  async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string, sign?: OwnerSign): Promise<StrandRow> {
+    const signer = this.requireOwnerSigner(`publish strand ${strandId}`);
     // Trim/reject here so the id that lands matches the one unpublishStrand looks up: it
     // trims too, and an untrimmed row would be unreachable by the same string.
     const trimmed = requireNonBlank(strandId, 'strand id');
@@ -5855,7 +5869,7 @@ export class CadreNode implements SAppIdLookup {
       Id: trimmed,
       Type: type,
       MemberPrivateKey: memberPrivateKey ?? null,
-      FounderOwnerKey: signingKey.publicKeyB64,
+      FounderOwnerKey: signer.publicKey,
     };
 
     // Read first rather than leaning on the insert's collision for BOTH readings. The
@@ -5880,19 +5894,24 @@ export class CadreNode implements SAppIdLookup {
       // is a read-only no-op and a publish interrupted between the row insert and the
       // mint heals here. A row another machine published is that machine's to mint for.
       if (type === 'c' && this.isSelfFoundedRow(matched)) {
-        await this.ensureStrandPartyKey(trimmed);
+        await this.ensureStrandPartyKey(trimmed, undefined, sign);
       }
       return matched;
     }
 
+    return await this.withOwnerApproval(signer, `Publish the strand ${trimmed} to the cadre`, sign,
+      (approved) => this.insertStrandRow(desired, signer, approved));
+  }
+
+  /**
+   * The write half of {@link publishStrand}: insert `desired`, adopting a matching row a
+   * concurrent founder landed first, then mint a closed strand's party key, all under one
+   * owner approval's `sign`.
+   */
+  private async insertStrandRow(desired: StrandRow, signer: OwnerSigner, sign: OwnerSign): Promise<StrandRow> {
+    const { Id: trimmed, Type: type } = desired;
     try {
-      await this.controlDatabase!.insertStrand(
-        trimmed,
-        type,
-        signingKey.publicKeyB64,
-        signMessageWith(signingKey.privateKeyB64),
-        memberPrivateKey
-      );
+      await this.controlDatabase!.insertStrand(trimmed, type, signer.publicKey, sign, desired.MemberPrivateKey ?? undefined);
     } catch (error) {
       // Only the uniqueness collision is a candidate for the idempotent reading; every
       // other rejection (unauthorized signer, retired stamp) must keep surfacing.
@@ -5909,14 +5928,14 @@ export class CadreNode implements SAppIdLookup {
       log('publishStrand(%s): lost a concurrent founding race; re-read the landed row', trimmed);
       return requireMatchingStrandRow(landed, desired, 'landed concurrently from another founder');
     }
-    log('Published strand %s (type %s) to control DB under owner %s', trimmed, type, signingKey.publicKeyB64);
+    log('Published strand %s (type %s) to control DB under owner %s', trimmed, type, signer.publicKey);
     // A closed strand's publish also mints this party's own membership identity key
     // (StrandPartyKey) — the key the founder bootstrap derives Member/Manager from,
-    // deliberately distinct from the shared memberPrivateKey argument above. A failure
+    // deliberately distinct from the row's shared MemberPrivateKey read secret. A failure
     // here surfaces (the strand row has already committed, so a retried publish takes
     // the idempotent branch and heals the mint; so does the next founder launch).
     if (type === 'c') {
-      await this.ensureStrandPartyKey(trimmed);
+      await this.ensureStrandPartyKey(trimmed, undefined, sign);
     }
     return desired;
   }
@@ -6066,20 +6085,18 @@ export class CadreNode implements SAppIdLookup {
    * step, not a widening of this method.
    *
    * @param strandId - The `Strand` row id to remove (as passed to {@link publishStrand}).
-   * @throws if the node is not started, exposes no owner signing key, the id is blank, or
+   * @throws if the node is not started, has no owner signer wired, the id is blank, or
    *   the signer is not an enrolled owner (the schema's `Strand.AuthorizedDelete` rejects
    *   the write and the row survives). A rejection does NOT imply the row survived: the
    *   local stop runs after the control-plane delete has already committed, so a failure
    *   there throws over a completed removal.
    */
   async unpublishStrand(strandId: string): Promise<void> {
-    const signingKey = this.requireOwnerSigningKey(`unpublish strand ${strandId}`);
+    const signer = this.requireOwnerSigner(`unpublish strand ${strandId}`);
     const trimmed = requireNonBlank(strandId, 'strand id');
-    const removed = await this.controlDatabase!.deleteStrand(
-      trimmed,
-      signingKey.publicKeyB64,
-      signMessageWith(signingKey.privateKeyB64)
-    );
+    // One approval: the strand delete and its party key's, each with its tombstone.
+    const removed = await signer.approve({ partyId: this.partyId, action: `Remove the strand ${trimmed} from the cadre` },
+      (sign) => this.controlDatabase!.deleteStrand(trimmed, signer.publicKey, sign));
     // Gate on `removed`: the absent-row no-op wrote nothing, so warning about an
     // unreplicated deletion there would send an operator chasing a phantom.
     if (removed && this.committedAlone()) {
@@ -6122,12 +6139,12 @@ export class CadreNode implements SAppIdLookup {
     // row is already gone — there is nothing to suppress — and an id re-published before
     // the next poll's suppression cleanup would then never be offered again this session.
     // (Same reasoning as handleStrandRemoved, which also avoids stopStrand's `_running`
-    // guard; here the guard is already satisfied by requireOwnerSigningKey above.)
+    // guard; here the guard is already satisfied by requireOwnerSigner above.)
     await this.strandWatcher?.forcePoll();
     if (this.strandManager.getInstance(trimmed)) {
       await this.detachStrand(trimmed);
     }
-    log('Unpublished strand %s from control DB under owner %s', trimmed, signingKey.publicKeyB64);
+    log('Unpublished strand %s from control DB under owner %s', trimmed, signer.publicKey);
   }
 
   /**
@@ -6154,11 +6171,13 @@ export class CadreNode implements SAppIdLookup {
    *   `generateStrandMemberKey` mints). When a row already holds a DIFFERENT key this
    *   throws — a party has one identity per strand; rotation is a deliberate
    *   remove-then-insert, not a silent swap.
+   * @param sign - The `sign` of an owner approval the caller already holds; omitted, a
+   *   mint asks for its own (a stored key asks for none).
    * @returns The live party key: the one just seated, or the stored one.
    */
-  async ensureStrandPartyKey(strandId: string, partyMemberPrivateKey?: string): Promise<string> {
+  async ensureStrandPartyKey(strandId: string, partyMemberPrivateKey?: string, sign?: OwnerSign): Promise<string> {
     const trimmed = requireNonBlank(strandId, 'strand id');
-    const signingKey = this.requireOwnerSigningKey(`seat a party key for strand ${trimmed}`);
+    const signer = this.requireOwnerSigner(`seat a party key for strand ${trimmed}`);
     const existing = await this.controlDatabase!.queryStrandPartyKey(trimmed);
     if (existing !== null) {
       if (partyMemberPrivateKey !== undefined && partyMemberPrivateKey !== existing) {
@@ -6173,8 +6192,8 @@ export class CadreNode implements SAppIdLookup {
     }
     const key = partyMemberPrivateKey ?? await generateStrandMemberKey();
     try {
-      await this.controlDatabase!.insertStrandPartyKey(
-        trimmed, key, signingKey.publicKeyB64, signMessageWith(signingKey.privateKeyB64));
+      await this.withOwnerApproval(signer, `Seat this cadre's membership key for the strand ${trimmed}`, sign,
+        (approved) => this.controlDatabase!.insertStrandPartyKey(trimmed, key, signer.publicKey, approved));
     } catch (error) {
       // The read and the insert are not atomic; a concurrent seat of the same strand's
       // key can land in between. Adopt the landed row when it satisfies this request —
@@ -6187,7 +6206,7 @@ export class CadreNode implements SAppIdLookup {
       log('ensureStrandPartyKey(%s): lost a concurrent seat race; adopting the landed key', trimmed);
       return landed;
     }
-    log('Seated strand party key for %s under owner %s', trimmed, signingKey.publicKeyB64);
+    log('Seated strand party key for %s under owner %s', trimmed, signer.publicKey);
     return key;
   }
 
@@ -6241,29 +6260,26 @@ export class CadreNode implements SAppIdLookup {
    * from this row. A host minting a closed-strand invite does both (mint +
    * publish), exactly as the integration harness's `createInvitation` does.
    *
-   * Signs with the same self-owner key as {@link publishStrand} (the ed25519
-   * key behind this node's PeerId, which must be an enrolled `OwnerKey`).
-   * Throws loudly if the node isn't started or exposes no signing key.
+   * Signs through the same owner signer as {@link publishStrand}, whose key must be an
+   * enrolled `OwnerKey`. Throws loudly if the node isn't started or has no owner signer wired.
    *
    * @param token - Invitation token (the `FormationInvite` primary key); use the
    *   `token` of the {@link OpenInvitation} from {@link createOpenInvitation}.
    * @param sAppId - The sApp a redeemed strand will use.
    * @param options - Optional `expiresAtMs` (epoch ms), `totalUses`, `validationUrl`,
    *   `strandId` (bind a closed/pre-existing host strand for provision-then-record).
+   * @param sign - The `sign` of an owner approval the caller already holds; omitted, this
+   *   asks for its own.
    */
   async publishFormationInvite(
     token: string,
     sAppId: string,
-    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string } = {}
+    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string } = {},
+    sign?: OwnerSign
   ): Promise<void> {
-    const signingKey = this.requireOwnerSigningKey(`publish formation invite ${token}`);
-    await this.controlDatabase!.insertFormationInvite(
-      token,
-      sAppId,
-      signingKey.publicKeyB64,
-      signMessageWith(signingKey.privateKeyB64),
-      options
-    );
+    const signer = this.requireOwnerSigner(`publish formation invite ${token}`);
+    await this.withOwnerApproval(signer, `Publish an invitation to the app ${sAppId}`, sign,
+      (approved) => this.controlDatabase!.insertFormationInvite(token, sAppId, signer.publicKey, approved, options));
     // A host may publish an invite whose token was minted elsewhere; registering
     // it locally opens the connection gate's formation exemption immediately
     // rather than waiting for the durable row to become readable.
@@ -6271,7 +6287,7 @@ export class CadreNode implements SAppIdLookup {
       token,
       options.expiresAtMs ?? Number.POSITIVE_INFINITY
     );
-    log('Published formation invite %s (sApp %s) under owner %s', token, sAppId, signingKey.publicKeyB64);
+    log('Published formation invite %s (sApp %s) under owner %s', token, sAppId, signer.publicKey);
   }
 
   /**
@@ -6282,10 +6298,10 @@ export class CadreNode implements SAppIdLookup {
    * — this is how a party says which outside approver it trusts. Without an enrollment,
    * every such invitation is unredeemable.
    *
-   * Signs with the same self-owner key as {@link publishStrand} (the ed25519 key behind
-   * this node's PeerId, which must be an enrolled `OwnerKey`). Throws loudly if the node
-   * isn't started, exposes no signing key, or the key is blank — a blank key would reach
-   * the database and fail the signature CHECK as an opaque constraint error.
+   * Signs through the same owner signer as {@link publishStrand}, whose key must be an
+   * enrolled `OwnerKey`. Throws loudly if the node isn't started, has no owner signer wired,
+   * or the key is blank — a blank key would reach the database and fail the signature CHECK
+   * as an opaque constraint error.
    *
    * Enrolling this node's OWN owner key is permitted and harmless: the domain/action tags
    * baked into each authorization digest mean an owner-key signature can never satisfy the
@@ -6300,14 +6316,11 @@ export class CadreNode implements SAppIdLookup {
    * @param key - Approver public key to enroll (base64url ed25519 public key).
    */
   async enrollValidationKey(key: string): Promise<void> {
-    const signingKey = this.requireOwnerSigningKey('enroll a validation key');
+    const signer = this.requireOwnerSigner('enroll a validation key');
     const trimmed = requireEd25519PublicKeyB64(key, 'validation key');
-    await this.controlDatabase!.insertValidationKey(
-      trimmed,
-      signingKey.publicKeyB64,
-      signMessageWith(signingKey.privateKeyB64)
-    );
-    log('Enrolled validation key %s under owner %s', trimmed, signingKey.publicKeyB64);
+    await signer.approve({ partyId: this.partyId, action: `Trust the approver key ${trimmed}` },
+      (sign) => this.controlDatabase!.insertValidationKey(trimmed, signer.publicKey, sign));
+    log('Enrolled validation key %s under owner %s', trimmed, signer.publicKey);
   }
 
   /**
@@ -6327,20 +6340,17 @@ export class CadreNode implements SAppIdLookup {
    * @param key - Approver public key to remove (base64url ed25519 public key).
    */
   async removeValidationKey(key: string): Promise<void> {
-    const signingKey = this.requireOwnerSigningKey('remove a validation key');
+    const signer = this.requireOwnerSigner('remove a validation key');
     const trimmed = requireNonBlank(key, 'validation key');
-    await this.controlDatabase!.deleteValidationKey(
-      trimmed,
-      signingKey.publicKeyB64,
-      signMessageWith(signingKey.privateKeyB64)
-    );
-    log('Removed validation key %s under owner %s', trimmed, signingKey.publicKeyB64);
+    await signer.approve({ partyId: this.partyId, action: `Stop trusting the approver key ${trimmed}` },
+      (sign) => this.controlDatabase!.deleteValidationKey(trimmed, signer.publicKey, sign));
+    log('Removed validation key %s under owner %s', trimmed, signer.publicKey);
   }
 
   /**
    * The approver keys currently enrolled, sorted. Read-only, so unlike
-   * {@link enrollValidationKey} / {@link removeValidationKey} it needs no owner signing
-   * key — only a started node.
+   * {@link enrollValidationKey} / {@link removeValidationKey} it needs no owner signer —
+   * only a started node.
    */
   async listValidationKeys(): Promise<string[]> {
     if (!this._running || !this.controlDatabase) {
@@ -6350,30 +6360,29 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Resolve the owner keypair every owner-signed control write needs — {@link publishStrand},
-   * {@link unpublishStrand}, {@link publishFormationInvite}, {@link enrollValidationKey},
-   * {@link removeValidationKey}
-   * — failing loudly in one two-part shape (not started / no signing key, naming owner
-   * genesis as the fix). Narrows `controlDatabase` for the caller: a non-null return means
+   * The owner signer every owner-signed strand write needs — {@link publishStrand},
+   * {@link unpublishStrand}, {@link ensureStrandPartyKey}, {@link publishFormationInvite},
+   * {@link enrollValidationKey}, {@link removeValidationKey} — failing loudly in one two-part
+   * shape (not started / no signer wired, naming the wiring call as the fix). Enrollment is the
+   * schema's to judge. Narrows `controlDatabase` for the caller: a return means
    * `this.controlDatabase` is non-null too.
    *
    * @param action - Infinitive phrase naming the attempted write, e.g. `'enroll a
    *   validation key'`; interpolated into both messages.
    */
-  private requireOwnerSigningKey(action: string): { privateKeyB64: string; publicKeyB64: string } {
+  private requireOwnerSigner(action: string): OwnerSigner {
     if (!this._running || !this.controlDatabase) {
       throw new Error(`CadreNode must be started before attempting to ${action}`);
     }
-    const signingKey = this.getSelfSigningKey();
-    if (!signingKey) {
+    const signer = this.getOwnerSigner();
+    if (!signer) {
       throw new Error(
-        `Cannot ${action}: no owner signing key available ` +
-        '(node identity is unavailable or does not match the node PeerId). Run owner ' +
-        'genesis (ensureOwnerKey + initializeSeedBootstrap) before writing owner-signed ' +
-        'control state.'
+        `Cannot ${action}: the owner signer is not initialized. Wire this node's owner key ` +
+        '(useOwnerSigner, or initializeSeedBootstrap for a key held in memory) before writing ' +
+        'owner-signed control state.'
       );
     }
-    return signingKey;
+    return signer;
   }
 
   /**
@@ -7824,12 +7833,19 @@ export class CadreNode implements SAppIdLookup {
   // ============================================================================
 
   /**
-   * Initialize the seed bootstrap service with an owner key.
-   * Must be called before using seed-related methods that require signing.
+   * Make `signer` this node's owner signer (`owner-signer.ts`): every owner signature the node
+   * produces from now on goes through it — seeds, vouches, removals, invitations, strand and
+   * join rows, and the background re-issues. Builds the owner-capable seed bootstrap service
+   * around it, so this must come before any of those. One signer per node; a node started
+   * with `claim` is refused (its claimant owns it).
    *
-   * @param ownerPrivateKey - The owner's private key (base64url encoded)
+   * Anchors the signer's key in the node-local trusted-owner store as `genesis`: wiring a key
+   * declares it an authority of this party.
+   *
+   * @throws when the node is not started, was started with `claim`, or already holds the
+   *   seed protocol handler (a second wiring, or {@link enableSeedListener} first).
    */
-  async initializeSeedBootstrap(ownerPrivateKey: string): Promise<void> {
+  async useOwnerSigner(signer: OwnerSigner): Promise<void> {
     if (!this.controlNode || !this.controlDatabase) {
       throw new Error('CadreNode must be started before initializing seed bootstrap');
     }
@@ -7840,9 +7856,9 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode: a node started with `claim` is owned by its claimant and cannot initialize seed bootstrap with an owner key');
     }
 
-    // A node wiring seed-bootstrap with an owner PRIVATE key is declaring that
-    // key an authority of its own party (founder genesis / self-signing owner)
-    // — anchor it in the node-local store. The in-memory set updates
+    // A node wiring an owner signer is declaring its key an authority of its own
+    // party (founder genesis / self-signing owner) — anchor it in the node-local
+    // store. The in-memory set updates
     // synchronously (see TrustedOwnerStore.trust); only the file persist is
     // fire-and-forget, logged on failure.
     // NOTE: wiring a key that is not a live owner here self-anchors a key that is
@@ -7864,23 +7880,35 @@ export class CadreNode implements SAppIdLookup {
     // identity key alone.
     if (this.trustedOwnerStore) {
       void this.trustedOwnerStore
-        .trust(ed25519PublicKeyFromPrivate(ownerPrivateKey), 'genesis')
+        .trust(signer.publicKey, 'genesis')
         .catch((error) => log('Trusted-owner genesis anchor persist failed: %o', error));
     }
 
     await this.installSeedBootstrapService(new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
-      ownerPrivateKey,
+      ownerSigner: signer,
       ...this.seedServiceBudgets(),
       trustPolicy: this.inboundSeedTrustPolicy(),
       // Seed trust anchors on the node-local store (seeded just above with this
       // node's own genesis key), never on the replicated OwnerKey table.
       ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
     }), this.controlNode, this.controlDatabase);
-    log('Seed bootstrap service initialized');
+    log('Owner signer wired (owner key %s)', signer.publicKey);
     // Embedders wire the owner key after start(), so the runner's first pass usually found
     // this machine not yet an owner; without this it would wait a full poll interval.
     this.pendingJoinRunner?.kick();
+  }
+
+  /**
+   * {@link useOwnerSigner} with a software signer over `ownerPrivateKey` (`softwareOwnerSigner`):
+   * the owner key held in this process's memory. Kept as a convenience because most tests and
+   * the embedders that hold the key themselves wire it this way; one that keeps the key
+   * elsewhere wires its own signer.
+   *
+   * @param ownerPrivateKey - The owner key's 32-byte Ed25519 seed, base64url.
+   */
+  async initializeSeedBootstrap(ownerPrivateKey: string): Promise<void> {
+    await this.useOwnerSigner(softwareOwnerSigner(ownerPrivateKey));
   }
 
   /**
@@ -8377,7 +8405,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * The event callbacks every {@link SeedBootstrapService} this node owns is
-   * wired with — shared by the owner-capable service ({@link initializeSeedBootstrap})
+   * wired with — shared by the owner-capable service ({@link useOwnerSigner})
    * and the listener-only one ({@link enableSeedListener}) so the two cannot drift.
    *
    * A seed applied by the INBOUND protocol handler writes no `CadrePeer` row of
@@ -8532,12 +8560,17 @@ export class CadreNode implements SAppIdLookup {
    * @param multiaddrs - Optional multiaddrs for the peer
    */
   async authorizePeer(peerId: string, multiaddrs?: string[]): Promise<void> {
+    await this.vouchPeer(peerId, multiaddrs);
+  }
+
+  /** {@link authorizePeer}'s body, signing inside the caller's owner approval when it passes `sign` ({@link claimNode}). */
+  private async vouchPeer(peerId: string, multiaddrs: string[] | undefined, sign?: OwnerSign): Promise<void> {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     // The insert notifies the control DB's membership hub, so the per-stream gate
     // has already admitted the just-vouched peer by the time this resolves.
-    await this.seedBootstrapService.authorizePeer({ peerId, multiaddrs });
+    await this.seedBootstrapService.authorizePeer({ peerId, multiaddrs }, sign);
     // Queue for re-replication if this committed local-only (no connected cohort).
     this.noteControlWrite(peerId, 'authorize');
     // NOTE: unlike addDrone, `multiaddrs` is not retained as a dial target: the
@@ -8659,9 +8692,10 @@ export class CadreNode implements SAppIdLookup {
    * when it names anything else; **re-vouch first**, under this node's key, the dependents the
    * caller chose to keep (`ControlDatabase.revouchOwnerKey`, `reauthorizePeer`), so they are
    * never untrusted in between, and stop before the removal if one fails (re-vouches already
-   * made stay, harmlessly); then the removal transaction. Afterwards this node forgets the
-   * machine as a dial target, and the refresh the write notifies hangs up its control
-   * connection ({@link hangUpRevokedControlPeers}) before this resolves.
+   * made stay, harmlessly); then the removal transaction. The re-vouches and the removal are
+   * one owner approval. Afterwards this node forgets the machine as a dial target, and the
+   * refresh the write notifies hangs up its control connection ({@link hangUpRevokedControlPeers})
+   * before this resolves.
    *
    * Not undone by this call: the machine keeps every row and strand block it already synced
    * and the party's strand member keys (`tickets/blocked/decide-removed-machine-strand-access`).
@@ -8685,11 +8719,19 @@ export class CadreNode implements SAppIdLookup {
       log('removeMachine(%s): no live row names it here; nothing to remove', peerId);
       return { removedPeer: false, removedOwnerKey: false, removedDeviceToken: false, withdrawnInvitations: [], revouched: { owners: [], peers: [] } };
     }
-    await this.revouchDependents(service, revouch, rows);
-    const writes = await service.removeMachine({
-      peerId,
-      ownerKey: plan.removesOwnerKey ? plan.machine.publicKey : null,
-      inviteKeys: plan.invitations,
+    const machine = plan.machine;
+    // The plan already refused 'not-an-owner' when no enrolled signer is wired.
+    const signer = service.ownerSigner;
+    if (!signer) {
+      throw new MachineRemovalRefusedError(peerId, 'not-an-owner');
+    }
+    const writes = await signer.approve({ partyId: this.partyId, action: `Remove the machine ${peerId} from the cadre` }, async (sign) => {
+      await this.revouchDependents(service, revouch, rows, sign);
+      return await service.removeMachine({
+        peerId,
+        ownerKey: plan.removesOwnerKey ? machine.publicKey : null,
+        inviteKeys: plan.invitations,
+      }, sign);
     });
     if (writes.removedPeer) {
       // Track + loudly flag a delete that committed local-only (security-relevant).
@@ -8734,7 +8776,7 @@ export class CadreNode implements SAppIdLookup {
       rows,
       owners,
       selfPeerId: this.peerId?.toString() ?? null,
-      selfOwnerKey: this.ownerSigningKeyEnrolledIn(new Set(owners.map((owner) => owner.key)))?.publicKeyB64 ?? null,
+      selfOwnerKey: this.ownerSignerEnrolledIn(new Set(owners.map((owner) => owner.key)))?.publicKey ?? null,
       invites,
       usages,
     });
@@ -8765,9 +8807,10 @@ export class CadreNode implements SAppIdLookup {
     service: SeedBootstrapService,
     revouch: MachineRemovalPlan['dependents'],
     rows: readonly CadrePeerRow[],
+    sign: OwnerSign,
   ): Promise<void> {
     for (const key of revouch.owners) {
-      await service.revouchOwner(key);
+      await service.revouchOwner(key, sign);
       if (this.committedAlone()) {
         log('removeMachine: re-vouch of owner %s committed while ALONE (0 control connections): the re-added ' +
           'owner row is local-only and is not re-issued on cohort growth, so other machines may never see it.', key);
@@ -8776,7 +8819,7 @@ export class CadreNode implements SAppIdLookup {
     for (const dependent of revouch.peers) {
       const row = rows.find((candidate) => candidate.peerId === dependent);
       const updatedAt = row !== undefined && row.updatedAt > 0 ? row.updatedAt : Date.now();
-      await service.reauthorizePeer(dependent, updatedAt);
+      await service.reauthorizePeer(dependent, updatedAt, sign);
     }
   }
 
@@ -8958,9 +9001,10 @@ export class CadreNode implements SAppIdLookup {
    * vouch the node into this cadre and keep its addresses as a dial target. The owner
    * side of the claim-secret entry in the Seed Delivery Protocol (`docs/architecture.md`).
    *
-   * Requires the seed service with an owner key ({@link initializeSeedBootstrap}), as
-   * {@link addDrone} does. The order is the REVERSE of `addDrone`'s: seed first, row
-   * second. A refused claim or a failed delivery therefore leaves no `CadrePeer` row and
+   * Requires the seed service with an owner key ({@link useOwnerSigner}), as
+   * {@link addDrone} does, and like it is one owner approval (the seed and the vouch). The
+   * order is the REVERSE of `addDrone`'s: seed first, row second. A refused claim or a
+   * failed delivery therefore leaves no `CadrePeer` row and
    * no retained dial target behind on this node — a phone that typed the wrong secret,
    * or scanned a node someone else already owns, has nothing to clean up.
    *
@@ -8991,21 +9035,28 @@ export class CadreNode implements SAppIdLookup {
    * @throws {PeerUnreachableError} when the node was never reached.
    */
   async claimNode(target: { peerId: string; multiaddrs: string[]; secret: string }): Promise<void> {
-    if (!this.seedBootstrapService) {
+    const service = this.seedBootstrapService;
+    if (!service) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     const secret = parseClaimSecret(target.secret);
-    const seed = await this.seedBootstrapService.createSeed();
-    const proof = claimProof(secret, target.peerId, seed.signerKey, seedDigest(seed));
-    const ack = await this.seedBootstrapService.deliverSeed(
-      { peerId: target.peerId, multiaddrs: target.multiaddrs }, seed, { claimProof: proof });
-    if (!ack.accepted) {
-      throw new ClaimRefusedError(target.peerId, ack.reason ?? 'no reason given', ack.code);
+    const signer = service.ownerSigner;
+    if (!signer) {
+      throw new Error('Owner key required to create seeds');
     }
-    log('claimNode: %s accepted the claim; vouching it into the cadre', target.peerId);
-    // The wrapper queues the write for re-replication: a phone claiming its first
-    // always-on node has no control connection yet, so the insert commits local-only.
-    await this.authorizePeer(target.peerId, target.multiaddrs);
+    await signer.approve({ partyId: this.partyId, action: `Claim the node ${target.peerId} for the cadre` }, async (sign) => {
+      const seed = await service.createSeed(sign);
+      const proof = claimProof(secret, target.peerId, seed.signerKey, seedDigest(seed));
+      const ack = await service.deliverSeed(
+        { peerId: target.peerId, multiaddrs: target.multiaddrs }, seed, { claimProof: proof });
+      if (!ack.accepted) {
+        throw new ClaimRefusedError(target.peerId, ack.reason ?? 'no reason given', ack.code);
+      }
+      log('claimNode: %s accepted the claim; vouching it into the cadre', target.peerId);
+      // The wrapper queues the write for re-replication: a phone claiming its first
+      // always-on node has no control connection yet, so the insert commits local-only.
+      await this.vouchPeer(target.peerId, target.multiaddrs, sign);
+    });
     this.retainDialTarget(target.peerId, target.multiaddrs, 'claimNode');
     void this.reconcileControlCohort().catch((error) =>
       log('claimNode: reconcile kick after claiming %s failed: %o', target.peerId, error));
@@ -9058,7 +9109,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Mint an owner-signed cadre invitation that a device can redeem at ANY member machine of
    * this party, the owner offline included ({@link redeemCadreInvitation}). Requires the
-   * owner key ({@link initializeSeedBootstrap}).
+   * owner key ({@link useOwnerSigner}).
    *
    * The invitation is an ed25519 keypair: the public half is the `CadreInvite` row's key,
    * the private half rides in the returned bundle as the proof of possession. Whoever holds
@@ -9251,36 +9302,49 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * If this node's identity key is a live `OwnerKey` here, wire it for signing
-   * ({@link initializeSeedBootstrap}) and return true; otherwise change nothing and return
-   * false. For a machine that joined someone else's cadre by invitation: after an
-   * owner-granting redemption, and on every later start. A redemption seats the request's
-   * `peerKey`, the key behind this node's peer id, so the identity key is the one to look for.
+   * If `signer`'s key is a live `OwnerKey` here, wire it ({@link useOwnerSigner}) and return
+   * true; otherwise change nothing and return false. For a machine that joined someone else's
+   * cadre by invitation: after an owner-granting redemption, and on every later start.
+   *
+   * Without `signer` the candidate is the signer already wired, else a software signer over the
+   * node's identity key. The identity default is the interim path for an owner admitted by an
+   * owner-granting `CadreInvite`, which seats the request's `peerKey`, the key behind this
+   * node's peer id (`owner-grant-separate-from-machine-invitation` replaces it).
    *
    * Unlike `ensureOwnerKey` it never inserts an `OwnerKey` row, so a machine that joined a
    * cadre can never genesis-insert itself into it, and a non-owner never anchors its own key.
    * An owner whose key is already wired (an earlier call) is answered true with nothing redone.
    *
    * NOTE: a node running the listener-only seed service ({@link enableSeedListener}) cannot be
-   * wired this way: libp2p takes one seed handler, and {@link initializeSeedBootstrap} would
-   * register a second. Nothing that joins by invitation enables the listener today; if one
-   * does, replace the listener here rather than beside it.
+   * wired this way: libp2p takes one seed handler, and {@link useOwnerSigner} would register a
+   * second. Nothing that joins by invitation enables the listener today; if one does, replace
+   * the listener here rather than beside it.
    *
-   * @throws when the node is not started.
+   * @throws when the node is not started, or when `signer` names a different key from the
+   *   signer already wired (one signer per node).
    */
-  async wireOwnKeyIfOwner(): Promise<boolean> {
+  async wireOwnKeyIfOwner(signer?: OwnerSigner): Promise<boolean> {
     if (!this.controlDatabase || !this._running) {
       throw new Error('CadreNode must be started before wiring its owner key');
     }
-    const signingKey = this.getSelfSigningKey();
-    if (!signingKey || !(await this.controlDatabase.getOwnerKeys()).has(signingKey.publicKeyB64)) {
-      log('wireOwnKeyIfOwner: this node\'s key is not an owner here; not wiring it');
+    const wired = this.getOwnerSigner();
+    const candidate = signer ?? wired ?? this.identityOwnerSigner();
+    if (!candidate || !(await this.controlDatabase.getOwnerKeys()).has(candidate.publicKey)) {
+      log('wireOwnKeyIfOwner: the candidate owner key is not an owner here; not wiring it');
       return false;
     }
-    if (!this.seedBootstrapService?.canAuthorize()) {
-      await this.initializeSeedBootstrap(signingKey.privateKeyB64);
+    if (wired === null) {
+      await this.useOwnerSigner(candidate);
+    } else if (wired.publicKey !== candidate.publicKey) {
+      throw new Error(`wireOwnKeyIfOwner: this node already has the owner key ${wired.publicKey} wired; one owner signer per node`);
     }
     return true;
+  }
+
+  /** A software owner signer over this node's identity key ({@link getSelfSigningKey}), or null on an ephemeral identity. */
+  private identityOwnerSigner(): OwnerSigner | null {
+    const identity = this.getSelfSigningKey();
+    return identity ? softwareOwnerSigner(identity.privateKeyB64) : null;
   }
 
   // ============================================================================
@@ -9522,7 +9586,7 @@ export class CadreNode implements SAppIdLookup {
    */
   async requestJoin(invitation: OpenInvitation, disclosure: StrandFormationDisclosure = {}): Promise<PendingJoinStatus> {
     const { database, runner } = this.requirePendingJoins();
-    const signer = await this.requireOwnerSigner(
+    const signer = await this.requireEnrolledOwnerSigner(
       'requestJoin needs an enrolled owner machine of this party, because the party-wide join request is ' +
       'owner-signed. formStrand(invitation, disclosure) joins once from this machine, with no retries.'
     );
@@ -9536,7 +9600,10 @@ export class CadreNode implements SAppIdLookup {
     }
     const requested = requestedPendingJoin(
       pendingJoinId(invitation.token), this.encodeInvitation(invitation), disclosure, expiresAt, now);
-    const row = await this.recordJoinRequest(database, requested, signer);
+    // The attempt below runs outside the approval: a formation can take a network timeout, and
+    // the outcome it records is the retry loop's own write.
+    const row = await signer.approve({ partyId: this.partyId, action: `Ask to join a strand of the app ${invitation.sAppId}` },
+      (sign) => this.recordJoinRequest(database, requested, signer.publicKey, sign));
     log('requestJoin: pending join %s recorded; attempting now', row.Id);
     return runner.attemptNow(row);
   }
@@ -9558,9 +9625,10 @@ export class CadreNode implements SAppIdLookup {
    */
   async dismissPendingJoin(id: string): Promise<boolean> {
     const { database, runner } = this.requirePendingJoins();
-    const { ownerKey, signMessage } = await this.requireOwnerSigner(
+    const signer = await this.requireEnrolledOwnerSigner(
       'dismissPendingJoin needs an enrolled owner machine of this party: the removal is owner-signed');
-    const removed = await database.deletePendingJoin(id, ownerKey, signMessage);
+    const removed = await signer.approve({ partyId: this.partyId, action: `Dismiss the pending join ${id}` },
+      (sign) => database.deletePendingJoin(id, signer.publicKey, sign));
     runner.forgetRow(id);
     return removed;
   }
@@ -9572,13 +9640,13 @@ export class CadreNode implements SAppIdLookup {
     return { database: this.controlDatabase, runner: this.pendingJoinRunner };
   }
 
-  /** This machine's owner key and signer for an owner-signed control write, or a throw carrying `refusal`. */
-  private async requireOwnerSigner(refusal: string): Promise<{ ownerKey: string; signMessage: (message: Uint8Array) => string }> {
-    const signingKey = await this.enrolledOwnerSigningKey();
-    if (!signingKey) {
+  /** This machine's enrolled owner signer ({@link enrolledOwnerSigner}), or a throw carrying `refusal`. */
+  private async requireEnrolledOwnerSigner(refusal: string): Promise<OwnerSigner> {
+    const signer = await this.enrolledOwnerSigner();
+    if (!signer) {
       throw new Error(refusal);
     }
-    return { ownerKey: signingKey.publicKeyB64, signMessage: signMessageWith(signingKey.privateKeyB64) };
+    return signer;
   }
 
   /**
@@ -9588,7 +9656,8 @@ export class CadreNode implements SAppIdLookup {
   private async recordJoinRequest(
     database: ControlDatabase,
     requested: JoinRequestFields,
-    { ownerKey, signMessage }: { ownerKey: string; signMessage: (message: Uint8Array) => string }
+    ownerKey: string,
+    signMessage: OwnerSign
   ): Promise<PendingJoin> {
     let written: PendingJoin;
     try {
@@ -9622,30 +9691,28 @@ export class CadreNode implements SAppIdLookup {
       }
       return this.controlDatabase;
     };
-    const outcomeSigner = (): Promise<{ ownerKey: string; signMessage: (message: Uint8Array) => string }> =>
-      this.requireOwnerSigner('Cannot record a pending join outcome: this machine is not an enrolled owner of the party');
+    // Each write is its own approval: the retry loop runs unattended.
+    const ownerWrite = async <T>(action: string, write: (ownerKey: string, sign: OwnerSign) => Promise<T>): Promise<T> => {
+      const signer = await this.requireEnrolledOwnerSigner(
+        'Cannot record a pending join outcome: this machine is not an enrolled owner of the party');
+      return await signer.approve({ partyId: this.partyId, action }, (sign) => write(signer.publicKey, sign));
+    };
     this.pendingJoinRunner = new PendingJoinRunner({
       selfId: this.controlNode!.peerId.toString(),
       linkRoundTripMs: this.config.network?.linkRoundTripMs,
-      isOwner: async () => (await this.enrolledOwnerSigningKey()) !== null,
+      isOwner: () => this.isOwner(),
       // NOTE: one owner-key read and one pending-join read (three tables) per pass (30 s); for a
       // party that never asked for a join the second reads never-written blocks, which consults
       // the cohort. If it shows up in a device profile, poll more slowly while the tables read empty.
       readRows: () => database().queryPendingJoins(),
       readRow: (id) => database().queryPendingJoin(id),
       attempt: (join) => this.formStrand(this.pendingJoinInvitation(join), parseStoredDisclosure(join)),
-      record: async (expected, outcome) => {
-        const { ownerKey, signMessage } = await outcomeSigner();
-        return database().recordJoinOutcome(expected, outcome, ownerKey, signMessage);
-      },
-      rewrite: async (expectedStampId, next) => {
-        const { ownerKey, signMessage } = await outcomeSigner();
-        return database().rewritePendingJoin(expectedStampId, next, ownerKey, signMessage);
-      },
-      remove: async (id) => {
-        const { ownerKey, signMessage } = await outcomeSigner();
-        return database().deletePendingJoin(id, ownerKey, signMessage);
-      },
+      record: (expected, outcome) => ownerWrite(`Record the outcome of the pending join ${expected.Id}`,
+        (ownerKey, sign) => database().recordJoinOutcome(expected, outcome, ownerKey, sign)),
+      rewrite: (expectedStampId, next) => ownerWrite(`Re-send the pending join ${next.Id} to the cadre`,
+        (ownerKey, sign) => database().rewritePendingJoin(expectedStampId, next, ownerKey, sign)),
+      remove: (id) => ownerWrite(`Clean up the finished pending join ${id}`,
+        (ownerKey, sign) => database().deletePendingJoin(id, ownerKey, sign)),
       isAlone: () => this.committedAlone(),
       sAppIdOf: (row) => this.pendingJoinSAppId(row),
       observeRows: (rows) => this.stageMembershipInvitesFromPendingJoins(rows),

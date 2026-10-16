@@ -121,7 +121,7 @@ export interface MachineRemovalPlanInput {
   rows: readonly CadrePeerRow[];
   owners: readonly OwnerKeyRow[];
   selfPeerId: string | null;
-  /** This node's enrolled owner key (`CadreNode.enrolledOwnerSigningKey`), or null when it cannot sign owner writes. */
+  /** The key of this node's owner signer when it is an enrolled owner (`CadreNode.ownerSignerEnrolledIn`), or null when it cannot sign owner writes. */
   selfOwnerKey: string | null;
   invites: readonly CadreInviteStatus[];
   usages: readonly CadreInviteUsageRow[];

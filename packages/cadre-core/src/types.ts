@@ -776,11 +776,11 @@ export interface CadreNodeConfig {
    * form). Mutually exclusive with {@link privateKey}. Absent ⇒ use `privateKey`
    * when set, else libp2p generates an ephemeral key.
    *
-   * In the single-key reference model the owner signing key is *derived from*
-   * the node identity (see {@link CadreNode.getIdentityOwnerKey}), so
-   * protecting the identity in a secure enclave protects the owner key too.
-   * A future separate-owner slot (`ownerKeyId`) is anticipated but not
-   * built here.
+   * The node signs owner writes through whatever owner signer the embedder wires
+   * (`CadreNode.useOwnerSigner`). The single-key reference model wires the key
+   * derived from this identity ({@link CadreNode.getIdentityOwnerKey}), so
+   * protecting the identity in a secure enclave protects that owner key too; a
+   * separate owner key has its own slot (`owner-key-store.ts`).
    */
   keyStore?: KeyStore;
 
@@ -972,7 +972,7 @@ export interface CadreNodeConfig {
    *
    * A node has exactly one cold-start trust source, so `claim` beside a non-empty
    * `trustedOwners.pinnedKeys` or a `seedTrustPolicy` fails `start()` closed, and
-   * `initializeSeedBootstrap` (an owner key) refuses on such a node: a hosted node never
+   * `useOwnerSigner` (an owner key) refuses on such a node: a hosted node never
    * holds an owner key. A claimed node restarted with this still set ignores it (its
    * anchor is non-empty), so the operator need not remove it.
    *
@@ -1025,7 +1025,7 @@ export interface CadreNodeConfig {
     /**
      * Provenance recorded for {@link pinnedKeys}. Default: 'operator'.
      * ('genesis' is reserved for the node's own founding key, seeded
-     * internally by `initializeSeedBootstrap`; 'chain' is written only by the
+     * internally by `useOwnerSigner`; 'chain' is written only by the
      * anchor sync, `CadreNode.syncOwnerAnchor`.)
      */
     pinnedSource?: Exclude<TrustSource, 'genesis' | 'chain'>;

@@ -13,7 +13,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { TestCadreNetwork } from '../harness/index.js';
-import { SeedBootstrapService } from '@serfab/cadre-core';
+import { SeedBootstrapService, softwareOwnerSigner } from '@serfab/cadre-core';
 
 /**
  * Extract raw Ed25519 private key from libp2p protobuf format and encode as base64url.
@@ -48,8 +48,7 @@ describe('Seed Bootstrap', () => {
     // Use the same public key format that was inserted into OwnerKey table
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      ownerPrivateKey: privateKeyBase64,
-      ownerPublicKey: alice.ownerPublicKey  // base64url encoded
+      ownerSigner: softwareOwnerSigner(privateKeyBase64)
     });
 
     // Initialize with the party's libp2p and control database
@@ -89,8 +88,7 @@ describe('Seed Bootstrap', () => {
 
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      ownerPrivateKey: privateKeyBase64,
-      ownerPublicKey: alice.ownerPublicKey
+      ownerSigner: softwareOwnerSigner(privateKeyBase64)
     });
     
     await seedService.initialize(
@@ -120,8 +118,7 @@ describe('Seed Bootstrap', () => {
 
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      ownerPrivateKey: privateKeyBase64,
-      ownerPublicKey: alice.ownerPublicKey
+      ownerSigner: softwareOwnerSigner(privateKeyBase64)
     });
     
     await seedService.initialize(
@@ -148,8 +145,7 @@ describe('Seed Bootstrap', () => {
 
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      ownerPrivateKey: privateKeyBase64,
-      ownerPublicKey: alice.ownerPublicKey
+      ownerSigner: softwareOwnerSigner(privateKeyBase64)
     });
     
     await seedService.initialize(

@@ -20,6 +20,7 @@ import {
 } from '../src/seed-trust-policy.js';
 import { MemoryTrustedOwnerStore, type TrustSource } from '../src/trusted-owner-store.js';
 import { CadreNode } from '../src/cadre-node.js';
+import { softwareOwnerSigner } from '../src/owner-signer.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import type {
   ControlNetworkSeed,
@@ -83,21 +84,12 @@ describe('SeedBootstrapService', () => {
       expect(service).toBeDefined();
     });
 
-    it('should derive public key from private key', () => {
+    it('should create service with an owner signer', () => {
       const service = new SeedBootstrapService({
         partyId,
-        ownerPrivateKey
+        ownerSigner: softwareOwnerSigner(ownerPrivateKey)
       });
-      expect(service).toBeDefined();
-    });
-
-    it('should accept explicit public key', () => {
-      const service = new SeedBootstrapService({
-        partyId,
-        ownerPrivateKey,
-        ownerPublicKey
-      });
-      expect(service).toBeDefined();
+      expect(service.ownerSigner?.publicKey).toBe(ownerPublicKey);
     });
   });
 
@@ -862,14 +854,14 @@ describe('SeedBootstrapService Helper Methods', () => {
   });
 
   describe('removePeer', () => {
-    it('requires an owner private key', async () => {
+    it('requires an owner signer', async () => {
       const service = new SeedBootstrapService({ partyId });
       await expect(service.removePeer('12D3KooWTestPeer'))
-        .rejects.toThrow('Owner private key required');
+        .rejects.toThrow('Owner signer required');
     });
 
     it('requires the control database to be initialized', async () => {
-      const service = new SeedBootstrapService({ partyId, ownerPrivateKey });
+      const service = new SeedBootstrapService({ partyId, ownerSigner: softwareOwnerSigner(ownerPrivateKey) });
       await expect(service.removePeer('12D3KooWTestPeer'))
         .rejects.toThrow('Control database not initialized');
     });
@@ -877,17 +869,17 @@ describe('SeedBootstrapService Helper Methods', () => {
 
   describe('authorizePeer', () => {
     it('checks the control database before the owner key', async () => {
-      const service = new SeedBootstrapService({ partyId, ownerPrivateKey });
+      const service = new SeedBootstrapService({ partyId, ownerSigner: softwareOwnerSigner(ownerPrivateKey) });
       await expect(service.authorizePeer({ peerId: '12D3KooWTestPeer' }))
         .rejects.toThrow('Control database not initialized');
     });
   });
 
   describe('reauthorizePeer', () => {
-    it('requires an owner private key even with no control database attached', async () => {
+    it('requires an owner signer even with no control database attached', async () => {
       const service = new SeedBootstrapService({ partyId });
       await expect(service.reauthorizePeer('12D3KooWTestPeer', Date.now()))
-        .rejects.toThrow('Owner private key required');
+        .rejects.toThrow('Owner signer required');
     });
   });
 

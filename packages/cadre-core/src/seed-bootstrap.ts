@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import { digest, sign, verify, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { digest, verify } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p, Connection, PeerId, Stream } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
@@ -43,6 +43,7 @@ import {
   anchoredTrustPolicy,
 } from './seed-trust-policy.js';
 import type { TrustedOwnerStore } from './trusted-owner-store.js';
+import type { OwnerSign, OwnerSigner } from './owner-signer.js';
 
 const log = debug('sereus:cadre:seed-bootstrap');
 
@@ -209,10 +210,12 @@ function deliveryDialAddrs(peerId: string, addrs: readonly string[]): Multiaddr[
 export interface SeedBootstrapConfig {
   /** Party ID for this cadre */
   partyId: string;
-  /** Owner private key for signing seeds and peer authorizations (base64url) */
-  ownerPrivateKey?: string;
-  /** Owner public key (base64url) - derived from private key if not provided */
-  ownerPublicKey?: string;
+  /**
+   * The owner signer every seed and owner-signed write of this service goes through
+   * (`owner-signer.ts`). Unset for a listener-only service, which receives and applies seeds
+   * but refuses every owner write.
+   */
+  ownerSigner?: OwnerSigner;
   /**
    * Trust anchor for incoming seeds. Decides whether a signature-verified
    * `signerKey` should be trusted, against the receiver's anchored owner
@@ -316,7 +319,6 @@ export class SeedBootstrapService {
   private readonly config: SeedBootstrapConfig;
   private libp2pNode: Libp2p | null = null;
   private controlDatabase: ControlDatabase | null = null;
-  private readonly ownerPublicKey: string | null;
   private readonly trustPolicy: SeedTrustPolicy;
   private readonly seedReadTimeoutMs: number;
   private readonly maxConcurrentSeeds: number;
@@ -333,19 +335,6 @@ export class SeedBootstrapService {
     this.maxConcurrentSeeds = config.maxConcurrentSeeds ?? DEFAULT_MAX_CONCURRENT_SEEDS;
     this.seedDeliverTimeoutMs = config.seedDeliverTimeoutMs ?? relayedRequestBudgetMs(config.linkRoundTripMs);
     this.dialBudget = config.dialBudget ?? DEFAULT_PEER_DIAL_BUDGET;
-
-    // Derive public key from private key if not provided
-    if (config.ownerPrivateKey && !config.ownerPublicKey) {
-      this.ownerPublicKey = getPublicKey(
-        config.ownerPrivateKey,
-        'ed25519',
-        'base64url',
-        'base64url'
-      ) as string;
-    } else {
-      this.ownerPublicKey = config.ownerPublicKey ?? null;
-    }
-
     log('SeedBootstrapService created for party: %s', config.partyId);
   }
 
@@ -358,15 +347,19 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Whether this service holds an owner private key, i.e. can produce the
-   * owner signatures that gate `CadrePeer` / `DeviceToken` inserts, deletes,
-   * and re-authorizations. A seed-listener-only service (`enableSeedListener`,
-   * no owner key) returns false: it can receive/apply seeds but cannot author
-   * or re-issue owner writes. Used by the write-while-alone re-replication
-   * drain to skip owner work on a non-owner node.
+   * Whether this service holds an owner signer, i.e. can produce the owner signatures that
+   * gate `CadrePeer` / `DeviceToken` inserts, deletes, and re-authorizations. A
+   * seed-listener-only service (`enableSeedListener`, no signer) returns false: it can
+   * receive/apply seeds but cannot author or re-issue owner writes. Used by the
+   * write-while-alone re-replication drain to skip owner work on a non-owner node.
    */
   canAuthorize(): boolean {
-    return !!this.config.ownerPrivateKey;
+    return this.config.ownerSigner !== undefined;
+  }
+
+  /** The owner signer this service was built with, or null for a listener-only service. */
+  get ownerSigner(): OwnerSigner | null {
+    return this.config.ownerSigner ?? null;
   }
 
   /**
@@ -374,7 +367,7 @@ export class SeedBootstrapService {
    *
    * `registerHandler` (default true) gates registration of the shared inbound
    * `/sereus/seed/1.0.0` handler on `libp2pNode`. Persistent services
-   * (`initializeSeedBootstrap`, `enableSeedListener`) own that handler and leave
+   * (`CadreNode.useOwnerSigner`, `enableSeedListener`) own that handler and leave
    * it on. The throwaway temp service CadreNode builds in `applySeed` passes
    * `false`: it only needs the stored `libp2pNode` / `controlDatabase` for
    * dialing and known-key lookup, and must NOT bind a discarded closure to the
@@ -412,8 +405,11 @@ export class SeedBootstrapService {
    * `UpdatedAt` but no self-signature (`Sig` null) — the owner cannot produce
    * the peer's self-signature, so the peer must self-publish (see
    * {@link CadreNode.registerSelf}) before the row resolves.
+   *
+   * @param sign - The signature function of an owner approval the caller already holds, so a
+   *   multi-step action asks once; omitted, this write asks for its own approval.
    */
-  async authorizePeer(options: AuthorizePeerOptions): Promise<void> {
+  async authorizePeer(options: AuthorizePeerOptions, sign?: OwnerSign): Promise<void> {
     const { peerId, multiaddrs } = options;
     log('Authorizing peer: %s', peerId);
     // CadrePeer.Multiaddr stores a comma-joined list; use '' when no addrs provided.
@@ -425,7 +421,7 @@ export class SeedBootstrapService {
       updatedAt: Date.now(),
       sig: null,
       profile: null,
-    });
+    }, `Add the machine ${peerId} to the cadre`, sign);
     log('Peer %s authorized successfully', peerId);
   }
 
@@ -442,7 +438,7 @@ export class SeedBootstrapService {
    *   in which case the row in the database is NOT this record and carries whatever
    *   `Sig` that writer had, so the caller must self-update to publish its signature.
    */
-  async insertSelfPeerRecord(record: PeerAddressRecord): Promise<boolean> {
+  async insertSelfPeerRecord(record: PeerAddressRecord, sign?: OwnerSign): Promise<boolean> {
     return await this.insertCadrePeerRow({
       peerId: record.peerId,
       publicKey: record.publicKey,
@@ -450,19 +446,18 @@ export class SeedBootstrapService {
       updatedAt: record.updatedAt,
       sig: record.sig,
       profile: record.profile,
-    });
+    }, 'Publish this machine\'s own address record', sign);
   }
 
   /**
-   * Shared owner-signed `CadrePeer` INSERT — the row fields and the owner-key
+   * Shared owner-signed `CadrePeer` INSERT — the row fields and the owner-signer
    * precondition; the stamp mint, voucher signature, write lock, existence check and
    * membership notify are all {@link ControlDatabase.insertCadrePeer}'s (see there for
    * the anti-replay and insert-race rationale). No `CadrePeer` write may bypass that
    * method: the write is what admits the peer's traffic.
    *
-   * The DB check precedes the owner-key check here, matching the order this method has
-   * always surfaced them (the owner-key error used to come out of the signer, after the
-   * DB check).
+   * The DB check precedes the owner-signer check here, matching the order this method has
+   * always surfaced them.
    *
    * @returns `true` when this call performed the INSERT, `false` when the row was
    *   already seated by a concurrent writer. The loser needs to know: an authorize seats
@@ -476,14 +471,11 @@ export class SeedBootstrapService {
     updatedAt: number;
     sig: string | null;
     profile: NodeProfile | null;
-  }): Promise<boolean> {
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    const ownerKey = this.requireOwnerPublicKey();
-    return await this.controlDatabase.insertCadrePeer(
-      row, ownerKey, message => this.signMessageBytes(message),
-    );
+  }, action: string, sign: OwnerSign | undefined): Promise<boolean> {
+    const controlDatabase = this.requireControlDatabase();
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    return await this.withOwnerSign(action, sign, (approved) =>
+      controlDatabase.insertCadrePeer(row, ownerKey, approved));
   }
 
   /**
@@ -503,17 +495,17 @@ export class SeedBootstrapService {
    * fresh signature — unaffected by the cleared row's retired stamp
    * (`DeviceToken.NotRevoked`).
    */
-  async insertSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
+  async insertSelfDeviceToken(record: DeviceTokenRecord, sign?: OwnerSign): Promise<void> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
     const stampId = generateStampId(record.peerId);
-    const signature = this.signDigest(deviceTokenAddDigest(this.config.partyId, { ...record, stampId }));
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    await this.controlDatabase.execWrite(`
+    const digestBytes = uint8ArrayFromString(deviceTokenAddDigest(this.config.partyId, { ...record, stampId }), 'base64url');
+    const signature = await this.withOwnerSign('Publish this machine\'s push token', sign, (approved) => approved(digestBytes));
+    await controlDatabase.execWrite(`
       insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?, ?)
-    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId], 'device-token-insert');
+    `, [ownerKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId], 'device-token-insert');
     log('Device token inserted (owner-signed): %s', record.peerId);
   }
 
@@ -535,79 +527,51 @@ export class SeedBootstrapService {
    * Both digests, the stamp read, and the transaction come from
    * {@link ControlDatabase.deleteDeviceToken} — one shared implementation across
    * `CadrePeer` / `DeviceToken` / `Strand` / `ValidationKey`. What stays here is the
-   * owner-key precondition; a no-op on an already-absent row is the shared body's
+   * owner-signer precondition; a no-op on an already-absent row is the shared body's
    * behavior, and unlike {@link removePeer} nothing here rides on it.
    */
-  async deleteDeviceToken(peerId: string): Promise<void> {
-    // Fail fast on a keyless service BEFORE the DB read, so a non-owner gets the
-    // owner-key error rather than a silent no-op on an absent row.
-    const ownerKey = this.requireOwnerPublicKey();
+  async deleteDeviceToken(peerId: string, sign?: OwnerSign): Promise<void> {
+    // Fail fast on a signerless service BEFORE the DB read, so a non-owner gets the
+    // owner-signer error rather than a silent no-op on an absent row.
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    await this.withOwnerSign(`Clear the push token of ${peerId}`, sign, (approved) =>
+      controlDatabase.deleteDeviceToken(peerId, ownerKey, approved));
+  }
+
+  /**
+   * Return the configured owner signer, or throw if none is set. The single precondition
+   * gate for every owner-signed write. {@link removePeer} / {@link reauthorizePeer} read the
+   * row's `StampId` from the DB BEFORE they sign, so they call this up front — otherwise a
+   * signerless service would either surface the wrong "Control database not initialized"
+   * error or, worse, silently no-op when the target row is absent (the early
+   * `stampId === null` return) instead of rejecting.
+   */
+  private requireOwnerSigner(): OwnerSigner {
+    if (!this.config.ownerSigner) {
+      throw new Error('Owner signer required to authorize peers');
+    }
+    return this.config.ownerSigner;
+  }
+
+  /** The control database {@link initialize} attached, or a throw. */
+  private requireControlDatabase(): ControlDatabase {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    await this.controlDatabase.deleteDeviceToken(
-      peerId, ownerKey, message => this.signMessageBytes(message),
-    );
+    return this.controlDatabase;
   }
 
   /**
-   * Return the configured owner private key, or throw if none is set. The single
-   * precondition gate for every owner-signed write. {@link removePeer} /
-   * {@link reauthorizePeer} read the row's `StampId` from the DB BEFORE they sign, so
-   * they call this up front — otherwise a keyless service would either surface the
-   * wrong "Control database not initialized" error or, worse, silently no-op when the
-   * target row is absent (the early `stampId === null` return) instead of rejecting.
+   * Run `body` with an owner signature function: the caller's `sign` when it passes one (a
+   * `CadreNode` action already inside its approval), otherwise one approval of this service's
+   * signer for `action`, the plain-words description a prompting signer shows.
    */
-  private requireOwnerPrivateKey(): string {
-    if (!this.config.ownerPrivateKey) {
-      throw new Error('Owner private key required to authorize peers');
+  private async withOwnerSign<T>(action: string, sign: OwnerSign | undefined, body: (sign: OwnerSign) => Promise<T>): Promise<T> {
+    if (sign) {
+      return await body(sign);
     }
-    return this.config.ownerPrivateKey;
-  }
-
-  /**
-   * The owner PUBLIC key that rides in every owner-signed write's context, non-null.
-   *
-   * The field is nullable because a read-only service carries no owner key at all, but the
-   * constructor derives the public key whenever `ownerPrivateKey` is set — so gating on
-   * {@link requireOwnerPrivateKey} first makes the pair inseparable and the second throw
-   * unreachable. Callers that must reject a keyless service BEFORE any DB read use this as
-   * their first line and get the owner-key precondition for free.
-   */
-  private requireOwnerPublicKey(): string {
-    this.requireOwnerPrivateKey();
-    if (!this.ownerPublicKey) {
-      throw new Error('Owner public key required to authorize peers');
-    }
-    return this.ownerPublicKey;
-  }
-
-  /**
-   * Sign a base64url digest with the owner key (ed25519). The single place the
-   * owner private key is applied; callers pass the canonical domain-tagged digest for
-   * the specific action ({@link deviceTokenAddDigest}), or the raw-bytes form via
-   * {@link signMessageBytes}. Throws if no owner key is set.
-   */
-  private signDigest(digestB64url: string): string {
-    return sign(
-      digestB64url,
-      this.requireOwnerPrivateKey(),
-      'ed25519',
-      'base64url',
-      'base64url',
-      'base64url'
-    ) as string;
-  }
-
-  /**
-   * Adapt the control database's raw-bytes `signMessage` callback (every guarded delete
-   * takes one) to {@link signDigest}'s base64url-string form. Both encodings hash to the
-   * same signed bytes (`sign` decodes its base64url input), so a signature minted here
-   * satisfies the same schema CHECK as one from the callers that sign the bytes directly — see
-   * `control-revocation-replay.spec.ts`'s "raw-bytes and digest-string signers agree".
-   */
-  private signMessageBytes(message: Uint8Array): string {
-    return this.signDigest(uint8ArrayToString(message, 'base64url'));
+    return await this.requireOwnerSigner().approve({ partyId: this.config.partyId, action }, body);
   }
 
   /**
@@ -632,16 +596,14 @@ export class SeedBootstrapService {
    * Both digests, the stamp read, the transaction, and the post-commit membership notify
    * come from {@link ControlDatabase.deleteCadrePeer} — one shared implementation across
    * `CadrePeer` / `DeviceToken` / `Strand` / `ValidationKey`. What stays here is the
-   * owner-key precondition and the absent-row gate the notify depends on (below).
+   * owner-signer precondition and the absent-row gate the notify depends on (below).
    */
-  async removePeer(peerId: string): Promise<void> {
-    // Fail fast on a keyless service BEFORE any DB read: a non-owner cannot sign the
-    // remove digest, and this precedence (owner key, then control DB) is what the
+  async removePeer(peerId: string, sign?: OwnerSign): Promise<void> {
+    // Fail fast on a signerless service BEFORE any DB read: a non-owner cannot sign the
+    // remove digest, and this precedence (owner signer, then control DB) is what the
     // unit contract asserts.
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
     // This absent-row gate must stay OUTSIDE the delete, even though the delete repeats it
     // internally: deleteCadrePeer's membership notify fires whenever its body resolves,
     // with no idea whether the body wrote anything, so delegating an absent peer would
@@ -649,7 +611,7 @@ export class SeedBootstrapService {
     // NOTE: deleteCadrePeer re-reads the StampId, so a peer removed by another writer
     // between the two reads no-ops silently yet still notifies. Narrow concurrent-removal
     // window only — the common "already absent" case is caught here.
-    const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
+    const stampId = await controlDatabase.queryCadrePeerStampId(peerId);
     if (stampId === null) {
       log('removePeer: no CadrePeer row for %s (already absent)', peerId);
       return;
@@ -657,83 +619,70 @@ export class SeedBootstrapService {
 
     log('Removing peer: %s', peerId);
 
-    await this.controlDatabase.deleteCadrePeer(
-      peerId, ownerKey, message => this.signMessageBytes(message),
-    );
+    await this.withOwnerSign(`Remove the machine ${peerId} from the cadre`, sign, (approved) =>
+      controlDatabase.deleteCadrePeer(peerId, ownerKey, approved));
 
     log('Peer %s removed successfully (stamp retired)', peerId);
   }
 
   /**
-   * Seat `ownerPublicKey` as a further owner, signed by this service's owner key. The
+   * Seat `ownerPublicKey` as a further owner, signed by this service's owner signer. The
    * liveness check, the stamp, the signature and the membership notify are
-   * {@link ControlDatabase.insertOwnerKeyVouched}'s; what stays here is the owner-key
+   * {@link ControlDatabase.insertOwnerKeyVouched}'s; what stays here is the owner-signer
    * precondition, checked before any read (see {@link removePeer}).
    *
    * @returns `true` when the row was seated, `false` when the key is already a live owner.
    */
-  async addOwner(ownerPublicKey: string): Promise<boolean> {
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    return await this.controlDatabase.insertOwnerKeyVouched(
-      ownerPublicKey, ownerKey, message => this.signMessageBytes(message),
-    );
+  async addOwner(ownerPublicKey: string, sign?: OwnerSign): Promise<boolean> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    return await this.withOwnerSign(`Add owner key ${ownerPublicKey}`, sign, (approved) =>
+      controlDatabase.insertOwnerKeyVouched(ownerPublicKey, ownerKey, approved));
   }
 
   /**
-   * Remove `ownerPublicKey` from the owners, signed by this service's owner key: the delete
+   * Remove `ownerPublicKey` from the owners, signed by this service's owner signer: the delete
    * and its `Revocation` tombstone in one transaction. The by-name refusals (self-removal,
    * the last owner), the digests and the membership notify are
-   * {@link ControlDatabase.deleteOwnerKey}'s; what stays here is the owner-key precondition,
+   * {@link ControlDatabase.deleteOwnerKey}'s; what stays here is the owner-signer precondition,
    * checked before any read (see {@link removePeer}).
    *
    * @returns `true` when the row was removed, `false` when the key is not a live owner here.
    */
-  async removeOwner(ownerPublicKey: string): Promise<boolean> {
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    return await this.controlDatabase.deleteOwnerKey(
-      ownerPublicKey, ownerKey, message => this.signMessageBytes(message),
-    );
+  async removeOwner(ownerPublicKey: string, sign?: OwnerSign): Promise<boolean> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    return await this.withOwnerSign(`Remove owner key ${ownerPublicKey}`, sign, (approved) =>
+      controlDatabase.deleteOwnerKey(ownerPublicKey, ownerKey, approved));
   }
 
   /**
-   * Re-vouch another owner's row under this service's owner key, so it stands on a remaining
+   * Re-vouch another owner's row under this service's owner signer, so it stands on a remaining
    * owner's signature before the owner that added it is removed
    * ({@link ControlDatabase.revouchOwnerKey}; for `CadreNode.removeMachine` only). What stays
-   * here is the owner-key precondition, checked before any read (see {@link removePeer}).
+   * here is the owner-signer precondition, checked before any read (see {@link removePeer}).
    *
    * @returns `true` when the row was re-vouched, `false` when the key is not a live owner here.
    */
-  async revouchOwner(ownerPublicKey: string): Promise<boolean> {
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    return await this.controlDatabase.revouchOwnerKey(
-      ownerPublicKey, ownerKey, message => this.signMessageBytes(message),
-    );
+  async revouchOwner(ownerPublicKey: string, sign?: OwnerSign): Promise<boolean> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    return await this.withOwnerSign(`Re-vouch owner key ${ownerPublicKey}`, sign, (approved) =>
+      controlDatabase.revouchOwnerKey(ownerPublicKey, ownerKey, approved));
   }
 
   /**
-   * Remove a machine completely, signed by this service's owner key: its `CadrePeer` row, its
+   * Remove a machine completely, signed by this service's owner signer: its `CadrePeer` row, its
    * `OwnerKey` row when `target.ownerKey` names one, its `DeviceToken` row, and the
    * withdrawal of every invitation in `target.inviteKeys`, all in one transaction
-   * ({@link ControlDatabase.removeMachine}). What stays here is the owner-key precondition,
+   * ({@link ControlDatabase.removeMachine}). What stays here is the owner-signer precondition,
    * checked before any read (see {@link removePeer}).
    */
-  async removeMachine(target: Parameters<ControlDatabase['removeMachine']>[0]): Promise<MachineRemovalWrites> {
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    return await this.controlDatabase.removeMachine(
-      target, ownerKey, message => this.signMessageBytes(message),
-    );
+  async removeMachine(target: Parameters<ControlDatabase['removeMachine']>[0], sign?: OwnerSign): Promise<MachineRemovalWrites> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    return await this.withOwnerSign(`Remove the machine ${target.peerId}`, sign, (approved) =>
+      controlDatabase.removeMachine(target, ownerKey, approved));
   }
 
   /**
@@ -745,25 +694,22 @@ export class SeedBootstrapService {
    *
    * The stamp read, the voucher signature, the write lock and the membership notify are
    * {@link ControlDatabase.reauthorizeCadrePeer}'s — including the caveat that it rebinds
-   * `VouchOwner` to this node's owner key. What stays here is the owner-key precondition.
+   * `VouchOwner` to this node's owner key. What stays here is the owner-signer precondition.
    *
    * A no-op (no throw, no notify) when the row does not exist.
    *
    * @param peerId - the membership row to re-touch.
    * @param updatedAt - the strictly-increasing freshness stamp to write.
-   * @throws if no owner private key is configured (a non-owner cannot
+   * @throws if no owner signer is configured (a non-owner cannot
    *   re-sign another peer's row) or the control database is not initialized.
    */
-  async reauthorizePeer(peerId: string, updatedAt: number): Promise<void> {
-    // Fail fast on a keyless service before any DB read (see removePeer): a non-owner
+  async reauthorizePeer(peerId: string, updatedAt: number, sign?: OwnerSign): Promise<void> {
+    // Fail fast on a signerless service before any DB read (see removePeer): a non-owner
     // cannot re-sign the voucher, and must not silently no-op on an absent row.
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    const retouched = await this.controlDatabase.reauthorizeCadrePeer(
-      peerId, updatedAt, ownerKey, message => this.signMessageBytes(message),
-    );
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    const retouched = await this.withOwnerSign(`Re-issue the membership of ${peerId}`, sign, (approved) =>
+      controlDatabase.reauthorizeCadrePeer(peerId, updatedAt, ownerKey, approved));
     if (!retouched) {
       log('reauthorizePeer: no CadrePeer row for %s (nothing to re-touch)', peerId);
       return;
@@ -781,22 +727,19 @@ export class SeedBootstrapService {
    *
    * The signatures, the single transaction, and the strictly-monotonic
    * `reissuedAt` contract are {@link ControlDatabase.reissueRevocations}'s. What
-   * stays here is the owner-key precondition.
+   * stays here is the owner-signer precondition.
    *
    * @returns how many tombstones were re-issued (`rows.length` on success).
-   * @throws if no owner private key is configured or the control database is not
+   * @throws if no owner signer is configured or the control database is not
    *   initialized.
    */
-  async reissueRevocations(rows: readonly RevocationRow[], reissuedAt: number): Promise<number> {
-    // Fail fast on a keyless service before any DB work (see removePeer): a
+  async reissueRevocations(rows: readonly RevocationRow[], reissuedAt: number, sign?: OwnerSign): Promise<number> {
+    // Fail fast on a signerless service before any DB work (see removePeer): a
     // non-owner cannot sign the reissue digests.
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    return this.controlDatabase.reissueRevocations(
-      rows, reissuedAt, ownerKey, message => this.signMessageBytes(message),
-    );
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    return await this.withOwnerSign(`Re-send ${rows.length} removal record(s) to the cadre`, sign, (approved) =>
+      controlDatabase.reissueRevocations(rows, reissuedAt, ownerKey, approved));
   }
 
   /**
@@ -804,100 +747,92 @@ export class SeedBootstrapService {
    * never-written block that the storage layer re-consults on every read.
    *
    * The signature, the insert-if-absent guard and the `'already-open'` mapping are
-   * {@link ControlDatabase.openRevocationLedger}'s. What stays here is the owner-key
+   * {@link ControlDatabase.openRevocationLedger}'s. What stays here is the owner-signer
    * precondition.
    *
-   * @throws if no owner private key is configured or the control database is not
+   * @throws if no owner signer is configured or the control database is not
    *   initialized.
    */
-  async openRevocationLedger(): Promise<RevocationLedgerOpenResult> {
-    // Fail fast on a keyless service before any DB work (see removePeer): a
+  async openRevocationLedger(sign?: OwnerSign): Promise<RevocationLedgerOpenResult> {
+    // Fail fast on a signerless service before any DB work (see removePeer): a
     // non-owner cannot sign the marker's append digest.
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    return this.controlDatabase.openRevocationLedger(
-      ownerKey, message => this.signMessageBytes(message),
-    );
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    return await this.withOwnerSign('Open the cadre\'s removal ledger', sign, (approved) =>
+      controlDatabase.openRevocationLedger(ownerKey, approved));
   }
 
   /**
    * Owner-signed INSERT of a `CadreInvite` row — an invitation any member machine can redeem
    * on this owner's behalf ({@link ControlDatabase.insertCadreInvite}). The keypair mint, the
    * expiry and use-count defaults, and the bundle the holder receives are
-   * `CadreNode.createCadreInvitation`'s; what stays here is the owner-key precondition and
-   * the signature, as {@link insertSelfDeviceToken} keeps them for device tokens.
+   * `CadreNode.createCadreInvitation`'s; what stays here is the owner-signer precondition and
+   * the approval, as {@link insertSelfDeviceToken} keeps them for device tokens.
    *
    * @returns the row as stored, which the invitation bundle carries verbatim.
-   * @throws if no owner private key is configured or the control database is not initialized.
+   * @throws if no owner signer is configured or the control database is not initialized.
    */
-  async insertCadreInvite(invite: Parameters<ControlDatabase['insertCadreInvite']>[0]): Promise<CadreInviteRow> {
-    // Fail fast on a keyless service before any DB work (see removePeer).
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    return await this.controlDatabase.insertCadreInvite(invite, ownerKey, message => this.signMessageBytes(message));
+  async insertCadreInvite(invite: Parameters<ControlDatabase['insertCadreInvite']>[0], sign?: OwnerSign): Promise<CadreInviteRow> {
+    // Fail fast on a signerless service before any DB work (see removePeer).
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    const kind = invite.grantsOwner ? 'an owner invitation' : 'a membership invitation';
+    return await this.withOwnerSign(`Create ${kind} to the cadre`, sign, (approved) =>
+      controlDatabase.insertCadreInvite(invite, ownerKey, approved));
   }
 
   /**
    * Owner-signed WITHDRAWAL of a `CadreInvite`: the `Revocation` tombstone over its stamp, with
    * the row kept ({@link ControlDatabase.withdrawCadreInvite}). What stays here is the
-   * owner-key precondition.
+   * owner-signer precondition.
    *
    * @returns `true` when this call filed the tombstone, `false` when the row is absent here or
    *   already withdrawn.
-   * @throws if no owner private key is configured or the control database is not initialized.
+   * @throws if no owner signer is configured or the control database is not initialized.
    */
-  async withdrawCadreInvite(key: string): Promise<boolean> {
-    const ownerKey = this.requireOwnerPublicKey();
-    if (!this.controlDatabase) {
-      throw new Error('Control database not initialized');
-    }
-    return await this.controlDatabase.withdrawCadreInvite(key, ownerKey, message => this.signMessageBytes(message));
+  async withdrawCadreInvite(key: string, sign?: OwnerSign): Promise<boolean> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    return await this.withOwnerSign(`Withdraw the cadre invitation ${key}`, sign, (approved) =>
+      controlDatabase.withdrawCadreInvite(key, ownerKey, approved));
   }
 
   /**
    * Create a seed from the current control network state.
-   * The seed contains peer information and is signed by an owner.
+   * The seed contains peer information and is signed by an owner; its `signerKey` is the
+   * owner signer's key.
    */
-  async createSeed(): Promise<ControlNetworkSeed> {
-    if (!this.config.ownerPrivateKey || !this.ownerPublicKey) {
+  async createSeed(sign?: OwnerSign): Promise<ControlNetworkSeed> {
+    const signer = this.config.ownerSigner;
+    if (!signer) {
       throw new Error('Owner key required to create seeds');
     }
-    
+
     if (!this.controlDatabase || !this.libp2pNode) {
       throw new Error('Service not initialized');
     }
-    
+
     log('Creating seed for party: %s', this.config.partyId);
-    
+
     // Query all peers from the control database
     const peers = await this.queryPeers();
-    
+
     // Create the seed data (without signature)
     const seedData = {
       partyId: this.config.partyId,
       peers,
     };
-    
+
     // Sign the seed over its canonical byte representation
-    const signature = sign(
-      seedDigest(seedData),
-      this.config.ownerPrivateKey,
-      'ed25519',
-      'base64url',
-      'base64url',
-      'base64url'
-    ) as string;
-    
+    const digestBytes = uint8ArrayFromString(seedDigest(seedData), 'base64url');
+    const signature = await this.withOwnerSign('Mint a seed for a machine joining the cadre', sign, (approved) => approved(digestBytes));
+
     const seed: ControlNetworkSeed = {
       ...seedData,
       signature,
-      signerKey: this.ownerPublicKey,
+      signerKey: signer.publicKey,
     };
-    
+
     log('Created seed with %d peers', peers.length);
     return seed;
   }
@@ -1440,19 +1375,22 @@ export class SeedBootstrapService {
    * does not listen. Call `CadreNode.reconcileControlCohort()` after delivering
    * the seed to dial at once.
    *
+   * The vouch and the seed are one owner approval.
+   *
    * @param options - Drone peer info from provider API
    * @returns Seed and encoded seed for drone initialization
    */
-  async addDrone(options: AddDroneOptions): Promise<DroneInitResult> {
+  async addDrone(options: AddDroneOptions, sign?: OwnerSign): Promise<DroneInitResult> {
     const { dronePeerId, droneMultiaddrs } = options;
 
     log('Adding drone: %s', dronePeerId);
 
-    // 1. Authorize the new drone peer
-    await this.authorizePeer({ peerId: dronePeerId, multiaddrs: droneMultiaddrs });
-
-    // 2. Create seed with current state
-    const seed = await this.createSeed();
+    const seed = await this.withOwnerSign(`Add the machine ${dronePeerId} to the cadre`, sign, async (approved) => {
+      // 1. Authorize the new drone peer
+      await this.authorizePeer({ peerId: dronePeerId, multiaddrs: droneMultiaddrs }, approved);
+      // 2. Create seed with current state
+      return await this.createSeed(approved);
+    });
 
     // 3. Encode for transport
     const encodedSeed = this.encodeSeed(seed);
@@ -1469,20 +1407,23 @@ export class SeedBootstrapService {
    * 1. Authorizes the new phone peer
    * 2. Creates a seed with relay addresses for dialing
    *
+   * The vouch and the seed are one owner approval.
+   *
    * @param phonePeerId - Peer ID of the new phone
    * @returns Seed with relay addresses for out-of-band delivery
    */
-  async addPhoneWithRelay(phonePeerId: string): Promise<DroneInitResult> {
+  async addPhoneWithRelay(phonePeerId: string, sign?: OwnerSign): Promise<DroneInitResult> {
     log('Adding phone with relay: %s', phonePeerId);
 
-    // 1. Authorize the new phone peer (no multiaddrs - NAT'd)
-    await this.authorizePeer({ peerId: phonePeerId });
+    const seed = await this.withOwnerSign(`Add the phone ${phonePeerId} to the cadre`, sign, async (approved) => {
+      // 1. Authorize the new phone peer (no multiaddrs - NAT'd)
+      await this.authorizePeer({ peerId: phonePeerId }, approved);
+      // 2. Create seed - will include our relay address if available
+      return await this.createSeed(approved);
+    });
 
-    // 2. Get relay address for this node
+    // 3. Get relay address for this node
     const relayAddr = await this.getRelayAddress();
-
-    // 3. Create seed - will include our relay address if available
-    const seed = await this.createSeed();
 
     // If we have a relay address, make sure it's in our peer entry
     if (relayAddr && this.libp2pNode) {

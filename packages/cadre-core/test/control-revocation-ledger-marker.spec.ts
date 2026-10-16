@@ -169,7 +169,7 @@ describe('Revocation ledger marker', () => {
     const service = node.getSeedBootstrapService();
     expect(service?.canAuthorize()).toBe(false);
 
-    await expect(service!.openRevocationLedger()).rejects.toThrow(/Owner private key required/);
+    await expect(service!.openRevocationLedger()).rejects.toThrow(/Owner signer required/);
     expect(await markerRows()).toEqual([]);
   }, 60_000);
 

@@ -12,7 +12,7 @@ export { CadreNode, OWNER_INVITATION_DEFAULT_TTL_MS, CADRE_INVITATION_DEFAULT_TT
 export { MachineRemovalRefusedError } from './machine-removal.js';
 
 // Control database
-export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type MachineRemovalWrites } from './control-database.js';
+export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type MachineRemovalWrites, type ControlSign } from './control-database.js';
 
 // Bounded retry for transient control-write failures (classifier + loop behind
 // ControlDatabase.lockedWithRetry; exported so the integration package can drive the

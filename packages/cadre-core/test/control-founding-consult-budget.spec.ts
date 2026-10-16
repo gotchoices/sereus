@@ -4,6 +4,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import type { StrandWatcher } from '../src/strand-watcher.js';
+import type { PendingJoinRunner } from '../src/pending-join-runner.js';
 import { controlNodeConfig, freshPartyId, memoryStorageProvider, scopedWithin } from './control-db-node-helpers.js';
 import { signedSApp } from './signed-sapp.js';
 import {
@@ -47,15 +48,17 @@ import {
  *
  * **Phases**, on one solo `CadreNode` (`profile: 'transaction'`, one `MemoryRawStorage`
  * per storage id), each measured from a zeroed counter: cold `start()`; genesis
- * (`ensureOwnerKey` with the identity key, the production call); `foundStrand`, with the
+ * (`ensureOwnerKey` with the identity key and `initializeSeedBootstrap` to wire it as the
+ * owner signer, the production calls); `foundStrand`, with the
  * control network's and the strand's consults reported separately by which
  * `CoordinatorRepo` issued them; six back-to-back calls each of
  * `queryRevokedStamps('CadrePeer')` and `queryCadrePeers()`; one idle
  * `reconcileControlCohort()` pass.
  *
  * **Background work is taken out of the phases, not budgeted around.** See
- * {@link settleStart}: the self-registration timer is disarmed, and the two reads `start()`
- * leaves running are awaited and charged to the cold phase, since every start pays them.
+ * {@link settleStart}: the self-registration timer and the pending-join retry loop are
+ * disarmed, and the two reads `start()` leaves running are awaited and charged to the cold
+ * phase, since every start pays them.
  *
  * **Timing.** Missing-block consults do not depend on time; held-block consults do. The
  * whole run measured ~320 ms, far inside one 10 s window, and every count below assumes the
@@ -173,7 +176,8 @@ const BASELINE_UPSTREAM = 'optimystic ff150e0f';
  */
 const COLD: Budget = { consults: 37, blocks: 29, commits: 1, consultBudget: 41, blockBudget: 32, commitBudget: 2 };
 /**
- * Genesis: `ensureOwnerKey` on the fresh party. 3 consults over 3 blocks, 2 commits:
+ * Genesis: `ensureOwnerKey` on the fresh party, then wiring the owner signer (no read). 3
+ * consults over 3 blocks, 2 commits:
  * `OwnerKey` ×1 and its unique stamp index ×1, both missing until the insert commits, and
  * the never-written `Revocation` ×1. History: 14 over the same 3 blocks in the motivating
  * trace and on 2026-09-15 (×6, ×6, ×2), exactly halved to 7 (×3, ×3, ×1) at optimystic
@@ -351,6 +355,7 @@ interface CadreNodeInternals {
 	selfRegistrationTimer: ReturnType<typeof setTimeout> | null;
 	membershipGateDrain: Promise<void> | null;
 	strandWatcher: StrandWatcher | null;
+	pendingJoinRunner: PendingJoinRunner | null;
 }
 
 interface StrandWatcherInternals {
@@ -380,6 +385,8 @@ async function waitForQuiet(counter: ConsultCounter): Promise<void> {
  * Take the background work `start()` leaves behind out of the later phases:
  *  - the 1 s self-registration timer (a `registerSelf` read, then a reconcile pass, then the
  *    reconcile interval and the 7.5-minute heartbeat) is disarmed, so none of it ever runs;
+ *  - the pending-join retry loop is stopped: wiring the owner signer at genesis kicks a pass,
+ *    which reads the never-written join tables at whatever phase it lands in;
  *  - the membership-gate seed `start()` launches without awaiting is awaited;
  *  - the strand watcher's first poll, deferred 100 ms after the watcher starts, is cancelled
  *    and run explicitly, after the seed, so the two reads never interleave.
@@ -396,6 +403,7 @@ async function settleStart(node: CadreNode, counter: ConsultCounter): Promise<Fi
 	const internals = node as unknown as CadreNodeInternals;
 	clearTimeout(internals.selfRegistrationTimer ?? undefined);
 	internals.selfRegistrationTimer = null;
+	internals.pendingJoinRunner?.stop();
 
 	const watcher = internals.strandWatcher;
 	expect(watcher, 'no strand watcher after start() — there is no first poll to settle').not.toBeNull();
@@ -504,9 +512,10 @@ async function measureFounding(counter: ConsultCounter): Promise<FoundingRun> {
 
 		const db = node.getControlDatabase();
 		expect(db).not.toBeNull();
-		const ownerPublicKey = node.getIdentityOwnerKey().publicKeyB64;
+		const owner = node.getIdentityOwnerKey();
 		const genesis = await measurePhase(counter, runStart, 'genesis', undefined, async () => {
-			expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(ownerPublicKey))).toBe(true);
+			expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(owner.publicKeyB64))).toBe(true);
+			await within('initializeSeedBootstrap() (genesis)', OP_TIMEOUT_MS, () => node.initializeSeedBootstrap(owner.privateKeyB64));
 		});
 
 		const strandId = `${SCOPE}-${Math.random().toString(36).slice(2)}`;

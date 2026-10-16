@@ -18,7 +18,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { TestCadreNetwork, waitUntil, controlNodeConfig, makeOwnOwner } from '../harness/index.js';
-import { CadreNode, SeedBootstrapService, pinnedKeyTrustPolicy, CadreInviteRejectedError } from '@serfab/cadre-core';
+import { CadreNode, SeedBootstrapService, pinnedKeyTrustPolicy, CadreInviteRejectedError, softwareOwnerSigner } from '@serfab/cadre-core';
 import type { TestParty, TestCadreNode } from '../harness/types.js';
 import type { ControlNetworkSeed } from '@serfab/cadre-core';
 
@@ -57,8 +57,7 @@ async function createSeedService(party: TestParty): Promise<SeedBootstrapService
 	const privateKeyBase64 = extractPrivateKeyBase64(party.ownerPrivateKey);
 	const service = new SeedBootstrapService({
 		partyId: party.partyId,
-		ownerPrivateKey: privateKeyBase64,
-		ownerPublicKey: party.ownerPublicKey,
+		ownerSigner: softwareOwnerSigner(privateKeyBase64),
 	});
 	await service.initialize(party.ownerNode.libp2p, party.controlDatabase);
 	return service;

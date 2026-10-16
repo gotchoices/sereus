@@ -59,8 +59,9 @@ export class OwnerSigningDeclinedError extends Error {
 
 /**
  * An {@link OwnerSigner} over a private key held in memory: never prompts, signs whatever its
- * `approve` body asks. Its signatures are byte-for-byte those `SeedBootstrapService` signs with
- * the same key (the digest bytes, base64url-encoded, as the signed input; Ed25519 is deterministic).
+ * `approve` body asks. Its signed input is the digest bytes, base64url-encoded, so its signatures
+ * are byte-for-byte those of any signer that signs the raw bytes with the same key (Ed25519 is
+ * deterministic).
  *
  * @param privateKeyB64 - The owner key's 32-byte Ed25519 seed, base64url.
  * @throws If `privateKeyB64` is not a 32-byte seed in base64url.
