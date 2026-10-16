@@ -11,21 +11,25 @@
  * before the marker was written. Every step deletes what may already be gone.
  */
 
-import { controlStorageScope, exportStrandBundle, KeyStoreJoinedStrandStore, unheldBundleContent } from '@serfab/cadre-core';
-import type { CadreNode, KeyStore, StrandBundle, StrandHoldings } from '@serfab/cadre-core';
-import { forwardedSecureStoreOptions, type SecureStoreApi, type SecureStoreKeyStoreOptions } from '../key-store.js';
-import { anchorSlotKey, bootstrapPeersKvKey, enrolledMachinesKvKey, strandNetworkKvKey, type KvStoreApi } from '../node-local.js';
-import { parseSavedStart, serializeSavedStart, type PhoneNodeOptions } from './options.js';
-import type { PendingStrandMove, StrandMoveRecords } from './strand-move.js';
+import { controlStorageScope } from '../storage-scope.js';
+import { exportStrandBundle, unheldBundleContent } from '../strand-move.js';
+import type { StrandBundle, StrandHoldings } from '../strand-move.js';
+import { KeyStoreJoinedStrandStore } from '../joined-strand-store.js';
+import type { CadreNode } from '../cadre-node.js';
+import type { KeyStore } from '../key-store.js';
+import { bootstrapPeersKvKey, enrolledMachinesKvKey, strandNetworkKvKey, type NodeLocalKv } from './node-local.js';
+import type { RemovableSlot } from './platform.js';
+import { parseSavedStart, serializeSavedStart, type EdgeNodeOptions } from './options.js';
+import { toError, type PendingStrandMove, type StrandMoveRecords } from './strand-move.js';
 
-/** How `PhoneNode.dissolveFormerParty` runs. */
+/** How `EdgeNode.dissolveFormerParty` runs. */
 export interface DissolveFormerPartyOptions {
 	/** Strand and pending-join ids of the former party to give up although the running party does not hold them; from a `FormerPartyNotEmptyError`. */
 	discard?: readonly string[];
 }
 
 /**
- * `PhoneNode.dissolveFormerParty` refused, nothing stopped: moving the former party's strands has
+ * `EdgeNode.dissolveFormerParty` refused, nothing stopped: moving the former party's strands has
  * not finished. A move into the running party finishes with `finishStrandMove()`; one into
  * another party is adopted only there.
  */
@@ -43,7 +47,7 @@ interface FormerPartyRemains {
 	pendingJoinIds: string[];
 }
 
-/** `PhoneNode.dissolveFormerParty` refused, nothing deleted: the former party holds what the running party lacks, or has other machines. */
+/** `EdgeNode.dissolveFormerParty` refused, nothing deleted: the former party holds what the running party lacks, or has other machines. */
 export class FormerPartyNotEmptyError extends Error {
 	readonly partyId: string;
 	/** Peer ids of `CadrePeer` rows other than this node's. Not discardable: removing them is the user's choice, made in that party. */
@@ -95,7 +99,7 @@ export function formerPartyRefusal(
 }
 
 /** The former party's start for {@link readFormerParty}: nothing to dial or reserve on, the running Noise mode. */
-export function formerPartyRead(partyId: string, running: PhoneNodeOptions): PhoneNodeOptions {
+export function formerPartyRead(partyId: string, running: EdgeNodeOptions): EdgeNodeOptions {
 	return {
 		partyId,
 		bootstrapAddrs: [],
@@ -105,26 +109,24 @@ export function formerPartyRead(partyId: string, running: PhoneNodeOptions): Pho
 }
 
 /** `options` without `formerPartyId` when it names `partyId`. */
-export function withoutFormerParty(options: PhoneNodeOptions, partyId: string | undefined): PhoneNodeOptions {
+export function withoutFormerParty(options: EdgeNodeOptions, partyId: string | undefined): EdgeNodeOptions {
 	if (partyId === undefined || options.formerPartyId !== partyId) return options;
 	const { formerPartyId: _dissolved, ...rest } = options;
 	return rest;
 }
 
-/** The phone node's storage a removal reaches. No database of the party removed may be open. */
+/** The edge node's storage a removal reaches. No handle on the party removed may be open. */
 export interface PartyStorage {
-	/** The node-local key-value store (`PhoneNodeNames.nodeLocalDb`), open. */
-	nodeLocal: KvStoreApi & { delete(key: string): Promise<void> };
-	/** `PhoneNodeNames.dissolveMarkerKey`. */
+	/** The node-local key-value store (`EdgeNodeStorage.nodeLocal`). */
+	nodeLocal: NodeLocalKv;
+	/** `EdgeNodeNames.dissolveMarkerKey`. */
 	markerKey: string;
-	/** `PhoneNodeNames.savedStartKey`. */
+	/** `EdgeNodeNames.savedStartKey`. */
 	savedStartKey: string;
-	/** `PhoneNodeNames.storagePrefix`. */
-	storagePrefix: string;
-	/** `LevelDBNative.destroy`. */
-	destroyDatabase: (name: string) => void;
-	secureStore: SecureStoreApi;
-	secureStoreOptions: SecureStoreKeyStoreOptions | undefined;
+	/** `EdgeNodeStorage.destroyScope`. */
+	destroyScope: (scope: string) => Promise<void>;
+	/** The party's trusted-owner anchor slot, the platform's own or the node-local default, for its removal. */
+	trustedOwnerSlot: (partyId: string) => RemovableSlot;
 	keyStore: KeyStore;
 	moves: StrandMoveRecords;
 }
@@ -148,7 +150,7 @@ async function markedParty(storage: PartyStorage): Promise<string | undefined> {
 	if (text === undefined) return undefined;
 	const partyId = parseMarker(text);
 	if (partyId === undefined) {
-		console.warn(`[cadre-rn/phone-node] deleting the dissolve marker ${storage.markerKey}: it is not one this kit wrote`);
+		console.warn(`[cadre-core/edge-node] deleting the dissolve marker ${storage.markerKey}: it is not one this kit wrote`);
 		await storage.nodeLocal.delete(storage.markerKey);
 	}
 	return partyId;
@@ -160,20 +162,28 @@ export async function finishMarkedRemoval(storage: PartyStorage): Promise<void> 
 	if (partyId !== undefined) await finishRemoving(storage, partyId);
 }
 
+/** What {@link finishRemovalAtStart} found: the party the marker named, if any, and why finishing its removal failed, if it did. */
+export interface RemovalAtStart {
+	/** Absent when there was no marker, or when it could not be read (`error` says so). */
+	partyId?: string;
+	error?: Error;
+}
+
 /**
  * {@link finishMarkedRemoval} before a start, which must then not keep the party it names as
- * `formerPartyId`, finished or not. A failure is logged and the start goes on; the marker stays
- * for the next.
+ * `formerPartyId`, finished or not. A failure is logged and reported, and the start goes on; the
+ * marker stays for the next.
  */
-export async function finishRemovalAtStart(storage: PartyStorage): Promise<string | undefined> {
+export async function finishRemovalAtStart(storage: PartyStorage): Promise<RemovalAtStart> {
 	let partyId: string | undefined;
 	try {
 		partyId = await markedParty(storage);
 		if (partyId !== undefined) await finishRemoving(storage, partyId);
+		return { partyId };
 	} catch (err) {
-		console.warn('[cadre-rn/phone-node] finishing the removal of a dissolved party failed; the next start retries:', err);
+		console.warn('[cadre-core/edge-node] finishing the removal of a dissolved party failed; the next start retries:', err);
+		return { partyId, error: toError(err) };
 	}
-	return partyId;
 }
 
 /**
@@ -187,11 +197,11 @@ export async function finishRemovalAtStart(storage: PartyStorage): Promise<strin
  * reclaiming, delete it here only for a strand no party on this device holds.
  */
 async function finishRemoving(storage: PartyStorage, partyId: string): Promise<void> {
-	storage.destroyDatabase(storage.storagePrefix + controlStorageScope(partyId));
+	await storage.destroyScope(controlStorageScope(partyId));
 	for (const key of [bootstrapPeersKvKey(partyId), enrolledMachinesKvKey(partyId), strandNetworkKvKey(partyId)]) {
 		await storage.nodeLocal.delete(key);
 	}
-	await storage.secureStore.deleteItemAsync(anchorSlotKey(partyId), forwardedSecureStoreOptions(storage.secureStoreOptions ?? {}));
+	await storage.trustedOwnerSlot(partyId).remove();
 	await forgetJoinedStrands(storage.keyStore, partyId);
 	await storage.moves.remove(partyId);
 	await dropFromSavedStart(storage, partyId);
@@ -218,7 +228,7 @@ function parseMarker(text: string): string | undefined {
 	try {
 		raw = JSON.parse(text);
 	} catch (err) {
-		console.warn('[cadre-rn/phone-node] the dissolve marker is not JSON:', err);
+		console.warn('[cadre-core/edge-node] the dissolve marker is not JSON:', err);
 		return undefined;
 	}
 	if (typeof raw !== 'object' || raw === null) return undefined;

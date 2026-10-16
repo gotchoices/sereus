@@ -24,7 +24,7 @@
  * existing cadre by invitation, which moves its one node to that party, carrying the
  * founded party's strands along, and later remove the party it left. The web app has no
  * kit: `web-join.ts` follows the phone kit's sequence (architecture.md → "An app joins an
- * existing cadre"; `packages/cadre-rn/src/phone-node/node.ts`) itself, over this module's
+ * existing cadre"; `packages/cadre-core/src/edge-node/edge-node.ts`) itself, over this module's
  * lifecycle exports.
  *
  * Beyond the solo strand, this module also drives the **consent/invitation
@@ -618,7 +618,7 @@ export function ownerKeyWired(): boolean {
 /**
  * Solo owner self-genesis, for a party this tab founded. A single-node cadre must
  * seed itself as the owner before it can author control-network writes. The phone
- * kit's founded-party rule (`cadre-rn` `phone-node/config.ts` → `enrollFoundedOwner`;
+ * kit's founded-party rule (`cadre-core` `edge-node/config.ts` → `enrollFoundedOwner`;
  * one shared copy is `edge-node-bring-up-shared-by-every-kit`): on a party
  * with no `OwnerKey` row, the owner slot's key (created now unless the slot holds one)
  * is inserted as the founding row and wired; on a party that has owners, the slot's

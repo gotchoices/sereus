@@ -1,7 +1,7 @@
 /**
  * party-start.ts — the record that names the party this tab starts, and how it came to it
  * (docs/architecture.md → "An app joins an existing cadre"). The browser counterpart of the
- * phone kit's saved start (`cadre-rn/src/phone-node/options.ts`), without `autoStart`: a tab
+ * phone kit's saved start (`cadre-core/src/edge-node/options.ts`), without `autoStart`: a tab
  * always starts on load.
  *
  * One record per tab, not per party, under a dot-free `kv` key of the node-local database: it

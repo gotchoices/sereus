@@ -2,7 +2,7 @@
  * web-strand-move.ts — carrying the strands of the party this tab founded into the party it
  * joins (docs/architecture.md → "An app joins an existing cadre" → "Moving the app's strands").
  * The browser counterpart of the phone kit's `strand-move.ts`
- * (`packages/cadre-rn/src/phone-node/strand-move.ts`), with the same record shape and rules.
+ * (`packages/cadre-core/src/edge-node/strand-move.ts`), with the same record shape and rules.
  *
  * The tab runs one node, so cadre-core's two ends of a move run on two nodes, one after the
  * other: `exportStrandBundle` on the left party's node before the switch, `adoptStrandBundle` on

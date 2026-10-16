@@ -51,6 +51,14 @@
     "./node-default-transports": {
       "types": "./dist/node-default-transports.d.ts",
       "import": "./dist/node-default-transports.js"
+    },
+    "./edge-node": {
+      "react-native": {
+        "types": "./dist/edge-node/index.d.ts",
+        "import": "./dist/edge-node/index.js"
+      },
+      "types": "./dist/edge-node/index.d.ts",
+      "import": "./dist/edge-node/index.js"
     }
   },
   "repository": {

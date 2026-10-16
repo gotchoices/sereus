@@ -8,6 +8,10 @@
  * ({@link rentalsKvKey}). The app chooses the databases and opens the
  * stores; `createPhoneNode` (`./phone-node`) does both for an app that uses it.
  *
+ * The record keys and the key-value slot (`kvStoreSlot`) are the edge node's
+ * (`@serfab/cadre-core/edge-node`), re-exported here under the names apps already
+ * import; what is the phone's own is the anchor's secure-store slot.
+ *
  * The anchor gets a DIFFERENT backend from the rest, deliberately — it has
  * different security properties and a different size.
  *
@@ -20,7 +24,9 @@
  * Keychain surviving an app reinstall, which is the *desirable* direction (same peer
  * id, same trusted owners, device rejoins); and the payload is tiny — one base64url
  * ed25519 key plus `{source, trustedAt}` is roughly 90 bytes, and a real anchor
- * holds one to three keys.
+ * holds one to three keys. The edge node's default, the node-local key
+ * `trustedOwnersKvKey(partyId)`, is what the browser and NativeScript apps use, which
+ * have no store more tamper-resistant than their node-local one.
  *
  * **Bootstrap peers → app-private LevelDB** (a `LevelDBKVStore` over a database of
  * the app's own). These are dial hints; dialing grants no authority — `CadreNode`
@@ -62,6 +68,14 @@ import {
 	type SecureStoreOptions,
 } from './key-store.js';
 
+export {
+	bootstrapPeersKvKey,
+	enrolledMachinesKvKey,
+	kvStoreSlot,
+	strandNetworkKvKey,
+	type KvStoreApi,
+} from '@serfab/cadre-core/edge-node';
+
 /**
  * SecureStore key prefix for the trusted-owner anchor. Deliberately NOT under
  * the `sereus.ks.` prefix `SecureStoreKeyStore` owns — that namespace carries
@@ -79,59 +93,14 @@ export function anchorSlotKey(partyId: string): string {
 }
 
 /**
- * `LevelDBKVStore` key for a party's retained cold-start dial targets. LevelDB
- * keys are bytes, so the party id needs no encoding here. Every record key is
- * `<record>.<partyId>`, so an app's own records in the same database stay clear of
- * them by using a dot-free key.
- */
-export function bootstrapPeersKvKey(partyId: string): string {
-	return `bootstrap-peers.${partyId}`;
-}
-
-/**
- * `LevelDBKVStore` key for a party's last-known enrolled-machine count. Same
- * database and encoding-free shape as {@link bootstrapPeersKvKey}, its own key so
- * neither record's snapshot write can clobber the other.
- */
-export function enrolledMachinesKvKey(partyId: string): string {
-	return `enrolled-machines.${partyId}`;
-}
-
-/**
- * `LevelDBKVStore` key for a party's strand network state — per strand, the FRET
- * routing table its strand node saved, re-imported after a relaunch. Same database
- * and shape as {@link bootstrapPeersKvKey}, its own key; not trust-bearing (FRET
- * verifies each address record at import), and a routing table would not fit secure
- * store either.
- */
-export function strandNetworkKvKey(partyId: string): string {
-	return `strand-network.${partyId}`;
-}
-
-/**
  * `LevelDBKVStore` key for a party's provider rentals: the containers an app rented from a
  * hosting provider for that party (`rentalStore` in `@serfab/cadre-rn/provider`). Same
- * database and shape as {@link bootstrapPeersKvKey}, its own key. Not trust-bearing: the
- * record only says which container to ask the provider about, and the provider's answer,
+ * database and shape as the edge node's `bootstrapPeersKvKey`, its own key. Not trust-bearing:
+ * the record only says which container to ask the provider about, and the provider's answer,
  * not the record, is what the app shows.
  */
 export function rentalsKvKey(partyId: string): string {
 	return `rentals.${partyId}`;
-}
-
-/**
- * The subset of `LevelDBKVStore` (`@optimystic/db-p2p-storage-rn`) a slot needs.
- * Declared locally — mirroring {@link SecureStoreApi} — so tests can pass an
- * in-memory fake and no native module lands in a Node test graph. The real
- * `LevelDBKVStore` is structurally assignable to this.
- */
-export interface KvStoreApi {
-	/** The key's text, or `undefined` when absent. Throws on a read fault. */
-	get(key: string): Promise<string | undefined>;
-	/** Resolves once `get` on this store reads `value`; durable only after a later {@link flush}. */
-	set(key: string, value: string): Promise<void>;
-	/** Make every write that resolved before this call durable. */
-	flush(): Promise<void>;
 }
 
 /**
@@ -175,26 +144,5 @@ export function secureStoreSlot(
 		// owners, move the anchor to its own key in the node-local LevelDB (as the
 		// dial hints already are) rather than trimming the record.
 		save: (text) => backend.setItemAsync(key, text, forwarded),
-	};
-}
-
-/**
- * A {@link DurableSlot} over one key of a `LevelDBKVStore` — the backend for every
- * non-trust-bearing record (the bootstrap-peer store, the enrolled-machine count and
- * the strand network state, and any of the app's own), each over its own key.
- *
- * A pass-through but for the flush: the KV store already deals in text and already
- * reports an absent key as `undefined`, and a read fault throws out of `get`, which is
- * exactly the "present but unreadable ⇒ throw" contract {@link DurableSlot} asks
- * for. A `set` resolves into the store's write group, so `save` flushes after it to
- * be durable when it resolves, as {@link DurableSlot.save} requires.
- */
-export function kvStoreSlot(kv: KvStoreApi, key: string): DurableSlot {
-	return {
-		load: () => kv.get(key),
-		save: async (text) => {
-			await kv.set(key, text);
-			await kv.flush();
-		},
 	};
 }

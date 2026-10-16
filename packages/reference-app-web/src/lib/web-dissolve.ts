@@ -2,7 +2,7 @@
  * web-dissolve.ts — removing the party this tab founded and left (docs/architecture.md → "An app
  * joins an existing cadre" → "Dissolving the party it left"): the check that the running party
  * holds everything the left one holds, and the removal of the left party's IndexedDB storage. The
- * browser counterpart of the phone kit's `dissolve.ts` (`packages/cadre-rn/src/phone-node/dissolve.ts`),
+ * browser counterpart of the phone kit's `dissolve.ts` (`packages/cadre-core/src/edge-node/dissolve.ts`),
  * with the same refusals, marker and removal order. The transition that stops and starts the node
  * around them is `web-join.ts`'s. The same marked removal deletes the storage of a party an owner
  * removed this tab from, with no check: that party is not the tab's to keep (`web-join.ts` →

@@ -48,6 +48,8 @@ import {
 import { Buffer } from '@craftzdog/react-native-buffer';
 import { noisePureJsCrypto } from '@optimystic/db-p2p';
 import type { NoiseCryptoInterface } from '@optimystic/db-p2p';
+// Type-only: the edge node names the modes so a stored one is validated without loading this module.
+import type { NoiseCryptoMode } from '@serfab/cadre-core/edge-node';
 import { installNativeDigest } from './native-digest.js';
 
 // An app that loads native Noise crypto has quick-crypto loaded, so the boot polyfill's
@@ -56,11 +58,12 @@ import { installNativeDigest } from './native-digest.js';
 installNativeDigest(algorithm => createHash(algorithm));
 
 /**
- * How much of the interface to replace. The app passes the result of
- * `buildNoiseCrypto` as `CadreNodeConfig.network.noiseCrypto`, which cadre-core reads
- * only when it builds the node, so changing modes means rebuilding the node.
+ * How much of the interface to replace, as `@serfab/cadre-core/edge-node` names it. The app
+ * passes `buildNoiseCrypto` as `EdgeNodePlatform.noiseCrypto.build`, and the edge node hands
+ * its result to `CadreNodeConfig.network.noiseCrypto`, which cadre-core reads only when it
+ * builds the node, so changing modes means rebuilding the node.
  */
-export type NoiseCryptoMode = 'off' | 'symmetric' | 'full';
+export type { NoiseCryptoMode };
 
 /**
  * Where the switch rests by default.

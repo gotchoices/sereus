@@ -7,13 +7,15 @@
  * the joined party's node once the app's key is wired as an owner there. Between them the bundle
  * is kept here, one record per left party, so a join killed partway, or an owner key wired only
  * on a later launch, finishes the move on a later start. The bundle carries read secrets, party
- * keys and bearer invitations, so the record lives in the secure store beside the identity.
+ * keys and bearer invitations, so the record lives in the key store beside the identity.
  */
 
-import { adoptStrandBundle, StrandMoveNotOwnerError } from '@serfab/cadre-core';
-import type { CadreInvitation, CadreNode, KeyId, KeyStore, StrandBundle, StrandMoveReport } from '@serfab/cadre-core';
+import { adoptStrandBundle, StrandMoveNotOwnerError } from '../strand-move.js';
+import type { StrandBundle, StrandMoveReport } from '../strand-move.js';
+import type { CadreInvitation } from '../cadre-invite-protocol.js';
+import type { CadreNode } from '../cadre-node.js';
+import type { KeyId, KeyStore } from '../key-store.js';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import { secureStoreKeySegment } from '../key-store.js';
 
 /** How a join's strand move settled: `JoinCadreResult.strandMove`. */
 export type StrandMoveOutcome =
@@ -24,7 +26,7 @@ export type StrandMoveOutcome =
 	/** Not adopted yet: the adoption threw (logged). The next start, or `finishStrandMove`, retries. */
 	| { state: 'deferred'; reason: 'adoption-failed'; error: Error };
 
-/** A move still waiting: `PhoneNode.pendingStrandMove`. */
+/** A move still waiting: `EdgeNode.pendingStrandMove`. */
 export interface PendingStrandMove {
 	fromPartyId: string;
 	/** The party the strands move into; the record is adopted there and nowhere else. */
@@ -36,7 +38,7 @@ export interface PendingStrandMove {
 }
 
 /**
- * `PhoneNode.joinCadre` refused before anything stopped: the party this app founded holds strands,
+ * `EdgeNode.joinCadre` refused before anything stopped: the party this app founded holds strands,
  * pending joins or invitations, and the invitation does not make the app an owner of the party it
  * joins. Every row a move seats there is owner-signed, so a member's join would leave them in a
  * party the app no longer runs.
@@ -58,7 +60,7 @@ export class StrandsNeedOwnerJoinError extends Error {
 	}
 }
 
-/** What the secure store holds for one left party between the export and a complete adoption. */
+/** What the key store holds for one left party between the export and a complete adoption. */
 interface StrandMoveRecord {
 	v: typeof RECORD_VERSION;
 	targetPartyId: string;
@@ -74,8 +76,13 @@ const RECORD_VERSION = 1;
 /** Key-store id prefix of every move record; the left party's id follows, base64url. */
 const SLOT_PREFIX = 'cadre/strand-move/';
 
+/**
+ * A persistence contract: `cadre/strand-move/<base64url of the party id's UTF-8 bytes>`, the
+ * id the React Native kit wrote before the records moved here (its `secureStoreKeySegment`
+ * encodes the same way), so an installed phone's record is read back.
+ */
 function slotId(fromPartyId: string): KeyId {
-	return SLOT_PREFIX + secureStoreKeySegment(fromPartyId);
+	return SLOT_PREFIX + uint8ArrayToString(uint8ArrayFromString(fromPartyId, 'utf8'), 'base64url');
 }
 
 /** The move records, one key-store slot per left party. A read the key store refuses throws; it is never read as "no record". */
@@ -85,10 +92,10 @@ export class StrandMoveRecords {
 	/**
 	 * Replaces the left party's record: a newer export is the fuller one.
 	 *
-	 * NOTE: a bundle with a routing table per strand runs past expo-secure-store's 2048-byte
-	 * value guideline; version 14 warns and stores it, and the iOS Keychain and Android's
+	 * NOTE: on a phone, a bundle with a routing table per strand runs past expo-secure-store's
+	 * 2048-byte value guideline; version 14 warns and stores it, and the iOS Keychain and Android's
 	 * encrypted preferences hold more. If a later SDK throws instead, keep the routing tables
-	 * (not secret) in the node-local LevelDB and only the secrets here.
+	 * (not secret) in the node-local store and only the secrets here.
 	 */
 	save(record: StrandMoveRecord): Promise<void> {
 		return this.keyStore.set(slotId(record.bundle.partyId), uint8ArrayFromString(JSON.stringify(record), 'utf8'));
@@ -124,12 +131,12 @@ export class StrandMoveRecords {
 		if (bytes === undefined) return undefined;
 		const record = parseRecord(uint8ArrayToString(bytes, 'utf8'));
 		if (record !== undefined && slotId(record.bundle.partyId) === slot) return record;
-		console.warn(`[cadre-rn/phone-node] deleting the strand move record in ${slot}: it is not one this kit wrote`);
+		console.warn(`[cadre-core/edge-node] deleting the strand move record in ${slot}: it is not one this kit wrote`);
 		try {
 			await this.keyStore.delete(slot);
 		} catch (err) {
 			// Read as absent either way; failing every start over a record nothing can use would be worse.
-			console.warn(`[cadre-rn/phone-node] could not delete the strand move record in ${slot}:`, err);
+			console.warn(`[cadre-core/edge-node] could not delete the strand move record in ${slot}:`, err);
 		}
 		return undefined;
 	}
@@ -172,7 +179,7 @@ async function keepWhatIsLeft(records: StrandMoveRecords, record: StrandMoveReco
 			await records.save({ ...record, moved, refused: report.refused });
 		}
 	} catch (err) {
-		console.warn(`[cadre-rn/phone-node] could not update the strand move record of party ${fromPartyId}; the next start adopts it again:`, err);
+		console.warn(`[cadre-core/edge-node] could not update the strand move record of party ${fromPartyId}; the next start adopts it again:`, err);
 	}
 }
 
@@ -193,14 +200,19 @@ async function adoptOrDefer(node: CadreNode, records: StrandMoveRecords, record:
 		const report = await adoptMoveRecord(node, records, record);
 		return { state: report.failed.length === 0 ? 'done' : 'partial', report };
 	} catch (err) {
-		console.warn(`[cadre-rn/phone-node] moving the strands of party ${record.bundle.partyId} failed; the next start retries:`, err);
+		console.warn(`[cadre-core/edge-node] moving the strands of party ${record.bundle.partyId} failed; the next start retries:`, err);
 		return deferredOutcome(err);
 	}
 }
 
 export function deferredOutcome(err: unknown): StrandMoveOutcome {
 	if (err instanceof StrandMoveNotOwnerError) return { state: 'deferred', reason: 'owner-key-not-wired' };
-	return { state: 'deferred', reason: 'adoption-failed', error: err instanceof Error ? err : new Error(String(err)) };
+	return { state: 'deferred', reason: 'adoption-failed', error: toError(err) };
+}
+
+/** A thrown value as an `Error`, for a status or outcome that carries one. */
+export function toError(err: unknown): Error {
+	return err instanceof Error ? err : new Error(String(err));
 }
 
 export function pendingMove(record: StrandMoveRecord): PendingStrandMove {
@@ -219,7 +231,7 @@ function parseRecord(text: string): StrandMoveRecord | undefined {
 	try {
 		raw = JSON.parse(text);
 	} catch (err) {
-		console.warn('[cadre-rn/phone-node] a strand move record is not JSON:', err);
+		console.warn('[cadre-core/edge-node] a strand move record is not JSON:', err);
 		return undefined;
 	}
 	return isRecord(raw) ? raw : undefined;

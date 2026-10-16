@@ -1,25 +1,24 @@
 /**
- * The phone node's `CadreNodeConfig` and how a start settles its owner key, with no native
- * imports, so a Node test can build the node shape a phone runs.
+ * The edge node's `CadreNodeConfig` and how a start settles its owner key. Nothing here needs a
+ * node started, so a test can build the node shape an edge device runs.
  */
 
-import { createOwnerKey, DEFAULT_IDENTITY_KEY_ID, loadOwnerSigner, OWNER_KEY_MAX_LABEL } from '@serfab/cadre-core';
-import type {
-	BootstrapPeerStore,
-	CadreNode,
-	CadreNodeConfig,
-	EnrolledMachineStore,
-	KeyStore,
-	OwnerSigner,
-	StrandNetworkStateStore,
-	TrustedOwnerStore,
-} from '@serfab/cadre-core';
+import { DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../key-store.js';
+import { createOwnerKey, loadOwnerSigner } from '../owner-key-store.js';
+import { OWNER_KEY_MAX_LABEL } from '../owner-key-export.js';
+import type { OwnerSigner } from '../owner-signer.js';
+import type { CadreNode } from '../cadre-node.js';
+import type { CadreNodeConfig } from '../types.js';
+import type { BootstrapPeerStore } from '../bootstrap-peer-store.js';
+import type { EnrolledMachineStore } from '../enrolled-machine-store.js';
+import type { StrandNetworkStateStore } from '../strand-network-state.js';
+import type { TrustedOwnerStore } from '../trusted-owner-store.js';
 import type { IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
-import type { PhoneNodeOptions } from './options.js';
+import type { EdgeNodeOptions } from './options.js';
 
-/** What {@link buildPhoneNodeConfig} takes: one start's options plus what the platform built. */
-export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
-	/** `undefined` keeps libp2p-noise's pure-JavaScript crypto. */
+/** What {@link buildEdgeNodeConfig} takes: one start's options plus what the platform built. */
+export interface EdgeNodeConfigInputs extends EdgeNodeOptions {
+	/** `undefined` keeps libp2p-noise's own crypto. */
 	noiseCrypto?: NoiseCryptoInterface;
 	/**
 	 * Holds the node identity, which the node loads on start, generating it on first run, and the
@@ -32,9 +31,14 @@ export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
 	 * segment — use it verbatim, do not parse it.
 	 */
 	storageProvider: (scope: string) => IRawStorage;
-	/** libp2p transport factories. The phone never listens, so these only dial. */
+	/** libp2p transport factories: what the node dials with, and what listens on `listenAddrs`. */
 	transports: Libp2pTransports;
-	/** See `PhoneNodePlatform.allowPrivateDial`. */
+	/**
+	 * Listen addresses besides the bare `/p2p-circuit` entry cadre-core adds for a named relay.
+	 * Default `[]`: an edge device accepts no inbound connection. See `EdgeNodePlatform.listenAddrs`.
+	 */
+	listenAddrs?: string[];
+	/** See `EdgeNodePlatform.allowPrivateDial`. */
 	allowPrivateDial: boolean;
 	trustedOwnerStore: TrustedOwnerStore;
 	bootstrapPeerStore: BootstrapPeerStore;
@@ -43,16 +47,17 @@ export interface PhoneNodeConfigInputs extends PhoneNodeOptions {
 }
 
 /**
- * The phone node's config: transaction profile (Ring Zulu only, intermittent connectivity), no
- * listen address, reachability through the configured relays (if any) but never a hard
- * requirement for one, every strand the control network lists, and no automatic hibernation (the
- * app's lifecycle runner hibernates on background). Schema signing is left at cadre-core's
- * fail-closed default; an app with unsigned schemas relaxes it in `PhoneNodePlatform.configure`.
+ * The edge node's config: transaction profile (Ring Zulu only, intermittent connectivity), no
+ * listen address unless the platform names one, reachability through the configured relays (if
+ * any) but never a hard requirement for one, every strand the control network lists, and no
+ * automatic hibernation (the app's lifecycle runner hibernates on background). Schema signing is
+ * left at cadre-core's fail-closed default; an app with unsigned schemas relaxes it in
+ * `EdgeNodePlatform.configure`.
  */
-export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeConfig {
+export function buildEdgeNodeConfig(inputs: EdgeNodeConfigInputs): CadreNodeConfig {
 	return {
 		// Identity comes from the key store (loaded when present, generated and persisted on first
-		// run). Mutually exclusive with `privateKey`, which would take it out of the secure store.
+		// run). Mutually exclusive with `privateKey`, which would take it out of the key store.
 		keyStore: inputs.keyStore,
 		identityKeyId: DEFAULT_IDENTITY_KEY_ID,
 		controlNetwork: {
@@ -65,12 +70,12 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 		},
 		network: {
 			transports: inputs.transports,
-			// Phones do NOT listen — React Native cannot accept an inbound connection. The only
-			// address a phone ever has is the `/p2p-circuit` address a relay reservation earns it.
-			// An explicitly empty `listenAddrs` stays empty through cadre-core's derivation, and
+			// An edge device accepts no inbound connection, so by default it listens on nothing:
+			// the only address it ever has is the `/p2p-circuit` address a relay reservation earns
+			// it. An explicitly empty `listenAddrs` stays empty through cadre-core's derivation, and
 			// naming a relay adds the bare `/p2p-circuit` search entry to it
-			// (`cadre-core/src/relay-addrs.ts` → `resolveListenAddrs`).
-			listenAddrs: [],
+			// (`cadre-core/src/relay-addrs.ts` → `resolveListenAddrs`). A browser adds `/webrtc`.
+			listenAddrs: inputs.listenAddrs ?? [],
 			// Through this config field rather than `CadreNode.reserveRelays()`, which reaches the
 			// control node only: formation has the invitee dial the control node and then the strand
 			// nodes, so both need a circuit address.
@@ -80,21 +85,21 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 			// control node): a 5 s local check while the reservation holds, a dial every backoff
 			// interval (2 s → 60 s) while it does not. If background battery use becomes a complaint,
 			// raise `checkMs`/`maxBackoffMs` in cadre-core rather than stopping the supervisor here,
-			// which would leave a phone that silently stopped being invitable.
+			// which would leave a device that silently stopped being invitable.
 			relayAddrs: inputs.relayAddrs,
-			// A phone must come up with its relay down — on a plane, on dead Wi-Fi, or with none
-			// configured. A first reservation attempt that lands nothing is logged and retried in the
-			// background instead of failing `start()`. A malformed entry still throws.
+			// An edge device must come up with its relay down — on a plane, on dead Wi-Fi, or with
+			// none configured. A first reservation attempt that lands nothing is logged and retried in
+			// the background instead of failing `start()`. A malformed entry still throws.
 			requireRelay: false,
-			// Native SHA-256 / ChaCha20-Poly1305 (and X25519 in `full` mode) for Noise; only local
-			// primitives change, not the wire protocol.
+			// The platform's Noise primitives (native SHA-256 / ChaCha20-Poly1305, and X25519 in
+			// `full` mode, on a phone); only local primitives change, not the wire protocol.
 			noiseCrypto: inputs.noiseCrypto,
-			// libp2p's `connection-gater` points its `react-native` field at the browser build, which
-			// refuses to dial plain `ws://`, loopback and private addresses. A cadre-host node claimed
-			// by its code on the same Wi-Fi, an emulator reaching `10.0.2.2` and a self-run relay
-			// without TLS are all of those. Only the dial is permitted: the connection is still Noise,
-			// the pinned `/p2p/<id>` decides which machine answers, and membership is still gated by
-			// `denyDialPeer` and the inbound hooks. cadre-core hands this gater to strand nodes too.
+			// libp2p's `connection-gater` points its `react-native` and `browser` fields at a build
+			// that refuses to dial plain `ws://`, loopback and private addresses. A cadre-host node
+			// claimed by its code on the same Wi-Fi, an emulator reaching `10.0.2.2` and a self-run
+			// relay without TLS are all of those. Only the dial is permitted: the connection is still
+			// Noise, the pinned `/p2p/<id>` decides which machine answers, and membership is still
+			// gated by `denyDialPeer` and the inbound hooks. cadre-core hands this gater to strand nodes too.
 			...(inputs.allowPrivateDial ? { connectionGater: { denyDialMultiaddr: () => false } } : {}),
 		},
 		strandFilter: { mode: 'all' },
@@ -107,17 +112,23 @@ export function buildPhoneNodeConfig(inputs: PhoneNodeConfigInputs): CadreNodeCo
 }
 
 /**
- * How the start settled this node's owner key: `PhoneNodeStatus.owner`. `'enrolled'`: a key is
+ * How the start settled this node's owner key: `EdgeNodeStatus.owner`. `'enrolled'`: a key is
  * an owner and wired for signing. `'member'`: the party lists no key this app holds (a party it
  * joined, or one it founded whose owner slot was lost). `'failed'` and `'timed-out'`: see
  * {@link runOwnerGenesis}.
  */
 export type OwnerGenesisResult = 'enrolled' | 'member' | 'failed' | 'timed-out';
 
-/** Default bound on {@link runOwnerGenesis} and {@link wireJoinedOwnerKey}. */
+/**
+ * Default bound on {@link runOwnerGenesis} and {@link wireJoinedOwnerKey}: what a start can wait
+ * for its owner step, which runs control reads and one control write, before it goes on without
+ * it. Not derived from the link, since a start that waited out a stalled write (about 84 s, see
+ * `docs/cadre-consistency.md`) would be a start the user gave up on.
+ */
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: a start goes on without its owner step rather than wait out a stalled control write; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
 export const DEFAULT_OWNER_GENESIS_TIMEOUT_MS = 60_000;
 
-/** Default `PhoneNodeOptions.ownerKeyLabel`: the founding owner key's name on its `OwnerKey` row. */
+/** Default `EdgeNodeOptions.ownerKeyLabel`: the founding owner key's name on its `OwnerKey` row. */
 export const DEFAULT_OWNER_KEY_LABEL = 'phone';
 
 /**
@@ -164,12 +175,13 @@ const GRANTED_OWNER_RECHECK_MS = 2_000;
  * party's start runs {@link wireJoinedOwnerKey} instead.
  *
  * Fail-soft and bounded: a failure or a genesis that has not settled within `timeoutMs` is logged
- * and returned, and the start stands — the phone can still join discovered strands and sync. A
+ * and returned, and the start stands — the app can still join discovered strands and sync. A
  * genesis that times out keeps running; its later failure is logged.
  *
- * NOTE: the bound belongs in cadre-core, where every embedder would get it. Since v1.10 a control
- * write against an unresponsive member can hold the write lock for about 84 s, so an unbounded wait
- * here is a real stall. Move the bound into cadre-core and drop `timeoutMs` when it has one.
+ * NOTE: the bound is here, in cadre-core, so every edge node gets it; a Node host runs genesis
+ * through the CLI's own flow instead. Since v1.10 a control write against an unresponsive member
+ * can hold the write lock for about 84 s, so an unbounded wait here would be a real stall. A bound
+ * on that write itself, in `ControlDatabase`, would make this one redundant; drop `timeoutMs` then.
  */
 export function runOwnerGenesis(node: CadreNode, options: OwnerGenesisOptions): Promise<OwnerGenesisResult> {
 	const label = options.label ?? DEFAULT_OWNER_KEY_LABEL;
@@ -213,7 +225,7 @@ async function withinBound(
 	timeoutMs: number,
 ): Promise<OwnerGenesisResult> {
 	const settled = settling.catch((err: unknown): OwnerGenesisResult => {
-		console.warn(`[cadre-rn/phone-node] ${label} failed:`, err);
+		console.warn(`[cadre-core/edge-node] ${label} failed:`, err);
 		return 'failed';
 	});
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -223,7 +235,7 @@ async function withinBound(
 	try {
 		const result = await Promise.race([settled, deadline]);
 		if (result === 'timed-out') {
-			console.warn(`[cadre-rn/phone-node] ${label} has not settled after ${timeoutMs} ms; starting without it`);
+			console.warn(`[cadre-core/edge-node] ${label} has not settled after ${timeoutMs} ms; starting without it`);
 		}
 		return result;
 	} finally {

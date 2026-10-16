@@ -1,7 +1,7 @@
 /**
  * web-join.ts — the tab joins the user's existing cadre, finishes moving its strands there, and
  * removes the cadre it left (docs/architecture.md → "An app joins an existing cadre"). The web app
- * has no kit, so this follows the phone kit's sequence (`cadre-rn/src/phone-node/node.ts` →
+ * has no kit, so this follows the phone kit's sequence (`cadre-core/src/edge-node/edge-node.ts` →
  * `joinCadre`, `finishStrandMove`, `dissolveFormerParty`) itself, as steps the store's actions run
  * in order over `cadre-web.ts`'s lifecycle exports, which own the one node.
  *

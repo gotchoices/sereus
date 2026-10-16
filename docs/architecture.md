@@ -60,7 +60,7 @@ A warm start applies the control schema to the tables already in the control sto
 
 **Recreating a control store.** Until versioned migrations land (`plan/control-schema-versioned-migrations`), a store this build refuses is recreated:
 
-1. Stop the node and delete the control store, storage scope `controlStorageScope(partyId)`, on every machine of the party. cadre-rn deletes it with `storage.destroyDatabase(storage.storagePrefix + controlStorageScope(partyId))` (`phone-node/dissolve.ts`), the web reference app with `deleteStore(controlStorageScope(partyId))` (`web-dissolve.ts`). Every machine is a precaution reasoned from the code, not a measured requirement: the control tables' collection ids are fixed by table name, so a recreated store and a surviving old one would hold different blocks under the same ids.
+1. Stop the node and delete the control store, storage scope `controlStorageScope(partyId)`, on every machine of the party. The edge node deletes it with `storage.destroyScope(controlStorageScope(partyId))` (`cadre-core/src/edge-node/dissolve.ts`; the phone kit's storage maps that to rn-leveldb's `destroyDB(storagePrefix + scope)`), the web reference app with `deleteStore(controlStorageScope(partyId))` (`web-dissolve.ts`). Every machine is a precaution reasoned from the code, not a measured requirement: the control tables' collection ids are fixed by table name, so a recreated store and a surviving old one would hold different blocks under the same ids.
 2. Start the founding machine with its owner key wired; on a party with no `OwnerKey` row that key founds the party again (owner genesis).
 3. Re-admit the other machines with new invitations.
 
@@ -428,7 +428,7 @@ The browser, React Native and NativeScript reference apps each inject slots, so 
 
 **How the NativeScript anchor fills.** The NativeScript app fills its anchor exactly as React Native's does: Settings carries an optional enrollment-invite paste field beside the seed field, and the pasted `CadreInvite`'s owner keys are anchored via `trustOwnerKeys(keys, 'invite')` *before* the seed is applied (and handed to `pinnedKeyTrustPolicy` for that apply), so a later seed from the same owner is then accepted by the default `anchoredTrustPolicy` with the invite field blank. It wires no owner private key, so it has no genesis self-anchor — it does not need one, since it either forms a cadre solo or enrolls via an invite. Its bootstrap-peer record fills in from `applySeed`.
 
-**Both phone apps relaunch into the same party.** Both phone apps also remember their start options, party id included — one non-party-scoped key beside their records (React Native's LevelDB, through the kit's `@serfab/cadre-rn/phone-node`; NativeScript's SQLite `kv` table, `reference-app-ns/src/start-options.ts`) — and relaunch into the same party, so their records are read back across a relaunch and their enrolled-machine counts declare a repair yardstick at bring-up.
+**Both phone apps relaunch into the same party.** Both phone apps also remember their start options, party id included — one non-party-scoped key beside their records (React Native's LevelDB, as the edge node's saved start, `@serfab/cadre-core/edge-node` run by the kit's `@serfab/cadre-rn/phone-node`; NativeScript's SQLite `kv` table, `reference-app-ns/src/start-options.ts`) — and relaunch into the same party, so their records are read back across a relaunch and their enrolled-machine counts declare a repair yardstick at bring-up.
 
 Tickets: `donated-node-durable-identity`, `provider-container-durable-identity-tests`.
 
@@ -765,7 +765,7 @@ The iOS store link names nothing about A, since iOS has no install referrer. B i
 
 **B trusts a hint only when its own list names the app.** Anyone can build a Play link with any referrer, and any app can open B with any link. B looks the scheme up in its own known-apps list (the kit's `KNOWN_SEREUS_APPS` plus its extras) by exact equality, drops a scheme that is not there, and names the app from its list, never from the hint. A hint can therefore only make B offer to open an app it already knows.
 
-**The pre-approval is single-use, party-bound and lasts an hour.** A keeps one list in its node-local database (`PhoneNode.recommendationSlot()`, key `recommended-apps`), at most one entry per scheme, so approving the same app again replaces the grant and the expiry.
+**The pre-approval is single-use, party-bound and lasts an hour.** A keeps one list in its node-local database (`EdgeNode.recommendationSlot()`, key `recommended-apps`), at most one entry per scheme, so approving the same app again replaces the grant and the expiry.
 
 - **Single use.** `take` removes the entry as it returns it, so a second delivery of the request, or a second request racing it, finds none and gets A's usual prompt. If A then cannot mint, the entry is gone and the user recommends again; it fails safe rather than restoring the entry.
 - **One hour.** `RECOMMENDATION_TTL_MS` is long enough to install B from the store and open it; an older entry reads as absent.
@@ -775,13 +775,13 @@ The iOS store link names nothing about A, since iOS has no install referrer. B i
 
 #### An app joins an existing cadre
 
-A phone app that already runs a one-node cadre of its own (party B) joins the user's main cadre (party A) by moving its one node from B to A: `PhoneNode.joinCadre` in `@serfab/cadre-rn/phone-node` ([kit README → Phone node](../packages/cadre-rn/README.md#phone-node)). The browser reference app has no kit and follows the same sequence itself, the join, the move and the dissolve, over IndexedDB, in `reference-app-web/src/lib/web-join.ts` and `web-dissolve.ts` ([reference-app-web README → Joining an existing cadre](../packages/reference-app-web/README.md#joining-an-existing-cadre)); the duplication is tracked as `debt-web-app-repeats-the-phone-kit-join-sequence`.
+A phone app that already runs a one-node cadre of its own (party B) joins the user's main cadre (party A) by moving its one node from B to A: `EdgeNode.joinCadre` in `@serfab/cadre-core/edge-node` ([The edge node](#the-edge-node)), which the phone kit's `createPhoneNode` runs ([kit README → Phone node](../packages/cadre-rn/README.md#phone-node)). The browser reference app has no kit and follows the same sequence itself, the join, the move and the dissolve, over IndexedDB, in `reference-app-web/src/lib/web-join.ts` and `web-dissolve.ts` ([reference-app-web README → Joining an existing cadre](../packages/reference-app-web/README.md#joining-an-existing-cadre)); the duplication is tracked as `debt-web-app-repeats-the-phone-kit-join-sequence`.
 
 **One node per app, keeping its identity.** The node is switched, not doubled:
 
 - **A node serves one party.** Every node-local store is party-scoped and refuses another party's records, and `redeemCadreInvitation` refuses an invitation for another party, so one node serving both would be a rewrite of `CadreNode`.
 - **A second node beside B's would collide or split the machine.** With the same identity both nodes claim one peer id (competing relay reservations) and open the same strand databases, whose storage scopes are strand ids rather than party-scoped; with a second identity the strands moved into A would name the new machine, not the one that founded them in B, as their founder (`publishStrand` records the publishing node's peer id in `Strand.FounderPeerId`).
-- **The identity is per app, not per party.** The kit keeps one key in the secure store (`DEFAULT_IDENTITY_KEY_ID`), so the peer id in a join request is the peer id that redeems. `PhoneNode.identityPeerId()` reads it before any party is started, so a fresh install can show a join request without founding a cadre first.
+- **The identity is per app, not per party.** The kit keeps one key in the secure store (`DEFAULT_IDENTITY_KEY_ID`), so the peer id in a join request is the peer id that redeems. `EdgeNode.identityPeerId()` reads it before any party is started, so a fresh install can show a join request without founding a cadre first.
 - **So is the owner key, in a slot of its own** (`DEFAULT_OWNER_KEY_ID`; [kit README → The phone's owner key](../packages/cadre-rn/README.md#the-phones-owner-key)). Joining does not make it an owner of A. The app is an owner of A through whichever key A lists: its owner key, once an owner of A adds it or the user imports one of A's keys, or, until owner grants seat a key of their own, the identity key an owner-granting invitation seats ("Invitation-granted owners" under [Owner Keys](#owner-keys)).
 
 The join moves B's strands into A ([Moving the app's strands](#moving-the-apps-strands)): the kit exports them before B's node stops and adopts them once the app's key is wired as an owner of A, so they open on the phone in A (steps below). B's data stays on disk under its own names: the control store under `controlStorageScope(B)`, the `<record>.<B>` node-local keys and B's anchor slot, until the app dissolves B ([Dissolving the party it left](#dissolving-the-party-it-left)).
@@ -828,7 +828,7 @@ A party's participation in a strand is control-database state, not strand-databa
 
 ##### Dissolving the party it left
 
-`PhoneNode.dissolveFormerParty()` deletes B's local storage once A holds everything B holds and no other machine is in B, so the app runs only as a member of A. It is local: it writes nothing to A's control database, nor to B's, whose last `OwnerKey` row `OwnerKey.MinOneOwner` would keep anyway.
+`EdgeNode.dissolveFormerParty()` deletes B's local storage once A holds everything B holds and no other machine is in B, so the app runs only as a member of A. It is local: it writes nothing to A's control database, nor to B's, whose last `OwnerKey` row `OwnerKey.MinOneOwner` would keep anyway.
 
 **The check reads B's storage.** The move record cannot show the move complete: it is deleted once an adoption fails nothing, and one that does not parse is deleted with a warning. A node serves one party, so the dissolve, in turn with start, stop and join, reads A's holdings, stops A's node, starts a node for B alone (no addresses, no strand launched, nothing saved) to export B's bundle and list its `CadrePeer` rows, stops it, and starts A again. That is one restart of A for a rare action the user starts. A record of B's content kept at the join was rejected: it would be a second durable record that can be lost the way the move record can, and B's storage is the only ground truth. While B's move record exists the dissolve is refused before anything stops (`StrandMovePendingError`).
 
@@ -2303,7 +2303,7 @@ The React Native reference app (`reference-app-rn`) backs the seam with
 (`kSecClassGenericPassword`) and Android **Keystore**-encrypted SharedPreferences.
 The phone node's identity, and its owner key in a slot of its own, therefore live
 in the platform enclave rather than the plaintext LevelDB the app used before.
-The kit's `createPhoneNode` (`@serfab/cadre-rn/phone-node`) constructs the store
+The kit's `createPhoneNode` (`@serfab/cadre-rn/phone-node`) constructs the store for the edge node ([The edge node](#the-edge-node))
 and passes it as `keyStore` — cadre-core's load-or-create path does the rest.
 Bridging details the backend handles:
 
@@ -2363,7 +2363,7 @@ identity, not import the old one.
   (`applySeed` with the inviting cadre's owner keys pinned — see
   [Enrollment and Bootstrap](#enrollment-and-bootstrap)), receiving a fresh
   identity. A lost owner slot means the device is no longer an owner: importing a
-  backup of the key (`PhoneNode.importOwnerKey`) makes it one again, as does
+  backup of the key (`EdgeNode.importOwnerKey`) makes it one again, as does
   another owner adding a new key. The settings screen surfaces the **owner public
   key** (base64url) the node signs with, so it can be shared for (re-)pairing.
 
@@ -2542,6 +2542,14 @@ The `provider` field accepts either an `IRawStorage` instance (shared across eve
 The cache's soundness rests on **one live cache per backend, and one process per store** (upstream `docs/storage.md`, Invariants 1 and 5). The helper is memoized per storage instance so the overlapping seams cannot stack two caches over one store, and the wrap is idempotent so re-wrapping is safe. Two obligations follow for anyone writing a new call site: never hand a node or transactor a raw `IRawStorage` without routing it through the helper, and never point two stores at one path or keyspace. `wrapStorageWithCache` and `disposeStorageCache` are a matched pair — each wrap that hands back a cache takes one holder claim on it and each dispose releases one — so a scope may release its own claim unconditionally without knowing whether it or another scope created the wrapper, and the cache is emptied, unregistered and dropped from the memo only when the last claim goes. A third obligation follows from that: call the pair in balance, one dispose per wrap.
 
 **A provider is called once per scope per runtime, and cadre-core owns what it returns.** The scopes are the party's control key (once per `CadreNode.start()`) and each strand id (once per `startStrand`); a `CadreNode` holds the control store in a field, and `StrandInstanceManager` holds each strand's store keyed by strand id. A hibernation quiesce → resume rebuilds the libp2p node over that same store rather than re-entering the provider, so the wake lands on a warm cache — and, on an in-memory backend, on the strand's blocks rather than an empty store. The provider *is* called again for a scope whose runtime has stopped (`stopStrand`, or a `stop()` then `start()` cycle), so it must be able to return a store over the same durable backend a second time; it need not memoize to do so. When a scope's runtime stops, cadre-core calls `disposeStorageCache` on its wrapper — releasing that scope's claim, and with the last claim the shared pool registration a long-lived process would otherwise accumulate one of per stop — and never closes the underlying handle the embedder returned.
+
+### The edge node
+
+An app on an edge device (a phone, a browser tab) brings its `CadreNode` up through one shared module, `@serfab/cadre-core/edge-node` (`packages/cadre-core/src/edge-node/`): `createEdgeNode(platform)` builds, starts, stops and rebuilds the node over the app's key store and storage, and owns what every such app needs the same way. The transition queue: start, stop, restart, join and dissolve run one at a time, a start called during a stop runs after it, and a second start joins the one in flight. Cleanup after a failed start. Event subscriptions (`on`) re-applied to every rebuilt node before it starts. The edge config (`buildEdgeNodeConfig`): transaction profile, relays through `network.relayAddrs` with `requireRelay: false` so the control node and every strand node reserve on them and a node still comes up with its relay down, no listen address unless the platform names one, no automatic hibernation. The bounded owner step (`runOwnerGenesis` on a founded party, `wireJoinedOwnerKey` on a joined one, 60 s by default). The saved start for unattended starts. The join, strand move, dissolve and removal sequence ([An app joins an existing cadre](#an-app-joins-an-existing-cadre)), with `unfinishedRemoval` reporting a removal a start could not finish. It is a subpath rather than the root export, so cadre-host and the CLI never load it.
+
+**What the platform supplies** (`EdgeNodePlatform`): a cadre-core `KeyStore` for everything secret (the identity, the owner key, the joined-strand and strand-move records); an `EdgeNodeStorage`, which is one raw block store per storage scope (synchronous, as `CadreNodeConfig.storage.provider` is; `lazyRawStorage` wraps an opener that is asynchronous, as IndexedDB's and SQLite's are), a node-local key-value store for the saved start and the per-party records, `destroyScope` for a removal, `close` for a stop, and, on a platform with a store more tamper-resistant than its node-local one, a per-party `trustedOwnerSlot` for the anchor (absent, the anchor is the node-local key `trusted-owners.<partyId>`); and optionally its transports, listen addresses, Noise crypto, the keys inside the node-local store, and the last word on the config (`configure`).
+
+**Who runs it.** The React Native kit's `createPhoneNode` (`@serfab/cadre-rn/phone-node`) is the edge node over `expo-secure-store` and rn-leveldb, the anchor in the secure store ([Mobile secure backend](#mobile-secure-backend-securestorekeystore)); its types are the edge node's under the kit's names. The browser reference app (IndexedDB) and the NativeScript reference app (SQLite) adopt it in `reference-app-web-runs-the-edge-node` and `reference-app-ns-runs-the-edge-node`.
 
 ### React Native Polyfills
 

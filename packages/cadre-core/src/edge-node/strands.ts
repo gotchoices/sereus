@@ -1,9 +1,10 @@
 /**
- * Strand helpers every phone app needs around a running node, from sereus-chat's bring-up.
+ * Strand helpers every edge app needs around a running node, from sereus-chat's bring-up.
  */
 
-import { StrandAwaitingFirstSyncError } from '@serfab/cadre-core';
-import type { CadreNode, StrandConfig, StrandInstance } from '@serfab/cadre-core';
+import { StrandAwaitingFirstSyncError } from '../strand-first-sync-gate.js';
+import type { CadreNode } from '../cadre-node.js';
+import type { StrandConfig, StrandInstance } from '../types.js';
 
 /** Default patience for {@link attachStrandWhenWritable}: generous enough that running out means something is wrong. */
 export const DEFAULT_STRAND_PATIENCE_MS = 240_000;
@@ -28,7 +29,7 @@ export async function attachStrandWhenWritable(
 		if (!(err instanceof StrandAwaitingFirstSyncError)) throw err;
 		const patienceMs = options.patienceMs ?? DEFAULT_STRAND_PATIENCE_MS;
 		console.info(
-			`[cadre-rn/phone-node] first sync of ${config.strandRow.Id} still arriving; ` +
+			`[cadre-core/edge-node] first sync of ${config.strandRow.Id} still arriving; ` +
 			`waiting up to ${patienceMs / 1000} s for it to become writable`,
 		);
 		return await node.whenStrandWritable(config.strandRow.Id, { timeoutMs: patienceMs });
@@ -60,7 +61,7 @@ export async function retryAfterRestart<T>(
 			return await write();
 		} catch (err) {
 			if (!isTransientWriteFailure(err) || attempt >= attempts) throw err;
-			console.info(`[cadre-rn/phone-node] write attempt ${attempt} lacked a super-majority; retrying in ${delayMs} ms`);
+			console.info(`[cadre-core/edge-node] write attempt ${attempt} lacked a super-majority; retrying in ${delayMs} ms`);
 			await new Promise((resolve) => setTimeout(resolve, delayMs));
 		}
 	}

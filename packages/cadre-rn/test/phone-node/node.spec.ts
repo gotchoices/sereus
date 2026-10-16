@@ -16,10 +16,12 @@ import {
 	ed25519PublicKeyB64FromPeerId,
 	ed25519PublicKeyFromPrivate,
 	exportStrandBundle,
+	StrandMoveNotOwnerError,
 	type CadreInvitation,
 	type CadreRemoval,
 	type SAppConfig,
 } from '@serfab/cadre-core';
+import { fromString as uint8ArrayFromString } from 'uint8arrays';
 import { FakeWriteBatch, lockingFakeRNLevelDB } from '../../../../test-harness/fake-rn-leveldb.js';
 import { SecureStoreKeyStore, secureStoreKeySegment } from '../../src/key-store.js';
 import { anchorSlotKey } from '../../src/node-local.js';
@@ -487,6 +489,36 @@ describe('createPhoneNode — joining another party', () => {
 		expect(phone.status).toEqual({ state: 'stopped' });
 		expect(secureStore.setOptionsByKey.has(moveRecordKey(partyId)), 'recorded before the switch').toBe(true);
 		expect(secureStore.map.has(moveRecordKey(partyId)), 'discarded by the rollback').toBe(false);
+	}, LIFECYCLE_MS * 3);
+
+	it('finishes a waiting move once the joined party lists the app\'s own key, asking for the owner row again first', async () => {
+		// A joined start settles as a member when its owner row has not arrived within the bound.
+		// An owner grant landing after that must be picked up by Retry, not refused as not-owner.
+		const { platform, secureStore, partyId: former } = device();
+		const phone = phoneNode(platform);
+		const strandId = `${former}-strand`;
+		const left = await phone.start(options(former));
+		await left.foundStrand({ strandId, type: 'o', sAppConfig: NOTES_SAPP });
+		const bundle = await exportStrandBundle(left);
+		const ownerKey = phone.ownerPublicKey()!;
+		await phone.stop();
+		const joined = `${former}-joined`;
+		// The record a join to `joined` leaves behind, written as the kit writes it: a persistence contract, as `moveRecordKey` is.
+		await new SecureStoreKeyStore(secureStore).set(
+			`cadre/strand-move/${secureStoreKeySegment(former)}`,
+			uint8ArrayFromString(JSON.stringify({ v: 1, targetPartyId: joined, bundle, moved: [], refused: [] }), 'utf8'),
+		);
+		const node = await phone.start({ ...options(joined), origin: 'joined', formerPartyId: former });
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'member' });
+		await expect(phone.finishStrandMove()).rejects.toBeInstanceOf(StrandMoveNotOwnerError);
+
+		await node.getControlDatabase()!.ensureOwnerKey(ownerKey, 'phone'); // the owner grant's row, arriving late
+		const report = await phone.finishStrandMove();
+
+		expect(report?.moved).toEqual([strandId]);
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+		expect(phone.ownerPublicKey()).toBe(ownerKey);
+		expect(await phone.pendingStrandMove()).toBeUndefined();
 	}, LIFECYCLE_MS * 3);
 });
 

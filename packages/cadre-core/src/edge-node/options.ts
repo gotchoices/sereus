@@ -1,36 +1,41 @@
 /**
- * What one phone-node start is made with, and the record that remembers it between launches.
+ * What one edge-node start is made with, and the record that remembers it between launches.
  *
  * The record is one per app, not party-scoped: it is what *selects* the party, so every other
- * node-local record is read through the `partyId` it carries. `PhoneNode.start` writes it after
+ * node-local record is read through the `partyId` it carries. `EdgeNode.start` writes it after
  * every successful start and `joinCadre` once a member admitted the app (`autoStart: true`),
  * `stop` rewrites it with `autoStart: false`, and a removal from the party replaces it
  * ({@link startAfterRemoval}); an app's launch and a push wake into a killed process read it to
  * start the node unattended.
  */
 
-// Type-only: the noise-crypto module loads react-native-quick-crypto at runtime.
-import type { NoiseCryptoMode } from '../noise-crypto.js';
+/**
+ * How much of Noise's crypto the platform replaces (`EdgeNodePlatform.noiseCrypto`): none, the
+ * per-frame hash and cipher, or those and the handshake's key exchange too. Named here, apart from
+ * any implementation, so a stored mode can be validated without loading a native module; the
+ * React Native kit's `/noise-crypto` builds the implementation for each.
+ */
+export type NoiseCryptoMode = 'off' | 'symmetric' | 'full';
 
-export interface PhoneNodeOptions {
+export interface EdgeNodeOptions {
 	/** Party ID — identifies this cadre. The app mints one on first run. */
 	partyId: string;
 	/** Bootstrap multiaddrs (the party's always-on machines). */
 	bootstrapAddrs: string[];
 	/**
-	 * Circuit-relay multiaddrs this phone reserves a slot on. A phone never listens, so a relay
-	 * reservation is the only address anyone can dial it at. Empty is allowed: the node starts and
-	 * dials out, but cannot be invited to or joined.
+	 * Circuit-relay multiaddrs this node reserves a slot on. An edge device accepts no inbound
+	 * connection, so a relay reservation is the only address anyone can dial it at. Empty is
+	 * allowed: the node starts and dials out, but cannot be invited to or joined.
 	 */
 	relayAddrs: string[];
-	/** How much of Noise's crypto runs natively; read only when the node is built. */
+	/** How much of Noise's crypto the platform replaces; read only when the node is built. */
 	noiseCryptoMode?: NoiseCryptoMode;
 	/**
 	 * How this app came to `partyId`. A `'founded'` party runs owner genesis on every start; a
 	 * `'joined'` one never does, because genesis on a party whose control store has not arrived
 	 * would seat this app as a second founder. Absent means `'founded'`.
 	 */
-	origin?: PhoneNodeOrigin;
+	origin?: EdgeNodeOrigin;
 	/**
 	 * The name the founding owner key gets on its `OwnerKey` row when this start founds the party
 	 * ("phone", "Ann's iPhone"). Read only by genesis; default `'phone'`. Trimmed, at most 64
@@ -38,23 +43,23 @@ export interface PhoneNodeOptions {
 	 */
 	ownerKeyLabel?: string;
 	/**
-	 * The party this app founded and left by joining another (`PhoneNode.joinCadre`). Its data
+	 * The party this app founded and left by joining another (`EdgeNode.joinCadre`). Its data
 	 * stays on disk under its own names, for moving its strands and dissolving the old cadre.
 	 */
 	formerPartyId?: string;
 }
 
 /** Whether this app founded its party, or joined it by invitation. */
-export type PhoneNodeOrigin = 'founded' | 'joined';
+export type EdgeNodeOrigin = 'founded' | 'joined';
 
-/** The last start, as `PhoneNode.loadSavedStart` reports it. */
+/** The last start, as `EdgeNode.loadSavedStart` reports it. */
 export interface SavedStart {
 	/** Exactly what the node was last successfully started with. */
-	options: PhoneNodeOptions;
+	options: EdgeNodeOptions;
 	/** True after a successful start, false after `stop`. Gates every unattended start. */
 	autoStart: boolean;
 	/**
-	 * The `PhoneNodePlatform.dataVersion` of the build that last started over this device's data,
+	 * The `EdgeNodePlatform.dataVersion` of the build that last started over this device's data,
 	 * or `undefined` when that build named none. The app compares it with its own to decide whether
 	 * the stored data is usable.
 	 */
@@ -70,7 +75,7 @@ export interface SavedStart {
 export function startAfterRemoval(saved: SavedStart): SavedStart | undefined {
 	const { partyId, formerPartyId, relayAddrs, noiseCryptoMode } = saved.options;
 	if (formerPartyId === undefined || formerPartyId === partyId) return undefined;
-	const options: PhoneNodeOptions = { partyId: formerPartyId, bootstrapAddrs: [], relayAddrs, origin: 'founded' };
+	const options: EdgeNodeOptions = { partyId: formerPartyId, bootstrapAddrs: [], relayAddrs, origin: 'founded' };
 	if (noiseCryptoMode !== undefined) options.noiseCryptoMode = noiseCryptoMode;
 	return { options, autoStart: false, ...(saved.writtenBy !== undefined && { writtenBy: saved.writtenBy }) };
 }
@@ -91,7 +96,7 @@ interface StartRecord {
 	bootstrapAddrs: string[];
 	relayAddrs: string[];
 	noiseCryptoMode?: NoiseCryptoMode;
-	origin?: PhoneNodeOrigin;
+	origin?: EdgeNodeOrigin;
 	formerPartyId?: string;
 	ownerKeyLabel?: string;
 	autoStart: boolean;
@@ -121,7 +126,7 @@ export function serializeSavedStart(saved: SavedStart): string {
  * Only the party id is worth discarding a record over. A malformed optional field falls back to
  * its default — `[]` for an address list, the build default for the Noise mode, absent for
  * `origin`, `formerPartyId` and `ownerKeyLabel`, `false` for `autoStart` — so a damaged record still keeps the
- * phone in its party, at worst needing the user to start the node by hand.
+ * app in its party, at worst needing the user to start the node by hand.
  */
 export function parseSavedStart(text: string | undefined): SavedStart | undefined {
 	if (text === undefined) return undefined;
@@ -129,10 +134,10 @@ export function parseSavedStart(text: string | undefined): SavedStart | undefine
 	if (!record) return undefined;
 	const { partyId } = record;
 	if (typeof partyId !== 'string' || partyId.trim().length === 0) {
-		console.warn('[cadre-rn/phone-node] ignoring saved start options with no party id');
+		console.warn('[cadre-core/edge-node] ignoring saved start options with no party id');
 		return undefined;
 	}
-	const options: PhoneNodeOptions = {
+	const options: EdgeNodeOptions = {
 		partyId,
 		bootstrapAddrs: stringArrayOrEmpty(record.bootstrapAddrs),
 		relayAddrs: stringArrayOrEmpty(record.relayAddrs),
@@ -154,16 +159,16 @@ function parseRecord(text: string): Record<string, unknown> | undefined {
 	try {
 		raw = JSON.parse(text);
 	} catch (err) {
-		console.warn('[cadre-rn/phone-node] ignoring saved start options that are not JSON:', err);
+		console.warn('[cadre-core/edge-node] ignoring saved start options that are not JSON:', err);
 		return undefined;
 	}
 	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-		console.warn('[cadre-rn/phone-node] ignoring saved start options that are not an object');
+		console.warn('[cadre-core/edge-node] ignoring saved start options that are not an object');
 		return undefined;
 	}
 	const record = raw as Record<string, unknown>;
 	if (record.version !== RECORD_VERSION) {
-		console.warn(`[cadre-rn/phone-node] ignoring saved start options of unknown version ${String(record.version)}`);
+		console.warn(`[cadre-core/edge-node] ignoring saved start options of unknown version ${String(record.version)}`);
 		return undefined;
 	}
 	return record;

@@ -26,6 +26,8 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 
 `createPhoneNode` is a phone app's whole node bring-up. It keeps the identity and the app's owner key in the secure store, each in its own slot, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by invitation, deletes the cadre it left once that cadre is empty, and deletes a cadre whose owner removed the app. Call it once, at module scope; a second call over the same storage names throws while the first is running.
 
+It is `@serfab/cadre-core/edge-node`'s `createEdgeNode` over the secure store and rn-leveldb: the kit supplies the key store (`SecureStoreKeyStore`), the storage (a LevelDB database per storage scope and one for the node-local records, `src/phone-node/leveldb-storage.ts`) and the trusted-owner anchor's secure-store slot; the transitions, the owner step, the saved start, the join, the strand move, the dissolve and the removal are the edge node's, and `PhoneNode`, `PhoneNodeOptions`, `PhoneNodeStatus` and the other names below are its types under the kit's names. An app that runs a node on another platform (a browser, NativeScript) runs the edge node directly over a key store and storage of its own.
+
 ```ts
 import * as SecureStore from 'expo-secure-store';           // or an adapter over the app's own secure store
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';

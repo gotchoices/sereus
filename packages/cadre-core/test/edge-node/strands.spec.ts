@@ -1,11 +1,11 @@
 /**
  * The strand helpers' decisions — what counts as progress, what counts as transient — over a
  * stand-in node. Running them against a real slow first sync or a real lone restart is
- * integration-test territory; what is the kit's own is which errors they wait out.
+ * integration-test territory; what is this module's own is which errors they wait out.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { StrandAwaitingFirstSyncError, type CadreNode, type StrandConfig, type StrandInstance } from '@serfab/cadre-core';
-import { attachStrandWhenWritable, retryAfterRestart } from '../../src/phone-node/strands.js';
+import { StrandAwaitingFirstSyncError, type CadreNode, type StrandConfig, type StrandInstance } from '../../src/index.js';
+import { attachStrandWhenWritable, retryAfterRestart } from '../../src/edge-node/strands.js';
 
 const CONFIG = { strandRow: { Id: 'strand-1' } } as StrandConfig;
 const INSTANCE = { strandId: 'strand-1', status: 'active' } as StrandInstance;

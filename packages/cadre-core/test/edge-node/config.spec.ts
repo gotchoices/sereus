@@ -9,12 +9,12 @@ import {
 	RELAY_SEARCH_LISTEN_ADDR,
 	resolveListenAddrs,
 	strandNodeAddrs,
-} from '@serfab/cadre-core';
-import { buildPhoneNodeConfig } from '../../src/phone-node/config.js';
+} from '../../src/index.js';
+import { buildEdgeNodeConfig } from '../../src/edge-node/config.js';
 
 /**
- * Assertions about the phone's `CadreNodeConfig` that do not need a node started.
- * `node.spec.ts` builds the same config through `createPhoneNode` and runs it; this file
+ * Assertions about the edge node's `CadreNodeConfig` that do not need a node started.
+ * The React Native kit's `node.spec.ts` builds the same config through `createPhoneNode` and runs it; this file
  * covers the settings whose absence would only show up as a failed dial on a
  * device, which no headless test reaches.
  *
@@ -32,7 +32,7 @@ const RELAY_ADDR = '/ip4/203.0.113.7/tcp/4002/ws/p2p/12D3KooWK99VoVxNE7XzyBwXEzW
 const SECOND_RELAY_ADDR = '/ip4/203.0.113.8/tcp/4002/ws/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
 
 function config(relayAddrs: string[] = [], allowPrivateDial = true) {
-	return buildPhoneNodeConfig({
+	return buildEdgeNodeConfig({
 		partyId,
 		allowPrivateDial,
 		bootstrapAddrs: [],
@@ -48,13 +48,13 @@ function config(relayAddrs: string[] = [], allowPrivateDial = true) {
 	});
 }
 
-describe('buildPhoneNodeConfig', () => {
+describe('buildEdgeNodeConfig', () => {
 	it('permits dialling private and insecure addresses', () => {
 		// A node borrowed from a cadre-host on the same Wi-Fi is reached at a private
 		// `ws://` address. libp2p's browser-build connection gater — which is what the
 		// package's `react-native` field points at — refuses exactly those by default,
 		// and cadre-core's membership gater supplies only `denyDialPeer` and the
-		// inbound/relay hooks. Without this the phone provisions the node, seeds it, and
+		// inbound/relay hooks. Without this the phone app provisions the node, seeds it, and
 		// then silently never connects.
 		const gater = config().network?.connectionGater;
 
@@ -68,11 +68,11 @@ describe('buildPhoneNodeConfig', () => {
 	});
 
 	it('leaves schema signing at cadre-core\'s fail-closed default', () => {
-		// An app with unsigned schemas relaxes it through `PhoneNodePlatform.configure`.
+		// An app with unsigned schemas relaxes it through `EdgeNodePlatform.configure`.
 		expect(config().requireSignedSchemas).toBeUndefined();
 	});
 
-	it('still listens on nothing — the phone is always the side that dials', () => {
+	it('still listens on nothing — an edge device is always the side that dials', () => {
 		expect(config().network?.listenAddrs).toEqual([]);
 		expect(config([RELAY_ADDR]).network?.listenAddrs).toEqual([]);
 	});
@@ -83,20 +83,20 @@ describe('buildPhoneNodeConfig', () => {
 		expect(config().network?.relayAddrs).toEqual([]);
 	});
 
-	it('never requires a relay, so a phone starts with its relay down or absent', () => {
+	it('never requires a relay, so an edge device starts with its relay down or absent', () => {
 		// `requireRelay: false` softens ONLY the reservation half: a first attempt that
 		// lands nothing is logged and retried in the background instead of throwing
-		// `RelayReservationFailedError` out of `start()`. A phone that could not boot on
+		// `RelayReservationFailedError` out of `start()`. A device that could not boot on
 		// a dead network would be useless.
 		expect(config([RELAY_ADDR]).network?.requireRelay).toBe(false);
 		expect(config().network?.requireRelay).toBe(false);
 	});
 });
 
-describe('buildPhoneNodeConfig — what cadre-core derives from it', () => {
+describe('buildEdgeNodeConfig — what cadre-core derives from it', () => {
 	it('gives the control node a bare /p2p-circuit listener once a relay is named', () => {
 		// An explicitly empty `listenAddrs` stays empty, and the search entry is ADDED to
-		// it: the phone gains a circuit address without gaining a direct listener it
+		// it: the device gains a circuit address without gaining a direct listener it
 		// cannot bind.
 		expect(resolveListenAddrs(config([RELAY_ADDR]).network)).toEqual([RELAY_SEARCH_LISTEN_ADDR]);
 	});

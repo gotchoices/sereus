@@ -1,11 +1,11 @@
 /**
- * The saved-start record (`src/phone-node/options.ts`) — reading back the options the
- * phone last started with. The record selects the party every node-local record is filed
- * under, so a damaged one must neither crash a launch nor cost the phone its party id over
+ * The saved-start record (`src/edge-node/options.ts`) — reading back the options the
+ * app last started with. The record selects the party every node-local record is filed
+ * under, so a damaged one must neither crash a launch nor cost the app its party id over
  * a lesser field.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { parseSavedStart, serializeSavedStart, type SavedStart } from '../../src/phone-node/options.js';
+import { parseSavedStart, serializeSavedStart, type SavedStart } from '../../src/edge-node/options.js';
 
 const SAVED: SavedStart = {
 	options: {
