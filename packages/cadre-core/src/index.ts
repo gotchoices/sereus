@@ -451,6 +451,7 @@ export {
   ownerGrantRedeemDigest,
   ownerGrantConsentDigest,
   verifyOwnerGrantRow,
+  verifyOwnerGrantRedemption,
   verifyOwnerGrantAdmission,
   type DeviceTokenAuthorizedRow
 } from './peer-authorization.js';

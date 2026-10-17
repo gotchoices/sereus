@@ -535,6 +535,29 @@ export function verifyOwnerGrantRow(partyId: string, grant: OwnerGrantRow): bool
 }
 
 /**
+ * The two signatures an owner-grant redemption carries, checked before any database work:
+ * the holder's `'redeem'` signature with the grant key and the seated key's `'consent'`
+ * signature with itself, both over (`grantKey`, `usageStampId`, `seatedKey`). The grant twin
+ * of {@link verifyCadreInviteRedemption}, with the same contract: the schema
+ * (`OwnerGrantUsage.GrantPossessed` / `OwnerConsented`) stays the authority, this turns a bad
+ * signature into a clean refusal instead of a constraint failure at commit. Never throws.
+ */
+export function verifyOwnerGrantRedemption(
+  partyId: string,
+  fields: { grantKey: string; usageStampId: string; seatedKey: string },
+  grantSig: string,
+  ownerSig: string,
+): boolean {
+  try {
+    return verifyB64(ownerGrantRedeemDigest(partyId, fields.grantKey, fields.usageStampId, fields.seatedKey), grantSig, fields.grantKey)
+      && verifyB64(ownerGrantConsentDigest(partyId, fields.grantKey, fields.usageStampId, fields.seatedKey), ownerSig, fields.seatedKey);
+  } catch (error) {
+    log('verifyOwnerGrantRedemption failed: %o', error);
+    return false;
+  }
+}
+
+/**
  * Is a grant-seated `OwnerKey` row (`vouchSig` null, `vouchUsage` naming an `OwnerGrantUsage`
  * row) an owner this node should derive into its anchor? The read-side mirror of the grant
  * branch of `OwnerKey.Authorized` (`owner-anchor-sync.ts` → `deriveOwnerAnchor`). The chain is
