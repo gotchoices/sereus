@@ -156,19 +156,20 @@ tab, not per party: a key may own several cadres.
 - **Joined party:** see [Joining an existing cadre](#joining-an-existing-cadre).
 - **`failed`, `timed-out`:** the owner step threw (logged to the console) or did not settle within
   the edge node's bound; the node runs without an owner key wired.
-- **Backup, export, import** (`lib/cadre-web.ts`, pass-throughs to the edge node, behind the Cadre
-  page's [Owner keys](#owner-keys) card): `addBackupOwnerKey` seats a new key as an owner under a
-  label and returns it with its export, keeping nothing; `exportOwnerKey` exports the tab's own key
-  and names the key it exported; `importOwnerKey` stores an exported key in the slot (refused when
-  the slot holds a different one) and wires it when the party lists it, which the edge node reports
-  as `running` with the owner `enrolled` and the store follows. All three are cadre-core's
-  `owner-key-flows.ts`, optionally passphrase-locked. Listing and removal (`listOwnerKeys`,
-  `planOwnerKeyRemoval`, `removeOwner`) go through the edge node the same way, in turn with its
-  transitions.
+- **Export, import, owner grants** (`lib/cadre-web.ts` and `lib/store.svelte.ts`, pass-throughs
+  to the edge node, behind the Cadre page's [Owner keys](#owner-keys) card): `exportOwnerKey`
+  exports the tab's own key and names the key it exported, optionally passphrase-locked;
+  `importOwnerKey` stores an exported key in the slot (refused when the slot holds a different
+  one) and wires it when the party lists it, which the edge node reports as `running` with the
+  owner `enrolled` and the store follows. `redeemOwnerGrant` seats the slot's key, created when the
+  slot is empty, through an owner grant and wires it the same way. Minting, listing and withdrawing
+  grants (`createOwnerGrant`, `listOwnerGrants`, `withdrawOwnerGrant`), listing owner keys and
+  removing one (`listOwnerKeys`, `planOwnerKeyRemoval`, `removeOwner`) go through the edge node the
+  same way, in turn with its transitions.
 - **Exposure** is the peer key's: origin-scoped IndexedDB. Clearing the site's data loses the
   owner key with the identity, and the tab is then no owner of the party it founded unless it
-  imports a backup of the key. Non-extractable WebCrypto keys were weighed and declined,
-  because a file or QR backup needs an exportable key.
+  imports an export of the key or redeems a backup grant. Non-extractable WebCrypto keys were
+  weighed and declined, because a file or QR copy of the key needs an exportable key.
 
 The chat strand's database can only be opened with the chat schema that
 created it. A build whose `CHAT_SCHEMA` changes an existing table (a column
@@ -282,9 +283,8 @@ with the phone app's flows and wording (`lib/add-device.svelte.ts`, `AddDevice.s
   can redeem.
 
 Either invitation admits the app as a machine and a member, for 24 hours, and grants no
-ownership. An app that is to be an owner too takes an owner grant, made under an owner app's
-Owner keys; this tab's own owner-grant card and a join field that takes a grant are
-`reference-app-web-owner-grants`.
+ownership. An app that is to be an owner too takes an owner grant instead, made under
+[Owner keys](#owner-keys) → *Add an owner key*.
 
 The minted invitation shows as a QR code (`lib/QrCode.svelte`) and as text with a copy
 button, with its expiry and, when no other machine of the cadre has an address a device
@@ -366,59 +366,88 @@ node and reaches the store as `error`.
 
 ## Owner keys
 
-The Cadre page's **Owner keys** card lists this cadre's owner keys, makes a backup key, exports
-this tab's key, imports a key, and removes one
-([architecture.md → Owner Keys](../../docs/architecture.md#owner-keys)). It has the phone app's
-list, forms, prompt and wording ([reference-app-rn.md → Owner Keys](../../docs/reference-app-rn.md#owner-keys)),
-with "this tab" for "this device", Download for Share, and paste only for Import, since a tab
-has no scanner (`lib/owner-keys.svelte.ts`, `OwnerKeys.svelte`, `OwnerKeyExportForm.svelte`).
+The Cadre page's **Owner keys** card lists this cadre's owner keys; on an owner tab it makes owner
+grants (one for another device or app, or a backup), lists and withdraws the outstanding ones,
+exports this tab's key and removes a key; on any tab it redeems an owner grant and imports a key
+([architecture.md → Owner Keys](../../docs/architecture.md#owner-keys), [Owner grants](../../docs/architecture.md#owner-grants)).
+It has the phone app's list, forms, prompt and wording ([reference-app-rn.md → Owner Keys](../../docs/reference-app-rn.md#owner-keys)),
+with "this tab" for "this device", Download for Share, and paste only for Redeem and Import, since
+a tab has no scanner (`lib/owner-keys.svelte.ts`, `lib/owner-grants.ts`, `OwnerKeys.svelte`,
+`OwnerGrantForm.svelte`, `OwnerKeyExportForm.svelte`).
 
 - **The list** has one row per live owner key `listOwnerKeys` reports: the name it was added
   under ("browser" for the key the tab founded its cadre with), or "Unnamed key"; its fingerprint
   (first 8 characters), with "This tab" on the key this tab signs with; and **Not trusted here**
-  when this tab's trusted-owner anchor lacks it. It is read when the node reaches `running` and
-  its owner step settles, after each action here, and on *Refresh*; a read that finishes after
-  the node was replaced is dropped. A member sees the list, one line saying only an owner can add
-  or remove owner keys, and Import.
-- **Make a backup key** (owner only): a name (default "Backup", at most 64 characters) and
-  **Protect with a passphrase**, on by default, with the passphrase typed twice; the button stays
-  disabled and says why while the passphrase is empty or the two differ. `addBackupOwnerKey`
-  seats the key as an owner, and the card shows its export once, the only copy.
-- **Export this tab's key** (owner, when the list marks a key "This tab"): the same form, the
-  name defaulting to that key's, then `exportOwnerKey`, which exports the key in the tab's owner
-  slot and names it, and the export is titled with that key. The slot's key is the only key the
-  tab signs with, so the export is the key the list marks.
-- **The export** stays on the card until *Done*, including across visits to other pages:
-  "Anyone who has this can control your cadre. Keep it somewhere safe and offline. This tab does
-  not keep a copy.", the QR code, the text with a copy button, and *Download*, which saves it as
-  `sereus-owner-key-‹fingerprint›.txt` through a `Blob` URL revoked a second after the click.
-  Nothing of it is written to `localStorage` or IndexedDB. A join, its rollback or a restart
-  replaces the node, and the card's next read forgets the export with the rest of the card.
-- **Keep a backup: this tab's own key is site data.** The tab's owner key lives in its origin's
+  when this tab's trusted-owner anchor lacks it. It is read, with the owner grants, when the node
+  reaches `running` and its owner step settles, after each action here, and on *Refresh*; a read
+  that finishes after the node was replaced is dropped. A member sees the list, one line saying
+  only an owner can add or remove owner keys, Redeem and Import.
+- **Add an owner key** (owner only): a name (at most 64 characters), then `createOwnerGrant` with
+  the default 15 minutes and one use. The grant is shown once: "Whoever uses this first becomes an
+  owner of this cadre. Show or send it only to your own device or app.", "Valid until ‹time›,
+  once." and where the other device or app takes it, a line on its reach when it is not
+  `anywhere` (only on the home network, or only while this tab is open), the QR code and the text
+  with a copy button. Whoever redeems it becomes an owner with a key of its own, listed under that
+  name.
+- **Make a backup** (owner only): the same form, the name defaulting to "Backup", then
+  `createOwnerGrant({ expiresInMs: null })`: an owner grant with no expiry, shown once under "Whoever
+  holds this can become an owner of this cadre until it is used or withdrawn. Keep it like a key:
+  somewhere safe and offline. This tab does not keep a copy." and "It works only while one of this
+  cadre's machines can be reached at an address it carries. To keep a copy that works with no
+  network, use Export this tab's key.", with *Download*, which saves it as
+  `sereus-owner-grant-‹name›.txt` (the name kept to letters, digits, `-` and `_`, else the grant's
+  key fingerprint).
+- **A grant needs an address.** It carries this cadre's machines' addresses, so a tab with no
+  relay reservation in a cadre with no other dialable machine (a solo tab without a relay) cannot
+  make one; the form shows cadre-core's refusal.
+- **Outstanding owner grants** (owner only) lists the live ones, backups first: the name, "Never
+  expires" or its expiry, and the uses left, each with *Withdraw*, which asks once ("Nobody can
+  become an owner with it afterwards. Owner keys it already added stay owners; remove those
+  above.") and runs `withdrawOwnerGrant`.
+- **Redeem an owner grant** (every tab) takes pasted grant text and runs the store's
+  `redeemOwnerGrant`. The outcomes are the phone's: "Now an owner"; "Already an owner" (the grant
+  was not used); and "Owner grant accepted" when the key's row has not reached this tab yet. Each
+  refusal is worded (a grant spent, for another cadre, its issuer unknown, no machine reachable,
+  this tab alone). A wired key changes the owner state with the node still `running`, so Add a
+  device or app and Devices and nodes read their standing again.
+- **Export this tab's key** (owner, when the list marks a key "This tab"): a name, defaulting to
+  that key's, and **Protect with a passphrase**, on by default, with the passphrase typed twice;
+  the button stays disabled and says why while the passphrase is empty or the two differ. Then
+  `exportOwnerKey`, which exports the key in the tab's owner slot and names it, and the export is
+  titled with that key. The slot's key is the only key the tab signs with, so the export is the
+  key the list marks.
+- **Shown once.** An export or a grant stays on the card until *Done*, including across visits to
+  other pages. An export shows "Anyone who has this can control your cadre. Keep it somewhere safe
+  and offline. This tab does not keep a copy.", the QR code, the text with a copy button, and
+  *Download*, which saves it as `sereus-owner-key-‹fingerprint›.txt`. Both downloads go through a
+  `Blob` URL revoked a second after the click; nothing of either is written to `localStorage` or
+  IndexedDB. A join, its rollback or a restart replaces the node, and the card's next read forgets
+  what it shows with the rest of the card.
+- **Keep a copy: this tab's own key is site data.** The tab's owner key lives in its origin's
   IndexedDB ([The tab's owner key](#the-tabs-owner-key)), so clearing the site's data loses it
-  with the tab's identity. A backup key, or an export of this tab's key, kept outside the browser
+  with the tab's identity. A backup grant, or an export of this tab's key, kept outside the browser
   is what makes the tab an owner again after that.
 - **Import an owner key** takes pasted export text; a locked one
   (`sereus-owner-key-locked:1.…`) shows a passphrase field. The outcomes are the phone's: an owner
   of this cadre ("This tab is now an owner of this cadre, with ‹name› (‹fingerprint›)."); an owner
   this tab takes from its next start, when the node already signs with another key; and "This
-  key is not an owner of this cadre. An owner can add
-  it.", the key kept in the slot. The last two both come back `wired: false`, and the card reads
-  the owner keys again to tell them apart. A tab already holding a different key, a wrong
-  passphrase and text that is not an owner key are refused by name. A wired key changes the
-  owner state with the node still `running`, so Add a device or app and Devices and nodes read
-  their standing again.
+  key is not an owner of this cadre. An owner can add it.", the key kept in the slot. The last two
+  both come back `wired: false`, and the card reads the owner keys again to tell them apart. A tab
+  already holding a different key, a wrong passphrase and text that is not an owner key are
+  refused by name. A wired key changes the owner state as a redemption's does.
 - **Remove** (owner only, on every row but this tab's own, under which "A tab cannot remove its
   own owner key; use another owner key."): `planOwnerKeyRemoval`, then "Remove owner key
-  ‹name› (‹fingerprint›)?" in the card, with one **Keep** box per device or owner key the removed
+  ‹name› (‹fingerprint›)?" in the card, with the owner grants the key made, which stop working
+  with it (`Backup "Paper" stops working.`), one **Keep** box per device or owner key the removed
   key added (checked by default; a device named as Devices and nodes names it), the line about
   this tab's own key when the removed key added it (`ownDependency`), and the `last-owner`
   refusal ("It cannot be removed: it is the only owner key of this cadre.") with only *Close*.
   *Remove* runs `removeOwner(key, { revouch })` with the kept rows, then both cards re-read.
 
 **Uses.** A lost or stolen phone that held an owner key: remove its machine under Devices and
-nodes, then its key here. A backup to keep offline: make a backup key, then download or print the
-QR code. A new browser or phone: join the cadre, then import a backup key there.
+nodes, then its key here. A backup to keep offline: make a backup, then download or print the QR
+code; a new browser or phone joins the cadre with it as an owner. Another device or app of yours
+that should be an owner: *Add an owner key*, then redeem the grant there, or join with it.
 
 ## Joining an existing cadre
 
@@ -428,29 +457,31 @@ a tab that founded a cadre of its own on first load joins the user's main cadre,
 phone app's flow and wording (`lib/join-cadre.svelte.ts`, `lib/join-flow.ts`,
 `JoinCadre.svelte`). The join is the edge node's `joinCadre` ([An app joins an existing
 cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre)), called by the store once
-`lib/web-join.ts` has decoded the pasted invitation and found it to be this tab's.
+`lib/web-join.ts` has decoded the pasted text: an owner grant, or an invitation found to be this
+tab's.
 
 - **This tab's request** — the join request (`encodeCadreJoinRequest`, app name "Sereus web
   reference") as a QR code and copyable text, with the tab's code (the short peer id) to
   compare with what the owner's app shows. Paste it in that app under *Add a device or app*
   → *Paste request*, or ask it for an open invitation.
-- **Join** — paste the response or open invitation and choose *Join*. A response made for
-  another app's request is refused before anything stops. An invitation for the party the tab
-  already runs is redeemed in place, nothing switched or rolled back. Otherwise its one
-  node moves: the founded party's strands, pending joins and invitations are exported and
+- **Join** — paste the response, open invitation or owner grant and choose *Join*. An owner
+  grant, made in the app that holds the cadre under Owner keys → *Add an owner key*, makes the
+  tab an owner too (the joining step says so). A response made for another app's request is
+  refused before anything stops. A credential for the party the tab already runs is redeemed in
+  place, nothing switched or rolled back. Otherwise its one node moves: the founded party's strands, pending joins and invitations are exported and
   kept as a move record in the tab's key store (`cadre-core/src/edge-node/strand-move.ts`; a
-  `keystore.cadre/strand-move/…` `kv` key), the node stops and starts in the invitation's
+  `keystore.cadre/strand-move/…` `kv` key), the node stops and starts in the credential's
   party (Home's status reads `joining`, and the "Add a device or app" and "Devices and nodes"
-  cards forget what belongs to the party left), and the invitation is redeemed there, waiting
+  cards forget what belongs to the party left), and the credential is redeemed there, waiting
   for a member to answer. The card shows each step:
   joining (with *Cancel* while it waits), admitted, moving strands, removing the old cadre,
   then done with the standing and the moved count. A join refused, expired or cancelled puts
   the tab back in the party it left, unchanged, and says why.
 - **The move needs an owner grant.** When the founded party holds anything to move, a join by
   invitation is refused up front (`StrandsNeedOwnerJoinError`): every row a move seats is
-  owner-signed, and an invitation admits a member. The card says to join with an owner grant
-  made in the owner tab under Owner keys; the join field takes one with
-  `reference-app-web-owner-grants`. The tab's own chat strand has no control row, so a fresh
+  owner-signed, and an invitation admits a member. The card says to make an owner grant in the
+  app that holds the cadre and paste it instead; the tab then joins as an owner, its slot's key
+  (created when empty) seated by the grant. The tab's own chat strand has no control row, so a fresh
   tab's export is empty and an invitation is fine; the chat strand keeps working in the joined
   party as the same local strand.
 - **After admission** the saved start names the joined party (`origin: 'joined'`, the
@@ -606,7 +637,8 @@ src/
   AddDevice.svelte       # /cadre's "Add a device or app" card
   Machines.svelte        # /cadre's "Devices and nodes" card
   OwnerKeys.svelte       # /cadre's "Owner keys" card
-  OwnerKeyExportForm.svelte # the Owner keys card's backup and export form
+  OwnerGrantForm.svelte  # the Owner keys card's form for Add an owner key and Make a backup
+  OwnerKeyExportForm.svelte # the Owner keys card's export form
   Messages.svelte        # /messages — chat strand send / list
   Activity.svelte        # /log — CadreNode lifecycle event log
   Diagnostics.svelte     # /diag — cadre + libp2p diagnostic surface
@@ -614,9 +646,9 @@ src/
   polyfills.ts           # Buffer global + timer .ref/.unref shim
   main.css               # global styles
   lib/
-    cadre-web.ts             # the tab's edge node, built once, and the tab's surface over it: diagnostics getters, chat strand, formation, cadre invitations, owner-key pass-throughs, debug hook
+    cadre-web.ts             # the tab's edge node, built once, and the tab's surface over it: diagnostics getters, chat strand, formation, cadre invitations, owner-key and owner-grant pass-throughs, debug hook
     web-edge-platform.ts     # the edge node's platform: key store, per-scope IndexedDB storage, transports, listen addresses
-    web-join.ts              # this tab's join request, and the check of a pasted invitation
+    web-join.ts              # this tab's join request, and the check of a pasted invitation or owner grant
     node-local-slots.ts      # the key store and the node-local store, over the node-local database's kv store
     strand-storage.ts        # per-scope IndexedDB IRawStorage, opened on first use; deleting a scope
     chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
@@ -624,7 +656,8 @@ src/
     network.svelte.ts        # strand-formation panel state (create / join invitation)
     add-device.svelte.ts     # "Add a device or app" state: request, approval, mint, list and withdraw open ones
     machines.svelte.ts       # "Devices and nodes" state: the cadre's machines, the devices invited, removing one
-    owner-keys.svelte.ts     # "Owner keys" state: the cadre's owner keys, backup, export, import, removing one
+    owner-keys.svelte.ts     # "Owner keys" state: the cadre's owner keys and owner grants, making, withdrawing and redeeming a grant, export, import, removing a key
+    owner-grants.ts          # the owner-grant words and helpers, shared with the join card's failure words
     join-cadre.svelte.ts     # "Join my existing cadre" state: the request, the join and its steps
     join-flow.ts             # the join's steps, their words, and the words for each failure
     cadre-format.ts          # peer-id code, key fingerprint, expiry and error text shared by the Cadre page's cards
@@ -662,8 +695,8 @@ yarn workspace @serfab/reference-app-web test:e2e
   invitation* with no relay, a malformed invitation is rejected on join, the
   **owner gate** rejects an unauthorized control write, and the authorization
   surface reflects the genesis owner + zero formation rows. `owner-keys.spec.ts`
-  makes a passphrase-locked backup key on the Cadre page, checks the export shown
-  once and the downloaded file's text, and removes the key again.
+  exports the tab's own key under a passphrase on the Cadre page, and checks the export shown
+  once and the downloaded file's text.
 - **Tier 2 — formation → convergence** (`e2e/distributed/formation-convergence.spec.ts`)
   — the live two-party tier. The dialable second party is an **in-process headless
   cadre responder** (`e2e/fixtures/formation-responder.ts`), booted in the spec's
@@ -693,10 +726,17 @@ yarn workspace @serfab/reference-app-web test:e2e
   removes the party the tab founded, which held nothing to move, so the start record names
   no `formerPartyId` and that party's control block database is gone. Same gate and
   self-skip as the formation tier.
+- **Tier 2 — owner grants** (`e2e/distributed/owner-grants.spec.ts`) — the same in-process
+  cadre mints an owner grant; the tab joins with it and is an owner of that party, then makes a
+  backup on the Owner keys card, checks the grant shown once and the downloaded file's text, finds
+  it under Outstanding owner grants and withdraws it. A grant carries the cadre's machines'
+  addresses, which a solo tab without a relay has none of, so the backup is made in the joined
+  cadre, whose member listens on loopback.
 
 Devices and nodes, and this tab's own removal, have no tier: removing a machine needs a second
 owner machine, which neither fixture runs. Neither has importing an owner key, since a solo tab's
-slot already holds the key it founded its cadre with, nor removing a key that added other rows.
+slot already holds the key it founded its cadre with, redeeming an owner grant on the card, nor
+removing an owner key.
 
 Wiring this suite into CI is out of scope for the current ticket — it stops at
 "runs cleanly locally."

@@ -1,16 +1,14 @@
 /**
  * The owner-key actions an app's owner-key screen offers, built from the owner-key slot
- * (`owner-key-store.ts`), the export text (`owner-key-export.ts`) and `CadreNode.addOwner`: make a
- * backup key and hand it out once, export the device's own key, and import an exported key into
- * the device's owner slot (`docs/architecture.md` → Owner Keys → Exporting and importing an owner
- * key). One copy for the phone kit and the web app.
+ * (`owner-key-store.ts`) and the export text (`owner-key-export.ts`): export the device's own key,
+ * and import an exported key into the device's owner slot (`docs/architecture.md` → Owner Keys →
+ * Exporting and importing an owner key). One copy for the phone kit and the web app.
  *
  * Over `CadreNode`'s public surface only; pure-JS crypto, so it loads on React Native and in the
  * browser.
  */
-import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { CadreNode } from './cadre-node.js';
-import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate } from './ed25519-key.js';
+import { ed25519PublicKeyFromPrivate } from './ed25519-key.js';
 import type { KeyStore } from './key-store.js';
 import {
 	decodeOwnerKeyExport,
@@ -24,17 +22,17 @@ import type { OwnerSigner } from './owner-signer.js';
 
 /** How an owner key is exported. */
 export interface OwnerKeyExportOptions {
-	/** The user's name for the key, carried in the export (and, for a backup key, on its `OwnerKey` row). Trimmed, at most 64 characters, blank meaning none. */
+	/** The user's name for the key, carried in the export. Trimmed, at most 64 characters, blank meaning none. */
 	label?: string;
 	/** Locks the export; must not be empty. Absent: a plain export. */
 	passphrase?: string;
 }
 
-/** An owner key's export and the key it holds: {@link addBackupOwnerKey}'s and {@link exportOwnerKey}'s answer. */
+/** An owner key's export and the key it holds: {@link exportOwnerKey}'s answer. */
 export interface ExportedOwnerKey {
-	/** The exported key (base64url); for a backup key, a live `OwnerKey` row now. */
+	/** The exported key (base64url). */
 	publicKey: string;
-	/** The private key as export text; for a backup key, its only copy, which the app shows or saves once. */
+	/** The private key as export text. */
 	exportText: string;
 }
 
@@ -44,23 +42,6 @@ export interface ImportedOwnerKey {
 	publicKey: string;
 	/** The node now signs with it: the key is a live owner of the node's party. */
 	wired: boolean;
-}
-
-/**
- * Make a backup owner key: generate one in memory, seat it as an owner under `label`, signed by
- * this node's owner key (`CadreNode.addOwner`), and return its export. Nothing is kept: whoever
- * holds `exportText` holds the key.
- *
- * @throws {OwnerKeyExportError} `malformed` for an over-long label or an empty passphrase, before
- *   any write.
- * @throws `CadreNode.addOwner`'s errors: `OwnerKeyAddRefusedError` `alone`, or no owner signer wired.
- */
-export async function addBackupOwnerKey(node: CadreNode, options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(await generateKeyPair('Ed25519'));
-	// Encoded before the add, so an export the encoder refuses never seats a key nobody holds.
-	const exportText = await encodeOwnerKeyExport({ privateKeyB64, ...exportFields(options) });
-	await node.addOwner(publicKeyB64, options.label === undefined ? {} : { label: options.label });
-	return { publicKey: publicKeyB64, exportText };
 }
 
 /**

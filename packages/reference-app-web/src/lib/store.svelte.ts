@@ -16,9 +16,10 @@
  * node the store has not attached yet, the page layer (the chat strand, the refresh poll) is
  * attached to it, which covers the start after a join, the restart after a dissolve and the left
  * party coming back after a failed join, none of which the store drives itself. The actions here
- * (start, stop, restart, join, retry the move, dissolve, import an owner key) are the edge node's,
- * which runs them one at a time; an owner's removal of this tab is acted on by the edge node too
- * (it stops the node and deletes that cadre's data), and reaches the store as status `removed`.
+ * (start, stop, restart, join, retry the move, dissolve, import an owner key, redeem an owner
+ * grant) are the edge node's, which runs them one at a time; an owner's removal of this tab is
+ * acted on by the edge node too (it stops the node and deletes that cadre's data), and reaches the
+ * store as status `removed`.
  */
 
 import {
@@ -32,7 +33,7 @@ import {
 	type OwnerStanding,
 	type RelayState,
 } from './cadre-web.js';
-import { decodeInvitationForThisTab } from './web-join.js';
+import { decodeCredentialForThisTab } from './web-join.js';
 import { resolveRelayAddrs } from './relay-config.js';
 import {
 	DEFAULT_EDGE_NODE_NAMES,
@@ -41,6 +42,7 @@ import {
 	type EdgeNodeStatus,
 	type JoinCadreResult,
 	type OwnerGenesisResult,
+	type RedeemedOwnerGrant,
 } from '@serfab/cadre-core/edge-node';
 import type { CadreNode, ImportedOwnerKey, StrandMoveReport, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
@@ -459,25 +461,25 @@ export async function restart(): Promise<void> {
 }
 
 /**
- * Join the cadre a pasted invitation names (docs/architecture.md → "An app joins an existing
- * cadre"): `EdgeNode.joinCadre`, once the invitation is decoded and found to be this tab's.
- * Already running in that party: the edge node redeems in place. Otherwise it records the
- * running party's strands for the move (refused up front when the invitation does not make the
- * tab an owner and there is something to move), stops the node and starts one in the invitation's
- * party (status `joining`; the "Add a device or app" and "Devices and nodes" cards forget what
- * belongs to the party left), and redeems there, waiting for a member until one answers or
- * `options.signal` aborts. Admitted: the saved start names the joined party, its strands are
- * adopted, and the store attaches as after any start. Anything else: the edge node starts the
- * party the tab left again and the join's error is thrown; a failure going back is the store's
- * `error`, the join's error still thrown.
+ * Join the cadre pasted join text names (docs/architecture.md → "An app joins an existing
+ * cadre"): `EdgeNode.joinCadre`, once the text is decoded as a machine invitation found to be
+ * this tab's, or as an owner grant, which makes the tab an owner too. Already running in that
+ * party: the edge node redeems in place. Otherwise it records the running party's strands for the
+ * move (refused up front when the credential is a machine invitation and there is something to
+ * move), stops the node and starts one in the credential's party (status `joining`; the "Add a
+ * device or app" and "Devices and nodes" cards forget what belongs to the party left), and
+ * redeems there, waiting for a member until one answers or `options.signal` aborts. Admitted: the
+ * saved start names the joined party, its strands are adopted, and the store attaches as after
+ * any start. Anything else: the edge node starts the party the tab left again and the join's
+ * error is thrown; a failure going back is the store's `error`, the join's error still thrown.
  */
 export async function joinCadre(encoded: string, options: JoinOptions = {}): Promise<JoinCadreResult> {
 	if (state.status !== 'running') throw new Error('The node is not running.');
-	const invitation = decodeInvitationForThisTab(encoded);
-	record('join:started', invitation.partyId);
+	const credential = decodeCredentialForThisTab(encoded);
+	record('join:started', credential.partyId);
 	try {
-		const result = await midTransition(() => edgeNode.joinCadre(invitation, { ...options, relayAddrs: resolveRelayAddrs() }));
-		record('join:admitted', invitation.partyId);
+		const result = await midTransition(() => edgeNode.joinCadre(credential, { ...options, relayAddrs: resolveRelayAddrs() }));
+		record('join:admitted', credential.partyId);
 		return result;
 	} catch (err) {
 		record('join:failed', errorMessage(err));
@@ -510,6 +512,15 @@ export async function retryStrandMove(): Promise<StrandMoveReport | undefined> {
  */
 export function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
 	return edgeNode.importOwnerKey(text, passphrase);
+}
+
+/**
+ * Redeem owner-grant text for the key in the tab's owner slot, created when the slot is empty
+ * (`EdgeNode.redeemOwnerGrant`). A key the redemption wires makes the edge node report `running`
+ * again with the owner `enrolled`, as an import's does, so the cards that follow it re-read.
+ */
+export function redeemOwnerGrant(text: string): Promise<RedeemedOwnerGrant> {
+	return edgeNode.redeemOwnerGrant(text);
 }
 
 /**

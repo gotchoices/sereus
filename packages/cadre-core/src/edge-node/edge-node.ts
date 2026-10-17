@@ -13,7 +13,7 @@
 import { CadreNode } from '../cadre-node.js';
 import { DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../key-store.js';
 import { loadOrCreateIdentityKey } from '../identity-key.js';
-import { addBackupOwnerKey, exportOwnerKey, importOwnerKeyInto } from '../owner-key-flows.js';
+import { exportOwnerKey, importOwnerKeyInto } from '../owner-key-flows.js';
 import type { ExportedOwnerKey, ImportedOwnerKey, OwnerKeyExportOptions } from '../owner-key-flows.js';
 import { createOwnerKey, loadOwnerSigner } from '../owner-key-store.js';
 import type { OwnerSigner } from '../owner-signer.js';
@@ -271,13 +271,6 @@ export interface EdgeNode {
 	 * the calls below; this one and every other that names the node throws while none is running.
 	 */
 	listOwnerKeys(): Promise<CadreOwnerKey[]>;
-	/**
-	 * Make a backup owner key: seat a new key as an owner under `options.label`, signed by this
-	 * app's owner key, and return its export, optionally locked with `options.passphrase`. Nothing
-	 * is kept on the device, so the app shows or saves `exportText` once. Throws cadre-core's
-	 * `OwnerKeyAddRefusedError` `alone` while the device has no connection to a cadre with other machines.
-	 */
-	addBackupOwnerKey(options?: OwnerKeyExportOptions): Promise<ExportedOwnerKey>;
 	/**
 	 * This app's own owner key, from the key store's owner slot, which is the key the node signs
 	 * with, as export text, with the key it holds (`publicKey`). Works with no node running. Throws
@@ -543,10 +536,6 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 
 	listOwnerKeys(): Promise<CadreOwnerKey[]> {
 		return this.onRunningNode((node) => node.listOwnerKeys());
-	}
-
-	addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
-		return this.onRunningNode((node) => addBackupOwnerKey(node, options));
 	}
 
 	exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {

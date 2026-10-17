@@ -2,7 +2,7 @@
 	import { untrack } from 'svelte';
 	import { exportFormProblem, type ExportForm } from './lib/owner-keys.svelte.js';
 
-	/** The Owner keys card's form for a backup key and for this tab's own key: a name, and a passphrase typed twice unless it is turned off. */
+	/** The Owner keys card's form for exporting this tab's own key: a name, and a passphrase typed twice unless it is turned off. */
 	interface Props {
 		title: string;
 		intro: string;

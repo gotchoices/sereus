@@ -65,7 +65,7 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
 | `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the credential's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), `removed` (an owner removed the app from `partyId`; see [Removed from the cadre](#removed-from-the-cadre)), or `failed` (with the error). |
 | `ownerPublicKey()` | The public key of the owner key the running node signs with, for pairing and approval prompts; null unless running with one wired (a `member` has none). |
-| `listOwnerKeys()`, `addBackupOwnerKey(options?)`, `exportOwnerKey(options?)`, `importOwnerKey(text, passphrase?)`, `planOwnerKeyRemoval(key)`, `removeOwner(key, options?)` | The owner-key screen's calls; see [The phone's owner key](#the-phones-owner-key). |
+| `listOwnerKeys()`, `exportOwnerKey(options?)`, `importOwnerKey(text, passphrase?)`, `planOwnerKeyRemoval(key)`, `removeOwner(key, options?)` | The owner-key screen's calls; see [The phone's owner key](#the-phones-owner-key). |
 | `createOwnerGrant(options?)`, `listOwnerGrants()`, `withdrawOwnerGrant(key)`, `redeemOwnerGrant(text)` | The owner-grant calls on the same screen; see [Owner grants](#owner-grants). |
 
 Platform options with defaults:
@@ -82,13 +82,12 @@ The app holds at most one owner key, apart from its identity ([architecture.md â
 How a start settles it (`status.owner`):
 
 - **Founded party with no `OwnerKey` row yet:** the slot's key becomes the founding row under `PhoneNodeOptions.ownerKeyLabel` (default `phone`) and is wired. It is created now unless the slot already holds one (a key imported before founding, or one an iOS reinstall kept in the Keychain); the kit creates a key nowhere else. `enrolled`.
-- **Founded party that has owners:** the slot's key is wired when it is a live owner (`enrolled`). Otherwise, the slot empty or its key not an owner, the app is a `member` and no key is created, since a new one could not be seated without another owner's signature. A lost slot is recovered by importing a backup.
+- **Founded party that has owners:** the slot's key is wired when it is a live owner (`enrolled`). Otherwise, the slot empty or its key not an owner, the app is a `member` and no key is created, since a new one could not be seated without another owner's signature. A lost slot is recovered by importing an exported key or redeeming a backup grant ([Owner grants](#owner-grants)).
 - **Joined party:** the slot's key is wired when it is a live owner (`enrolled`): the key an owner grant seated, one imported here, or one an owner of the party added. Otherwise `member`. The identity key is never tried, since a machine's network identity is never an owner key.
 
 The owner-key calls run in turn with start, stop and join, and those that name the node throw while none is running:
 
 - **`listOwnerKeys()`**: cadre-core's `CadreOwnerKey` rows, with label, voucher, `heldHere` and `trusted`.
-- **`addBackupOwnerKey({ label?, passphrase? })`**: seats a new key as an owner, signed by this app's key, and returns `{ publicKey, exportText }`; the phone keeps nothing, so the app shows or saves the text once. Refused `alone` (cadre-core's `OwnerKeyAddRefusedError`) while the phone has no connection to a cadre with other machines.
 - **`exportOwnerKey({ label?, passphrase? })`**: the slot's key, the key the node signs with, as `{ publicKey, exportText }`. Works with no node running; throws when the slot is empty.
 - **`importOwnerKey(text, passphrase?)`**: stores the key in the slot and, with a node running, wires it when the party lists it (`{ wired: true }`, and `status.owner` becomes `enrolled`). Refused with `OwnerKeySlotOccupiedError` when the slot holds a different key, and with `OwnerKeyExportError` for text that is not an owner key (an invitation or join request is named), a locked export with no passphrase (`passphrase-required`) or a wrong one. A node already signing with another key keeps it until its next start.
 - **`planOwnerKeyRemoval(key)`**, **`removeOwner(key, { revouch })`**: cadre-core's, for the removal prompt and its keep-switches.

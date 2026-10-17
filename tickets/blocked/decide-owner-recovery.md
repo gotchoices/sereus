@@ -18,10 +18,10 @@ The same thing happens when the last owner app is uninstalled while the host kee
 
 ## What exists now: backup grants, and exported keys
 
-The phone reference app's **Make a backup** (Settings → Owner keys) makes a **backup owner grant** (`docs/architecture.md` → Owner grants → Backups; `docs/reference-app-rn.md` → Owner Keys): a code with no expiry, shown once as a QR code and text to print or save. Redeeming it on a new device (Join my existing cadre, or Owner keys → Redeem an owner grant on a device already in the cadre) makes that device an owner. The browser app still makes a backup owner key, a new key added as an owner and exported, until `reference-app-web-owner-grants` gives it the same backup grant.
+Both reference apps' **Make a backup** (the phone's Settings → Owner keys, the browser's Cadre page → Owner keys) makes a **backup owner grant** (`docs/architecture.md` → Owner grants → Backups; `docs/reference-app-rn.md` → Owner Keys; `packages/reference-app-web/README.md` → Owner keys): a code with no expiry, shown once as a QR code and text to print or save, and on the browser as a downloadable file. Redeeming it on a new device (Join my existing cadre, or Owner keys → Redeem an owner grant on a device already in the cadre) makes that device an owner.
 
 - **Option B, as a grant.** The backup grant is B's printed recovery invitation: nothing enters `OwnerKey` until it is used, so the paper is not a standing owner; it is listed under Outstanding owner grants, where it can be withdrawn and made again, e.g. after the paper is lost; and it needs a machine of the cadre reachable at an address it carries to redeem at, which a cadre worth recovering normally has. It is a bearer credential: whoever finds it can become an owner until it is withdrawn.
-- **Option A without a second device.** Exporting this device's key (Owner keys → Export this device's key) is still the backup that needs no network: importing the export makes a new device the same owner, with no machine of the cadre to answer. It is a standing owner key, held on paper or in a file.
+- **Option A without a second device.** Exporting this device's key (Owner keys → Export this device's key, or Export this tab's key) is still the backup that needs no network: importing the export makes a new device the same owner, with no machine of the cadre to answer. It is a standing owner key, held on paper or in a file.
 
 **Still open:**
 

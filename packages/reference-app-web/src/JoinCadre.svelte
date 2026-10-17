@@ -24,6 +24,10 @@
 	const INTRO_LINE =
 		'If another Sereus app already holds your cadre, this tab can join it. What its own cadre holds moves with it.';
 
+	/** Where an owner grant comes from, and why this tab would want one. */
+	const OWNER_GRANT_LINE =
+		'To bring this tab’s strands along, it joins as an owner: in the app that holds your cadre, make an owner grant (a code that makes the app that uses it an owner) under Owner keys → Add an owner key, and paste it below.';
+
 	const flowText = $derived(join.flow ? joinFlowText(join.flow) : null);
 
 	// The request names this tab's peer id, the same in every party; re-read after a restart or a join.
@@ -92,12 +96,13 @@
 		{/if}
 
 		<h4>Join</h4>
-		<label for="cadre-invitation-in">Paste response or invitation</label>
+		<p class="hint">{OWNER_GRANT_LINE}</p>
+		<label for="cadre-invitation-in">Paste response, invitation or owner grant</label>
 		<textarea
 			id="cadre-invitation-in"
 			rows="3"
 			spellcheck="false"
-			placeholder="sereus-invite:1.…"
+			placeholder="sereus-invite:1.… or sereus-owner-grant:1.…"
 			bind:value={join.invitationText}
 			data-testid="cadre-invitation-in"
 		></textarea>

@@ -1,49 +1,66 @@
 /**
  * owner-keys.svelte.ts — state of the Cadre page's "Owner keys" card: this cadre's owner keys
- * (`CadreNode.listOwnerKeys`) and, on an owner tab, Make a backup key, Export this tab's key and
- * Remove (`planOwnerKeyRemoval`, `removeOwner`), with Import on any tab (docs/architecture.md →
- * "Owner Keys"). The browser counterpart of the phone app's `owner-keys-section.tsx` and
- * `owner-keys.ts`, with the same list, forms, prompt and wording, "this tab" for "this device",
- * and Download for Share. A tab has no camera scanner, so Import takes pasted text only.
+ * (`CadreNode.listOwnerKeys`) and, on an owner tab, Add an owner key and Make a backup (owner
+ * grants, `createOwnerGrant`), the outstanding grants with Withdraw, Export this tab's key and
+ * Remove (`planOwnerKeyRemoval`, `removeOwner`), with Redeem an owner grant and Import on any tab
+ * (docs/architecture.md → "Owner Keys", "Owner grants"). The browser counterpart of the phone
+ * app's `owner-keys-section.tsx`, `owner-grant-views.tsx` and `owner-keys.ts`, with the same
+ * list, forms, prompt and wording, "this tab" for "this device", and Download for Share. A tab
+ * has no camera scanner, so Redeem and Import take pasted text only. The owner-grant words are
+ * `owner-grants.ts`'s.
  *
  * Module state, as `machines.svelte.ts` is: the router unmounts the page on every route change,
- * and a backup key's export exists nowhere else, so it has to survive a visit to Home. The store
- * cannot reset this card, since the import goes through the store, so a read on a node other than
- * the one the card was read on forgets the card first: a join, its rollback and a restart each
- * replace the node.
+ * and an export or a grant exists nowhere else, so it has to survive a visit to Home. The store
+ * cannot reset this card, since the import and the redemption go through the store, so a read on
+ * a node other than the one the card was read on forgets the card first: a join, its rollback
+ * and a restart each replace the node.
  *
- * An export's text is the private key, and so is the text pasted into Import: log neither, nor a
- * passphrase. Log a key's fingerprint.
+ * An export's text is the private key, and so is the text pasted into Import; a grant's text
+ * makes whoever holds it an owner: log none of them, nor a passphrase. Log a key's fingerprint, a
+ * grant's key.
  */
 
 import {
 	LOCKED_OWNER_KEY_EXPORT_PREFIX,
 	OWNER_KEY_MAX_LABEL,
-	OwnerKeyAddRefusedError,
 	OwnerKeyExportError,
 	OwnerKeyRemovalRefusedError,
 	OwnerKeySlotOccupiedError,
+	parseNullableStoredDatetimeMs,
+	type CadreInvitationReach,
 	type CadreMachine,
 	type CadreNode,
 	type CadreOwnerKey,
 	type ImportedOwnerKey,
-	type OwnerKeyAddRefusal,
+	type OwnerGrantStatus,
 	type OwnerKeyExportOptions,
 	type OwnerKeyRemovalPlan,
 	type OwnerKeyRemovalRefusal,
 } from '@serfab/cadre-core';
-import { addBackupOwnerKey, exportOwnerKey, getCadreNode, isOwner, listOwnerKeys, planOwnerKeyRemoval, removeOwner } from './cadre-web.js';
-import { importOwnerKey } from './store.svelte.js';
+import type { RedeemedOwnerGrant } from '@serfab/cadre-core/edge-node';
+import {
+	createOwnerGrant,
+	exportOwnerKey,
+	getCadreNode,
+	isOwner,
+	listOwnerGrants,
+	listOwnerKeys,
+	planOwnerKeyRemoval,
+	removeOwner,
+	withdrawOwnerGrant,
+} from './cadre-web.js';
+import { importOwnerKey, redeemOwnerGrant } from './store.svelte.js';
 import { pushError } from './diagnostics.svelte.js';
 import { errorMessage, ownerFingerprint, peerCode } from './cadre-format.js';
 import { machineCode, machineKind, refreshMachines } from './machines.svelte.js';
+import { describeOwnerGrantFailure, grantFileName, liveGrants, shownGrantTitle } from './owner-grants.js';
 import type { Standing } from './add-device.svelte.js';
 
 /** The card's element id, which machine removal's "Go to Owner keys" scrolls to. */
 export const OWNER_KEYS_CARD_ID = 'owner-keys';
 
-/** Which part of the card a notice shows under: the list (a removal), the open form, or Import. */
-export type NoticeArea = 'list' | 'form' | 'import';
+/** Which part of the card a notice shows under: the list (a removal), the open form, the outstanding grants, Redeem or Import. */
+export type NoticeArea = 'list' | 'form' | 'grants' | 'redeem' | 'import';
 
 /** What the last action came to; replaced by the next action's. */
 export interface OwnerKeysNotice {
@@ -54,9 +71,22 @@ export interface OwnerKeysNotice {
 	failed: boolean;
 }
 
-/** What the card shows in place of its buttons: a form, or an export shown once. */
+/** An owner grant just made, the one time its text is shown. */
+export interface ShownGrant {
+	backup: boolean;
+	title: string;
+	text: string;
+	expiresAtMs: number | null;
+	reach: CadreInvitationReach;
+	/** What Download saves a backup as. */
+	fileName: string;
+}
+
+/** What the card shows in place of its buttons: a form, or an export or a grant shown once. */
 export type Panel =
-	| { kind: 'backup-form' }
+	/** `backup`: Make a backup; otherwise Add an owner key. */
+	| { kind: 'grant-form'; backup: boolean }
+	| { kind: 'grant'; grant: ShownGrant }
 	| { kind: 'export-form'; defaultLabel: string }
 	| { kind: 'export'; title: string; publicKey: string; text: string };
 
@@ -73,15 +103,18 @@ interface OwnerKeysState {
 	standing: Standing;
 	keys: CadreOwnerKey[];
 	listError: string | null;
+	/** The live owner grants, latest expiry first ({@link liveGrants}). */
+	grants: OwnerGrantStatus[];
+	grantsError: string | null;
 	panel: Panel | null;
 	confirming: PendingRemoval | null;
-	/** A backup, an export, an import, a plan read or a removal is running; they run one at a time. */
+	/** A grant made or withdrawn, a redemption, an export, an import, a plan read or a removal is running; they run one at a time. */
 	busy: boolean;
 	notice: OwnerKeysNotice | null;
 }
 
 function initialState(): OwnerKeysState {
-	return { standing: 'checking', keys: [], listError: null, panel: null, confirming: null, busy: false, notice: null };
+	return { standing: 'checking', keys: [], listError: null, grants: [], grantsError: null, panel: null, confirming: null, busy: false, notice: null };
 }
 
 const state = $state<OwnerKeysState>(initialState());
@@ -93,14 +126,21 @@ export function ownerKeysState(): OwnerKeysState {
 }
 
 /**
- * Re-read this tab's owner standing and the cadre's owner keys from the running node. The keys
- * read, or null when the read failed or the node was replaced meanwhile.
+ * Re-read this tab's owner standing, the cadre's owner keys and its live owner grants from the
+ * running node. The keys read, or null when the read failed or the node was replaced meanwhile.
  */
 export async function refreshOwnerKeys(): Promise<CadreOwnerKey[] | null> {
 	const node = getCadreNode();
 	if (!node) return null;
 	forgetIfReplaced(node);
 	const stale = () => getCadreNode() !== node;
+	await readStanding(stale);
+	const keys = await readKeys(stale);
+	await readGrants(stale);
+	return keys;
+}
+
+async function readStanding(stale: () => boolean): Promise<void> {
 	try {
 		const owner = await isOwner();
 		if (!stale()) state.standing = owner ? 'owner' : 'member';
@@ -108,6 +148,9 @@ export async function refreshOwnerKeys(): Promise<CadreOwnerKey[] | null> {
 		console.warn('[cadre] could not read whether this tab is an owner:', err);
 		if (!stale()) state.standing = 'unreadable';
 	}
+}
+
+async function readKeys(stale: () => boolean): Promise<CadreOwnerKey[] | null> {
 	try {
 		const keys = await listOwnerKeys();
 		if (stale()) return null;
@@ -121,16 +164,36 @@ export async function refreshOwnerKeys(): Promise<CadreOwnerKey[] | null> {
 	}
 }
 
-/** The card's list, forms, export and confirmation belong to the node they were read on; an action still running keeps the card busy. */
+// Read on a member tab too, where the list is hidden: one cheap read, rather than one gated on a standing still being read.
+async function readGrants(stale: () => boolean): Promise<void> {
+	try {
+		const grants = await listOwnerGrants();
+		if (stale()) return;
+		state.grants = liveGrants(grants);
+		state.grantsError = null;
+	} catch (err) {
+		console.warn('[cadre] could not read this cadre\'s owner grants:', err);
+		if (!stale()) state.grantsError = errorMessage(err);
+	}
+}
+
+/** Re-read the live owner grants alone, after one is made or withdrawn here. */
+async function refreshGrants(): Promise<void> {
+	const node = getCadreNode();
+	if (node) await readGrants(() => getCadreNode() !== node);
+}
+
+/** The card's list, forms, export, grant and confirmation belong to the node they were read on; an action still running keeps the card busy. */
 function forgetIfReplaced(node: CadreNode): void {
 	if (node === readOn) return;
 	readOn = node;
 	Object.assign(state, initialState(), { busy: state.busy });
 }
 
-export function showBackupForm(): void {
+/** The form for Add an owner key, or for Make a backup. */
+export function showGrantForm(backup: boolean): void {
 	state.notice = null;
-	state.panel = { kind: 'backup-form' };
+	state.panel = { kind: 'grant-form', backup };
 }
 
 /** The export form, its name defaulting to that of the key this tab signs with. */
@@ -139,26 +202,82 @@ export function showExportForm(ownKey: CadreOwnerKey): void {
 	state.panel = { kind: 'export-form', defaultLabel: ownKey.label ?? '' };
 }
 
-/** Close the form, or take the export off the card: it is not shown again. */
+/** Close the form, or take the export or the grant off the card: it is not shown again. */
 export function closePanel(): void {
 	state.panel = null;
 	state.notice = null;
 }
 
-/** Seat a new owner key under the form's name and show its export, the only copy. */
-export async function makeBackup(form: ExportForm): Promise<void> {
+/**
+ * Mint an owner grant under the form's name and show it, the only time its text is shown: a
+ * backup is a grant with no expiry, and Add an owner key takes the 15-minute, one-use default.
+ */
+export async function makeGrant(backup: boolean, label: string): Promise<void> {
+	await exclusive(async () => {
+		const trimmed = label.trim();
+		try {
+			const { grant, encoded, reach } = await createOwnerGrant({
+				...(trimmed !== '' && { label: trimmed }),
+				...(backup && { expiresInMs: null }),
+			});
+			const row = grant.grant;
+			console.info(`[cadre] made ${backup ? 'backup ' : ''}owner grant ${row.key} (reach ${reach})`);
+			state.panel = {
+				kind: 'grant',
+				grant: {
+					backup,
+					title: shownGrantTitle(backup, row.label),
+					text: encoded,
+					expiresAtMs: parseNullableStoredDatetimeMs(row.expiresAt),
+					reach,
+					fileName: grantFileName(row),
+				},
+			};
+		} catch (err) {
+			console.warn('[cadre] making an owner grant failed:', err);
+			state.notice = failure('form', backup ? 'Could not make a backup' : 'Could not make an owner grant', err);
+		}
+		await refreshGrants();
+	});
+}
+
+/** Withdraw an outstanding owner grant (the caller has confirmed), then re-read the grants. */
+export async function withdrawGrant(key: string): Promise<void> {
 	await exclusive(async () => {
 		try {
-			const { publicKey, exportText } = await addBackupOwnerKey(exportOptions(form));
-			console.info(`[cadre] added backup owner key ${ownerFingerprint(publicKey)}`);
-			const name = ownerKeyName({ key: publicKey, label: form.label.trim() || null });
-			state.panel = { kind: 'export', title: `New owner key ${name}`, publicKey, text: exportText };
-			changed();
+			const withdrawn = await withdrawOwnerGrant(key);
+			console.info(withdrawn ? `[cadre] withdrew owner grant ${key}` : `[cadre] owner grant ${key} was already withdrawn`);
 		} catch (err) {
-			console.warn('[cadre] making a backup owner key failed:', err);
-			state.notice = failure('form', 'Could not make a backup key', err);
+			console.warn(`[cadre] withdrawing owner grant ${key} failed:`, err);
+			state.notice = failure('grants', 'Could not withdraw the owner grant', err);
 		}
+		await refreshGrants();
 	});
+}
+
+/**
+ * Redeem pasted owner-grant text for the key in this tab's owner slot, created when the slot is
+ * empty, and say what it came to. True once the redemption went through, so the form clears.
+ */
+export async function redeemPasted(text: string): Promise<boolean> {
+	const redeemed = await exclusive(async () => {
+		let result: RedeemedOwnerGrant;
+		try {
+			result = await redeemOwnerGrant(text);
+		} catch (err) {
+			// The refusals never carry the grant's text.
+			console.warn('[cadre] redeeming an owner grant failed:', err);
+			state.notice = failure('redeem', 'Could not redeem the owner grant', err);
+			return false;
+		}
+		console.info(`[cadre] redeemed an owner grant for ${ownerFingerprint(result.ownerKey)} (already an owner ${result.alreadyOwner}, wired ${result.wired})`);
+		void refreshMachines();
+		// This tab may be an owner now, which decides what the card offers.
+		const listed = await refreshOwnerKeys();
+		state.notice = { area: 'redeem', failed: false, ...redemptionNotice(result, listed ?? []) };
+		return true;
+	});
+	return redeemed === true;
 }
 
 /** Export the key in this tab's owner slot, titled with the key the export holds. */
@@ -277,7 +396,7 @@ async function exclusive<T>(action: (node: CadreNode) => Promise<T>): Promise<T 
 	}
 }
 
-/** After a key is added or removed here: the list, and which machines Devices and nodes trusts, change. */
+/** After a key is removed here: the list, the removed key's grants, and which machines Devices and nodes trusts, change. */
 function changed(): void {
 	void refreshMachines();
 	void refreshOwnerKeys();
@@ -317,20 +436,11 @@ function importNotice(imported: ImportedOwnerKey, listed: readonly CadreOwnerKey
 // `owner-keys-section.tsx`, with "tab" for "device" and "phone". If a third surface (cadre-host's
 // UI) manages owner keys, move them into cadre-core and import them everywhere.
 
-/** The name a backup key is offered under. */
-export const DEFAULT_BACKUP_LABEL = 'Backup';
-
 /** Under this tab's own key: an owner key cannot sign its own removal (`self`). */
 export const OWN_KEY_LINE = 'A tab cannot remove its own owner key; use another owner key.';
 
 /** Above an export, the one time it is shown. */
 export const EXPORT_WARNING = 'Anyone who has this can control your cadre. Keep it somewhere safe and offline. This tab does not keep a copy.';
-
-const ALONE_LINE = 'Connect to your cadre first; a new owner key made now would not reach your other machines.';
-
-const ADD_REFUSAL_LINE: Record<OwnerKeyAddRefusal, string> = {
-	alone: ALONE_LINE,
-};
 
 /** Why a removal cannot go ahead: in the confirmation from the plan, and in the notice when `removeOwner` refuses. */
 export const REMOVAL_REFUSAL_LINE: Record<OwnerKeyRemovalRefusal, string> = {
@@ -369,7 +479,7 @@ function listedKeyName(keys: readonly CadreOwnerKey[], key: string): string {
 	return row ? ownerKeyName(row) : ownerFingerprint(key);
 }
 
-/** What the backup and export form holds. */
+/** What the export form holds. */
 export interface ExportForm {
 	label: string;
 	/** Protect with a passphrase. */
@@ -379,16 +489,22 @@ export interface ExportForm {
 	repeat: string;
 }
 
+/** Why a name cannot be used, for the line under its form; null when it can. A blank name is none. */
+export function labelProblem(label: string): string | null {
+	return label.trim().length > OWNER_KEY_MAX_LABEL ? `A name has at most ${OWNER_KEY_MAX_LABEL} characters.` : null;
+}
+
 /** Why the form cannot be sent yet, for the line under it; null when it can. */
 export function exportFormProblem(form: ExportForm): string | null {
-	if (form.label.trim().length > OWNER_KEY_MAX_LABEL) return `A name has at most ${OWNER_KEY_MAX_LABEL} characters.`;
+	const label = labelProblem(form.label);
+	if (label) return label;
 	if (!form.locked) return null;
 	if (form.passphrase === '') return 'Enter a passphrase, or turn off Protect with a passphrase.';
 	if (form.passphrase !== form.repeat) return 'The two passphrases do not match.';
 	return null;
 }
 
-/** The form as `addBackupOwnerKey` and `exportOwnerKey` take it: a blank name is none, and an unlocked export has no passphrase. */
+/** The form as `exportOwnerKey` takes it: a blank name is none, and an unlocked export has no passphrase. */
 function exportOptions(form: ExportForm): OwnerKeyExportOptions {
 	const label = form.label.trim();
 	return {
@@ -429,12 +545,31 @@ function importOutcomeText(outcome: ImportOutcome, imported: ImportedOwnerKey, l
 	}
 }
 
-/** What the notice says for a backup, an export, an import or a removal that failed. */
+/** The notice after a redemption, naming this tab's key as the list does when the cadre lists it. */
+function redemptionNotice(redeemed: RedeemedOwnerGrant, listed: readonly CadreOwnerKey[]): { title: string; message: string } {
+	const name = listedKeyName(listed, redeemed.ownerKey);
+	if (redeemed.alreadyOwner) {
+		return {
+			title: 'Already an owner',
+			message: `This tab is already an owner of this cadre, with ${name}. The grant was not used: it still works for another device until it expires or is withdrawn.`,
+		};
+	}
+	if (!redeemed.wired) {
+		return {
+			title: 'Owner grant accepted',
+			message: `This tab's key (${name}) is now an owner of this cadre. The tab acts as one once your cadre's records reach it, at the latest from its next start.`,
+		};
+	}
+	return { title: 'Now an owner', message: `This tab is now an owner of this cadre, with ${name}.` };
+}
+
+/** What the notice says for an owner grant made, withdrawn or redeemed, an export, an import or a removal that failed. */
 function describeOwnerKeyFailure(err: unknown): string {
+	const grantLine = describeOwnerGrantFailure(err);
+	if (grantLine !== null) return grantLine;
 	// The export module's messages are written for the user and never carry key material.
 	if (err instanceof OwnerKeyExportError) return err.message;
 	if (err instanceof OwnerKeySlotOccupiedError) return SLOT_OCCUPIED_LINE;
-	if (err instanceof OwnerKeyAddRefusedError) return ADD_REFUSAL_LINE[err.code];
 	if (err instanceof OwnerKeyRemovalRefusedError) return REMOVAL_REFUSAL_LINE[err.code];
 	return errorMessage(err);
 }

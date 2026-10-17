@@ -6,7 +6,8 @@
  *
  * The wording is the phone app's (`reference-app-rn/src/join-flow.ts` and `join-failure.ts`),
  * with "this app" changed to "this tab", "chats" to "strands" and "this phone" to "this
- * browser": the two apps share no code by design.
+ * browser": the two apps share no code by design. An owner grant's refusals are worded by
+ * `owner-grants.ts`, since the Owner keys card shows them too.
  */
 import {
 	CadreInviteRejectedError,
@@ -14,10 +15,14 @@ import {
 	CadreInviteUnreachableError,
 } from '@serfab/cadre-core';
 import { StrandsNeedOwnerJoinError, type EdgeJoinProgress } from '@serfab/cadre-core/edge-node';
+import { describeOwnerGrantFailure } from './owner-grants.js';
 
 export type JoinFlow =
-	/** Redeeming the invitation; `wait` while no member of the cadre is ready, until `retryAtMs`. Cancellable. */
-	| { step: 'joining'; wait?: 'no-member-answered' | 'member-not-ready'; retryAtMs?: number }
+	/**
+	 * Redeeming the credential; `wait` while no member of the cadre is ready, until `retryAtMs`.
+	 * `asOwner`: it is an owner grant, so the tab joins as an owner. Cancellable.
+	 */
+	| { step: 'joining'; asOwner: boolean; wait?: 'no-member-answered' | 'member-not-ready'; retryAtMs?: number }
 	/** `asOwner`: the tab joined with an owner grant. */
 	| { step: 'admitted'; asOwner: boolean }
 	| { step: 'moving-strands' }
@@ -57,13 +62,13 @@ export class JoinCancelledError extends Error {
 	}
 }
 
-/** The step a join's progress report puts the flow in. */
-export function flowForProgress(progress: EdgeJoinProgress): JoinFlow {
+/** The step a join's progress report puts the flow in; `asOwner` says whether the credential is an owner grant. */
+export function flowForProgress(progress: EdgeJoinProgress, asOwner: boolean): JoinFlow {
 	switch (progress.state) {
 		case 'redeeming':
-			return { step: 'joining' };
+			return { step: 'joining', asOwner };
 		case 'waiting':
-			return { step: 'joining', wait: progress.reason, retryAtMs: progress.retryAtMs };
+			return { step: 'joining', asOwner, wait: progress.reason, retryAtMs: progress.retryAtMs };
 		case 'admitted':
 			return { step: 'admitted', asOwner: progress.asOwner };
 		case 'moving-strands':
@@ -120,7 +125,7 @@ function joiningLine(flow: Extract<JoinFlow, { step: 'joining' }>): string {
 		case 'member-not-ready':
 			return `Your cadre is catching up.${next}`;
 		default:
-			return 'Joining your cadre…';
+			return flow.asOwner ? 'Joining your cadre, and setting this tab up as an owner…' : 'Joining your cadre…';
 	}
 }
 
@@ -185,13 +190,13 @@ export function describeJoinFailure(err: unknown): string {
 	if (err instanceof CadreInviteUnreachableError) return 'No member named in the invitation could be reached';
 	if (err instanceof CadreInviteReplyInvalidError) return 'A member answered, but its answer did not verify';
 	if (err instanceof StrandsNeedOwnerJoinError) return ownerJoinNeededLine(err.strandCount);
-	return err instanceof Error ? err.message : String(err);
+	return describeOwnerGrantFailure(err) ?? (err instanceof Error ? err.message : String(err));
 }
 
 /** The edge node refused a member join that would leave the founded party's strands behind; the phone app's `join-failure.ts` says the same of "this app". */
 function ownerJoinNeededLine(strandCount: number): string {
 	const held = strandCount > 0 ? `its ${strands(strandCount)}` : 'what its own cadre holds';
-	return `This invitation makes the tab a member, and only an owner can bring ${held} along. Join with an owner grant instead, made in the owner tab under Owner keys.`;
+	return `This invitation makes the tab a member, and only an owner can bring ${held} along. In the app that holds your cadre, make an owner grant under Owner keys → Add an owner key, and paste it here.`;
 }
 
 /** The notice for a join that did not happen: the user cancelled it, or it failed. */

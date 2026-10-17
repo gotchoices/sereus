@@ -16,6 +16,7 @@ import {
 	ed25519PublicKeyB64FromPeerId,
 	ed25519PublicKeyFromPrivate,
 	encodeOwnerGrant,
+	encodeOwnerKeyExport,
 	exportStrandBundle,
 	StrandMoveNotOwnerError,
 	type CadreInvitation,
@@ -426,20 +427,22 @@ describe('createPhoneNode — its owner key', () => {
 	}, LIFECYCLE_MS * 2);
 
 	it('wires the owner slot\'s key on a party it joined', async () => {
-		// The slot holds a backup the user imported, not the key that founded the party: a joined
+		// The slot holds a key the user imported, not the key that founded the party: a joined
 		// start wires whichever key the slot holds, when the party lists it.
 		const { platform, secureStore, partyId } = device();
 		const phone = phoneNode(platform);
-		await phone.start(options(partyId));
-		const backup = await phone.addBackupOwnerKey({ label: 'backup' });
+		const founded = await phone.start(options(partyId));
+		const addedPrivateKey = randomBytes(32).toString('base64url');
+		const added = ed25519PublicKeyFromPrivate(addedPrivateKey);
+		await founded.addOwner(added, { label: 'added' });
 		await phone.stop();
 		await loseOwnerSlot(secureStore);
-		expect(await phone.importOwnerKey(backup.exportText)).toEqual({ publicKey: backup.publicKey, wired: false });
+		expect(await phone.importOwnerKey(await encodeOwnerKeyExport({ privateKeyB64: addedPrivateKey }))).toEqual({ publicKey: added, wired: false });
 
 		await phone.start({ ...options(partyId), origin: 'joined' });
 
 		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
-		expect(phone.ownerPublicKey()).toBe(backup.publicKey);
+		expect(phone.ownerPublicKey()).toBe(added);
 	}, LIFECYCLE_MS * 2);
 
 	it('is an owner again with a fresh key once it redeems a backup grant, and makes no key for another cadre\'s', async () => {

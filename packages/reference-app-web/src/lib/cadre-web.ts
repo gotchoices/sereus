@@ -5,10 +5,11 @@
  *
  * The edge node owns the lifecycle: starting the party the saved start names (`store.svelte.ts`
  * → `start`), owner genesis on a party the tab founded, the start saved for the next load, joining
- * another cadre by invitation with the founded party's strands carried along, dissolving the cadre
- * left, and acting on an owner's removal of this tab (docs/architecture.md → "The edge node"). It
- * runs those one at a time, re-applies the store's event handlers to every node it builds before
- * that node starts, and bounds the owner step.
+ * another cadre by invitation or owner grant with the founded party's strands carried along,
+ * dissolving the cadre left, redeeming an owner grant, and acting on an owner's removal of this
+ * tab (docs/architecture.md → "The edge node"). It runs those one at a time, re-applies the
+ * store's event handlers to every node it builds before that node starts, and bounds the owner
+ * step.
  *
  * This module keeps what is the tab's: the diagnostics getters (the control and node-local
  * database handles, the control storage, when the identity was first seen, the relay posture),
@@ -16,7 +17,8 @@
  * dialability, responder-side `createOpenInvitation` / `encodeInvitation`, initiator-side
  * `decodeInvitation` / `formStrand` + closed-strand `addStrand`), cadre invitations, the
  * `CadreControl` authorization gates ("RBAC") surfaced to diagnostics, the formed-strand e2e hooks
- * and the `__cadre` debug hook, plus pass-throughs to the edge node's owner-key calls.
+ * and the `__cadre` debug hook, plus pass-throughs to the edge node's owner-key and owner-grant
+ * calls.
  *
  * Browser specifics vs the phone: WebSocket + circuit-relay + WebRTC(+direct) transports (no TCP
  * in a tab); a database per storage scope opened on first use; a plaintext key store, the identity
@@ -30,10 +32,13 @@ import type {
 	CadreOwnerKey,
 	CreateCadreInvitationOptions,
 	CreateCadreInvitationResult,
+	CreateOwnerGrantOptions,
+	CreateOwnerGrantResult,
 	ExportedOwnerKey,
 	FormStrandResult,
 	ImportedOwnerKey,
 	OpenInvitation,
+	OwnerGrantStatus,
 	OwnerKeyExportOptions,
 	OwnerKeyRemovalPlan,
 	OwnerKeyRemovalResult,
@@ -276,22 +281,13 @@ async function trackIdentityFirstSeen(): Promise<void> {
 	}
 }
 
-// ── Owner keys (the Cadre page's owner-key section) ───────────────────────────
+// ── Owner keys and owner grants (the Cadre page's Owner keys card) ──────────────
 // Pass-throughs to the edge node, which runs them in turn with its transitions: genesis creates
 // the owner slot's key inside a start, and the slot's check-then-set must not race an import.
 
 /** The cadre's live owner keys (`CadreNode.listOwnerKeys`); throws while no node runs. */
 export function listOwnerKeys(): Promise<CadreOwnerKey[]> {
 	return edgeNode.listOwnerKeys();
-}
-
-/**
- * Make a backup owner key: seat a new key as an owner, signed by this tab's owner key, and
- * return its export (cadre-core's `addBackupOwnerKey`). Nothing is kept in the tab, so the page
- * shows or saves `exportText` once.
- */
-export function addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
-	return edgeNode.addBackupOwnerKey(options);
 }
 
 /**
@@ -319,6 +315,24 @@ export function planOwnerKeyRemoval(key: string): Promise<OwnerKeyRemovalPlan> {
 /** Remove an owner key, re-vouching first the dependents `options.revouch` keeps. */
 export function removeOwner(key: string, options: RemoveOwnerOptions = {}): Promise<OwnerKeyRemovalResult> {
 	return edgeNode.removeOwner(key, options);
+}
+
+/**
+ * Mint an owner grant, signed by this tab's owner key: 15 minutes and one use by default, a
+ * backup with no expiry with `expiresInMs: null`. Its text is shown once; the tab keeps none.
+ */
+export function createOwnerGrant(options: CreateOwnerGrantOptions = {}): Promise<CreateOwnerGrantResult> {
+	return edgeNode.createOwnerGrant(options);
+}
+
+/** Every owner grant the running node holds, minted here or replicated in, with its standing. */
+export function listOwnerGrants(): Promise<OwnerGrantStatus[]> {
+	return edgeNode.listOwnerGrants();
+}
+
+/** Withdraw an owner grant by its key; false when it is not held here or was already withdrawn. */
+export function withdrawOwnerGrant(key: string): Promise<boolean> {
+	return edgeNode.withdrawOwnerGrant(key);
 }
 
 // ── Strand formation (consent / invitation flow) ──────────────────────────────

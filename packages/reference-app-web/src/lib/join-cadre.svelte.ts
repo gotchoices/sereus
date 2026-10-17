@@ -20,6 +20,7 @@ import {
 } from '@serfab/cadre-core/edge-node';
 import { edgeNode, ownerKeyWired } from './cadre-web.js';
 import { joinRequestText } from './web-join.js';
+import { isOwnerGrantText } from './owner-grants.js';
 import { dissolveFormerParty, joinCadre, nodeState, retryStrandMove as retryMoveOnNode } from './store.svelte.js';
 import { pushError } from './diagnostics.svelte.js';
 import { flowForProgress, JoinCancelledError, joinFailureNotice, type JoinFlow } from './join-flow.js';
@@ -78,24 +79,25 @@ export function refreshJoinRequest(): void {
 }
 
 /**
- * Join the cadre the pasted response or invitation names, each step shown in `flow`, through
- * moving this tab's strands and removing the cadre it left. Resolves when the join settled
- * either way: admitted (the flow shows how far the move and the removal went) or not (the
+ * Join the cadre the pasted response, invitation or owner grant names, each step shown in `flow`,
+ * through moving this tab's strands and removing the cadre it left. Resolves when the join
+ * settled either way: admitted (the flow shows how far the move and the removal went) or not (the
  * failure shows, with the tab back in the cadre it ran before). Ignored while a flow is on screen.
  */
 export async function joinExistingCadre(): Promise<void> {
 	const encoded = state.invitationText.trim();
 	if (!encoded || state.flow) return;
+	const asOwner = isOwnerGrantText(encoded);
 	const controller = new AbortController();
 	joinAbort = controller;
 	state.failure = null;
-	state.flow = { step: 'joining' };
+	state.flow = { step: 'joining', asOwner };
 	let joined: JoinCadreResult;
 	try {
 		joined = await joinCadre(encoded, {
 			signal: controller.signal,
 			onProgress: (progress) => {
-				state.flow = flowForProgress(progress);
+				state.flow = flowForProgress(progress, asOwner);
 			},
 		});
 	} catch (err) {

@@ -116,7 +116,6 @@ export {
   type DecodedOwnerKeyExport
 } from './owner-key-export.js';
 export {
-  addBackupOwnerKey,
   exportOwnerKey,
   importOwnerKeyInto,
   type ExportedOwnerKey,

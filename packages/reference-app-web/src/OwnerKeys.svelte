@@ -1,33 +1,46 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { parseNullableStoredDatetimeMs } from '@serfab/cadre-core';
 	import { nodeState } from './lib/store.svelte.js';
 	import {
 		askToRemove,
 		cancelRemoval,
 		closePanel,
 		confirmRemoval,
-		DEFAULT_BACKUP_LABEL,
 		EXPORT_WARNING,
 		exportOwnKey,
 		importPasted,
 		isLockedOwnerKeyText,
-		makeBackup,
+		makeGrant,
 		OWN_KEY_LINE,
 		OWNER_KEYS_CARD_ID,
 		ownerKeyFacts,
 		ownerKeyName,
 		ownerKeysState,
 		ownerKeyTitle,
+		redeemPasted,
 		refreshOwnerKeys,
 		REMOVAL_REFUSAL_LINE,
 		setKept,
-		showBackupForm,
 		showExportForm,
+		showGrantForm,
+		withdrawGrant,
 		type NoticeArea,
 	} from './lib/owner-keys.svelte.js';
-	import { ownerFingerprint } from './lib/cadre-format.js';
+	import {
+		BACKUP_NEEDS_A_MACHINE,
+		BACKUP_WARNING,
+		GRANT_WARNING,
+		GRANT_WHERE_LINE,
+		grantReachLine,
+		grantRemovalLines,
+		grantTitle,
+		usesLeftText,
+	} from './lib/owner-grants.js';
+	import { ownerFingerprint, validUntilText } from './lib/cadre-format.js';
 	import Copyable from './lib/Copyable.svelte';
 	import QrCode from './lib/QrCode.svelte';
+	import OwnerGrantForm from './OwnerGrantForm.svelte';
 	import OwnerKeyExportForm from './OwnerKeyExportForm.svelte';
 
 	const node = nodeState();
@@ -35,6 +48,7 @@
 
 	const NOT_OWNER_LINE = 'Only an owner of this cadre can add or remove owner keys. This tab is a member.';
 	const UNREADABLE_LINE = 'Could not check whether this tab is an owner of this cadre, so it cannot add or remove owner keys from here until Refresh reads it.';
+	const WITHDRAW_QUESTION = 'Withdraw this owner grant? Nobody can become an owner with it afterwards. Owner keys it already added stay owners; remove those above.';
 	/** How long a download's Blob URL outlives the click: some browsers read it only after `click` returns. */
 	const DOWNLOAD_URL_LIFETIME_MS = 1_000;
 
@@ -42,7 +56,8 @@
 	/** The key this tab signs with, when the cadre lists it. */
 	const ownKey = $derived(card.keys.find((key) => key.heldHere) ?? null);
 
-	// Pasted key text and its passphrase are the component's, so they leave with the page.
+	// Pasted grant and key text and the key's passphrase are the component's, so they leave with the page.
+	let redeemText = $state('');
 	let importText = $state('');
 	let importPassphrase = $state('');
 	const importLocked = $derived(isLockedOwnerKeyText(importText));
@@ -54,6 +69,10 @@
 		untrack(() => void refreshOwnerKeys());
 	});
 
+	async function runRedeem(): Promise<void> {
+		if (await redeemPasted(redeemText)) redeemText = '';
+	}
+
 	async function runImport(): Promise<void> {
 		if (await importPasted(importText, importLocked ? importPassphrase : undefined)) {
 			importText = '';
@@ -61,12 +80,21 @@
 		}
 	}
 
-	/** Save the export as a text file named by the key's fingerprint; nothing is kept in the browser's storage. */
-	function download(shown: { publicKey: string; text: string }): void {
-		const url = URL.createObjectURL(new Blob([`${shown.text}\n`], { type: 'text/plain' }));
+	function confirmWithdraw(key: string): void {
+		if (confirm(WITHDRAW_QUESTION)) void withdrawGrant(key);
+	}
+
+	/** A listed grant's expiry, as the phone's list writes it. */
+	function grantExpiryText(expiresAt: string | null): string {
+		return expiresAt === null ? 'Never expires' : validUntilText(parseNullableStoredDatetimeMs(expiresAt));
+	}
+
+	/** Save shown text as a text file; nothing is kept in the browser's storage. */
+	function download(text: string, fileName: string): void {
+		const url = URL.createObjectURL(new Blob([`${text}\n`], { type: 'text/plain' }));
 		const link = document.createElement('a');
 		link.href = url;
-		link.download = `sereus-owner-key-${ownerFingerprint(shown.publicKey)}.txt`;
+		link.download = fileName;
 		link.click();
 		setTimeout(() => URL.revokeObjectURL(url), DOWNLOAD_URL_LIFETIME_MS);
 	}
@@ -90,6 +118,7 @@
 		{#if card.confirming}
 			{@const removal = card.confirming}
 			{@const refusal = removal.plan.refusal}
+			{@const grantLines = grantRemovalLines(removal.plan.grants)}
 			<div class="confirm" data-testid="remove-owner-key-confirm">
 				<h4>Remove owner key {ownerKeyName(removal.ownerKey)}?</h4>
 				{#if refusal !== null}
@@ -98,6 +127,13 @@
 					<p class="text">
 						Whoever holds this key can no longer act as an owner of this cadre. The devices it was used on stay in the cadre.
 					</p>
+					{#if grantLines.length > 0}
+						<p class="text">It made these owner grants, which stop working with it:</p>
+						{#each grantLines as line, index (index)}
+							<p class="text">{line}</p>
+						{/each}
+						<p class="hint">Make new ones with another owner key if they are still needed.</p>
+					{/if}
 					{#if removal.rows.length > 0}
 						<p class="text">These were added with this key. Keep each one?</p>
 						{#each removal.rows as row (row.id)}
@@ -182,20 +218,39 @@
 					<Copyable value={shown.text} />
 				</div>
 				<div class="buttons">
-					<button onclick={() => download(shown)} data-testid="btn-download-owner-key">Download</button>
+					<button
+						onclick={() => download(shown.text, `sereus-owner-key-${ownerFingerprint(shown.publicKey)}.txt`)}
+						data-testid="btn-download-owner-key"
+					>
+						Download
+					</button>
 					<button onclick={closePanel} data-testid="btn-owner-key-export-done">Done</button>
 				</div>
 			</div>
-		{:else if card.panel?.kind === 'backup-form'}
-			<OwnerKeyExportForm
-				title="Make a backup key"
-				intro="A new owner key for this cadre, to keep somewhere safe. It is shown once; this tab keeps no copy."
-				defaultLabel={DEFAULT_BACKUP_LABEL}
-				submitLabel="Make backup key"
-				busy={card.busy}
-				onSubmit={(form) => void makeBackup(form)}
-				onCancel={closePanel}
-			/>
+		{:else if card.panel?.kind === 'grant'}
+			{@const shown = card.panel.grant}
+			{@const reachLine = grantReachLine(shown.reach, shown.backup)}
+			<div class="export" data-testid="owner-grant">
+				<h4>{shown.title}</h4>
+				<p class="hint warn">{shown.backup ? BACKUP_WARNING : GRANT_WARNING}</p>
+				<p class="hint">{shown.backup ? BACKUP_NEEDS_A_MACHINE : `${validUntilText(shown.expiresAtMs)}, once. ${GRANT_WHERE_LINE}`}</p>
+				{#if reachLine}
+					<p class="hint" class:warn={reachLine.warning}>{reachLine.text}</p>
+				{/if}
+				<QrCode text={shown.text} label={shown.title} />
+				<div class="export-text" data-testid="owner-grant-text">
+					<Copyable value={shown.text} />
+				</div>
+				<div class="buttons">
+					{#if shown.backup}
+						<button onclick={() => download(shown.text, shown.fileName)} data-testid="btn-download-owner-grant">Download</button>
+					{/if}
+					<button onclick={closePanel} data-testid="btn-owner-grant-done">Done</button>
+				</div>
+			</div>
+		{:else if card.panel?.kind === 'grant-form'}
+			{@const backup = card.panel.backup}
+			<OwnerGrantForm {backup} busy={card.busy} onSubmit={(label) => void makeGrant(backup, label)} onCancel={closePanel} />
 			{@render noticeFor('form')}
 		{:else if card.panel?.kind === 'export-form'}
 			<OwnerKeyExportForm
@@ -211,17 +266,58 @@
 		{:else}
 			{#if owner}
 				<div class="buttons">
-					<button onclick={showBackupForm} disabled={card.busy} data-testid="btn-make-backup-key">Make a backup key</button>
+					<button onclick={() => showGrantForm(false)} disabled={card.busy} data-testid="btn-add-owner-key">Add an owner key</button>
+					<button onclick={() => showGrantForm(true)} disabled={card.busy} data-testid="btn-make-backup">Make a backup</button>
 					{#if ownKey}
 						{@const own = ownKey}
 						<button onclick={() => showExportForm(own)} disabled={card.busy} data-testid="btn-export-own-key">Export this tab's key</button>
 					{/if}
 				</div>
+
+				<h4>Outstanding owner grants</h4>
+				{#if card.grantsError}
+					<p class="bad">Could not read the owner grants: {card.grantsError}</p>
+				{:else if card.grants.length === 0}
+					<p class="hint" data-testid="no-owner-grants">None.</p>
+				{/if}
+				<ul class="keys">
+					{#each card.grants as { grant, usesRecorded } (grant.key)}
+						<li data-testid="owner-grant-row">
+							<div class="item">
+								<div>
+									<div class="title">{grantTitle(grant)}</div>
+									<div class="meta">{grantExpiryText(grant.expiresAt)} · {usesLeftText(grant.totalUses, usesRecorded)}</div>
+								</div>
+								<button onclick={() => confirmWithdraw(grant.key)} disabled={card.busy} data-testid="btn-withdraw-owner-grant">Withdraw</button>
+							</div>
+						</li>
+					{/each}
+				</ul>
+				{@render noticeFor('grants')}
 			{/if}
+
+			<h4>Redeem an owner grant</h4>
+			<p class="hint">
+				Made under Add an owner key or Make a backup on an owner device of this cadre. Redeeming it makes this tab an owner, with this tab's owner key, or a new one when it holds none.
+			</p>
+			<label for="owner-grant-in">Owner grant</label>
+			<textarea
+				id="owner-grant-in"
+				rows="3"
+				spellcheck="false"
+				autocomplete="off"
+				placeholder="sereus-owner-grant:1.…"
+				bind:value={redeemText}
+				data-testid="owner-grant-in"
+			></textarea>
+			<div class="buttons">
+				<button onclick={() => void runRedeem()} disabled={card.busy || !redeemText.trim()} data-testid="btn-redeem-owner-grant">Redeem</button>
+			</div>
+			{@render noticeFor('redeem')}
 
 			<h4>Import an owner key</h4>
 			<p class="hint">
-				An owner key exported on another device, or a backup key. This tab keeps it, and is an owner of every cadre that lists it.
+				An owner key exported on another device or tab. This tab keeps it, and is an owner of every cadre that lists it.
 			</p>
 			<label for="owner-key-in">Owner key</label>
 			<textarea

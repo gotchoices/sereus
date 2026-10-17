@@ -1,13 +1,14 @@
 /**
  * cadre-member.ts — an in-process headless cadre the browser tab can JOIN, for the
- * join-cadre e2e (`e2e/distributed/join-cadre.spec.ts`).
+ * join-cadre e2e (`e2e/distributed/join-cadre.spec.ts`) and the owner-grant e2e
+ * (`e2e/distributed/owner-grants.spec.ts`).
  *
  * Boots a real cadre-core `CadreNode` inside the Playwright **worker** process (the spec's
  * `beforeAll`, for the reason `formation-responder.ts` gives: `global-setup` runs in another
  * process and could not share the live handle). The node founds a party of its own under a
  * generated owner key (owner genesis, as `cadre-web.ts` runs it for a founded tab) and listens on a loopback
  * WebSocket address, so it is the one always-on machine of that party: the owner that mints a
- * cadre invitation, and the member a device redeems it at (`CadreNode.start` registers the
+ * cadre invitation or an owner grant, and the member a device redeems it at (`CadreNode.start` registers the
  * redemption handler on every node). The browser only dials out, so it needs no relay.
  *
  * In-memory storage: the party exists for one spec run. The tab's own party (the one it
@@ -32,6 +33,11 @@ export interface CadreMemberHandle {
 	 * `issuer-only` here: this machine is the party's only one.
 	 */
 	mintInvitation(options: { peerId?: string }): Promise<{ encoded: string; reach: CadreInvitationReach }>;
+	/**
+	 * Mint an owner grant into this party (`CadreNode.createOwnerGrant`): 15 minutes, one use, and
+	 * whoever redeems it becomes an owner with a key of its own, listed under `label`.
+	 */
+	mintOwnerGrant(options: { label?: string }): Promise<{ encoded: string }>;
 	/** The peer ids of the party's machines (`CadrePeer` rows), this one included. */
 	listMembers(): Promise<string[]>;
 	/** Stop the node and release its listener. */
@@ -100,6 +106,10 @@ export async function startCadreMember(): Promise<CadreMemberHandle> {
 			mintInvitation: async (options) => {
 				const { encoded, reach } = await node.createCadreInvitation(options);
 				return { encoded, reach };
+			},
+			mintOwnerGrant: async (options) => {
+				const { encoded } = await node.createOwnerGrant(options);
+				return { encoded };
 			},
 			listMembers: async () => (await node.listMembers()).map((member) => member.peerId),
 			stop: () => node.stop(),
