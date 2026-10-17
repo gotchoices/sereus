@@ -77,3 +77,4 @@ If the run cannot finish inside the agent's budget, say so in the handoff with h
 - `yarn lint`, `yarn typecheck`; run the loopback arm.
 - Run the phone arm once as above; record the results in the doc comment and in `tickets/plan/strand-workload-count-driven-fixes.md` under `## Measured`.
 - Add one paragraph to `docs/testing.md` beside the other opt-in scenarios: what it measures, the env variable, the `DEBUG` value, and that its numbers live in its doc comment.
+- Add one sentence to `docs/cadre-consistency.md` → "Deadlines Below Cadre", after its sentence on the ring: this scenario is the one that measured which of those deadlines fire on a phone-shaped link, and its numbers live in its doc comment (do not copy them into the doc). Handed over from `strand-deadline-ladder`, which wrote the table before this file existed.
