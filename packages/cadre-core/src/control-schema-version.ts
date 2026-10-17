@@ -181,9 +181,13 @@ function leastMigratable(kinds: readonly ControlSchemaChangeKind[]): ControlSche
  * drops is resolved against `catalog`, the one the statement would run against: the hydrated
  * store's at runtime.
  */
-export function classifyControlSchemaChange(statement: Statement, catalog: SchemaManager): ControlSchemaChangeKind {
+function classifyControlSchemaChange(statement: Statement, catalog: SchemaManager): ControlSchemaChangeKind {
 	switch (statement.type) {
 		case 'createTable':
+			return 'additive';
+		// NOTE: a `unique index` over an existing table fails the apply on a store whose rows
+		// already repeat the key, which the spec's empty tables cannot show. If a version adds
+		// one to a table that holds rows, prove the stored rows are unique on it.
 		case 'createIndex':
 			return 'additive';
 		case 'drop':
@@ -229,7 +233,13 @@ function isPlainNullableColumn(column: ColumnDef): boolean {
 	return column.constraints.length > 0 && column.constraints.every((constraint) => constraint.type === 'null');
 }
 
-/** Whether the table has the column and no index, unique constraint or primary key covers it. */
+/**
+ * Whether the table has the column and no index, unique constraint or primary key covers it.
+ *
+ * NOTE: judged against the catalog before the apply, so a column whose covering index the same
+ * diff drops (`diff schema` emits the `drop index` first) still counts as covered. Conservative;
+ * if a version needs that change, judge the diff as a sequence.
+ */
 function isUnkeyedColumn(table: TableSchema | undefined, name: string): boolean {
 	const column = table?.columnIndexMap.get(name.toLowerCase());
 	if (table === undefined || column === undefined) {

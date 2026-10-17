@@ -1273,8 +1273,8 @@ export class ControlDatabase {
     await this.db!.exec(declaration);
     // A warm store this build cannot apply to without losing data is refused HERE, before the
     // apply runs anything: the optimystic module refuses most changes to an existing table
-    // part-way through an apply, and a dropped table takes its rows. The apply is where
-    // versioned migrations will go (plan/control-schema-versioned-migrations).
+    // part-way through an apply, and a dropped table takes its rows. Migrating a store in place
+    // (control-store-migrates-on-start) widens this check to let catalog-only changes through.
     await refuseIncompatibleControlStore(this.db!, this.config.partyId);
     await this.applyControlSchema();
     log('Schema loaded and executed');

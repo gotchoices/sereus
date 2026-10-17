@@ -182,6 +182,9 @@ describe('control schema versions', () => {
 
 		// Quereus hashes the declaration with comments and tags stripped, so a comment-only edit
 		// moves neither side, and a Quereus upgrade that renders schemas differently moves both.
+		// NOTE: an edit to schemas/control.qsql copied into the last fixture in place, with no new
+		// version, passes here; only review catches it. If that slips through, pin the text hash
+		// of each fixture once its version ships.
 		const latest = await schemaHash(controlSchemaFileDeclaration(fixtureOf(fixtures, CONTROL_SCHEMA_VERSION)));
 		expect(latest, 'The declared control schema differs from the fixture of CONTROL_SCHEMA_VERSION. A version that has ' +
 			'shipped in a release is never edited: bump CONTROL_SCHEMA_VERSION and add its fixture, a copy of ' +
