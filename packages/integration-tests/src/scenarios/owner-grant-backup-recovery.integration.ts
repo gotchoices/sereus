@@ -31,7 +31,7 @@ import { describe, it, expect } from 'vitest';
 import type { CadreNode } from '@serfab/cadre-core';
 import {
 	buildPhoneOwner, makeOwnOwner, createTestOwnerKey, waitUntil, readCohort, machinePeerIds,
-	startPinningMember, admitMember, startPartyDevice, waitingForMember, type InviteMember,
+	startPinningMember, admitMember, buildPartyDevice, waitingForMember, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and the redemptions' passes over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -84,7 +84,8 @@ describe('E2E backup owner grant redeemed while the issuing owner is offline', (
 			console.log('[backup-recovery] the stopped owner left M\'s control cohort after %d ms', Date.now() - ownerLeftAt);
 
 			// ── F joins with the backup grant and a fresh key ───────────────────────
-			F = await startPartyDevice(partyId);
+			F = await buildPartyDevice(partyId);
+			await F.start();
 			const fresh = F;
 			const fPeerId = fresh.peerId!.toString();
 			const fOwner = createTestOwnerKey();

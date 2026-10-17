@@ -42,10 +42,9 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode, CadreInviteRejectedError, MemoryBootstrapPeerStore } from '@serfab/cadre-core';
-import type { PrivateKey } from '@libp2p/interface';
 import {
 	controlNodeConfig, makeOwnOwner, hasOutboundTo, waitUntil, captureRawStorage, readCohort,
-	startPinningMember, admitMember, redeemWaitingForMember, ownerKeySeatedByInvitation, type InviteMember,
+	startPinningMember, admitMember, buildPartyDevice, redeemWaitingForMember, ownerKeySeatedByInvitation, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -69,9 +68,6 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 				partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none',
 				listenAddrs: [], storageProvider: captureA.provider, bootstrapPeerStore: aPeerStore,
 			}));
-		}
-		function buildDevice(key: PrivateKey): CadreNode {
-			return new CadreNode(controlNodeConfig({ partyId, privateKey: key, profile: 'transaction', listenAddrs: [], strandFilter: 'none' }));
 		}
 
 		let A: CadreNode | undefined;
@@ -115,7 +111,7 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			// ── P redeems at M with the owner offline ──────────────────────────────
 			const pKey = await generateKeyPair('Ed25519');
 			const pPeerId = peerIdFromPrivateKey(pKey).toString();
-			P = buildDevice(pKey);
+			P = await buildPartyDevice(partyId, pKey);
 			await P.start();
 			expect(P.getTrustedOwnerStore()!.has(aOwnerKey)).toBe(false);
 			const redeemStartedAt = Date.now();
@@ -176,7 +172,7 @@ describe('E2E cadre invitation redeemed at a member while the owner is offline',
 			await waitUntil(async () => (await member.node.listCadreInvitations()).find((status) => status.invite.key === key)?.withdrawn === true, {
 				timeoutMs: OP_MS, intervalMs: 500, description: 'M holds the withdrawal tombstone',
 			});
-			Q = buildDevice(await generateKeyPair('Ed25519'));
+			Q = await buildPartyDevice(partyId);
 			await Q.start();
 			const refusal: unknown = await Q.redeemCadreInvitation(invitation).catch((err: unknown) => err);
 			expect(refusal).toBeInstanceOf(CadreInviteRejectedError);

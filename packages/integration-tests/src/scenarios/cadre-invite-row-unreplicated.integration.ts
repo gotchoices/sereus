@@ -38,7 +38,7 @@ import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import { CadreNode, type CadreInviteRow } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectionsTo, waitUntil, readCohort, peerDialGate, captureRawStorage, awaitBlockCoverage,
-	startPinningMember, admitMember, redeemWaitingForMember, ownerKeySeatedByInvitation, type InviteMember,
+	startPinningMember, admitMember, buildPartyDevice, redeemWaitingForMember, ownerKeySeatedByInvitation, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -119,7 +119,7 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			// ── P redeems at M, which seats the row from the bundle ─────────────────
 			const pKey = await generateKeyPair('Ed25519');
 			const pPeerId = peerIdFromPrivateKey(pKey).toString();
-			P = new CadreNode(controlNodeConfig({ partyId, privateKey: pKey, profile: 'transaction', listenAddrs: [], strandFilter: 'none' }));
+			P = await buildPartyDevice(partyId, pKey);
 			await P.start();
 			const redeemStartedAt = Date.now();
 			const { joined, passes } = await redeemWaitingForMember(P, invitation, STARTUP_MS, 'row-unreplicated');

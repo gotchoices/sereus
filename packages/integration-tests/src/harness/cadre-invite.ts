@@ -97,17 +97,16 @@ export async function admitMember(owner: CadreNode, member: InviteMember, timeou
 }
 
 /**
- * A phone-shaped device started in `partyId` on an empty store: no listen address, no pinned
- * owner key, no strand, and a stable identity (`joinWithOwnerGrant` signs its self-invitation
- * for that identity). Not a member until something admits it: an invitation it redeems, or the
- * self-admission an owner grant gives it.
+ * A phone-shaped device for `partyId` on an empty store, not yet started: no listen address, no
+ * pinned owner key, no strand, and a stable identity (`joinWithOwnerGrant` signs its
+ * self-invitation for that identity). Not a member until something admits it: an invitation it
+ * redeems, or the self-admission an owner grant gives it. Unstarted, like `buildPhoneOwner`, so
+ * the caller holds the node for its `finally` before `start()` can throw.
  */
-export async function startPartyDevice(partyId: string, key?: PrivateKey): Promise<CadreNode> {
-	const node = new CadreNode(controlNodeConfig({
+export async function buildPartyDevice(partyId: string, key?: PrivateKey): Promise<CadreNode> {
+	return new CadreNode(controlNodeConfig({
 		partyId, privateKey: key ?? await generateKeyPair('Ed25519'), profile: 'transaction', listenAddrs: [], strandFilter: 'none',
 	}));
-	await node.start();
-	return node;
 }
 
 /** The options every redemption call takes (`redeemCadreInvitation`, `redeemOwnerGrant`, `joinWithOwnerGrant`), all set. */

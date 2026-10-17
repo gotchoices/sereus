@@ -30,14 +30,13 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
 import {
 	CadreNode, decodeCadreInvitation, decodeCadreJoinRequest, encodeCadreJoinRequest,
 	type CadreJoinProgress,
 } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, waitUntil, captureRawStorage, sameListenAddr,
-	startPinningMember, admitMember, redeemWaitingForMember, type InviteMember,
+	startPinningMember, admitMember, buildPartyDevice, redeemWaitingForMember, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -49,11 +48,6 @@ const OP_MS = 30_000;
  * 5 s, 10 s, 20 s apart. Several restarts' worth, so a slow machine fails on an assertion, not here.
  */
 const WAIT_FOR_MEMBER_MS = 5 * STARTUP_MS;
-
-/** A phone-shaped device for `partyId`: no listen address, no owner genesis. */
-function buildDevice(partyId: string, key: PrivateKey): CadreNode {
-	return new CadreNode(controlNodeConfig({ partyId, privateKey: key, profile: 'transaction', listenAddrs: [], strandFilter: 'none' }));
-}
 
 /**
  * Write an owner-signed `JoinedStrand` row from `device` with the owner signer it wired, as the
@@ -97,7 +91,7 @@ describe('E2E an app joins a cadre by invitation', () => {
 			// ── Targeted: B asks, A mints for B's peer id and goes away, M goes down ──
 			const bKey = await generateKeyPair('Ed25519');
 			const bPeerId = peerIdFromPrivateKey(bKey).toString();
-			B = buildDevice(partyId, bKey);
+			B = await buildPartyDevice(partyId, bKey);
 			await B.start();
 			const asked = decodeCadreJoinRequest(encodeCadreJoinRequest({ v: 1, peerId: B.peerId!.toString(), appName: 'B' }));
 			const targeted = await A.createCadreInvitation({ peerId: asked.peerId, grantsOwner: true });
@@ -139,8 +133,7 @@ describe('E2E an app joins a cadre by invitation', () => {
 			const open = await B.createCadreInvitation({ grantsOwner: true });
 			expect(open.invitation.invite.peerId).toBeNull();
 			expect(open.reach).toBe('local-network');
-			const cKey = await generateKeyPair('Ed25519');
-			C = buildDevice(partyId, cKey);
+			C = await buildPartyDevice(partyId);
 			await C.start();
 			const { joined: cJoined } = await redeemWaitingForMember(C, decodeCadreInvitation(open.encoded), STARTUP_MS, 'open');
 			expect(cJoined.peerId).toBe(mPeerId);

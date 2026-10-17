@@ -18,17 +18,18 @@
  * any machine row for H. M pins only O, so M trusting the new key means M derived it from the
  * grant chain (`chain` provenance), and O, which did not write the row, derives it the same
  * way once the row replicates and its next membership refresh runs (its timed reconcile; no
- * refresh is driven here). H is a stranger to M until its exchange verifies, so the exchange
- * also shows it is not cut at the provisional connection deadline. M pushes its control store
- * to H and counts H in its write cohort before the write, so the write commits on the first
- * pass; the scenario pins that.
+ * refresh is driven here). H is a stranger to M, so M's connection gate admits it only
+ * provisionally (a live grant does not open the stranger window an invitation does); the
+ * exchange completes well inside the provisional deadline, which this scenario therefore does
+ * not exercise. M pushes its control store to H and counts H in its write cohort before the
+ * write, so the write commits on the first pass; the scenario pins that.
  */
 
 import { describe, it, expect } from 'vitest';
 import { OwnerGrantRejectedError, type CadreNode, type CadreOwnerKey } from '@serfab/cadre-core';
 import {
 	buildPhoneOwner, makeOwnOwner, createTestOwnerKey, waitUntil, machinePeerIds,
-	startPinningMember, admitMember, startPartyDevice, waitingForMember, type InviteMember,
+	startPinningMember, admitMember, buildPartyDevice, waitingForMember, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and the redemption's passes over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -72,7 +73,8 @@ describe('E2E owner grant redeemed by a holder with no machine in the cadre', ()
 			expect(grant.members.every((addr) => addr.endsWith(`/p2p/${member.peerId}`))).toBe(true);
 
 			// ── H redeems it over the protocol with a fresh key ─────────────────────
-			H = await startPartyDevice(partyId);
+			H = await buildPartyDevice(partyId);
+			await H.start();
 			const holder = H;
 			const hPeerId = holder.peerId!.toString();
 			const hardwareKey = createTestOwnerKey();
@@ -103,7 +105,8 @@ describe('E2E owner grant redeemed by a holder with no machine in the cadre', ()
 			expect(await machinePeerIds(owner)).toEqual(machinesBefore);
 
 			// ── H2 with another key: the single use is spent ────────────────────────
-			H2 = await startPartyDevice(partyId);
+			H2 = await buildPartyDevice(partyId);
+			await H2.start();
 			const secondKey = createTestOwnerKey();
 			const refusal: unknown = await H2.redeemOwnerGrant(grant, secondKey.signer).catch((err: unknown) => err);
 			expect(refusal).toBeInstanceOf(OwnerGrantRejectedError);
