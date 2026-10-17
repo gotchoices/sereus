@@ -14,9 +14,10 @@
  *
  * ## The classes
  *
- *  - `stranger-open` — seed delivery, strand formation, cadre-invitation redemption. Any peer;
- *    each handler makes its own trust decision in-protocol (a seed signature against the
- *    anchored trust policy, a formation token, an invitation's possession proof).
+ *  - `stranger-open` — seed delivery, strand formation, cadre-invitation redemption, owner-grant
+ *    redemption. Any peer; each handler makes its own trust decision in-protocol (a seed
+ *    signature against the anchored trust policy, a formation token, an invitation's or a
+ *    grant's possession proof).
  *  - `transport` — libp2p plumbing (identify, ping, hole punching, AutoNAT, the circuit-relay
  *    stop and hop protocols, WebRTC signaling). Every connection runs these, the redeeming
  *    device's own included: refusing identify would make that device treat the member as
@@ -81,6 +82,7 @@ import type { Connection, Libp2p, Stream, StreamHandler, StreamHandlerRecord } f
 import { SEED_PROTOCOL } from './seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from './strand-formation-protocol.js';
 import { CADRE_INVITE_PROTOCOL } from './cadre-invite-protocol.js';
+import { OWNER_GRANT_PROTOCOL } from './owner-grant-protocol.js';
 import { WAKE_PROTOCOL } from './strand-wake-protocol.js';
 import { STRAND_ADDR_PROTOCOL } from './strand-addr-protocol.js';
 import { withTimeout } from './control-stream.js';
@@ -89,7 +91,7 @@ const log = debug('sereus:cadre:control-protocol-guard');
 
 /** What a peer must be to open a stream on a control-node protocol (see the module doc). */
 export type ControlProtocolClass =
-	/** Any peer. The handler makes its own trust decision in-protocol (seed, formation, cadre-invite). */
+	/** Any peer. The handler makes its own trust decision in-protocol (seed, formation, cadre-invite, owner-grant). */
 	| 'stranger-open'
 	/** libp2p plumbing that a stranger's connection needs or that carries no party data. */
 	| 'transport'
@@ -145,6 +147,7 @@ export function controlProtocolClasses(partyId: string): ReadonlyMap<string, Con
 		[SEED_PROTOCOL, 'stranger-open'],
 		[FORMATION_PROTOCOL, 'stranger-open'],
 		[CADRE_INVITE_PROTOCOL, 'stranger-open'],
+		[OWNER_GRANT_PROTOCOL, 'stranger-open'],
 
 		[WAKE_PROTOCOL, 'members'],
 		[STRAND_ADDR_PROTOCOL, 'members'],

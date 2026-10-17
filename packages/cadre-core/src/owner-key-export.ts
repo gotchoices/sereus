@@ -18,7 +18,7 @@ import { scryptAsync } from '@noble/hashes/scrypt.js';
 import { randomBytes } from '@noble/hashes/utils.js';
 import { fromString as uint8ArrayFromString, toString as uint8ArrayToString } from 'uint8arrays';
 import { canonicalJson } from './canonical-json.js';
-import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX, OWNER_KEY_EXPORT_STEM } from './cadre-join-request.js';
+import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX, OWNER_GRANT_PREFIX, OWNER_KEY_EXPORT_STEM } from './cadre-join-request.js';
 import { NODE_CLAIM_PAYLOAD_PREFIX } from './node-claim-payload.js';
 import { ed25519PublicKeyFromPrivate, requireEd25519PrivateKeyB64 } from './ed25519-key.js';
 
@@ -78,7 +78,7 @@ export type OwnerKeyExportErrorCode =
 	| 'wrong-passphrase'
 	/** A locked export given with no passphrase (`importOwnerKeyInto` in `owner-key-flows.ts`). */
 	| 'passphrase-required'
-	/** Not owner-key text; the message names an invitation, join request or join code. */
+	/** Not owner-key text; the message names an invitation, an owner grant, a join request or a join code. */
 	| 'not-an-owner-key'
 	/** A locked export asks for more scrypt work than {@link MAX_SCRYPT_N} and {@link MAX_SCRYPT_R_TIMES_P} allow. */
 	| 'cost-too-high';
@@ -134,8 +134,8 @@ export async function encodeOwnerKeyExport(input: OwnerKeyExportInput): Promise<
  * locked one whose envelope is well formed and whose scrypt cost is within the cap, so an app
  * refuses a hostile file before asking for the passphrase.
  *
- * @throws {OwnerKeyExportError} `not-an-owner-key` (naming an invitation, join request or join
- *   code), `malformed` or `cost-too-high`.
+ * @throws {OwnerKeyExportError} `not-an-owner-key` (naming an invitation, an owner grant, a join
+ *   request or a join code), `malformed` or `cost-too-high`.
  */
 export function decodeOwnerKeyExport(text: string): DecodedOwnerKeyExport {
 	const trimmed = text.trim();
@@ -221,6 +221,9 @@ function exportPrefix(text: string): string {
 function notAnOwnerKeyMessage(text: string): string {
 	if (text.startsWith(CADRE_INVITATION_PREFIX)) {
 		return 'This is a cadre invitation, not an owner key; paste it where the app asks for an invitation';
+	}
+	if (text.startsWith(OWNER_GRANT_PREFIX)) {
+		return 'This is an owner grant, not an owner key; paste it where the app asks for an owner grant';
 	}
 	if (text.startsWith(CADRE_JOIN_REQUEST_PREFIX)) {
 		return 'This is a join request, not an owner key; paste it into the app that manages your cadre';

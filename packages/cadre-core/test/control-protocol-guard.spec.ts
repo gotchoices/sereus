@@ -12,7 +12,7 @@ import { WAKE_PROTOCOL } from '../src/strand-wake-protocol.js';
 
 /**
  * The control node's per-stream protocol guard (`control-protocol-guard.ts`): every protocol a
- * running control node serves is classed, the stranger-open set is exactly the three Sereus
+ * running control node serves is classed, the stranger-open set is exactly the four Sereus
  * protocols that make their own trust decision, and the wrapper the guard puts on a handler
  * admits or refuses by class, failing closed. The wire-level effect on a real outsider is
  * `control-stream-authz.integration.ts`.
@@ -35,12 +35,12 @@ describe('control protocol guard', () => {
 		}
 	}, 60_000);
 
-	it('declares exactly the seed, formation and cadre-invite protocols open to strangers', () => {
+	it('declares exactly the seed, formation, cadre-invite and owner-grant protocols open to strangers', () => {
 		// Literal wire ids, so widening the set (or renaming one of them) cannot pass silently.
 		const open = [...controlProtocolClasses('any-party')]
 			.filter(([, protocolClass]) => protocolClass === 'stranger-open')
 			.map(([protocol]) => protocol);
-		expect(open).toEqual(['/sereus/seed/1.0.0', '/sereus/formation/1.0.0', '/sereus/cadre-invite/1.0.0']);
+		expect(open).toEqual(['/sereus/seed/1.0.0', '/sereus/formation/1.0.0', '/sereus/cadre-invite/1.0.0', '/sereus/owner-grant/1.0.0']);
 	});
 
 	type Predicates = Pick<ControlProtocolGuardOptions, 'isMemberLive' | 'isMemberSnapshot'>;

@@ -18,7 +18,9 @@ import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { CadreInviteSignedFields, OwnerGrantSignedFields, RevocableTable } from './control-authorization.js';
-import type { CadreInvitation, CadreInviteAddressOutcome } from './cadre-invite-protocol.js';
+import type { CadreInvitation } from './cadre-invite-protocol.js';
+import type { OwnerGrantBundle } from './owner-grant-protocol.js';
+import type { RedemptionAddressOutcome } from './member-redemption.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
 import type { ListenTransportOptions } from './relay-addrs.js';
@@ -2183,6 +2185,8 @@ export interface OwnerKeyRemovalPlan {
   revouchesOwnRow: boolean;
   /** This node's own `OwnerKey` row was vouched by the key. It cannot re-vouch that row (the re-add's delete would be its own removal); it keeps its place in every anchor that already derived it, and another owner can re-vouch it afterwards. */
   ownDependency: boolean;
+  /** Live owner grants the key issued, which stop being redeemable once it is removed (`OwnerGrantUsage.Authorized` wants a live issuer): an app says "the backup made with this key stops working". Withdrawn, expired and spent grants are not listed. */
+  grants: OwnerGrantRow[];
 }
 
 /** Options for `CadreNode.removeOwner`. */
@@ -2807,7 +2811,7 @@ export type CadreJoinProgress =
        * least one member answered with a retryable refusal (issuer-unknown, busy, conflict, internal).
        */
       reason: 'no-member-answered' | 'member-not-ready';
-      outcomes: readonly CadreInviteAddressOutcome[];
+      outcomes: readonly RedemptionAddressOutcome[];
     };
 
 /** What `CadreNode.redeemCadreInvitation` returns once a member accepted. */
@@ -2818,6 +2822,64 @@ export interface RedeemCadreInvitationResult {
   grantsOwner: boolean;
   /** When the member accepted, ISO 8601. */
   redeemedAt: string;
+}
+
+/**
+ * What an owner asks `CadreNode.createOwnerGrant` for. The grant is a keypair the node mints;
+ * whoever holds the returned bundle can become an owner of this cadre through any member
+ * machine, so it is a bearer credential for admin rights.
+ */
+export interface CreateOwnerGrantOptions {
+  /** The label every key the grant seats will carry; trimmed, at most 64 characters, blank meaning none. */
+  label?: string;
+  /**
+   * Lifetime from now, in ms; default 15 minutes. `null` means NO expiry and must be passed
+   * explicitly: a backup grant, kept as carefully as an owner key. A negative value mints an
+   * already-expired grant (tests).
+   */
+  expiresInMs?: number | null;
+  /** How many redemptions it allows; default 1. */
+  uses?: number;
+}
+
+/** What `CadreNode.createOwnerGrant` returns: the bundle, the same encoded for sharing, and how far it reaches. */
+export interface CreateOwnerGrantResult {
+  grant: OwnerGrantBundle;
+  /** `encodeOwnerGrant(grant)`: `sereus-owner-grant:1.` and base64url JSON, for a QR code, a paste or a file. */
+  encoded: string;
+  /** Whether a holder could redeem it once the minting machine is gone; see {@link CadreInvitationReach}. */
+  reach: CadreInvitationReach;
+}
+
+/** How `CadreNode.redeemOwnerGrant` and `joinWithOwnerGrant` dial the grant's members: the invitation's options, with the same meanings. */
+export type RedeemOwnerGrantOptions = RedeemCadreInvitationOptions;
+
+/** What `CadreNode.redeemOwnerGrant` returns once the key is seated. */
+export interface RedeemOwnerGrantResult {
+  /** The key seated as an owner: the signer's public key. */
+  ownerKey: string;
+  /** The key was already a live owner, so nothing was written and no use of the grant was spent. */
+  alreadyOwner: boolean;
+  /** The member machine that wrote the row, when the redemption went over the protocol and its address named one; null on the local path. */
+  memberPeerId: string | null;
+}
+
+/** What `CadreNode.joinWithOwnerGrant` returns once this node is a member and its key an owner. */
+export interface JoinWithOwnerGrantResult {
+  /** The member machine that admitted this node, when its address named one. */
+  peerId: string | null;
+  /** When the member admitted this node, ISO 8601. */
+  redeemedAt: string;
+  /** The key seated as an owner: the signer's public key. */
+  ownerKey: string;
+  /** The key was already a live owner of the party, so the grant spent no use. */
+  alreadyOwner: boolean;
+  /**
+   * The signer was wired as this node's owner signer, because its `OwnerKey` row reached this
+   * node within the bound. False when the row had not synced in time: the node is a member and
+   * the key an owner all the same, and `CadreNode.wireOwnKeyIfOwner(signer)` wires it later.
+   */
+  ownerWired: boolean;
 }
 
 /**

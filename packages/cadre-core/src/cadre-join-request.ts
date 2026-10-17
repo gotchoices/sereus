@@ -39,6 +39,13 @@ export const CADRE_INVITATION_PREFIX = 'sereus-invite:1.';
  */
 export const OWNER_KEY_EXPORT_STEM = 'sereus-owner-key';
 
+/**
+ * Version 1 of an encoded owner grant (`encodeOwnerGrant` in `owner-grant-protocol.ts`). Declared
+ * here for the same reason: whoever holds a grant can become an owner, so one pasted where an
+ * invitation, a join request or an owner key belongs is refused by name, never sent to a member.
+ */
+export const OWNER_GRANT_PREFIX = 'sereus-owner-grant:1.';
+
 /** Longest `appName` a request carries: one line in an approval prompt. */
 export const CADRE_JOIN_REQUEST_MAX_APP_NAME = 64;
 
@@ -88,8 +95,8 @@ export function encodeCadreJoinRequest(request: CadreJoinRequest): string {
 }
 
 /**
- * Decode the text the owner's app was given. Refuses, naming the problem: an owner key or an
- * invitation pasted here, any prefix but version 1's, a body that is not base64url JSON of the request's
+ * Decode the text the owner's app was given. Refuses, naming the problem: an owner key, an owner
+ * grant or an invitation pasted here, any prefix but version 1's, a body that is not base64url JSON of the request's
  * shape, a peer id that does not parse or is not Ed25519, an `appName` that is empty or
  * longer than {@link CADRE_JOIN_REQUEST_MAX_APP_NAME} characters once trimmed, and a `reply`
  * that {@link requireCadreJoinReply} refuses.
@@ -98,6 +105,9 @@ export function decodeCadreJoinRequest(text: string): CadreJoinRequest {
 	const trimmed = text.trim();
 	if (trimmed.startsWith(OWNER_KEY_EXPORT_STEM)) {
 		throw new Error('This is an owner key, not a join request; it is private, so import it only where the app asks for an owner key');
+	}
+	if (trimmed.startsWith(OWNER_GRANT_PREFIX)) {
+		throw new Error('This is an owner grant, not a join request; paste it where the app asks for an owner grant');
 	}
 	if (trimmed.startsWith(CADRE_INVITATION_PREFIX)) {
 		throw new Error('This is a cadre invitation, not a join request; paste it where the app asks for an invitation');

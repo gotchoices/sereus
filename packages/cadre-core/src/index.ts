@@ -5,7 +5,7 @@ export * from './types.js';
 export { canonicalJson } from './canonical-json.js';
 
 // Main CadreNode class
-export { CadreNode, OWNER_INVITATION_DEFAULT_TTL_MS, CADRE_INVITATION_DEFAULT_TTL_MS } from './cadre-node.js';
+export { CadreNode, OWNER_INVITATION_DEFAULT_TTL_MS, CADRE_INVITATION_DEFAULT_TTL_MS, OWNER_GRANT_DEFAULT_TTL_MS } from './cadre-node.js';
 
 // Removing a machine from a cadre: the by-name refusal `CadreNode.removeMachine` throws
 // (the listing, plan and result types are in types.ts)
@@ -655,6 +655,7 @@ export {
   CADRE_JOIN_REQUEST_PREFIX,
   CADRE_INVITATION_PREFIX,
   OWNER_KEY_EXPORT_STEM,
+  OWNER_GRANT_PREFIX,
   CADRE_JOIN_REQUEST_MAX_APP_NAME,
   type CadreJoinReply,
   type CadreJoinRequest
@@ -739,6 +740,48 @@ export {
   type RedeemSigner,
   type CadreInviteRedemption
 } from './cadre-invite-protocol.js';
+// Owner grant redemption transport: the bundle an owner hands out, the wire messages, the
+// member-side handler and the holder-side dialer, and how a redemption fails
+export {
+  OwnerGrantHandler,
+  redeemOwnerGrantAtMembers,
+  redeemOwnerGrantInPasses,
+  signOwnerGrantRequest,
+  verifyOwnerGrantReply,
+  encodeOwnerGrant,
+  decodeOwnerGrant,
+  isWellFormedOwnerGrantRow,
+  OwnerGrantRejectedError,
+  OwnerGrantUnreachableError,
+  OwnerGrantReplyInvalidError,
+  OWNER_GRANT_PROTOCOL,
+  OWNER_GRANT_REJECTION_RETRYABLE,
+  isOwnerGrantRejectionCode,
+  type OwnerGrantBundle,
+  type OwnerGrantRedeemRequest,
+  type OwnerGrantRedeemReply,
+  type OwnerGrantAccepted,
+  type OwnerGrantRejectionCode,
+  type OwnerGrantHandlerOptions,
+  type OwnerGrantStore,
+  type RedeemOwnerGrantAtMembersOptions,
+  type RedeemOwnerGrantInPassesOptions,
+  type OwnerGrantRedemption
+} from './owner-grant-protocol.js';
+// The exchange shape both redemption protocols are built on
+export {
+  MemberRedemptionHandler,
+  dialRedemption,
+  dialRedemptionInPasses,
+  MAX_REDEMPTION_FRAME_BYTES,
+  type MemberRedemptionHandlerOptions,
+  type MemberRedemptionOptions,
+  type MemberRedemptionPassOptions,
+  type MemberRedemption,
+  type RedemptionAddressOutcome,
+  type RedemptionRejection,
+  type RedemptionRefusalFrame
+} from './member-redemption.js';
 // Which machines, and how many addresses of each, an invitation names; how far a cadre invitation reaches
 export {
   selectCadreInvitationMembers,

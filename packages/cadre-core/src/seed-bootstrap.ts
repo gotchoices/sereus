@@ -26,6 +26,7 @@ import type {
   AddDroneOptions,
   DroneInitResult,
   CadreInviteRow,
+  OwnerGrantRow,
   NodeProfile,
   PeerAddressRecord,
   DeviceTokenRecord,
@@ -805,6 +806,42 @@ export class SeedBootstrapService {
     const controlDatabase = this.requireControlDatabase();
     return await this.withOwnerSign(`Withdraw the cadre invitation ${key}`, sign, (approved) =>
       controlDatabase.withdrawCadreInvite(key, ownerKey, approved));
+  }
+
+  /**
+   * Owner-signed INSERT of an `OwnerGrant` row — a grant of ownership any member machine can
+   * redeem on this owner's behalf ({@link ControlDatabase.insertOwnerGrant}). The keypair mint,
+   * the lifetime default and the bundle the holder receives are `CadreNode.createOwnerGrant`'s;
+   * what stays here is the owner-signer precondition and the approval, as for
+   * {@link insertCadreInvite}. The label is checked before the approval opens, so one the row
+   * would refuse never prompts the user.
+   *
+   * @returns the row as stored, which the grant bundle carries verbatim.
+   * @throws if no owner signer is configured, the control database is not initialized, or the label is too long.
+   */
+  async insertOwnerGrant(grant: Parameters<ControlDatabase['insertOwnerGrant']>[0], sign?: OwnerSign): Promise<OwnerGrantRow> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    const label = ownerKeyLabel(grant.label);
+    const named = label === null ? 'an owner grant' : `the owner grant "${label}"`;
+    return await this.withOwnerSign(`Create ${named}: whoever holds it can become an owner of the cadre`, sign, (approved) =>
+      controlDatabase.insertOwnerGrant({ ...grant, label }, ownerKey, approved));
+  }
+
+  /**
+   * Owner-signed WITHDRAWAL of an `OwnerGrant`: the `Revocation` tombstone over its stamp, with
+   * the row kept ({@link ControlDatabase.withdrawOwnerGrant}). What stays here is the
+   * owner-signer precondition.
+   *
+   * @returns `true` when this call filed the tombstone, `false` when the row is absent here or
+   *   already withdrawn.
+   * @throws if no owner signer is configured or the control database is not initialized.
+   */
+  async withdrawOwnerGrant(key: string, sign?: OwnerSign): Promise<boolean> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    return await this.withOwnerSign(`Withdraw the owner grant ${key}`, sign, (approved) =>
+      controlDatabase.withdrawOwnerGrant(key, ownerKey, approved));
   }
 
   /**

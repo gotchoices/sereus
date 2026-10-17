@@ -10,6 +10,7 @@
 import type {
 	CadreOwnerKey,
 	CadrePeerRow,
+	OwnerGrantStatus,
 	OwnerKeyAddRefusal,
 	OwnerKeyDependents,
 	OwnerKeyRemovalPlan,
@@ -88,6 +89,8 @@ export interface OwnerKeyRemovalPlanInput {
 	rows: readonly CadrePeerRow[];
 	/** Live `OwnerKey` rows (`ControlDatabase.queryOwnerKeyRows`). */
 	owners: readonly OwnerKeyRow[];
+	/** Every owner grant with its standing (`ControlDatabase.listOwnerGrantStatuses`); the live ones the key issued are the plan's `grants`. */
+	grants: readonly OwnerGrantStatus[];
 	selfPeerId: string | null;
 	/** The key of this node's owner signer when it is an enrolled owner (`CadreNode.ownerSignerEnrolledIn`), or null when it cannot sign owner writes. */
 	selfOwnerKey: string | null;
@@ -110,6 +113,10 @@ export interface OwnerKeyRemovalPlanInput {
  * `CadrePeer` row is re-vouched unasked (`revouchesOwnRow`): left on the removed key, every other
  * machine would drop the remover. Its own `OwnerKey` row is reported as `ownDependency`, since
  * re-vouching it would mean signing its own removal.
+ *
+ * `grants` are the live owner grants the key issued: a redemption wants a live issuer, so they
+ * stop working with the removal. They are listed, not withdrawn (`removeOwner` leaves them: a
+ * tombstone over a grant that can no longer be redeemed would add nothing).
  */
 export function planOwnerKeyRemoval(input: OwnerKeyRemovalPlanInput): OwnerKeyRemovalPlan {
 	const row = input.owners.find((owner) => owner.key === input.key) ?? null;
@@ -119,6 +126,7 @@ export function planOwnerKeyRemoval(input: OwnerKeyRemovalPlanInput): OwnerKeyRe
 		dependents: dependentsOf(input),
 		revouchesOwnRow: input.rows.some((own) => own.peerId === input.selfPeerId && own.vouchOwner === input.key),
 		ownDependency: input.owners.some((own) => own.key === input.selfOwnerKey && own.vouchOwner === input.key),
+		grants: input.grants.filter((status) => status.live && status.grant.issuerKey === input.key).map((status) => status.grant),
 	};
 }
 

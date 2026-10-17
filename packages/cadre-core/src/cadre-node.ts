@@ -54,6 +54,12 @@ import type {
   CreateCadreInvitationResult,
   RedeemCadreInvitationOptions,
   RedeemCadreInvitationResult,
+  CreateOwnerGrantOptions,
+  CreateOwnerGrantResult,
+  OwnerGrantStatus,
+  RedeemOwnerGrantOptions,
+  RedeemOwnerGrantResult,
+  JoinWithOwnerGrantResult,
   PeerAddressRecord,
   ResolveDeviceTokenOpts,
   PendingJoin,
@@ -76,7 +82,7 @@ import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
-import { softwareOwnerSigner, withinOwnerApproval, type OwnerSign, type OwnerSigner } from './owner-signer.js';
+import { softwareOwnerSigner, withinOwnerApproval, type OwnerSign, type OwnerSigner, type OwnerSigningRequest } from './owner-signer.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
 import { MemoryStrandNetworkStateStore, type StrandNetworkStateStore } from './strand-network-state.js';
 import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
@@ -140,6 +146,15 @@ import {
   signRedeemRequest,
   type CadreInvitation
 } from './cadre-invite-protocol.js';
+import {
+  OwnerGrantHandler,
+  encodeOwnerGrant,
+  redeemOwnerGrantInPasses,
+  signOwnerGrantRequest,
+  type OwnerGrantBundle,
+  type OwnerGrantRedeemRequest,
+  type OwnerGrantRedemption
+} from './owner-grant-protocol.js';
 import { FormationPostApprovalError } from './strand-formation-rejection.js';
 import {
   PendingJoinRunner,
@@ -227,12 +242,37 @@ export const STRAND_PEER_ADDR_REFRESH_MS = 10 * 60 * 1000;
 export const STRAND_PEER_ADDR_RETRY_MS = 60 * 1000;
 
 /**
- * Default lifetime of an UNTARGETED, OWNER-GRANTING cadre invitation
- * ({@link CadreNode.createCadreInvitation}): whoever holds the bundle becomes an owner, so
- * it is a bearer credential for admin rights and lives only long enough to be pasted or
- * scanned by the device it was minted for.
+ * Default lifetime of an owner grant ({@link CadreNode.createOwnerGrant}): whoever holds the
+ * bundle can become an owner, so it is a bearer credential for admin rights and lives only
+ * long enough to be pasted or scanned by the device it was minted for. A backup grant is minted
+ * with no expiry, by explicit choice.
  */
-export const OWNER_INVITATION_DEFAULT_TTL_MS = 15 * 60 * 1000;
+export const OWNER_GRANT_DEFAULT_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Default lifetime of an UNTARGETED, OWNER-GRANTING cadre invitation
+ * ({@link CadreNode.createCadreInvitation}): an owner grant's, for the same reason.
+ * `machine-invitation-grants-no-ownership` removes it with the owner-granting invitation.
+ */
+export const OWNER_INVITATION_DEFAULT_TTL_MS = OWNER_GRANT_DEFAULT_TTL_MS;
+
+/**
+ * Lifetime of the invitation {@link CadreNode.joinWithOwnerGrant} issues to itself: redeemed in
+ * the same call at the member that just wrote the grant, so the grant's short default is plenty,
+ * and a later call signs a fresh one.
+ */
+const SELF_INVITATION_TTL_MS = OWNER_GRANT_DEFAULT_TTL_MS;
+
+/** How often {@link CadreNode.joinWithOwnerGrant} asks again whether its own `OwnerKey` row has reached this node. */
+const OWNER_ROW_SYNC_RECHECK_MS = 2_000;
+
+/**
+ * Bound on that wait, the edge node's owner-step bound (`DEFAULT_OWNER_GENESIS_TIMEOUT_MS` in
+ * `edge-node/config.ts`): the join has already succeeded at the member, so past it the call
+ * returns with the key unwired rather than wait out a stalled sync.
+ */
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: the call goes on with the key unwired rather than wait out a stalled control sync; `wireOwnKeyIfOwner` wires it later
+const OWNER_ROW_SYNC_TIMEOUT_MS = 60_000;
 
 /** Default lifetime of every other cadre invitation: targeted, or granting membership only. */
 export const CADRE_INVITATION_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -245,6 +285,27 @@ type EventHandler<T> = (data: T) => void;
  */
 function relayStrandAddrPeer(relay: CircuitRelayTarget): StrandAddrPeer {
   return { peerId: relay.relayPeerId, addrs: [multiaddr(relay.relayAddr)] };
+}
+
+/**
+ * What the holder of an owner grant approves on the signer whose key it seats: one request for
+ * the whole action, naming the party (as every owner signing request does) and the grant.
+ */
+function ownerGrantApproval(bundle: OwnerGrantBundle, scope: 'redeem' | 'join' = 'redeem'): OwnerSigningRequest {
+  const grant = namedOwnerKey(bundle.grant.key, bundle.grant.label);
+  return {
+    partyId: bundle.partyId,
+    action: scope === 'join'
+      ? `Join the cadre with this device and make this key one of its owners, with the owner grant ${grant}`
+      : `Make this key an owner of the cadre, with the owner grant ${grant}`,
+  };
+}
+
+/** `members` with the addresses naming `peerId` (by their trailing `/p2p/`) first, order otherwise kept; unchanged for a null `peerId`. */
+function addressesOfFirst(members: readonly string[], peerId: string | null): string[] {
+  if (peerId === null) return [...members];
+  const names = (addr: string): boolean => addr.endsWith(`/p2p/${peerId}`);
+  return [...members.filter(names), ...members.filter((addr) => !names(addr))];
 }
 
 /**
@@ -482,6 +543,13 @@ export class CadreNode implements SAppIdLookup {
    * once that database is up, on every node.
    */
   private cadreInviteHandler: CadreInviteHandler | null = null;
+  /**
+   * Owner grant redemption handler (`/sereus/owner-grant/1.0.0`): a holder of a grant dials
+   * this machine and proves possession of the grant and of the key it seats; the handler seats
+   * the row and writes the `OwnerKey` row against this node's control database. Registered by
+   * {@link start} beside the invitation handler, on every node.
+   */
+  private ownerGrantHandler: OwnerGrantHandler | null = null;
   /**
    * Server-side push-wake fan-out. Constructed by {@link start} only when
    * `config.push` (an injected `PushNotifier` + policy) is present — without it
@@ -1398,6 +1466,16 @@ export class CadreNode implements SAppIdLookup {
       });
       await this.cadreInviteHandler.register(this.controlNode);
 
+      // Answer owner grant redemptions likewise: a holder dials any member and proves possession
+      // of the grant and of the key it seats; no machine is admitted, so the holder's identity
+      // is not checked.
+      this.ownerGrantHandler = new OwnerGrantHandler({
+        partyId: this.config.controlNetwork.partyId,
+        store: this.controlDatabase,
+        admitDevice: (peerId) => this.admitRedeemingDevice(peerId),
+      });
+      await this.ownerGrantHandler.register(this.controlNode);
+
       // A node waiting to be claimed listens for its claim seed from the start: nobody
       // else will turn the listener on, and a node no seed can reach cannot be claimed.
       // Before `control:connected`, so an embedder that reports "awaiting claim" on that
@@ -1912,9 +1990,10 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Persist out-of-band-established owner keys into the node-local anchor —
-   * the runtime enrollment seam: {@link redeemCadreInvitation} calls it with the
-   * cadre invitation's `ownerKeys` BEFORE dialing a member (so the anchor already
-   * holds the pins when the reply and the rows that follow are judged), and an
+   * the runtime enrollment seam: {@link redeemCadreInvitation} and
+   * {@link redeemOwnerGrant} call it with their bundle's `ownerKeys` BEFORE dialing
+   * a member (so the anchor already holds the pins when the reply and the rows
+   * that follow are judged), and an
    * embedder calls it with an operator-supplied pin. Idempotent. ('genesis'
    * provenance is reserved for the node's own founding key, seeded internally by
    * {@link useOwnerSigner}; 'chain' is written only by {@link syncOwnerAnchor}.)
@@ -2358,10 +2437,18 @@ export class CadreNode implements SAppIdLookup {
    *     own strand node, so a NAT'd member's strand node can hold a
    *     circuit-relay reservation here (see `delegate-admission.ts`).
    *     Connection only: the per-stream gate below never honors a grant;
-   *  3. the authorized-member set is empty — cold start: the rows that would
+   *  3. the peer is a device whose invitation or owner-grant redemption this
+   *     node has verified and is writing ({@link admittingDevices}): its
+   *     connection carries the exchange, which must not be cut at the
+   *     provisional deadline. A LIVE OWNER GRANT does not count as expecting a
+   *     stranger the way check 7's invitation does: a backup grant has no
+   *     expiry, and counting it would admit every stranger outright for the
+   *     party's life, so the holder rides the provisional admission until its
+   *     redemption verifies, then this;
+   *  4. the authorized-member set is empty — cold start: the rows that would
    *     authorize anyone arrive by replication over these very connections;
-   *  4. the peer IS an authorized member; or
-   *  5. an open invitation is OUTSTANDING — at least one unexpired,
+   *  5. the peer IS an authorized member; or
+   *  6. an open invitation is OUTSTANDING — at least one unexpired,
    *     not-fully-consumed invitation this node minted or persisted (see
    *     `StrandSolicitationService.hasOutstandingInvitation`). A formation
    *     initiator is another party's peer by design and its token is only
@@ -2369,19 +2456,19 @@ export class CadreNode implements SAppIdLookup {
    *     "does this node expect a stranger at all?". REGISTERING the responder
    *     does not count: every node registers one at {@link start}, and
    *     registering mints no invitation; or
-   *  6. a LIVE cadre invitation exists — a `CadreInvite` row this node holds
+   *  7. a LIVE cadre invitation exists — a `CadreInvite` row this node holds
    *     that is not withdrawn, unexpired, has uses left and whose issuer is
    *     still an owner (`ControlDatabase.hasLiveCadreInvite`). The device that
    *     redeems it is a stranger until the redemption writes its row, and its
    *     proof of possession is only checkable inside `/sereus/cadre-invite/1.0.0`;
-   *     same reasoning as check 5, and the same expectation-of-a-stranger key.
+   *     same reasoning as check 6, and the same expectation-of-a-stranger key.
    *
    * Ordering is semantically free (the checks are OR'd) but decides who pays:
-   * checks 1-2 are in-memory, 3/4 share one control-DB read, and only a peer
-   * that is otherwise headed for a provisional admission reaches check 5's and
-   * 6's invitation lookups.
+   * checks 1-3 are in-memory, 4/5 share one control-DB read, and only a peer
+   * that is otherwise headed for a provisional admission reaches check 6's and
+   * 7's invitation lookups.
    *
-   * Caveats of check 5:
+   * Caveats of check 6:
    *  - the in-memory mint registry dies with the process, so after a restart
    *    only invitations persisted as `FormationInvite` rows still hold the
    *    window open (re-mint otherwise);
@@ -2392,8 +2479,8 @@ export class CadreNode implements SAppIdLookup {
    * When every check falls through: `'admit-provisionally'`, on every node,
    * relay server or not. The gate sees only a peer id, so it cannot tell an
    * outsider from a device whose invitation row this node has not received yet
-   * (it redeems here by seating the row from its bundle, after which check 6
-   * admits) or from a sibling whose membership row is still replicating (check 4
+   * (it redeems here by seating the row from its bundle, after which check 7
+   * admits) or from a sibling whose membership row is still replicating (check 5
    * admits once it lands; if it has not landed by the deadline, the connection
    * is closed and either side's next reconcile dial re-forms it, since outbound
    * dials are never gated). The protocol guard refuses all of them every
@@ -2401,12 +2488,12 @@ export class CadreNode implements SAppIdLookup {
    * {@link admitControlRelayReservation} disarms the deadline (see
    * `membership-connection-gater.ts` → "The relay-reservation seam").
    *
-   * NOTE: check 3/4 runs a control-DB read per inbound connection
+   * NOTE: check 4/5 runs a control-DB read per inbound connection
    * (`listAuthorizedMembers`); connections are rare and cadres small, and this
    * layer is fail-open behind `ADMISSION_DECISION_TIMEOUT_MS`, so the live
    * read is safe here — unlike the per-stream gate, which must consult the
    * materialized {@link authorizedControlPeers} snapshot instead.
-   * NOTE: checks 5 and 6 add two more control reads (`hasOutstandingFormationInvite`,
+   * NOTE: checks 6 and 7 add two more control reads (`hasOutstandingFormationInvite`,
    * `hasLiveCadreInvite`) for a stranger with no locally minted invitation in play, on
    * every node, and a provisional connection's deadline runs the whole decision once
    * more. If stranger connections ever arrive fast enough for those reads — on arrival
@@ -2421,6 +2508,9 @@ export class CadreNode implements SAppIdLookup {
       return 'admit';
     }
     if (this.delegateAdmission.has(remotePeerId)) {
+      return 'admit';
+    }
+    if (this.admittingDevices.has(remotePeerId)) {
       return 'admit';
     }
     const authorized = await this.listAuthorizedMembers();
@@ -8764,7 +8854,9 @@ export class CadreNode implements SAppIdLookup {
    * `OwnerKey` row and its `Revocation` tombstone commit together, and the tombstone rides the
    * committed-delete seam ({@link noteGuardedDelete}), so one committed while alone is re-issued
    * on cohort growth like every other removal. The machines the key was used on stay members;
-   * removing one is {@link removeMachine}.
+   * removing one is {@link removeMachine}. The owner grants the key issued stop being redeemable
+   * (the plan's `grants` names the live ones) and are not withdrawn: a tombstone over a grant
+   * nobody can redeem would add nothing.
    *
    * Steps: re-plan ({@link planOwnerKeyRemoval}) and throw {@link OwnerKeyRemovalRefusedError}
    * on a refusal; check `options.revouch` against the plan's dependents and throw before any
@@ -8812,11 +8904,14 @@ export class CadreNode implements SAppIdLookup {
 
   /** {@link planOwnerKeyRemoval} with the rows it was judged from, which {@link removeOwner} re-vouches dependents by. */
   private async planOwnerKeyRemovalWith(controlDatabase: ControlDatabase, key: string): Promise<{ plan: OwnerKeyRemovalPlan; rows: CadrePeerRow[] }> {
-    const [rows, owners] = await Promise.all([controlDatabase.queryCadrePeers(), controlDatabase.queryOwnerKeyRows()]);
+    const [rows, owners, grants] = await Promise.all([
+      controlDatabase.queryCadrePeers(), controlDatabase.queryOwnerKeyRows(), controlDatabase.listOwnerGrantStatuses()
+    ]);
     const plan = planOwnerKeyRemoval({
       key,
       rows,
       owners,
+      grants,
       selfPeerId: this.peerId?.toString() ?? null,
       selfOwnerKey: this.ownerSignerEnrolledIn(new Set(owners.map((owner) => owner.key)))?.publicKey ?? null,
       anchor: this.trustedOwnerStore?.all() ?? new Set(),
@@ -9289,22 +9384,7 @@ export class CadreNode implements SAppIdLookup {
    *   integer, or neither this machine nor any other member has an address.
    */
   async createCadreInvitation(options: CreateCadreInvitationOptions): Promise<CreateCadreInvitationResult> {
-    const service = this.seedBootstrapService;
-    if (!service?.canAuthorize()) {
-      throw new Error('Seed bootstrap service not initialized with an owner key. Call initializeSeedBootstrap() first.');
-    }
-    const ownerKeys = Array.from(this.trustedOwnerStore?.all() ?? []);
-    if (ownerKeys.length === 0) {
-      throw new Error('createCadreInvitation: this node anchors no owner key, and an invitation without owner keys cannot be verified by the device that redeems it');
-    }
-    const uses = options.uses ?? 1;
-    if (!Number.isInteger(uses) || uses < 1) {
-      throw new Error(`createCadreInvitation: uses must be a positive integer (received ${String(options.uses)})`);
-    }
-    const { members, reach } = await this.selectInvitationMembers();
-    if (members.length === 0) {
-      throw new Error('createCadreInvitation: neither this machine nor any other machine of the party has an address a device could dial');
-    }
+    const { service, ownerKeys, uses, members, reach } = await this.issuedBundleParts('createCadreInvitation', options.uses);
     const expiresInMs = options.expiresInMs
       ?? (options.grantsOwner && !options.peerId ? OWNER_INVITATION_DEFAULT_TTL_MS : CADRE_INVITATION_DEFAULT_TTL_MS);
     const invitePrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
@@ -9326,6 +9406,36 @@ export class CadreNode implements SAppIdLookup {
     log('Cadre invitation minted: %s (peer=%s owner=%s uses=%d, %d member address(es), reach=%s)',
       row.key, row.peerId ?? 'any', row.grantsOwner, uses, members.length, reach);
     return { invitation, encoded: encodeCadreInvitation(invitation), reach };
+  }
+
+  /**
+   * What the two credentials an owner mints share ({@link createCadreInvitation},
+   * {@link createOwnerGrant}), checked in this order: the owner-capable service; the anchor's
+   * keys the holder pins (an empty anchor is refused rather than falling back to the table, since
+   * a reply could not be checked against it); the use count; and the member addresses with their
+   * reach, refused when neither this machine nor any other member has one.
+   */
+  private async issuedBundleParts(
+    caller: string,
+    uses: number | undefined
+  ): Promise<{ service: SeedBootstrapService; ownerKeys: string[]; uses: number; members: string[]; reach: CadreInvitationReach }> {
+    const service = this.seedBootstrapService;
+    if (!service?.canAuthorize()) {
+      throw new Error('Seed bootstrap service not initialized with an owner key. Call initializeSeedBootstrap() first.');
+    }
+    const ownerKeys = Array.from(this.trustedOwnerStore?.all() ?? []);
+    if (ownerKeys.length === 0) {
+      throw new Error(`${caller}: this node anchors no owner key, and a bundle without owner keys cannot be verified by the device that redeems it`);
+    }
+    const checkedUses = uses ?? 1;
+    if (!Number.isInteger(checkedUses) || checkedUses < 1) {
+      throw new Error(`${caller}: uses must be a positive integer (received ${String(uses)})`);
+    }
+    const { members, reach } = await this.selectInvitationMembers();
+    if (members.length === 0) {
+      throw new Error(`${caller}: neither this machine nor any other machine of the party has an address a device could dial`);
+    }
+    return { service, ownerKeys, uses: checkedUses, members, reach };
   }
 
   /**
@@ -9493,6 +9603,294 @@ export class CadreNode implements SAppIdLookup {
   private identityOwnerSigner(): OwnerSigner | null {
     const identity = this.getSelfSigningKey();
     return identity ? softwareOwnerSigner(identity.privateKeyB64) : null;
+  }
+
+  // ============================================================================
+  // Owner Grant API (redeemable through any member, `/sereus/owner-grant/1.0.0`)
+  // ============================================================================
+
+  /**
+   * Mint an owner-signed owner grant: whoever holds the returned bundle can seat an owner key of
+   * their own through ANY member machine of this party ({@link redeemOwnerGrant}), or join the
+   * party as a machine and an owner at once ({@link joinWithOwnerGrant}), the owner that minted
+   * it offline or not. Requires the owner key ({@link useOwnerSigner}); one owner approval.
+   *
+   * The grant is an ed25519 keypair: the public half is the `OwnerGrant` row's key, the private
+   * half rides in the bundle as the proof of possession. It admits no machine and names no peer
+   * id. Whoever holds the bundle can become an owner, so it defaults to a 15-minute lifetime
+   * ({@link OWNER_GRANT_DEFAULT_TTL_MS}) and one use; `expiresInMs: null` mints a BACKUP grant
+   * with no expiry, which must be asked for explicitly and kept as carefully as an owner key.
+   * The label is the issuer's choice and goes on every key the grant seats ({@link addOwner}'s
+   * rule: trimmed, at most 64 characters, blank meaning none). The bundle carries the signed
+   * row, this node's anchored owner keys and at most six member addresses, chosen as
+   * {@link createCadreInvitation} chooses them and for the same reasons; `reach` says where a
+   * holder could redeem it once this machine is gone. A backup's addresses are those at mint
+   * time, so it can go stale if every member's address changes.
+   *
+   * @throws when no owner key is wired, the anchor is empty, `uses` is not a positive integer,
+   *   the label is over 64 characters, or neither this machine nor any other member has an address.
+   */
+  async createOwnerGrant(options: CreateOwnerGrantOptions = {}): Promise<CreateOwnerGrantResult> {
+    const { service, ownerKeys, uses, members, reach } = await this.issuedBundleParts('createOwnerGrant', options.uses);
+    const expiresInMs = options.expiresInMs === undefined ? OWNER_GRANT_DEFAULT_TTL_MS : options.expiresInMs;
+    const grantPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const row = await service.insertOwnerGrant({
+      key: ed25519PublicKeyFromPrivate(grantPrivateKey),
+      label: options.label,
+      expiresAtMs: expiresInMs === null ? null : Date.now() + expiresInMs,
+      totalUses: uses,
+    });
+    const grant: OwnerGrantBundle = {
+      v: 1,
+      partyId: this.config.controlNetwork.partyId,
+      grantPrivateKey,
+      grant: row,
+      ownerKeys,
+      members,
+    };
+    log('Owner grant minted: %s (label=%s expires=%s uses=%d, %d member address(es), reach=%s)',
+      row.key, row.label ?? 'none', row.expiresAt ?? 'never', uses, members.length, reach);
+    return { grant, encoded: encodeOwnerGrant(grant), reach };
+  }
+
+  /**
+   * Every owner grant this node holds — minted here or replicated in — with its standing
+   * ({@link OwnerGrantStatus}: live, withdrawn, redemptions recorded).
+   */
+  async listOwnerGrants(): Promise<OwnerGrantStatus[]> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before listing owner grants');
+    }
+    return await this.controlDatabase.listOwnerGrantStatuses();
+  }
+
+  /**
+   * Withdraw an owner grant: an owner-signed `Revocation` tombstone over its row, which stays as
+   * the proof behind every key it seated; those keys stay owners (removing one is
+   * {@link removeOwner}). No further redemption succeeds anywhere the tombstone reaches, and a
+   * member holding it refuses the bundle's copy of the row. A withdrawal committed while alone is
+   * re-issued on cohort growth like any other tombstone.
+   *
+   * @returns `true` when this call filed the tombstone, `false` when the row is not held here or
+   *   was already withdrawn.
+   */
+  async withdrawOwnerGrant(key: string): Promise<boolean> {
+    if (!this.seedBootstrapService) {
+      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
+    }
+    return await this.seedBootstrapService.withdrawOwnerGrant(key);
+  }
+
+  /**
+   * Become an owner of this node's party with an owner grant: seat `signer`'s key as an
+   * `OwnerKey` row by consent, with no owner online. `signer` holds the key to seat; its one
+   * `approve` names the party and says the key becomes an owner of it, and signs the `'consent'`
+   * digest. The grant's `'redeem'` signature is made with the bundle's private key in memory.
+   * A bundle for another party is refused before anything is pinned, dialed or written; then
+   * the bundle's `ownerKeys` are pinned into the node-local anchor (`'invite'` provenance, the
+   * pin a credential the owner handed out carries, as {@link redeemCadreInvitation} pins).
+   *
+   * Two paths, chosen by whether this node is a live member of the party ({@link isLiveMemberSelf})
+   * or an enrolled owner of it ({@link isOwner}):
+   *
+   * - **Local**, on a member machine: the grant row is seated from the bundle when absent (its
+   *   own transaction) and the redemption written in this node's own control database
+   *   (`ControlDatabase.redeemOwnerGrant`), replicating like any other write. Refused `alone`
+   *   under {@link addOwner}'s rule, before the approval: an `OwnerKey` row has no re-issue
+   *   path, so one committed with no control connection while the party has other members would
+   *   stay here; connect, then try again.
+   * - **Protocol**, otherwise (a device with no machine in the cadre; a node started in the
+   *   party on an empty store): dial the members the bundle names over
+   *   `/sereus/owner-grant/1.0.0` (`redeemOwnerGrantInPasses`), one signed request for every
+   *   address and every pass as {@link redeemCadreInvitation} dials, so a retry after a lost
+   *   reply is answered `alreadyOwner`. The member that accepts pushes its control store here
+   *   and writes the row with this node counted in its write cohort, so a member alone with
+   *   this node still commits. `options` are the invitation's (`waitForMember`, `signal`,
+   *   `onProgress`).
+   *
+   * Neither path wires the signer: call {@link wireOwnKeyIfOwner}(signer) afterwards — at once
+   * on the local path, and on the protocol path once the row has synced here. A key that is
+   * already a live owner is answered `alreadyOwner` with no use spent, on both paths. To join
+   * the party as a machine too, use {@link joinWithOwnerGrant}.
+   *
+   * @throws a plain `Error` for a node not started or a bundle naming another party;
+   *   {@link OwnerKeyAddRefusedError} `alone` on the local path, and `OwnerGrantIssuerUnknownError`
+   *   when the issuer is not an owner here; on the protocol path `OwnerGrantRejectedError` on a
+   *   final refusal, `OwnerGrantReplyInvalidError` on an acceptance that fails the reply check,
+   *   `OwnerGrantUnreachableError` when every address was tried (one pass only), and the
+   *   signal's reason on an abort.
+   */
+  async redeemOwnerGrant(bundle: OwnerGrantBundle, signer: OwnerSigner, options: RedeemOwnerGrantOptions = {}): Promise<RedeemOwnerGrantResult> {
+    const { controlDatabase } = this.requireStartedForGrant(bundle, 'redeeming an owner grant');
+    await this.trustOwnerKeys(bundle.ownerKeys, 'invite');
+    // An enrolled owner machine is a party machine whether or not its own row is published yet
+    // (the first self-record lands a second after start), so it writes locally too.
+    if (await this.isLiveMemberSelf() || await this.isOwner()) {
+      return await this.redeemOwnerGrantLocally(controlDatabase, bundle, signer);
+    }
+    const request = await signer.approve(ownerGrantApproval(bundle), (sign) => this.signOwnerGrantRequest(bundle, signer, sign));
+    const { reply, memberPeerId } = await this.redeemOwnerGrantAtMembers(bundle, request, options);
+    return { ownerKey: signer.publicKey, alreadyOwner: reply.alreadyOwner, memberPeerId };
+  }
+
+  /** {@link redeemOwnerGrant}'s local path: the alone refusal, the seat, then one approval around the consent signature and the write. */
+  private async redeemOwnerGrantLocally(controlDatabase: ControlDatabase, bundle: OwnerGrantBundle, signer: OwnerSigner): Promise<RedeemOwnerGrantResult> {
+    if (await this.ownerKeyWriteAlone()) {
+      throw new OwnerKeyAddRefusedError(signer.publicKey, 'alone');
+    }
+    await controlDatabase.seatOwnerGrant(bundle.grant);
+    const { alreadyOwner } = await signer.approve(ownerGrantApproval(bundle), async (sign) => {
+      const request = await this.signOwnerGrantRequest(bundle, signer, sign);
+      return await controlDatabase.redeemOwnerGrant({
+        grantKey: bundle.grant.key,
+        seatedKey: signer.publicKey,
+        usageStampId: request.usageStampId,
+        grantSig: request.grantSig,
+        ownerSig: request.ownerSig,
+      });
+    });
+    // NOTE: the refusal is checked before the approval, and a connection can drop while the user
+    // approves; a redemption that still commits alone is logged, as an add's is.
+    if (!alreadyOwner && this.committedAlone()) {
+      log('redeemOwnerGrant(%s) committed while ALONE (the last control connection dropped during the approval): ' +
+        'the new owner row is local-only and is not re-issued on cohort growth.', signer.publicKey);
+    }
+    log('Owner grant %s redeemed locally for %s (alreadyOwner=%s)', bundle.grant.key, signer.publicKey, alreadyOwner);
+    return { ownerKey: signer.publicKey, alreadyOwner, memberPeerId: null };
+  }
+
+  /**
+   * {@link redeemOwnerGrant}'s protocol path, given the signed request: dial the bundle's members
+   * in passes, then refresh the membership gate, since the rows the member pushed and wrote are
+   * judged against the pins and the anchor derives this node's key from them once its row is here.
+   */
+  private async redeemOwnerGrantAtMembers(bundle: OwnerGrantBundle, request: OwnerGrantRedeemRequest, options: RedeemOwnerGrantOptions): Promise<OwnerGrantRedemption> {
+    const pinned = new Set(bundle.ownerKeys);
+    const redemption = await redeemOwnerGrantInPasses(this.controlNode!, {
+      bundle,
+      request,
+      isTrustedIssuer: (ownerKey) => pinned.has(ownerKey),
+      linkRoundTripMs: this.config.network?.linkRoundTripMs,
+      waitForMember: options.waitForMember ?? false,
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+    });
+    log('Owner grant %s redeemed at %s for %s (alreadyOwner=%s)', bundle.grant.key, redemption.memberAddr, request.ownerKey, redemption.reply.alreadyOwner);
+    await this.refreshMembershipGate('owner-grant-redeemed');
+    return redemption;
+  }
+
+  /** The signed request for `bundle` seating `signer`'s key, under an open approval's `sign`; the nonce is minted here, by the holder. */
+  private signOwnerGrantRequest(bundle: OwnerGrantBundle, signer: OwnerSigner, sign: OwnerSign): Promise<OwnerGrantRedeemRequest> {
+    return signOwnerGrantRequest(bundle, signer.publicKey, sign, generateStampId(this.controlNode!.peerId.toString()));
+  }
+
+  /**
+   * Join this node's party as a machine AND an owner with one owner grant, for a node started in
+   * the grant's party that is not a member: a fresh install recovering with a backup grant, an
+   * app joining as an owner. Needs a started node with a stable identity, as
+   * {@link redeemCadreInvitation} does, and a bundle for this party.
+   *
+   * Steps, the two signatures made under ONE approval of `signer` before any dial, so a
+   * prompting signer asks once and its prompt does not span the network:
+   *
+   * 1. {@link redeemOwnerGrant}'s protocol path: the member that accepts seats `signer`'s key.
+   * 2. A **self-invitation**: a `CadreInvite` row targeted at this node's peer id, one use, a
+   *    short expiry ({@link SELF_INVITATION_TTL_MS}), signed by `signer`
+   *    (`ControlDatabase.signCadreInvite`; never inserted here, since this store holds no
+   *    `OwnerKey` row for the issuer yet). Its bundle carries the grant's owner keys plus the
+   *    new key (the device's reply check wants the row's issuer among the pins) and the grant's
+   *    members with the member that accepted the grant first, since that member holds the new
+   *    key as a live owner and seats the row from the bundle; one the row has not reached yet
+   *    answers `issuer-unknown`, which is retryable.
+   * 3. {@link redeemCadreInvitation} with it: the member admits this node.
+   * 4. {@link wireOwnKeyIfOwner}(signer) once the `OwnerKey` row has synced here, asked every
+   *    {@link OWNER_ROW_SYNC_RECHECK_MS} up to {@link OWNER_ROW_SYNC_TIMEOUT_MS}; the result's
+   *    `ownerWired` says whether it did in time, and a later call wires it otherwise.
+   *
+   * @throws as {@link redeemOwnerGrant} (protocol path) and {@link redeemCadreInvitation} throw,
+   *   and a plain `Error` for an ephemeral identity.
+   */
+  async joinWithOwnerGrant(bundle: OwnerGrantBundle, signer: OwnerSigner, options: RedeemOwnerGrantOptions = {}): Promise<JoinWithOwnerGrantResult> {
+    const { controlNode, controlDatabase } = this.requireStartedForGrant(bundle, 'joining with an owner grant');
+    if (!this.getSelfSigningKey()) {
+      throw new Error('joinWithOwnerGrant: this node runs on an ephemeral identity; configure `keyStore` or `privateKey` so its key can sign the admission');
+    }
+    await this.trustOwnerKeys(bundle.ownerKeys, 'invite');
+    const invitePrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const { request, selfInvite } = await signer.approve(ownerGrantApproval(bundle, 'join'), async (sign) => ({
+      request: await this.signOwnerGrantRequest(bundle, signer, sign),
+      selfInvite: await controlDatabase.signCadreInvite({
+        key: ed25519PublicKeyFromPrivate(invitePrivateKey),
+        peerId: controlNode.peerId.toString(),
+        grantsOwner: false,
+        expiresAtMs: Date.now() + SELF_INVITATION_TTL_MS,
+        totalUses: 1,
+      }, signer.publicKey, sign),
+    }));
+    const granted = await this.redeemOwnerGrantAtMembers(bundle, request, options);
+    const selfInvitation: CadreInvitation = {
+      v: 1,
+      partyId: bundle.partyId,
+      invitePrivateKey,
+      invite: selfInvite,
+      ownerKeys: [...bundle.ownerKeys, signer.publicKey],
+      members: addressesOfFirst(bundle.members, granted.memberPeerId),
+    };
+    const joined = await this.redeemCadreInvitation(selfInvitation, options);
+    const ownerWired = await this.wireOwnKeyOnceSynced(signer);
+    log('Joined with owner grant %s: member via %s, owner key %s (wired=%s)', bundle.grant.key, joined.peerId ?? 'unnamed member', signer.publicKey, ownerWired);
+    return { peerId: joined.peerId, redeemedAt: joined.redeemedAt, ownerKey: signer.publicKey, alreadyOwner: granted.reply.alreadyOwner, ownerWired };
+  }
+
+  /**
+   * {@link wireOwnKeyIfOwner}(signer) once `signer`'s `OwnerKey` row has reached this node, asked
+   * again every {@link OWNER_ROW_SYNC_RECHECK_MS} until it has, the node stops, or
+   * {@link OWNER_ROW_SYNC_TIMEOUT_MS} passes: false then, and a later call wires it. Usually
+   * immediate: the member pushed its whole store, the row included, before the admission write.
+   */
+  private async wireOwnKeyOnceSynced(signer: OwnerSigner): Promise<boolean> {
+    const deadline = Date.now() + OWNER_ROW_SYNC_TIMEOUT_MS;
+    while (!(await this.wireOwnKeyIfOwner(signer))) {
+      if (!this._running || Date.now() >= deadline) {
+        log('wireOwnKeyOnceSynced: the OwnerKey row for %s has not reached this node yet; not wired', signer.publicKey);
+        return false;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, OWNER_ROW_SYNC_RECHECK_MS));
+    }
+    return true;
+  }
+
+  /**
+   * The started node's handles for a grant call, the bundle's party checked first: a grant for
+   * another party is refused before any pin, dial or write.
+   */
+  private requireStartedForGrant(bundle: OwnerGrantBundle, action: string): { controlNode: Libp2p; controlDatabase: ControlDatabase } {
+    if (!this.controlNode || !this.controlDatabase || !this._running) {
+      throw new Error(`CadreNode must be started before ${action}`);
+    }
+    if (bundle.partyId !== this.config.controlNetwork.partyId) {
+      throw new Error(`Owner grant is for party ${bundle.partyId}; this node serves ${this.config.controlNetwork.partyId}`);
+    }
+    return { controlNode: this.controlNode, controlDatabase: this.controlDatabase };
+  }
+
+  /**
+   * Is this node a live member of its party: its own `CadrePeer` row is held here and passes the
+   * membership predicate ({@link hasAnchoredProof}, judged as {@link listAuthorizedMembers}
+   * judges every other row; that listing leaves this node out)? What decides
+   * {@link redeemOwnerGrant}'s path. A machine's own row is written by its enrollment (or its
+   * first self-record, for an owner's machine), so a node on an empty store, or one holding only
+   * a store a member pushed it, is not one.
+   */
+  private async isLiveMemberSelf(): Promise<boolean> {
+    const controlDatabase = this.controlDatabase;
+    const self = this.controlNode?.peerId.toString();
+    if (!controlDatabase || self === undefined) {
+      return false;
+    }
+    const own = (await controlDatabase.queryCadrePeers()).find((row) => row.peerId === self);
+    return own !== undefined && this.hasAnchoredProof(own, await this.chainFor([own], this.invitationChainSource(controlDatabase, true)));
   }
 
   // ============================================================================

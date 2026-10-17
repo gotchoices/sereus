@@ -185,6 +185,7 @@ describe('CadreNode.removeMachine and removeOwner', () => {
       dependents: { owners: [ownerDependent.publicKey], peers: [device.partyId] },
       revouchesOwnRow: true,
       ownDependency: false,
+      grants: [],
     });
 
     await expect(node.removeOwner(removed.publicKey, { revouch: { peers: [bystander.partyId] } }))

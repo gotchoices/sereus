@@ -8,38 +8,52 @@
  * ownership) through `ControlDatabase.redeemCadreInvite`, and answers with the party id,
  * the row and dial hints. The owner that minted the invitation need not be online.
  *
- * Same shape as the seed and wake protocols: one length-prefixed JSON frame each way over
- * the shared primitives in `control-stream.ts`. Stranger-facing by design — the device is
- * not a member when it dials — so the connection gate admits a stranger while a live
- * invitation exists (`membership-connection-gater.ts`), and the handler's own trust
- * decision is the proof of possession: nothing touches the database for a caller that
- * cannot prove it holds the invitation and is the identity it names.
+ * The exchange shape — one frame each way, the member's hardening and admission of the
+ * device, the device's address-by-address dialing in passes — is `member-redemption.ts`'s,
+ * shared with the owner-grant protocol; this module supplies the invitation's bundle, request,
+ * checks, writes and refusal codes. Stranger-facing by design — the device is not a member
+ * when it dials — so the connection gate admits a stranger while a live invitation exists
+ * (`membership-connection-gater.ts`), and the handler's own trust decision is the proof of
+ * possession: nothing touches the database for a caller that cannot prove it holds the
+ * invitation and is the identity it names.
  *
  * The seed protocol is left untouched so `SeedMessage` can grow independently.
  */
 
 import debug from 'debug';
-import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
-import type { Connection, Libp2p } from '@libp2p/interface';
+import { multiaddr } from '@multiformats/multiaddr';
+import type { Libp2p } from '@libp2p/interface';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { sign } from '@optimystic/quereus-plugin-crypto';
-import { type ControlStream, withDeadline, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
-import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
-import { relayedRequestBudgetMs } from './link-budget.js';
 import {
   cadreInviteRedeemMessage,
   cadreInviteConsentMessage,
   CadreInviteIssuerUnknownError,
   InvitationExhaustedError,
-  parseNullableStoredDatetimeMs,
   type ControlDatabase
 } from './control-database.js';
 import { verifyCadreInviteRow, verifyCadreInviteRedemption } from './peer-authorization.js';
-import { ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64 } from './ed25519-key.js';
-import { dialAddr, nextMacrotask, trailingPeerId } from './peer-dial.js';
-import { chainMessages } from './control-retry.js';
-import { isRetriableControlWriteFailure } from './control-write-retry.js';
-import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX, OWNER_KEY_EXPORT_STEM } from './cadre-join-request.js';
+import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
+import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX, OWNER_GRANT_PREFIX, OWNER_KEY_EXPORT_STEM } from './cadre-join-request.js';
+import {
+  MemberRedemptionHandler,
+  constraintRefusal,
+  dialRedemption,
+  dialRedemptionInPasses,
+  isBoundedString,
+  isEd25519KeyB64,
+  isNullableBoundedString,
+  isNullableUseCap,
+  rejection,
+  writeFailureRefusal,
+  type ConstraintRefusalRow,
+  type MemberRedemption,
+  type MemberRedemptionHandlerOptions,
+  type MemberRedemptionOptions,
+  type MemberRedemptionPassOptions,
+  type RedemptionAddressOutcome,
+  type RedemptionRejection
+} from './member-redemption.js';
 import type { CadreInviteRow, CadreJoinProgress, SeedPeer } from './types.js';
 
 const log = debug('sereus:cadre:invite-proto');
@@ -47,26 +61,8 @@ const log = debug('sereus:cadre:invite-proto');
 /** Protocol id for cadre invitation redemption (parallel to `/sereus/seed/1.0.0`). */
 export const CADRE_INVITE_PROTOCOL = '/sereus/cadre-invite/1.0.0';
 
-/**
- * Cap on either frame. A request is one signed row, two signatures and a few addresses;
- * a reply adds a peer list of a cadre's size. Both fit in a few KB; 64 KiB is the
- * defensive bound a stranger can make the handler buffer.
- */
-const MAX_CADRE_INVITE_MSG_SIZE = 64 * 1024;
-
-/**
- * Default time the member waits for the request frame before aborting the read (ms). The
- * read only: a stranger opens the stream, so the bound is on a caller that opens one and
- * never sends. Same figure as the seed handler's.
- */
-// eslint-disable-next-line no-restricted-syntax -- link-independent: a receiver cap on one frame on a stream the peer already opened; it bounds a peer that opens a stream and never sends, not the dial
-const DEFAULT_REDEEM_READ_TIMEOUT_MS = 10_000;
-
-/** Default cap on concurrent inbound redemptions; over it the handler answers `busy`. */
-const DEFAULT_MAX_CONCURRENT_REDEMPTIONS = 100;
-
-/** Longest string field accepted off the wire; a stamp is 342 base64url chars, a signature 86. */
-const MAX_WIRE_FIELD_LENGTH = 1024;
+/** What the dialer calls the credential in log lines, deadline labels and error text. */
+const LABEL = 'Cadre invitation';
 
 /** Most addresses a request may carry for the device, and a reply per peer (`sanitizeAddrs`). */
 const MAX_ADDRS = 16;
@@ -76,8 +72,6 @@ const MAX_BUNDLE_MEMBERS = 64;
 
 /** Most peers a reply may carry as dial hints. */
 const MAX_REPLY_PEERS = 256;
-
-const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 // ── The invitation bundle ────────────────────────────────────────────────────
 
@@ -119,7 +113,8 @@ export interface CadreInvitation {
 /**
  * Encode a bundle for out-of-band delivery: {@link CADRE_INVITATION_PREFIX}, then base64url
  * over JSON. The prefix lets an app tell an invitation from a join request
- * (`cadre-join-request.ts`) and name the mistake when one is pasted for the other.
+ * (`cadre-join-request.ts`) or an owner grant (`owner-grant-protocol.ts`) and name the mistake
+ * when one is pasted for the other.
  */
 export function encodeCadreInvitation(invitation: CadreInvitation): string {
   return `${CADRE_INVITATION_PREFIX}${uint8ArrayToString(new TextEncoder().encode(JSON.stringify(invitation)), 'base64url')}`;
@@ -131,13 +126,16 @@ export function encodeCadreInvitation(invitation: CadreInvitation): string {
  * without a node (a settings screen that wants to show which cadre an invitation joins) can
  * decode one.
  *
- * @throws on an owner key or a join request, a string without the prefix or that is not base64url JSON after
- *   it, or one that decodes to another shape or version.
+ * @throws on an owner key, an owner grant or a join request, a string without the prefix or
+ *   that is not base64url JSON after it, or one that decodes to another shape or version.
  */
 export function decodeCadreInvitation(encoded: string): CadreInvitation {
   const trimmed = encoded.trim();
   if (trimmed.startsWith(OWNER_KEY_EXPORT_STEM)) {
     throw new Error('This is an owner key, not a cadre invitation; it is private, so import it only where the app asks for an owner key');
+  }
+  if (trimmed.startsWith(OWNER_GRANT_PREFIX)) {
+    throw new Error('This is an owner grant, not a cadre invitation; paste it where the app asks for an owner grant');
   }
   if (trimmed.startsWith(CADRE_JOIN_REQUEST_PREFIX)) {
     throw new Error('This is a join request, not a cadre invitation; paste it into the app that manages your cadre');
@@ -264,27 +262,7 @@ export interface CadreInviteAccepted extends CadreInviteRedeemReply {
 }
 
 /** A refusal as the member sends it: a code, a reason, nothing else. */
-interface CadreInviteRejection extends CadreInviteRedeemReply {
-  accepted: false;
-  code: CadreInviteRejectionCode;
-  reason: string;
-}
-
-/**
- * A refusal as the device reads it: the code and reason verbatim off the wire, untyped, so
- * {@link CadreInviteRejectedError} is the one place that classifies a code this build does
- * not know (as `'unrecognized'`, retryable) rather than the decoder folding it into a code
- * it does.
- */
-interface CadreInviteRefusalFrame {
-  accepted: false;
-  code: unknown;
-  reason: unknown;
-}
-
-function rejection(code: CadreInviteRejectionCode, reason: string): CadreInviteRejection {
-  return { accepted: false, code, reason };
-}
+type CadreInviteRejection = RedemptionRejection<CadreInviteRejectionCode>;
 
 // ── Errors the device sees ───────────────────────────────────────────────────
 
@@ -309,12 +287,8 @@ export class CadreInviteRejectedError extends Error {
   }
 }
 
-/** What one address the bundle named came to. */
-export interface CadreInviteAddressOutcome {
-  addr: string;
-  /** A dial or exchange failure, or a retryable {@link CadreInviteRejectedError}. */
-  error: Error;
-}
+/** What one address the bundle named came to; the owner-grant redemption reports the same shape. */
+export type CadreInviteAddressOutcome = RedemptionAddressOutcome;
 
 /**
  * Every address the bundle names was tried and none accepted: each failed to dial, answered
@@ -349,29 +323,15 @@ export class CadreInviteReplyInvalidError extends Error {
 
 // ── Shape checks (both directions) ───────────────────────────────────────────
 
-function isBoundedString(value: unknown, max = MAX_WIRE_FIELD_LENGTH): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= max;
-}
-
-function isEd25519KeyB64(value: unknown): value is string {
-  if (!isBoundedString(value) || !BASE64URL.test(value)) return false;
-  try {
-    requireEd25519PublicKeyB64(value, 'key');
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Is `value` a {@link CadreInviteRow} with every column in its stored form and bounded? */
 export function isWellFormedCadreInviteRow(value: unknown): value is CadreInviteRow {
   if (typeof value !== 'object' || value === null) return false;
   const row = value as Record<string, unknown>;
   return isEd25519KeyB64(row.key)
-    && (row.peerId === null || isBoundedString(row.peerId))
+    && isNullableBoundedString(row.peerId)
     && typeof row.grantsOwner === 'boolean'
-    && (row.expiresAt === null || isBoundedString(row.expiresAt))
-    && (row.totalUses === null || (Number.isInteger(row.totalUses) && (row.totalUses as number) >= 1))
+    && isNullableBoundedString(row.expiresAt)
+    && isNullableUseCap(row.totalUses)
     && isBoundedString(row.stampId)
     && isEd25519KeyB64(row.issuerKey)
     && isBoundedString(row.issuerSig);
@@ -428,19 +388,8 @@ function sanitizePeers(peers: unknown): SeedPeer[] {
   return out;
 }
 
-/**
- * Read a reply frame into a typed reply, sanitizing the attacker-influenced fields of an
- * acceptance. A refusal keeps only its code and reason, as sent. Throws on a frame that is
- * neither.
- */
-function decodeReply(value: unknown): CadreInviteAccepted | CadreInviteRefusalFrame {
-  if (typeof value !== 'object' || value === null) {
-    throw new Error('Cadre invitation reply is not an object');
-  }
-  const reply = value as Record<string, unknown>;
-  if (reply.accepted !== true) {
-    return { accepted: false, code: reply.code, reason: reply.reason };
-  }
+/** An acceptance frame's fields, the attacker-influenced ones sanitized. Throws on a malformed one. */
+function decodeAccepted(reply: Record<string, unknown>): CadreInviteAccepted {
   if (!isBoundedString(reply.partyId) || !isWellFormedCadreInviteRow(reply.invite)) {
     throw new Error('Cadre invitation acceptance is missing its party id or a well-formed row');
   }
@@ -520,162 +469,53 @@ export function verifyRedeemReply(
 /** The control-database surface a redemption needs; a `ControlDatabase` satisfies it. */
 export type CadreInviteStore = Pick<ControlDatabase, 'seatCadreInvite' | 'isCadreInviteLive' | 'redeemCadreInvite' | 'querySeedPeers'>;
 
-export interface CadreInviteHandlerOptions {
-  /** This member's party id; a request for another party is refused by name. */
-  partyId: string;
+export interface CadreInviteHandlerOptions extends MemberRedemptionHandlerOptions {
   /** This member's peer id: the reply's peer list marks it preferred, since the device just reached it. */
   peerId: string;
   store: CadreInviteStore;
-  /**
-   * Push this member's control store to the device, resolving once the push has finished, and
-   * keep the device counted in this member's control write cohort until the returned release
-   * is called. Called after the request verified and before the row is seated and the
-   * admission is written; the handler releases once both have settled. Absent, the writes go
-   * ahead with the device neither caught up nor in the cohort, so it does not hold them; see
-   * `admitDeviceIfLive`.
-   */
-  admitDevice?: (peerId: string) => Promise<() => void>;
-  /** Time to wait for the request frame; default {@link DEFAULT_REDEEM_READ_TIMEOUT_MS}. */
-  redeemReadTimeoutMs?: number;
-  /** Cap on concurrent inbound redemptions; default {@link DEFAULT_MAX_CONCURRENT_REDEMPTIONS}. */
-  maxConcurrentRedemptions?: number;
 }
 
 /** Constraint names the schema refuses a redemption with, and the code each maps to. */
-const REDEEM_CONSTRAINT_CODES: ReadonlyArray<[RegExp, CadreInviteRejectionCode, string]> = [
+const REDEEM_CONSTRAINT_CODES: ReadonlyArray<ConstraintRefusalRow<CadreInviteRejectionCode>> = [
   [/CHECK constraint failed: Authorized\b/, 'invite-spent', 'The invitation is expired, withdrawn, exhausted, or its issuer is no longer an owner'],
   [/CHECK constraint failed: (InvitePossessed|PeerConsented|PeerExists|OwnerExists)\b/, 'invite-invalid', 'The redemption does not satisfy the invitation'],
   [/CHECK constraint failed: NotRevoked\b/, 'invite-spent', 'The invitation was withdrawn'],
 ];
 
-/** Which named constraint, if any, refused the write — read off the error's cause chain. */
-function constraintRejection(error: unknown): CadreInviteRejection | null {
-  if (!(error instanceof Error)) return null;
-  const messages = chainMessages(error);
-  for (const [pattern, code, reason] of REDEEM_CONSTRAINT_CODES) {
-    if (messages.some((message) => pattern.test(message))) return rejection(code, reason);
-  }
-  return null;
-}
-
-/** A write failure that is not a refusal: the retry gave up (`conflict`), or something else (`internal`). */
-function writeFailureRejection(error: unknown): CadreInviteRejection {
-  // NOTE: a seat torn on a member alone with an uncaught-up device was measured answering
-  // `internal`, not `conflict` (cadre-invite-redeemed-at-a-member-without-the-row). Both are
-  // retryable, so the device is unaffected; if the two codes ever diverge in retryability,
-  // find which tear `isRetriableControlWriteFailure` does not recognise.
-  return isRetriableControlWriteFailure(error)
-    ? rejection('conflict', 'The redemption write failed transiently; nothing was recorded')
-    : rejection('internal', 'Internal redemption error');
-}
-
 /**
- * Member side: registers the handler and drives each inbound stream through the checks in
- * cost order — shape, connecting identity, both signatures, target device — so no database
- * work happens for a stranger that cannot prove anything, then admits the device to this
- * member's control replication (`admitDevice`), seats the row and redeems.
- * Hardened as the seed handler is: a concurrency cap (over it, `busy`) and a read timeout.
- *
- * Registered only by a started `CadreNode`, after its control database is up, like the
- * formation responder; nothing here is reachable on a node without one.
+ * Member side of the invitation protocol (`MemberRedemptionHandler` has the shape): after the
+ * request's shape, it checks the party, the connecting identity (an ed25519 peer id is an
+ * identity multihash of the very key, and this is the only layer that can check the pair),
+ * both signatures and a targeted invitation's device, then seats the row from the bundle and
+ * redeems. An issuer this member does not know as an owner is the one retryable refusal left:
+ * the device tries the next address, which may hold the issuer's row.
  */
-export class CadreInviteHandler {
-  private readonly options: CadreInviteHandlerOptions;
-  private readonly readTimeoutMs: number;
-  private readonly maxConcurrent: number;
-  private readonly registered = new Set<Libp2p>();
-  private active = 0;
+export class CadreInviteHandler extends MemberRedemptionHandler<CadreInviteRedeemRequest, CadreInviteRedeemReply> {
+  private readonly peerId: string;
+  private readonly store: CadreInviteStore;
+  protected readonly busyRefusal = rejection('busy', 'Too many concurrent redemptions');
+  protected readonly internalRefusal = rejection('internal', 'Internal redemption error');
+  protected readonly malformedRefusal = rejection('invite-invalid', 'Malformed redemption request');
 
   constructor(options: CadreInviteHandlerOptions) {
-    this.options = options;
-    this.readTimeoutMs = options.redeemReadTimeoutMs ?? DEFAULT_REDEEM_READ_TIMEOUT_MS;
-    this.maxConcurrent = options.maxConcurrentRedemptions ?? DEFAULT_MAX_CONCURRENT_REDEMPTIONS;
+    super('Cadre invite', CADRE_INVITE_PROTOCOL, options);
+    this.peerId = options.peerId;
+    this.store = options.store;
   }
 
-  /** In-flight inbound redemptions. */
-  get activeCount(): number {
-    return this.active;
+  protected isWellFormedRequest(value: unknown): value is CadreInviteRedeemRequest {
+    return isWellFormedRedeemRequest(value);
   }
 
-  /**
-   * Register on `node`; rejects when libp2p refuses the registration. `runOnLimitedConnection`
-   * because a phone redeems through a relay, whose connection libp2p marks limited; the
-   * exchange is two small frames, well inside any relay's cap.
-   */
-  async register(node: Libp2p, protocolId: string = CADRE_INVITE_PROTOCOL): Promise<void> {
-    if (this.registered.has(node)) return;
-    await node.handle(protocolId, async (rawStream: unknown, rawConnection: unknown) => {
-      await this.handleStream(rawStream as ControlStream, (rawConnection as Connection).remotePeer.toString());
-    }, { runOnLimitedConnection: true });
-    this.registered.add(node);
-    log('cadre invitation handler registered (%s)', protocolId);
-  }
-
-  async unregister(node: Libp2p, protocolId: string = CADRE_INVITE_PROTOCOL): Promise<void> {
-    if (!this.registered.has(node)) return;
-    await node.unhandle(protocolId);
-    this.registered.delete(node);
-    log('cadre invitation handler unregistered (%s)', protocolId);
-  }
-
-  /**
-   * One inbound redemption: read the frame, decide, reply, close. Public as the seam the
-   * protocol spec drives directly; `remotePeerId` is the connection's authenticated peer.
-   */
-  async handleStream(stream: ControlStream, remotePeerId: string): Promise<void> {
-    if (this.active >= this.maxConcurrent) {
-      log('refusing redemption from %s: %d in flight at cap %d', remotePeerId, this.active, this.maxConcurrent);
-      await replyAndClose(stream, rejection('busy', 'Too many concurrent redemptions'), 'Cadre invite');
-      return;
-    }
-    this.active++;
-    try {
-      const reply = await this.decide(stream, remotePeerId);
-      log('redemption from %s: %s', remotePeerId, reply.accepted ? 'accepted' : `refused (${reply.code})`);
-      await replyAndClose(stream, reply, 'Cadre invite');
-    } catch (error) {
-      log('redemption from %s failed: %o', remotePeerId, error);
-      await replyAndClose(stream, rejection('internal', 'Internal redemption error'), 'Cadre invite');
-    } finally {
-      this.active--;
-    }
-  }
-
-  /**
-   * Read the request frame to EOF, bounded and size-capped; JSON only, shape is `decide`'s.
-   * Throws on a frame that cannot be read, which {@link handleStream} answers `internal`:
-   * a read timeout or a cut frame proves nothing about the invitation, so the device must
-   * stay free to try the next address.
-   */
-  private async readRequest(stream: ControlStream): Promise<unknown> {
-    const data = await readStreamToEnd(stream, { maxBytes: MAX_CADRE_INVITE_MSG_SIZE, timeoutMs: this.readTimeoutMs, label: 'Cadre invite' });
-    return JSON.parse(new TextDecoder().decode(decodeLengthPrefixedFrame(data, MAX_CADRE_INVITE_MSG_SIZE)));
-  }
-
-  private async decide(stream: ControlStream, remotePeerId: string): Promise<CadreInviteRedeemReply> {
-    const request = await this.readRequest(stream);
-    const refused = this.checkRequest(request, remotePeerId);
-    if (refused) return refused;
-    return await this.seatAndRedeem(request as CadreInviteRedeemRequest, remotePeerId);
-  }
-
-  /**
-   * The checks that cost no database work, in order: shape, party, connecting identity (an
-   * ed25519 peer id is an identity multihash of the very key, and this is the only layer that
-   * can check the pair), both signatures, and a targeted invitation's device.
-   */
-  private checkRequest(request: unknown, remotePeerId: string): CadreInviteRejection | null {
-    if (!isWellFormedRedeemRequest(request)) {
-      return rejection('invite-invalid', 'Malformed redemption request');
-    }
-    if (request.partyId !== this.options.partyId) {
+  protected checkRequest(request: CadreInviteRedeemRequest, remotePeerId: string): CadreInviteRejection | null {
+    if (request.partyId !== this.partyId) {
       return rejection('party-mismatch', 'This machine serves another cadre');
     }
     if (ed25519PublicKeyB64FromPeerId(remotePeerId) !== request.peerKey) {
       return rejection('invite-invalid', 'The peer key is not the connecting identity');
     }
     const fields = { inviteKey: request.invite.key, usageStampId: request.usageStampId, peerKey: request.peerKey };
-    if (!verifyCadreInviteRedemption(this.options.partyId, fields, request.inviteSig, request.peerSig)) {
+    if (!verifyCadreInviteRedemption(this.partyId, fields, request.inviteSig, request.peerSig)) {
       return rejection('invite-invalid', 'The redemption signatures do not verify');
     }
     if (request.invite.peerId !== null && request.invite.peerId !== remotePeerId) {
@@ -684,36 +524,23 @@ export class CadreInviteHandler {
     return null;
   }
 
-  /**
-   * Admit the device to this member's control replication (see {@link admitDeviceIfLive}),
-   * seat the row from the bundle (its own transaction; a no-op when held), then redeem. The
-   * admission comes first because the seat is already a write the device takes part in. An
-   * issuer this member does not know as an owner is the one retryable refusal left: the device
-   * tries the next address, which may hold the issuer's row.
-   */
-  private async seatAndRedeem(request: CadreInviteRedeemRequest, remotePeerId: string): Promise<CadreInviteRedeemReply> {
-    const release = await this.admitDeviceIfLive(request.invite, remotePeerId);
-    try {
-      return await this.seatAndRedeemAdmitted(request, remotePeerId);
-    } finally {
-      release();
-    }
+  protected isLive(request: CadreInviteRedeemRequest): Promise<boolean> {
+    return this.store.isCadreInviteLive(request.invite);
   }
 
-  /** {@link seatAndRedeem}'s two writes, each answered by name when it fails. */
-  private async seatAndRedeemAdmitted(request: CadreInviteRedeemRequest, remotePeerId: string): Promise<CadreInviteRedeemReply> {
-    const { store } = this.options;
+  /** The two writes — the seat (its own transaction; a no-op when held) and the redemption — each answered by name when it fails. */
+  protected async redeemAdmitted(request: CadreInviteRedeemRequest, remotePeerId: string): Promise<CadreInviteRedeemReply> {
     try {
-      await store.seatCadreInvite(request.invite);
+      await this.store.seatCadreInvite(request.invite);
     } catch (error) {
       if (error instanceof CadreInviteIssuerUnknownError) {
         return rejection('issuer-unknown', 'The invitation\'s issuer is not known as an owner here');
       }
       log('seating invitation %s from %s failed: %o', request.invite.key, remotePeerId, error);
-      return constraintRejection(error) ?? writeFailureRejection(error);
+      return constraintRefusal(error, REDEEM_CONSTRAINT_CODES) ?? writeFailureRefusal(error);
     }
     try {
-      const result = await store.redeemCadreInvite({
+      const result = await this.store.redeemCadreInvite({
         inviteKey: request.invite.key,
         peerId: remotePeerId,
         peerKey: request.peerKey,
@@ -728,57 +555,17 @@ export class CadreInviteHandler {
         return rejection('invite-spent', 'The invitation has no uses left');
       }
       log('redeeming invitation %s for %s failed: %o', request.invite.key, remotePeerId, error);
-      return constraintRejection(error) ?? writeFailureRejection(error);
+      return constraintRefusal(error, REDEEM_CONSTRAINT_CODES) ?? writeFailureRefusal(error);
     }
     // The row as held: the seat inserted this copy verbatim, or found the same row (its key
     // is the primary key and every column is under the issuer's signature).
-    return { accepted: true, partyId: this.options.partyId, invite: request.invite, peers: await this.peersBestEffort() };
-  }
-
-  /**
-   * Admit the device to this member's control replication before the first write of the
-   * exchange (the seat, when this member does not hold the row; otherwise the admission), and
-   * resolve to the release that ends the admission. The device is not a member until the
-   * admission is written, so only this puts it in this member's control write cohort, and it
-   * must be there to hold the rows that admit it. It is pushed the control store first,
-   * because a cohort node with no base revision of a block refuses a commit to it; a member
-   * alone with the device would then have half its cohort refusing, and the write would tear
-   * instead of committing.
-   *
-   * Only for an invitation still live here, judged on the row this member holds or, before
-   * the seat, on the bundle's copy once its issuer signature verifies
-   * (`ControlDatabase.isCadreInviteLive`): the holder of a withdrawn, expired or spent one,
-   * or of a forged copy naming a real owner, is refused without being sent anything. The
-   * retry of an admission already written can read as spent too and is sent nothing; it
-   * needs nothing, since the device is a member and the ordinary catch-up reaches it.
-   * Best-effort: a failed check or push is logged and the writes go ahead without the device
-   * admitted, then commit or are answered retryably.
-   */
-  private async admitDeviceIfLive(invite: CadreInviteRow, remotePeerId: string): Promise<() => void> {
-    const { admitDevice, store } = this.options;
-    const notAdmitted = (): void => undefined;
-    if (!admitDevice) return notAdmitted;
-    try {
-      if (!await store.isCadreInviteLive(invite)) {
-        log('invitation %s is not live here; %s is not admitted before the write', invite.key, remotePeerId);
-        return notAdmitted;
-      }
-      // NOTE: accepted tradeoff — when a write then fails (the seat refused, the last use
-      // taken by a race, the row expiring between this check and the write), the device keeps
-      // a copy of a control store it was not admitted to. It holds a live owner-signed
-      // invitation and proved possession and consent, and a seed hands an un-enrolled machine
-      // the same information. Revisit if a control table ever carries data a non-member must not see.
-      return await admitDevice(remotePeerId);
-    } catch (error) {
-      log('admitting %s before its admission write failed (writing anyway): %o', remotePeerId, error);
-      return notAdmitted;
-    }
+    return { accepted: true, partyId: this.partyId, invite: request.invite, peers: await this.peersBestEffort() };
   }
 
   /** Dial hints are an optimization; a failed read costs the device its hints, not its membership. */
   private async peersBestEffort(): Promise<SeedPeer[]> {
     try {
-      return await this.options.store.querySeedPeers(this.options.peerId);
+      return await this.store.querySeedPeers(this.peerId);
     } catch (error) {
       log('peer projection for the reply failed (continuing without hints): %o', error);
       return [];
@@ -795,11 +582,7 @@ export interface RedeemAtMembersOptions {
   request: CadreInviteRedeemRequest;
   /** Is this owner key one the device pinned from the bundle? The reply check's input. */
   isTrustedIssuer: (ownerKey: string) => boolean;
-  /**
-   * This machine's declared link round trip (`NetworkConfig.linkRoundTripMs`), from which
-   * the per-address deadline derives: a dial that may need a relay plus one request
-   * (`relayedRequestBudgetMs`, 28.5 s at the default declaration), as seed delivery's is.
-   */
+  /** See `MemberRedemptionOptions.linkRoundTripMs`. */
   linkRoundTripMs?: number;
   /** Per-address deadline override; default derived from `linkRoundTripMs`. */
   addressBudgetMs?: number;
@@ -809,134 +592,41 @@ export interface RedeemAtMembersOptions {
 }
 
 /** What a successful redemption yields the device. */
-export interface CadreInviteRedemption {
-  reply: CadreInviteAccepted;
-  /** The answering member's peer id, from the address's trailing `/p2p/`; null when it named none. */
-  memberPeerId: string | null;
-  /** The address that answered. */
-  memberAddr: string;
-}
+export type CadreInviteRedemption = MemberRedemption<CadreInviteAccepted>;
 
-/**
- * Dial `addr`, open one stream to it, send the request, half-close, read the one reply frame.
- * `signal` is the per-address deadline: it cancels the dial and resets a live stream.
- *
- * The address is dialed outside libp2p's dial queue (`dialAddr`), so another dial of the
- * member in flight cannot capture this attempt; an open connection is still reused.
- */
-async function exchangeRedemption(
-  node: Libp2p,
-  addr: Multiaddr,
-  request: CadreInviteRedeemRequest,
-  signal: AbortSignal,
-  budgetMs: number,
-  protocolId: string
-): Promise<CadreInviteAccepted | CadreInviteRefusalFrame> {
-  const connection = await dialAddr(node, addr, signal, 'Cadre invitation redemption');
-  // `runOnLimitedConnection`: a member may be reachable only through a relay (see `register`).
-  const rawStream = await connection.newStream(protocolId, { runOnLimitedConnection: true, signal });
-  return await exchangeFrame(
-    rawStream as unknown as ControlStream,
-    signal,
-    request,
-    async (stream) => {
-      const data = await readStreamToEnd(stream, { maxBytes: MAX_CADRE_INVITE_MSG_SIZE, timeoutMs: budgetMs, label: 'Cadre invite reply' });
-      return decodeReply(JSON.parse(new TextDecoder().decode(decodeLengthPrefixedFrame(data, MAX_CADRE_INVITE_MSG_SIZE))));
-    },
-    'Cadre invitation redemption aborted by its deadline'
-  );
-}
-
-function asError(error: unknown): Error {
-  if (error instanceof Error) return error;
-  // A WebSocket transport rejects a refused dial with an `ErrorEvent`, whose text is its `message`.
-  const message = (error as { message?: unknown } | null)?.message;
-  return new Error(typeof message === 'string' && message.length > 0 ? message : String(error), { cause: error });
-}
-
-/**
- * Run `op` with a signal that aborts when either `deadline` or the caller's `signal` does.
- * Relayed by hand rather than with `AbortSignal.any`, which the phone runtimes lack.
- */
-async function underDeadlineAndCaller<T>(
-  deadline: AbortSignal,
-  caller: AbortSignal | undefined,
-  op: (signal: AbortSignal) => Promise<T>
-): Promise<T> {
-  if (!caller) return await op(deadline);
-  const either = new AbortController();
-  const abort = (): void => either.abort();
-  deadline.addEventListener('abort', abort, { once: true });
-  caller.addEventListener('abort', abort, { once: true });
-  // An abort between the caller's last check and the listener above fired no event.
-  if (caller.aborted) abort();
-  try {
-    return await op(either.signal);
-  } finally {
-    deadline.removeEventListener('abort', abort);
-    caller.removeEventListener('abort', abort);
-  }
+/** The invitation's half of the shared dial loop: its label, protocol, bundle, codec, checks and errors. */
+function inviteRedemption(options: RedeemAtMembersOptions): MemberRedemptionOptions<CadreInviteAccepted> {
+  return {
+    label: LABEL,
+    protocolId: options.protocolId ?? CADRE_INVITE_PROTOCOL,
+    members: options.invitation.members,
+    request: options.request,
+    decodeAccepted,
+    refusal: (code, reason) => new CadreInviteRejectedError(code, reason),
+    verifyAccepted: (reply) => verifyRedeemReply(reply, options.invitation, options.isTrustedIssuer),
+    unreachable: (outcomes) => new CadreInviteUnreachableError(outcomes),
+    ...(options.linkRoundTripMs !== undefined ? { linkRoundTripMs: options.linkRoundTripMs } : {}),
+    ...(options.addressBudgetMs !== undefined ? { addressBudgetMs: options.addressBudgetMs } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+  };
 }
 
 /**
  * Device side: try the bundle's addresses one at a time, each under its own deadline, and
- * stop at the first acceptance or the first final refusal. A dial failure, a malformed
- * reply or a retryable refusal moves to the next address.
- *
- * Every address gets the SAME request, with one `usageStampId`: `CadreInviteUsage` is keyed
- * by it, so a member the device gave up on that was still committing cannot admit it twice,
- * and a retry at the next member after a dropped reply is answered as already a member.
+ * stop at the first acceptance or the first final refusal (`dialRedemption` in
+ * `member-redemption.ts`). Every address gets the SAME request, with one `usageStampId`:
+ * `CadreInviteUsage` is keyed by it, so a member the device gave up on that was still
+ * committing cannot admit it twice, and a retry at the next member after a dropped reply is
+ * answered as already a member.
  *
  * @throws {CadreInviteRejectedError} on a final refusal (its `retryable` is false).
  * @throws {CadreInviteReplyInvalidError} on an acceptance that fails {@link verifyRedeemReply}.
  * @throws {CadreInviteUnreachableError} when every address was tried and none accepted.
  * @throws the reason of `options.signal` once it aborts.
  */
-export async function redeemAtMembers(node: Libp2p, options: RedeemAtMembersOptions): Promise<CadreInviteRedemption> {
-  const protocolId = options.protocolId ?? CADRE_INVITE_PROTOCOL;
-  const budgetMs = options.addressBudgetMs ?? relayedRequestBudgetMs(options.linkRoundTripMs);
-  const outcomes: CadreInviteAddressOutcome[] = [];
-  for (const addr of options.invitation.members) {
-    options.signal?.throwIfAborted();
-    // Between attempts: a relayed address's relay leg goes through libp2p's dial queue, which
-    // needs a macrotask to drop an aborted job (see `tryAddrsInTurn`).
-    if (outcomes.length > 0) await nextMacrotask();
-    let parsed: Multiaddr;
-    try {
-      parsed = multiaddr(addr);
-    } catch (error) {
-      outcomes.push({ addr, error: new Error('not a multiaddr', { cause: error }) });
-      continue;
-    }
-    try {
-      const reply = await withDeadline(budgetMs, `Cadre invitation redemption via ${addr}`,
-        (deadline) => underDeadlineAndCaller(deadline, options.signal,
-          (signal) => exchangeRedemption(node, parsed, options.request, signal, budgetMs, protocolId)));
-      if (!reply.accepted) {
-        const refusal = new CadreInviteRejectedError(reply.code, reply.reason);
-        if (!refusal.retryable) throw refusal;
-        log('redemption via %s refused retryably (%s); trying the next address', addr, refusal.code);
-        outcomes.push({ addr, error: refusal });
-        continue;
-      }
-      verifyRedeemReply(reply, options.invitation, options.isTrustedIssuer);
-      return { reply, memberPeerId: trailingPeerId(parsed), memberAddr: addr };
-    } catch (error) {
-      if (error instanceof CadreInviteRejectedError || error instanceof CadreInviteReplyInvalidError) throw error;
-      // The caller's abort cut this attempt short; its reason, not the cut, is the answer.
-      options.signal?.throwIfAborted();
-      log('redemption via %s failed before an answer (%s); trying the next address', addr, asError(error).message);
-      outcomes.push({ addr, error: asError(error) });
-    }
-  }
-  throw new CadreInviteUnreachableError(outcomes);
+export function redeemAtMembers(node: Libp2p, options: RedeemAtMembersOptions): Promise<CadreInviteRedemption> {
+  return dialRedemption(node, inviteRedemption(options));
 }
-
-/** Pause after the first pass in which no member accepted; doubled after each further one. */
-const REDEEM_PASS_FIRST_PAUSE_MS = 5_000;
-
-/** Longest pause between passes. */
-const REDEEM_PASS_MAX_PAUSE_MS = 60_000;
 
 export interface RedeemInPassesOptions extends RedeemAtMembersOptions {
   /** Keep making passes while every answer is retryable; false makes exactly one. */
@@ -946,108 +636,18 @@ export interface RedeemInPassesOptions extends RedeemAtMembersOptions {
 }
 
 /**
- * Device side, in passes: one {@link redeemAtMembers} pass over the bundle's addresses, or,
- * with `waitForMember`, as many as it takes, pausing between them (5 s after the first,
- * doubling to 60 s, never past the invitation's expiry). Every pass sends the same signed
- * request, so a member that admitted the device on a pass whose reply was lost answers a later
- * pass as already a member, with no second usage row.
- *
- * A wait ends at the first acceptance, at a final refusal or an invalid reply (thrown as
- * {@link redeemAtMembers} throws them), when the invitation expires by this device's clock
- * (thrown as the `invite-spent` refusal a member would give), when `signal` aborts (its reason
- * thrown), and when `node` stops. A bundle that names no address has nothing to wait for and
- * throws at once.
+ * Device side, in passes (`dialRedemptionInPasses` in `member-redemption.ts`): one
+ * {@link redeemAtMembers} pass, or, with `waitForMember`, as many as it takes, pausing between
+ * them and never past the invitation's expiry, which by this device's clock is thrown as the
+ * `invite-spent` refusal a member would give.
  */
-export async function redeemInPasses(node: Libp2p, options: RedeemInPassesOptions): Promise<CadreInviteRedemption> {
-  for (let pass = 1; ; pass++) {
-    if (options.waitForMember) {
-      // One pass leaves expiry to the member, whose clock decides; a wait has nothing else to end it.
-      refuseIfExpired(options.invitation.invite);
-      refuseIfStopped(node);
-    }
-    reportProgress(options.onProgress, { state: 'redeeming', pass });
-    try {
-      return await redeemAtMembers(node, options);
-    } catch (error) {
-      if (!options.waitForMember || !(error instanceof CadreInviteUnreachableError) || error.outcomes.length === 0) throw error;
-      const pauseMs = pauseAfterPass(pass, options.invitation.invite);
-      reportProgress(options.onProgress, {
-        state: 'waiting', pass, retryAtMs: Date.now() + pauseMs, reason: waitReason(error.outcomes), outcomes: error.outcomes
-      });
-      log('redemption pass %d found no member ready; the next pass in %d ms', pass, pauseMs);
-      await pause(pauseMs, options.signal, node);
-    }
-  }
-}
-
-// NOTE: judged by this device's clock, so one running ahead ends a wait before the members
-// would refuse it. If waits are seen ending early on skewed phones, allow a grace margin here.
-function refuseIfExpired(invite: CadreInviteRow): void {
-  const expiresAtMs = parseNullableStoredDatetimeMs(invite.expiresAt);
-  if (expiresAtMs !== null && expiresAtMs <= Date.now()) {
-    throw new CadreInviteRejectedError('invite-spent', 'the invitation expired before a member accepted it');
-  }
-}
-
-/** A stopped node's every dial fails at once, which would otherwise read as "no member answered" until expiry. */
-function refuseIfStopped(node: Libp2p): void {
-  if (node.status !== 'started') {
-    throw new Error(`Cadre invitation redemption stopped waiting: the node is ${node.status}`);
-  }
-}
-
-/** The pause after pass `pass`, cut short at the invitation's expiry so the next check ends the wait then. */
-function pauseAfterPass(pass: number, invite: CadreInviteRow): number {
-  const backoffMs = Math.min(REDEEM_PASS_FIRST_PAUSE_MS * 2 ** (pass - 1), REDEEM_PASS_MAX_PAUSE_MS);
-  const expiresAtMs = parseNullableStoredDatetimeMs(invite.expiresAt);
-  return expiresAtMs === null ? backoffMs : Math.max(0, Math.min(backoffMs, expiresAtMs - Date.now()));
-}
-
-/** Any refusal means a member answered and is not ready yet; otherwise none answered at all. */
-function waitReason(outcomes: readonly CadreInviteAddressOutcome[]): 'no-member-answered' | 'member-not-ready' {
-  return outcomes.some((outcome) => outcome.error instanceof CadreInviteRejectedError) ? 'member-not-ready' : 'no-member-answered';
-}
-
-/** A UI callback must not break the join. */
-function reportProgress(onProgress: ((progress: CadreJoinProgress) => void) | undefined, progress: CadreJoinProgress): void {
-  if (!onProgress) return;
-  try {
-    onProgress(progress);
-  } catch (error) {
-    log('redemption progress callback threw (ignored): %o', error);
-  }
-}
-
-/**
- * Wait `ms`, or reject with `signal`'s reason as soon as it aborts. Ends early, resolving, when
- * `node` stops (or is already stopped), so the next pass's stop check ends the wait without a
- * timer holding the process open. Listeners and timer are cleared however it ends.
- */
-function pause(ms: number, signal: AbortSignal | undefined, node: Libp2p): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    if (node.status !== 'started') {
-      resolve();
-      return;
-    }
-    const settle = (): void => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      node.removeEventListener('stop', onStop);
-    };
-    const onAbort = (): void => {
-      settle();
-      reject(signal!.reason);
-    };
-    const onStop = (): void => {
-      settle();
-      resolve();
-    };
-    const timer = setTimeout(onStop, ms);
-    signal?.addEventListener('abort', onAbort, { once: true });
-    node.addEventListener('stop', onStop, { once: true });
-  });
+export function redeemInPasses(node: Libp2p, options: RedeemInPassesOptions): Promise<CadreInviteRedemption> {
+  const passes: MemberRedemptionPassOptions<CadreInviteAccepted> = {
+    ...inviteRedemption(options),
+    waitForMember: options.waitForMember,
+    expiresAt: options.invitation.invite.expiresAt,
+    expired: () => new CadreInviteRejectedError('invite-spent', 'the invitation expired before a member accepted it'),
+    ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+  };
+  return dialRedemptionInPasses(node, passes);
 }

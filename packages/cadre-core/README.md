@@ -194,7 +194,7 @@ The main entry point for cadre participation.
 | `publishStrand(id, type?, memberKey?)` | Owner-signed `Strand` row insert — makes the strand visible cadre-wide. Idempotent: a live row with the same `(Type, MemberPrivateKey)` is returned unwritten; different content on the same id throws. Prefer `foundStrand` when creating a strand |
 | `unpublishStrand(id)` | Owner-signed party-wide removal — deletes this party's `Strand` row; every node stops the strand. Destroys a closed strand's `MemberPrivateKey` |
 | `getEnrollmentService()` | Access peer enrollment API |
-| `isOwner()` | Whether this node can act as an owner of its cadre: its identity key is wired for signing and enrolled in `OwnerKey`. The gate the owner-only flows (`createCadreInvitation`, `claimNode`, `rentNode`) share with the apps |
+| `isOwner()` | Whether this node can act as an owner of its cadre: its identity key is wired for signing and enrolled in `OwnerKey`. The gate the owner-only flows (`createCadreInvitation`, `createOwnerGrant`, `claimNode`, `rentNode`) share with the apps |
 | `invitationReach()` | Where a device could redeem an invitation minted now from, judged on the other members' addresses (`anywhere`, `local-network`, `issuer-only`), without minting one; `rentNode` chooses its join path by it |
 
 ### Events

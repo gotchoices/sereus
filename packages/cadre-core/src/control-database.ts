@@ -568,6 +568,20 @@ export function ownerKeyLabel(label: string | null | undefined): string | null {
  */
 export type ControlSign = (message: Uint8Array) => string | Promise<string>;
 
+/** What an owner asks {@link ControlDatabase.insertCadreInvite} (or {@link ControlDatabase.signCadreInvite}) to sign. */
+export interface CadreInviteFields {
+  /** The invitation public key (base64url ed25519), the row's primary key. */
+  key: string;
+  /** The device the invitation is for, or null for whoever redeems first. */
+  peerId?: string | null;
+  /** Whether redemption also seats an `OwnerKey` row for the device. */
+  grantsOwner: boolean;
+  /** Epoch ms after which it cannot be redeemed; omit for never. */
+  expiresAtMs?: number | null;
+  /** How many redemptions it allows; omit for unlimited. */
+  totalUses?: number | null;
+}
+
 async function signGuardedRemoval(
   partyId: string,
   tableName: RemovableTable,
@@ -4328,24 +4342,24 @@ export class ControlDatabase {
    * private half to the invitee out of band. It is never stored here (`Strand.Invite` has the
    * same shape).
    *
-   * @param invite.key - the invitation public key (base64url ed25519), the row's primary key
-   * @param invite.peerId - the device the invitation is for, or null for whoever redeems first
-   * @param invite.grantsOwner - whether redemption also seats an `OwnerKey` row for the device
-   * @param invite.expiresAtMs - epoch ms after which it cannot be redeemed; omit for never
-   * @param invite.totalUses - how many redemptions it allows; omit for unlimited
    * @returns the row as stored, `expiresAt` in its canonical form
    */
-  async insertCadreInvite(
-    invite: {
-      key: string;
-      peerId?: string | null;
-      grantsOwner: boolean;
-      expiresAtMs?: number | null;
-      totalUses?: number | null;
-    },
-    ownerKey: string,
-    signMessage: ControlSign
-  ): Promise<CadreInviteRow> {
+  async insertCadreInvite(invite: CadreInviteFields, ownerKey: string, signMessage: ControlSign): Promise<CadreInviteRow> {
+    const row = await this.signCadreInvite(invite, ownerKey, signMessage);
+    await this.lockedWithRetry(() => this.execCadreInviteInsert(row), {}, 'cadre-invite-insert');
+    log('Cadre invitation inserted: %s (peer=%s owner=%s)', row.key, row.peerId ?? 'any', row.grantsOwner);
+    return row;
+  }
+
+  /**
+   * Build and owner-sign a `CadreInvite` row WITHOUT inserting it: the signing half of
+   * {@link insertCadreInvite}, which `CadreNode.joinWithOwnerGrant` uses alone for the
+   * invitation a node issues to itself, since a store that holds no `OwnerKey` row for the
+   * issuer would refuse the local insert and the row is seated at a member from the bundle
+   * instead. `ExpiresAt` is canonicalized by this database's engine, which is a format, not a
+   * store, so the row reads the same wherever it is seated.
+   */
+  async signCadreInvite(invite: CadreInviteFields, ownerKey: string, signMessage: ControlSign): Promise<CadreInviteRow> {
     this.ensureInitialized();
     const key = requireEd25519PublicKeyB64(invite.key, 'cadre invitation key');
     const signed: CadreInviteSignedFields = {
@@ -4356,14 +4370,11 @@ export class ControlDatabase {
       totalUses: invite.totalUses ?? null,
       stampId: generateStampId(this.config.libp2pNode.peerId.toString()),
     };
-    const row: CadreInviteRow = {
+    return {
       ...signed,
       issuerKey: ownerKey,
       issuerSig: await signMessage(cadreInviteAddMessage(this.config.partyId, signed)),
     };
-    await this.lockedWithRetry(() => this.execCadreInviteInsert(row), {}, 'cadre-invite-insert');
-    log('Cadre invitation inserted: %s (peer=%s owner=%s)', key, row.peerId ?? 'any', row.grantsOwner);
-    return row;
   }
 
   /**
