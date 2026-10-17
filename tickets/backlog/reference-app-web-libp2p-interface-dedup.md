@@ -105,3 +105,7 @@ Typecheck no longer fails: 3c3ce8dc silenced it with `as unknown as PrivateKey` 
 ### Note from planning `edge-node-bring-up-shared-by-every-kit`
 
 `implement/1.22-reference-app-web-runs-the-edge-node` deletes the `loadOrCreateBrowserPeerKey` call whose result is the `PrivateKey` these two errors are about: the tab's identity moves into a cadre-core `KeyStore`. Its handoff says whether `svelte-check` is clean afterwards. If it is, this ticket's symptom is gone and only the duplicate install remains, which may not be worth fixing on its own.
+
+## Status after `reference-app-web-runs-the-edge-node` (2026-10-16, review)
+
+The tab's identity now goes through a cadre-core `KeyStore` (`node-local-slots.ts` → `nodeLocalKeyStore`), so `cadre-web.ts` no longer handles a `PrivateKey` and the two casts are gone with it; `svelte-check` reports 0 errors in 1270 files. Only the second arm remains: the duplicate copies in the published browser bundle.

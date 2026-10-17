@@ -1742,7 +1742,7 @@ failure costs*:
 | `network.relayAddrs` with `requireRelay: false` | same point in `start()` | logged, not thrown; status is `retrying`/`error` and the node stays up, solo |
 | `CadreNode.reserveRelays(addrs)` | whenever the app calls it | nothing throws; status is `retrying`/`error` and the node stays up, solo |
 
-The second and third postures are what browser tabs and other must-still-boot nodes use — `requireRelay: false` gives that posture to a CONTROL node's own `relayAddrs` reservation (a strand node's per-relay reservation is already fail-soft regardless, see below), while `reserveRelays()` is for a caller that only discovers its relay at runtime and never named one in config. Either way, a caller on the fail-soft posture reads `CadreNode.getRelayReservationState()` to learn whether the node actually ended up dialable — `start()` resolving no longer implies it.
+The second and third postures are what phones, browser tabs and other must-still-boot nodes use — `requireRelay: false` gives that posture to a CONTROL node's own `relayAddrs` reservation (a strand node's per-relay reservation is already fail-soft regardless, see below), and is what the edge node's config sets for every phone and browser tab ([The edge node](#the-edge-node)), while `reserveRelays()` is for a caller that only discovers its relay at runtime and never named one in config. Either way, a caller on the fail-soft posture reads `CadreNode.getRelayReservationState()` to learn whether the node actually ended up dialable — `start()` resolving no longer implies it.
 
 **Why `relayAddrs` no longer builds a `<relay>/p2p/<relayPeerId>/p2p-circuit`
 listen address.** libp2p's transport manager dials a *configured* circuit
@@ -1797,7 +1797,7 @@ list as `network.transports`. A Node host supplies db-p2p's default list as
 `network.defaultTransports`, from the Node-only
 `@serfab/cadre-core/node-default-transports` subpath (cadre-cli does), because
 that list names `@libp2p/tcp`. A node with no configured relay, such as a
-browser tab that calls `reserveRelays()`, keeps discovery. Without it, a slot
+caller that only names one through `reserveRelays()` at runtime, keeps discovery. Without it, a slot
 freed while the relay stays up is refilled at the supervisor's next liveness
 check (5 s) instead of within milliseconds.
 

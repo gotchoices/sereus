@@ -154,7 +154,8 @@ export function clearEvents(): void {
 
 edgeNode.on('control:connected', () => {
 	state.controlConnected = true;
-	record('control:connected', getPartyId() ?? '');
+	// Raised inside the node's start, before the edge node reports it running, so the party id is not readable here.
+	record('control:connected');
 });
 edgeNode.on('control:disconnected', () => {
 	state.controlConnected = false;
