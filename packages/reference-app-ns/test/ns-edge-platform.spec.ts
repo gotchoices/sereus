@@ -94,7 +94,7 @@ describe('a phone upgraded from the build before the edge node', () => {
 	});
 
 	it('keeps its party and its auto-start: the start it saved reads through the edge node', async () => {
-		// The record exactly as `start-options.ts` serialized it, under its literal key
+		// The record exactly as the build before the edge node serialized it, under its literal key
 		// in `s_val`: no relays, no origin. Read as founded, with no relays.
 		const bootstrap = '/ip4/10.0.0.1/tcp/4001/ws/p2p/12D3KooWQVo7JTYHgoj9rt9HScoxaM5axn3uB8P1WHiKrhhUqed3';
 		const record = JSON.stringify({ version: 1, partyId: 'party-x', bootstrapAddrs: [bootstrap], autoStart: true });

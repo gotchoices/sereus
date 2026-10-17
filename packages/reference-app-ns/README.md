@@ -30,7 +30,7 @@ app/
 src/
   polyfills/        V8/JSC-audited globals (hermes, event, abort, intl, websocket, node-crypto, node-os, buffer-global, audit)
   ns-edge-platform.ts the edge node's platform: key store, node-local store and per-scope block stores over SQLite
-  cadre-phone.ts    the phone's one edge node (@serfab/cadre-core/edge-node) + helpers on its running node
+  cadre-phone.ts    the phone's one edge node (@serfab/cadre-core/edge-node) + the peer dial on its running node
   cadre-vm.ts       CadreViewModel (Observable) — edge-node status/strands/join (← use-cadre + cadre-context)
   join-failure.ts   plain words for each way a join can fail (hand-copied twin of RN's)
   chat-vm.ts        ChatViewModel (Observable) — poll loop, optimistic send, participant auto-register (← use-chat)

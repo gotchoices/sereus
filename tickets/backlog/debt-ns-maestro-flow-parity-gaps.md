@@ -1,5 +1,5 @@
 description: The NativeScript phone app is supposed to be tested by reusing the React Native app's automated UI test scripts unchanged, but the two apps' screens no longer match closely enough for those scripts to run against it.
-files: packages/reference-app-ns/app/chat/chat-page.xml, packages/reference-app-ns/app/app-root.xml, packages/reference-app-ns/src/chat-vm.ts, packages/reference-app-ns/src/cadre-vm.ts, packages/reference-app-ns/src/test-ids.ts, packages/reference-app-rn/maestro/_setup.yaml, packages/reference-app-rn/maestro/flows/4-solo-create-strand.yaml, docs/reference-app-ns.md
+files: packages/reference-app-ns/app/chat/chat-page.xml, packages/reference-app-ns/app/settings/settings-page.xml, packages/reference-app-ns/app/app-root.xml, packages/reference-app-ns/src/chat-vm.ts, packages/reference-app-ns/src/cadre-vm.ts, packages/reference-app-ns/src/test-ids.ts, packages/reference-app-rn/maestro/_setup.yaml, packages/reference-app-rn/maestro/flows/4-solo-create-strand.yaml, docs/reference-app-ns.md
 ---
 
 # Reused RN Maestro flows cannot pass against the NativeScript app
@@ -52,6 +52,8 @@ screens.
   scrolling to it first. Unproven either way (device-only), but it is the kind of
   thing that reads as a mysterious tap failure. Whoever does the device run should
   check it, and add a scroll-to-element step if it bites.
+
+- **The shared setup now joins at first launch; NativeScript joins only once connected.** `_setup.yaml` brings the phone in through React Native's first-launch join (`btn-first-launch-join`, `btn-join-flow-ok`). NativeScript has no first-launch screen, and its Join a Cadre section (`input-cadre-invitation`, `btn-join-cadre`) is shown only while connected, so a fresh phone must Connect first, founding a party of its own and running owner genesis there, before it can paste an invitation. The edge node it runs can join from stopped (`EdgeNode.joinCadre`), so offering the join field while disconnected is a screen change only (`settings-page.xml`, `cadre-vm.ts`'s visibility props). Found in review of `reference-app-ns-runs-the-edge-node`.
 
 - **The documentation still describes the abandoned tab layout.**
   `docs/reference-app-ns.md` describes the app shell as a two-tab view in several

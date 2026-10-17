@@ -266,6 +266,11 @@ class SharedOpen<T> {
 	/**
 	 * Forget the open, so the next {@link get} opens afresh, and hand back what it opened for the
 	 * caller to close; `undefined` when nothing was opened or the open failed (its caller saw why).
+	 *
+	 * NOTE: a call that got the handle before `take` and runs a statement after the close hits a
+	 * closed handle. The edge node runs its own key-store and node-local calls in turn with stop,
+	 * and this app makes none outside them; if it ever calls `pendingStrandMove` or reads the
+	 * node-local store from a screen, have `take` wait for the calls in flight.
 	 */
 	async take(): Promise<T | undefined> {
 		const opening = this.opening;

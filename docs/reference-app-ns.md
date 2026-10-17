@@ -63,7 +63,7 @@ The phone runs cadre-core's edge node (`createEdgeNode` from `@serfab/cadre-core
 
 - **Opened on first use.** The edge node asks for a scope's storage synchronously and the opener is async, so the platform hands out cadre-core's `lazyRawStorage` proxy, which awaits the open before each call. Its `durability` is read before any open, so it states `'power-loss'`, the value `SqliteRawStorage` fixes.
 - **One open per database name.** Every proxy over a scope shares one connection. An open that fails is dropped, so the operations awaiting it fail with its error and the next operation opens again.
-- **Closed by every stop.** A stop, and a failed start, flush and close the identity database and every scope's block store and database (`EdgeNodeStorage.close`); the next start opens them again. A screen therefore must not hold a strand instance across Disconnect: the view model drops its strand list on every status but `running`.
+- **Closed by every stop.** A stop, and a failed start, flush and close the identity database and every scope's block store and database (`EdgeNodeStorage.close`); the next start opens them again. A screen therefore must not hold a strand instance across Disconnect: the view model drops its strand list on each status a stop reports (`stopped`, `removed`, `failed`).
 - **Deleted by a removal or a dissolve.** `destroyScope` closes the scope's handle, then deletes its file with the plugin's `deleteDatabase`.
 
 A device that ran a build predating the party scoping still has an unscoped
@@ -101,7 +101,7 @@ Typing *another* cadre's party id and bootstrap address into Settings is still a
 
 Every record above is filed under the party id, so they are read back on a relaunch only because the party id itself is remembered: the **saved start** (`EdgeNode.loadSavedStart`; party id, bootstrap and relay addresses, how the phone came to the party, plus `autoStart`) sits under the one key `start-options`, deliberately *not* party-scoped, since it is what selects the party. The edge node owns its format and parsing (`@serfab/cadre-core/edge-node` → `options.ts`). A record written before the edge node (`{ version, partyId, bootstrapAddrs, autoStart }`) reads as a founded start with no relays, so an installed phone keeps its party and its auto-start (pinned in `test/ns-edge-platform.spec.ts`).
 
-- **Written** only by the edge node: after every successful start and an admitted join (`autoStart: true`), and on Settings → **Disconnect** (`autoStart: false`, same options); a removal by an owner replaces it. A failed start writes nothing. `startSolo` (`solo-smoke.ts`) is a start like any other and writes it too.
+- **Written** only by the edge node: after every successful start and an admitted join (`autoStart: true`), and on Settings → **Disconnect** (`autoStart: false`, same options); a removal by an owner replaces it with the cadre the phone founded and left (auto-start off) or deletes it, and the view model reads it again so the Settings form offers that, never the removed party. A failed start writes nothing. `startSolo` (`solo-smoke.ts`) is a start like any other and writes it too.
 - **Read** once at app launch (`CadreViewModel.restore`, run when `getCadreVm()` first creates the shared view model). With `autoStart` true and nothing started yet, the app connects by itself with those options, exactly as a Connect tap would. Either way the Settings Party ID, Bootstrap and Relays fields prefill from them (comma-separated, so a list round-trips). A read fault shows "Could not read the saved connection settings" and starts nothing.
 - **Overlapping transitions** (the launch auto-start and a Connect tap, Disconnect during a start, Connect during a stop) are queued by the edge node and run in call order.
 - **Reinstall** deletes the SQLite database with the app, identity included, so a reinstalled phone is a new peer in a new party. Nothing on this app lives in the Keychain to outlive it.
@@ -122,7 +122,7 @@ app/
 src/
   polyfills/        V8/JSC-audited globals (buffer-global, hermes, intl-pluralrules, event, node-crypto, node-os, audit, registry)
   ns-edge-platform.ts the edge node's platform: key store, node-local store, per-scope block stores (SQLite)
-  cadre-phone.ts    the phone's one edge node (@serfab/cadre-core/edge-node) + helpers on its running node
+  cadre-phone.ts    the phone's one edge node (@serfab/cadre-core/edge-node) + the peer dial on its running node
   cadre-vm.ts       CadreViewModel (Observable) — edge-node status/strands/join  (← RN use-cadre + cadre-context)
   join-failure.ts   plain words for each way a join can fail  (hand-copied twin of RN's)
   chat-vm.ts        ChatViewModel (Observable) — 2 s poll loop, optimistic send, participant auto-register  (← RN use-chat)
@@ -346,7 +346,8 @@ so an unreadable paste never touches it; a seed decodes before it is applied; an
 Settings handler given a blank field makes no call at all. The view model's status,
 peer id and strand list follow the fake edge node's status reports, as they follow
 the real one's, and a join that comes up in the invitation's party leaves the
-Settings form naming that party. Both fakes declare `implements` against a
+Settings form naming that party, as a removal leaves it naming the cadre the saved
+start now names. Both fakes declare `implements` against a
 `Pick<…>` of the real types, so a cadre-core signature change fails `typecheck`
 instead of leaving the suites green while the app breaks on device — a `vi.mock`
 factory is not otherwise checked against the module it replaces.

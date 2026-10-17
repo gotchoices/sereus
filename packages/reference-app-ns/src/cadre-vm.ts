@@ -49,6 +49,7 @@ export class CadreViewModel extends Observable {
 	private _error = '';
 	private _strands = new Map<string, StrandInstance>();
 	private _savedStartOptions: EdgeNodeOptions | null = null;
+	private _savedStartFromLaunch = false;
 
 	constructor() {
 		super();
@@ -75,11 +76,20 @@ export class CadreViewModel extends Observable {
 	/**
 	 * The options the node last started with, for the Settings form to fill from: read
 	 * at launch ({@link restore}), then the running start's each time the node comes up,
-	 * so after a join they name the joined party. Null until the launch read resolves,
-	 * and when nothing is saved.
+	 * so after a join they name the joined party, and read again after a removal
+	 * ({@link refillAfterRemoval}). Null until the launch read resolves, and when nothing
+	 * is saved.
 	 */
 	get savedStartOptions(): EdgeNodeOptions | null {
 		return this._savedStartOptions;
+	}
+
+	/**
+	 * Whether {@link savedStartOptions} came from the launch read, which can resolve after
+	 * the user began typing and so fills only blank fields; every later value replaces the form.
+	 */
+	get savedStartFromLaunch(): boolean {
+		return this._savedStartFromLaunch;
 	}
 
 	// ── Derived display props (notified alongside their sources) ─────────────
@@ -151,8 +161,9 @@ export class CadreViewModel extends Observable {
 		this.notifyPropertyChange('error', error);
 	}
 
-	private setSavedStartOptions(options: EdgeNodeOptions): void {
+	private setSavedStartOptions(options: EdgeNodeOptions | null, fromLaunch = false): void {
 		this._savedStartOptions = options;
+		this._savedStartFromLaunch = fromLaunch;
 		this.notifyPropertyChange('savedStartOptions', options);
 	}
 
@@ -182,9 +193,10 @@ export class CadreViewModel extends Observable {
 	}
 
 	/**
-	 * Show what the edge node reports. Every state but `running` drops the strand map: a stop
-	 * closes each strand's database, so a screen still holding an instance must not read
-	 * through it.
+	 * Show what the edge node reports. `stopped`, `removed` and `failed` drop the strand map:
+	 * a stop closes each strand's database, so a screen still holding an instance must not
+	 * read through it. `starting` and `joining` need not, since the edge node reports
+	 * `stopped` before every build.
 	 */
 	private applyStatus(status: EdgeNodeStatus): void {
 		switch (status.state) {
@@ -200,6 +212,7 @@ export class CadreViewModel extends Observable {
 				return;
 			case 'removed':
 				this.showStopped('idle', `An owner removed this phone from cadre ${status.partyId}`);
+				void this.refillAfterRemoval();
 				return;
 			case 'failed':
 				this.showStopped('error', status.error.message);
@@ -221,6 +234,22 @@ export class CadreViewModel extends Observable {
 		this.setStrands(new Map());
 		this.setError(error);
 		this.setStatus(status);
+	}
+
+	/**
+	 * Acting on a removal, the edge node rewrote the saved start: it now names the cadre this
+	 * phone founded and left, with auto-start off, or nothing. Read it again so the form offers
+	 * that and not the removed party, which a Connect would start as founded, running owner
+	 * genesis there; unreadable, the form is emptied for the same reason.
+	 */
+	private async refillAfterRemoval(): Promise<void> {
+		try {
+			const saved = await edge.loadSavedStart();
+			this.setSavedStartOptions(saved?.options ?? null);
+		} catch (err) {
+			console.warn('[cadre-vm] could not read the saved start after this phone was removed:', err);
+			this.setSavedStartOptions(null);
+		}
 	}
 
 	/** `edge.node` is null as soon as a stop begins, so a late event from a node going down changes nothing. */
@@ -272,7 +301,7 @@ export class CadreViewModel extends Observable {
 			return;
 		}
 		if (!saved) return;
-		this.setSavedStartOptions(saved.options);
+		this.setSavedStartOptions(saved.options, true);
 		if (saved.autoStart && this._status === 'idle') await this.start(saved.options);
 	}
 

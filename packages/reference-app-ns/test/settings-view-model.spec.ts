@@ -246,6 +246,21 @@ describe('onDisconnect', () => {
 	});
 });
 
+describe('after an owner removed this phone', () => {
+	it('offers the cadre the saved start now names, not the one it was removed from', async () => {
+		// A Connect on the removed party would start it as founded and run owner genesis there.
+		const { vm, H } = await loadSettings();
+		const home = { partyId: 'party-home', bootstrapAddrs: [], relayAddrs: [RELAY] };
+		H.state.savedStart = { options: home, autoStart: false };
+
+		const removal = { partyId: 'party-x', stampId: 'stamp-1', signerKey: null, at: 0 };
+		H.edge.report({ state: 'removed', partyId: 'party-x', removal, formerPartyId: 'party-home' });
+		await vi.waitFor(() => expect(vm.partyId).toBe('party-home'));
+
+		expect(vm.relayAddr).toBe(RELAY);
+	});
+});
+
 describe('onDialPeer', () => {
 	it('dials the trimmed address and clears the field on success', async () => {
 		const { vm, H } = await loadSettings();

@@ -55,24 +55,24 @@ export class SettingsViewModel extends Observable {
 	/**
 	 * Show the options the node last started with. They are read once at launch, and
 	 * this page can be built before that read resolves; then they fill only the fields
-	 * the user has not typed into meanwhile. Each time the node comes up they are the
-	 * running start's, and replace the fields: those are hidden while connected, and
-	 * after a join they must name the joined party, or the next Connect would leave it.
+	 * the user has not typed into meanwhile. Every later value replaces the fields: each
+	 * time the node comes up they are the running start's (after a join they must name
+	 * the joined party, or the next Connect would leave it), and after a removal they are
+	 * what the saved start now names, or nothing (never the removed party). Both arrive
+	 * while the form was hidden, so neither overwrites an edit.
 	 */
 	private followSavedStartOptions(): void {
-		const saved = this.cadre.savedStartOptions;
-		if (saved) this.prefill(saved, false);
+		this.prefill(this.cadre.savedStartOptions, false);
 		this.cadre.on('propertyChange', (args: EventData) => {
 			if ((args as PropertyChangeData).propertyName !== 'savedStartOptions') return;
-			const arrived = this.cadre.savedStartOptions;
-			if (arrived) this.prefill(arrived, this.cadre.connected);
+			this.prefill(this.cadre.savedStartOptions, !this.cadre.savedStartFromLaunch);
 		});
 	}
 
-	private prefill(saved: EdgeNodeOptions, replace: boolean): void {
-		if (replace || !this._partyId) this.partyId = saved.partyId;
-		if (replace || !this._bootstrapAddr) this.bootstrapAddr = saved.bootstrapAddrs.join(', ');
-		if (replace || !this._relayAddr) this.relayAddr = saved.relayAddrs.join(', ');
+	private prefill(saved: EdgeNodeOptions | null, replace: boolean): void {
+		if (replace || !this._partyId) this.partyId = saved?.partyId ?? '';
+		if (replace || !this._bootstrapAddr) this.bootstrapAddr = saved?.bootstrapAddrs.join(', ') ?? '';
+		if (replace || !this._relayAddr) this.relayAddr = saved?.relayAddrs.join(', ') ?? '';
 	}
 
 	// ── Two-way bound inputs ────────────────────────────────────────────────
