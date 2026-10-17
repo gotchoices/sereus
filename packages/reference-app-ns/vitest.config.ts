@@ -9,9 +9,9 @@ import { defineConfig } from 'vitest/config';
  * `chat-vm.spec.ts`) do import `@nativescript/core`, but only for `Observable`
  * and `ObservableArray`; the alias below redirects that specifier to
  * `test/stubs/nativescript-core.ts`, which re-exports the real classes from the
- * submodules that load here. Everything else collected here
- * (`src/node-local-slots.ts`, `src/cadre-phone.ts`, `src/ns-storage.ts`) is plain
- * module logic once `@optimystic/db-p2p-storage-ns` is mocked; the last two reach
+ * submodules that load here. The one other module collected here,
+ * `src/ns-edge-platform.ts`, runs over Node's `node:sqlite` once
+ * `openOptimysticNSDb` and the NativeScript SQLite plugin are mocked; it reaches
  * `@nativescript/core` only for `isAndroid`, which the stub fixes at false.
  *
  * `globalSetup` runs the stale-build guard because these suites execute real,

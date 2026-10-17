@@ -9,7 +9,8 @@
  * device/emulator (out-of-band — see README).
  */
 
-import { startSolo } from './cadre-phone';
+import type { CadreNode } from '@serfab/cadre-core';
+import { edge } from './cadre-phone';
 import { createChatStrand } from './chat-strand';
 import {
 	insertParticipant,
@@ -20,6 +21,17 @@ import {
 } from './chat-operations';
 
 const DEFAULT_PARTY_ID = 'reference-chat-party-ns';
+
+/**
+ * Start in solo/forming mode — no drone, no relay. The node forms its own cadre, running owner
+ * genesis like any founded start, and can create a local strand.
+ *
+ * Like any start, a successful one is saved as the options the next launch starts with, so it
+ * replaces whatever Settings last connected with.
+ */
+export function startSolo(partyId: string): Promise<CadreNode> {
+	return edge.start({ partyId, bootstrapAddrs: [], relayAddrs: [] });
+}
 
 export interface SoloSmokeResult {
 	/** Control-network PeerId — stable across cold launches (key in SQLite kv). */

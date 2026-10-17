@@ -8,9 +8,9 @@
 
 import { Observable, type EventData, type PropertyChangeData } from '@nativescript/core';
 import type { RedeemCadreInvitationResult } from '@serfab/cadre-core';
+import type { EdgeNodeOptions } from '@serfab/cadre-core/edge-node';
 import { getCadreVm, type CadreViewModel } from '../../src/cadre-vm';
 import { describeJoinFailure } from '../../src/join-failure';
-import type { PhoneNodeOptions } from '../../src/start-options';
 
 /** RFC-4122-ish v4 UUID (Math.random — good enough for the demo, matches RN). */
 function uuid(): string {
@@ -20,7 +20,7 @@ function uuid(): string {
 	});
 }
 
-/** The bootstrap field's comma-separated list, trimmed, blanks dropped. */
+/** A comma-separated address field (Bootstrap, Relays) as a list, trimmed, blanks dropped. */
 function splitAddrs(field: string): string[] {
 	return field.split(',').map((addr) => addr.trim()).filter((addr) => addr.length > 0);
 }
@@ -38,6 +38,7 @@ export class SettingsViewModel extends Observable {
 
 	private _partyId = '';
 	private _bootstrapAddr = '';
+	private _relayAddr = '';
 	private _seedInput = '';
 	private _cadreInvitationInput = '';
 	private _peerAddr = '';
@@ -48,32 +49,30 @@ export class SettingsViewModel extends Observable {
 	constructor() {
 		super();
 		this.cadre = getCadreVm();
-		this.prefillFromSavedStartOptions();
+		this.followSavedStartOptions();
 	}
 
 	/**
 	 * Show the options the node last started with. They are read once at launch, and
-	 * this page can be built before that read resolves — then they are applied when it
-	 * does, once, and only into fields the user has not typed into meanwhile.
+	 * this page can be built before that read resolves; then they fill only the fields
+	 * the user has not typed into meanwhile. Each time the node comes up they are the
+	 * running start's, and replace the fields: those are hidden while connected, and
+	 * after a join they must name the joined party, or the next Connect would leave it.
 	 */
-	private prefillFromSavedStartOptions(): void {
+	private followSavedStartOptions(): void {
 		const saved = this.cadre.savedStartOptions;
-		if (saved) {
-			this.prefill(saved);
-			return;
-		}
-		const onChange = (args: EventData): void => {
+		if (saved) this.prefill(saved, false);
+		this.cadre.on('propertyChange', (args: EventData) => {
 			if ((args as PropertyChangeData).propertyName !== 'savedStartOptions') return;
-			this.cadre.off('propertyChange', onChange);
 			const arrived = this.cadre.savedStartOptions;
-			if (arrived) this.prefill(arrived);
-		};
-		this.cadre.on('propertyChange', onChange);
+			if (arrived) this.prefill(arrived, this.cadre.connected);
+		});
 	}
 
-	private prefill(saved: PhoneNodeOptions): void {
-		if (!this._partyId) this.partyId = saved.partyId;
-		if (!this._bootstrapAddr) this.bootstrapAddr = saved.bootstrapAddrs.join(', ');
+	private prefill(saved: EdgeNodeOptions, replace: boolean): void {
+		if (replace || !this._partyId) this.partyId = saved.partyId;
+		if (replace || !this._bootstrapAddr) this.bootstrapAddr = saved.bootstrapAddrs.join(', ');
+		if (replace || !this._relayAddr) this.relayAddr = saved.relayAddrs.join(', ');
 	}
 
 	// ── Two-way bound inputs ────────────────────────────────────────────────
@@ -94,6 +93,16 @@ export class SettingsViewModel extends Observable {
 		if (value === this._bootstrapAddr) return;
 		this._bootstrapAddr = value;
 		this.notifyPropertyChange('bootstrapAddr', value);
+	}
+
+	/** Circuit-relay multiaddrs the phone reserves on, comma-separated: what makes it reachable, and so invitable. */
+	get relayAddr(): string {
+		return this._relayAddr;
+	}
+	set relayAddr(value: string) {
+		if (value === this._relayAddr) return;
+		this._relayAddr = value;
+		this.notifyPropertyChange('relayAddr', value);
 	}
 
 	get seedInput(): string {
@@ -175,7 +184,11 @@ export class SettingsViewModel extends Observable {
 		const partyId = this._partyId.trim() || uuid();
 		this.partyId = partyId;
 		// Comma-separated, so a remembered list of several round-trips.
-		await this.cadre.start({ partyId, bootstrapAddrs: splitAddrs(this._bootstrapAddr) });
+		await this.cadre.start({
+			partyId,
+			bootstrapAddrs: splitAddrs(this._bootstrapAddr),
+			relayAddrs: splitAddrs(this._relayAddr),
+		});
 		if (this.cadre.status === 'error') {
 			this.showAlert('Connection failed', this.cadre.error);
 		}
@@ -203,16 +216,16 @@ export class SettingsViewModel extends Observable {
 	}
 
 	/**
-	 * Redeem a pasted cadre invitation. The field is cleared on success only: a
-	 * failed join keeps the paste, so the retry the modal may suggest costs no
-	 * re-paste. The failure modal speaks in plain words (`describeJoinFailure`),
-	 * not the error's own text.
+	 * Join the cadre a pasted invitation names, reserving on the Relays field's relays
+	 * there. The field is cleared on success only: a failed join keeps the paste, so
+	 * the retry the modal may suggest costs no re-paste. The failure modal speaks in
+	 * plain words (`describeJoinFailure`), not the error's own text.
 	 */
 	async onJoinCadre(): Promise<void> {
 		const encoded = this._cadreInvitationInput.trim();
 		if (!encoded) return;
 		try {
-			const result = await this.cadre.joinCadre(encoded);
+			const result = await this.cadre.joinCadre(encoded, splitAddrs(this._relayAddr));
 			this.cadreInvitationInput = '';
 			this.showAlert('Joined cadre', joinedCadreMessage(result));
 		} catch (err) {

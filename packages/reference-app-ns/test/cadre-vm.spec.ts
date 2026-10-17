@@ -1,13 +1,14 @@
 /**
  * `cadre-vm.ts` — the shared view model both NativeScript screens bind to.
  *
- * What this suite exists for is what the view model puts in FRONT of the node:
- * the 'Node not started' guards, the rewrap of an unreadable seed or invitation
- * paste with copy naming the field, and the join path's order — decode first, so
- * a bad paste never reaches `redeemCadreInvitation`. Every node call is appended
- * to one shared `H.calls` array (see `test/stubs/fake-cadre-node.ts`) and the
- * tests assert that array whole, so a call that moved fails as surely as one
- * that never happened.
+ * What this suite exists for is what the view model puts in FRONT of the edge
+ * node: the 'Node not started' guards, the rewrap of an unreadable seed or
+ * invitation paste with copy naming the field, the join path's order — decode
+ * first, so a bad paste never reaches the edge node — and how the edge node's
+ * status reports become the screens' status, peer id and strand list. Every
+ * edge-node and node call is appended to one shared `H.calls` array (see
+ * `test/stubs/fake-cadre-node.ts`) and the tests assert that array whole, so a
+ * call that moved fails as surely as one that never happened.
  *
  * `@serfab/cadre-core` is left REAL: `cadre-vm.ts` calls `decodeCadreInvitation`
  * as a runtime value, and the join tests feed it a bundle the real
@@ -30,7 +31,7 @@ import type { PropertyChangeData } from '@nativescript/core';
 import type { CadreViewModel } from '../src/cadre-vm';
 
 /**
- * The shared fake node, reached through a hoisted dynamic import — `vi.mock`
+ * The shared fakes, reached through a hoisted dynamic import — `vi.mock`
  * factories are hoisted above this file's own imports, so a static binding would
  * not be in scope for them. One instance for the whole file (hence `H.reset()`
  * per load); the dynamic import is the only way to give the factories and the
@@ -44,11 +45,12 @@ vi.mock('../src/chat-strand', async () => (await stubs).chatStrandMock());
 type Stubs = typeof import('./stubs/fake-cadre-node');
 
 const SEED = 'encoded-seed';
+const RELAY = '/ip4/5.6.7.8/tcp/4003/ws/p2p/12D3KooWRelayRelayRelayRelayRelayRelayRelayRelayRela';
 
 /**
- * A fresh view-model module over a fresh fake node. Both halves matter:
- * `getCadreVm()` caches a module-level singleton, and the fake node accumulates
- * a call log — either one crossing a test boundary would make these tests read
+ * A fresh view-model module over a fresh fake edge node. Both halves matter:
+ * `getCadreVm()` caches a module-level singleton, and the fakes accumulate a
+ * call log — either one crossing a test boundary would make these tests read
  * each other's state.
  */
 async function loadModule(): Promise<{ mod: typeof import('../src/cadre-vm'); H: Stubs }> {
@@ -60,8 +62,8 @@ async function loadModule(): Promise<{ mod: typeof import('../src/cadre-vm'); H:
 }
 
 /**
- * A view model that has adopted the fake node, with the call log cleared of the
- * adopt path so each test asserts only the calls it caused.
+ * A view model that has adopted the running fake node, with the call log cleared
+ * of the adopt path so each test asserts only the calls it caused.
  */
 async function adoptedVm(): Promise<{ vm: CadreViewModel; H: Stubs }> {
 	const { mod, H } = await loadModule();
@@ -71,7 +73,7 @@ async function adoptedVm(): Promise<{ vm: CadreViewModel; H: Stubs }> {
 	return { vm, H };
 }
 
-/** A view model with no node — every guarded method must refuse. */
+/** A view model with no node running — every guarded method must refuse. */
 async function coldVm(): Promise<{ vm: CadreViewModel; H: Stubs }> {
 	const { mod, H } = await loadModule();
 	const vm = new mod.CadreViewModel();
@@ -92,7 +94,7 @@ describe('the @nativescript/core stub', () => {
 		vm.on('propertyChange', (args) => void seen.push((args as PropertyChangeData).propertyName));
 
 		expect(vm.status).toBe('idle');
-		await vm.start({ partyId: 'party-x', bootstrapAddrs: [] });
+		await vm.start({ partyId: 'party-x', bootstrapAddrs: [], relayAddrs: [] });
 
 		expect(vm.status).toBe('connected');
 		expect(seen).toContain('status');
@@ -100,10 +102,10 @@ describe('the @nativescript/core stub', () => {
 	});
 });
 
-// ── Constructor: adopting an already-running node ─────────────────────────────
+// ── Following the edge node's status ──────────────────────────────────────────
 
 describe('the constructor', () => {
-	it('adopts a running node, reading its peer id, strands and events', async () => {
+	it('adopts a running node, reading its peer id and strands', async () => {
 		const { mod, H } = await loadModule();
 		H.presentRunningNode().strands.set('strand-1', H.fakeStrand());
 
@@ -115,28 +117,34 @@ describe('the constructor', () => {
 		// What the Chat VM reads — `null` rather than `''` when there is no node.
 		expect(vm.getPeerId()).toBe('peer-abc');
 		expect(vm.strandCount).toBe(1);
-		expect(H.calls).toEqual(['getStrands', 'on:strand:started', 'on:strand:stopped', 'on:strand:writable', 'on:strand:error', 'on:strand:commit-held']);
 	});
 
 	it('adopts nothing when no node is running', async () => {
-		const { vm, H } = await coldVm();
+		const { vm } = await coldVm();
 
 		expect(vm.status).toBe('idle');
 		expect(vm.peerIdDisplay).toBe('—');
 		expect(vm.getPeerId()).toBeNull();
 		expect(vm.getFirstStrand()).toBeNull();
 		expect(vm.strandCount).toBe(0);
-		expect(H.state.node.boundHandlerCount()).toBe(0);
 	});
+});
 
-	it('ignores a node that exists but is not running', async () => {
-		const { mod, H } = await loadModule();
-		H.presentRunningNode().isRunning = false;
+describe('a status the edge node reports on its own', () => {
+	it('shows a removal by an owner as disconnected, saying why, with the strands dropped', async () => {
+		// The edge node acts on a removal without any screen asking, so only its
+		// report tells the view model; a stale strand would point at a deleted database.
+		const { vm, H } = await adoptedVm();
+		H.state.node.strands.set('strand-1', H.fakeStrand());
+		H.state.node.emit('strand:started', { strandId: 'strand-1' });
 
-		const vm = new mod.CadreViewModel();
+		const removal = { partyId: 'party-x', stampId: 'stamp-1', signerKey: null, at: 0 };
+		H.edge.report({ state: 'removed', partyId: 'party-x', removal });
 
 		expect(vm.status).toBe('idle');
-		expect(H.calls).toEqual([]);
+		expect(vm.error).toMatch(/removed this phone from cadre party-x/);
+		expect(vm.strandCount).toBe(0);
+		expect(vm.peerId).toBe('');
 	});
 });
 
@@ -156,24 +164,23 @@ describe('getCadreVm', () => {
 		second.H.presentRunningNode();
 
 		expect(second.mod.getCadreVm()).not.toBe(first);
-		expect(first.status).toBe('idle');
 		expect(second.mod.getCadreVm().status).toBe('connected');
 	});
 
 	it('resumes the last session at launch only when it ended connected', async () => {
-		// The launch half of the saved start options: a relaunch after anything but
+		// The launch half of the saved start: a relaunch after anything but
 		// Disconnect reconnects to the same party by itself; after Disconnect it only
 		// offers the options back to the Settings form.
-		const options = { partyId: 'party-x', bootstrapAddrs: ['/ip4/1.2.3.4/tcp/4001/ws'] };
+		const options = { partyId: 'party-x', bootstrapAddrs: ['/ip4/1.2.3.4/tcp/4001/ws'], relayAddrs: [RELAY] };
 
 		const resumed = await loadModule();
-		resumed.H.state.savedStartOptions = { options, autoStart: true };
+		resumed.H.state.savedStart = { options, autoStart: true };
 		const connected = resumed.mod.getCadreVm();
 		await vi.waitFor(() => expect(connected.status).toBe('connected'));
 		expect(resumed.H.state.startOpts).toEqual([options]);
 
 		const disconnected = await loadModule();
-		disconnected.H.state.savedStartOptions = { options, autoStart: false };
+		disconnected.H.state.savedStart = { options, autoStart: false };
 		const idle = disconnected.mod.getCadreVm();
 		await vi.waitFor(() => expect(idle.savedStartOptions).toEqual(options));
 		expect(idle.status).toBe('idle');
@@ -184,36 +191,27 @@ describe('getCadreVm', () => {
 // ── joinCadre ─────────────────────────────────────────────────────────────────
 
 describe('joinCadre', () => {
-	it('decodes the paste, redeems the bundle at the node and returns its result', async () => {
-		// The decode is the real one, so what reaches the node is the bundle the
+	it('decodes the paste and hands the bundle and the relays to the edge node', async () => {
+		// The decode is the real one, so what reaches the edge node is the bundle the
 		// encoder was given, not the string the user pasted.
 		const { vm, H } = await adoptedVm();
 
-		const result = await vm.joinCadre(H.ENCODED_INVITATION);
+		const result = await vm.joinCadre(H.ENCODED_INVITATION, [RELAY]);
 
-		expect(result).toBe(H.state.node.redeemResult);
-		expect(H.calls).toEqual(['redeemCadreInvitation']);
-		expect(H.state.node.redeemed).toEqual([H.invitation()]);
+		expect(result).toBe(H.state.joinResult);
+		expect(H.calls.filter((call) => call === 'joinCadre')).toHaveLength(1);
+		expect(H.state.joined).toEqual([{ invitation: H.invitation(), options: { relayAddrs: [RELAY] } }]);
 	});
 
-	it('rewraps an unreadable paste naming the invitation, and never reaches the node', async () => {
+	it('rewraps an unreadable paste naming the invitation, and never reaches the edge node', async () => {
 		// `decodeCadreInvitation` says what was wrong with the bundle; the modal
 		// renders `String(err)`, so the message must also say which paste it was.
 		// Matched on a distinctive substring — this is UI copy, and a wording tweak
 		// should not fail the suite. The decoder's own error rides along as `cause`.
 		const { vm, H } = await adoptedVm();
 
-		await expect(vm.joinCadre('not-an-invitation')).rejects.toThrow(/cadre invitation could not be read/i);
-		await expect(vm.joinCadre('not-an-invitation')).rejects.toMatchObject({ cause: expect.any(Error) });
-		expect(H.calls).toEqual([]);
-	});
-
-	it('refuses before the node is started, without touching the node', async () => {
-		// Guard order matches `applySeed`: the throw comes before any node call.
-		const { vm, H } = await coldVm();
-
-		await expect(vm.joinCadre(H.ENCODED_INVITATION)).rejects.toThrow('Node not started');
-		expect(H.state.node.redeemed).toEqual([]);
+		await expect(vm.joinCadre('not-an-invitation', [])).rejects.toThrow(/cadre invitation could not be read/i);
+		await expect(vm.joinCadre('not-an-invitation', [])).rejects.toMatchObject({ cause: expect.any(Error) });
 		expect(H.calls).toEqual([]);
 	});
 });
@@ -288,17 +286,19 @@ describe('start', () => {
 		const { vm, H } = await coldVm();
 		H.state.startError = new Error('control network unreachable');
 
-		await expect(vm.start({ partyId: 'party-x', bootstrapAddrs: [] })).resolves.toBeUndefined();
+		await expect(vm.start({ partyId: 'party-x', bootstrapAddrs: [], relayAddrs: [] })).resolves.toBeUndefined();
 
 		expect(vm.status).toBe('error');
 		expect(vm.error).toBe('control network unreachable');
 		expect(vm.connected).toBe(false);
 	});
 
-	it('binds the strand events of the node it started', async () => {
+	it('follows the strand events of the node it started', async () => {
+		// Subscribed once, on the edge node, before any node exists: the edge node
+		// applies the handlers to the node the start builds.
 		const { vm, H } = await coldVm();
 
-		await vm.start({ partyId: 'party-x', bootstrapAddrs: [] });
+		await vm.start({ partyId: 'party-x', bootstrapAddrs: [], relayAddrs: [] });
 		H.state.node.strands.set('strand-1', H.fakeStrand());
 		H.state.node.emit('strand:started', { strandId: 'strand-1' });
 
@@ -308,28 +308,20 @@ describe('start', () => {
 });
 
 describe('stop', () => {
-	it('unbinds every strand event before dropping the node', async () => {
-		// A stopped view model that still received `strand:started` would repopulate
-		// its strand list from a dead node. The fake's `off` deletes by handler
-		// identity, so a view model passing freshly-created closures leaves these bound.
-		const { vm, H } = await adoptedVm();
-
-		await vm.stop();
-
-		expect(H.calls).toEqual(['off:strand:started', 'off:strand:stopped', 'off:strand:writable', 'off:strand:error', 'off:strand:commit-held', 'stopPhoneNode']);
-		expect(H.state.node.boundHandlerCount()).toBe(0);
-	});
-
-	it('clears the view model back to idle', async () => {
+	it('stops the edge node and drops the strand list with the node', async () => {
+		// A stop closes every strand database, so a chat screen still offered one of
+		// those instances would read through a closed handle.
 		const { mod, H } = await loadModule();
 		H.presentRunningNode().strands.set('strand-1', H.fakeStrand());
 		const vm = new mod.CadreViewModel();
 
 		await vm.stop();
 
+		expect(H.calls).toContain('stop');
 		expect(vm.status).toBe('idle');
 		expect(vm.peerId).toBe('');
 		expect(vm.strandCount).toBe(0);
+		expect(vm.getFirstStrand()).toBeNull();
 	});
 });
 
@@ -349,9 +341,8 @@ describe('the strand list', () => {
 	});
 
 	it('refreshes itself when a strand reports an error, and says so', async () => {
-		// The noisiest of the three handlers: it logs before refreshing, and a
-		// refresh that stopped happening here would leave a dead strand showing
-		// `active` in the list.
+		// The noisiest of the handlers: it logs before refreshing, and a refresh that
+		// stopped happening here would leave a dead strand showing `active` in the list.
 		const { vm, H } = await adoptedVm();
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 		try {
@@ -363,18 +354,6 @@ describe('the strand list', () => {
 		} finally {
 			warn.mockRestore();
 		}
-	});
-
-	it('ignores a strand event that arrives after the node stopped running', async () => {
-		// `refreshStrands` is guarded on `isRunning`, so a late event from a node
-		// being torn down cannot repopulate the list from it.
-		const { vm, H } = await adoptedVm();
-		H.state.node.strands.set('strand-1', H.fakeStrand());
-		H.state.node.isRunning = false;
-
-		H.state.node.emit('strand:started', { strandId: 'strand-1' });
-
-		expect(vm.strandCount).toBe(0);
 	});
 });
 
@@ -402,7 +381,7 @@ describe('createStrand', () => {
 describe('dialPeer', () => {
 	it('forwards the address and propagates a dial failure', async () => {
 		// Unguarded by design — it delegates to `cadre-phone`, which carries its own
-		// 'Phone node not started' guard (covered in `cadre-phone.spec.ts`).
+		// 'Phone node not started' guard.
 		const { vm, H } = await adoptedVm();
 
 		await vm.dialPeer('/ip4/1.2.3.4/tcp/4001/ws');

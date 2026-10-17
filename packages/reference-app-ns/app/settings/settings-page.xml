@@ -42,6 +42,11 @@
 					<Label text="Bootstrap addr" class="label" />
 					<TextField text="{{ bootstrapAddr }}" hint="/ip4/…/tcp/…/ws/p2p/…" class="input"
 						automationText="input-bootstrap-addr" />
+					<Label text="Relays" class="label" />
+					<TextField text="{{ relayAddr }}" hint="/ip4/…/tcp/…/ws/p2p/… (comma-separated)" class="input"
+						automationText="input-relay-addr" />
+					<Label class="hint" textWrap="true"
+						text="A phone accepts no connection, so the only address other machines can dial it at is one a relay forwards. Without a relay this phone can dial out, but cannot be invited to a cadre." />
 					<Button text="Connect" tap="onConnect" isEnabled="{{ cadre.notConnecting }}"
 						class="btn" automationText="btn-connect" />
 				</StackLayout>
@@ -64,7 +69,7 @@
 
 					<Label text="Join a Cadre" class="section-title" />
 					<Label class="hint" textWrap="true"
-						text="Paste an invitation an owner of the cadre issued. Joining pins that owner's keys and admits this phone at one of the members the invitation names." />
+						text="Paste an invitation an owner of another cadre issued. This phone moves to that cadre, keeping its identity: joining pins that owner's keys and admits this phone at one of the members the invitation names. A failed join returns it to the cadre it was in." />
 					<Label text="Paste cadre invitation" class="label" />
 					<TextView text="{{ cadreInvitationInput }}" hint="base64url cadre invitation"
 						class="input textarea" automationText="input-cadre-invitation" />

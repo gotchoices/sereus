@@ -1,6 +1,7 @@
 /**
- * join-failure.ts — the plain words the "Join cadre" modal shows for each way
- * `CadreNode.redeemCadreInvitation` can fail.
+ * join-failure.ts — the plain words the "Join cadre" modal shows for each way a
+ * join can fail before a member admits the phone: `CadreNode.redeemCadreInvitation`'s
+ * errors, and the edge node's refusal before it switches party.
  *
  * A hand-copied twin of reference-app-rn's `src/join-failure.ts`; the two apps
  * share no code by design (docs/reference-app-ns.md).
@@ -11,6 +12,7 @@ import {
 	CadreInviteReplyInvalidError,
 	CadreInviteUnreachableError,
 } from '@serfab/cadre-core';
+import { StrandsNeedOwnerJoinError } from '@serfab/cadre-core/edge-node';
 
 const TRY_AGAIN = 'The member could not complete the join right now; try again';
 
@@ -34,5 +36,10 @@ export function describeJoinFailure(err: unknown): string {
 	if (err instanceof CadreInviteRejectedError) return REJECTION_TEXT[err.code];
 	if (err instanceof CadreInviteUnreachableError) return 'No member named in the invitation could be reached';
 	if (err instanceof CadreInviteReplyInvalidError) return 'A member answered, but its answer did not verify';
+	if (err instanceof StrandsNeedOwnerJoinError) {
+		// No strands means pending joins or invitations only.
+		const held = err.strandCount > 0 ? `this phone's ${err.strandCount} strand(s)` : "what this phone's own cadre holds";
+		return `This invitation makes the phone a member, and only an owner can bring ${held} along. Ask for an invitation that also grants owner.`;
+	}
 	return err instanceof Error ? err.message : String(err);
 }

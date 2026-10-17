@@ -1,11 +1,13 @@
 /**
- * cadre-vm.ts — NativeScript view model for CadreNode lifecycle.
+ * cadre-vm.ts — NativeScript view model for the phone's edge node.
  *
  * Replaces reference-app-rn's `use-cadre.ts` + `cadre-context.tsx`: an
- * `Observable` wrapping the singleton phone node (`cadre-phone.ts`) so both the
+ * `Observable` over the phone's one edge node (`cadre-phone.ts`) so both the
  * Chat and Settings screens share one source of truth for connection status,
- * peer id, and strands. Exposed as a module-level singleton via `getCadreVm()`,
- * mirroring RN's `cadre-context` (one node, one VM, shared across screens).
+ * peer id, and strands. Status follows the edge node's own reports
+ * (`EdgeNode.onStatus`), so a start, stop or join is shown whoever began it.
+ * Exposed as a module-level singleton via `getCadreVm()`, mirroring RN's
+ * `cadre-context` (one node, one VM, shared across screens).
  */
 
 import { Observable, type EventData } from '@nativescript/core';
@@ -15,19 +17,11 @@ import type {
 	CadreNode,
 	CadreNodeEvents,
 	ControlNetworkSeed,
-	RedeemCadreInvitationResult,
 	StrandCommitHeld,
 	StrandInstance,
 } from '@serfab/cadre-core';
-import {
-	startPhoneNode,
-	stopPhoneNode,
-	getPhoneNode,
-	loadSavedStartOptions,
-	dialPeer as dialPeerImpl,
-	type PhoneNodeOptions,
-	type SavedStartOptions,
-} from './cadre-phone';
+import type { EdgeNodeOptions, EdgeNodeStatus, JoinCadreResult, SavedStart } from '@serfab/cadre-core/edge-node';
+import { edge, dialPeer as dialPeerImpl } from './cadre-phone';
 import { createChatStrand } from './chat-strand';
 
 export type CadreStatus = 'idle' | 'connecting' | 'connected' | 'error';
@@ -51,36 +45,17 @@ export class CadreViewModel extends Observable {
 	static readonly commitHeldEvent = 'commitHeld';
 
 	private _status: CadreStatus = 'idle';
-	private _node: CadreNode | null = null;
 	private _peerId = '';
 	private _error = '';
 	private _strands = new Map<string, StrandInstance>();
-	private _savedStartOptions: PhoneNodeOptions | null = null;
-
-	// Stored event handlers so they can be detached on stop.
-	private readonly onStrandStarted = (): void => this.refreshStrands();
-	private readonly onStrandStopped = (): void => this.refreshStrands();
-	/** A `'syncing'` joiner became writable — its instance gained a database in place. */
-	private readonly onStrandWritable = (): void => this.refreshStrands();
-	private readonly onStrandError = ({ strandId, error }: CadreNodeEvents['strand:error']): void => {
-		console.warn(`[cadre-vm] strand ${strandId} error:`, error);
-		this.refreshStrands();
-	};
-	private readonly onCommitHeld = (held: CadreNodeEvents['strand:commit-held']): void => {
-		this.notify<CommitHeldEventData>({ eventName: CadreViewModel.commitHeldEvent, object: this, ...held });
-	};
+	private _savedStartOptions: EdgeNodeOptions | null = null;
 
 	constructor() {
 		super();
-		// Adopt an already-running node (e.g. after a screen rebuild).
-		const existing = getPhoneNode();
-		if (existing?.isRunning) {
-			this._node = existing;
-			this._status = 'connected';
-			this._peerId = existing.peerId?.toString() ?? '';
-			this._strands = new Map(existing.getStrands());
-			this.bindEvents(existing);
-		}
+		this.subscribeToNodeEvents();
+		// The status now, then every change: a view model built while the node runs adopts it.
+		this.applyStatus(edge.status);
+		edge.onStatus((status) => this.applyStatus(status));
 	}
 
 	// ── Raw observable props ────────────────────────────────────────────────
@@ -98,11 +73,12 @@ export class CadreViewModel extends Observable {
 	}
 
 	/**
-	 * The options the node last started with, read once at launch ({@link restore})
-	 * for the Settings form to prefill from. Null until that read resolves, and when
-	 * nothing is saved.
+	 * The options the node last started with, for the Settings form to fill from: read
+	 * at launch ({@link restore}), then the running start's each time the node comes up,
+	 * so after a join they name the joined party. Null until the launch read resolves,
+	 * and when nothing is saved.
 	 */
-	get savedStartOptions(): PhoneNodeOptions | null {
+	get savedStartOptions(): EdgeNodeOptions | null {
 		return this._savedStartOptions;
 	}
 
@@ -175,7 +151,7 @@ export class CadreViewModel extends Observable {
 		this.notifyPropertyChange('error', error);
 	}
 
-	private setSavedStartOptions(options: PhoneNodeOptions): void {
+	private setSavedStartOptions(options: EdgeNodeOptions): void {
 		this._savedStartOptions = options;
 		this.notifyPropertyChange('savedStartOptions', options);
 	}
@@ -187,28 +163,79 @@ export class CadreViewModel extends Observable {
 		this.notifyPropertyChange('strandItems', this.strandItems);
 	}
 
-	// ── Event wiring ────────────────────────────────────────────────────────
+	// ── Following the edge node ─────────────────────────────────────────────
 
-	private bindEvents(node: CadreNode): void {
-		node.on('strand:started', this.onStrandStarted);
-		node.on('strand:stopped', this.onStrandStopped);
-		node.on('strand:writable', this.onStrandWritable);
-		node.on('strand:error', this.onStrandError);
-		node.on('strand:commit-held', this.onCommitHeld);
+	/** Registered once, on the edge node, which applies them to every node a start or join builds. */
+	private subscribeToNodeEvents(): void {
+		const refresh = (): void => this.refreshStrands();
+		edge.on('strand:started', refresh);
+		edge.on('strand:stopped', refresh);
+		// A `'syncing'` joiner became writable — its instance gained a database in place.
+		edge.on('strand:writable', refresh);
+		edge.on('strand:error', ({ strandId, error }: CadreNodeEvents['strand:error']) => {
+			console.warn(`[cadre-vm] strand ${strandId} error:`, error);
+			refresh();
+		});
+		edge.on('strand:commit-held', (held: CadreNodeEvents['strand:commit-held']) => {
+			this.notify<CommitHeldEventData>({ eventName: CadreViewModel.commitHeldEvent, object: this, ...held });
+		});
 	}
 
-	private unbindEvents(node: CadreNode): void {
-		node.off('strand:started', this.onStrandStarted);
-		node.off('strand:stopped', this.onStrandStopped);
-		node.off('strand:writable', this.onStrandWritable);
-		node.off('strand:error', this.onStrandError);
-		node.off('strand:commit-held', this.onCommitHeld);
-	}
-
-	private refreshStrands(): void {
-		if (this._node?.isRunning) {
-			this.setStrands(new Map(this._node.getStrands()));
+	/**
+	 * Show what the edge node reports. Every state but `running` drops the strand map: a stop
+	 * closes each strand's database, so a screen still holding an instance must not read
+	 * through it.
+	 */
+	private applyStatus(status: EdgeNodeStatus): void {
+		switch (status.state) {
+			case 'running':
+				this.showRunning(status.node);
+				return;
+			case 'starting':
+			case 'joining':
+				this.setStatus('connecting');
+				return;
+			case 'stopped':
+				this.showStopped('idle', '');
+				return;
+			case 'removed':
+				this.showStopped('idle', `An owner removed this phone from cadre ${status.partyId}`);
+				return;
+			case 'failed':
+				this.showStopped('error', status.error.message);
+				return;
 		}
+	}
+
+	private showRunning(node: CadreNode): void {
+		this.setPeerId(node.peerId?.toString() ?? '');
+		this.setStrands(new Map(node.getStrands()));
+		this.setError('');
+		this.setStatus('connected');
+		// After the status, so a listener reading `connected` sees the node up.
+		if (edge.options) this.setSavedStartOptions(edge.options);
+	}
+
+	private showStopped(status: CadreStatus, error: string): void {
+		this.setPeerId('');
+		this.setStrands(new Map());
+		this.setError(error);
+		this.setStatus(status);
+	}
+
+	/** `edge.node` is null as soon as a stop begins, so a late event from a node going down changes nothing. */
+	private refreshStrands(): void {
+		const node = edge.node;
+		if (node?.isRunning) {
+			this.setStrands(new Map(node.getStrands()));
+		}
+	}
+
+	/** The running node, or a throw saying there is none — the guard every node action shares. */
+	private runningNode(): CadreNode {
+		const node = edge.node;
+		if (!node) throw new Error('Node not started');
+		return node;
 	}
 
 	// ── Accessors for the Chat VM ───────────────────────────────────────────
@@ -232,9 +259,9 @@ export class CadreViewModel extends Observable {
 	 * this read owns the node and is not second-guessed.
 	 */
 	async restore(): Promise<void> {
-		let saved: SavedStartOptions | undefined;
+		let saved: SavedStart | undefined;
 		try {
-			saved = await loadSavedStartOptions();
+			saved = await edge.loadSavedStart();
 		} catch (err) {
 			// NOTE: fields stay blank, so a Connect now mints a new party id and, on
 			// success, overwrites the unreadable record. Acceptable because the
@@ -251,35 +278,22 @@ export class CadreViewModel extends Observable {
 
 	/**
 	 * Start (or adopt) the phone node. Sets status to `error` on failure rather
-	 * than throwing, matching the RN hook — callers read `status`/`error`.
+	 * than throwing, matching the RN hook — callers read `status`/`error`. The
+	 * edge node reports the start's progress itself (`applyStatus`).
 	 */
-	async start(opts: PhoneNodeOptions): Promise<void> {
+	async start(opts: EdgeNodeOptions): Promise<void> {
+		this.setError('');
 		try {
-			this.setStatus('connecting');
-			this.setError('');
-			const node = await startPhoneNode(opts);
-			this._node = node;
-			this.bindEvents(node);
-			this.setPeerId(node.peerId?.toString() ?? '');
-			this.setStrands(new Map(node.getStrands()));
-			this.setStatus('connected');
+			await edge.start(opts);
 		} catch (err) {
 			console.error('[cadre-vm] start failed:', err instanceof Error ? err.stack : err);
-			this.setError(errMessage(err));
-			this.setStatus('error');
+			this.showStopped('error', errMessage(err));
 		}
 	}
 
+	/** Settings → Disconnect: also turns off the next launch's auto-start. */
 	async stop(): Promise<void> {
-		if (this._node) {
-			this.unbindEvents(this._node);
-		}
-		await stopPhoneNode();
-		this._node = null;
-		this.setPeerId('');
-		this.setStrands(new Map());
-		this.setError('');
-		this.setStatus('idle');
+		await edge.stop();
 	}
 
 	/**
@@ -307,8 +321,7 @@ export class CadreViewModel extends Observable {
 	 * ({@link joinCadre}).
 	 */
 	async applySeed(encoded: string): Promise<void> {
-		const node = this._node;
-		if (!node) throw new Error('Node not started');
+		const node = this.runningNode();
 		const seed = this.decodeSeedOrThrow(node, encoded);
 		const result = await node.applySeed(seed);
 		if (!result.success) {
@@ -333,18 +346,19 @@ export class CadreViewModel extends Observable {
 	}
 
 	/**
-	 * Join the cadre a pasted base64url invitation names: decode it, then redeem it
-	 * at one of the members it lists (`CadreNode.redeemCadreInvitation`, which pins
-	 * the invitation's owner keys before dialing). Guard order matches
-	 * {@link applySeed}: 'Node not started' throws before anything is decoded. The
-	 * node's own errors (`CadreInviteRejectedError`, `CadreInviteUnreachableError`,
-	 * `CadreInviteReplyInvalidError`) pass through for the Settings screen to word.
+	 * Join the cadre a pasted base64url invitation names: decode it, then hand it to
+	 * the edge node, which moves this phone to that party, keeping its identity, and
+	 * redeems the invitation at one of the members it lists, pinning its owner keys
+	 * before dialing. That party starts as joined, so owner genesis never runs there:
+	 * genesis before the party's control rows arrive would seat this phone as a second
+	 * founder. A failed join starts the party this phone left again. The errors
+	 * (`CadreInviteRejectedError`, `CadreInviteUnreachableError`,
+	 * `CadreInviteReplyInvalidError`, `StrandsNeedOwnerJoinError`) pass through for the
+	 * Settings screen to word.
 	 */
-	async joinCadre(encodedInvitation: string): Promise<RedeemCadreInvitationResult> {
-		const node = this._node;
-		if (!node) throw new Error('Node not started');
+	async joinCadre(encodedInvitation: string, relayAddrs: string[]): Promise<JoinCadreResult> {
 		const invitation = this.decodeInvitationOrThrow(encodedInvitation);
-		return node.redeemCadreInvitation(invitation);
+		return edge.joinCadre(invitation, { relayAddrs });
 	}
 
 	async dialPeer(addr: string): Promise<void> {
@@ -352,8 +366,7 @@ export class CadreViewModel extends Observable {
 	}
 
 	async createStrand(strandId: string): Promise<StrandInstance> {
-		const node = this._node;
-		if (!node) throw new Error('Node not started');
+		const node = this.runningNode();
 		const instance = await createChatStrand(node, strandId);
 		this.refreshStrands();
 		return instance;

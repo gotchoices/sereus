@@ -1,10 +1,9 @@
 /**
  * Vitest global setup — runs once before the reference-app-ns unit suite.
  *
- * `node-local-slots.spec.ts` composes `kvSlot` with the REAL
- * `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, and
- * `cadre-phone.spec.ts` keeps both of those real over a faked `SqliteKVStore` —
- * all runtime values from `@serfab/cadre-core`, which reaches `node_modules` as
+ * `ns-edge-platform.spec.ts` runs the REAL edge node (`@serfab/cadre-core/edge-node`)
+ * over the real `@optimystic/db-p2p-storage-ns` stores, and the view-model suites
+ * decode real invitations — all runtime values from `@serfab/cadre-core`, which reaches `node_modules` as
  * a symlink whose manifest points at `dist`. That entry point in turn imports
  * the `@optimystic/*` and `@quereus/quereus` packages linked in from their
  * sibling checkouts. So an edit to any of their `src` with no following build

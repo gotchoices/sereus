@@ -25,7 +25,7 @@
  * works, and is not needed today) — do not replace the real class with a double.
  *
  * Scope is deliberately these two modules, plus `isAndroid` and `Utils` for
- * `src/ns-db-path.ts`, which `cadre-phone.ts` and `ns-storage.ts` call before every
+ * `src/ns-db-path.ts`, which `ns-edge-platform.ts` calls before every
  * database open. `isAndroid` is false under Node, so that helper passes names through
  * unchanged — the names the specs assert on — and never reaches `Utils`. The real
  * `utils` module cannot stand in: it ships only `index.android.js` / `index.ios.js`,

@@ -3,8 +3,8 @@
  * member admits the app: `CadreNode.redeemCadreInvitation`'s errors, and the kit's refusals
  * before it switches party.
  *
- * reference-app-ns carries a hand-copied twin (`src/join-failure.ts` there) without the kit's
- * refusals, since it has no party to leave; the two apps share no code by design
+ * reference-app-ns carries a hand-copied twin (`src/join-failure.ts` there), without the
+ * cancelled-join alert, since it offers no cancel; the two apps share no code by design
  * (docs/reference-app-ns.md).
  */
 

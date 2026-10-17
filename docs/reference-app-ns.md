@@ -55,107 +55,56 @@ This is the same topology as the RN app — see
 | **Phone** | NativeScript Core (V8/JSC) | WebSocket + circuit relay | SQLite (`db-p2p-storage-ns`) | `transaction` |
 | **Drone** | Node.js (`cadre-cli` / test-fixture) | TCP + WebSocket listener | File system / in-memory | `storage` |
 
-The circuit-relay transport is for dialing out only: unlike the RN app, the NS app never names a relay to reserve a slot on, so it holds no `/p2p-circuit` address and cannot be reached through a relay (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)).
+The phone reserves a slot on each relay named in Settings → Relays (`input-relay-addr`, the start's `relayAddrs`), so its control node and each strand node hold a `/p2p-circuit` address and can be dialed through the relay. With no relay named it dials out only, and cannot be invited (see [architecture.md → Which nodes can be reached through a relay](architecture.md#which-nodes-can-be-reached-through-a-relay)).
 
 ### Storage
 
-The phone uses `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`,
-`openOptimysticNSDb`, `loadOrCreateNSPeerKey`) over the
-`@nativescript-community/sqlite` native plugin. One database per cadre-core storage
-scope: `sereus-<strandId>` for each strand, and `sereus-control-<hex party id>`
-for the party's control database — the control key carries the party id, so switching
-parties on one device lands on a different database rather than sharing one. The peer
-identity (Ed25519 key, producing a stable PeerId across cold launches) lives in
-`sereus-peer-identity`. On Android each database is opened by its full path under the
-app's databases directory (`src/ns-db-path.ts`), so opening one needs no Activity and
-works before the first screen exists; it is the same file the plugin uses for a bare
-name. Because `openOptimysticNSDb` is async but
-`CadreNodeConfig.storage.provider` is a sync factory, `src/ns-storage.ts` returns a
-lazy `IRawStorage` proxy that awaits a cached open before delegating each call. Its
-`durability` is read before any open, so it states `'power-loss'`, the value
-`SqliteRawStorage` fixes; it has no `close`, since the storage it delegates to is
-shared with every later proxy over the same database. The
-cache holds one open per database name. An open that fails is dropped from it, so the
-operations awaiting that open fail with its error and the next operation opens again;
-the identity database in `src/cadre-phone.ts` follows the same rule.
+The phone runs cadre-core's edge node (`createEdgeNode` from `@serfab/cadre-core/edge-node`, the bring-up React Native's `createPhoneNode` is too) over SQLite: `src/ns-edge-platform.ts` supplies its key store and storage over `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`, `SqliteKVStore`, `openOptimysticNSDb`) and the `@nativescript-community/sqlite` native plugin. One database per cadre-core storage scope: `sereus-<strandId>` for each strand, and `sereus-control-<hex party id>` for the party's control database — the control key carries the party id, so switching parties on one device lands on a different database rather than sharing one. On Android each database is opened by its full path under the app's databases directory (`src/ns-db-path.ts`), so opening one needs no Activity and works before the first screen exists; it is the same file the plugin uses for a bare name.
+
+- **Opened on first use.** The edge node asks for a scope's storage synchronously and the opener is async, so the platform hands out cadre-core's `lazyRawStorage` proxy, which awaits the open before each call. Its `durability` is read before any open, so it states `'power-loss'`, the value `SqliteRawStorage` fixes.
+- **One open per database name.** Every proxy over a scope shares one connection. An open that fails is dropped, so the operations awaiting it fail with its error and the next operation opens again.
+- **Closed by every stop.** A stop, and a failed start, flush and close the identity database and every scope's block store and database (`EdgeNodeStorage.close`); the next start opens them again. A screen therefore must not hold a strand instance across Disconnect: the view model drops its strand list on every status but `running`.
+- **Deleted by a removal or a dissolve.** `destroyScope` closes the scope's handle, then deletes its file with the plugin's `deleteDatabase`.
 
 A device that ran a build predating the party scoping still has an unscoped
 `sereus-control` database. Nothing opens or deletes it: its rows belong to whichever
 party was configured when they were written and nothing recorded which.
 
-### Node-local records
+### Node-local records and identity
 
-The two per-party records cadre-core never replicates — the trusted-owner anchor
-and the cold-start bootstrap-peer set — are durable here as well. Both go
-through `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore` over a
-`DurableSlot` this app supplies (`src/node-local-slots.ts`): one
-`SqliteKVStore` with an *empty* key prefix over the same
-`sereus-peer-identity` database, under the literal keys
-`trusted-owners.<partyId>` and `bootstrap-peers.<partyId>`. `cadre-phone.ts`
-holds that database handle open for the node's whole life (`identityDbOpening`,
-which caches the in-flight open so overlapping callers share one native handle)
-and closes it in `stopPhoneNode`.
+`sereus-peer-identity` is the one database that is not a storage scope, and cannot be: the party id is read out of it. Its `kv` table holds two things, each in its own column:
 
-One database, one fate: the identity BLOB and both node-local records are wiped
-together. This app has no Keychain/Keystore integration, so the anchor is only as
-protected as the plaintext identity key it qualifies — unlike React Native, which
-puts the anchor in the secure enclave (see [`reference-app-rn.md`](reference-app-rn.md)).
-Whoever adds NS secure storage should move both together.
+- **The key store** (`EdgeNodePlatform.keyStore`), in `b_val`: the identity under `peer-private-key`, the row `loadOrCreateNSPeerKey` wrote before the edge node, so a phone keeps its peer id across the upgrade; every other slot (the owner key, the joined-strand and strand-move records) under `keystore.<slot id>`. Each write is followed by a synced commit. A slot's row that holds no bytes is refused with `KeyStoreAccessError`, never read as empty, which would write a new key over it.
+- **The node-local records** (`EdgeNodeStorage.nodeLocal`), text in `s_val` through one `SqliteKVStore` with an empty key prefix: the saved start (`start-options`), the dissolve marker (`dissolving-party`), and per party the trusted-owner anchor, bootstrap peers, enrolled-machine count and strand network state (`trusted-owners.<partyId>`, `bootstrap-peers.<partyId>`, `enrolled-machines.<partyId>`, `strand-network.<partyId>`), the keys this app wrote before the edge node.
 
-**Redeeming a cadre invitation is this app's only writer of the anchor.**
-Settings' Join a Cadre section takes a pasted invitation (`input-cadre-invitation`,
-`btn-join-cadre`) and hands it to `CadreNode.redeemCadreInvitation`
-(`CadreViewModel.joinCadre`), which pins the bundle's
-owner keys before dialing the members it names. The pin persists and sticks even
-if the redemption then fails, so a retry or a later seed from the same owner is
-anchored. The Seed Bootstrap field (`input-seed`) is accepted only when the seed's
-signer is already anchored — the default `anchoredTrustPolicy` — so it serves a
-phone that founded the cadre or has redeemed that owner's invitation; the hint
-beside it says so. Both fields are kept on failure, so the retry costs no re-paste.
-A seed decodes through a raw base64url → `JSON.parse` in cadre-core, and
-`decodeCadreInvitation` names what is wrong with a bundle but not which field it
-came from, so `CadreViewModel` rewraps either failure with copy naming *which*
-paste was unreadable; the modal would otherwise read `SyntaxError: Unexpected
-token …` and name neither. (RN surfaces the bare parse error; this is a deliberate
-NS-only improvement, not a parity gap to close in the other direction.) A
-*refused* redemption is worded by `src/join-failure.ts`, a hand-copied twin of
-RN's module: one plain sentence per rejection code, one each for an unreachable
-member and an unverifiable reply.
+The database opens on first use (the launch read of the saved start, or a start) and closes with every stop; the next read opens it again.
 
-The app wires **no owner private key**, so there is no genesis self-anchor. It
-does not need one — it either forms a cadre solo or enrolls into an existing one
-via an invite. (An owner private key would also land in the same plaintext SQLite
-blob as the identity key; see the Keychain/Keystore caveat above.) The
-bootstrap-peer record fills in from `applySeed`.
+One database, one fate: the identity, the owner key and the anchor are wiped together. This app has no Keychain/Keystore integration, so all three sit in plaintext SQLite, unlike React Native, which keeps them in the platform secure store (see [`reference-app-rn.md`](reference-app-rn.md)). Whoever adds NS secure storage moves the identity, the owner key and the anchor together.
 
-Every record above is filed under the party id, so they are read back on a
-relaunch only because the party id itself is remembered: the **start options**
-(party id and bootstrap addresses, plus `autoStart`) sit under the one key
-`start-options` of the same `kv` table — deliberately *not* party-scoped, since
-this is what selects the party. [`src/start-options.ts`](../packages/reference-app-ns/src/start-options.ts)
-parses it with the same rules as React Native's copy (see
-[`reference-app-rn.md` § Start options](reference-app-rn.md#start-options-app-private-leveldb)):
-unparseable, unknown version or no party id counts as no record (logged); a
-malformed bootstrap list becomes `[]`.
+### Joining another cadre
 
-- **Written** only by `cadre-phone.ts`: after every successful start
-  (`autoStart: true`) and on Settings → **Disconnect** (`autoStart: false`, same
-  options). A failed start writes nothing. Both writes are best-effort — a
-  failure is logged and the node carries on. `startSolo` (`solo-smoke.ts`) is a
-  start like any other and writes it too.
-- **Read** once at app launch (`CadreViewModel.restore`, run when `getCadreVm()`
-  first creates the shared view model). With `autoStart` true and nothing started
-  yet, the app connects by itself with those options, exactly as a Connect tap
-  would — so a redeemed invitation's pin is read back and a later seed from that
-  owner is accepted. Either way the Settings Party ID and
-  Bootstrap fields prefill from them (the bootstrap field is comma-separated so a
-  list round-trips). A read fault shows "Could not read the saved connection
-  settings" and starts nothing.
-- **Overlapping starts** (the launch auto-start and a Connect tap) share one start
-  in flight; Disconnect during a start waits for it, then stops that node.
-- **Reinstall** deletes the SQLite database with the app, identity included, so a
-  reinstalled phone is a new peer in a new party. Nothing on this app lives in the
-  Keychain to outlive it.
+Settings' Join a Cadre section takes a pasted invitation (`input-cadre-invitation`, `btn-join-cadre`) and hands it, with the Relays field's relays, to the edge node's `joinCadre` (`CadreViewModel.joinCadre`). The phone moves to the invitation's party, keeping its identity: the edge node stops the running node, starts one in that party with `origin: 'joined'`, and redeems the invitation there, which pins the bundle's owner keys before dialing the members it names. A joined party never runs owner genesis, on this start or a later one: genesis before the party's control rows arrive would seat the phone as a second founder.
+
+- **Admitted**: the edge node saves the joined party as the start, and the Settings form takes the running start's party, bootstrap and relay fields, so the next Connect starts the joined party rather than the one the phone left.
+- **Refused**: the edge node starts the party the phone left again, and the modal words the refusal (`src/join-failure.ts`).
+- **Strands of the party left behind**: when the phone founded the party it leaves and the invitation grants owner, the edge node moves that party's strands into the joined one itself; a member-only invitation is refused before anything stops when there is something to move (`StrandsNeedOwnerJoinError`). The left party's data stays on disk under its own names; dissolving it has no NativeScript UI.
+
+The Seed Bootstrap field (`input-seed`) is accepted only when the seed's signer is already anchored — the default `anchoredTrustPolicy` — so it serves a phone that founded the cadre or joined it by that owner's invitation; the hint beside it says so. Both fields are kept on failure, so the retry costs no re-paste. A seed decodes through a raw base64url → `JSON.parse` in cadre-core, and `decodeCadreInvitation` names what is wrong with a bundle but not which field it came from, so `CadreViewModel` rewraps either failure with copy naming *which* paste was unreadable; the modal would otherwise read `SyntaxError: Unexpected token …` and name neither. (RN surfaces the bare parse error; this is a deliberate NS-only improvement, not a parity gap to close in the other direction.) `src/join-failure.ts` is a hand-copied twin of RN's module: one plain sentence per rejection code, one each for an unreachable member and an unverifiable reply, and one for the refusal to join as a member with strands to move.
+
+### Owner key
+
+A start from Settings → Connect founds its party (`origin` absent, read as `'founded'`), so the edge node runs owner genesis on it: on a party with no owner yet, it creates an owner key in the key store's owner slot, seats it as the founding owner and wires it for signing; on a party that already has owners, it wires the slot's key only if it is one of them. The key sits in plaintext SQLite beside the identity (see above). A start naming the party of the saved start takes that start's `origin`, so typing a joined party's id back into Settings does not run genesis there.
+
+Typing *another* cadre's party id and bootstrap address into Settings is still a founded start: on a phone whose copy of that party's owner rows has not arrived when genesis runs, genesis seats this phone's key as a second founding owner, as it does on React Native. Joining by invitation is the way into another cadre. The bootstrap-peer record fills in from `applySeed`.
+
+### Start options
+
+Every record above is filed under the party id, so they are read back on a relaunch only because the party id itself is remembered: the **saved start** (`EdgeNode.loadSavedStart`; party id, bootstrap and relay addresses, how the phone came to the party, plus `autoStart`) sits under the one key `start-options`, deliberately *not* party-scoped, since it is what selects the party. The edge node owns its format and parsing (`@serfab/cadre-core/edge-node` → `options.ts`). A record written before the edge node (`{ version, partyId, bootstrapAddrs, autoStart }`) reads as a founded start with no relays, so an installed phone keeps its party and its auto-start (pinned in `test/ns-edge-platform.spec.ts`).
+
+- **Written** only by the edge node: after every successful start and an admitted join (`autoStart: true`), and on Settings → **Disconnect** (`autoStart: false`, same options); a removal by an owner replaces it. A failed start writes nothing. `startSolo` (`solo-smoke.ts`) is a start like any other and writes it too.
+- **Read** once at app launch (`CadreViewModel.restore`, run when `getCadreVm()` first creates the shared view model). With `autoStart` true and nothing started yet, the app connects by itself with those options, exactly as a Connect tap would. Either way the Settings Party ID, Bootstrap and Relays fields prefill from them (comma-separated, so a list round-trips). A read fault shows "Could not read the saved connection settings" and starts nothing.
+- **Overlapping transitions** (the launch auto-start and a Connect tap, Disconnect during a start, Connect during a stop) are queued by the edge node and run in call order.
+- **Reinstall** deletes the SQLite database with the app, identity included, so a reinstalled phone is a new peer in a new party. Nothing on this app lives in the Keychain to outlive it.
 
 ## App Structure
 
@@ -172,10 +121,9 @@ app/
   settings/         settings screen: connect/join-cadre/seed/dial-peer/create-strand/modal  (SettingsViewModel → cadre-vm)
 src/
   polyfills/        V8/JSC-audited globals (buffer-global, hermes, intl-pluralrules, event, node-crypto, node-os, audit, registry)
-  ns-storage.ts     makeLazyNsStorage(scope) — lazy IRawStorage proxy over async openOptimysticNSDb
-  cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
-  start-options.ts  the last start options + autoStart, remembered between launches
-  cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands/join  (← RN use-cadre + cadre-context)
+  ns-edge-platform.ts the edge node's platform: key store, node-local store, per-scope block stores (SQLite)
+  cadre-phone.ts    the phone's one edge node (@serfab/cadre-core/edge-node) + helpers on its running node
+  cadre-vm.ts       CadreViewModel (Observable) — edge-node status/strands/join  (← RN use-cadre + cadre-context)
   join-failure.ts   plain words for each way a join can fail  (hand-copied twin of RN's)
   chat-vm.ts        ChatViewModel (Observable) — 2 s poll loop, optimistic send, participant auto-register  (← RN use-chat)
   test-ids.ts       automationText constants shared with the e2e flows (ported from RN src/test-ids.ts)
@@ -208,7 +156,7 @@ Chat / Settings pages (via `cadre-vm` → `cadre-phone`) on navigation, after th
 audit runs. The Chat page (the default page) creates the shared `CadreViewModel`,
 which reads the saved start options and reconnects when the last session ended
 connected — Settings → Connect is the other way the node starts (see
-[Node-local records](#node-local-records)).
+[Start options](#start-options)).
 
 ```ts
 // app/app.ts
@@ -368,7 +316,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 | Tier | Command | Agent/CI-runnable? | What it proves |
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
-| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the join and seed paths in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database, and the open cache behind the lazy storage proxy (`src/ns-storage.ts`). Guarded by the shared stale-build check (`test/global-setup.ts`). The pages are **not** covered here. |
+| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the SQLite edge-node platform (`src/ns-edge-platform.ts`) under the real edge node over `node:sqlite` — what an upgraded phone reads back and the key store's rows — the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the join and seed paths in depth, plus every other button on that screen — and the chat view model (`src/chat-vm.ts`: poll, participant registration, send and retry key) over a real in-memory Quereus database. Guarded by the shared stale-build check (`test/global-setup.ts`). The pages are **not** covered here. |
 | Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, the named-package browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
@@ -377,15 +325,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 
 `vitest.config.ts` collects `test/**/*.spec.ts` under `environment: 'node'`.
 
-Three groups are targeted. The first reaches no NativeScript API at all:
-`src/node-local-slots.ts`, `src/cadre-phone.ts` and `src/ns-storage.ts`.
-`cadre-phone.ts` runs with `@optimystic/db-p2p-storage-ns` (SQLite, identity) and
-`src/ns-storage.ts` mocked, and cadre-core mocked **only** in its `CadreNode`
-export so the two node-local store classes stay real. `ns-storage.ts` has its own
-suite (`test/ns-storage.spec.ts`) over a mocked `@optimystic/db-p2p-storage-ns`,
-covering the open cache — one open per database name, a failed open retried by the
-next operation — and the proxy staying unopened until a listing is iterated; its
-one-line delegating methods are left to the `IRawStorage` types.
+Three groups are targeted. The first is the platform the edge node runs over, `src/ns-edge-platform.ts` (`test/ns-edge-platform.spec.ts`). Node's built-in `node:sqlite`, behind `@optimystic/db-p2p-storage-ns`'s own `wrapNSPluginDb`, stands in for the NativeScript plugin: only `openOptimysticNSDb` and the plugin's `deleteDatabase` are mocked, so the SQL, the package's stores and cadre-core's edge node are real. It pins what a phone that ran this app before the edge node reads back — its identity row as the key store's identity slot, its saved start through `EdgeNode.loadSavedStart` — and the key store's rows: each slot's `kv` key, the listing, and the refusal of a row that holds no bytes. The edge node's own behaviour (queued transitions, cleanup after a failed start, genesis, joins) is covered by cadre-core's suite; this platform's open, close and delete of its handles is checked by reading.
 
 The second is the two `Observable` view models behind the Settings screen —
 `src/cadre-vm.ts` and `app/settings/settings-view-model.ts`. They import
@@ -395,17 +335,19 @@ refuses). `resolve.alias` therefore redirects that exact specifier — anchored
 regex, so the subpaths are untouched — to `test/stubs/nativescript-core.ts`,
 which re-exports the **real** `Observable` and `ObservableArray` from the
 submodules that do load (`data/observable`, `data/observable-array`). The stub
-also fixes `isAndroid` at false, so `src/ns-db-path.ts` hands the storage and
-identity suites the plain database names they assert on. Both suites
-drive one shared fake `CadreNode`
-(`test/stubs/fake-cadre-node.ts`) that records every call into a single ordered
-array, because the behaviours under test are orderings: a pasted invitation is
-decoded (by the real `decodeCadreInvitation`, over a bundle the real
-`encodeCadreInvitation` rendered) *before* `redeemCadreInvitation` is reached, so
-an unreadable paste never touches the node; a seed decodes before it is applied;
-and a Settings handler given a blank field makes no call at all. That fake
-declares `implements` against a `Pick<CadreNode, …>` of the
-methods it stands in for, so a cadre-core signature change fails `typecheck`
+also fixes `isAndroid` at false, so `src/ns-db-path.ts` hands the platform suite
+the plain database names its opener is keyed by. Both suites drive one shared fake
+edge node and the fake `CadreNode` it runs (`test/stubs/fake-cadre-node.ts`), handed
+over through a mocked `src/cadre-phone.ts`. The fakes record every call into a
+single ordered array, because the behaviours under test are orderings: a pasted
+invitation is decoded (by the real `decodeCadreInvitation`, over a bundle the real
+`encodeCadreInvitation` rendered) *before* the edge node's `joinCadre` is reached,
+so an unreadable paste never touches it; a seed decodes before it is applied; and a
+Settings handler given a blank field makes no call at all. The view model's status,
+peer id and strand list follow the fake edge node's status reports, as they follow
+the real one's, and a join that comes up in the invitation's party leaves the
+Settings form naming that party. Both fakes declare `implements` against a
+`Pick<…>` of the real types, so a cadre-core signature change fails `typecheck`
 instead of leaving the suites green while the app breaks on device — a `vi.mock`
 factory is not otherwise checked against the module it replaces.
 

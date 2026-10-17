@@ -26,12 +26,13 @@ app/
   app-root.xml      TabView → Chat + Settings (each a Frame defaultPage)
   app.css           dark theme shared by both screens
   chat/             chat screen: status bar, message ListView, composer (binds getChatVm())
-  settings/         settings screen: connect/seed/add-peer/create-strand/modal (SettingsViewModel → cadre-vm)
+  settings/         settings screen: connect/join-cadre/seed/add-peer/create-strand/modal (SettingsViewModel → cadre-vm)
 src/
   polyfills/        V8/JSC-audited globals (hermes, event, abort, intl, websocket, node-crypto, node-os, buffer-global, audit)
-  ns-storage.ts     makeLazyNsStorage(scope) — lazy IRawStorage proxy over async openOptimysticNSDb
-  cadre-phone.ts    CadreNode singleton (NS storage provider, WS transports, SQLite identity)
-  cadre-vm.ts       CadreViewModel (Observable) — node lifecycle/status/strands (← use-cadre + cadre-context)
+  ns-edge-platform.ts the edge node's platform: key store, node-local store and per-scope block stores over SQLite
+  cadre-phone.ts    the phone's one edge node (@serfab/cadre-core/edge-node) + helpers on its running node
+  cadre-vm.ts       CadreViewModel (Observable) — edge-node status/strands/join (← use-cadre + cadre-context)
+  join-failure.ts   plain words for each way a join can fail (hand-copied twin of RN's)
   chat-vm.ts        ChatViewModel (Observable) — poll loop, optimistic send, participant auto-register (← use-chat)
   test-ids.ts       automationText constants shared with the e2e flows (ported from RN)
   chat-strand.ts    create/join chat strand (ported from reference-app-rn)
@@ -47,7 +48,7 @@ nativescript.config.ts
 | Script | What it does | Agent-runnable? |
 |--------|--------------|-----------------|
 | `yarn workspace @serfab/reference-app-ns typecheck` | `tsc --noEmit` across the new package + cadre-core/db-p2p/storage-ns/quereus types | yes |
-| `yarn workspace @serfab/reference-app-ns test` | `vitest run` — unit suite over `test/**/*.spec.ts` (node-local slots, the `cadre-phone` lifecycle, and the cadre, settings and chat view models), preceded by the shared stale-build check on cadre-core and the linked `@optimystic`/`@quereus` siblings | yes |
+| `yarn workspace @serfab/reference-app-ns test` | `vitest run` — unit suite over `test/**/*.spec.ts` (the SQLite edge-node platform over `node:sqlite`, and the cadre, settings and chat view models), preceded by the shared stale-build check on cadre-core and the linked `@optimystic`/`@quereus` siblings | yes |
 | `yarn workspace @serfab/reference-app-ns test:bundle` | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, the named-package browser variants). The analog of reference-app-rn's `expo export`. | yes |
 | `yarn workspace @serfab/reference-app-ns test:bundle:native` | `ns prepare android` — the same webpack compile plus the gradle native-plugin build | **no** — needs local Android SDK / gradle |
 | `yarn workspace @serfab/reference-app-ns test:e2e` | `node scripts/run-e2e.mjs` — spawns the RN drone fixture, `adb reverse`, runs the reused RN Maestro flows against the NS app | **no** — needs emulator + built APK + Maestro + adb (see Automated e2e) |
@@ -132,6 +133,7 @@ Reuses `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`, `openOptimysticNSDb`
 `loadOrCreateNSPeerKey`) — SQLite via the `@nativescript-community/sqlite` peer
 dependency. One database per cadre-core storage scope: `sereus-<strandId>` per strand,
 and `sereus-control-<hex party id>` for the party's control database. The peer
-identity lives in `sereus-peer-identity`. Because `openOptimysticNSDb` is async but
-`CadreNodeConfig.storage.provider` is a sync factory, `ns-storage.ts` returns a lazy
-proxy that awaits a cached open before delegating (see that file).
+identity, the owner key and the edge node's node-local records (the saved start, each
+party's trusted-owner anchor and dial hints) live in `sereus-peer-identity`. The edge
+node (`@serfab/cadre-core/edge-node`) runs over these through `ns-edge-platform.ts`;
+see [`docs/reference-app-ns.md` § Storage](../../docs/reference-app-ns.md#storage).

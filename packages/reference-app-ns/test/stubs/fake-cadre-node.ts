@@ -1,7 +1,7 @@
 /**
- * The one fake `CadreNode` the three view-model suites drive (cadre, settings,
- * chat), plus the two module doubles that hand it to them (`src/cadre-phone`,
- * `src/chat-strand`).
+ * The one fake edge node, and the fake `CadreNode` it runs, that the three
+ * view-model suites drive (cadre, settings, chat), plus the two module doubles
+ * that hand them over (`src/cadre-phone`, `src/chat-strand`).
  *
  * Shared rather than duplicated per suite. Each suite reaches it through a
  * `vi.hoisted(async () => import(…))` binding, which both the suite body and the
@@ -10,58 +10,68 @@
  * suite must call `vi.resetModules()` (`getCadreVm()` caches a module-level
  * singleton), and the mock factories do not re-import in step with the suite —
  * the factory keeps whichever instance it first captured, so a suite that
- * re-imported would end up configuring a different fake node than the view model
+ * re-imported would end up configuring a different fake than the view model
  * was handed. Hence the explicit {@link reset}, called from every load helper.
  *
- * Every node call is appended to {@link calls} so ORDER can be asserted, not
- * merely presence: the join path must decode the paste before it redeems (an
- * unreadable paste never reaches the node), a seed must decode before it is
- * applied, and a Settings handler given a blank field must make no call at all.
- * Per-spy call-order plumbing would not read as an ordering at the assertion
- * site.
+ * Every edge-node and node call is appended to {@link calls} so ORDER can be
+ * asserted, not merely presence: a seed must decode before it is applied, an
+ * unreadable invitation paste never reaches the edge node, and a Settings handler
+ * given a blank field must make no call at all.
  *
- * {@link FakeNode} declares `implements NodeSurface`, so a cadre-core signature
- * change breaks the BUILD here rather than leaving the suites green while the
- * app breaks on device. A `vi.mock` factory is not type-checked against the
- * module it replaces, so without this the fake could drift arbitrarily far from
- * the real class.
+ * {@link FakeNode} and {@link FakeEdgeNode} declare `implements` against the real
+ * types, so a cadre-core signature change breaks the BUILD here rather than
+ * leaving the suites green while the app breaks on device. A `vi.mock` factory is
+ * not type-checked against the module it replaces, so without this the fakes
+ * could drift arbitrarily far from the real classes.
  */
 
-import type { SavedStartOptions } from '../../src/start-options';
 import type { Database } from '@quereus/quereus';
 import { encodeCadreInvitation } from '@serfab/cadre-core';
 import type {
 	ApplySeedResult,
 	CadreInvitation,
 	CadreNode,
+	CadreNodeEvents,
 	ControlNetworkSeed,
-	RedeemCadreInvitationResult,
 	SeedTrustPolicy,
 	StrandInstance,
 	StrandStatus,
 } from '@serfab/cadre-core';
+import type {
+	EdgeNode,
+	EdgeNodeOptions,
+	EdgeNodeStatus,
+	JoinCadreOptions,
+	JoinCadreResult,
+	SavedStart,
+} from '@serfab/cadre-core/edge-node';
 
 /**
  * The slice of `CadreNode` the view models reach. Pinned as a type so the
  * fake below is checked against the real signatures.
  */
-type NodeSurface = Pick<
-	CadreNode,
-	'isRunning' | 'peerId' | 'getStrands' | 'on' | 'off' | 'decodeSeed' | 'applySeed' | 'redeemCadreInvitation'
+type NodeSurface = Pick<CadreNode, 'isRunning' | 'peerId' | 'getStrands' | 'on' | 'off' | 'decodeSeed' | 'applySeed'>;
+
+/** The slice of `EdgeNode` the view models reach. */
+type EdgeSurface = Pick<
+	EdgeNode,
+	'status' | 'node' | 'options' | 'start' | 'stop' | 'loadSavedStart' | 'onStatus' | 'on' | 'joinCadre'
 >;
 
-/** Every node/module call the view models make, in order. */
+/** Every edge-node, node and module call the view models make, in order. */
 export const calls: string[] = [];
 
 /**
  * Owner keys as the app sees them: opaque base64url strings. Each decodes to 32
  * bytes, which is all `decodeCadreInvitation`'s shape check asks of a key.
  */
-export const KEY_A = 'ZXhhbXBsZS1vd25lci1rZXktYWFhYWFhYWFhYWFhYWE';
-export const KEY_B = 'ZXhhbXBsZS1vd25lci1rZXktYmJiYmJiYmJiYmJiYmI';
+const KEY_A = 'ZXhhbXBsZS1vd25lci1rZXktYWFhYWFhYWFhYWFhYWE';
 /** The invitation keypair's two halves, 32 bytes each like the owner keys. */
 const INVITE_KEY = 'ZXhhbXBsZS1pbnZpdGUta2V5LWFhYWFhYWFhYWFhYWE';
 const INVITE_PRIVATE_KEY = 'ZXhhbXBsZS1pbnZpdGUtc2VlZC1hYWFhYWFhYWFhYWE';
+
+/** The party {@link invitation} names, other than the one a running fake node starts in. */
+export const INVITED_PARTY = 'party-invited';
 
 /**
  * A well-formed cadre invitation, as `CadreNode.createCadreInvitation` would
@@ -71,7 +81,7 @@ const INVITE_PRIVATE_KEY = 'ZXhhbXBsZS1pbnZpdGUtc2VlZC1hYWFhYWFhYWFhYWE';
 export function invitation(): CadreInvitation {
 	return {
 		v: 1,
-		partyId: 'party-x',
+		partyId: INVITED_PARTY,
 		invitePrivateKey: INVITE_PRIVATE_KEY,
 		invite: {
 			key: INVITE_KEY,
@@ -132,14 +142,13 @@ export function refusal(error?: string): ApplySeedResult {
 }
 
 /** An invitation a member accepted, naming itself. */
-export function admission(): RedeemCadreInvitationResult {
+function admission(): JoinCadreResult {
 	return { peerId: '12D3KooWDroneDroneDroneDroneDroneDroneDroneDroneDrone', grantsOwner: false, redeemedAt: '2026-10-07T00:00:00.000Z' };
 }
 
 /**
  * The `CadreNode` surface `cadre-vm.ts` actually reaches. Handed to the view
- * model through the mocked `cadre-phone` module, so it arrives exactly as a real
- * node would.
+ * model through the fake edge node, so it arrives exactly as a real node would.
  */
 export class FakeNode implements NodeSurface {
 	isRunning = true;
@@ -152,14 +161,9 @@ export class FakeNode implements NodeSurface {
 
 	decodeSeedError: Error | null = null;
 	applySeedResult: ApplySeedResult = acceptance();
-	/** What `redeemCadreInvitation` throws when set; else it resolves to {@link redeemResult}. */
-	redeemError: Error | null = null;
-	redeemResult: RedeemCadreInvitationResult = admission();
 
 	readonly decodedSeeds: string[] = [];
 	readonly applied: { seed: ControlNetworkSeed; options: { trustPolicy?: SeedTrustPolicy } | undefined }[] = [];
-	/** Every bundle handed to `redeemCadreInvitation`, decoded. */
-	readonly redeemed: CadreInvitation[] = [];
 
 	getStrands(): Map<string, StrandInstance> {
 		calls.push('getStrands');
@@ -178,8 +182,6 @@ export class FakeNode implements NodeSurface {
 
 	off(event: string, handler: unknown): void {
 		calls.push(`off:${event}`);
-		// By identity: a view model that handed a freshly-created closure here would
-		// leave the original bound, and `boundHandlerCount()` would still see it.
 		this.bound.get(event)?.delete(handler);
 	}
 
@@ -206,43 +208,153 @@ export class FakeNode implements NodeSurface {
 		this.applied.push({ seed, options });
 		return this.applySeedResult;
 	}
+}
 
-	async redeemCadreInvitation(invitation: CadreInvitation): Promise<RedeemCadreInvitationResult> {
-		calls.push('redeemCadreInvitation');
-		this.redeemed.push(invitation);
-		if (this.redeemError) throw this.redeemError;
-		return this.redeemResult;
+/** The fake node as the edge node hands it out. The one cast between the two, at this ONE site. */
+function asCadreNode(node: FakeNode): CadreNode {
+	return node as unknown as CadreNode;
+}
+
+/** The options {@link presentRunningNode} reports the node started with. */
+const RUNNING_OPTIONS: EdgeNodeOptions = { partyId: 'party-x', bootstrapAddrs: [], relayAddrs: [] };
+
+/** A node event subscription, re-applied to the node each time it comes up, as the real edge node does. */
+interface Subscription {
+	event: string;
+	handler: unknown;
+}
+
+/**
+ * The phone's edge node as `cadre-vm.ts` reaches it: status reports, a start and
+ * stop over {@link state}'s one node, the saved start, and a join that brings the
+ * node up in the invitation's party.
+ */
+export class FakeEdgeNode implements EdgeSurface {
+	status: EdgeNodeStatus = { state: 'stopped' };
+	options: EdgeNodeOptions | null = null;
+	private readonly listeners = new Set<(status: EdgeNodeStatus) => void>();
+	private readonly subscriptions = new Set<Subscription>();
+
+	get node(): CadreNode | null {
+		return this.status.state === 'running' ? asCadreNode(state.node) : null;
+	}
+
+	async start(options: EdgeNodeOptions): Promise<CadreNode> {
+		calls.push('start');
+		state.startOpts.push(options);
+		if (this.status.state === 'running') return asCadreNode(state.node);
+		this.report({ state: 'starting' });
+		if (state.startError) {
+			this.report({ state: 'failed', error: state.startError });
+			throw state.startError;
+		}
+		this.run(options);
+		return asCadreNode(state.node);
+	}
+
+	async stop(): Promise<void> {
+		calls.push('stop');
+		this.takeDown();
+		this.report({ state: 'stopped' });
+	}
+
+	async loadSavedStart(): Promise<SavedStart | undefined> {
+		return state.savedStart;
+	}
+
+	onStatus(listener: (status: EdgeNodeStatus) => void): () => void {
+		this.listeners.add(listener);
+		return () => {
+			this.listeners.delete(listener);
+		};
+	}
+
+	on<K extends keyof CadreNodeEvents>(event: K, handler: (data: CadreNodeEvents[K]) => void): () => void {
+		const subscription: Subscription = { event, handler };
+		this.subscriptions.add(subscription);
+		if (this.status.state === 'running') state.node.on(event, handler);
+		return () => {
+			this.subscriptions.delete(subscription);
+			state.node.off(event, handler);
+		};
+	}
+
+	/** Admitted: running in the invitation's party with the relays asked for. Refused: back in the party it left, throwing. */
+	async joinCadre(invitation: CadreInvitation, options: JoinCadreOptions = {}): Promise<JoinCadreResult> {
+		calls.push('joinCadre');
+		state.joined.push({ invitation, options });
+		if (state.joinError) throw state.joinError;
+		this.takeDown();
+		this.run({ partyId: invitation.partyId, bootstrapAddrs: [], relayAddrs: options.relayAddrs ?? [], origin: 'joined' });
+		return state.joinResult;
+	}
+
+	/** Bring {@link state}'s node up with `options`, every subscription attached, and report it running. */
+	run(options: EdgeNodeOptions): void {
+		for (const { event, handler } of this.subscriptions) state.node.on(event, handler);
+		this.options = options;
+		this.report({ state: 'running', node: asCadreNode(state.node), owner: 'enrolled' });
+	}
+
+	/** Detach every subscription from the node going down, as the real edge node's stop does. */
+	private takeDown(): void {
+		if (this.status.state === 'running') {
+			for (const { event, handler } of this.subscriptions) state.node.off(event, handler);
+		}
+		this.options = null;
+	}
+
+	/** Report `status` to every listener; a test calls it for a report no view-model action caused. */
+	report(status: EdgeNodeStatus): void {
+		this.status = status;
+		for (const listener of this.listeners) listener(status);
+	}
+
+	clear(): void {
+		this.status = { state: 'stopped' };
+		this.options = null;
+		this.listeners.clear();
+		this.subscriptions.clear();
 	}
 }
 
+/** The one fake edge node, handed to every view model through the mocked `cadre-phone`. */
+export const edge = new FakeEdgeNode();
+
 export const state = {
-	/** The single fake node a suite drives; one per fresh import of this module. */
+	/** The single fake node a suite drives; one per {@link reset}. */
 	node: new FakeNode(),
-	/** What the mocked `getPhoneNode()` returns — null until a test adopts or starts. */
-	phoneNode: null as FakeNode | null,
 	startError: null as Error | null,
 	dialError: null as Error | null,
 	createStrandError: null as Error | null,
-	startOpts: [] as unknown[],
-	/** What the mocked `loadSavedStartOptions()` resolves to — nothing saved by default. */
-	savedStartOptions: undefined as SavedStartOptions | undefined,
+	/** What `edge.joinCadre` throws when set; else it resolves to {@link joinResult}. */
+	joinError: null as Error | null,
+	joinResult: admission(),
+	startOpts: [] as EdgeNodeOptions[],
+	/** Every invitation handed to `edge.joinCadre`, decoded, with its options. */
+	joined: [] as { invitation: CadreInvitation; options: JoinCadreOptions }[],
+	/** What `edge.loadSavedStart()` resolves to — nothing saved by default. */
+	savedStart: undefined as SavedStart | undefined,
 };
 
 /** Back to a fresh, empty world — one fake node, nothing running, nothing recorded. */
 export function reset(): void {
 	calls.length = 0;
+	edge.clear();
 	state.node = new FakeNode();
-	state.phoneNode = null;
 	state.startError = null;
 	state.dialError = null;
 	state.createStrandError = null;
+	state.joinError = null;
+	state.joinResult = admission();
 	state.startOpts = [];
-	state.savedStartOptions = undefined;
+	state.joined = [];
+	state.savedStart = undefined;
 }
 
-/** Make {@link state}'s node the one a freshly-constructed view model adopts. */
+/** Report {@link state}'s node running, so a freshly-constructed view model adopts it. */
 export function presentRunningNode(): FakeNode {
-	state.phoneNode = state.node;
+	edge.run(RUNNING_OPTIONS);
 	return state.node;
 }
 
@@ -252,27 +364,6 @@ export function clearCalls(): void {
 }
 
 // ── The two module doubles ────────────────────────────────────────────────────
-
-async function startPhoneNode(opts: unknown): Promise<FakeNode> {
-	calls.push('startPhoneNode');
-	state.startOpts.push(opts);
-	if (state.startError) throw state.startError;
-	state.phoneNode = state.node;
-	return state.node;
-}
-
-async function stopPhoneNode(): Promise<void> {
-	calls.push('stopPhoneNode');
-	state.phoneNode = null;
-}
-
-function getPhoneNode(): FakeNode | null {
-	return state.phoneNode;
-}
-
-async function loadSavedStartOptions(): Promise<SavedStartOptions | undefined> {
-	return state.savedStartOptions;
-}
 
 async function dialPeer(addr: string): Promise<void> {
 	calls.push(`dialPeer:${addr}`);
@@ -290,7 +381,7 @@ async function createChatStrand(node: unknown, strandId: string): Promise<Strand
 
 /** Replacement module shape for `src/cadre-phone`. */
 export function phoneNodeMock(): Record<string, unknown> {
-	return { startPhoneNode, stopPhoneNode, getPhoneNode, loadSavedStartOptions, dialPeer };
+	return { edge, dialPeer };
 }
 
 /** Replacement module shape for `src/chat-strand`. */

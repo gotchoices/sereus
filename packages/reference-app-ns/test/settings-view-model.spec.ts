@@ -27,6 +27,7 @@ vi.mock('../src/chat-strand', async () => (await stubs).chatStrandMock());
 type Stubs = typeof import('./stubs/fake-cadre-node');
 
 const SEED = 'encoded-seed';
+const RELAY = '/ip4/5.6.7.8/tcp/4003/ws/p2p/12D3KooWRelayRelayRelayRelayRelayRelayRelayRelayRela';
 
 /**
  * A Settings view model whose shared `CadreViewModel` has adopted the fake node.
@@ -60,7 +61,7 @@ async function loadWith({ nodeRunning }: { nodeRunning: boolean }): Promise<{ vm
 // ── Join a cadre ──────────────────────────────────────────────────────────────
 
 describe('onJoinCadre', () => {
-	it('redeems the trimmed paste, clears the field and names the member that admitted the phone', async () => {
+	it('joins with the trimmed paste, clears the field and names the member that admitted the phone', async () => {
 		// Pasting from a clipboard commonly drags a newline along, and base64url
 		// decoding is what would fail on it.
 		const { vm, H } = await loadSettings();
@@ -69,11 +70,25 @@ describe('onJoinCadre', () => {
 		expect(vm.canJoinCadre).toBe(true);
 		await vm.onJoinCadre();
 
-		expect(H.calls).toEqual(['redeemCadreInvitation']);
+		expect(H.state.joined.map(({ invitation }) => invitation)).toEqual([H.invitation()]);
 		expect(vm.cadreInvitationInput).toBe('');
 		expect(vm.modalTitle).toBe('Joined cadre');
-		expect(vm.modalMessage).toContain(H.state.node.redeemResult.peerId);
+		expect(vm.modalMessage).toContain(H.state.joinResult.peerId);
 		expect(vm.modalVisibility).toBe('visible');
+	});
+
+	it('leaves the form naming the joined party, so the next Connect starts that one', async () => {
+		// The form is hidden while connected; were it left on the party the phone
+		// left, Disconnect then Connect would leave the cadre it just joined.
+		const { vm, H } = await loadSettings();
+		vm.cadreInvitationInput = H.ENCODED_INVITATION;
+		vm.relayAddr = RELAY;
+
+		await vm.onJoinCadre();
+
+		expect(H.state.joined.map(({ options }) => options)).toEqual([{ relayAddrs: [RELAY] }]);
+		expect(vm.partyId).toBe(H.INVITED_PARTY);
+		expect(vm.relayAddr).toBe(RELAY);
 	});
 
 	it('shows a refusal in plain words and keeps the paste for a retry', async () => {
@@ -84,7 +99,7 @@ describe('onJoinCadre', () => {
 		// class `join-failure.ts` checks `instanceof` against; a file-level import
 		// would be the previous registry's copy, and the mapping would never match.
 		const { CadreInviteRejectedError } = await import('@serfab/cadre-core');
-		H.state.node.redeemError = new CadreInviteRejectedError('invite-spent', 'expired 2026-10-06T00:00:00Z');
+		H.state.joinError = new CadreInviteRejectedError('invite-spent', 'expired 2026-10-06T00:00:00Z');
 		vm.cadreInvitationInput = H.ENCODED_INVITATION;
 
 		await vm.onJoinCadre();
@@ -187,18 +202,21 @@ describe('onConnect', () => {
 		await vm.onConnect();
 
 		expect(vm.partyId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-		expect(H.state.startOpts).toEqual([{ partyId: vm.partyId, bootstrapAddrs: [] }]);
+		expect(H.state.startOpts).toEqual([{ partyId: vm.partyId, bootstrapAddrs: [], relayAddrs: [] }]);
 		expect(vm.cadre.connected).toBe(true);
 	});
 
-	it('passes the pasted party id and bootstrap address through, trimmed', async () => {
+	it('passes the pasted party id, bootstrap and relay addresses through, trimmed', async () => {
 		const { vm, H } = await loadColdSettings();
 		vm.partyId = '  party-x  ';
 		vm.bootstrapAddr = ' /ip4/1.2.3.4/tcp/4001/ws \n';
+		vm.relayAddr = ` ${RELAY} ,, `;
 
 		await vm.onConnect();
 
-		expect(H.state.startOpts).toEqual([{ partyId: 'party-x', bootstrapAddrs: ['/ip4/1.2.3.4/tcp/4001/ws'] }]);
+		expect(H.state.startOpts).toEqual([
+			{ partyId: 'party-x', bootstrapAddrs: ['/ip4/1.2.3.4/tcp/4001/ws'], relayAddrs: [RELAY] },
+		]);
 	});
 
 	it('raises the failure modal when the node will not start', async () => {
@@ -217,13 +235,12 @@ describe('onConnect', () => {
 });
 
 describe('onDisconnect', () => {
-	it('stops the node and leaves nothing bound to it', async () => {
+	it('stops the edge node and goes back to the disconnected form', async () => {
 		const { vm, H } = await loadSettings();
 
 		await vm.onDisconnect();
 
-		expect(H.calls).toContain('stopPhoneNode');
-		expect(H.state.node.boundHandlerCount()).toBe(0);
+		expect(H.calls).toContain('stop');
 		expect(vm.cadre.status).toBe('idle');
 		expect(vm.modalVisibility).toBe('collapse');
 	});
