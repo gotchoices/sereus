@@ -1,9 +1,9 @@
 import debug from 'debug';
 import { digest, verify } from '@optimystic/quereus-plugin-crypto';
-import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields } from './control-authorization.js';
-import type { BoundControlDomain, CadreInviteSignedFields, ControlAction, RevocableTable, UnboundControlDomain } from './control-authorization.js';
+import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields } from './control-authorization.js';
+import type { BoundControlDomain, CadreInviteSignedFields, ControlAction, OwnerGrantSignedFields, RevocableTable, UnboundControlDomain } from './control-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
-import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields, OwnerKeyRow, RevocationRow } from './types.js';
+import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields, OwnerGrantRow, OwnerGrantUsageRow, OwnerKeyRow, RevocationRow } from './types.js';
 
 const log = debug('sereus:cadre:peer-authorization');
 
@@ -485,6 +485,96 @@ export function verifyInvitationOwnerAdmission(
       && verifyAdmissionChain(partyId, row.vouchOwner, row.vouchUsage, usage, invite, isAnchored);
   } catch (error) {
     log('verifyInvitationOwnerAdmission failed: %o', error);
+    return false;
+  }
+}
+
+/**
+ * Canonical digest an owner signs to seat an `OwnerGrant` row — the read-side mirror of
+ * `ownerGrantAddMessage` in control-database.ts, base64url instead of raw bytes. The whole
+ * row is bound, the label included, through the one field builder both sides share
+ * (`ownerGrantRowFields`). SQL mirror: `OwnerGrant.AuthorizedInsert`.
+ */
+export function ownerGrantAddDigest(partyId: string, row: OwnerGrantSignedFields): string {
+  return taggedDigest('CadreControl.OwnerGrant', 'add', partyId, ownerGrantRowFields(row));
+}
+
+/**
+ * Canonical digest the HOLDER of an `OwnerGrant`'s private key signs to redeem it once:
+ * proof of possession, verified against the grant key itself
+ * (`OwnerGrantUsage.GrantPossessed`). Binds the redemption's nonce and the key being seated,
+ * so one redemption cannot be re-presented for another key or another use. Mirror of
+ * `ownerGrantRedeemMessage` in control-database.ts.
+ */
+export function ownerGrantRedeemDigest(partyId: string, grantKey: string, usageStampId: string, seatedKey: string): string {
+  return taggedDigest('CadreControl.OwnerGrantUsage', 'redeem', partyId, [grantKey, usageStampId, seatedKey]);
+}
+
+/**
+ * Canonical digest the key being SEATED signs to prove it is held by the redeemer
+ * (`OwnerGrantUsage.OwnerConsented`), over the same fields as {@link ownerGrantRedeemDigest}
+ * under a distinct action tag, so the holder's and the key's signatures are never
+ * interchangeable. Mirror of `ownerGrantConsentMessage` in control-database.ts.
+ */
+export function ownerGrantConsentDigest(partyId: string, grantKey: string, usageStampId: string, seatedKey: string): string {
+  return taggedDigest('CadreControl.OwnerGrantUsage', 'consent', partyId, [grantKey, usageStampId, seatedKey]);
+}
+
+/**
+ * Does an `OwnerGrant` row carry a valid `'add'` signature by its own `issuerKey`, for
+ * `partyId`? The grant twin of {@link verifyCadreInviteRow}, with the same contract: whether
+ * that issuer IS an owner is the caller's question, and a malformed row verifies as `false`.
+ */
+export function verifyOwnerGrantRow(partyId: string, grant: OwnerGrantRow): boolean {
+  try {
+    return verifyB64(ownerGrantAddDigest(partyId, grant), grant.issuerSig, grant.issuerKey);
+  } catch (error) {
+    log('verifyOwnerGrantRow failed: %o', error);
+    return false;
+  }
+}
+
+/**
+ * Is a grant-seated `OwnerKey` row (`vouchSig` null, `vouchUsage` naming an `OwnerGrantUsage`
+ * row) an owner this node should derive into its anchor? The read-side mirror of the grant
+ * branch of `OwnerKey.Authorized` (`owner-anchor-sync.ts` → `deriveOwnerAnchor`). The chain is
+ *
+ *   row --vouchUsage--> usage --grantKey--> grant --issuerKey--> anchored owner
+ *
+ * and every link is verified: the issuer is anchored and is the row's `vouchOwner`; the usage
+ * is the row's `vouchUsage` and names this key and this exact row incarnation
+ * (`seatedStampId`); the usage names this grant; the row carries the grant's label; the
+ * grant's stored `'add'` signature verifies over the row rebuilt from its columns; the
+ * holder's `'redeem'` signature verifies with the grant key and the seated key's `'consent'`
+ * signature with itself. All three signatures are judged for `partyId`.
+ *
+ * Expiry, use count and withdrawal are deliberately NOT re-checked, as
+ * {@link verifyInvitationOwnerAdmission} omits them: they were conditions at redemption
+ * (`OwnerGrantUsage.Authorized`), and ownership persists until an owner removes the row.
+ * Same never-throws contract as the siblings.
+ */
+export function verifyOwnerGrantAdmission(
+  partyId: string,
+  row: OwnerKeyRow,
+  usage: OwnerGrantUsageRow,
+  grant: OwnerGrantRow,
+  isAnchored: (ownerKey: string) => boolean,
+): boolean {
+  try {
+    return row.vouchOwner !== null
+      && row.vouchUsage !== null
+      && isAnchored(row.vouchOwner)
+      && grant.issuerKey === row.vouchOwner
+      && usage.usageStampId === row.vouchUsage
+      && usage.seatedKey === row.key
+      && usage.seatedStampId === row.stampId
+      && usage.grantKey === grant.key
+      && (grant.label ?? '') === (row.label ?? '')
+      && verifyB64(ownerGrantAddDigest(partyId, grant), grant.issuerSig, grant.issuerKey)
+      && verifyB64(ownerGrantRedeemDigest(partyId, grant.key, usage.usageStampId, usage.seatedKey), usage.grantSig, grant.key)
+      && verifyB64(ownerGrantConsentDigest(partyId, grant.key, usage.usageStampId, usage.seatedKey), usage.ownerSig, usage.seatedKey);
+  } catch (error) {
+    log('verifyOwnerGrantAdmission failed: %o', error);
     return false;
   }
 }

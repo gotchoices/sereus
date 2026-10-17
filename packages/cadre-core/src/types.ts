@@ -17,7 +17,7 @@ import type { StrandNetworkStateStore } from './strand-network-state.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
-import type { CadreInviteSignedFields, RevocableTable } from './control-authorization.js';
+import type { CadreInviteSignedFields, OwnerGrantSignedFields, RevocableTable } from './control-authorization.js';
 import type { CadreInvitation, CadreInviteAddressOutcome } from './cadre-invite-protocol.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
@@ -1951,27 +1951,28 @@ export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | '
 
 /**
  * One live `CadreControl.OwnerKey` row as `ControlDatabase.queryOwnerKeyRows` reads it: the
- * key, its label and the persisted proof of how it was seated. The three proof shapes are the
+ * key, its label and the persisted proof of how it was seated. The four proof shapes are the
  * schema's (`OwnerKey.Authorized`): the founding row (all three null), an owner-signed add
- * (`vouchOwner` and `vouchSig`, the signer's signature over `ownerKeyAddDigest(key, label, stampId)`), or an
+ * (`vouchOwner` and `vouchSig`, the signer's signature over `ownerKeyAddDigest(key, label, stampId)`), an
  * owner-granting invitation redeemed by consent (`vouchOwner` the issuer, `vouchSig` null,
- * `vouchUsage` the `CadreInviteUsage` row). Rows whose stamp is retired in `Revocation`, and
- * the stampless row the schema permits but no writer produces, never reach a reader, so
- * `stampId` is non-null here. The anchor sync (`deriveOwnerAnchor`) judges
- * the proof against the keys it already trusts, never against the table itself.
+ * `vouchUsage` the `CadreInviteUsage` row), or an owner grant redeemed by consent (`vouchOwner`
+ * the issuer, `vouchSig` null, `vouchUsage` the `OwnerGrantUsage` row). Rows whose stamp is
+ * retired in `Revocation`, and the stampless row the schema permits but no writer produces,
+ * never reach a reader, so `stampId` is non-null here. The anchor sync (`deriveOwnerAnchor`)
+ * judges the proof against the keys it already trusts, never against the table itself.
  */
 export interface OwnerKeyRow {
   /** ed25519 public key (base64url) — the row key. */
   key: string;
-  /** The user's name for the key, bound into an owner-signed add; null when none was given, and always on an invitation-admitted row. */
+  /** The user's name for the key, bound into an owner-signed add or into the grant that seated it; null when none was given, and always on an invitation-admitted row. */
   label: string | null;
   /** Single-use anti-replay nonce the voucher signature, or the usage row, is bound to. */
   stampId: string;
-  /** The owner that signed the add, or that issued the invitation that admitted it; null on the founding row. */
+  /** The owner that signed the add, or that issued the invitation or grant that seated it; null on the founding row. */
   vouchOwner: string | null;
-  /** That owner's signature over the row's `'add'` digest, base64url; null on the founding row and on an invitation-admitted row. */
+  /** That owner's signature over the row's `'add'` digest, base64url; null on the founding row and on a consent-seated row. */
   vouchSig: string | null;
-  /** The `CadreInviteUsage.UsageStampId` that admitted this row; null otherwise. */
+  /** The `CadreInviteUsage.UsageStampId` or `OwnerGrantUsage.UsageStampId` that seated this row; null otherwise. The two tables' stamps are told apart by lookup, never by shape. */
   vouchUsage: string | null;
 }
 
@@ -2025,6 +2026,54 @@ export interface CadreInviteUsageRow {
 export interface InvitationChain {
   usages: Map<string, CadreInviteUsageRow>;
   invites: Map<string, CadreInviteRow>;
+}
+
+/**
+ * One `CadreControl.OwnerGrant` row: an owner-signed grant of ownership to whoever holds its
+ * private half, as `ControlDatabase.insertOwnerGrant` returns it and `queryOwnerGrant` reads
+ * it. Every column is here because the row travels, as a {@link CadreInviteRow} does: the
+ * holder carries it inside the grant bundle and a member re-seats it verbatim
+ * (`seatOwnerGrant`), so `expiresAt` is the engine-canonical `datetime` string the row
+ * stores. The signed subset is `OwnerGrantSignedFields` (`control-authorization.ts`); the
+ * grant names no machine and no peer id.
+ */
+export interface OwnerGrantRow extends OwnerGrantSignedFields {
+  /** The owner that signed the row (`IssuerKey`, base64url ed25519); a reader checks it against its anchor. */
+  issuerKey: string;
+  /** That owner's `'add'` signature over the row (`IssuerSig`, base64url). */
+  issuerSig: string;
+}
+
+/**
+ * One `CadreControl.OwnerGrantUsage` row: a redemption of an {@link OwnerGrantRow}, as
+ * `ControlDatabase.queryOwnerGrantUsages` reads it. Both signatures are stored so any reader
+ * can re-verify the chain grant → usage → `OwnerKey` row (`verifyOwnerGrantAdmission`).
+ */
+export interface OwnerGrantUsageRow {
+  /** The redemption's single-use nonce (the row key), signed into both signatures. */
+  usageStampId: string;
+  /** The `OwnerGrant.Key` redeemed. */
+  grantKey: string;
+  /** The owner key seated (base64url ed25519): the holder's, fresh or already held. */
+  seatedKey: string;
+  /** The `OwnerKey.StampId` this redemption seated. */
+  seatedStampId: string;
+  /** The grant private key's signature over the `'redeem'` digest, base64url. */
+  grantSig: string;
+  /** The seated key's signature over the `'consent'` digest, base64url. */
+  ownerSig: string;
+}
+
+/**
+ * The usage and grant rows a grant-seated `OwnerKey` row is verified through, keyed by
+ * `UsageStampId` and `OwnerGrant.Key` (`verifyOwnerGrantAdmission`, from `deriveOwnerAnchor`).
+ * The grant twin of {@link InvitationChain}, loaded beside it by `CadreNode.syncOwnerAnchor`
+ * when some owner row is consent-seated; a row's `vouchUsage` is looked up in this chain
+ * first and in the invitation chain otherwise.
+ */
+export interface OwnerGrantChain {
+  usages: Map<string, OwnerGrantUsageRow>;
+  grants: Map<string, OwnerGrantRow>;
 }
 
 /**
@@ -2192,6 +2241,30 @@ export interface CadreInviteRedemptionResult {
   alreadyMember: boolean;
   peerStampId: string;
   ownerStampId: string | null;
+}
+
+/**
+ * One {@link OwnerGrantRow} with its standing, as `ControlDatabase.listOwnerGrantStatuses`
+ * reports it. `live` is the redemption's own test: not withdrawn, unexpired, uses left,
+ * issuer still an owner here.
+ */
+export interface OwnerGrantStatus {
+  grant: OwnerGrantRow;
+  live: boolean;
+  withdrawn: boolean;
+  /** Redemptions this node holds for it (`OwnerGrantUsage` rows). */
+  usesRecorded: number;
+}
+
+/**
+ * What `ControlDatabase.redeemOwnerGrant` did. `alreadyOwner` is the idempotent retry after
+ * a dropped reply, and the case of a holder seating a key that is already an owner: the
+ * key's live `OwnerKey` row was already present, so nothing was written and no use was
+ * spent. `seatedStampId` is the live row's either way.
+ */
+export interface OwnerGrantRedemptionResult {
+  alreadyOwner: boolean;
+  seatedStampId: string;
 }
 
 /**

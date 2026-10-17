@@ -145,6 +145,9 @@ const MEASURED_ON = '2026-10-07';
  * sync (`CadreNode.syncOwnerAnchor`, ticket `owner-anchor-derivation`) now reads the tombstone
  * list at the head of every membership refresh, and both paths trigger a refresh.
  *
+ * Re-measured whole at `ff150e0f` on 2026-10-16 (clean tree): no figure moved except the cold
+ * start, whose growth is the two owner-grant tables (see {@link COLD}).
+ *
  * Re-measured whole at `ff150e0f` on 2026-10-07, later the same day, after every owner lookup in
  * the control schema gained its live-owner clause (`removed-owner-still-authorizes-where-its-row-survives`):
  * each owner-gated write's check now reads `Revocation` once more, so `foundStrand`'s control
@@ -158,11 +161,11 @@ const BASELINE_UPSTREAM = 'optimystic ff150e0f';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
- * watcher's first poll it leaves running. 37 consults over 29 blocks, 1 commit. Every
+ * watcher's first poll it leaves running. 41 consults over 33 blocks, 1 commit. Every
  * control table and index block is consulted once as the schema is applied (all missing),
  * the schema catalog (`optimystic/schema`) 5 times, and four never-written tables once
  * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` and
- * `JoinedStrand` by the watcher's `queryStrands` / `queryJoinedStrands`. 28 + 5 + 4 = 37.
+ * `JoinedStrand` by the watcher's `queryStrands` / `queryJoinedStrands`. 32 + 5 + 4 = 41.
  * History: 24 over 18 blocks in the trace that motivated this spec (snapshotted at `start()`'s
  * return, before the seed and the poll), 30 on 2026-09-15, 25 over 18 at optimystic
  * `03ffadc4` — the catalog went 7 → 5 and each of the three never-written tables 3 → 2 — 26
@@ -173,9 +176,11 @@ const BASELINE_UPSTREAM = 'optimystic ff150e0f';
  * start: +2 over 2 blocks), 33 over 25 once `PendingJoin` became `JoinRequest` with its two
  * index-less outcome tables (`JoinSuccess`, `JoinFailure`: +2 over 2, recorded here late),
  * then 37 over 29 with `CadreInvite` (its table and stamp index) and `CadreInviteUsage` (its
- * table and the `CadreInviteUsageByInvite` index), read by nothing at start: +4 over 4.
+ * table and the `CadreInviteUsageByInvite` index), read by nothing at start: +4 over 4, then
+ * 41 over 33 with `OwnerGrant` (its table and stamp index) and `OwnerGrantUsage` (its table
+ * and the `OwnerGrantUsageByGrant` index), read by nothing at start: +4 over 4.
  */
-const COLD: Budget = { consults: 37, blocks: 29, commits: 1, consultBudget: 41, blockBudget: 32, commitBudget: 2 };
+const COLD: Budget = { consults: 41, blocks: 33, commits: 1, consultBudget: 45, blockBudget: 36, commitBudget: 2 };
 /**
  * Genesis: `ensureOwnerKey` on the fresh party, then wiring the owner signer (no read). 3
  * consults over 3 blocks, 2 commits:

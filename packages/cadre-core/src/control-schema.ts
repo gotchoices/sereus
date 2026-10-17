@@ -12,7 +12,7 @@ import { Parser } from '@quereus/quereus';
  * Quereus computes with tags stripped, so a schema edit without a bump fails
  * `control-schema-drift.spec.ts`; a comment-only edit moves neither.
  */
-export const CONTROL_SCHEMA_VERSION = 1;
+export const CONTROL_SCHEMA_VERSION = 2;
 
 /** The `OwnerKey` table tag that records {@link CONTROL_SCHEMA_VERSION} in the schema and in every store. */
 export const CONTROL_SCHEMA_VERSION_TAG = 'sereus.controlSchemaVersion';
@@ -43,13 +43,14 @@ export const CONTROL_SCHEMA_DECLARATION = `-- A Sereus party's cadre (its nodes)
 -- two digests scoped by the invitation token instead (FormationUsage.Authorized).
 --
 -- Rows of the guarded tables (OwnerKey, ValidationKey, Strand, StrandPartyKey, JoinedStrand,
--- JoinRequest, CadrePeer, DeviceToken, CadreInvite) carry a one-off StampId bound into their
--- add and remove digests. \`unique\` holds over live rows only, so a delete retires the stamp
--- into Revocation in the same transaction (RevocationRecorded) and an insert refuses a retired
--- stamp (NotRevoked): the never-expiring add approval cannot re-seat a removed row. A
--- legitimate re-add mints a fresh stamp and a fresh signature. CadreInvite is the one guarded
--- table that is never deleted: its tombstone withdraws the invitation while the row stays,
--- because the rows it admitted prove their membership through it.
+-- JoinRequest, CadrePeer, DeviceToken, CadreInvite, OwnerGrant) carry a one-off StampId bound
+-- into their add and remove digests. \`unique\` holds over live rows only, so a delete retires
+-- the stamp into Revocation in the same transaction (RevocationRecorded) and an insert refuses
+-- a retired stamp (NotRevoked): the never-expiring add approval cannot re-seat a removed row.
+-- A legitimate re-add mints a fresh stamp and a fresh signature. CadreInvite and OwnerGrant
+-- are the two guarded tables that are never deleted: a tombstone there withdraws the
+-- invitation or grant while the row stays, because the rows it admitted prove themselves
+-- through it.
 --
 -- A check whose expression evaluates to null passes (SQL three-valued logic), so every
 -- comparison over a nullable column that is meant to pin a value is written null-safe
@@ -67,12 +68,14 @@ export const CONTROL_SCHEMA_DECLARATION = `-- A Sereus party's cadre (its nodes)
 -- effective at the writer as soon as its tombstone arrives, whether or not the row's delete
 -- has. Only the founding count in OwnerKey.Authorized stays raw.
 declare schema CadreControl {
-    -- A key that can authorize control changes. A row is seated one of three ways, told apart
+    -- A key that can authorize control changes. A row is seated one of four ways, told apart
     -- by the vouch columns: the founding row (all three null), an owner-signed add (VouchOwner
-    -- and VouchSig pinned to the insert context, VouchUsage null), or an owner-granting
+    -- and VouchSig pinned to the insert context, VouchUsage null), an owner-granting
     -- invitation redeemed by consent (VouchOwner = the invitation's IssuerKey, VouchSig null,
-    -- VouchUsage = the CadreInviteUsage row that admitted it). A reader judges the stored proof
-    -- against its node-local anchor, never against this replicated table.
+    -- VouchUsage = the CadreInviteUsage row that admitted it), or an owner grant redeemed by
+    -- consent (VouchOwner = the grant's IssuerKey, VouchSig null, VouchUsage = the
+    -- OwnerGrantUsage row that seated it). A reader judges the stored proof against its
+    -- node-local anchor, never against this replicated table.
     table OwnerKey (
         Key text primary key,
         Label text null,                -- the user's name for the key ("phone", "paper backup"); bound into the
@@ -109,12 +112,15 @@ declare schema CadreControl {
         -- deliberately raw, the one owner read here that ignores Revocation: a machine holding only
         -- a retired owner row must still be refused a second genesis, or a removed device could
         -- re-found the party on its own copy. An owner cannot sign its own removal.
-        -- The consent branch seats an owner with no signature at all: a CadreInviteUsage row
-        -- written in the same transaction names this exact row (Key and stamp), and the
-        -- invitation it redeemed grants ownership and was issued by the stored VouchOwner. The
-        -- invitation is read from committed.CadreInvite, so an invitation cannot be seated and
-        -- redeemed in one transaction; the usage row carries the liveness conditions. Nothing
-        -- signed names a label there, so the row carries none.
+        -- The two consent branches seat an owner with no signature at all. Invitation: a
+        -- CadreInviteUsage row written in the same transaction names this exact row (Key and
+        -- stamp), and the invitation it redeemed grants ownership and was issued by the stored
+        -- VouchOwner; nothing signed names a label there, so the row carries none. Grant: an
+        -- OwnerGrantUsage row written in the same transaction names this exact row, and the
+        -- grant it redeemed was issued by the stored VouchOwner and carries the row's label
+        -- (the issuer's choice, bound into the grant's signature). Both read the redeemed row
+        -- from its committed table, so neither can be seated and redeemed in one transaction;
+        -- the usage rows carry the liveness conditions.
         constraint Authorized check on insert, delete (
             (old.Key is null and (select count(1) from committed.OwnerKey) = 0
                 and new.VouchOwner is null and new.VouchSig is null and new.VouchUsage is null)
@@ -130,6 +136,16 @@ declare schema CadreControl {
                                 and U.PeerKey = new.Key
                                 and U.OwnerStampId = new.StampId
                                 and exists (select 1 from committed.CadreInvite I where I.Key = U.InviteKey and I.GrantsOwner = 1 and I.IssuerKey = new.VouchOwner)
+                    ))
+                or (old.Key is null and new.VouchSig is null and new.VouchUsage is not null
+                    and exists (
+                        select 1 from OwnerGrantUsage U
+                            where U.UsageStampId = new.VouchUsage
+                                and U.SeatedKey = new.Key
+                                and U.SeatedStampId = new.StampId
+                                and exists (select 1 from committed.OwnerGrant G
+                                    where G.Key = U.GrantKey and G.IssuerKey = new.VouchOwner
+                                        and coalesce(G.Label, '') = coalesce(new.Label, ''))
                     ))
                 or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.OwnerKey', 'remove', party_id(), old.Key, old.StampId), context.Signature, A.Key, 'ed25519')))
         )
@@ -784,18 +800,133 @@ declare schema CadreControl {
     -- hasLiveCadreInvite) on an append-only table, as FormationUsageByToken does.
     index CadreInviteUsageByInvite on CadreInviteUsage (InviteKey);
 
+    -- An owner-signed grant of ownership to whoever holds the grant's private half: it seats an
+    -- OwnerKey row for a key the holder generates or already holds, and admits no machine (a
+    -- machine is admitted by a CadreInvite; peer identity and ownership are unrelated, so the
+    -- row names no peer id). The grant is a keypair as the invitation is: the row holds the
+    -- public half, the holder proves possession by signing with the private half
+    -- (OwnerGrantUsage.GrantPossessed), and the member machine that writes the redemption can
+    -- verify that signature but never produce it, so it cannot seat an owner for itself. Rows
+    -- are never deleted: a key seated through one carries no owner signature of its own, and
+    -- its proof is the chain grant -> usage -> OwnerKey row, verified at read time, so the row
+    -- must outlive every key it seated. Withdrawal is an owner-signed Revocation tombstone over
+    -- the row's stamp with the row kept (Revocation.RowIsGone); liveness is read as no
+    -- tombstone, unexpired, uses left, issuer still an owner (OwnerGrantUsage.Authorized).
+    -- NOTE: expired and withdrawn rows accumulate for the life of the party, as CadreInvite's.
+    -- The label is the issuer's: it is bound into the grant's signature and the seated OwnerKey
+    -- row must carry it (the grant branch of OwnerKey.Authorized), so a key seated on a fresh
+    -- device during recovery needs no naming prompt, and nothing the holder writes names it.
+    table OwnerGrant (
+        Key text primary key,       -- the grant's ed25519 public key (base64url)
+        Label text null,            -- the label the seated OwnerKey row carries, chosen by the issuer
+        ExpiresAt datetime null,    -- null: never. The writer defaults to a short expiry; a lifetime with
+                                    -- no end is the issuer's explicit choice (a backup grant)
+        TotalUses int null check (TotalUses >= 0),
+        IssuerKey text,             -- the owner that signed the row (== insert context.OwnerKey); a reader checks
+                                    -- it against its node-local anchor, never against the replicated OwnerKey table
+        IssuerSig text,             -- that owner's 'add' signature (== insert context.Signature), stored so any
+                                    -- reader can re-verify the row from the holder's copy or the replicated one
+        StampId text unique,
+        -- A withdrawn grant cannot be re-seated from the signed copy its holder keeps, on any
+        -- node that holds the tombstone (schema header for the node that does not).
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'OwnerGrant' and R.StampId = new.StampId)
+        ),
+        -- Never empty, as OwnerKey.LabelLength: the add digest binds coalesce(Label, '').
+        constraint LabelLength check (
+            Label is null or length(Label) between 1 and 64
+        ),
+        -- The owner signs the whole row, nullable columns as '' (cadre-core ownerGrantRowFields),
+        -- and the stored issuer pair must be the pair verified here, as CadreInvite pins its issuer.
+        constraint AuthorizedInsert check on insert (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(
+                digest(
+                    'CadreControl.OwnerGrant', 'add', party_id(),
+                    new.Key,
+                    coalesce(new.Label, ''),
+                    coalesce(cast(new.ExpiresAt as text), ''),
+                    coalesce(cast(new.TotalUses as text), ''),
+                    new.StampId
+                ),
+                context.Signature, A.Key, 'ed25519'))
+            and coalesce(new.IssuerKey, '') = context.OwnerKey
+            and coalesce(new.IssuerSig, '') = context.Signature
+        ),
+        constraint NoUpdate check on update (false),
+        -- Never deleted (table comment). Withdrawal is the tombstone alone.
+        constraint NoDelete check on delete (false)
+    ) with context (OwnerKey text, Signature text);
+
+    -- Append-only record of owner-grant redemptions, one row per redemption: the proof an
+    -- OwnerKey row was seated by consent rather than by an owner signature.
+    table OwnerGrantUsage (
+        UsageStampId text primary key,  -- nonce minted by the holder and signed into both signatures below. The
+                                        -- primary key: this table never deletes, so the key alone makes a nonce
+                                        -- permanent and there is no NotRevoked pair here (CadreInviteUsage).
+        GrantKey text,                  -- the OwnerGrant redeemed
+        SeatedKey text,                 -- the owner key seated (base64url ed25519): the holder's, fresh or already held
+        SeatedStampId text,             -- the OwnerKey.StampId this usage seats: one row incarnation, not a key
+                                        -- forever. Minted by the writer inside the redeeming transaction and not
+                                        -- signed (CadreInviteUsage.PeerStampId).
+        GrantSig text,                  -- by the grant's private key over the 'redeem' digest: proof of possession
+        OwnerSig text,                  -- by SeatedKey over the 'consent' digest: the holder holds the key it seats
+        constraint InsertOnly check on update, delete (false),
+        -- The grant is read from the pre-transaction snapshot, so a grant cannot be seated and
+        -- redeemed in one transaction (the grant branch of OwnerKey.Authorized rests on that).
+        -- NOTE: accepted tradeoff — the use cap counts committed usage, so two holders of one
+        -- single-use grant redeeming on different machines may both be seated until merge, and
+        -- after merge both rows stand (CadreInviteUsage.Authorized). Serializing would need
+        -- cross-machine coordination the control plane does not have; the mitigations are the
+        -- defaults the writer sets (single use and a 15-minute expiry, a longer lifetime only
+        -- when the user chooses one) and the owner seeing the extra key in the owner-key list
+        -- and removing it. Revisit if the control plane gains a cross-machine sequencer. An
+        -- issuer removed since issuing takes its outstanding grants with it (the
+        -- committed.OwnerKey clause, which a tombstone alone satisfies); keys it already
+        -- seated stay owners.
+        constraint Authorized check on insert (
+            exists (
+                select 1 from committed.OwnerGrant G
+                    where G.Key = new.GrantKey
+                        and not exists (select 1 from Revocation R where R.TableName = 'OwnerGrant' and R.StampId = G.StampId)
+                        and (G.ExpiresAt is null or G.ExpiresAt > context.Now)
+                        and (G.TotalUses is null or G.TotalUses > (select count(1) from committed.OwnerGrantUsage U where U.GrantKey = new.GrantKey))
+                        and exists (select 1 from committed.OwnerKey K where K.Key = G.IssuerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = K.StampId))
+            )
+        ),
+        -- Verified against the grant key itself: the member writing the row can check this
+        -- signature but, holding only the public half, cannot produce it.
+        constraint GrantPossessed check on insert (
+            verify(digest('CadreControl.OwnerGrantUsage', 'redeem', party_id(), new.GrantKey, new.UsageStampId, new.SeatedKey),
+                   new.GrantSig, new.GrantKey, 'ed25519')
+        ),
+        -- The holder proves it holds the key being seated (CadreInviteUsage.PeerConsented).
+        constraint OwnerConsented check on insert (
+            verify(digest('CadreControl.OwnerGrantUsage', 'consent', party_id(), new.GrantKey, new.UsageStampId, new.SeatedKey),
+                   new.OwnerSig, new.SeatedKey, 'ed25519')
+        ),
+        -- Deferred, so the same-transaction OwnerKey insert counts: a usage row can never be
+        -- held in reserve to seat a row later (CadreInviteUsage.PeerExists).
+        constraint SeatedExists check (
+            exists (select 1 from OwnerKey K where K.Key = new.SeatedKey and K.StampId = new.SeatedStampId)
+        )
+    ) with context (Now datetime);
+
+    -- Serves the cap count above and the liveness reads (cadre-core countOwnerGrantUsage,
+    -- listOwnerGrantStatuses) on an append-only table, as CadreInviteUsageByInvite does.
+    index OwnerGrantUsageByGrant on OwnerGrantUsage (GrantKey);
+
     -- Append-only retirement record for the stamps of removed rows of every guarded table, with
     -- the removed row's key. Every append is owner-signed, so the growth surface is the owner
     -- keys. One singleton marker row, ('Revocation', 'ledger', 'opened'), retires nothing: an
     -- owner's connected reconcile pass files it (ControlDatabase.openRevocationLedger) so this
     -- table is never a never-written block, which the storage layer would consult the cohort
     -- for on every guarded insert and membership lookup. Readers filter on their own guarded
-    -- TableName, and queryRevocations skips it. A 'CadreInvite' row withdraws an invitation
-    -- whose row stays (CadreInvite table comment).
+    -- TableName, and queryRevocations skips it. A 'CadreInvite' or 'OwnerGrant' row withdraws
+    -- an invitation or a grant whose row stays (the table comments).
     table Revocation (
         TableName text,             -- 'OwnerKey' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' |
-                                    -- 'JoinRequest' | 'CadrePeer' | 'DeviceToken' | 'CadreInvite', or 'Revocation'
-                                    -- for the marker
+                                    -- 'JoinRequest' | 'CadrePeer' | 'DeviceToken' | 'CadreInvite' | 'OwnerGrant', or
+                                    -- 'Revocation' for the marker
         RowKey text,                -- primary key of the removed row
         StampId text,               -- the retired stamp
         ReissuedAt integer default 0,   -- bumped by an owner-signed re-issue so a tombstone committed while the
@@ -823,9 +954,9 @@ declare schema CadreControl {
         -- counts). Keyed on the stamp, not RowKey: a node that converges on a re-admission before
         -- the earlier removal's tombstone must still accept that tombstone. Retiring a stamp that
         -- never existed is harmless: stamps carry 128 random bits (generateStampId). For
-        -- 'CadreInvite' there is no row-gone test: a tombstone there is a withdrawal, and the
-        -- row stays (CadreInvite table comment). The last branch admits the marker row and
-        -- nothing else under 'Revocation'.
+        -- 'CadreInvite' and 'OwnerGrant' there is no row-gone test: a tombstone there is a
+        -- withdrawal, and the row stays (the table comments). The last branch admits the marker
+        -- row and nothing else under 'Revocation'.
         constraint RowIsGone check on insert (
             (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
@@ -836,6 +967,7 @@ declare schema CadreControl {
                 or (new.TableName = 'JoinRequest' and not exists (select 1 from JoinRequest J where J.StampId = new.StampId))
                 or (new.TableName = 'DeviceToken' and not exists (select 1 from DeviceToken D where D.StampId = new.StampId))
                 or (new.TableName = 'CadreInvite')
+                or (new.TableName = 'OwnerGrant')
                 or (new.TableName = 'Revocation' and new.RowKey = 'ledger' and new.StampId = 'opened')
         ),
         -- Owner-signed over the whole row under its own domain tag, so the delete's 'remove'

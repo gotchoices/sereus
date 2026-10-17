@@ -99,6 +99,6 @@ describe('control schema drift guard', () => {
     const db = new Database();
     await db.exec(CONTROL_SCHEMA_DECLARATION);
     const explained = await db.get('explain schema CadreControl');
-    expect({ version: CONTROL_SCHEMA_VERSION, schema: explained?.info }).toEqual({ version: 1, schema: 'hash:ceU-1DFc' });
+    expect({ version: CONTROL_SCHEMA_VERSION, schema: explained?.info }).toEqual({ version: 2, schema: 'hash:GrqGOvAk' });
   });
 });

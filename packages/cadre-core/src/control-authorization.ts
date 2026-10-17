@@ -59,6 +59,8 @@ export const CONTROL_TABLES = [
   'FormationUsage',
   'CadreInvite',
   'CadreInviteUsage',
+  'OwnerGrant',
+  'OwnerGrantUsage',
   'Revocation',
 ] as const;
 
@@ -76,17 +78,17 @@ export type ControlTable = typeof CONTROL_TABLES[number];
  * {@link ControlTable} rather than a fresh literal list, so a renamed table is a
  * compile error here instead of a silently dead branch.
  *
- * `CadreInvite` is the one member whose rows are never deleted: its tombstone is a
- * withdrawal over a row that stays (`NotRevoked` refuses re-seating the withdrawn
- * row; there is no `RevocationRecorded`, since nothing is ever removed), so it is
- * revocable without being removable — `control-database.ts`'s `RemovableTable`
- * excludes it.
+ * `CadreInvite` and `OwnerGrant` are the two members whose rows are never deleted: a
+ * tombstone there is a withdrawal over a row that stays (`NotRevoked` refuses re-seating
+ * the withdrawn row; there is no `RevocationRecorded`, since nothing is ever removed), so
+ * they are revocable without being removable — `control-database.ts`'s `RemovableTable`
+ * excludes them.
  *
  * Lives in this import-free module rather than beside its main consumer
  * (`control-database.ts`) so the lightweight signers — `peer-authorization.ts`'s
  * `revocationDigest` — can type against it without pulling in the runtime.
  */
-export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' | 'JoinRequest' | 'DeviceToken' | 'CadreInvite'>;
+export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' | 'JoinRequest' | 'DeviceToken' | 'CadreInvite' | 'OwnerGrant'>;
 
 /**
  * What a signature authorizes, scoped to one table rule — or, for
@@ -122,10 +124,11 @@ export type BoundControlDomain = Exclude<ControlDomain, UnboundControlDomain>;
  *    owner key.
  *  - `'consent'` — a peer self-signs its OWN `FormationUsage` or
  *    `CadreInviteUsage` redemption (the joiner proving it agreed to join), with
- *    its own key. Distinct from the approver's `'vouch'` over the same table so
- *    the two stored signatures are never interchangeable.
- *  - `'redeem'` — the holder of a `CadreInvite`'s private key proves possession
- *    on a `CadreInviteUsage` row. Distinct from the device's `'consent'` over the
+ *    its own key, or the key an `OwnerGrantUsage` seats signs that it is held.
+ *    Distinct from the approver's `'vouch'` over the same table so the two
+ *    stored signatures are never interchangeable.
+ *  - `'redeem'` — the holder of a `CadreInvite`'s or `OwnerGrant`'s private key
+ *    proves possession on the usage row. Distinct from the `'consent'` over the
  *    same fields: the two signatures are by different keys and neither may stand
  *    in for the other.
  *  - `'reissue'` — an owner re-writes an existing `Revocation` tombstone,
@@ -164,6 +167,38 @@ export function cadreInviteRowFields(row: CadreInviteSignedFields): string[] {
     row.key,
     row.peerId ?? '',
     row.grantsOwner ? '1' : '0',
+    row.expiresAt ?? '',
+    row.totalUses === null ? '' : String(row.totalUses),
+    row.stampId,
+  ];
+}
+
+/**
+ * The `OwnerGrant` columns its `'add'` signature binds, in the schema's order and with
+ * the row's stored forms (`expiresAt` canonical, as {@link CadreInviteSignedFields}).
+ * `label` is the label the seated `OwnerKey` row must carry: the issuer's choice, bound
+ * here so the holder cannot seat the key under another name. Structurally satisfied by
+ * an `OwnerGrantRow` (`types.ts`), which adds the issuer pair the signature does not cover.
+ */
+export interface OwnerGrantSignedFields {
+  key: string;
+  label: string | null;
+  expiresAt: string | null;
+  totalUses: number | null;
+  stampId: string;
+}
+
+/**
+ * The row-field half of an `OwnerGrant` `'add'` digest, shared by the signer
+ * (`control-database.ts`'s `ownerGrantAddMessage`) and the verifier
+ * (`peer-authorization.ts`'s `ownerGrantAddDigest`), as {@link cadreInviteRowFields} is.
+ * SQL mirror, in `OwnerGrant.AuthorizedInsert`: `new.Key, coalesce(new.Label, ''),
+ * coalesce(cast(new.ExpiresAt as text), ''), coalesce(cast(new.TotalUses as text), ''), new.StampId`.
+ */
+export function ownerGrantRowFields(row: OwnerGrantSignedFields): string[] {
+  return [
+    row.key,
+    row.label ?? '',
     row.expiresAt ?? '',
     row.totalUses === null ? '' : String(row.totalUses),
     row.stampId,

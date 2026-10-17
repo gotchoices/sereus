@@ -38,6 +38,7 @@ import type {
   CadrePeerRow,
   RevocationRow,
   InvitationChain,
+  OwnerGrantChain,
   CadreInviteStatus,
   CadreMachine,
   CadreOwnerKey,
@@ -293,7 +294,11 @@ type InvitationChainSource = () => Promise<InvitationChain>;
  */
 type RevocationSource = () => Promise<RevocationRow[]>;
 
-/** Whether a `CadrePeer` or `OwnerKey` row's proof is an invitation admission rather than an owner voucher (`types.ts` → `CadrePeerRow`, `OwnerKeyRow`). */
+/**
+ * Whether a `CadrePeer` or `OwnerKey` row's proof is a consent admission rather than an owner
+ * voucher (`types.ts` → `CadrePeerRow`, `OwnerKeyRow`): a machine invitation for either table,
+ * or an owner grant for an `OwnerKey` row.
+ */
 function isInvitationAdmitted(row: { vouchSig: string | null; vouchUsage: string | null }): boolean {
   return row.vouchSig === null && row.vouchUsage !== null;
 }
@@ -8238,8 +8243,15 @@ export class CadreNode implements SAppIdLookup {
       const tombstones = await loadTombstones();
       const retired = new Set(tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey').map(tombstone => tombstone.stampId));
       const rows = await controlDatabase.queryOwnerKeyRows(retry, retired);
-      const chain = rows.some(isInvitationAdmitted) ? await loadChain() : null;
-      const derivation = deriveOwnerAnchor({ partyId: this.partyId, anchor: before, rows, tombstones, chain });
+      // A consent-seated row's usage stamp names one of the two usage tables, which cannot be
+      // told apart without reading, so both chains are loaded when any such row exists.
+      // NOTE: the grant chain is two whole-table reads per membership refresh while any owner
+      // row is grant-seated, over tables that are append-only; the memo suggested on
+      // loadInvitationChain would cover it too.
+      const consentSeated = rows.some(isInvitationAdmitted);
+      const chain = consentSeated ? await loadChain() : null;
+      const grantChain = consentSeated ? await this.loadOwnerGrantChain(controlDatabase, retry) : null;
+      const derivation = deriveOwnerAnchor({ partyId: this.partyId, anchor: before, rows, tombstones, chain, grantChain });
       if (derivation.refusedRemovals.length > 0) {
         log('syncOwnerAnchor(%s): refused %d owner removal(s) that would empty the anchor: %o', reason, derivation.refusedRemovals.length, derivation.refusedRemovals);
       }
@@ -8321,6 +8333,22 @@ export class CadreNode implements SAppIdLookup {
     return {
       usages: new Map(usages.map(usage => [usage.usageStampId, usage])),
       invites: new Map(invites.map(invite => [invite.key, invite])),
+    };
+  }
+
+  /**
+   * The usage and grant rows {@link syncOwnerAnchor} resolves a grant-seated `OwnerKey` row
+   * through, keyed for lookup: the owner-grant twin of {@link loadInvitationChain}, read only by
+   * the anchor sync, since a grant admits no machine.
+   */
+  private async loadOwnerGrantChain(controlDatabase: ControlDatabase, retry: boolean): Promise<OwnerGrantChain> {
+    const [usages, grants] = await Promise.all([
+      controlDatabase.queryOwnerGrantUsages(retry),
+      controlDatabase.queryOwnerGrants(retry),
+    ]);
+    return {
+      usages: new Map(usages.map(usage => [usage.usageStampId, usage])),
+      grants: new Map(grants.map(grant => [grant.key, grant])),
     };
   }
 

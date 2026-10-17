@@ -19,9 +19,10 @@
  *   retired, although nothing could re-derive it from the remaining base.
  * - **derivable from S**: a live row whose stored proof verifies against S — owner-signed
  *   (`vouchSig` set): `vouchOwner` is in S and `verifyOwnerKeyVoucher` holds;
- *   invitation-admitted (`vouchSig` null, `vouchUsage` set): `verifyInvitationOwnerAdmission`
- *   holds with S as the anchor. The founding row (all three null) is never derivable:
- *   founders enter anchors only out of band.
+ *   consent-seated (`vouchSig` null, `vouchUsage` set): `verifyOwnerGrantAdmission` holds with
+ *   S as the anchor when `vouchUsage` names an `OwnerGrantUsage` row, else
+ *   `verifyInvitationOwnerAdmission` when it names a `CadreInviteUsage` row. The founding row
+ *   (all three null) is never derivable: founders enter anchors only out of band.
  * - **derived**: the least fixpoint from base ∪ kept — add every key whose live row is
  *   derivable from what is already in the set, until nothing changes. **chainDerived** is the
  *   keys whose live row was derivable in this pass, base keys included.
@@ -45,9 +46,9 @@
  * two cannot be told apart from replicated state; keeping is the only rule under which a
  * sole owner can rotate at all.
  */
-import { verifyInvitationOwnerAdmission, verifyOwnerKeyVoucher, verifyRevocationSigner } from './peer-authorization.js';
+import { verifyInvitationOwnerAdmission, verifyOwnerGrantAdmission, verifyOwnerKeyVoucher, verifyRevocationSigner } from './peer-authorization.js';
 import type { TrustSource } from './trusted-owner-store.js';
-import type { InvitationChain, OwnerKeyRow, RevocationRow } from './types.js';
+import type { InvitationChain, OwnerGrantChain, OwnerKeyRow, RevocationRow } from './types.js';
 
 export interface OwnerAnchorInputs {
 	/** The party whose table is being read; every stored proof is judged for it, so a voucher or tombstone signed for another party neither seats nor removes a key. */
@@ -58,8 +59,10 @@ export interface OwnerAnchorInputs {
 	rows: readonly OwnerKeyRow[];
 	/** `Revocation` rows; only those with `tableName === 'OwnerKey'` are consulted. */
 	tombstones: readonly RevocationRow[];
-	/** The usage and invitation rows, when some owner row is invitation-admitted; null skips those rows. */
+	/** The usage and invitation rows, when some owner row is consent-seated; null skips the rows whose usage is not in `grantChain`. */
 	chain: InvitationChain | null;
+	/** The usage and grant rows, when some owner row is consent-seated; null skips the rows whose usage is not in `chain`. */
+	grantChain: OwnerGrantChain | null;
 }
 
 export interface OwnerAnchorDerivation {
@@ -70,7 +73,7 @@ export interface OwnerAnchorDerivation {
 }
 
 /** The rule above, as one pure function. */
-export function deriveOwnerAnchor({ partyId, anchor, rows, tombstones, chain }: OwnerAnchorInputs): OwnerAnchorDerivation {
+export function deriveOwnerAnchor({ partyId, anchor, rows, tombstones, chain, grantChain }: OwnerAnchorInputs): OwnerAnchorDerivation {
 	const ownerTombstones = tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey');
 	// NOTE: a stamp is retired by any tombstone that names it, verified or not — the same
 	// reading `queryCadrePeers` and `getOwnerKeys` give the table. A forged tombstone can
@@ -80,7 +83,7 @@ export function deriveOwnerAnchor({ partyId, anchor, rows, tombstones, chain }: 
 	const liveRows = rows.filter(row => !retired.has(row.stampId));
 
 	const derived = passStartSet(anchor, liveRows);
-	const chainDerived = deriveFixpoint(partyId, derived, liveRows, chain);
+	const chainDerived = deriveFixpoint(partyId, derived, liveRows, chain, grantChain);
 
 	const removed = removedKeys(partyId, derived, chainDerived, ownerTombstones);
 	if (removed.size > 0 && removed.size === derived.size) {
@@ -108,7 +111,7 @@ function passStartSet(anchor: ReadonlyMap<string, TrustSource>, liveRows: readon
  * trust only grows within a pass, and a proof that failed against a trusted voucher cannot
  * pass later, so no row is verified twice.
  */
-function deriveFixpoint(partyId: string, derived: Set<string>, liveRows: readonly OwnerKeyRow[], chain: InvitationChain | null): Set<string> {
+function deriveFixpoint(partyId: string, derived: Set<string>, liveRows: readonly OwnerKeyRow[], chain: InvitationChain | null, grantChain: OwnerGrantChain | null): Set<string> {
 	const chainDerived = new Set<string>();
 	const pending = new Set(liveRows);
 	let progress = true;
@@ -119,7 +122,7 @@ function deriveFixpoint(partyId: string, derived: Set<string>, liveRows: readonl
 				continue;
 			}
 			pending.delete(row);
-			if (proofVerifies(partyId, row, derived, chain)) {
+			if (proofVerifies(partyId, row, derived, chain, grantChain)) {
 				chainDerived.add(row.key);
 				derived.add(row.key);
 				progress = true;
@@ -130,7 +133,7 @@ function deriveFixpoint(partyId: string, derived: Set<string>, liveRows: readonl
 }
 
 /** Does `row`'s stored proof verify against `trusted`, for `partyId`, by the kind of proof it carries (see the module doc)? */
-function proofVerifies(partyId: string, row: OwnerKeyRow, trusted: ReadonlySet<string>, chain: InvitationChain | null): boolean {
+function proofVerifies(partyId: string, row: OwnerKeyRow, trusted: ReadonlySet<string>, chain: InvitationChain | null, grantChain: OwnerGrantChain | null): boolean {
 	if (row.vouchOwner === null) {
 		return false;
 	}
@@ -140,12 +143,20 @@ function proofVerifies(partyId: string, row: OwnerKeyRow, trusted: ReadonlySet<s
 	if (row.vouchUsage === null) {
 		return false;
 	}
+	const isAnchored = (key: string): boolean => trusted.has(key);
+	// A usage stamp is a 256-bit nonce, so one naming both tables is not a case to order
+	// deliberately; the grant chain is simply asked first.
+	const grantUsage = grantChain?.usages.get(row.vouchUsage);
+	const grant = grantUsage === undefined ? undefined : grantChain?.grants.get(grantUsage.grantKey);
+	if (grantUsage !== undefined && grant !== undefined) {
+		return verifyOwnerGrantAdmission(partyId, row, grantUsage, grant, isAnchored);
+	}
 	const usage = chain?.usages.get(row.vouchUsage);
 	const invite = usage === undefined ? undefined : chain?.invites.get(usage.inviteKey);
 	if (usage === undefined || invite === undefined) {
 		return false;
 	}
-	return verifyInvitationOwnerAdmission(partyId, row, usage, invite, key => trusted.has(key));
+	return verifyInvitationOwnerAdmission(partyId, row, usage, invite, isAnchored);
 }
 
 /**

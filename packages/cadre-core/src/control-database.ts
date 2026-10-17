@@ -7,14 +7,14 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, SeedPeer, MachineRemovalResult } from './types.js';
+import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalResult } from './types.js';
 import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, controlSchemaFileDeclaration } from './control-schema.js';
 import { refuseIncompatibleControlStore } from './control-schema-version.js';
 import { canonicalDatetime } from './canonical-datetime.js';
-import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, CONTROL_TABLES } from './control-authorization.js';
-import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields } from './control-authorization.js';
+import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, CONTROL_TABLES } from './control-authorization.js';
+import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields, OwnerGrantSignedFields } from './control-authorization.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
-import { verifyCadreInviteRow } from './peer-authorization.js';
+import { verifyCadreInviteRow, verifyOwnerGrantRow } from './peer-authorization.js';
 import { OWNER_KEY_MAX_LABEL } from './owner-key-export.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
@@ -99,13 +99,14 @@ export class FormationAbortedError extends Error {
 /**
  * The invitation's seat budget is already spent: the count of recorded usage rows for the
  * invitation has reached its `TotalUses`, so this redemption cannot be given a seat. `token`
- * is the `FormationInvite.Token` or the `CadreInvite.Key`, whichever table the caller
- * redeemed against.
+ * is the `FormationInvite.Token`, the `CadreInvite.Key` or the `OwnerGrant.Key`, whichever
+ * table the caller redeemed against.
  *
  * Raised off the committed-count check ({@link ControlDatabase.assertSeatRemains}) ahead of
  * the write, inside {@link ControlDatabase.redeemInvitation} /
  * {@link ControlDatabase.recordFormationUsage}, off the same check for a cadre invitation
- * ({@link ControlDatabase.redeemCadreInvite}), and off the unlocked pre-check
+ * ({@link ControlDatabase.redeemCadreInvite}) and an owner grant
+ * ({@link ControlDatabase.redeemOwnerGrant}), and off the unlocked pre-check
  * `ControlFormationUsageRecorder.authorizeUsage` runs before the manager issues a membership
  * pass — and off nothing else. It exists because
  * without it the refusal surfaces as a generic `CHECK constraint failed: Authorized` from the
@@ -150,8 +151,32 @@ export class CadreInviteIssuerUnknownError extends Error {
   }
 }
 
-/** The refusal {@link CadreInviteIssuerUnknownError} wraps — the constraint named, as the engine words it. */
-const CADRE_INVITE_UNAUTHORIZED = /CHECK constraint failed: AuthorizedInsert\b/;
+/**
+ * {@link ControlDatabase.seatOwnerGrant} was refused by `OwnerGrant.AuthorizedInsert`: the
+ * grant twin of {@link CadreInviteIssuerUnknownError}, for the same two causes (the issuer's
+ * `OwnerKey` row has not replicated here yet or has since been removed; or a tampered row).
+ * Its own class rather than a shared one so a caller that handles invitation and grant
+ * bundles can tell by `instanceof` which credential was refused.
+ */
+export class OwnerGrantIssuerUnknownError extends Error {
+  constructor(
+    readonly grantKey: string,
+    readonly issuerKey: string,
+    options?: { cause?: unknown }
+  ) {
+    super(
+      `Owner grant ${grantKey} cannot be seated here: its issuer ${issuerKey} is not an owner on this node, or its signature does not verify`,
+      options
+    );
+    this.name = 'OwnerGrantIssuerUnknownError';
+  }
+}
+
+/**
+ * The refusal {@link CadreInviteIssuerUnknownError} and {@link OwnerGrantIssuerUnknownError}
+ * wrap — the constraint named, as the engine words it; both tables name theirs `AuthorizedInsert`.
+ */
+const ISSUER_UNAUTHORIZED = /CHECK constraint failed: AuthorizedInsert\b/;
 
 /**
  * What a recorded `FormationUsage` row came out as.
@@ -373,6 +398,51 @@ export function cadreInviteConsentMessage(partyId: string, fields: CadreInviteRe
 }
 
 /**
+ * The exact bytes an owner signs to seat an `OwnerGrant` row — the TS mirror of the `'add'`
+ * digest in `OwnerGrant.AuthorizedInsert`, over the whole row in the schema's order with
+ * nullable columns as `''` (`ownerGrantRowFields`, shared with the base64url verifier
+ * `peer-authorization.ts`'s `ownerGrantAddDigest`). `expiresAt` must already be the stored
+ * canonical `datetime` string, as {@link ControlDatabase.insertOwnerGrant} produces it, for
+ * the reason on {@link cadreInviteAddMessage}.
+ */
+export function ownerGrantAddMessage(partyId: string, row: OwnerGrantSignedFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.OwnerGrant', 'add', partyId, ownerGrantRowFields(row));
+}
+
+/** The fields both owner-grant redemption signatures cover; see {@link ownerGrantRedeemMessage}. */
+export interface OwnerGrantRedemptionFields {
+  grantKey: string;
+  /** The single-use nonce the holder minted for this redemption (`generateStampId`). */
+  usageStampId: string;
+  /** The owner key being seated (base64url ed25519). */
+  seatedKey: string;
+}
+
+/**
+ * The exact bytes the HOLDER of an owner grant signs, with the grant's private key, to redeem
+ * it once — the TS mirror of the `'redeem'` digest `OwnerGrantUsage.GrantPossessed` verifies
+ * against the grant's public key. Binding the seated key and the nonce means a captured
+ * redemption can seat no other key and spend no other use.
+ */
+export function ownerGrantRedeemMessage(partyId: string, fields: OwnerGrantRedemptionFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.OwnerGrantUsage', 'redeem', partyId, [
+    fields.grantKey, fields.usageStampId, fields.seatedKey,
+  ]);
+}
+
+/**
+ * The exact bytes the SEATED key signs, proving the holder holds it — the TS mirror of the
+ * `'consent'` digest `OwnerGrantUsage.OwnerConsented` verifies against `SeatedKey`. Same
+ * fields as {@link ownerGrantRedeemMessage} under a distinct action tag, so neither
+ * signature can stand in for the other.
+ */
+export function ownerGrantConsentMessage(partyId: string, fields: OwnerGrantRedemptionFields): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.OwnerGrantUsage', 'consent', partyId, [
+    fields.grantKey, fields.usageStampId, fields.seatedKey,
+  ]);
+}
+
+/**
  * Minimal interface for the CollectionFactory returned by the optimystic plugin.
  * We only need the methods we actually use.
  */
@@ -420,14 +490,23 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   JoinRequest: 'Id',
   DeviceToken: 'PeerId',
   CadreInvite: 'Key',
+  OwnerGrant: 'Key',
 };
 
 /**
- * A guarded table an owner may remove a row from. `CadreInvite` is excluded by design — its
- * rows are never deleted (`NoDelete`), and withdrawing one is a tombstone alone
- * ({@link ControlDatabase.withdrawCadreInvite}).
+ * A guarded table of owner-issued credentials: signed rows that travel inside a bundle, are
+ * seated verbatim by any member ({@link ControlDatabase.seatCadreInvite},
+ * {@link ControlDatabase.seatOwnerGrant}), and are never deleted (`NoDelete`) because the
+ * rows they admitted prove themselves through them. Withdrawing one is a tombstone alone
+ * ({@link ControlDatabase.withdrawCadreInvite}, {@link ControlDatabase.withdrawOwnerGrant}).
  */
-type RemovableTable = Exclude<RevocableTable, 'CadreInvite'>;
+type IssuedTable = Extract<RevocableTable, 'CadreInvite' | 'OwnerGrant'>;
+
+/** The write-reason prefix each {@link IssuedTable}'s seat and withdrawal log under. */
+const ISSUED_TABLE_REASON: Readonly<Record<IssuedTable, string>> = { CadreInvite: 'cadre-invite', OwnerGrant: 'owner-grant' };
+
+/** A guarded table an owner may remove a row from: every revocable table but the {@link IssuedTable}s. */
+type RemovableTable = Exclude<RevocableTable, IssuedTable>;
 
 /**
  * One row incarnation's owner-signed removal, ready for {@link ControlDatabase.execGuardedRemoval}:
@@ -445,7 +524,7 @@ interface GuardedRemoval {
 /**
  * The exact bytes an owner signs to append one `Revocation` tombstone — `Revocation.Authorized`
  * binds the whole (TableName, RowKey, StampId) row under its own domain tag. Shared by every
- * tombstone writer (a guarded removal, a `CadreInvite` withdrawal, the ledger marker) so the
+ * tombstone writer (a guarded removal, an issued row's withdrawal, the ledger marker) so the
  * field order lives in one place; the base64url verifier is `peer-authorization.ts`'s
  * `revocationDigest`.
  */
@@ -637,13 +716,14 @@ export function projectSeedPeers(rows: readonly CadrePeerRow[], minterPeerId: st
 }
 
 /**
- * The conditions a cadre invitation must still meet to be redeemed, short of its use count:
- * not withdrawn, unexpired (`expiresAt <= now` is expired, as the redemption refuses it),
- * and issued by a current owner. Shared by {@link ControlDatabase.hasLiveCadreInvite},
- * {@link ControlDatabase.isCadreInviteLive} and {@link ControlDatabase.listCadreInviteStatuses}
- * so they cannot drift from each other, or from `CadreInviteUsage.Authorized`.
+ * The conditions an issued credential (a cadre invitation or an owner grant) must still meet
+ * to be redeemed, short of its use count: not withdrawn, unexpired (`expiresAt <= now` is
+ * expired, as the redemption refuses it), and issued by a current owner. Shared by
+ * {@link ControlDatabase.hasLiveCadreInvite}, {@link ControlDatabase.isCadreInviteLive},
+ * {@link ControlDatabase.listCadreInviteStatuses} and their owner-grant twins so they cannot
+ * drift from each other, or from `CadreInviteUsage.Authorized` / `OwnerGrantUsage.Authorized`.
  */
-function cadreInviteStillOpen(
+function issuedRowStillOpen(
   row: { stampId: string; issuerKey: string; expiresAt: string | null },
   withdrawn: ReadonlySet<string>,
   owners: ReadonlySet<string>,
@@ -667,8 +747,8 @@ function cadreInviteStillOpen(
  * hold, so a reaped row is recoverable by re-forming. `JoinRequest` is reapable for the same
  * reason: the inviting party and the user also hold its invitation. `OwnerKey` has no
  * production removal path and `MinOneOwner` makes an automated owner-key reap a
- * party-bricking hazard. `CadreInvite` is never deleted at all (its tombstone is a
- * withdrawal over a row that stays), so there is nothing to reap.
+ * party-bricking hazard. `CadreInvite` and `OwnerGrant` are never deleted at all (their
+ * tombstones are withdrawals over rows that stay), so there is nothing to reap.
  */
 export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey', 'JoinedStrand', 'JoinRequest'] as const satisfies readonly RevocableTable[];
 export type ReapableTable = (typeof REAPABLE_TABLES)[number];
@@ -676,7 +756,7 @@ export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 /**
  * Runtime membership test for {@link REAPABLE_TABLES}, narrowing a tombstone's
  * `TableName` to the subset {@link ControlDatabase.reapRevokedRow} accepts. A tombstone
- * naming an excluded table (`Strand`, `OwnerKey`, `CadreInvite`) is skipped silently —
+ * naming an excluded table (`Strand`, `OwnerKey`, `CadreInvite`, `OwnerGrant`) is skipped silently —
  * `Strand` tombstones are the common case in a party that has unpublished a strand, so a
  * log line per skip would be per-pass noise.
  */
@@ -716,6 +796,42 @@ function cadreInviteUsageRowOf(row: Record<string, SqlValue>): CadreInviteUsageR
     inviteSig: row.InviteSig as string,
     peerSig: row.PeerSig as string,
   };
+}
+
+/** Every `OwnerGrant` column, in the order {@link ownerGrantRowOf} reads them; callers append their `where`. */
+const OWNER_GRANT_SELECT_SQL = 'select Key, Label, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId from CadreControl.OwnerGrant';
+
+/** A stored `OwnerGrant` row as an {@link OwnerGrantRow}; `ExpiresAt` kept canonical, as {@link cadreInviteRowOf} keeps it. */
+function ownerGrantRowOf(row: Record<string, SqlValue>): OwnerGrantRow {
+  return {
+    key: row.Key as string,
+    label: (row.Label as string | null) ?? null,
+    expiresAt: row.ExpiresAt == null ? null : String(row.ExpiresAt),
+    totalUses: (row.TotalUses as number | null) ?? null,
+    issuerKey: row.IssuerKey as string,
+    issuerSig: row.IssuerSig as string,
+    stampId: row.StampId as string,
+  };
+}
+
+/** A stored `OwnerGrantUsage` row as an {@link OwnerGrantUsageRow}. */
+function ownerGrantUsageRowOf(row: Record<string, SqlValue>): OwnerGrantUsageRow {
+  return {
+    usageStampId: row.UsageStampId as string,
+    grantKey: row.GrantKey as string,
+    seatedKey: row.SeatedKey as string,
+    seatedStampId: row.SeatedStampId as string,
+    grantSig: row.GrantSig as string,
+    ownerSig: row.OwnerSig as string,
+  };
+}
+
+/** One issued row's standing, as {@link ControlDatabase.listCadreInviteStatuses} and {@link ControlDatabase.listOwnerGrantStatuses} report it. */
+interface IssuedRowStanding<Row> {
+  row: Row;
+  live: boolean;
+  withdrawn: boolean;
+  usesRecorded: number;
 }
 
 /** A `JoinedStrand` row as a {@link StrandRow}; the schema's `KnownType` check backs the `Type` cast. */
@@ -2038,18 +2154,11 @@ export class ControlDatabase {
    * signature all sit inside the locked body: a {@link lockedWithRetry} re-run starts over a
    * rolled-back attempt with a fresh stamp, as {@link redeemCadreInvite} does.
    *
-   * NOTE: re-adding a removed owner from a machine that still holds its retired physical row
-   * is refused here by name: `OwnerKey` is not reaped, so a machine that received the
-   * tombstone without the delete (see {@link getOwnerKeys}) keeps the row, and an insert there
-   * would collide on the primary key. Re-add from the machine that removed the key, or any
-   * machine the delete reached; if re-adding removed owners becomes routine, the fix is an
-   * `OwnerKey` reap branch, gated so it can never take the table below `MinOneOwner`.
-   *
    * @param label - the user's name for the key, as {@link insertOwnerKey}'s.
    * @returns `true` when this call seated the row, `false` when `key` is already a live owner
    *   here (nothing written, whatever its label).
-   * @throws when this node holds `key`'s row under a retired stamp (above), or when the
-   *   schema refuses the signer.
+   * @throws when this node holds `key`'s row under a retired stamp
+   *   ({@link liveOwnerKeyStamp}), or when the schema refuses the signer.
    */
   async insertOwnerKeyVouched(
     key: string,
@@ -2060,17 +2169,9 @@ export class ControlDatabase {
     this.ensureInitialized();
     const storedLabel = ownerKeyLabel(label);
     return await this.mutateCadrePeer('owner-key-add', async () => {
-      // retry: false on both reads — inside the locked write body (see queryStampId's NOTE).
-      const heldStamp = await this.queryStampId('OwnerKey', key, false);
-      if (heldStamp !== null) {
-        if (!(await this.queryRevokedStamps('OwnerKey', false)).has(heldStamp)) {
-          log('insertOwnerKeyVouched: %s is already an owner; nothing written', key);
-          return false;
-        }
-        throw new Error(
-          `Cannot re-add owner key ${key} here: this node still holds the row it was removed under ` +
-          '(OwnerKey rows are not reaped); re-add it from the machine that removed it'
-        );
+      if (await this.liveOwnerKeyStamp(key) !== null) {
+        log('insertOwnerKeyVouched: %s is already an owner; nothing written', key);
+        return false;
       }
       const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
       const signature = await signMessage(ownerKeyAddMessage(this.config.partyId, key, storedLabel, stampId));
@@ -2078,6 +2179,34 @@ export class ControlDatabase {
       log('Owner key %s added (vouched by %s)', key, ownerKey);
       return true;
     });
+  }
+
+  /**
+   * The stamp of `key`'s live `OwnerKey` row here, or null when this node holds none: the
+   * insert-if-absent read of {@link insertOwnerKeyVouched} and {@link redeemOwnerGrant}. Inside
+   * the locked body (both reads `retry: false`; see queryStampId's NOTE).
+   *
+   * NOTE: re-adding a removed owner from a machine that still holds its retired physical row
+   * is refused here by name: `OwnerKey` is not reaped, so a machine that received the
+   * tombstone without the delete (see {@link getOwnerKeys}) keeps the row, and an insert there
+   * would collide on the primary key. Re-add from the machine that removed the key, or any
+   * machine the delete reached; if re-adding removed owners becomes routine, the fix is an
+   * `OwnerKey` reap branch, gated so it can never take the table below `MinOneOwner`.
+   *
+   * @throws when this node holds `key`'s row under a retired stamp (above).
+   */
+  private async liveOwnerKeyStamp(key: string): Promise<string | null> {
+    const heldStamp = await this.queryStampId('OwnerKey', key, false);
+    if (heldStamp === null) {
+      return null;
+    }
+    if ((await this.queryRevokedStamps('OwnerKey', false)).has(heldStamp)) {
+      throw new Error(
+        `Cannot re-add owner key ${key} here: this node still holds the row it was removed under ` +
+        '(OwnerKey rows are not reaped); re-add it from the machine that removed it'
+      );
+    }
+    return heldStamp;
   }
 
   /**
@@ -2205,7 +2334,7 @@ export class ControlDatabase {
   ): Promise<MachineRemovalResult> {
     return await this.mutateCadrePeer('machine-remove', async () => {
       const removals = await this.signMachineRemovals(target.peerId, signMessage);
-      const withdrawals = await this.signCadreInviteWithdrawals(target.inviteKeys, signMessage);
+      const withdrawals = await this.signWithdrawals('CadreInvite', target.inviteKeys, signMessage);
       if (removals.length === 0 && withdrawals.length === 0) {
         log('removeMachine: nothing live names %s here (already removed)', target.peerId);
         return { removedPeer: false, removedDeviceToken: false, withdrawnInvitations: [] };
@@ -3006,8 +3135,8 @@ export class ControlDatabase {
 
   /**
    * File the owner-signed `Revocation` tombstone retiring one row incarnation — the second
-   * statement of every guarded removal ({@link execGuardedRemoval}) and the whole of a
-   * `CadreInvite` withdrawal ({@link withdrawCadreInvite}), whose row stays — or the ledger
+   * statement of every guarded removal ({@link execGuardedRemoval}) and the whole of an
+   * issued row's withdrawal ({@link withdrawIssuedRow}), whose row stays — or the ledger
    * marker ({@link openRevocationLedger}), which retires nothing. The caller supplies the
    * lock and, where one is needed, the transaction.
    *
@@ -3465,8 +3594,9 @@ export class ControlDatabase {
    * Covers every write that can change who is a member or an owner: EVERY `CadrePeer`
    * writer, with one documented exception ({@link updateSelfPeerRecord}, which cannot
    * change the snapshot), the `OwnerKey` writers ({@link insertOwnerKeyVouched},
-   * {@link deleteOwnerKey}) and the invitation redemption ({@link redeemCadreInvite}),
-   * which seats both. That is what makes the party-membership snapshot refresh automatic
+   * {@link deleteOwnerKey}), the invitation redemption ({@link redeemCadreInvite}), which
+   * seats both, and the owner-grant redemption ({@link redeemOwnerGrant}). That is what
+   * makes the party-membership snapshot refresh automatic
    * rather than a caller obligation. The name predates the `OwnerKey` writers. A
    * writer necessarily holds the target node's ControlDatabase (the `SeedBootstrapService`'s
    * event callbacks are NOT a viable seam: the temp service `CadreNode.applySeed`
@@ -4247,21 +4377,35 @@ export class ControlDatabase {
    *   not verify. Every other refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
    */
   async seatCadreInvite(row: CadreInviteRow): Promise<boolean> {
+    return this.seatIssuedRow('CadreInvite', row.key, () => this.execCadreInviteInsert(row),
+      cause => new CadreInviteIssuerUnknownError(row.key, row.issuerKey, { cause }));
+  }
+
+  /**
+   * Insert-if-absent of an issued row from a bundle's copy, under the write lock: the body of
+   * {@link seatCadreInvite} and {@link seatOwnerGrant}. `exec` runs the bare insert under the
+   * row's own stored issuer pair.
+   *
+   * @returns `true` when this call inserted the row, `false` when it was already present.
+   * @throws `refuse(cause)` when the table's `AuthorizedInsert` refuses the row; every other
+   *   refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
+   */
+  private async seatIssuedRow(table: IssuedTable, key: string, exec: () => Promise<void>, refuse: (cause: unknown) => Error): Promise<boolean> {
     this.ensureInitialized();
     try {
       return await this.lockedWithRetry(async () => {
         // retry: false — inside the locked write body (see queryStampId's NOTE).
-        if (await this.queryStampId('CadreInvite', row.key, false) !== null) {
-          log('CadreInvite %s already seated; seat skipped', row.key);
+        if (await this.queryStampId(table, key, false) !== null) {
+          log('%s %s already seated; seat skipped', table, key);
           return false;
         }
-        await this.execCadreInviteInsert(row);
-        log('Cadre invitation seated from its bundle: %s', row.key);
+        await exec();
+        log('%s seated from its bundle: %s', table, key);
         return true;
-      }, {}, 'cadre-invite-seat');
+      }, {}, `${ISSUED_TABLE_REASON[table]}-seat`);
     } catch (error) {
-      if (errorChainMatches(error, CADRE_INVITE_UNAUTHORIZED)) {
-        throw new CadreInviteIssuerUnknownError(row.key, row.issuerKey, { cause: error });
+      if (errorChainMatches(error, ISSUER_UNAUTHORIZED)) {
+        throw refuse(error);
       }
       throw error;
     }
@@ -4331,9 +4475,13 @@ export class ControlDatabase {
    * `retry: false` is passed by {@link assertCadreInviteSeatRemains}, inside the locked body.
    */
   async countCadreInviteUsage(key: string, retry = true): Promise<number> {
+    return this.countUsageRows('select count(1) as Count from CadreControl.CadreInviteUsage where InviteKey = ?', key, 'cadre-invite-usage-count', retry);
+  }
+
+  /** The one-row count read behind {@link countCadreInviteUsage} and {@link countOwnerGrantUsage}. */
+  private async countUsageRows(sql: string, key: string, label: string, retry: boolean): Promise<number> {
     this.ensureInitialized();
-    const sql = 'select count(1) as Count from CadreControl.CadreInviteUsage where InviteKey = ?';
-    for (const row of await this.readRows(sql, [key], 'cadre-invite-usage-count', retry)) {
+    for (const row of await this.readRows(sql, [key], label, retry)) {
       return (row.Count as number) ?? 0;
     }
     return 0;
@@ -4369,7 +4517,7 @@ export class ControlDatabase {
       undefined,
       'live-cadre-invites'
     )) {
-      const open = cadreInviteStillOpen(
+      const open = issuedRowStillOpen(
         { stampId: row.StampId as string, issuerKey: row.IssuerKey as string, expiresAt: (row.ExpiresAt as string | null) ?? null },
         withdrawn, owners, nowMs
       );
@@ -4409,14 +4557,27 @@ export class ControlDatabase {
   async isCadreInviteLive(invite: CadreInviteRow, nowMs: number = Date.now()): Promise<boolean> {
     this.ensureInitialized();
     const row = await this.queryCadreInvite(invite.key) ?? (verifyCadreInviteRow(this.config.partyId, invite) ? invite : null);
+    return this.issuedRowLive('CadreInvite', row, nowMs, key => this.countCadreInviteUsage(key));
+  }
+
+  /**
+   * The body of {@link isCadreInviteLive} and {@link isOwnerGrantLive}: is `row` (the one held,
+   * or a verified bundle copy; null for neither) still open and under its use cap?
+   */
+  private async issuedRowLive(
+    table: IssuedTable,
+    row: { key: string; stampId: string; issuerKey: string; expiresAt: string | null; totalUses: number | null } | null,
+    nowMs: number,
+    countUsage: (key: string) => Promise<number>
+  ): Promise<boolean> {
     if (row === null) {
       return false;
     }
-    const [withdrawn, owners] = await Promise.all([this.queryRevokedStamps('CadreInvite'), this.getOwnerKeys()]);
-    if (!cadreInviteStillOpen(row, withdrawn, owners, nowMs)) {
+    const [withdrawn, owners] = await Promise.all([this.queryRevokedStamps(table), this.getOwnerKeys()]);
+    if (!issuedRowStillOpen(row, withdrawn, owners, nowMs)) {
       return false;
     }
-    return row.totalUses === null || await this.countCadreInviteUsage(row.key) < row.totalUses;
+    return row.totalUses === null || await countUsage(row.key) < row.totalUses;
   }
 
   /**
@@ -4427,22 +4588,34 @@ export class ControlDatabase {
    * occasional read, not a gate's.
    */
   async listCadreInviteStatuses(nowMs: number = Date.now()): Promise<CadreInviteStatus[]> {
+    const standings = await this.issuedRowStandings('CadreInvite', await this.queryCadreInvites(), nowMs, key => this.countCadreInviteUsage(key));
+    return standings.map(({ row, ...standing }) => ({ invite: row, ...standing }));
+  }
+
+  /**
+   * The body of {@link listCadreInviteStatuses} and {@link listOwnerGrantStatuses}: each of
+   * `rows` with its withdrawal, its recorded uses and whether it is still redeemable.
+   */
+  private async issuedRowStandings<Row extends { key: string; stampId: string; issuerKey: string; expiresAt: string | null; totalUses: number | null }>(
+    table: IssuedTable,
+    rows: readonly Row[],
+    nowMs: number,
+    countUsage: (key: string) => Promise<number>
+  ): Promise<Array<IssuedRowStanding<Row>>> {
     this.ensureInitialized();
-    const [invites, withdrawnStamps, owners] = await Promise.all([
-      this.queryCadreInvites(), this.queryRevokedStamps('CadreInvite'), this.getOwnerKeys()
-    ]);
-    const statuses: CadreInviteStatus[] = [];
-    // NOTE: one retried count read per invitation, withdrawn and expired rows included, since
-    // rows are never deleted; if a long-lived cadre's listing ever shows as slow, group the
-    // usage counts in one statement or skip the count for rows that are no longer open.
-    for (const invite of invites) {
-      const usesRecorded = await this.countCadreInviteUsage(invite.key);
-      const withdrawn = withdrawnStamps.has(invite.stampId);
-      const live = cadreInviteStillOpen(invite, withdrawnStamps, owners, nowMs)
-        && (invite.totalUses === null || usesRecorded < invite.totalUses);
-      statuses.push({ invite, live, withdrawn, usesRecorded });
+    const [withdrawnStamps, owners] = await Promise.all([this.queryRevokedStamps(table), this.getOwnerKeys()]);
+    const standings: Array<IssuedRowStanding<Row>> = [];
+    // NOTE: one retried count read per row, withdrawn and expired rows included, since rows
+    // are never deleted; if a long-lived cadre's listing ever shows as slow, group the usage
+    // counts in one statement or skip the count for rows that are no longer open.
+    for (const row of rows) {
+      const usesRecorded = await countUsage(row.key);
+      const withdrawn = withdrawnStamps.has(row.stampId);
+      const live = issuedRowStillOpen(row, withdrawnStamps, owners, nowMs)
+        && (row.totalUses === null || usesRecorded < row.totalUses);
+      standings.push({ row, live, withdrawn, usesRecorded });
     }
-    return statuses;
+    return standings;
   }
 
   /**
@@ -4467,50 +4640,60 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: ControlSign
   ): Promise<boolean> {
+    return this.withdrawIssuedRow('CadreInvite', key, ownerKey, signMessage);
+  }
+
+  /**
+   * The body of {@link withdrawCadreInvite} and {@link withdrawOwnerGrant}: under the write
+   * lock, file the owner-signed tombstone retiring the row's stamp with the row kept, and fire
+   * the guarded-delete listener for it (so a withdrawal made while alone is re-issued).
+   */
+  private async withdrawIssuedRow(table: IssuedTable, key: string, ownerKey: string, signMessage: ControlSign): Promise<boolean> {
     this.ensureInitialized();
     const filed = await this.lockedWithRetry(async (): Promise<RevokedRowRef | null> => {
-      const [withdrawal] = await this.signCadreInviteWithdrawals([key], signMessage);
+      const [withdrawal] = await this.signWithdrawals(table, [key], signMessage);
       if (withdrawal === undefined) {
         return null;
       }
       await this.execTombstone(withdrawal.ref, withdrawal.signature, ownerKey);
       return withdrawal.ref;
-    }, {}, 'cadre-invite-withdraw');
+    }, {}, `${ISSUED_TABLE_REASON[table]}-withdraw`);
     if (filed === null) {
       return false;
     }
-    log('Cadre invitation withdrawn: %s (stamp %s retired, row kept)', key, filed.stampId);
+    log('%s withdrawn: %s (stamp %s retired, row kept)', table, key, filed.stampId);
     this.notifyGuardedDelete(filed);
     return true;
   }
 
   /**
-   * The withdrawal tombstones for the `CadreInvite` rows among `keys` that are held here and
-   * not yet withdrawn, signed and ready for {@link execTombstone}: the body
-   * {@link withdrawCadreInvite} files one of and {@link removeMachine} files several of in one
+   * The withdrawal tombstones for the `table` rows among `keys` that are held here and not
+   * yet withdrawn, signed and ready for {@link execTombstone}: the body
+   * {@link withdrawIssuedRow} files one of and {@link removeMachine} files several of in one
    * transaction. Inside the locked body (every read `retry: false`); an absent or already
    * withdrawn key is logged and left out.
    */
-  private async signCadreInviteWithdrawals(
+  private async signWithdrawals(
+    table: IssuedTable,
     keys: readonly string[],
     signMessage: ControlSign
   ): Promise<Array<{ ref: RevokedRowRef; signature: string }>> {
     if (keys.length === 0) {
       return [];
     }
-    const withdrawn = await this.queryRevokedStamps('CadreInvite', false);
+    const withdrawn = await this.queryRevokedStamps(table, false);
     const withdrawals: Array<{ ref: RevokedRowRef; signature: string }> = [];
     for (const key of keys) {
-      const stampId = await this.queryStampId('CadreInvite', key, false);
+      const stampId = await this.queryStampId(table, key, false);
       if (stampId === null) {
-        log('withdrawCadreInvite: no CadreInvite row for %s (nothing to withdraw)', key);
+        log('withdraw %s: no row for %s (nothing to withdraw)', table, key);
         continue;
       }
       if (withdrawn.has(stampId)) {
-        log('withdrawCadreInvite: %s already withdrawn (stamp %s retired)', key, stampId);
+        log('withdraw %s: %s already withdrawn (stamp %s retired)', table, key, stampId);
         continue;
       }
-      const ref: RevokedRowRef = { tableName: 'CadreInvite', rowKey: key, stampId };
+      const ref: RevokedRowRef = { tableName: table, rowKey: key, stampId };
       withdrawals.push({ ref, signature: await signMessage(revocationTombstoneMessage(this.config.partyId, ref)) });
     }
     return withdrawals;
@@ -4635,14 +4818,257 @@ export class ControlDatabase {
    * generic `Authorized` failure a caller would otherwise report as retryable. Reads the
    * committed count inside the locked body, so on a same-node race the loser is refused here.
    */
-  private async assertCadreInviteSeatRemains(invite: CadreInviteRow): Promise<void> {
-    if (invite.totalUses === null) {
+  private assertCadreInviteSeatRemains(invite: CadreInviteRow): Promise<void> {
+    return this.assertIssuedSeatRemains(invite, key => this.countCadreInviteUsage(key, false));
+  }
+
+  /** The body of {@link assertCadreInviteSeatRemains} and {@link assertOwnerGrantSeatRemains}; `countUsage` reads inside the locked body. */
+  private async assertIssuedSeatRemains(row: { key: string; totalUses: number | null }, countUsage: (key: string) => Promise<number>): Promise<void> {
+    if (row.totalUses === null) {
       return;
     }
-    const used = await this.countCadreInviteUsage(invite.key, false);
-    if (used >= invite.totalUses) {
-      throw new InvitationExhaustedError(invite.key, used, invite.totalUses);
+    const used = await countUsage(row.key);
+    if (used >= row.totalUses) {
+      throw new InvitationExhaustedError(row.key, used, row.totalUses);
     }
+  }
+
+  // ── Owner grants (OwnerGrant / OwnerGrantUsage) ─────────────────────────────────────────
+
+  /**
+   * Mint and insert an owner-signed `OwnerGrant`: a grant of ownership to whoever holds the
+   * grant's private half, redeemable through any member machine ({@link redeemOwnerGrant})
+   * to seat an owner key the holder generates or already holds. No machine is admitted and no
+   * peer id is named. The grant twin of {@link insertCadreInvite}: the owner signs the whole
+   * row ({@link ownerGrantAddMessage}), `ExpiresAt` through {@link canonicalDatetime}, and
+   * the returned row is what the grant bundle carries, re-inserted verbatim by
+   * {@link seatOwnerGrant} on a member that has not received it by replication.
+   *
+   * @param grant.key - the grant's ed25519 PUBLIC key (base64url), the row's primary key; the
+   *   caller minted the pair and hands the private half to the holder out of band
+   * @param grant.label - the label every key this grant seats will carry
+   *   ({@link ownerKeyLabel}'s rule: trimmed, at most 64 characters, blank meaning none); the
+   *   issuer's choice, which the holder cannot change
+   * @param grant.expiresAtMs - epoch ms after which it cannot be redeemed; omit or null for
+   *   never. The short default lifetime is the node API's to apply, not this writer's.
+   * @param grant.totalUses - how many redemptions it allows; omit for unlimited
+   * @returns the row as stored, `expiresAt` in its canonical form
+   */
+  async insertOwnerGrant(
+    grant: { key: string; label?: string | null; expiresAtMs?: number | null; totalUses?: number | null },
+    ownerKey: string,
+    signMessage: ControlSign
+  ): Promise<OwnerGrantRow> {
+    this.ensureInitialized();
+    const key = requireEd25519PublicKeyB64(grant.key, 'owner grant key');
+    const signed: OwnerGrantSignedFields = {
+      key,
+      label: ownerKeyLabel(grant.label),
+      expiresAt: grant.expiresAtMs == null ? null : await canonicalDatetime(this.db!, grant.expiresAtMs),
+      totalUses: grant.totalUses ?? null,
+      stampId: generateStampId(this.config.libp2pNode.peerId.toString()),
+    };
+    const row: OwnerGrantRow = {
+      ...signed,
+      issuerKey: ownerKey,
+      issuerSig: await signMessage(ownerGrantAddMessage(this.config.partyId, signed)),
+    };
+    await this.lockedWithRetry(() => this.execOwnerGrantInsert(row), {}, 'owner-grant-insert');
+    log('Owner grant inserted: %s (label=%s)', key, row.label ?? 'none');
+    return row;
+  }
+
+  /**
+   * Seat an owner-signed `OwnerGrant` row received inside a grant bundle, under its own stored
+   * `IssuerKey`/`IssuerSig` as the write context — insert-if-absent, as {@link seatCadreInvite}.
+   *
+   * @returns `true` when this call inserted the row, `false` when it was already present.
+   * @throws {OwnerGrantIssuerUnknownError} when `OwnerGrant.AuthorizedInsert` refuses it: the
+   *   issuer is not an owner on this node (not replicated yet, or removed), or the signature does
+   *   not verify. Every other refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
+   */
+  async seatOwnerGrant(row: OwnerGrantRow): Promise<boolean> {
+    return this.seatIssuedRow('OwnerGrant', row.key, () => this.execOwnerGrantInsert(row),
+      cause => new OwnerGrantIssuerUnknownError(row.key, row.issuerKey, { cause }));
+  }
+
+  /** Bare `OwnerGrant` insert shared by {@link insertOwnerGrant} and {@link seatOwnerGrant}; the caller holds the lock. */
+  private async execOwnerGrantInsert(row: OwnerGrantRow): Promise<void> {
+    await this.db!.exec(`
+      insert into CadreControl.OwnerGrant (Key, Label, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId)
+        with context OwnerKey = ?, Signature = ?
+        values (?, ?, ?, ?, ?, ?, ?)
+    `, [
+      row.issuerKey, row.issuerSig,
+      row.key, row.label, row.expiresAt, row.totalUses,
+      row.issuerKey, row.issuerSig, row.stampId,
+    ]);
+  }
+
+  /**
+   * Read one `OwnerGrant` row by key, or null when absent. Withdrawn rows are returned too,
+   * as {@link queryCadreInvite} returns them: the row is the holder's proof and never goes
+   * away. `retry: false` is passed by {@link redeemOwnerGrant}, inside its locked body.
+   */
+  async queryOwnerGrant(key: string, retry = true): Promise<OwnerGrantRow | null> {
+    this.ensureInitialized();
+    for (const row of await this.readRows(`${OWNER_GRANT_SELECT_SQL} where Key = ?`, [key], 'owner-grant', retry)) {
+      return ownerGrantRowOf(row);
+    }
+    return null;
+  }
+
+  /**
+   * Every `OwnerGrant` row this node holds, withdrawn and expired ones included. Read by the
+   * anchor sync when at least one `OwnerKey` row is consent-seated (`CadreNode.loadOwnerGrantChain`);
+   * `retry: false` is forwarded from the membership-gate refresh for {@link queryCadrePeers}' reason.
+   */
+  async queryOwnerGrants(retry = true): Promise<OwnerGrantRow[]> {
+    this.ensureInitialized();
+    const rows = await this.readRows(OWNER_GRANT_SELECT_SQL, undefined, 'owner-grants', retry);
+    return rows.map(ownerGrantRowOf);
+  }
+
+  /** Every `OwnerGrantUsage` row this node holds — the redemption records a grant-seated `OwnerKey` row is verified against. Same `retry` contract as {@link queryOwnerGrants}. */
+  async queryOwnerGrantUsages(retry = true): Promise<OwnerGrantUsageRow[]> {
+    this.ensureInitialized();
+    const rows = await this.readRows(
+      'select UsageStampId, GrantKey, SeatedKey, SeatedStampId, GrantSig, OwnerSig from CadreControl.OwnerGrantUsage',
+      undefined, 'owner-grant-usages', retry
+    );
+    return rows.map(ownerGrantUsageRowOf);
+  }
+
+  /**
+   * How many times an owner grant has been redeemed (its `OwnerGrantUsage` rows), served
+   * through the `OwnerGrantUsageByGrant` index. A permissive PRE-check like
+   * {@link countCadreInviteUsage}: the cap is `OwnerGrantUsage.Authorized`'s own committed count.
+   */
+  async countOwnerGrantUsage(key: string, retry = true): Promise<number> {
+    return this.countUsageRows('select count(1) as Count from CadreControl.OwnerGrantUsage where GrantKey = ?', key, 'owner-grant-usage-count', retry);
+  }
+
+  /**
+   * Is this one owner grant still redeemable here — not withdrawn, unexpired, uses left, issuer
+   * still an owner — judged as {@link isCadreInviteLive} judges an invitation: by the row this
+   * node holds under `grant.key`, else by `grant` itself (a bundle's copy, not seated yet)
+   * when its issuer signature verifies. A permissive pre-check; {@link seatOwnerGrant} and the
+   * redemption's own write enforce every condition.
+   */
+  async isOwnerGrantLive(grant: OwnerGrantRow, nowMs: number = Date.now()): Promise<boolean> {
+    this.ensureInitialized();
+    const row = await this.queryOwnerGrant(grant.key) ?? (verifyOwnerGrantRow(this.config.partyId, grant) ? grant : null);
+    return this.issuedRowLive('OwnerGrant', row, nowMs, key => this.countOwnerGrantUsage(key));
+  }
+
+  /**
+   * Every `OwnerGrant` row this node holds with its standing — recorded redemptions, withdrawal,
+   * and whether it is still redeemable — for an owner's listing, as {@link listCadreInviteStatuses}.
+   */
+  async listOwnerGrantStatuses(nowMs: number = Date.now()): Promise<OwnerGrantStatus[]> {
+    const standings = await this.issuedRowStandings('OwnerGrant', await this.queryOwnerGrants(), nowMs, key => this.countOwnerGrantUsage(key));
+    return standings.map(({ row, ...standing }) => ({ grant: row, ...standing }));
+  }
+
+  /**
+   * Owner-signed WITHDRAWAL of an owner grant: file the `Revocation` tombstone retiring its
+   * stamp, with the row kept, exactly as {@link withdrawCadreInvite} withdraws an invitation
+   * and for the same reason (every key the grant seated proves itself through the row;
+   * `OwnerGrant.NoDelete`, `Revocation.RowIsGone`). Afterwards `OwnerGrantUsage.Authorized`
+   * refuses every further redemption and `OwnerGrant.NotRevoked` refuses re-seating the
+   * holder's copy on any node holding the tombstone. Keys already seated stay owners;
+   * removing one is {@link deleteOwnerKey}.
+   *
+   * Idempotent: `false` (nothing written) when the row is absent here or already withdrawn,
+   * `true` when this call filed the tombstone. Fires the guarded-delete listener, so a
+   * withdrawal committed while alone is re-issued on cohort growth.
+   */
+  async withdrawOwnerGrant(key: string, ownerKey: string, signMessage: ControlSign): Promise<boolean> {
+    return this.withdrawIssuedRow('OwnerGrant', key, ownerKey, signMessage);
+  }
+
+  /**
+   * Redeem a seated `OwnerGrant` on the issuer's behalf: seat `seatedKey` as an owner with NO
+   * owner signature. One transaction writes the `OwnerKey` row (the grant branch of
+   * `Authorized`: `VouchOwner` the issuer, `VouchSig` null, `VouchUsage` the usage stamp,
+   * `Label` the grant's) and then the `OwnerGrantUsage` row that authorizes it; the usage
+   * row's `SeatedExists` reads the owner row back, so the two are bound to this exact
+   * redemption and neither can be held in reserve. The grant must already be committed
+   * ({@link seatOwnerGrant}): both consent reads are of `committed.OwnerGrant`. No machine is
+   * admitted and no peer id is named.
+   *
+   * The two signatures are minted where the private keys are (the grant's and the seated
+   * key's), over {@link ownerGrantRedeemMessage} / {@link ownerGrantConsentMessage}; this
+   * machine only verifies them, by writing the row.
+   *
+   * Idempotent, and a no-op for a key that is already an owner: when `seatedKey` has a live
+   * `OwnerKey` row here nothing is written and no use is spent — `alreadyOwner: true` with
+   * that row's stamp. The seat check ({@link assertOwnerGrantSeatRemains}) runs after that, so
+   * the retry of a single-use redemption is answered `alreadyOwner` rather than refused as
+   * exhausted. A key removed earlier is seated afresh under a new stamp (`NotRevoked` passes),
+   * except on a machine that still holds its retired row, which refuses by name
+   * ({@link liveOwnerKeyStamp}).
+   *
+   * Through {@link mutateCadrePeer}, so the membership hub is notified and the anchors follow;
+   * inside the locked body every read passes `retry: false` and the stamp is minted per
+   * attempt, so a {@link lockedWithRetry} re-run starts clean.
+   *
+   * @throws {InvitationExhaustedError} when the grant's uses are all spent (by name, ahead of
+   *   the schema's generic `Authorized` refusal); its `token` is the grant key.
+   */
+  async redeemOwnerGrant(params: {
+    grantKey: string;
+    /** The owner key to seat (base64url ed25519): the holder generated it, or already holds it. */
+    seatedKey: string;
+    /** Single-use nonce minted by the holder; both signatures cover it. */
+    usageStampId: string;
+    /** The holder's signature with the grant private key over the `'redeem'` digest. */
+    grantSig: string;
+    /** The seated key's signature over the `'consent'` digest. */
+    ownerSig: string;
+    nowMs?: number;
+  }): Promise<OwnerGrantRedemptionResult> {
+    this.ensureInitialized();
+    const { grantKey, seatedKey, usageStampId, grantSig, ownerSig } = params;
+    const nowMs = params.nowMs ?? Date.now();
+    log('Redeeming owner grant %s for %s', grantKey, seatedKey);
+
+    return this.mutateCadrePeer('owner-grant-redeem', async () => {
+      const grant = await this.queryOwnerGrant(grantKey, false);
+      if (grant === null) {
+        throw new Error(`Cannot redeem owner grant ${grantKey}: no OwnerGrant row is seated on this node (seatOwnerGrant first)`);
+      }
+      const heldStamp = await this.liveOwnerKeyStamp(seatedKey);
+      if (heldStamp !== null) {
+        log('redeemOwnerGrant: %s is already an owner; nothing written', seatedKey);
+        return { alreadyOwner: true, seatedStampId: heldStamp };
+      }
+      await this.assertOwnerGrantSeatRemains(grant);
+
+      // Minted inside the body, so a re-run mints afresh over a rolled-back attempt rather
+      // than re-presenting a stamp the usage row may already name.
+      const seatedStampId = generateStampId(this.config.libp2pNode.peerId.toString());
+      const nowCanonical = await canonicalDatetime(this.db!, nowMs);
+      await this.inTransaction('owner-grant-redeem', async () => {
+        await this.db!.exec(`
+          insert into CadreControl.OwnerKey (Key, Label, StampId, VouchOwner, VouchSig, VouchUsage)
+            with context OwnerKey = null, Signature = null
+            values (?, ?, ?, ?, null, ?)
+        `, [seatedKey, grant.label, seatedStampId, grant.issuerKey, usageStampId]);
+        await this.db!.exec(`
+          insert into CadreControl.OwnerGrantUsage (UsageStampId, GrantKey, SeatedKey, SeatedStampId, GrantSig, OwnerSig)
+            with context Now = ?
+            values (?, ?, ?, ?, ?, ?)
+        `, [nowCanonical, usageStampId, grantKey, seatedKey, seatedStampId, grantSig, ownerSig]);
+      });
+      log('Redeemed owner grant %s: %s seated as an owner (usage %s)', grantKey, seatedKey, usageStampId);
+      return { alreadyOwner: false, seatedStampId };
+    });
+  }
+
+  /** {@link assertCadreInviteSeatRemains} for an owner grant: refuse an exhausted grant by name, ahead of the write. */
+  private assertOwnerGrantSeatRemains(grant: OwnerGrantRow): Promise<void> {
+    return this.assertIssuedSeatRemains(grant, key => this.countOwnerGrantUsage(key, false));
   }
 
   /**

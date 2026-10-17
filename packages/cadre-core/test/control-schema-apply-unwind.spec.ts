@@ -48,7 +48,7 @@ import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
  * `CadreNode.buildControlNodeOptions`, naming the subset the apply depends on.
  */
 
-/** The fifteen `CadreControl` tables `schemas/control.qsql` declares, in name order. */
+/** The seventeen `CadreControl` tables `schemas/control.qsql` declares, in name order. */
 const CONTROL_TABLE_NAMES = [
 	'CadreInvite',
 	'CadreInviteUsage',
@@ -60,6 +60,8 @@ const CONTROL_TABLE_NAMES = [
 	'JoinRequest',
 	'JoinSuccess',
 	'JoinedStrand',
+	'OwnerGrant',
+	'OwnerGrantUsage',
 	'OwnerKey',
 	'Revocation',
 	'Strand',
@@ -190,12 +192,13 @@ describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 			await internals.applyControlSchema();
 
 			// The WHOLE `cadrecontrol` catalog, so a table or index that went missing and one
-			// that appeared uninvited both fail here: the fifteen tables and the two indexes
+			// that appeared uninvited both fail here: the seventeen tables and the three indexes
 			// `schemas/control.qsql` declares, and nothing of the plugin's own alongside them
-			// (measured 2026-09-25; the cadre-invitation table pair and its index added 2026-10-06).
+			// (measured 2026-09-25; the cadre-invitation table pair and its index added 2026-10-06,
+			// the owner-grant pair and its index 2026-10-16).
 			expect(await readCatalog(internals.db!)).toEqual(new Map([
 				['table', [...CONTROL_TABLE_NAMES]],
-				['index', ['CadreInviteUsageByInvite', 'FormationUsageByToken']]
+				['index', ['CadreInviteUsageByInvite', 'FormationUsageByToken', 'OwnerGrantUsageByGrant']]
 			]));
 		} finally {
 			// Nested, not sequential: a `close()` that throws must not strand the libp2p node

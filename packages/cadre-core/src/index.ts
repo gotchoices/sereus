@@ -16,7 +16,7 @@ export { MachineRemovalRefusedError } from './machine-removal.js';
 export { OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-keys.js';
 
 // Control database
-export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type ControlSign } from './control-database.js';
+export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, OwnerGrantIssuerUnknownError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, ownerGrantAddMessage, ownerGrantRedeemMessage, ownerGrantConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type ControlSign, type OwnerGrantRedemptionFields } from './control-database.js';
 
 // What `start()` throws when the control store was written with a control schema this build
 // cannot apply to it (recreate procedure: docs/architecture.md)
@@ -58,7 +58,7 @@ export type {
 } from './control-retry.js';
 
 // Control-plane authorization field vector (the domain/action tagging every signer shares)
-export { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, type ControlDomain, type BoundControlDomain, type UnboundControlDomain, type ControlAction, type CadreInviteSignedFields } from './control-authorization.js';
+export { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, type ControlDomain, type BoundControlDomain, type UnboundControlDomain, type ControlAction, type CadreInviteSignedFields, type OwnerGrantSignedFields } from './control-authorization.js';
 
 // Ed25519 key bridge (libp2p Ed25519 -> base64url keypair)
 export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, ed25519PublicKeyB64FromPeerId, requireEd25519PublicKeyB64, requireEd25519PrivateKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
@@ -447,6 +447,11 @@ export {
   verifyInvitationOwnerAdmission,
   verifyCadreInviteRow,
   verifyCadreInviteRedemption,
+  ownerGrantAddDigest,
+  ownerGrantRedeemDigest,
+  ownerGrantConsentDigest,
+  verifyOwnerGrantRow,
+  verifyOwnerGrantAdmission,
   type DeviceTokenAuthorizedRow
 } from './peer-authorization.js';
 
