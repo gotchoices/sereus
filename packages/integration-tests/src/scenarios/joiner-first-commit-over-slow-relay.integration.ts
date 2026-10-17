@@ -30,51 +30,46 @@
  * every row of it is readable on the founder even though the joiner stops the moment its commit
  * returns. A commit that reported success must not live only on the machine that made it.
  *
- * What it found (Optimystic 1.12.1, Sereus 1.14.0): under a slow link the joiner's strand node can
- * be connected to nothing but the relay when its strand becomes writable. Its commit then resolves
- * a cluster of only itself for every block and commits with `quorum: 'local'`
- * (`coordinator-repo` `commit:solo-cohort`, `cohortSize: 1, soleIsSelf: true`) in about 0.1 s,
- * reporting success. The rows reach the founder only if the joiner later reconnects and syncs;
- * stopped, they never do. It logs how long each step took and every node's peer id, so a run's
- * `DEBUG=optimystic:db-p2p:*` log can be read against them.
+ * What the third arm shows: on the slow link the joiner's strand becomes writable after about 45 s
+ * while still connected to the founder's strand node, because the founder creates every declared
+ * table's collection when it founds the strand (`strand-founder-commits-every-table-collection`).
+ * The joiner's first commit therefore goes to a cohort of both members and needs both approvals.
+ * The drop cycle below resets the founder's leg while the commit is in flight, and the commit
+ * fails with "Failed to get super-majority: 1/2 approvals": the app is told, and can retry. It
+ * logs how long each step took and every node's peer id, so a run's `DEBUG=optimystic:db-p2p:*`
+ * log can be read against them.
  *
- * Why the joiner has no strand peer in the third arm: on this link an outbound frame waits 10 to
- * 20 s in its socket's queue, so a liveness ping's echo routinely takes longer than the 10 s that
+ * Why the strand nodes keep losing each other on that link: an outbound frame waits 10 to 20 s in
+ * its socket's queue, so a liveness ping's echo routinely takes longer than the 10 s that
  * `@libp2p/ping`'s handler allows on every cadre node. The handler resets the ping stream, and the
  * pinging node's monitor aborts the connection whatever its own 30 s deadline
  * (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). Between the two strand
  * nodes that drops their circuit; from the relay, whose monitor pings each strand node, it drops
  * that node's relay connection and every circuit on it. So the strand nodes lose each other about
- * 40 s after each reconnect, the member redial (`strand-peer-redial.ts`) reconnects them after its
- * 21.5 s backoff, a database build that found the founder unreachable is retried 5 s later
- * (`strand-deferred-join-keeps-its-runtime`), and the joiner's first sync completes across several
- * of those windows. When it does, the joiner can be between windows, with only the relay
- * connected. The harness relay carries the deployed relay's monitor, limits and ping handler
- * (`harness/dedicated-relay.ts`), so it does not cut circuits on a deadline of its own.
+ * 40 s after each reconnect, and the member redial (`strand-peer-redial.ts`) reconnects them after
+ * its 21.5 s backoff. The harness relay carries the deployed relay's monitor, limits and ping
+ * handler (`harness/dedicated-relay.ts`), so it does not cut circuits on a deadline of its own.
  *
- * Why the joiner's first sync takes minutes there: the joiner becomes writable only once it is
- * cut off from the founder, on blocks it already holds, so the first sync lasts until such a
- * cut-off. A relay abort does not close the WebSocket
- * (`blocked/report-libp2p-websockets-buffered-amount`, second arm): the aborted node keeps a
- * connection whose muxer is closed until it next opens a stream on it. With the relay answering
- * pings that is usually at once, because the node's own monitor ping to the relay is in flight
- * (its echo crosses the same slow socket queue) and the abort resets it; the node re-dials and
- * reserves within about 2 s, the strand nodes reconnect, and the first sync waits for a later
- * cut-off. Without the relay's ping service the node stays unreachable through the relay until
- * its next ping, up to 35 s, and the joiner is cut off sooner.
+ * The fourth arm is the restart the phones also tried, of a joiner that wrote alone. The lone
+ * commit is made on purpose: once the joiner is writable, the founder takes its strand offline
+ * (`hibernateStrand`, the mobile background-entry path, which stops its strand node and keeps its
+ * store), and the joiner waits until its strand node has dropped the connection and its FRET ring
+ * no longer holds the founder live. Optimystic builds a block's cohort from that ring, and the
+ * founder's leave notice can be lost in the link's queue; a run of failed contacts then marks it
+ * dead, about 19 s later in three runs. The joiner's seat batch is then a commit made alone, and
+ * its report must say it is held nowhere else. The joiner stops; the founder wakes its strand over
+ * its kept store; the joiner is rebuilt over the storage it kept (raw stores, saved strand network
+ * state, joined-strand record) and re-claims the strand; and the founder must then hold every row.
+ * Everything up to the joiner's stop runs on the slow link, the wake and the restart on an
+ * undelayed one: there peer-join backfill from the restarted joiner delivered the rows 0.8 s after
+ * the restart began, in two runs.
  *
- * The fourth arm is the restart the phones also tried: the third arm's solo commit, then the
- * joiner stops, is rebuilt over the storage it kept (raw stores, saved strand network state,
- * joined-strand record) and re-claims the strand, and the founder must then hold every row. The
- * restart runs on an undelayed link: there the restarted strand node reconnects and peer-join
- * backfill delivers the solo-committed blocks, which the founder accepts.
- *
- * The fifth arm restarts on the slow link instead, the frame cap and the busy event loop still in
- * force. There FRET's maintenance pings cannot reconnect the two strand nodes -- each is allowed
- * 2 s, dial included, and a relayed dial on that link takes longer -- so what reconnects them is
- * the strand member redial, which dials with the relayed-dial budget the declared link gives
- * (`strand-peer-redial.ts`). The rows reached the founder 48 s and 211 s after the restart began,
- * in two runs.
+ * The fifth arm runs the wake and the restart on the slow link too, the frame cap and the busy
+ * event loop still in force. There FRET's maintenance pings cannot reconnect the two strand nodes
+ * -- each is allowed 2 s, dial included, and a relayed dial on that link takes longer -- so what
+ * reconnects them is the strand member redial, which dials with the relayed-dial budget the
+ * declared link gives (`strand-peer-redial.ts`). The rows reached the founder 37 s and 38 s after
+ * the restart began, in two runs.
  *
  * The sixth arm checks what the app is told about a write made alone (docs/strands.md, "A commit's
  * durability"), on an undelayed link: with the joiner stopped, the founder writes one row, and its
@@ -85,7 +80,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import type { PrivateKey } from '@libp2p/interface';
+import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import {
 	CadreNode,
 	InMemoryKeyStore,
@@ -145,13 +140,10 @@ const YEAR_MS = 365 * 24 * 3600_000;
 /**
  * Generous on purpose: the arm reports how long each step took; a gate only bounds a hang.
  *
- * NOTE: the slow-link arms' first sync has reached about 400 s. That is the cost on that link with
- * the relay behaving as deployed, not a fixture artifact. If the fourth or fifth arm times out
- * here, the causes are the drop cycle
- * (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`) and the saturated link.
- * Removing the fixture relay's ping service would make the arm pass by cutting the joiner off
- * from the founder sooner (header), so do not do that. A first sync past 600 s would keep the
- * third arm's `it.fails` green for the wrong reason.
+ * NOTE: the slow-link arms' first sync takes about 45 s. If one times out here, look at the drop
+ * cycle (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`) and the saturated
+ * link before raising this. A first sync past 600 s would keep the third arm's `it.fails` green
+ * for the wrong reason.
  */
 const FIRST_SYNC_MS = 600_000;
 const CONVERGE = { timeoutMs: 180_000, intervalMs: 500 } as const;
@@ -257,8 +249,8 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
 		// ── A committed transaction does not depend on the committer staying up ──
 		// The joiner goes away the moment its commit returns, as a phone does when its app is
 		// backgrounded. A commit the strand's cohort accepted is already held by the founder; one
-		// the joiner made with a cohort of only itself (optimystic's `commit:solo-cohort`, which
-		// a slow link produces -- see the file header) exists nowhere else, and is lost.
+		// the joiner made alone (optimystic's `commit:solo-cohort`) exists nowhere else while the
+		// joiner is stopped.
 		await B.stop();
 		const tReach = Date.now();
 		await waitUntil(
@@ -348,13 +340,85 @@ async function claimDiscoveredStrand(node: CadreNode, strandId: string, sAppConf
 }
 
 interface RestartOptions {
-	/** Keep the frame cap and the busy event loop through the restart, instead of lifting them first. */
+	/** Keep the frame cap and the busy event loop through the founder's wake and the joiner's restart, instead of lifting them first. */
 	slowRestart?: boolean;
 }
 
 /**
- * The third arm's journey up to the joiner's stop, then a restart of the joiner over the storage
- * it kept, on an undelayed link unless `slowRestart`. The founder must then hold every row.
+ * Run `sql` as one transaction on `node`'s strand database `db`, and return the report of the
+ * commit that wrote `table` (qualified, as `schema.table`). A multi-statement batch has no
+ * `returning StampId()` to name its commit, so the report is picked from the node's
+ * `strand:commit-durability` events by the table it wrote; cadre-core's own membership writes
+ * report there too.
+ */
+async function execReported(node: CadreNode, strandId: string, db: Database, sql: string, table: string): Promise<StrandCommitDurability | undefined> {
+	let reported: StrandCommitDurability | undefined;
+	const onCommit = (commit: StrandCommitDurability): void => {
+		if (commit.strandId === strandId && [...commit.report.tables.keys()].some(t => t.toLowerCase() === table.toLowerCase())) {
+			reported = commit;
+		}
+	};
+	node.on('strand:commit-durability', onCommit);
+	try {
+		await db.exec(sql, undefined, { transaction: true });
+	} finally {
+		node.off('strand:commit-durability', onCommit);
+	}
+	return reported;
+}
+
+/** The slice of FRET's routing-table export read here (`SerializedTable` in `p2p-fret`). */
+interface FretTableView {
+	exportTable(): { entries: ReadonlyArray<{ id: string; state: string; membership?: string }> };
+}
+
+function isFretTableView(service: unknown): service is FretTableView {
+	return typeof (service as Partial<FretTableView> | undefined)?.exportTable === 'function';
+}
+
+/**
+ * Whether `node`'s FRET ring holds `peer` as a live member: FRET's `isLiveMember`, the rule
+ * Optimystic assembles a block's cohort by. A peer this answers false for is left out of every
+ * cohort, so a commit with no other live member is made alone.
+ */
+function ringHoldsLive(node: Libp2p, peer: PeerId): boolean {
+	const fret = node.services.fret;
+	if (!isFretTableView(fret)) throw new Error('the strand node runs no FRET service');
+	const entry = fret.exportTable().entries.find(e => e.id === peer.toString());
+	return entry?.membership === 'member' && entry.state !== 'dead';
+}
+
+/**
+ * Take the founder's strand offline (`hibernateStrand`, the mobile background-entry path: its
+ * strand node stops, its store and control node stay) and wait until the joiner's strand node has
+ * lost it, so the joiner's next commit is made alone. Losing the connection is not enough: the
+ * founder's leave notice can be lost in a slow link's queue, and until a run of failed contacts
+ * marks it dead the joiner's ring still puts it in every cohort.
+ */
+async function hibernateFounderStrand(A: CadreNode, joiner: StrandInstance, founderStrandPeer: PeerId, label: string): Promise<void> {
+	const strandId = joiner.strandId;
+	const joinerNode = joiner.libp2pNode!;
+	const tHibernate = Date.now();
+	await A.hibernateStrand(strandId);
+	// `hibernateStrand` does nothing to a strand whose latency hint never hibernates.
+	expect(A.getStrand(strandId)?.status, "the founder's strand hibernated").toBe('hibernating');
+	const hibernated = since(tHibernate);
+	const tCut = Date.now();
+	await waitUntil(() => !joinerNode.getConnections().some(c => c.remotePeer.equals(founderStrandPeer)),
+		{ timeoutMs: 120_000, intervalMs: 100, description: "the joiner's strand node to drop its connection to the founder's hibernated one" });
+	const disconnected = since(tCut);
+	await waitUntil(() => !ringHoldsLive(joinerNode, founderStrandPeer),
+		{ timeoutMs: 180_000, intervalMs: 100, description: "the joiner's FRET ring to stop holding the founder's hibernated strand node live" });
+	console.log(`[first-commit ${label}] founder's strand (${founderStrandPeer}) hibernated in ${hibernated}; after that, `
+		+ `the joiner lost its connection within ${disconnected} and left it out of its ring within ${since(tCut)}`);
+}
+
+/**
+ * The founder hibernates its strand once the joiner is writable, so the joiner's seat batch is a
+ * commit made alone; the joiner stops; the founder wakes its strand over its kept store; then the
+ * joiner restarts over the storage it kept and re-claims the strand. The founder must then hold
+ * every row. Everything up to the joiner's stop runs under the frame cap and the busy event loop;
+ * the wake and the restart run on an undelayed link unless `slowRestart`.
  */
 async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void> {
 	let link: ReturnType<typeof installWsLatency> | undefined = installWsLatency({ delayMs: 20, mode: 'serial' });
@@ -374,8 +438,8 @@ async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void
 		A = await startPartyNode(aHome, relay);
 		await makeOwnOwner(A);
 		const founded = await A.foundStrand({ strandId, type: 'c', memberPrivateKey: await generateStrandMemberKey(), sAppConfig: sApp });
-		const aDb = founded.instance.database!.getDatabase();
-		await aDb.exec(seatBatch('S', 'sid-a', 'key-a', 'Founder'), undefined, { transaction: true });
+		const founderStrandPeer = founded.instance.libp2pNode!.peerId;
+		await founded.instance.database!.getDatabase().exec(seatBatch('S', 'sid-a', 'key-a', 'Founder'), undefined, { transaction: true });
 		const invitation = await A.createOpenInvitation(SAPP_ID, YEAR_MS);
 		await A.publishFormationInvite(invitation.token, SAPP_ID, { strandId, expiresAtMs: Date.now() + YEAR_MS, totalUses: 1 });
 
@@ -385,19 +449,22 @@ async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void
 			partyId: bHome.partyId,
 			purpose: 'joiner restart delivers a write made alone',
 		});
+		const tJoin = Date.now();
 		await B.addStrand({
 			strandRow: { Id: strandId, MemberPrivateKey: formResult.memberPrivateKey ?? null, Type: 'c', FounderOwnerKey: null, FounderPeerId: null },
 			sAppConfig: sApp,
 			awaitFirstSync: false,
 		});
 		const bStrand = await B.whenStrandWritable(strandId, { timeoutMs: FIRST_SYNC_MS });
-		await bStrand.database!.getDatabase().exec(seatBatch('F', 'sid-b', 'key-b', 'Joiner'), undefined, { transaction: true });
+		console.log(`[first-commit ${label}] joiner writable after ${since(tJoin)}`);
+
+		await hibernateFounderStrand(A, bStrand, founderStrandPeer, label);
+		const alone = await execReported(B, strandId, bStrand.database!.getDatabase(), seatBatch('F', 'sid-b', 'key-b', 'Joiner'), 'App.Seat');
+		console.log(`[first-commit ${label}] joiner's seat with the founder's strand hibernated: ${describeCommit(alone)}`);
+		expect(alone?.heldElsewhere, describeCommit(alone)).toBe(false);
 		const stopping = B;
 		B = undefined;
 		await stopping.stop();
-		// Logged, not asserted: once the joiner's first commit stops being made alone (the
-		// third arm passing), this arm no longer exercises delivery after a restart.
-		console.log(`[first-commit ${label}] founder held the joiner's rows when it stopped: ${await holdsJoinerSeat(aDb)}`);
 
 		if (!opts.slowRestart) {
 			release();
@@ -405,6 +472,11 @@ async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void
 			link.restore();
 			link = undefined;
 		}
+		const tWake = Date.now();
+		await A.wakeStrand(strandId);
+		console.log(`[first-commit ${label}] founder's strand awake after ${since(tWake)}`);
+		// The wake rebuilt the founder's strand database over its kept store.
+		const aDb = A.getStrand(strandId)!.database!.getDatabase();
 		const tRestart = Date.now();
 		B = await startPartyNode(bHome, relay);
 		await claimDiscoveredStrand(B, strandId, sApp);
@@ -517,10 +589,13 @@ describe("a joiner's first transaction over a relayed link", () => {
 		await runJoinerFirstCommit({ latency: { delayMs: 100, mode: 'pipelined' } });
 	}, 1_800_000);
 
-	// KNOWN FAILURE, kept as `it.fails` so the suite stays green while it reproduces: the joiner's
-	// strand node holds only the relay connection when its strand becomes writable, commits with a
-	// cohort of itself (`commit:solo-cohort`), and the rows are lost when it stops. When this arm
-	// starts failing, the bug is fixed: make it a plain `it`.
+	// KNOWN FAILURE, kept as `it.fails` so the suite stays green while it reproduces: on this link
+	// the joiner is connected to the founder when its strand becomes writable, so its first commit
+	// goes to both members, and it fails with "Failed to get super-majority: 1/2 approvals" when the
+	// ping drop cycle resets the founder's leg
+	// (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). When this `it.fails`
+	// turns red, the arm passes: that drop cycle no longer cuts a commit on this link, so make it a
+	// plain `it`.
 	it.fails('commits, and its rows outlive the joiner, on a 20 ms frame cap with a 70%-busy event loop', async () => {
 		await runJoinerFirstCommit({ latency: { delayMs: 20, mode: 'serial' }, eventLoopBusy: 0.7 });
 	}, 1_800_000);
