@@ -342,6 +342,11 @@ export function hasOutboundTo(node: CadreNode, remotePeerId: string): boolean {
     .some((c) => c.direction === 'outbound' && c.status === 'open');
 }
 
+/** The peer ids of the machines `node` lists (`CadreNode.listMachines`: every live `CadrePeer` row, its own included), sorted. */
+export async function machinePeerIds(node: CadreNode): Promise<string[]> {
+  return (await node.listMachines()).map((machine) => machine.peerId).sort();
+}
+
 /**
  * The libp2p peerStore multiaddrs this node holds for `remotePeerId` — the
  * cold-start fallback source `resolveControlDialAddrs` uses when the signed

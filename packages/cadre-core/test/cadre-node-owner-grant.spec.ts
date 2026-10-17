@@ -16,8 +16,8 @@ import { startSelfOwnerNode, type SelfOwnerNode } from './self-owner-node-helper
  * joining as a machine and an owner with one grant (`joinWithOwnerGrant`); the local path on a
  * member, and its `alone` refusal; what the connection gate makes of a live backup grant; and
  * the removal plan's `grants`. The protocol's own cases ride the shared handler and dial loop
- * the invitation spec drives (`cadre-invite-protocol.spec.ts`); the real-network runs are the
- * `owner-grant-scenarios` ticket's.
+ * the invitation spec drives (`cadre-invite-protocol.spec.ts`); the real-network runs are
+ * `owner-grant-without-machine` and `owner-grant-backup-recovery` in `integration-tests`.
  */
 
 /** Epoch ms of a row's stored `datetime` (T-separated, no zone — UTC). */

@@ -1,8 +1,9 @@
 /**
  * Machines and steps shared by the cadre invitation scenarios (`cadre-invite-*.integration.ts`,
- * `app-joins-cadre-by-invitation`) and the owner-anchor scenario: an always-on member that pins
- * the owner's key, its owner-online admission, and a device's redemption that waits while
- * members answer retryably.
+ * `app-joins-cadre-by-invitation`), the owner grant scenarios (`owner-grant-*.integration.ts`)
+ * and the owner-anchor scenario: an always-on member that pins the owner's key, its
+ * owner-online admission, a device started in the party that no one has admitted, and a
+ * redemption that waits while members answer retryably.
  */
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
@@ -10,7 +11,8 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import {
 	CadreNode, ed25519PublicKeyB64FromPeerId,
-	type CadreInvitation, type CadreJoinProgress, type RawStorageProvider, type RedeemCadreInvitationResult,
+	type CadreInvitation, type CadreJoinProgress, type RawStorageProvider,
+	type RedeemCadreInvitationOptions, type RedeemCadreInvitationResult,
 } from '@serfab/cadre-core';
 import { controlNodeConfig, controlAddrs, hasOutboundTo } from './node-fixtures.js';
 import type { TestOwnerKey } from './owner-key.js';
@@ -95,28 +97,46 @@ export async function admitMember(owner: CadreNode, member: InviteMember, timeou
 }
 
 /**
- * A device's redemption that waits for a member (`waitForMember`), bounded by `budgetMs`, with
- * each pass that found no member ready logged. A scenario that pins one pass still waits, so a
- * regression shows as the count of passes the member needed rather than a failure at the first
- * retryable answer. `onProgress` sees every report too.
+ * A phone-shaped device started in `partyId` on an empty store: no listen address, no pinned
+ * owner key, no strand, and a stable identity (`joinWithOwnerGrant` signs its self-invitation
+ * for that identity). Not a member until something admits it: an invitation it redeems, or the
+ * self-admission an owner grant gives it.
  */
-export async function redeemWaitingForMember(
-	device: CadreNode,
-	invitation: CadreInvitation,
+export async function startPartyDevice(partyId: string, key?: PrivateKey): Promise<CadreNode> {
+	const node = new CadreNode(controlNodeConfig({
+		partyId, privateKey: key ?? await generateKeyPair('Ed25519'), profile: 'transaction', listenAddrs: [], strandFilter: 'none',
+	}));
+	await node.start();
+	return node;
+}
+
+/** The options every redemption call takes (`redeemCadreInvitation`, `redeemOwnerGrant`, `joinWithOwnerGrant`), all set. */
+export type MemberWaitOptions = Required<RedeemCadreInvitationOptions>;
+
+/**
+ * Run a redemption that waits for a member (`waitForMember`), bounded by `budgetMs`, with each
+ * pass that found no member ready logged. A scenario that pins one pass still waits, so a
+ * regression shows as the count of passes the member needed rather than a failure at the first
+ * retryable answer. `passes` is the most passes any one redemption made: `joinWithOwnerGrant`
+ * reports its grant redemption and its self-invitation through one callback, each counting
+ * from 1. `onProgress` sees every report too.
+ */
+export async function waitingForMember<T>(
 	budgetMs: number,
 	label: string,
+	redeem: (options: MemberWaitOptions) => Promise<T>,
 	onProgress?: (progress: CadreJoinProgress) => void
-): Promise<{ joined: RedeemCadreInvitationResult; passes: number }> {
+): Promise<{ result: T; passes: number }> {
 	const budget = new AbortController();
-	const timer = setTimeout(() => budget.abort(new Error(`[${label}] no member accepted the invitation within ${budgetMs} ms`)), budgetMs);
+	const timer = setTimeout(() => budget.abort(new Error(`[${label}] no member accepted the redemption within ${budgetMs} ms`)), budgetMs);
 	let passes = 0;
 	try {
-		const joined = await device.redeemCadreInvitation(invitation, {
+		const result = await redeem({
 			waitForMember: true,
 			signal: budget.signal,
 			onProgress: (progress) => {
 				if (progress.state === 'redeeming') {
-					passes = progress.pass;
+					passes = Math.max(passes, progress.pass);
 				} else {
 					console.log('[%s] pass %d found no member ready (%s): %s', label, progress.pass, progress.reason,
 						progress.outcomes.map((outcome) => `${outcome.addr}: ${outcome.error.message}`).join('; '));
@@ -124,8 +144,20 @@ export async function redeemWaitingForMember(
 				onProgress?.(progress);
 			},
 		});
-		return { joined, passes };
+		return { result, passes };
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+/** A device's invitation redemption, waiting for a member as {@link waitingForMember} does. */
+export async function redeemWaitingForMember(
+	device: CadreNode,
+	invitation: CadreInvitation,
+	budgetMs: number,
+	label: string,
+	onProgress?: (progress: CadreJoinProgress) => void
+): Promise<{ joined: RedeemCadreInvitationResult; passes: number }> {
+	const { result: joined, passes } = await waitingForMember(budgetMs, label, (options) => device.redeemCadreInvitation(invitation, options), onProgress);
+	return { joined, passes };
 }
