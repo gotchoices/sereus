@@ -1,12 +1,16 @@
 import http from 'node:http';
 import debug from 'debug';
-import type {
-  CadreNode,
-  ControlDatabase,
-  CreateCadreInvitationOptions,
-  StrandInstance,
-  StrandRow,
-  StrandStatus,
+import {
+  OWNER_KEY_MAX_LABEL,
+  type CadreInvitationReach,
+  type CadreNode,
+  type ControlDatabase,
+  type CreateCadreInvitationOptions,
+  type CreateOwnerGrantOptions,
+  type CreateOwnerGrantResult,
+  type StrandInstance,
+  type StrandRow,
+  type StrandStatus,
 } from '@serfab/cadre-core';
 import { checkBearer } from './bearer.js';
 
@@ -103,6 +107,12 @@ export interface AdminStrandRemoval {
   alone: boolean;
 }
 
+/** The body of `POST /admin/owner-grants`: the minted grant, and what the operator who asked for it must be told. */
+export interface AdminOwnerGrant extends CreateOwnerGrantResult {
+  /** Always the bearer warning first; then the backup and reach warnings that apply ({@link ownerGrantWarnings}). */
+  warnings: string[];
+}
+
 /**
  * Loopback admin channel for an owner cadre node.
  *
@@ -123,6 +133,9 @@ export interface AdminStrandRemoval {
  * - `GET    /admin/invites`           → `{ invitations: CadreInviteStatus[] }` (every invitation this node holds, with its standing)
  * - `POST   /admin/invites`           → `{ invitation, encoded }` (mint a cadre invitation; body `{ peerId?, expiresInMs?, uses? }`)
  * - `DELETE /admin/invites/:key`      → `{ withdrawn: boolean }` (owner-signed withdrawal; `false` when not held here or already withdrawn)
+ * - `GET    /admin/owner-grants`      → `{ grants: OwnerGrantStatus[] }` (every owner grant this node holds, with its standing)
+ * - `POST   /admin/owner-grants`      → {@link AdminOwnerGrant} (mint an owner grant; body `{ label?, expiresInMs?: number | null, uses? }`, `null` a backup)
+ * - `DELETE /admin/owner-grants/:key` → `{ withdrawn: boolean }` (owner-signed withdrawal; `false` when not held here or already withdrawn)
  * - `POST   /admin/add-drone`         → `{ seed, encodedSeed }` (mint a seed authorizing a drone/donated node)
  * - `DELETE /admin/members/:peerId`   → `{ ok: true }`
  * - `DELETE /admin/strands/:id?confirm=1` → {@link AdminStrandRemoval} (closed strands need `confirm`)
@@ -284,6 +297,21 @@ export class AdminServer {
       }
     }
 
+    // Owner grants: whoever holds one becomes an owner through any member of the party
+    // (`CadreNode.createOwnerGrant` / `redeemOwnerGrant`). The key is base64url, one path segment.
+    if (resource === 'owner-grants') {
+      if (method === 'GET' && id === undefined) {
+        return { grants: await node.listOwnerGrants() };
+      }
+      if (method === 'POST' && id === undefined) {
+        const minted = await node.createOwnerGrant(parseOwnerGrantOptions(await this.readJson(req)));
+        return { ...minted, warnings: ownerGrantWarnings(minted) } satisfies AdminOwnerGrant;
+      }
+      if (method === 'DELETE' && id !== undefined) {
+        return { withdrawn: await node.withdrawOwnerGrant(id) };
+      }
+    }
+
     // Mint a seed authorizing a drone (a provider-hosted node) to join this
     // node's cadre. The node signs the seed with its own authority key; only
     // the signed, public form (`encodedSeed`) transits. This is the requester
@@ -381,6 +409,57 @@ function parseInvitationOptions(body: Record<string, unknown>): CreateCadreInvit
     ...(body.expiresInMs !== undefined ? { expiresInMs: body.expiresInMs as number } : {}),
     ...(body.uses !== undefined ? { uses: body.uses as number } : {}),
   };
+}
+
+/**
+ * The owner-grant mint request from its JSON body, each field checked for shape as
+ * {@link parseInvitationOptions} checks the invitation's. `expiresInMs: null` is kept as given:
+ * it is how a backup (no expiry) is asked for, and only an explicit `null` asks. The label's
+ * length is checked here so an over-long one is the caller's `bad_request`, not a node fault.
+ * `peerId` is refused rather than ignored: a grant names no device, and a caller sending one
+ * believes the grant is bound to it when whoever holds it can redeem it.
+ */
+function parseOwnerGrantOptions(body: Record<string, unknown>): CreateOwnerGrantOptions {
+  if ('peerId' in body) {
+    throw new AdminError('bad_request', 'peerId is not accepted: an owner grant names no device, whoever holds it can redeem it; to admit one machine, mint an invitation (POST /admin/invites)');
+  }
+  if (body.label !== undefined && (typeof body.label !== 'string' || body.label.trim().length > OWNER_KEY_MAX_LABEL)) {
+    throw new AdminError('bad_request', `label must be a string of at most ${OWNER_KEY_MAX_LABEL} characters when given`);
+  }
+  if (body.expiresInMs !== undefined && body.expiresInMs !== null && (typeof body.expiresInMs !== 'number' || !Number.isFinite(body.expiresInMs))) {
+    throw new AdminError('bad_request', 'expiresInMs must be a finite number, or null for a backup with no expiry, when given');
+  }
+  if (body.uses !== undefined && (typeof body.uses !== 'number' || !Number.isInteger(body.uses) || body.uses < 1)) {
+    throw new AdminError('bad_request', 'uses must be a positive integer when given');
+  }
+  return {
+    ...(body.label !== undefined ? { label: body.label as string } : {}),
+    ...(body.expiresInMs !== undefined ? { expiresInMs: body.expiresInMs as number | null } : {}),
+    ...(body.uses !== undefined ? { uses: body.uses as number } : {}),
+  };
+}
+
+/** Where the grant can be redeemed once this server is gone, when that is narrower than anywhere. */
+const OWNER_GRANT_REACH_WARNING: Record<CadreInvitationReach, string | undefined> = {
+  'anywhere': undefined,
+  'local-network': 'The other machines it names are at private addresses only: while this server is offline, it can be redeemed only on their network.',
+  'issuer-only': 'It names no other machine at an address a holder could dial: it can be redeemed only while this server is running and reachable.',
+};
+
+/**
+ * What the issuer of a minted grant must be told, the bearer warning always first: the grant
+ * is a credential for admin rights over the cadre until it is spent, expires or is withdrawn.
+ */
+export function ownerGrantWarnings({ grant: bundle, reach }: CreateOwnerGrantResult): string[] {
+  const { key, expiresAt, totalUses } = bundle.grant;
+  const backup = expiresAt === null;
+  const spent = totalUses === 1 ? 'it is used' : `its ${totalUses ?? 'unlimited'} uses are spent`;
+  const reachWarning = OWNER_GRANT_REACH_WARNING[reach];
+  return [
+    `Whoever holds this grant can become an owner of cadre ${bundle.partyId} until ${spent}${backup ? '' : ', it expires'} or it is withdrawn (DELETE /admin/owner-grants/${key}).`,
+    ...(backup ? ['It is a backup grant with no expiry: keep it as carefully as an owner key. It names the addresses the machines have today, so it stops working if all of them change.'] : []),
+    ...(reachWarning ? [reachWarning] : []),
+  ];
 }
 
 /**

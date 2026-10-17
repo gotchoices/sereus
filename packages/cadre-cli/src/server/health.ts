@@ -99,6 +99,11 @@ export interface HealthServerOptions {
    */
   invitation?: () => InvitationStatus | undefined;
   /**
+   * How the start-up owner grant's redemption stands, read on every `/status`. Absent, or
+   * answering undefined: the node was started without one, and `node.ownerGrant` is omitted.
+   */
+  ownerGrant?: () => OwnerGrantRedemptionStatus | undefined;
+  /**
    * The owner's removal of this node from its cadre, read on every `/status`: from the marker at
    * start, or from `cadre:removed` in this process (`stopWhenRemoved`). Absent, or answering
    * undefined: not removed, and `node.removed` is null.
@@ -143,6 +148,21 @@ export interface InvitationStatus {
   retryable?: boolean;
 }
 
+/**
+ * The redemption of the owner grant the node was started with (`--owner-grant`,
+ * `CADRE_OWNER_GRANT`), in {@link InvitationStatus}'s shape and with its meanings: `pending` from
+ * start until it settles, then `accepted` or `failed`. `memberPeerId` names the member that admitted
+ * a node that joined with the grant; a node that was already a member redeems in its own store.
+ */
+export interface OwnerGrantRedemptionStatus extends InvitationStatus {
+  /** `accepted` only: the owner key the grant seated, the owner key file's (base64url). */
+  ownerKey?: string;
+  /** `accepted` only: the key was already an owner of the party, so the grant spent no use. */
+  alreadyOwner?: boolean;
+  /** `accepted` only: the node signs with the key in this run. False while the key's row has not reached the node; the next start wires it. */
+  ownerWired?: boolean;
+}
+
 /** `/status`'s `node.removed`: the removal as cadre-core reported it, less the party `node.partyId` already names. */
 export type RemovalStatus = Pick<CadreRemoval, 'stampId' | 'signerKey' | 'at'>;
 
@@ -179,6 +199,8 @@ export interface HealthStatus {
     claimedBy?: string;
     /** Present only when the node was started with an invitation. */
     invitation?: InvitationStatus;
+    /** Present only when the node was started with an owner grant. */
+    ownerGrant?: OwnerGrantRedemptionStatus;
     /**
      * Null unless an owner removed this node from its cadre. The removed node is stopped: it
      * reports no peer id or addresses, `running` false and `status` `unhealthy`, and `partyId`
@@ -231,6 +253,7 @@ export class HealthServer {
       seedToken: options.seedToken ?? '',
       claim: options.claim ?? (() => ({ secretConfigured: false })),
       invitation: options.invitation ?? (() => undefined),
+      ownerGrant: options.ownerGrant ?? (() => undefined),
       removal: options.removal ?? (() => undefined),
     };
   }
@@ -284,6 +307,7 @@ export class HealthServer {
       this.node?.getConnectionPaths() ?? emptyConnectionPathSummary();
     const claim = this.options.claim();
     const invitation = this.options.invitation();
+    const ownerGrant = this.options.ownerGrant();
     const removal = this.options.removal();
 
     return {
@@ -303,6 +327,7 @@ export class HealthServer {
         claim: claimState(claim),
         ...(claim.claimedBy !== undefined ? { claimedBy: claim.claimedBy } : {}),
         ...(invitation ? { invitation } : {}),
+        ...(ownerGrant ? { ownerGrant } : {}),
         removed: removal ? { stampId: removal.stampId, signerKey: removal.signerKey, at: removal.at } : null,
       },
     };

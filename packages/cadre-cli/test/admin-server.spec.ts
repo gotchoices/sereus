@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { AdminServer } from '../src/server/admin-server.js';
-import type { CadreNode, CadreInviteStatus, CreateCadreInvitationOptions, StrandRow, StrandStatus } from '@serfab/cadre-core';
+import type {
+  CadreNode, CadreInviteStatus, CreateCadreInvitationOptions, CreateOwnerGrantOptions, OwnerGrantStatus, StrandRow, StrandStatus,
+} from '@serfab/cadre-core';
 
 /**
  * The closed strand's membership key, as it sits in the control row. Tests assert this
@@ -92,6 +94,34 @@ class MockNode {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     return key === 'invite-key';
+  }
+
+  /** The owner grants this node holds; withdrawing one flips its standing, as the node's tombstone does. */
+  ownerGrants: OwnerGrantStatus[] = [];
+
+  async createOwnerGrant(options: CreateOwnerGrantOptions) {
+    this.record('createOwnerGrant', options);
+    const grant = {
+      key: 'grant-key', label: options.label ?? null, expiresAt: options.expiresInMs === null ? null : '2030-01-01T00:00:00',
+      totalUses: options.uses ?? 1, stampId: 'stamp', issuerKey: 'owner', issuerSig: 'sig',
+    };
+    this.ownerGrants.push({ grant, live: true, withdrawn: false, usesRecorded: 0 });
+    const bundle = { v: 1 as const, partyId: this.partyId, grantPrivateKey: 'grant-private-key', grant, ownerKeys: ['owner'], members: this.multiaddrs };
+    return { grant: bundle, encoded: 'encoded-grant', reach: 'issuer-only' as const };
+  }
+
+  async listOwnerGrants() {
+    this.record('listOwnerGrants');
+    return this.ownerGrants;
+  }
+
+  async withdrawOwnerGrant(key: string) {
+    this.record('withdrawOwnerGrant', key);
+    const held = this.ownerGrants.find((status) => status.grant.key === key && !status.withdrawn);
+    if (!held) return false;
+    held.live = false;
+    held.withdrawn = true;
+    return true;
   }
 
   async removePeer(peerId: string) {
@@ -276,6 +306,47 @@ describe('AdminServer', () => {
       const unknown = await fetch(`${base}/admin/invites/other-key`, { method: 'DELETE', headers: auth() });
       expect((await unknown.json()).data).toEqual({ withdrawn: false });
       expect(node.calls.filter((c) => c.method === 'withdrawCadreInvitation').map((c) => c.args[0])).toEqual(['invite-key', 'other-key']);
+    });
+
+    // A backup must be asked for with an explicit null, which the route passes through, and the
+    // operator is always told the grant is a bearer credential and how to withdraw it.
+    it('mints an owner grant, lists it live, withdraws it, and lists it withdrawn', async () => {
+      const mint = await fetch(`${base}/admin/owner-grants`, {
+        method: 'POST',
+        headers: auth({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ label: 'office', expiresInMs: null, uses: 2 }),
+      });
+      const minted = (await mint.json()).data;
+      expect(node.calls.find((c) => c.method === 'createOwnerGrant')?.args).toEqual([{ label: 'office', expiresInMs: null, uses: 2 }]);
+      expect(minted).toMatchObject({ encoded: 'encoded-grant', reach: 'issuer-only' });
+      expect(minted.warnings).toEqual([
+        expect.stringMatching(/^Whoever holds this grant can become an owner of cadre party-xyz until its 2 uses are spent or it is withdrawn \(DELETE \/admin\/owner-grants\/grant-key\)/),
+        expect.stringMatching(/backup grant with no expiry/),
+        expect.stringMatching(/only while this server is running/),
+      ]);
+
+      const listed = async () => (await (await fetch(`${base}/admin/owner-grants`, { headers: auth() })).json()).data.grants;
+      expect(await listed()).toMatchObject([{ grant: { key: 'grant-key' }, live: true, withdrawn: false }]);
+
+      const withdraw = await fetch(`${base}/admin/owner-grants/grant-key`, { method: 'DELETE', headers: auth() });
+      expect((await withdraw.json()).data).toEqual({ withdrawn: true });
+      expect(await listed()).toMatchObject([{ grant: { key: 'grant-key' }, live: false, withdrawn: true }]);
+    });
+
+    it.each([
+      ['a peerId (a grant names no device)', { peerId: '12D3KooWDevice' }],
+      ['a label over 64 characters', { label: 'x'.repeat(65) }],
+      ['a non-numeric expiresInMs', { expiresInMs: 'never' }],
+      ['a zero uses', { uses: 0 }],
+    ])('POST /admin/owner-grants rejects %s (400)', async (_case, payload) => {
+      const res = await fetch(`${base}/admin/owner-grants`, {
+        method: 'POST',
+        headers: auth({ 'content-type': 'application/json' }),
+        body: JSON.stringify(payload),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe('bad_request');
+      expect(node.calls.find((c) => c.method === 'createOwnerGrant')).toBeUndefined();
     });
 
     it('DELETE /admin/members/:peerId removes a peer', async () => {

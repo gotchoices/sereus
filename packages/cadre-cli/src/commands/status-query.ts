@@ -1,4 +1,4 @@
-import type { HealthStatus } from '../server/health.js';
+import type { HealthStatus, InvitationStatus, OwnerGrantRedemptionStatus } from '../server/health.js';
 
 /**
  * Minimal subset of the global `fetch` this module depends on. Declaring it
@@ -44,6 +44,10 @@ export interface RuntimeLive {
   uptime: number;
   /** Null unless an owner removed the node from its cadre (`partyId`); it then runs no node. */
   removed: HealthStatus['node']['removed'];
+  /** How the invitation the node was started with stands; null on a node started without one. */
+  invitation: InvitationStatus | null;
+  /** How the owner grant the node was started with stands; null on a node started without one. */
+  ownerGrant: OwnerGrantRedemptionStatus | null;
 }
 
 export interface RuntimeUnreachable {
@@ -133,6 +137,8 @@ export function buildStatusReport(
         strands: s.node.strands,
         uptime: s.uptime,
         removed: s.node.removed ?? null,
+        invitation: s.node.invitation ?? null,
+        ownerGrant: s.node.ownerGrant ?? null,
       },
     };
   }
@@ -187,6 +193,8 @@ function formatRuntimeSection(runtime: RuntimeLive | RuntimeUnreachable): string
     `  Profile:         ${runtime.profile}`,
     `  Strands:         total=${s.total} syncing=${s.syncing} active=${s.active} idle=${s.idle} hibernating=${s.hibernating}`,
     ...formatRemoval(runtime),
+    ...formatRedemption('Invitation:', runtime.invitation),
+    ...formatRedemption('Owner grant:', runtime.ownerGrant),
     ...formatMultiaddrs(runtime.multiaddrs),
   ];
 }
@@ -195,6 +203,20 @@ function formatRemoval({ removed, partyId }: RuntimeLive): string[] {
   if (!removed) return [];
   const by = removed.signerKey ? `owner ${removed.signerKey.slice(0, 8)}` : 'an owner';
   return [`  Removed:         from cadre ${partyId} by ${by} at ${new Date(removed.at).toISOString()}; the node has stopped`];
+}
+
+/** A start-up redemption's line: its state, then what went wrong and whether starting again may help, or what it settled. */
+function formatRedemption(label: string, status: OwnerGrantRedemptionStatus | null): string[] {
+  if (!status) return [];
+  const notes = status.state === 'failed'
+    ? [status.error, status.retryable ? 'retryable: start again with the same one' : 'final']
+    : [
+      status.memberPeerId && `admitted by ${status.memberPeerId}`,
+      status.alreadyOwner && 'already an owner, no use spent',
+      status.ownerWired === false && 'owner key not wired until its row syncs',
+    ];
+  const text = notes.filter(Boolean).join('; ');
+  return [`  ${label.padEnd(17)}${status.state}${text ? ` (${text})` : ''}`];
 }
 
 function formatMultiaddrs(multiaddrs: string[]): string[] {

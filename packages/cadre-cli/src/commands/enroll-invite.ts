@@ -18,7 +18,7 @@ const log = debug('cadre:cli:enroll-invite');
  *
  * A machine invitation admits a machine and grants nothing else: the device becomes a member,
  * never an owner. Ownership is a credential of its own, an owner grant (`docs/architecture.md`
- * → Owner Keys), which this CLI does not mint.
+ * → Owner grants), which `cadre enroll owner-grant` mints.
  *
  * It goes through the admin channel for the same reason `cadre enroll add` does: the owner is
  * already running, and the invitation's row is a control write its running gate must see.
@@ -54,7 +54,7 @@ export function parseDuration(input: string): number {
   return ms;
 }
 
-function parseUses(raw: string): number {
+export function parseUses(raw: string): number {
   const uses = Number(raw);
   if (!Number.isInteger(uses) || uses < 1) {
     throw new AdminOptionError(`Invalid --uses: ${raw} (a positive whole number)`);

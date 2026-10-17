@@ -94,9 +94,28 @@ cadre start -c cadre.yaml --owner --owner-label "office server"   # founding a p
 - The owner key file is `owner.keyFile` in the config (`CADRE_OWNER_KEY_FILE`, `--owner-key-file <path>`), by default `owner.key` in the node-state directory. It has the identity file's format, and it is never the identity file: a config naming the same file for both is refused. When the file is missing, `--owner` creates it and says so on stderr. **Anyone who can read that file controls the cadre**; keep it private (start-up warns when other accounts can read it, as for the claim secret file) and back it up (`cadre owner-key export`).
 - On a party with no owner yet, the key founds it: the genesis `OwnerKey` row, labelled `--owner-label` (default `server <hostname>`, at most 64 characters).
 - On a party that lists the key as an owner, the node signs with it; nothing is inserted.
-- On a party whose owners do not include the key, start-up fails, naming the key's fingerprint and public key. Add it as an owner from a device that holds one of the party's owner keys, or import one of the party's owner keys here (`cadre owner-key import`), then start again.
+- On a party whose owners do not include the key, start-up fails, naming the key's fingerprint and public key. Add it as an owner from a device that holds one of the party's owner keys, or import one of the party's owner keys here (`cadre owner-key import`), then start again; or start with an owner grant instead ([With an owner grant](#with-an-owner-grant)).
 
-`--owner` needs a node identity (`identity.keyFile` or `--identity-file`): the node's own `CadrePeer` row, which names it in every seed it mints, is signed with it. `--owner-label` and `--owner-key-file` are refused without `--owner`.
+`--owner` needs a node identity (`identity.keyFile` or `--identity-file`): the node's own `CadrePeer` row, which names it in every seed it mints, is signed with it. `--owner-label` is refused without `--owner`, and `--owner-key-file` without `--owner` or `--owner-grant`.
+
+#### With an owner grant
+
+An [owner grant](#owner-grants) makes a server an owner without copying an existing owner key onto it: an owner mints the grant (`cadre enroll owner-grant` on an owner server, or Add an owner key in a reference app), and the server redeems it for a key of its own.
+
+```bash
+CADRE_OWNER_GRANT="$(cat server.grant)" cadre start -c cadre.yaml --identity-file node.key
+# or: cadre start -c cadre.yaml --identity-file node.key --owner-grant "$(cat server.grant)"
+```
+
+- The key is the one in the owner key file, created when missing as `--owner` creates it. A key that already owns another cadre becomes an owner of this one too: one key, several cadres.
+- On a server that is already a member of the cadre, the grant is redeemed in its own store, after one pass dialing the cadre's other machines. That needs a connection to one of them: a key made an owner with none would stay on this machine, so the redemption is refused as `alone` (retryable) when none answered, and starting again once they are reachable redeems it.
+- On a server that is not in the cadre yet, the grant joins it too, as a machine and an owner, at any member the grant names; no `--invitation` or `--seed` is needed, and either beside the grant is refused.
+- After the redemption the node runs as `--owner` does. Once its key is an owner, change `--owner-grant` to `--owner` in the service file: a later start with the grant still there finds the key already an owner, says so and spends nothing, but the grant text stays where anyone who reads the file can see it.
+- `--owner` beside `--owner-grant` is refused on a party with no owner in this node's store, where `--owner` would found the party rather than join one; on a party with owners the grant decides.
+- `CADRE_OWNER_GRANT` is the same as `--owner-grant`, kept out of the process list: the grant is a credential for admin rights over the cadre. Pass one of the two.
+- A grant for another party than the config's `controlNetwork.partyId`, or text that is not an owner grant, stops start-up before the node dials anything.
+
+A failed redemption is reported and the node keeps running, as a failed `--invitation` is. `/status` reports the redemption as `node.ownerGrant`, in `node.invitation`'s shape (`pending`, `accepted`, or `failed` with `error` and `retryable`); on `accepted` it adds `ownerKey`, `alreadyOwner` (no use was spent) and `ownerWired`. `ownerWired` is false when the server joined and its key's row had not reached it within a minute: the key is an owner, the node does not sign as one in this run, and the next start wires it. `cadre status` prints the same as an `Owner grant:` line.
 
 #### `cadre owner-key`
 
@@ -117,6 +136,9 @@ Each finds the owner key file as `cadre start` does (`-c`, `--owner-key-file`). 
 endpoint and reports it alongside the static config summary. A missing config
 file is non-fatal (the live query still runs); when no node is reachable it
 says so and exits with code `3` (rather than reporting a bare `running: false`).
+A node started with an invitation or an owner grant also gets an `Invitation:` or
+`Owner grant:` line saying how its redemption stands (`invitation` and `ownerGrant` under
+`--json`, `null` without one).
 
 ```bash
 cadre status -c cadre.yaml
@@ -184,7 +206,7 @@ When the seed carries no address to dial and no `--addr` was given, neither mach
 
 ### Join by invitation (the owner may be offline)
 
-An owner mints a **cadre invitation** while it is running, hands the bundle to the new machine out of band, and can then go offline: the new machine redeems the bundle at **any member** of the cadre the bundle names, and that member writes the new machine's membership on the owner's behalf ([docs/architecture.md → Enrollment Flow: Invitation Redeemed at Any Member](../../docs/architecture.md#enrollment-flow-invitation-redeemed-at-any-member)). A machine invitation admits a machine and grants nothing else; ownership is a credential of its own, an owner grant ([docs/architecture.md → Owner Keys](../../docs/architecture.md#owner-keys)), which this CLI does not mint.
+An owner mints a **cadre invitation** while it is running, hands the bundle to the new machine out of band, and can then go offline: the new machine redeems the bundle at **any member** of the cadre the bundle names, and that member writes the new machine's membership on the owner's behalf ([docs/architecture.md → Enrollment Flow: Invitation Redeemed at Any Member](../../docs/architecture.md#enrollment-flow-invitation-redeemed-at-any-member)). A machine invitation admits a machine and grants nothing else; ownership is a credential of its own, an [owner grant](#owner-grants).
 
 ```bash
 # 1. On the new machine B: prints B's peer ID, writes node-b.key and node-b.id
@@ -204,11 +226,34 @@ cadre start -c cadre.yaml --identity-file node-b.key --invitation "$(cat node-b.
 
 Only the bundle goes to stdout, so `>` and `$(…)` capture exactly what `--invitation` takes; stderr names the party, the key, what it admits, when it expires, and the member addresses the device will try in order. `--json` prints `{ invitation, encoded }` instead. The owner's admin channel also lists the invitations the node holds (`GET /admin/invites`, each with whether it is still live and how many times it was redeemed) and withdraws one (`DELETE /admin/invites/<key>`).
 
-On the new machine, `--invitation` redeems right after the node is up: the node dials the listed members in order, pins the invitation's owner keys as its trust anchor, and once a member accepts it syncs the control database over that connection. It needs a node identity (the redemption is signed with it) and cannot be combined with `--seed` (the owner-online way to the same end) or with `--owner` (which founds a cadre on this node rather than joining one). To make the machine an owner as well, start it with `--owner` and without `--invitation` once it has joined ([Make this server an owner](#make-this-server-an-owner)). A node that is already a member, started again with the flag still in its service file, is accepted again without a second record being written. A failed redemption is reported and the node keeps running, as a failed `--seed` is.
+On the new machine, `--invitation` redeems right after the node is up: the node dials the listed members in order, pins the invitation's owner keys as its trust anchor, and once a member accepts it syncs the control database over that connection. It needs a node identity (the redemption is signed with it) and cannot be combined with `--seed` (the owner-online way to the same end) or with `--owner` (which founds a cadre on this node rather than joining one). To join as an owner as well, start with an owner grant instead of the invitation ([With an owner grant](#with-an-owner-grant)). A node that is already a member, started again with the flag still in its service file, is accepted again without a second record being written. A failed redemption is reported and the node keeps running, as a failed `--seed` is.
 
 `CADRE_INVITATION` is the same as `--invitation`, for a launcher: the bundle carries the invitation's private key, and an argument shows in the process list. Pass one of the two; both at once is refused. While the redemption runs and after it settles, `/status` reports it as `node.invitation`: `{ state: 'pending' }` from start, `{ state: 'accepted', memberPeerId? }` with the member that admitted the node, or `{ state: 'failed', error, retryable }`. A member's refusal keeps its code in parentheses at the end of `error` (`… (invite-spent)`); `retryable` is true only when no member named in the bundle could be reached, so starting again with the same invitation may succeed. The field is absent on a node started without an invitation. cadre-host's join by invitation reads it.
 
 The bundle names the owner's own addresses first and then other members', taken from their signed address records: six addresses at most, so the text fits a QR code. A member that has not yet received the invitation's row seats it from the bundle and admits the device. A member that does not yet hold the issuing owner's key answers `issuer-unknown`, and the device moves on to the next address; an owner added since the members last synced should let one always-on member receive its key before going offline.
+
+### Owner grants
+
+An **owner grant** makes whoever holds it an owner of the cadre, with a key of their own, through any member of the cadre; the owner that minted it may be offline ([docs/architecture.md → Owner grants](../../docs/architecture.md#owner-grants)). It admits no machine by itself: a server that is not in the cadre yet joins with it as a machine and an owner at once ([With an owner grant](#with-an-owner-grant)), and an app redeems it under Owner keys → Redeem an owner grant.
+
+```bash
+# On the owner machine, running as `cadre start --owner --admin-port 7070 …` with CADRE_STARTUP_TOKEN set
+CADRE_STARTUP_TOKEN=<token> cadre enroll owner-grant --label "office server" --admin-port 7070 > server.grant
+```
+
+`cadre enroll owner-grant` takes the same admin port and token options as `enroll add`. Its flags:
+
+- `--label <text>`: the label every key the grant seats carries (at most 64 characters).
+- `--ttl <duration>` (`15m`, `24h`, `7d`; default 15 minutes), or `--ttl never` for a **backup** grant with no expiry, a way back into the cadre kept as carefully as an owner key. A backup names the addresses the cadre's machines have when it is minted, so it stops working if all of them change.
+- `--uses <n>`: how many keys it may make owners (default 1).
+
+Only the grant goes to stdout, so `>` and `$(…)` capture exactly what `--owner-grant` takes. Stderr names the party, the grant's key, its label, uses and expiry, and the member addresses a holder will try, then the warnings: always that whoever holds the grant can become an owner of the cadre until it is used, expires or is withdrawn, then that a backup has no expiry, and that a grant naming no other reachable machine can be redeemed only while this server runs. `--json` prints `{ grant, encoded, reach, warnings }` instead.
+
+The owner's admin channel serves the grants:
+
+- `POST /admin/owner-grants`, body `{ label?, expiresInMs?, uses? }`, mints one and answers `{ grant, encoded, reach, warnings }`. `expiresInMs: null` asks for a backup; leaving it out takes the 15-minute default. `peerId` is refused: a grant names no device, and whoever holds it can redeem it.
+- `GET /admin/owner-grants` lists the grants the node holds, each with whether it is still live and how many times it was redeemed (`{ grants: [{ grant, live, withdrawn, usesRecorded }] }`).
+- `DELETE /admin/owner-grants/<key>` withdraws one (`{ withdrawn }`, false when the node does not hold it or it was already withdrawn). Keys it has already made owners stay owners.
 
 ### Waiting to be claimed
 
@@ -226,7 +271,7 @@ The claim names the cadre. A node waiting to be claimed cannot know which party 
 
 `/status` reports `node.claim` as `claimed` as soon as a claim is on record (read at start, or written in this process — before the claimant is acknowledged, and kept across the restart, so a poller never sees it flip back), `awaiting` with a secret and no record, and `none` without a secret. When claimed, `node.claimedBy` is the record's owner key, and `node.partyId` names the party the running node serves — the claimed one once the restart completes. cadre-host's join flow reads both.
 
-A claim secret, and a claim on record, cannot be combined with `--owner`, `--seed`, `--invitation` (or `CADRE_INVITATION`), `--pin-owner-key` or `CADRE_OWNER_KEYS`: each is another way to choose the node's owner, and `cadre start` refuses the combination, naming every conflicting option. The secret comes from `CADRE_CLAIM_SECRET` or from a file the config names, `claim.secretFile` (what `cadre init` writes; `CADRE_CLAIM_SECRET_FILE` sets it from the environment), never from a flag, because a flag value shows in the process list. Setting both is refused. A secret file must hold the secret and nothing else; `cadre start` and `cadre code` warn when other accounts can read it. The secret is never logged; only `cadre code` prints it, inside the code.
+A claim secret, and a claim on record, cannot be combined with `--owner`, `--seed`, `--invitation` (or `CADRE_INVITATION`), `--owner-grant` (or `CADRE_OWNER_GRANT`), `--pin-owner-key` or `CADRE_OWNER_KEYS`: each is another way to choose the node's owner, and `cadre start` refuses the combination, naming every conflicting option. The secret comes from `CADRE_CLAIM_SECRET` or from a file the config names, `claim.secretFile` (what `cadre init` writes; `CADRE_CLAIM_SECRET_FILE` sets it from the environment), never from a flag, because a flag value shows in the process list. Setting both is refused. A secret file must hold the secret and nothing else; `cadre start` and `cadre code` warn when other accounts can read it. The secret is never logged; only `cadre code` prints it, inside the code.
 
 ### Removed from the cadre
 
@@ -361,18 +406,19 @@ says so rather than starting without it.
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation (`true`/`false`/`1`/`0`) |
 | `CADRE_LATENCY_HINT` | `hibernation.defaultLatencyHint` | Default latency hint: `realtime`, `interactive`, `background` or `archive` |
 | `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher polling interval in milliseconds |
-| `CADRE_OWNER_KEY_FILE` | `owner.keyFile` | The owner key file `cadre start --owner` and the owner-signed commands use ([Make this server an owner](#make-this-server-an-owner)); same format as the identity file, never the same file. Defaults to `owner.key` in the node-state directory. `--owner-key-file <path>` sets this |
+| `CADRE_OWNER_KEY_FILE` | `owner.keyFile` | The owner key file `cadre start --owner`, `cadre start --owner-grant` and the owner-signed commands use ([Make this server an owner](#make-this-server-an-owner)); same format as the identity file, never the same file. Defaults to `owner.key` in the node-state directory. `--owner-key-file <path>` sets this |
 | `CADRE_CLAIM_SECRET_FILE` | `claim.secretFile` | File holding the claim secret, the file form of `CADRE_CLAIM_SECRET` ([Waiting to be claimed](#waiting-to-be-claimed)); `cadre init` writes it. Setting both is refused |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets, the claim record `claim.json`, the removal marker `removed.<partyId>.json`). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
 | `CADRE_HEALTH_PORT` | _(env only)_ | Health server port for `cadre start`, and the port `cadre status` queries; the env value wins over `--health-port` |
 | `CADRE_METRICS_PORT` | _(env only)_ | Metrics server port for `cadre start`; the env value wins over `--metrics-port` |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
-| `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add` and `cadre enroll invite` present it (or read it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
-| `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add` and `cadre enroll invite` connect to when they are not given `--admin-port` |
+| `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add`, `cadre enroll invite` and `cadre enroll owner-grant` present it (or read it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
+| `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add`, `cadre enroll invite` and `cadre enroll owner-grant` connect to when they are not given `--admin-port` |
 | `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor. Each entry must be a base64url 32-byte Ed25519 public key; a malformed entry fails startup naming the bad value, rather than sitting in the anchor and silently matching no signer |
-| `CADRE_CLAIM_SECRET` | _(env only)_ | Start the node waiting to be claimed ([Waiting to be claimed](#waiting-to-be-claimed)): a one-time secret, base64url of 32 random bytes. The claim names the party; `controlNetwork.partyId` is a placeholder. A malformed value fails startup without echoing it; a set-but-empty value means no claim. May stay set after the claim. Cannot be combined with `--owner`, `--seed`, `--invitation`, `CADRE_INVITATION`, `--pin-owner-key` or `CADRE_OWNER_KEYS` |
+| `CADRE_CLAIM_SECRET` | _(env only)_ | Start the node waiting to be claimed ([Waiting to be claimed](#waiting-to-be-claimed)): a one-time secret, base64url of 32 random bytes. The claim names the party; `controlNetwork.partyId` is a placeholder. A malformed value fails startup without echoing it; a set-but-empty value means no claim. May stay set after the claim. Cannot be combined with `--owner`, `--seed`, `--invitation`, `CADRE_INVITATION`, `--owner-grant`, `CADRE_OWNER_GRANT`, `--pin-owner-key` or `CADRE_OWNER_KEYS` |
 | `CADRE_OWNER_KEY_PASSPHRASE` | _(env only)_ | The passphrase `cadre owner-key export` locks an export with and `cadre owner-key import` unlocks one with; the environment form of `--passphrase-file`. Setting both is refused |
 | `CADRE_INVITATION` | _(env only)_ | `cadre start --invitation` without the argument ([Join by invitation](#join-by-invitation-the-owner-may-be-offline)): the encoded bundle `cadre enroll invite` prints, kept out of the process list because it carries the invitation's private key. A set-but-empty value means none. Refused beside `--invitation`; cannot be combined with `--seed`, `--owner` or `CADRE_CLAIM_SECRET`. `/status` then reports `node.invitation` |
+| `CADRE_OWNER_GRANT` | _(env only)_ | `cadre start --owner-grant` without the argument ([With an owner grant](#with-an-owner-grant)): the grant `cadre enroll owner-grant` prints, kept out of the process list because whoever holds it can become an owner. A set-but-empty value means none. Refused beside `--owner-grant`; cannot be combined with `--seed`, `--invitation`, `CADRE_INVITATION` or `CADRE_CLAIM_SECRET`. `/status` then reports `node.ownerGrant` |
 
 Environment variables override config file values. A variable that is **set but
 empty** (or whitespace-only) counts as unspecified and is ignored — this is what

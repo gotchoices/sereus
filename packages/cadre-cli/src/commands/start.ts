@@ -10,6 +10,7 @@ import {
   type NodeClaimRecord,
   type SeedTrustPolicy,
   type CadreInvitation,
+  type OwnerGrantBundle,
 } from '@serfab/cadre-core';
 import { fromString } from 'uint8arrays';
 import { specifiedEnv } from '@serfab/config-check';
@@ -19,16 +20,28 @@ import { claimRecordPath, partyOnRecord, type ClaimRecord } from './claim-record
 import { resolveClaimSecret } from './claim-secret.js';
 import { afterClaimSeedSettles, buildClaimedNode, buildConfiguredNode, claimConfigFor, stopWhenRemoved, warnRemoved } from './start-node.js';
 import { openNodeStorage } from './node-session.js';
-import { loadServerOwnerKey, ownerKeyLabel, wireServerOwnerKey, type ServerOwnerKey } from './start-owner.js';
+import {
+  loadServerOwnerKey,
+  ownerKeyLabel,
+  redeemStartupOwnerGrant,
+  refuseFoundingBesideGrant,
+  registerOwnerNode,
+  wireServerOwnerKey,
+  type ServerOwnerKey,
+} from './start-owner.js';
 import { readRemovalMarker } from './removal-marker.js';
 import {
   decodeInvitationFor,
+  decodeOwnerGrantFor,
   redeemStartupInvitation,
   refuseInvitationConflicts,
+  refuseOwnerGrantConflicts,
   startupInvitation,
+  startupOwnerGrant,
   type StartupInvitation,
+  type StartupOwnerGrant,
 } from './start-invitation.js';
-import { HealthServer, type HealthServerOptions, type InvitationStatus } from '../server/health.js';
+import { HealthServer, type HealthServerOptions, type InvitationStatus, type OwnerGrantRedemptionStatus } from '../server/health.js';
 import { AdminServer } from '../server/admin-server.js';
 
 const log = debug('cadre:cli:start');
@@ -102,15 +115,15 @@ export function validatePinnedOwnerKeys(keys: string[]): string[] {
  * Refuse every start-up option that cannot be combined with a claim, all named in one error.
  * A node waiting to be claimed takes its owner from the claim, and a claimed node took it from
  * the claim on record; each of these is another way in: `--owner` founds a cadre on this node,
- * `--seed` and an invitation (`--invitation`, `CADRE_INVITATION`) join one, and a pinned owner
- * key (`--pin-owner-key`, `CADRE_OWNER_KEYS`) trusts a signer the claim never named. The node
- * refuses a pin beside a claim itself (`CadreNodeConfig.claim`), but its message names the
- * config field; this check runs first — for an environment secret, before the config is loaded;
- * for `claim.secretFile`, right after — and
+ * `--seed`, an invitation (`--invitation`, `CADRE_INVITATION`) and an owner grant (`--owner-grant`,
+ * `CADRE_OWNER_GRANT`) join one, and a pinned owner key (`--pin-owner-key`, `CADRE_OWNER_KEYS`)
+ * trusts a signer the claim never named. The node refuses a pin beside a claim itself
+ * (`CadreNodeConfig.claim`), but its message names the config field; this check runs first — for
+ * an environment secret, before the config is loaded; for `claim.secretFile`, right after — and
  * names the options the operator actually passed. `subject` is what the message blames: the secret, or the record.
  */
 export function refuseClaimConflicts(
-  options: { owner?: boolean; seed?: string; invitation?: StartupInvitation; pinOwnerKey?: string[] },
+  options: { owner?: boolean; seed?: string; invitation?: StartupInvitation; ownerGrant?: StartupOwnerGrant; pinOwnerKey?: string[] },
   ownerKeysEnv: string | undefined,
   subject: string = 'CADRE_CLAIM_SECRET',
 ): void {
@@ -118,6 +131,7 @@ export function refuseClaimConflicts(
     options.owner ? '--owner' : undefined,
     options.seed ? '--seed' : undefined,
     options.invitation?.source,
+    options.ownerGrant?.source,
     collectPinnedOwnerKeys(options.pinOwnerKey, undefined).length > 0 ? '--pin-owner-key' : undefined,
     collectPinnedOwnerKeys(undefined, ownerKeysEnv).length > 0 ? 'CADRE_OWNER_KEYS' : undefined,
   ].filter((name): name is string => name !== undefined);
@@ -128,16 +142,48 @@ export function refuseClaimConflicts(
 }
 
 /**
- * The founding label for `--owner` (`ownerKeyLabel`), refusing `--owner-label` and
- * `--owner-key-file` without `--owner`, which would otherwise be ignored without a word.
+ * The founding label for `--owner` (`ownerKeyLabel`), refusing the owner options that would
+ * otherwise be ignored without a word: `--owner-label` without `--owner` (a grant never founds a
+ * party; the key it seats carries the label its issuer chose), and `--owner-key-file` without
+ * `--owner` or an owner grant.
  */
-function ownerKeyLabelFor(options: { owner?: boolean; ownerLabel?: string; ownerKeyFile?: string }): string {
-  if (!options.owner) {
-    const strays = [options.ownerLabel !== undefined ? '--owner-label' : undefined, options.ownerKeyFile !== undefined ? '--owner-key-file' : undefined]
-      .filter((name): name is string => name !== undefined);
-    if (strays.length > 0) throw new Error(`${strays.join(' and ')} ${strays.length === 1 ? 'applies' : 'apply'} only with --owner`);
+function ownerKeyLabelFor(options: { owner?: boolean; ownerLabel?: string; ownerKeyFile?: string }, ownerGrant: StartupOwnerGrant | undefined): string {
+  if (!options.owner && options.ownerLabel !== undefined) {
+    throw new Error('--owner-label applies only with --owner: it labels the key that founds a party, and an owner grant never founds one');
+  }
+  if (!options.owner && !ownerGrant && options.ownerKeyFile !== undefined) {
+    throw new Error('--owner-key-file applies only with --owner or an owner grant (--owner-grant, CADRE_OWNER_GRANT)');
   }
   return ownerKeyLabel(options.ownerLabel);
+}
+
+/** Refuse a start-up credential on a node without an identity: the redemption, and an owner's own `CadrePeer` row, are signed with it. */
+function requireNodeIdentity(config: ResolvedConfig, source: string): void {
+  if (!config.privateKey) {
+    throw new Error(`${source} requires a node identity (set identity.keyFile in the config, or pass --identity-file): the redemption is signed with it`);
+  }
+}
+
+/**
+ * Make this server an owner, after the node is up: with the owner grant when there is one (and
+ * `--owner` beside it only on a party that has owners), else as `--owner` does; then publish the
+ * node's own row when its key is wired. Returns the grant's outcome for `/status`.
+ */
+async function settleServerOwner(
+  node: CadreNode,
+  owner: ServerOwnerKey,
+  grant: { startup: StartupOwnerGrant; bundle: OwnerGrantBundle } | undefined,
+  options: { owner?: boolean; label: string },
+): Promise<OwnerGrantRedemptionStatus | undefined> {
+  if (!grant) {
+    await wireServerOwnerKey(node, owner, options.label);
+    await registerOwnerNode(node);
+    return undefined;
+  }
+  if (options.owner) await refuseFoundingBesideGrant(node, grant.startup.source);
+  const status = await redeemStartupOwnerGrant(node, owner, grant.bundle);
+  if (status.ownerWired) await registerOwnerNode(node);
+  return status;
 }
 
 /**
@@ -197,7 +243,7 @@ async function startHealthServer(
   flags: HealthServerFlags,
   profile: string,
   node: CadreNode | undefined,
-  facts: Pick<HealthServerOptions, 'claim' | 'invitation' | 'removal'>,
+  facts: Pick<HealthServerOptions, 'claim' | 'invitation' | 'ownerGrant' | 'removal'>,
 ): Promise<HealthServer | null> {
   if (flags.healthServer === false) return null;
   const healthPort = parseInt(commandEnv('CADRE_HEALTH_PORT') ?? flags.healthPort, 10);
@@ -253,7 +299,8 @@ export const startCommand = new Command('start')
   .option('--startup-token-file <path>', 'Write $CADRE_STARTUP_TOKEN to this file as the first step of start-up, before any port is bound. Used by external orchestrators to verify a live PID is the child they spawned (vs a recycled PID) — an identity check, not a readiness signal.')
   .option('--identity-file <path>', 'Load the node identity from a libp2p protobuf private key file — the one identity format, written by \'cadre enroll create\' and by cadre-host for each node it runs (identity.key). Takes precedence over the config file\'s identity.keyFile.')
   .option('--owner', 'This server holds an owner key for its cadre, in the owner key file (owner.keyFile, default <node state dir>/owner.key; created when missing), never its node identity. On a party with no owner the key founds it; on one that lists the key the node signs with it; on one whose owners do not include it start-up fails, naming the key to add. Not for a node donated to a requester: that one pins the requester\'s owner key with --pin-owner-key instead.')
-  .option('--owner-key-file <path>', 'With --owner: the owner key file. Takes precedence over the config file\'s owner.keyFile and CADRE_OWNER_KEY_FILE.')
+  .option('--owner-grant <encoded>', 'Make this server an owner with an owner grant — what `cadre enroll owner-grant` prints, or an app\'s Add an owner key — for the key in the owner key file (created when missing, as --owner creates it). On a node that is not in the cadre yet it joins the cadre too, at any member the grant names. The node then runs as --owner does; a later start with the key already an owner spends nothing. CADRE_OWNER_GRANT is the same, kept out of the process list; pass one of the two. Needs a node identity; cannot be combined with --seed or --invitation, nor with --owner on a party with no owner here. Start-up fails if it does not decode or names another party')
+  .option('--owner-key-file <path>', 'With --owner or --owner-grant: the owner key file. Takes precedence over the config file\'s owner.keyFile and CADRE_OWNER_KEY_FILE.')
   .option('--owner-label <text>', 'With --owner, founding a party: the founding owner key\'s label (default "server <hostname>"; at most 64 characters).')
   .option('--admin-port <port>', 'Bind the loopback admin channel (127.0.0.1) on this port. Requires CADRE_STARTUP_TOKEN in env.')
   .option('--pin-owner-key <b64url>', 'Pin a base64url owner key as a cold-start seed-trust anchor (repeatable; unions with CADRE_OWNER_KEYS). Required for a cold node to accept --seed / POST /seed.', collectPinKey, [])
@@ -272,7 +319,8 @@ export const startCommand = new Command('start')
       // Set-but-empty is unset, as for every other variable.
       const envClaimSecret = specifiedEnv(commandEnv('CADRE_CLAIM_SECRET'));
       const startup = startupInvitation(options.invitation, commandEnv('CADRE_INVITATION'));
-      const conflictOptions = { owner: options.owner, seed: options.seed, invitation: startup, pinOwnerKey: options.pinOwnerKey };
+      const startupGrant = startupOwnerGrant(options.ownerGrant, commandEnv('CADRE_OWNER_GRANT'));
+      const conflictOptions = { owner: options.owner, seed: options.seed, invitation: startup, ownerGrant: startupGrant, pinOwnerKey: options.pinOwnerKey };
       if (envClaimSecret !== undefined) refuseClaimConflicts(conflictOptions, commandEnv('CADRE_OWNER_KEYS'));
 
       // A --identity-file flag overrides the config file's identity. Route it through the env
@@ -287,7 +335,7 @@ export const startCommand = new Command('start')
       if (options.ownerKeyFile) {
         process.env.CADRE_OWNER_KEY_FILE = options.ownerKeyFile;
       }
-      const ownerLabel = ownerKeyLabelFor(options);
+      const ownerLabel = ownerKeyLabelFor(options, startupGrant);
 
       const config = await resolveConfig(options.config);
       applyWsPortOption(config, options.wsPort);
@@ -309,19 +357,24 @@ export const startCommand = new Command('start')
         reportClaimOnRecord(claimOnRecord, config.controlNetwork.partyId);
       }
 
-      // The conflict check comes before either decode, so an operator who passed both flags
-      // is told that, not that one of the two values failed to decode.
+      // The conflict checks come before any decode, so an operator who passed two credentials
+      // is told that, not that one of the values failed to decode.
+      if (startupGrant) refuseOwnerGrantConflicts(startupGrant, { seed: options.seed, invitation: startup });
       if (startup) refuseInvitationConflicts(startup, options);
       const seed = options.seed ? decodeSeedFor(options.seed, partyId) : undefined;
       let invitation: CadreInvitation | undefined;
       if (startup) {
-        if (!config.privateKey) {
-          throw new Error(`${startup.source} requires a node identity (set identity.keyFile in the config, or pass --identity-file): the redemption is signed with it`);
-        }
+        requireNodeIdentity(config, startup.source);
         invitation = decodeInvitationFor(startup, partyId);
       }
-      // How the redemption below stands, as `/status` reports it to a launcher following the join.
+      let ownerGrant: { startup: StartupOwnerGrant; bundle: OwnerGrantBundle } | undefined;
+      if (startupGrant) {
+        requireNodeIdentity(config, startupGrant.source);
+        ownerGrant = { startup: startupGrant, bundle: decodeOwnerGrantFor(startupGrant, partyId) };
+      }
+      // How the redemptions below stand, as `/status` reports them to a launcher following the join.
       let invitationStatus: InvitationStatus | undefined = invitation ? { state: 'pending' } : undefined;
+      let ownerGrantStatus: OwnerGrantRedemptionStatus | undefined = ownerGrant ? { state: 'pending' } : undefined;
 
       // Operator-pinned owner keys anchor cold-start seed trust. Build the
       // policy BEFORE constructing CadreNode so every later service-construction
@@ -350,6 +403,7 @@ export const startCommand = new Command('start')
       const statusFacts = {
         claim: () => ({ secretConfigured: claimSecret !== undefined, claimedBy: claimRecord?.ownerKey }),
         invitation: () => invitationStatus,
+        ownerGrant: () => ownerGrantStatus,
         removal: () => removal,
       };
       if (removal) {
@@ -359,14 +413,14 @@ export const startCommand = new Command('start')
       const noteRemoval = (reported: CadreRemoval): void => { removal = reported; };
 
       // Loaded (or created) before the node is built, so a key file that cannot be read stops
-      // the start before any port is bound.
+      // the start before any port is bound. An owner grant's node identity was required above.
       let serverOwnerKey: ServerOwnerKey | undefined;
-      if (options.owner) {
-        if (!config.privateKey) {
-          // The node's own CadrePeer row, which names it in every seed it mints, is signed with
-          // the node identity; a node on an ephemeral one publishes none.
-          throw new Error('--owner requires a node identity (set identity.keyFile in the config, or pass --identity-file)');
-        }
+      if (options.owner && !config.privateKey) {
+        // The node's own CadrePeer row, which names it in every seed it mints, is signed with
+        // the node identity; a node on an ephemeral one publishes none.
+        throw new Error('--owner requires a node identity (set identity.keyFile in the config, or pass --identity-file)');
+      }
+      if (options.owner || ownerGrant) {
         serverOwnerKey = await loadServerOwnerKey(config.ownerKeyFile, partyId);
       }
 
@@ -450,25 +504,10 @@ export const startCommand = new Command('start')
       // bundle names and the node then syncs the control database over the connection it holds.
       if (invitation) invitationStatus = await redeemStartupInvitation(node, invitation);
 
-      // Owner init: wire the server's owner key, founding the party when it has no owner, so
-      // this node can mint invites and authorize peers.
+      // Owner init: make the server's owner key an owner with the grant, or wire it as it stands,
+      // founding the party when it has no owner, so this node can mint invites and authorize peers.
       if (serverOwnerKey) {
-        await wireServerOwnerKey(node, serverOwnerKey, ownerLabel);
-        console.log('✓ Owner seed-bootstrap initialized');
-
-        // Write the owner's own signed CadrePeer row up-front, before any
-        // seed can be minted. The background heartbeat keeps it fresh, but it
-        // fires too late for the first invite/seed — without this, createSeed()
-        // would omit this node, so a freshly-seeded node would have no address
-        // for the seed's minter to dial (applySeed dials the seed's preferred
-        // peers) until the ~7.5 min heartbeat first published the row.
-        const selfReg = await node.registerSelf();
-        const selfRegMessage: Record<typeof selfReg, string> = {
-          inserted: '✓ Owner self-registered into CadrePeer (row inserted)',
-          refreshed: '✓ Owner CadrePeer record refreshed',
-          skipped: '• Owner self-registration skipped (see logs for the reason; the heartbeat retries)',
-        };
-        console.log(selfRegMessage[selfReg]);
+        ownerGrantStatus = await settleServerOwner(node, serverOwnerKey, ownerGrant, { owner: options.owner, label: ownerLabel });
       }
 
       // Bind the loopback admin channel if requested. The startup token doubles

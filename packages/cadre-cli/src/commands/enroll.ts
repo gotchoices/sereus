@@ -6,6 +6,7 @@ import { EnrollmentService, verifyPeerAuthorization } from '@serfab/cadre-core';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { enrollAddCommand } from './enroll-add.js';
 import { enrollInviteCommand } from './enroll-invite.js';
+import { enrollOwnerGrantCommand } from './enroll-owner-grant.js';
 
 const log = debug('cadre:cli:enroll');
 
@@ -72,6 +73,7 @@ export const enrollCommand = new Command('enroll')
   )
   .addCommand(enrollAddCommand)
   .addCommand(enrollInviteCommand)
+  .addCommand(enrollOwnerGrantCommand)
   .addCommand(
     new Command('register')
       .description('Verify an owner-signed peer authorization (offline check — does not contact the control network or register the peer)')
