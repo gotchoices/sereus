@@ -47,7 +47,7 @@ The redial that opens a connection already follows the link: FRET 1.1.0 runs it 
 
 ## What this does not fix
 
-On the phone link of #48 the delay is not the declared round trip: each outbound frame waits behind every frame already queued, and frames were measured waiting 10-22 s (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). A ping derived from a 3 500 ms declaration (7 s) still misses there. Whether to reduce the traffic or to size these deadlines from measured response times is the question in `plan/strand-workload-count-driven-fixes`; this ticket fixes the case where the link is inside its declaration, which is a defect on its own.
+On the phone link of #48 the delay is not the declared round trip: each outbound frame waits behind every frame already queued, and frames were measured waiting 10-22 s (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). A ping derived from a 3 500 ms declaration (7 s) still misses there. Whether to reduce the traffic or to size these deadlines from measured response times is the question in `strand-workload-count-driven-fixes`; this ticket fixes the case where the link is inside its declaration, which is a defect on its own.
 
 ## How to confirm
 
