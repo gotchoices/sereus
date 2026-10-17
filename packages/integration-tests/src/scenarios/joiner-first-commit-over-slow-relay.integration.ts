@@ -253,17 +253,8 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
 		// joiner is stopped.
 		await B.stop();
 		const tReach = Date.now();
-		await waitUntil(
-			async () => {
-				const seats = await rows(aDb, 'select Side from App.Seat');
-				const keys = await rows(aDb, 'select Sid from App.PartyKey');
-				const parties = await rows(aDb, 'select Sid from App.Party');
-				return seats.some(r => r.Side === 'F')
-					&& keys.some(r => r.Sid === 'sid-b')
-					&& parties.some(r => r.Sid === 'sid-b');
-			},
-			{ ...CONVERGE, description: "every row of the joiner's committed transaction is readable on the founder after the joiner stops" },
-		);
+		await waitUntil(() => holdsJoinerSeat(aDb),
+			{ ...CONVERGE, description: "every row of the joiner's committed transaction is readable on the founder after the joiner stops" });
 		console.log(`[first-commit ${label}] joiner's rows readable on the founder ${since(tReach)} after the joiner stopped`);
 		expect((await rows(aDb, 'select Side from App.Seat')).map(r => r.Side).sort()).toEqual(['F', 'S']);
 	} finally {
@@ -596,6 +587,8 @@ describe("a joiner's first transaction over a relayed link", () => {
 	// (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). When this `it.fails`
 	// turns red, the arm passes: that drop cycle no longer cuts a commit on this link, so make it a
 	// plain `it`.
+	// NOTE: failed in 2 of 2 runs (2026-10-17), but only because a drop landed while the commit was
+	// in flight; if it turns red once and not on a rerun, the commit missed a drop by timing.
 	it.fails('commits, and its rows outlive the joiner, on a 20 ms frame cap with a 70%-busy event loop', async () => {
 		await runJoinerFirstCommit({ latency: { delayMs: 20, mode: 'serial' }, eventLoopBusy: 0.7 });
 	}, 1_800_000);
