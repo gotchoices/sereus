@@ -143,19 +143,20 @@
  *
  * | source | requests | share |
  * |---|---|---|
- * | read-repair consults beyond loopback's rate: 54 sent, all silent (32 more found a cohort of only the node itself and sent nothing) | 51 | 44% / 26% |
- * | of those, re-asks of a block whose previous consult went silent | 31 | 27% / 16% |
+ * | read-repair consults beyond loopback's rate: 53 sent, all silent (32 more found a cohort of only the node itself and sent nothing; the other 3 `cohort silent` lines close consults started before round 1) | 50 | 43% / 26% |
+ * | of those, re-asks of a block whose last consult to send a request went silent | 31 | 27% / 16% |
  * | of those, inside 81 s of the block's last check (what a strand read-repair window as long as the commit broadcast's retries would skip) | 16 | 14% / 8% |
  * | commit retries sent, 8 × 3 (an upper bound: one coordinated by a node whose ring had marked the peer `dead` commits alone) | 24 | 21% / 12% |
  * | read retries | 0 | 0 |
  * | circuit-relay hop streams: mostly the redials after the connection monitor's 9 aborts | 28 | 24% / 14% |
  * | block-transfer streams beyond loopback's rate | 13 | 11% / 7% |
  * | libp2p pings (streams opened) | 12 | excluded / 6% |
- * | FRET maintenance pings that failed against a strand node (contact strikes) | 67 | excluded / 34% |
+ * | FRET maintenance pings that failed against a strand node (contact strikes) | 67 | excluded / 35% |
  *
- * The streams the strand nodes opened for sync, cluster, repo and block transfer (36) were at
- * loopback's rate for three rounds (38): what grew was requests that never opened in time, redials
- * and pings. Proposals filed from this: `blocked/decide-link-deadlines-from-measured-response-time`
+ * The streams the strand nodes opened for sync, cluster, repo and block transfer (36) were at the
+ * rate the frame-counted loopback runs opened the same protocols for three rounds (35; the phone
+ * run's own loopback arm opened 17): what grew was requests that never opened in time, redials and
+ * pings. Proposals filed from this: `blocked/decide-link-deadlines-from-measured-response-time`
  * and `blocked/optimystic-retries-do-not-back-off`.
  */
 

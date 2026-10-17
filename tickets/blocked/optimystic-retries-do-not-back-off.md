@@ -26,8 +26,8 @@ The phone arm of `strand-workload-on-a-phone-link.integration.ts` (every outboun
 
 - **Coordinator retries:** 12 started (`batch-coordinator retry peer=`); 8 were sent to the next coordinator and 4 found none (`No coordinator available … the remaining candidate peer(s) are foreign or not-yet-confirmed`). At three requests a retried write (pend, commit, and the broadcast to the other member), 24 requests. That is an upper bound: a retry coordinated by a node whose ring had already marked the other member `dead` commits alone.
 - **Read retries:** none in this run. The reporter's runs on the same link logged 8 to 35 a run. They are included because the cause is the same.
-- **Read-repair consults:** 54 sent during the rounds, and all 54 found the other member silent at 7 s. 31 of them were re-asks of a block whose previous consult had gone silent. In the 180 s after the rounds, all 224 consults were such re-asks, each block re-asked about every 8.2 s (one block was consulted 10.4, 18.5, 26.7, 34.9 … 141.4 s after its last check).
-- **Share of the requests beyond the clean workload:** the three together, 55 requests: 47% of the excess with FRET's and libp2p's own pings excluded, 28% with them. Coordinator retries alone 21% and 12%; consult re-asks alone 27% and 16%.
+- **Read-repair consults:** 53 sent during the rounds, and all 53 found the other member silent at 7 s. 31 of them were re-asks of a block whose last consult to send a request had gone silent. In the 180 s after the rounds, all 224 consults were such re-asks, each block re-asked about every 8.2 s (one block was consulted 10.4, 18.5, 26.7, 34.9 … 141.4 s after its last check).
+- **Share of the requests beyond the clean workload:** the three together, 55 requests: 48% of the excess with FRET's and libp2p's own pings excluded, 28% with them. Coordinator retries alone 21% and 12%; consult re-asks alone 27% and 16%.
 
 A source under a quarter of the excess cannot by itself bring a queue that overran a deadline back under it. These three share one cause and one fix, so they are weighed together.
 
@@ -45,13 +45,13 @@ The second keeps Optimystic's reason for leaving a silent consult unarmed (a rec
 ## Alternatives, and why they were not taken
 
 - **Arm the read-repair window on a silent consult.** Optimystic rejected that deliberately: with a long window it hides a recovered peer's newer revision for the whole window.
-- **A longer read-repair window for strands** (cadre could set `readRepairWindowMs` in `STRAND_CLUSTER_POLICY` today). The window spaces only consults that were answered, and on this link none were. A window as long as Optimystic's commit-broadcast retries (81 250 ms at the default declaration: seven 10 500 ms request deadlines plus 7 750 ms of waits between them) would have skipped at most 16 of the 54 consults, 14% of the excess with pings excluded and 8% with them. It would also be the first stated staleness bound for strand reads, which no doc states yet. Not filed for that reason.
+- **A longer read-repair window for strands** (cadre could set `readRepairWindowMs` in `STRAND_CLUSTER_POLICY` today). The window spaces only consults that were answered, and on this link none were. A window as long as Optimystic's commit-broadcast retries (81 250 ms at the default declaration: seven 10 500 ms request deadlines plus 7 750 ms of waits between them) would have skipped at most 16 of the 53 consults, 14% of the excess with pings excluded and 8% with them. It would also be the first stated staleness bound for strand reads, which no doc states yet. Not filed for that reason.
 - **Fewer coordinator attempts.** A two-member strand already makes only two; the problem is when they are sent, not how many.
 - **Back off above Optimystic.** All three retries happen inside one Optimystic operation, where cadre cannot space them; cadre's control-write retry and an app's own retry sit above them and see only the final failure.
 
 ## If nothing is done
 
-Every request given up on over a congested link is replaced at once by one queued behind it: here 28-47% of the traffic beyond the clean workload, depending on whether pings are counted. With measured-response deadlines upstream fewer requests would time out, but each one that still did would put its replacement straight back on the queue.
+Every request given up on over a congested link is replaced at once by one queued behind it: here 28-48% of the traffic beyond the clean workload, depending on whether pings are counted. With measured-response deadlines upstream fewer requests would time out, but each one that still did would put its replacement straight back on the queue.
 
 ## Reversibility
 
