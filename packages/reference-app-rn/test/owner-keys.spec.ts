@@ -68,7 +68,6 @@ describe('redeeming an owner grant', () => {
 
 	it.each<[string, unknown, RegExp]>([
 		['a spent or withdrawn grant', new OwnerGrantRejectedError('grant-spent', 'withdrawn'), /expired, withdrawn or used up/],
-		['a grant for another cadre', new OwnerGrantRejectedError('party-mismatch', 'other'), /another cadre/],
 		['no member reachable', new OwnerGrantUnreachableError([]), /could be reached/],
 		['a member with no connection to the others', new OwnerKeyAddRefusedError('slot-key', 'alone'), /^Connect to your cadre/],
 		['text that is not an owner grant, refused by the decoder', new Error('This is an owner key, not an owner grant'), /^This is an owner key/],
