@@ -33,6 +33,7 @@ export * from './stream-counter.js';
 // Safe in the barrel: importing it instruments nothing unless `installWsLatency` is called
 // or one of its environment variables is set, and those are process-wide by intent.
 export * from './ws-latency.js';
+export * from './event-loop-load.js';
 export * from './provider-process-orchestrator.js';
 // The provider's routes driven in-process (`inject`), with every body kept for the join scenarios' leak check.
 export * from './provider-api.js';

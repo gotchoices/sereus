@@ -156,6 +156,69 @@ function resetStats(): void {
 	reportedAtFrames = -1;
 }
 
+/** One window's totals: what a scenario's marked interval sent, setup excluded. */
+export interface WsFrameWindowStats {
+	/** False when no shim was installed for the window, so every count below is zero for that reason. */
+	readonly instrumented: boolean;
+	readonly frames: number;
+	/** The most frames one dialed socket sent inside the window, not over its lifetime. */
+	readonly busiestSocketFrames: number;
+	/** The longest any frame released inside the window had waited. */
+	readonly worstSendWaitMs: number;
+	readonly bytes: number;
+}
+
+/** Counts frames from `openWsFrameWindow` until `close`, beside the process-wide totals. */
+export interface WsFrameWindow {
+	read(): WsFrameWindowStats;
+	close(): void;
+}
+
+interface WindowTally {
+	frames: number;
+	bytes: number;
+	worstSendWaitMs: number;
+	readonly perSocket: Map<object, number>;
+}
+
+/** Open windows. Per-frame work is a loop over these, which is empty unless a scenario opened one. */
+const windows = new Set<WindowTally>();
+
+function countIntoWindows(socket: object, bytes: number): void {
+	for (const tally of windows) {
+		tally.frames++;
+		tally.bytes += bytes;
+		tally.perSocket.set(socket, (tally.perSocket.get(socket) ?? 0) + 1);
+	}
+}
+
+function noteWaitInWindows(waitedMs: number): void {
+	for (const tally of windows) {
+		if (waitedMs > tally.worstSendWaitMs) tally.worstSendWaitMs = waitedMs;
+	}
+}
+
+/**
+ * Start counting the frames of one interval, such as a workload's rounds after its setup. The
+ * summary line cannot give this: its totals run from the install, and its busiest-socket figure
+ * is a socket's lifetime count.
+ */
+export function openWsFrameWindow(): WsFrameWindow {
+	const tally: WindowTally = { frames: 0, bytes: 0, worstSendWaitMs: 0, perSocket: new Map() };
+	const instrumented = active !== undefined;
+	windows.add(tally);
+	return {
+		read: () => ({
+			instrumented,
+			frames: tally.frames,
+			busiestSocketFrames: Math.max(0, ...tally.perSocket.values()),
+			worstSendWaitMs: tally.worstSendWaitMs,
+			bytes: tally.bytes,
+		}),
+		close: () => { windows.delete(tally); },
+	};
+}
+
 interface ActiveShim {
 	readonly Native: typeof WebSocket;
 	readonly Shim: typeof WebSocket;
@@ -180,8 +243,8 @@ let progressTimer: ReturnType<typeof setInterval> | undefined;
  * `installWsLatency` prints the running totals before it zeros them, and its `restore()`
  * prints that install's final line. For a `WS_FRAME_STATS=1` baseline that is the line the
  * committed latency arm's install emits — see docs/testing.md → "Where measurements live".
- * If a scenario ever needs a total with no such boundary in it, give the module an explicit
- * `reportWsFrameStats()` for the scenario to call rather than trying to infer the end.
+ * A scenario that needs the total of an interval it marks itself opens a window
+ * (`openWsFrameWindow`) rather than inferring the end from these lines.
  */
 function startReporting(): void {
 	progressTimer = setInterval(() => {
@@ -239,6 +302,7 @@ function wrapGlobalWebSocket(): void {
 			if (this.#frames > stats.maxFramesPerSocket) stats.maxFramesPerSocket = this.#frames;
 			const bytes = byteLengthOf(data);
 			stats.bytes += bytes;
+			countIntoWindows(this, bytes);
 			if (bytes <= 64) stats.tiny++;
 			else if (bytes <= 1024) stats.small++;
 			else stats.large++;
@@ -254,6 +318,7 @@ function wrapGlobalWebSocket(): void {
 			const release = (): void => {
 				const waited = Date.now() - queuedAt;
 				if (waited > stats.maxWaitMs) stats.maxWaitMs = waited;
+				noteWaitInWindows(waited);
 				try {
 					// The socket can close while this frame waits its turn; a closed socket
 					// is an ordinary outcome here, not a fault to surface.

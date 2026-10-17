@@ -102,6 +102,7 @@ import {
 	makeOwnOwner,
 	startDedicatedRelay,
 	installWsLatency,
+	occupyEventLoop,
 	captureRawStorage,
 	type DedicatedRelay,
 	type RawStorageCapture,
@@ -168,16 +169,6 @@ async function rows(db: Database, sql: string): Promise<Record<string, unknown>[
 	const out: Record<string, unknown>[] = [];
 	for await (const row of db.eval(sql)) out.push({ ...row });
 	return out;
-}
-
-/** Keep the event loop busy `fraction` of every 100 ms until the returned stop is called. */
-function occupyEventLoop(fraction: number): () => void {
-	const busyMs = Math.round(fraction * 100);
-	const timer = setInterval(() => {
-		const until = Date.now() + busyMs;
-		while (Date.now() < until) { /* a phone's JS thread, busy elsewhere */ }
-	}, 100);
-	return () => clearInterval(timer);
 }
 
 const ENV_EVENT_LOOP_BUSY = Number(process.env.EVENT_LOOP_BUSY ?? 0);

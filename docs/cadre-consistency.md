@@ -125,6 +125,8 @@ Under cadre-core's deadlines, a strand's reads and writes wait on Optimystic's, 
 
 The ring's deadlines matter to a write because a timed-out maintenance ping is a contact strike, FRET marks a peer `dead` after three (`deadAfterFailures`, which Optimystic leaves at its default), and a `dead` peer is in no cohort (`blocked/fret-maintenance-deadlines-below-the-declared-link`).
 
+Which of these deadlines fire on a phone-shaped link, and how often, is measured by `packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts`; its numbers live in that file's doc comment.
+
 ## Two Layers
 
 The design separates two concerns that have been conflated in earlier discussion:
