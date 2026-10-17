@@ -1,14 +1,14 @@
 description: Commit the reporter's test from GitHub #48, in which an app on two phones keeps writing and reading a shared strand, and run it once on the slow phone-shaped link to record which time limits in the stack fire and how often, so the fixes can be aimed at the ones that actually fire.
 prereq: strand-founder-commits-every-table-collection
 architecture: docs/cadre-consistency.md#deadlines-over-optimystics-reads-and-commits
-files: packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts (new), packages/integration-tests/src/harness/event-loop-load.ts (new), packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (`occupyEventLoop` ~174, `ENV_EVENT_LOOP_BUSY` ~183), docs/testing.md (the opt-in scenario paragraphs ~63-74), tickets/plan/strand-workload-deadline-fixes.md (append the measurement)
+files: packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts (new), packages/integration-tests/src/harness/event-loop-load.ts (new), packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (`occupyEventLoop` ~174, `ENV_EVENT_LOOP_BUSY` ~183), docs/testing.md (the opt-in scenario paragraphs ~63-74), tickets/plan/strand-workload-count-driven-fixes.md (append the measurement)
 ----
 
 # Commit the strand workload scenario and attribute its deadline events
 
 ## Why
 
-gotchoices/sereus#48 reports that on a phone-shaped link (every outbound WebSocket frame held 20 ms, one after another, with the event loop 70% busy) a two-party strand's steady work fails: rounds of 11-169 s against 0.1 s on loopback, 5 failed operations per run, dozens of requests abandoned to deadlines and retried, and in one run the strand nodes ended disconnected holding different rows. The reporter's scenario is the acceptance test for the fixes. This ticket commits it and runs it once with debug logging, so the follow-on plan ticket (`strand-workload-deadline-fixes`) files fixes against measured counts rather than a list read from the code.
+gotchoices/sereus#48 reports that on a phone-shaped link (every outbound WebSocket frame held 20 ms, one after another, with the event loop 70% busy) a two-party strand's steady work fails: rounds of 11-169 s against 0.1 s on loopback, 5 failed operations per run, dozens of requests abandoned to deadlines and retried, and in one run the strand nodes ended disconnected holding different rows. The reporter's scenario is the acceptance test for the fixes. This ticket commits it and runs it once with debug logging, so the follow-on plan ticket (`strand-workload-count-driven-fixes`) files fixes against measured counts rather than a list read from the code.
 
 The prereq (`strand-founder-commits-every-table-collection`) removes one class of network reads: a table nobody has written now has a collection from founding, so reading it is local. This ticket measures after it, so the counts do not include that class.
 
@@ -31,6 +31,8 @@ Source: the scenario file at the end of the issue body (`gh issue view 48`). Kee
 | ping failure | `aborting connection due to ping failure` | libp2p's connection monitor dropping a connection (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`) |
 | no coordinator | `No coordinator available` | a write's retry ran out of peers to try |
 | solo commit | `commit:solo-cohort` | a node committed with a cohort of only itself, which is how the two sides can end holding different rows while both are running |
+| FRET contact strike | `change: contact strike` | FRET's 2 s maintenance ping to a peer failed; at the third strike the peer is marked `dead` and leaves every cohort (`blocked/fret-maintenance-deadlines-below-the-declared-link`). Logged under `optimystic:fret:service:fret`, already inside `DEBUG='optimystic:*'` |
+| FRET peer revived | `revived - stabilization interval` | a peer FRET had marked `dead` answered again and rejoined the ring |
 
 The ping line is logged under `libp2p:connection-monitor`, so the measuring run sets `DEBUG='optimystic:*,libp2p:connection-monitor*'`. Note it in the file's run instructions.
 
@@ -55,7 +57,7 @@ Run it in the foreground (the progress line keeps the runner's idle timer alive)
 - whether A's strand node held a connection to B's after the rounds, and whether the two sides converged within 180 s, with what each side held if not;
 - the seating time.
 
-Write these into the scenario's doc comment, and append them, with the log path, to `tickets/plan/strand-workload-deadline-fixes.md` under a `## Measured` heading, so that ticket's planner starts from them. If the phone arm passes (no failed operation, converged), it is no longer `it.fails`: make it a plain `it` and say so in the handoff; the follow-on ticket then has only the deadline ladder and the upstream proposals the counts still justify.
+Write these into the scenario's doc comment, and append them, with the log path, to `tickets/plan/strand-workload-count-driven-fixes.md` under a `## Measured` heading, so that ticket's planner starts from them. If the phone arm passes (no failed operation, converged), it is no longer `it.fails`: make it a plain `it` and say so in the handoff; the follow-on ticket then has only the upstream proposals the counts still justify.
 
 If the run cannot finish inside the agent's budget, say so in the handoff with how far it got, and leave the measurement to the review stage or a human.
 
@@ -73,5 +75,5 @@ If the run cannot finish inside the agent's budget, say so in the handoff with h
 - Add `harness/event-loop-load.ts` with `occupyEventLoop`, export it, and switch `joiner-first-commit-over-slow-relay.integration.ts` to it.
 - Add `strand-workload-on-a-phone-link.integration.ts` from the issue, with the `beforeAll` layout, the opt-in phone `describe`, the dropped `CloseRequest` filter, the per-namespace tally with the added patterns, and the progress line.
 - `yarn lint`, `yarn typecheck`; run the loopback arm.
-- Run the phone arm once as above; record the results in the doc comment and in `tickets/plan/strand-workload-deadline-fixes.md` under `## Measured`.
+- Run the phone arm once as above; record the results in the doc comment and in `tickets/plan/strand-workload-count-driven-fixes.md` under `## Measured`.
 - Add one paragraph to `docs/testing.md` beside the other opt-in scenarios: what it measures, the env variable, the `DEBUG` value, and that its numbers live in its doc comment.
