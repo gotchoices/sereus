@@ -102,6 +102,9 @@ async function redeemOnRunningNode(
 	signal: AbortSignal,
 ): Promise<Admission> {
 	if (!isOwnerGrant(credential)) return redeemInvitation(node, credential, options, signal);
+	// NOTE: a member running with no control connection to the party is refused `alone`
+	// (`OwnerKeyAddRefusedError`) by the grant's local path, where the invitation path waits for a
+	// member; if apps meet that, wait for a control connection before redeeming in place.
 	const redeemed = await node.redeemOwnerGrant(credential, await runtime.ownerSlotSigner(), redeemOptions(options, signal));
 	return { peerId: redeemed.memberPeerId, redeemedAt: new Date().toISOString(), asOwner: true };
 }
@@ -216,6 +219,10 @@ async function redeemOnJoinedNode(
 	// NOTE: a rollback after the grant was redeemed but the self-invitation refused leaves the
 	// slot's key an owner of the credential's party while the app is back in the party it left;
 	// a later join there, with a machine invitation too, picks the ownership up through that key.
+	// NOTE: `joinWithOwnerGrant` already waits up to its own bound for the key's `OwnerKey` row
+	// and wires it; `wireJoinedOwner(node, true)` then asks again for up to the owner-step bound
+	// while it is still unwired, so a row that never arrives costs both waits before `timed-out`.
+	// If that shows up, carry `joined.ownerWired` in the admission and skip the second wait.
 	const joined = await node.joinWithOwnerGrant(credential, await runtime.ownerSlotSigner(), redeemOptions(options, signal));
 	return { peerId: joined.peerId, redeemedAt: joined.redeemedAt, asOwner: true };
 }

@@ -33,6 +33,8 @@ Follow `docs/reference-app-rn.md` → "Adding a Device or App", "Devices and Nod
 
 Also note how long each joining step runs, whether the wording fits the screen, and how the modals behave when a scanner closes and an alert opens at once.
 
+**Since `machine-invitation-grants-no-ownership` landed, an invitation admits a machine only.** The **Also an owner** switch, the bearer warning and the owner/member word in the lists are gone, so "approve as owner" above is a plain Add or Allow, and every join by invitation ends "as a member". The rows that need the new app to be an owner (the first two as an owner, Open invitation, App that founded first) need an owner grant made under Owner keys and a join field that takes one, which `reference-app-rn-owner-grants` adds; run those rows once it has landed.
+
 ## If the run finds bugs
 
 File each as its own ticket. Update the doc sections in place with whatever the run teaches.

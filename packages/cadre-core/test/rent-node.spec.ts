@@ -99,7 +99,7 @@ async function nodeCode(): Promise<{ payload: NodeClaimPayload; code: { code: st
 }
 
 describe('rentNode', () => {
-	it('invites when a member is reachable from anywhere: one single-use non-owner invitation, a create with it, no claim', async () => {
+	it('invites when a member is reachable from anywhere: one single-use invitation, a create with it, no claim', async () => {
 		const node = fakeNode('anywhere');
 		const client = fakeClient({ code: (await nodeCode()).code });
 		const steps: RentNodeStep[] = [];

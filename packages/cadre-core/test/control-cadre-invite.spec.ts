@@ -213,7 +213,7 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     }
   }
 
-  /** Admit `device` through a fresh untargeted, non-owner invitation; returns its live stamp. */
+  /** Admit `device` through a fresh untargeted invitation; returns its live stamp. */
   async function admit(device: TestContactJoiner): Promise<string> {
     const { invite } = await issue();
     const result = await redeem(invite, device);

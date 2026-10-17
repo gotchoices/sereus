@@ -102,7 +102,7 @@ export interface MachineRemovalPlanInput {
  *
  * `invitations` are the live ones the machine could redeem to come back: targeted at it,
  * or already redeemed by it and still redeemable (a multi-use invitation, or an open
- * owner invitation inside its lifetime). The schema's rule: keeping a device out is removing
+ * invitation inside its lifetime). The schema's rule: keeping a device out is removing
  * its row and withdrawing the invitation.
  */
 export function planMachineRemoval(input: MachineRemovalPlanInput): MachineRemovalPlan {
