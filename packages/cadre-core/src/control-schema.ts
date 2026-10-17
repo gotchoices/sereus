@@ -7,12 +7,18 @@ import { Parser } from '@quereus/quereus';
  * (`control-schema-version.ts`, which also says why that is the version the store was
  * created under).
  *
- * Bump it on EVERY edit to the declared control schema, additive or not. The drift
- * spec pins this number together with the `explain schema CadreControl` hash, which
- * Quereus computes with tags stripped, so a schema edit without a bump fails
- * `control-schema-drift.spec.ts`; a comment-only edit moves neither.
+ * When it changes, what a new version may change, and the fixture each version keeps:
+ * docs/architecture.md → "Control schema changes and incompatible stores", enforced by
+ * `control-schema-versions.spec.ts`.
  */
 export const CONTROL_SCHEMA_VERSION = 3;
+
+/**
+ * The first control schema version whose fixture is kept, and the oldest a store can be
+ * migrated from. Stores that record no version (written by 1.16.0 and earlier) are not
+ * migrated; docs/architecture.md says why.
+ */
+export const CONTROL_SCHEMA_BASELINE_VERSION = 3;
 
 /** The `OwnerKey` table tag that records {@link CONTROL_SCHEMA_VERSION} in the schema and in every store. */
 export const CONTROL_SCHEMA_VERSION_TAG = 'sereus.controlSchemaVersion';

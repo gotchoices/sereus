@@ -9,21 +9,24 @@
  * runs and destroys rows (`drop table`). This module decides from the pending DDL and the
  * stored schema version, before any of it runs, and throws one typed error instead.
  *
- * Where the version lives and the rule for bumping it: `CONTROL_SCHEMA_VERSION` in
- * `control-schema.ts`.
+ * The same change classifier ({@link classifyControlSchemaChange}) is what
+ * `control-schema-versions.spec.ts` runs over each pair of consecutive control schema versions,
+ * so a schema edit that no store could be migrated across fails when it is made. Where the
+ * version lives, when it changes and what a new version may change: docs/architecture.md →
+ * "Control schema changes and incompatible stores".
  *
  * NOTE: the stored tag is the version the store's `OwnerKey` table was CREATED under. The
  * optimystic plugin does not persist `alter table … set tags` (Quereus applies a tag change to
  * its catalog without calling the module, and the plugin follows it in memory only), so the
  * `set tags` an additive upgrade runs raises the version for that process alone. The check stays
  * safe regardless, because it lets through only DDL that adds, so an older build's diff against
- * an upgraded store lists the drop and is refused on that ground. If versioned migrations
- * (plan/control-schema-versioned-migrations) need the version a store was upgraded to, they need
- * that persisted upstream or recorded elsewhere.
+ * an upgraded store lists the drop and is refused on that ground. Migrating a store in place
+ * (control-store-migrates-on-start) needs the version a store was upgraded to, so it needs that
+ * persisted upstream (optimystic-catalog-only-alter-table).
  */
 
-import { Parser, type Database, type SqlValue } from '@quereus/quereus';
-import type { Statement } from '@quereus/quereus/parser';
+import { Parser, type Database, type SchemaManager, type SqlValue, type TableSchema } from '@quereus/quereus';
+import type { AlterTableStmt, ColumnDef, Statement } from '@quereus/quereus/parser';
 import { CONTROL_SCHEMA_NAME, CONTROL_SCHEMA_VERSION_TAG } from './control-schema.js';
 import { controlStorageScope } from './storage-scope.js';
 
@@ -80,8 +83,8 @@ function provenance(storeVersion: number, buildVersion: number): string {
  *
  * A cold store (the hydrated catalog lists no control table) passes without a diff: the apply
  * creates everything. A warm store is refused when either
- *  - any pending statement is not additive ({@link isAdditiveStatement}): every other change to
- *    an existing control table is refused by the optimystic module or discards rows; or
+ *  - any pending statement is not `additive` ({@link classifyControlSchemaChange}): every other
+ *    change to an existing control table is refused by the optimystic module or discards rows; or
  *  - its version is above the build's: a newer release created it, so even a diff that only adds
  *    (the newer release no longer declares something this build does) would put back what that
  *    release removed, and the newer release would then refuse its own store.
@@ -95,9 +98,11 @@ export async function refuseIncompatibleControlStore(db: Database, partyId: stri
 	}
 	const storeVersion = schemaVersionOf(db.schemaManager.getTable(CONTROL_SCHEMA_NAME, VERSION_TABLE)?.tags);
 	const buildVersion = declaredSchemaVersion(db);
-	const pendingDdl = await pendingSchemaDdl(db);
-	if (storeVersion > buildVersion || !pendingDdl.every(isAdditiveDdl)) {
-		throw new ControlStoreIncompatibleError(partyId, storeVersion, buildVersion, pendingDdl);
+	const pending = await pendingControlSchemaChanges(db);
+	// `catalog-only` changes stay refused until the optimystic module applies them
+	// (optimystic-catalog-only-alter-table); control-store-migrates-on-start widens this then.
+	if (storeVersion > buildVersion || pending.some((change) => change.kind !== 'additive')) {
+		throw new ControlStoreIncompatibleError(partyId, storeVersion, buildVersion, pending.map((change) => change.ddl));
 	}
 }
 
@@ -108,7 +113,7 @@ function isWarmControlStore(db: Database): boolean {
 }
 
 /** The version the declared control schema carries on its version table; 0 when it carries none. */
-function declaredSchemaVersion(db: Database): number {
+export function declaredSchemaVersion(db: Database): number {
 	const declared = db.declaredSchemaManager.getDeclaredSchema(CONTROL_SCHEMA_NAME);
 	const table = declared?.items.find(
 		(item) => item.type === 'declaredTable' && item.tableStmt.table.name.toLowerCase() === VERSION_TABLE.toLowerCase()
@@ -132,33 +137,105 @@ function schemaVersionOf(tags: Readonly<Record<string, SqlValue>> | undefined): 
 	return version;
 }
 
-/** The DDL `apply schema CadreControl` would run now, one statement per entry. */
-async function pendingSchemaDdl(db: Database): Promise<string[]> {
-	const ddl: string[] = [];
-	for await (const row of db.eval(`diff schema ${CONTROL_SCHEMA_NAME}`)) {
-		ddl.push(row.ddl as string);
-	}
-	return ddl;
-}
+/**
+ * How applying one `diff schema` statement to a warm store treats its rows, from most to least
+ * migratable (docs/architecture.md → "Control schema changes and incompatible stores"):
+ *  - `additive`: a new table, a new index, or a table tag change, which the optimystic module
+ *    applies today without touching a row;
+ *  - `catalog-only`: a change the optimystic module applies to the table's catalog record without
+ *    rewriting a row, once optimystic-catalog-only-alter-table ships;
+ *  - `unmigratable`: everything else, which rewrites or discards rows.
+ */
+export type ControlSchemaChangeKind = 'additive' | 'catalog-only' | 'unmigratable';
 
-/** Whether one `diff schema` row only adds to the store, judged on its parsed statements. */
-function isAdditiveDdl(ddl: string): boolean {
-	return new Parser().parseAll(ddl).every(isAdditiveStatement);
+const CHANGE_KINDS: readonly ControlSchemaChangeKind[] = ['additive', 'catalog-only', 'unmigratable'];
+
+/** One row of `diff schema CadreControl`, classified. */
+export interface PendingControlSchemaChange {
+	readonly ddl: string;
+	/** The least migratable kind among the row's statements. */
+	readonly kind: ControlSchemaChangeKind;
 }
 
 /**
- * The statements the optimystic module applies to a warm store without losing a row: a new
- * table, a new index, and a tag change (catalog-only metadata, which is how the version tag
- * moves up).
+ * The DDL `apply schema CadreControl` would run now, one entry per `diff schema` row, each
+ * classified against the catalog `db` holds. Needs `declare schema CadreControl` to have run.
  */
-function isAdditiveStatement(statement: Statement): boolean {
+export async function pendingControlSchemaChanges(db: Database): Promise<PendingControlSchemaChange[]> {
+	const changes: PendingControlSchemaChange[] = [];
+	for await (const row of db.eval(`diff schema ${CONTROL_SCHEMA_NAME}`)) {
+		const ddl = row.ddl as string;
+		const kinds = new Parser().parseAll(ddl).map((statement) => classifyControlSchemaChange(statement, db.schemaManager));
+		changes.push({ ddl, kind: leastMigratable(kinds) });
+	}
+	return changes;
+}
+
+/** The least migratable of `kinds`; `additive` when there are none. */
+function leastMigratable(kinds: readonly ControlSchemaChangeKind[]): ControlSchemaChangeKind {
+	return CHANGE_KINDS[Math.max(0, ...kinds.map((kind) => CHANGE_KINDS.indexOf(kind)))];
+}
+
+/**
+ * The {@link ControlSchemaChangeKind} of one statement `diff schema` emits. A name the statement
+ * drops is resolved against `catalog`, the one the statement would run against: the hydrated
+ * store's at runtime.
+ */
+export function classifyControlSchemaChange(statement: Statement, catalog: SchemaManager): ControlSchemaChangeKind {
 	switch (statement.type) {
 		case 'createTable':
 		case 'createIndex':
-			return true;
+			return 'additive';
+		case 'drop':
+			return statement.objectType === 'index' ? 'catalog-only' : 'unmigratable';
 		case 'alterTable':
-			return statement.action.type === 'setTags';
+			return classifyTableAlteration(statement, catalog);
 		default:
-			return false;
+			return 'unmigratable';
 	}
+}
+
+function classifyTableAlteration({ table, action }: AlterTableStmt, catalog: SchemaManager): ControlSchemaChangeKind {
+	const stored = (): TableSchema | undefined => catalog.getTable(table.schema ?? CONTROL_SCHEMA_NAME, table.name);
+	switch (action.type) {
+		case 'setTags':
+			return 'additive';
+		// NOTE: Quereus checks stored rows against an added CHECK, so one that a stored row fails
+		// fails the apply on that store; control-schema-versions.spec.ts diffs empty tables and
+		// cannot see it. If a version adds a CHECK over existing columns, prove the rows hold it.
+		case 'addConstraint':
+			return action.constraint.type === 'check' ? 'catalog-only' : 'unmigratable';
+		case 'dropConstraint':
+			return hasCheckConstraint(stored(), action.name) ? 'catalog-only' : 'unmigratable';
+		case 'addColumn':
+			return isPlainNullableColumn(action.column) ? 'catalog-only' : 'unmigratable';
+		case 'dropColumn':
+			return isUnkeyedColumn(stored(), action.name) ? 'catalog-only' : 'unmigratable';
+		default:
+			return 'unmigratable';
+	}
+}
+
+function hasCheckConstraint(table: TableSchema | undefined, name: string): boolean {
+	return table?.checkConstraints.some((check) => check.name?.toLowerCase() === name.toLowerCase()) ?? false;
+}
+
+/**
+ * Whether existing rows can read null for the column: declared `null` and nothing else (no
+ * default, generated expression or other column constraint). The `null` must be explicit,
+ * because Quereus makes a column not null unless it says otherwise.
+ */
+function isPlainNullableColumn(column: ColumnDef): boolean {
+	return column.constraints.length > 0 && column.constraints.every((constraint) => constraint.type === 'null');
+}
+
+/** Whether the table has the column and no index, unique constraint or primary key covers it. */
+function isUnkeyedColumn(table: TableSchema | undefined, name: string): boolean {
+	const column = table?.columnIndexMap.get(name.toLowerCase());
+	if (table === undefined || column === undefined) {
+		return false;
+	}
+	return !table.primaryKeyDefinition.some((key) => key.index === column)
+		&& !(table.indexes ?? []).some((index) => index.columns.some((indexed) => indexed.index === column))
+		&& !(table.uniqueConstraints ?? []).some((unique) => unique.columns.includes(column));
 }
