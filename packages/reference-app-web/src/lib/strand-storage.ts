@@ -1,33 +1,19 @@
 /**
- * strand-storage.ts — per-scope IndexedDB `IRawStorage` provider for the
- * browser CadreNode.
+ * strand-storage.ts — per-scope IndexedDB storage for the browser's edge node.
  *
- * `CadreNodeConfig.storage.provider` is a **synchronous** factory
- * `(scope: string) => IRawStorage`, and cadre-core partitions each network's data
- * by scope key:
- *   - the control network calls `provider(controlStorageScope(partyId))` (see
- *     `cadre-core/src/storage-scope.ts`, and `cadre-node.ts` →
- *     `resolveControlStorage`) — the key carries the party id, so two parties on
- *     one origin never share a control store; and
- *   - each strand calls `provider(strandId)` (see
- *     `cadre-core/src/strand-instance-manager.ts` → `resolveStrandStorage`).
+ * cadre-core partitions each network's data by storage scope key: the control network's is
+ * `controlStorageScope(partyId)` (`cadre-core/src/storage-scope.ts`), each strand's is its strand
+ * id. Every key cadre-core mints is already within `[a-z0-9._-]`, so this module concatenates it
+ * into a database name (`sereus-strand-<key>`) without escaping.
  *
- * Every key cadre-core mints is already within `[a-z0-9._-]`, so this module
- * concatenates it into a database name without escaping.
- *
- * But `IndexedDBRawStorage` wraps an **already-open** `OptimysticWebDBHandle`
- * (the opener `openOptimysticWebDb` is async) and has no per-scope namespacing —
- * every block key lives in one IndexedDB database. RN sidesteps this because its
- * LevelDB opener is synchronous; the web handle is not.
- *
- * Bridge: pre-open one handle per key (a distinct IndexedDB database named
- * `sereus-strand-<key>`) **before** the sync provider is hit, stash the handles,
- * and have the provider return `new IndexedDBRawStorage(handle)` for the
- * requested key. The reference app drives the control bring-up and `addStrand`
- * explicitly, so every key is known ahead of the factory call (call
- * `openStores([...])` first). Returning a single cached `IndexedDBRawStorage`
- * per key keeps the libp2p storageRepo and the bootstrap-mode local transactor
- * (which share the instance) pointed at the same handle.
+ * `IndexedDBRawStorage` wraps an **already-open** `OptimysticWebDBHandle`, and the opener is
+ * async, while `EdgeNodeStorage.rawStorage` is synchronous. The platform (`web-edge-platform.ts`)
+ * returns cadre-core's `lazyRawStorage` over {@link openStore}, so a scope's database opens on its
+ * first use: nothing is opened ahead of a start or an `addStrand`, and a strand the control
+ * network lists gets storage like any other. One handle and one `IndexedDBRawStorage` per key,
+ * cached here until {@link closeStores} (which the edge node calls on every stop), so two proxies
+ * over one scope share a store and diagnostics can read the control database once the node has
+ * opened it ({@link getStoreHandle}).
  */
 
 import {
@@ -41,9 +27,10 @@ import type { IRawStorage } from '@optimystic/db-p2p';
 const DB_PREFIX = 'sereus-strand-';
 
 /**
- * The key of the database holding this tab's **node-local** `kv` records — its
- * Ed25519 identity, its start record (party id, founded or joined), the per-party trusted-owner anchor, the
- * bootstrap peers, the enrolled-machine count (see `node-local-slots.ts`).
+ * The key of the database holding this tab's **node-local** `kv` records — its key store
+ * (identity, owner key, joined-strand and strand-move records) and the edge node's node-local
+ * records (the saved start, the dissolve marker, each party's trusted-owner anchor, bootstrap
+ * peers, enrolled-machine count and strand network state; see `node-local-slots.ts`).
  *
  * NOT a cadre-core scope key. It is spelled `'control'` only because that is the
  * name the database has carried since before the control block store became
@@ -64,37 +51,33 @@ export const NODE_LOCAL_STORE_KEY = 'control';
 
 const handles = new Map<string, OptimysticWebDBHandle>();
 const storages = new Map<string, IRawStorage>();
+/** Opens in flight, so two first uses of one key (a strand's read and its write) share one open. */
+const opening = new Map<string, Promise<OptimysticWebDBHandle>>();
 
-/**
- * Pre-open (and cache) an IndexedDB handle + `IndexedDBRawStorage` for each key.
- * Idempotent per key — a key already open is skipped. Must be awaited before the
- * synchronous {@link storageProvider} is invoked for that key (i.e. before
- * `node.start()` for the party-scoped control key, and before `node.addStrand(...)`
- * for a strand). {@link NODE_LOCAL_STORE_KEY} goes through here too, but is opened
- * for `cadre-web.ts` to read directly rather than for cadre-core to ask for.
- */
-export async function openStores(keys: string[]): Promise<void> {
-	for (const key of keys) {
-		if (handles.has(key)) continue;
-		const handle = await openOptimysticWebDb(DB_PREFIX + key);
+/** The open handle for `key`, opening its database on first use. One handle per key until {@link closeStores}. */
+export async function openHandle(key: string): Promise<OptimysticWebDBHandle> {
+	const open = handles.get(key);
+	if (open) return open;
+	const inFlight = opening.get(key);
+	if (inFlight) return inFlight;
+	const pending = openOptimysticWebDb(DB_PREFIX + key);
+	opening.set(key, pending);
+	try {
+		const handle = await pending;
 		handles.set(key, handle);
-		storages.set(key, new IndexedDBRawStorage(handle));
+		return handle;
+	} finally {
+		opening.delete(key);
 	}
 }
 
-/**
- * Synchronous storage factory handed to `CadreNodeConfig.storage.provider`.
- * Returns the pre-opened `IndexedDBRawStorage` for `key`. Throws a clear error
- * if the key was not pre-opened — that is a wiring bug (a strand/control key
- * reached the provider before `openStores` ran), not a recoverable condition.
- */
-export function storageProvider(key: string): IRawStorage {
-	const storage = storages.get(key);
+/** The `IndexedDBRawStorage` for `key`, over {@link openHandle}'s handle. One per key until {@link closeStores}. */
+export async function openStore(key: string): Promise<IRawStorage> {
+	const handle = await openHandle(key);
+	let storage = storages.get(key);
 	if (!storage) {
-		throw new Error(
-			`strand-storage: no pre-opened IndexedDB handle for "${key}". ` +
-				`Call openStores(['${key}']) before start()/addStrand().`,
-		);
+		storage = new IndexedDBRawStorage(handle);
+		storages.set(key, storage);
 	}
 	return storage;
 }
@@ -109,13 +92,27 @@ export function getStoreStorage(key: string): IRawStorage | null {
 	return storages.get(key) ?? null;
 }
 
-/** Close every open handle and drop the caches. Mirrors the old `db.close()`. */
+/**
+ * Close every open handle and drop the caches: `EdgeNodeStorage.close`. Each storage applies
+ * what it still holds before its handle closes; a failure doing so is logged and the rest still
+ * close. Waits for an open in flight first, so it cannot land a handle after the clear.
+ */
 export async function closeStores(): Promise<void> {
-	for (const handle of handles.values()) {
-		handle.close();
-	}
+	await Promise.allSettled([...opening.values()]);
+	const open = [...handles.entries()];
 	handles.clear();
+	const stores = [...storages.values()];
 	storages.clear();
+	for (const storage of stores) await closeStorage(storage);
+	for (const [, handle] of open) handle.close();
+}
+
+async function closeStorage(storage: IRawStorage): Promise<void> {
+	try {
+		await storage.close?.();
+	} catch (err) {
+		console.warn('[reference-app-web] closing a raw storage failed:', err);
+	}
 }
 
 /**
@@ -138,15 +135,20 @@ export class StoreDeleteBlockedError extends Error {
 const blockedDeletes = new Set<string>();
 
 /**
- * Delete the database of `key`, closing this page's handle on it first. Succeeds when there is no
- * such database. Throws {@link StoreDeleteBlockedError} rather than waiting while another tab
- * holds it open: the browser fires `blocked` and would otherwise wait for as long as that tab runs.
+ * Delete the database of `key`, closing this page's handle on it first: `EdgeNodeStorage.destroyScope`.
+ * Succeeds when there is no such database. Throws {@link StoreDeleteBlockedError} rather than
+ * waiting while another tab holds it open: the browser fires `blocked` and would otherwise wait
+ * for as long as that tab runs.
  */
 export async function deleteStore(key: string): Promise<void> {
 	if (blockedDeletes.has(key)) throw new StoreDeleteBlockedError(key);
+	const inFlight = opening.get(key);
+	if (inFlight) await inFlight.catch(() => undefined);
+	const storage = storages.get(key);
+	storages.delete(key);
+	if (storage) await closeStorage(storage);
 	handles.get(key)?.close();
 	handles.delete(key);
-	storages.delete(key);
 	await deleteDatabase(key);
 }
 
@@ -162,9 +164,9 @@ function deleteDatabase(key: string): Promise<void> {
 			reject(request.error ?? new Error(`Deleting IndexedDB database ${DB_PREFIX + key} failed`));
 		};
 		// NOTE: read as another tab holding the database open. The spec also fires `blocked` for this
-		// page's own connection while it closes with a transaction still running, which
-		// `stopCadre` awaiting `node.stop()` should rule out; if the card ever says to close other
-		// tabs with none open, wait briefly for `success` here before giving up.
+		// page's own connection while it closes with a transaction still running, which the edge
+		// node's stop (awaiting `node.stop()` before `close`) should rule out; if the card ever says
+		// to close other tabs with none open, wait briefly for `success` here before giving up.
 		request.onblocked = () => {
 			blockedDeletes.add(key);
 			reject(new StoreDeleteBlockedError(key));

@@ -1,76 +1,65 @@
 /**
- * `kvSlot` — the browser's `DurableSlot` over the control database's `kv` store.
+ * The tab's key store and node-local store (`node-local-slots.ts`), the two things the browser
+ * hands `@serfab/cadre-core/edge-node`'s `createEdgeNode` over its node-local IndexedDB database.
  *
- * Scope is deliberately narrow. The node-local *store policy* over an arbitrary
- * slot (cold start, corrupt JSON, foreign partyId, unknown envelope,
- * discard-all vs drop-entry, synchronous visibility, failed-persist recovery) is
- * owned and covered by `packages/cadre-core/test/node-local-snapshot.spec.ts`
- * against its own fake slot — re-asserting it here would only duplicate it.
- * What this file covers is what web actually owns: `kvSlot` itself, and the
- * composition of a real `kvSlot` with the three stores — including the two
- * places the composition could quietly disagree with what the store expects (a
- * non-string `kv` value, and a read that fails). The enrolled-machine count's
- * own policy lives in `packages/cadre-core/test/enrolled-machine-store.spec.ts`;
- * it deliberately cold-starts where the other two throw, which is the one thing
- * asserted here.
+ * Scope is deliberately narrow. The edge node's own policy over a key store and a node-local
+ * store (the identity load-or-create rule, owner genesis, the saved start, the four persistent
+ * stores' cold start and fail-closed reads) is covered in `packages/cadre-core/test` against its
+ * own fakes; re-asserting it here would only duplicate it. What this file covers is what the web
+ * owns: the `kv` keys each key-store slot is kept under (a persistence contract: renaming one
+ * silently orphans every tab's identity or owner key), the two places the key store could quietly
+ * disagree with what cadre-core expects (text under a slot's key, a slot it does not map), and the
+ * one branch of the node-local store (a non-string value reads as absent).
  */
 import { describe, it, expect } from 'vitest';
-import { generateKeyPair } from '@libp2p/crypto/keys';
-import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
 	createOwnerKey,
+	DEFAULT_IDENTITY_KEY_ID,
+	DEFAULT_OWNER_KEY_ID,
+	loadOrCreateIdentityKey,
 	loadOwnerSigner,
-	PersistentTrustedOwnerStore,
-	PersistentBootstrapPeerStore,
-	PersistentEnrolledMachineStore,
 } from '@serfab/cadre-core';
 import type { OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
 import {
-	kvSlot,
-	ownerKeyStore,
+	keyStoreKvKey,
+	KEY_STORE_KV_PREFIX,
+	nodeLocalKeyStore,
+	nodeLocalKv,
 	OWNER_KEY_KV_KEY,
-	TRUSTED_OWNERS_KV_KEY,
-	BOOTSTRAP_PEERS_KV_KEY,
-	ENROLLED_MACHINES_KV_KEY,
-	STRAND_NETWORK_KV_KEY,
+	PEER_KEY_KV_KEY,
 } from '../src/lib/node-local-slots';
 
-/**
- * A real Ed25519 peer id — the bootstrap-peer store's loader validates ids on
- * reload, so a fixture that must survive a round trip has to actually parse.
- */
-async function realPeerId(): Promise<string> {
-	return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
-}
-
 // ── Fake IndexedDB handle ─────────────────────────────────────────────────────
-// `kvSlot` only ever calls `handle.get('kv', key)` / `handle.put('kv', text, key)`
-// at runtime, so a map-backed double covers both without a real IndexedDB.
+// The two stores only ever call `get`, `put`, `delete` and `getAllKeys` on the `kv` store, and the
+// key store's writes go through one `transaction('kv', 'readwrite')`, so a map-backed double
+// covers them without a real IndexedDB.
 
 class FakeKvHandle {
 	readonly store = new Map<string, string | Uint8Array>();
-	getError: Error | null = null;
-	putError: Error | null = null;
 
 	async get(_storeName: 'kv', key: string): Promise<string | Uint8Array | undefined> {
-		if (this.getError) throw this.getError;
 		return this.store.get(key);
 	}
 
 	async put(_storeName: 'kv', value: string | Uint8Array, key: string): Promise<string> {
-		if (this.putError) throw this.putError;
 		this.store.set(key, value);
 		return key;
 	}
 
-	/** The one-store write transaction `ownerKeyStore` opens; its durability option is not modelled. */
+	async delete(_storeName: 'kv', key: string): Promise<void> {
+		this.store.delete(key);
+	}
+
+	async getAllKeys(_storeName: 'kv'): Promise<string[]> {
+		return [...this.store.keys()];
+	}
+
+	/** The one-store write transaction the key store opens; its durability option is not modelled. */
 	transaction(_storeName: 'kv', _mode: 'readwrite', _options?: unknown) {
 		return {
 			store: {
 				put: (value: string | Uint8Array, key: string) => this.put('kv', value, key),
-				delete: async (key: string) => {
-					this.store.delete(key);
-				},
+				delete: (key: string) => this.delete('kv', key),
 			},
 			done: Promise.resolve(),
 		};
@@ -83,179 +72,81 @@ class FakeKvHandle {
 // `value: string | Uint8Array`) as of db-p2p-storage-web 0.17; if that store's
 // key or value type changes, this fake keeps compiling while testing the old
 // shape. Pin the two methods against the real type if that ever bites.
-function fakeHandle(): { fake: FakeKvHandle; handle: OptimysticWebDBHandle } {
+function fakeHandle(): { fake: FakeKvHandle; open: () => Promise<OptimysticWebDBHandle> } {
 	const fake = new FakeKvHandle();
-	return { fake, handle: fake as unknown as OptimysticWebDBHandle };
+	return { fake, open: async () => fake as unknown as OptimysticWebDBHandle };
 }
 
-// ── kvSlot ─────────────────────────────────────────────────────────────────────
+// ── The key store ─────────────────────────────────────────────────────────────
 
-describe('kvSlot', () => {
-	it('round-trips save → load through the backing map, statelessly', async () => {
-		const { handle } = fakeHandle();
-		await kvSlot(handle, 'k').save('hello world');
-		// A fresh slot instance, same backing map: proves the slot itself holds no
-		// state, only the map does.
-		expect(await kvSlot(handle, 'k').load()).toBe('hello world');
-	});
-
-	it('keeps distinct keys of one database independent', async () => {
-		const { handle } = fakeHandle();
-		await kvSlot(handle, TRUSTED_OWNERS_KV_KEY).save('owners');
-		await kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY).save('peers');
-		expect(await kvSlot(handle, TRUSTED_OWNERS_KV_KEY).load()).toBe('owners');
-		expect(await kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY).load()).toBe('peers');
-	});
-
-	it('loads undefined (not a throw) for a non-string value already under the key', async () => {
-		const { fake, handle } = fakeHandle();
-		fake.store.set('k', new Uint8Array([1, 2, 3]));
-		expect(await kvSlot(handle, 'k').load()).toBeUndefined();
-	});
-
-	it('loads undefined for a never-written key', async () => {
-		const { handle } = fakeHandle();
-		expect(await kvSlot(handle, 'never').load()).toBeUndefined();
-	});
-
-	it('rejects on a failed read rather than resolving undefined', async () => {
-		const { fake, handle } = fakeHandle();
-		fake.getError = new Error('IndexedDB blocked');
-		await expect(kvSlot(handle, 'k').load()).rejects.toThrow('IndexedDB blocked');
-	});
-
-	it('rejects on a failed write rather than resolving', async () => {
-		const { fake, handle } = fakeHandle();
-		fake.putError = new Error('quota exceeded');
-		await expect(kvSlot(handle, 'k').save('text')).rejects.toThrow('quota exceeded');
-	});
-});
-
-// ── The node-local stores over a real kvSlot ──────────────────────────────────
-
-describe('node-local stores over kvSlot', () => {
+describe('nodeLocalKeyStore', () => {
 	/**
-	 * The `kv` keys are a persistence contract: renaming one silently orphans
-	 * every existing tab's anchor and dial targets rather than failing.
+	 * The `kv` keys are a persistence contract: the identity and owner key under the keys tabs
+	 * held before the edge node, so both survive the upgrade; every other slot under one prefix.
 	 */
-	it('pins the kv keys the stores are persisted under', () => {
-		expect(TRUSTED_OWNERS_KV_KEY).toBe('trusted-owners');
-		expect(BOOTSTRAP_PEERS_KV_KEY).toBe('bootstrap-peers');
-		expect(ENROLLED_MACHINES_KV_KEY).toBe('enrolled-machines');
-		expect(STRAND_NETWORK_KV_KEY).toBe('strand-network');
+	it('pins the kv key each slot is kept under', () => {
+		expect(keyStoreKvKey(DEFAULT_IDENTITY_KEY_ID)).toBe('peer-private-key');
+		expect(keyStoreKvKey(DEFAULT_OWNER_KEY_ID)).toBe('owner-private-key');
+		expect(keyStoreKvKey('cadre/joined-strand/abc')).toBe('keystore.cadre/joined-strand/abc');
+		expect(PEER_KEY_KV_KEY).toBe('peer-private-key');
 		expect(OWNER_KEY_KV_KEY).toBe('owner-private-key');
+		expect(KEY_STORE_KV_PREFIX).toBe('keystore.');
 	});
 
-	it('gives every record a key of its own, so no snapshot write clobbers another', () => {
-		const keys = [TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY, STRAND_NETWORK_KV_KEY];
-		expect(new Set(keys).size).toBe(keys.length);
-	});
-
-	it('persists the enrolled-machine count across a fresh open() of the same slot', async () => {
-		const { handle } = fakeHandle();
-		const first = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
-		await first.record(4);
-
-		const reopened = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
-		expect(reopened.count()).toBe(4);
-	});
-
-	// The deliberate divergence: this record is a block-repair hint, recomputed the
-	// moment the control database is up, so an unreadable slot must not stop the tab
-	// starting. `enrolled-machine-store.ts` carries the reasoning.
-	it('cold-starts the enrolled-machine count when the database read fails, rather than rejecting', async () => {
-		const { fake, handle } = fakeHandle();
-		fake.getError = new Error('IndexedDB blocked');
-
-		const store = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
-		expect(store.count()).toBeUndefined();
-	});
-
-	it('persists a trusted owner key across a fresh open() of the same slot', async () => {
-		const { handle } = fakeHandle();
-		const first = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
-		await first.trust('owner-key-b64', 'genesis');
-
-		const reopened = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
-		expect(reopened.has('owner-key-b64')).toBe(true);
-		expect(reopened.all()).toEqual(new Set(['owner-key-b64']));
-	});
-
-	it('persists a bootstrap peer across a fresh open() of the same slot', async () => {
-		const { handle } = fakeHandle();
-		const peer = await realPeerId();
-		const first = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
-		await first.record(peer, ['/ip4/1.2.3.4/tcp/4001/ws']);
-
-		const reopened = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
-		expect([...reopened.all().keys()]).toEqual([peer]);
-		expect(reopened.all().get(peer)?.addrs).toEqual(['/ip4/1.2.3.4/tcp/4001/ws']);
-	});
-
-	// Both records share ONE database with the tab's identity (see the module
-	// header of `node-local-slots.ts`), so their snapshot writes are the one place
-	// they could clobber each other.
-	it('keeps all three records side by side in one database', async () => {
-		const { handle } = fakeHandle();
-		const peer = await realPeerId();
-		const owners = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
-		const peers = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
-		const counts = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
-		await owners.trust('owner-key-b64', 'genesis');
-		await peers.record(peer, ['/ip4/1.2.3.4/tcp/4001/ws']);
-		await counts.record(4);
-
-		const reopenedOwners = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
-		const reopenedPeers = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
-		const reopenedCounts = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
-		expect(reopenedOwners.all()).toEqual(new Set(['owner-key-b64']));
-		expect([...reopenedPeers.all().keys()]).toEqual([peer]);
-		expect(reopenedCounts.count()).toBe(4);
-	});
-
-	// `kv` values are `string | Uint8Array`; `kvSlot` reports a non-string as
-	// absent, so the store must see a cold start rather than a load failure.
-	it('cold-starts empty when the kv value is not text', async () => {
-		const { fake, handle } = fakeHandle();
-		fake.store.set(TRUSTED_OWNERS_KV_KEY, new Uint8Array([1, 2, 3]));
-
-		const store = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
-		expect(store.all().size).toBe(0);
-	});
-
-	// The load-bearing half of the same distinction: a genuine IndexedDB fault
-	// must NOT look like a cold start, or the next snapshot write destroys an
-	// intact record. `startCadre` relies on open() rejecting here.
-	it('rejects open() when the database read fails, rather than cold-starting', async () => {
-		const { fake, handle } = fakeHandle();
-		fake.getError = new Error('IndexedDB blocked');
-
-		await expect(
-			PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1')
-		).rejects.toThrow('IndexedDB blocked');
-		await expect(
-			PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1')
-		).rejects.toThrow('IndexedDB blocked');
-		expect(fake.store.size).toBe(0);
-	});
-});
-
-// ── ownerKeyStore ──────────────────────────────────────────────────────────────
-
-describe('ownerKeyStore', () => {
 	it('keeps the owner key as bytes under its own kv key, read back by a fresh store over the database', async () => {
-		const { fake, handle } = fakeHandle();
-		const created = await createOwnerKey(ownerKeyStore(handle));
+		const { fake, open } = fakeHandle();
+		const created = await createOwnerKey(nodeLocalKeyStore(open));
 
 		expect(fake.store.get(OWNER_KEY_KV_KEY)).toBeInstanceOf(Uint8Array);
-		expect((await loadOwnerSigner(ownerKeyStore(handle)))?.publicKey).toBe(created.publicKey);
+		expect((await loadOwnerSigner(nodeLocalKeyStore(open)))?.publicKey).toBe(created.publicKey);
 	});
 
-	it('reports text under the key as a fault, not an empty slot genesis would fill with a new key', async () => {
-		const { fake, handle } = fakeHandle();
+	it('loads the identity cadre-core generated through it from the peer key tabs already hold', async () => {
+		const { fake, open } = fakeHandle();
+		const generated = await loadOrCreateIdentityKey(nodeLocalKeyStore(open));
+
+		expect(fake.store.get(PEER_KEY_KV_KEY)).toBeInstanceOf(Uint8Array);
+		expect((await loadOrCreateIdentityKey(nodeLocalKeyStore(open))).publicKey.toString()).toBe(generated.publicKey.toString());
+	});
+
+	it('reports text under a slot\'s key as a fault, not an empty slot genesis would fill with a new key', async () => {
+		const { fake, open } = fakeHandle();
 		fake.store.set(OWNER_KEY_KV_KEY, 'not key bytes');
 
-		await expect(createOwnerKey(ownerKeyStore(handle))).rejects.toMatchObject({ name: 'KeyStoreAccessError' });
+		await expect(createOwnerKey(nodeLocalKeyStore(open))).rejects.toMatchObject({ name: 'KeyStoreAccessError' });
 		expect(fake.store.get(OWNER_KEY_KV_KEY)).toBe('not key bytes');
+	});
+
+	// `KeyStoreJoinedStrandStore` and the strand-move records find their slots through `list()`;
+	// the node-local records beside them in the same object store are not slots.
+	it('lists the mapped slots and the prefixed ones, and nothing else in the kv store', async () => {
+		const { fake, open } = fakeHandle();
+		const keyStore = nodeLocalKeyStore(open);
+		await keyStore.set(DEFAULT_IDENTITY_KEY_ID, new Uint8Array([1]));
+		await keyStore.set('cadre/joined-strand/abc', new Uint8Array([2]));
+		fake.store.set('start-options', '{}');
+		fake.store.set('trusted-owners.party-1', '{}');
+
+		expect((await keyStore.list()).sort()).toEqual(['cadre/identity', 'cadre/joined-strand/abc']);
+		await keyStore.delete('cadre/joined-strand/abc');
+		expect(await keyStore.list()).toEqual(['cadre/identity']);
+	});
+});
+
+// ── The node-local store ──────────────────────────────────────────────────────
+
+describe('nodeLocalKv', () => {
+	// `kv` values are `string | Uint8Array`; the edge node's records are text, so a non-string
+	// under a record's key is a corrupt record its loader cold-starts from, not a read fault.
+	it('reads a non-string value as absent, and text as itself', async () => {
+		const { fake, open } = fakeHandle();
+		const kv = nodeLocalKv(open);
+		fake.store.set('bootstrap-peers.party-1', new Uint8Array([1, 2, 3]));
+		await kv.set('start-options', '{"v":1}');
+
+		expect(await kv.get('bootstrap-peers.party-1')).toBeUndefined();
+		expect(await kv.get('start-options')).toBe('{"v":1}');
+		await kv.delete('start-options');
+		expect(await kv.get('start-options')).toBeUndefined();
 	});
 });

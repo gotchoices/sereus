@@ -32,7 +32,7 @@ import {
 	type OwnerKeyRemovalPlan,
 	type OwnerKeyRemovalRefusal,
 } from '@serfab/cadre-core';
-import { addBackupOwnerKey, exportOwnerKey, getCadreNode, isOwner } from './cadre-web.js';
+import { addBackupOwnerKey, exportOwnerKey, getCadreNode, isOwner, listOwnerKeys, planOwnerKeyRemoval, removeOwner } from './cadre-web.js';
 import { importOwnerKey } from './store.svelte.js';
 import { pushError } from './diagnostics.svelte.js';
 import { errorMessage, ownerFingerprint, peerCode } from './cadre-format.js';
@@ -109,7 +109,7 @@ export async function refreshOwnerKeys(): Promise<CadreOwnerKey[] | null> {
 		if (!stale()) state.standing = 'unreadable';
 	}
 	try {
-		const keys = await node.listOwnerKeys();
+		const keys = await listOwnerKeys();
 		if (stale()) return null;
 		state.keys = keys;
 		state.listError = null;
@@ -204,7 +204,7 @@ export async function askToRemove(ownerKey: CadreOwnerKey): Promise<void> {
 	await exclusive(async (node) => {
 		let plan: OwnerKeyRemovalPlan;
 		try {
-			plan = await node.planOwnerKeyRemoval(ownerKey.key);
+			plan = await planOwnerKeyRemoval(ownerKey.key);
 		} catch (err) {
 			console.warn(`[cadre] could not read what removing owner key ${ownerFingerprint(ownerKey.key)} would do:`, err);
 			state.notice = { area: 'list', title: 'Could not prepare the removal', message: errorMessage(err), failed: true };
@@ -240,17 +240,17 @@ export async function confirmRemoval(): Promise<void> {
 	// Kept open while another action runs: `exclusive` would drop the removal unsaid.
 	if (!removal || state.busy) return;
 	state.confirming = null;
-	await exclusive(async (node) => {
-		await remove(node, removal);
+	await exclusive(async () => {
+		await remove(removal);
 		changed();
 	});
 }
 
-async function remove(node: CadreNode, { ownerKey, rows, kept }: PendingRemoval): Promise<void> {
+async function remove({ ownerKey, rows, kept }: PendingRemoval): Promise<void> {
 	const revouch = revouchOf(rows, new Set(kept));
 	const fingerprint = ownerFingerprint(ownerKey.key);
 	try {
-		const result = await node.removeOwner(ownerKey.key, { revouch });
+		const result = await removeOwner(ownerKey.key, { revouch });
 		if (!result.removed) {
 			state.notice = alreadyRemoved(ownerKey);
 			return;

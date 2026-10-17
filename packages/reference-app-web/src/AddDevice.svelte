@@ -94,8 +94,8 @@
 		<p class="hint">Checking whether this tab is an owner of this cadre…</p>
 	{:else if add.standing === 'member'}
 		<p class="hint" data-testid="add-device-member">
-			{#if node.owner === 'error'}
-				Only an owner of this cadre can add a device or app, and this tab could not make itself the owner of its cadre (Home shows why).
+			{#if node.owner === 'failed' || node.owner === 'timed-out'}
+				Only an owner of this cadre can add a device or app, and this tab could not make itself the owner of its cadre (the browser console shows why).
 			{:else}
 				Only an owner of this cadre can add a device or app. This tab is a member.
 			{/if}

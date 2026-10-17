@@ -109,7 +109,7 @@
 </section>
 
 <section class="actions">
-	<button onclick={handleRestart} disabled={busy || node.status === 'starting' || node.status === 'joining' || node.status === 'removing'}>
+	<button onclick={handleRestart} disabled={busy || node.status === 'starting' || node.status === 'joining'}>
 		Restart node
 	</button>
 </section>
@@ -263,7 +263,6 @@
 	}
 	.status-starting,
 	.status-joining,
-	.status-removing,
 	.status-removed {
 		color: #8a5a00;
 	}

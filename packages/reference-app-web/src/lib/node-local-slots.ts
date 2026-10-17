@@ -1,151 +1,126 @@
 /**
- * node-local-slots.ts — `DurableSlot` factory over the node-local database's
- * `kv` IndexedDB object store, for the browser's node-local records: the
- * trusted-owner anchor (`@serfab/cadre-core/trusted-owner-store`), the
- * cold-start bootstrap-peer store (`@serfab/cadre-core/bootstrap-peer-store`),
- * the enrolled-machine count (`@serfab/cadre-core/enrolled-machine-store`) and
- * the strand network state, each under its own key, per party. And the tab's
- * owner key, one per tab, as a cadre-core `KeyStore` ({@link ownerKeyStore}).
+ * node-local-slots.ts — the edge node's key store and node-local key-value store, both over the
+ * `kv` object store of the tab's node-local IndexedDB database (`strand-storage.ts` →
+ * `NODE_LOCAL_STORE_KEY`). `web-edge-platform.ts` hands them to `@serfab/cadre-core/edge-node`'s
+ * `createEdgeNode` as `EdgeNodePlatform.keyStore` and `EdgeNodeStorage.nodeLocal`.
  *
- * Every record goes in the SAME database as the tab's Ed25519 identity and
- * start record (`strand-storage.ts`'s `NODE_LOCAL_STORE_KEY` database, `kv` store) —
- * not a separate one. The decisive property is shared fate: "Clear site data"
- * must wipe identity, owner key, anchor, and dial targets together so the tab
- * cold-starts as a genuinely fresh node, rather than leaving a half-cleared state
- * where a regenerated identity inherits a stale anchor, or a retained identity
- * loses its anchor silently. See `cadre-web.ts` (`startCadre`) for the wiring.
+ * Both take an opener rather than an open handle. The key store answers `identityPeerId()` and an
+ * owner-key export with no node running, and the node-local store holds the saved start, which
+ * outlives every stop: `EdgeNodeStorage.close` closes the handle, and the next read reopens it.
  *
- * That database is NOT cadre-core's control block store, which is keyed by party
- * id (`controlStorageScope`). These records are read BEFORE the party id is known
- * — the party id itself is one of them — so they cannot live behind a name derived
- * from it. Each record is filed under `<key>.<partyId>` ({@link partyKvKey}), as the
- * phone kit files its records, because a tab that joins another cadre switches
- * party and comes back to the one it founded if the join fails: one key per tab
- * would have the first save in the joined party overwrite the founded party's
- * records. Each record also carries its own `partyId` and fails closed on a
- * mismatch, which is what keeps the shared database from re-introducing the
- * cross-party bleed the block-store scoping fixed. Records under the old,
- * party-less keys are orphaned, unread (development builds only; no compatibility).
+ * Everything is in ONE database, with the tab's identity. The decisive property is shared fate:
+ * "Clear site data" wipes identity, owner key, joined-strand records, trusted-owner anchor and
+ * dial targets together, so the tab cold-starts as a genuinely fresh node, rather than leaving a
+ * half-cleared state where a regenerated identity inherits a stale anchor. That database is NOT
+ * cadre-core's control block store, which is keyed by party id (`controlStorageScope`): the saved
+ * start is read BEFORE the party id is known, since the party id is what it holds.
+ *
+ * **Key store slots → `kv` keys.** The identity slot (`cadre/identity`) is `peer-private-key` and
+ * the owner slot (`cadre/owner`) is `owner-private-key`, the keys tabs held before the edge node,
+ * so both survive the upgrade; both hold libp2p protobuf bytes, the form `loadOrCreateIdentityKey`
+ * reads. Every other slot (joined-strand records, strand-move records) is `keystore.<keyId>`.
+ *
+ * **Node-local records** are text under the keys cadre-core's `edge-node/node-local.ts` names:
+ * `start-options`, `dissolving-party`, and `<record>.<partyId>` for each party's trusted-owner
+ * anchor, bootstrap peers, enrolled-machine count and strand network state. Each party's records
+ * are filed under its own id because a tab that joins another cadre switches party, and comes
+ * back to the one it founded when the join fails; one key per tab would have the joined party's
+ * first save overwrite the founded party's records.
  */
-import { DEFAULT_OWNER_KEY_ID, KeyStoreAccessError, type DurableSlot, type KeyId, type KeyStore } from '@serfab/cadre-core';
+import { DEFAULT_IDENTITY_KEY_ID, DEFAULT_OWNER_KEY_ID, KeyStoreAccessError, type KeyId, type KeyStore } from '@serfab/cadre-core';
+import type { NodeLocalKv } from '@serfab/cadre-core/edge-node';
 import { supportsStrictDurability, transactionDurability, type OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
 
-/** `kv` key stem for the persisted trusted-owner anchor snapshot. */
-export const TRUSTED_OWNERS_KV_KEY = 'trusted-owners';
-
-/** `kv` key stem for the persisted bootstrap-peer (cold-start dial target) snapshot. */
-export const BOOTSTRAP_PEERS_KV_KEY = 'bootstrap-peers';
+/** `kv` key of the tab's identity (`DEFAULT_IDENTITY_KEY_ID`): the libp2p protobuf bytes of an Ed25519 private key. */
+export const PEER_KEY_KV_KEY = 'peer-private-key';
 
 /**
- * `kv` key stem for the persisted strand network state — per strand, the FRET routing
- * table its strand node saved, re-imported after a reload. Not trust-bearing: FRET
- * verifies each address record at import.
- */
-export const STRAND_NETWORK_KV_KEY = 'strand-network';
-
-/**
- * `kv` key stem for the tab's last-known enrolled-machine count — the control
- * network's block-repair yardstick, read back at the next launch because the
- * control node is built before the database holding the membership rows exists.
- */
-export const ENROLLED_MACHINES_KV_KEY = 'enrolled-machines';
-
-/**
- * `kv` key of the tab's owner key: the libp2p protobuf bytes of an Ed25519 private key, the
- * stored form of the peer key beside it (`peer-private-key`). One per tab and dot-free, like the
- * peer key, rather than per party: one owner key may own several cadres.
+ * `kv` key of the tab's owner key (`DEFAULT_OWNER_KEY_ID`), in the identity's stored form. One per
+ * tab and dot-free, like the identity, rather than per party: one owner key may own several cadres.
  */
 export const OWNER_KEY_KV_KEY = 'owner-private-key';
 
-/** Every per-party record's key stem, so a party's records can be found and removed together. */
-export const PARTY_KV_KEYS: readonly string[] = [
-	TRUSTED_OWNERS_KV_KEY,
-	BOOTSTRAP_PEERS_KV_KEY,
-	ENROLLED_MACHINES_KV_KEY,
-	STRAND_NETWORK_KV_KEY,
-];
+/** `kv` key prefix of every other key-store slot; the slot id follows verbatim. */
+export const KEY_STORE_KV_PREFIX = 'keystore.';
 
-/**
- * The `kv` key of one party's record: `<key>.<partyId>`. A party id is arbitrary
- * text, but IndexedDB keys are strings of any content, so it needs no encoding. The
- * tab's own one-per-tab records (the start record, the identity) use dot-free keys,
- * which keeps them clear of every per-party key.
- */
-export function partyKvKey(key: string, partyId: string): string {
-	return `${key}.${partyId}`;
+/** Opens the node-local database, or returns it when it is open (`strand-storage.ts` → `openHandle`). */
+export type OpenNodeLocal = () => Promise<OptimysticWebDBHandle>;
+
+/** The `kv` key a key-store slot is kept under. A persistence contract: see the module header. */
+export function keyStoreKvKey(keyId: KeyId): string {
+	if (keyId === DEFAULT_IDENTITY_KEY_ID) return PEER_KEY_KV_KEY;
+	if (keyId === DEFAULT_OWNER_KEY_ID) return OWNER_KEY_KV_KEY;
+	return KEY_STORE_KV_PREFIX + keyId;
+}
+
+/** The inverse of {@link keyStoreKvKey}; `undefined` for a `kv` key that is no slot's. */
+function keyIdOfKvKey(key: string): KeyId | undefined {
+	if (key === PEER_KEY_KV_KEY) return DEFAULT_IDENTITY_KEY_ID;
+	if (key === OWNER_KEY_KV_KEY) return DEFAULT_OWNER_KEY_ID;
+	return key.startsWith(KEY_STORE_KV_PREFIX) ? key.slice(KEY_STORE_KV_PREFIX.length) : undefined;
 }
 
 /**
- * A `DurableSlot` over one `kv` key of the node-local database. The `kv` store's
- * value type is `string | Uint8Array`; `DurableSlot` deals in text only, so a
- * non-string value is a corrupt slot and is treated the same as absent (the
- * loader — `node-local-snapshot.ts` for the two snapshot records,
- * `enrolled-machine-store.ts` for the count — then cold-starts empty).
+ * The tab's key store: a cadre-core `KeyStore` over the node-local database, each slot under the
+ * key {@link keyStoreKvKey} names. A value that is not bytes is reported as `KeyStoreAccessError`,
+ * never as an empty slot, which the identity loader or owner genesis would fill with a new key.
  *
- * NOTE: two same-origin tabs open the same IndexedDB database and each
- * snapshot-writes its own full view on `save`, so the last writer wins and the
- * other tab's newly-recorded entries (a bootstrap peer, a trust anchor) can be
- * dropped. Acceptable — re-seeding refills them — but real; see the ticket
- * `2.1-web-durable-node-local-stores` for the fuller rationale. The same two tabs
- * share the start record too: a join in one switches the other only on its next load,
- * and a removal of the left party in one stops at that party's database while the other
- * still runs it (`strand-storage.ts` → `deleteStore`).
+ * A write is strict where the browser supports it: a key may found a party, and one lost to a
+ * power cut after that would leave the party with an owner nobody holds.
+ *
+ * Exposure is origin-scoped IndexedDB, readable by any script on the origin. Non-extractable
+ * WebCrypto Ed25519 keys were weighed and declined, because an exportable key is what a file or
+ * QR backup needs.
  */
-export function kvSlot(handle: OptimysticWebDBHandle, key: string): DurableSlot {
-	return {
-		async load() {
-			const raw = await handle.get('kv', key);
-			return typeof raw === 'string' ? raw : undefined;
-		},
-		async save(text) {
-			await handle.put('kv', text, key);
-		},
-	};
-}
-
-/**
- * The tab's owner-key slot as a cadre-core `KeyStore`, holding `DEFAULT_OWNER_KEY_ID` alone, so
- * cadre-core's owner-key slot functions and flows (`createOwnerKey`, `importOwnerKeyInto`, ...)
- * run over it unchanged; any other slot id is refused. A value that is not bytes is reported as
- * `KeyStoreAccessError`, never as an empty slot, which genesis would fill with a new key.
- *
- * A write is strict where the browser supports it, as the peer key's first write is
- * (`loadOrCreateBrowserPeerKey`): the key may found a party, and one lost to a power cut after
- * that would leave the party with an owner nobody holds.
- *
- * Exposure is the peer key's: origin-scoped IndexedDB, readable by any script on the origin.
- * Non-extractable WebCrypto Ed25519 keys were weighed and declined, because an exportable key is
- * what a file or QR backup needs.
- */
-export function ownerKeyStore(handle: OptimysticWebDBHandle): KeyStore {
+export function nodeLocalKeyStore(open: OpenNodeLocal): KeyStore {
 	const durability = transactionDurability(supportsStrictDurability());
-	const write = async (value: Uint8Array | undefined): Promise<void> => {
-		const tx = handle.transaction('kv', 'readwrite', { durability });
-		await Promise.all([value === undefined ? tx.store.delete(OWNER_KEY_KV_KEY) : tx.store.put(value, OWNER_KEY_KV_KEY), tx.done]);
+	const write = async (key: string, value: Uint8Array | undefined): Promise<void> => {
+		const tx = (await open()).transaction('kv', 'readwrite', { durability });
+		await Promise.all([value === undefined ? tx.store.delete(key) : tx.store.put(value, key), tx.done]);
 	};
 	return {
 		async get(keyId) {
-			requireOwnerSlot(keyId);
-			const stored = await handle.get('kv', OWNER_KEY_KV_KEY);
+			const key = keyStoreKvKey(keyId);
+			const stored = await (await open()).get('kv', key);
 			if (stored === undefined || stored instanceof Uint8Array) return stored;
-			throw new KeyStoreAccessError(keyId, 'The tab\'s owner-key slot holds text, not key bytes');
+			throw new KeyStoreAccessError(keyId, `The node-local kv key ${key} holds text, not key bytes`);
 		},
-		async set(keyId, keyMaterial) {
-			requireOwnerSlot(keyId);
-			await write(keyMaterial);
-		},
-		async delete(keyId) {
-			requireOwnerSlot(keyId);
-			await write(undefined);
-		},
+		set: (keyId, keyMaterial) => write(keyStoreKvKey(keyId), keyMaterial),
+		delete: (keyId) => write(keyStoreKvKey(keyId), undefined),
 		async list() {
-			return (await handle.get('kv', OWNER_KEY_KV_KEY)) === undefined ? [] : [DEFAULT_OWNER_KEY_ID];
+			const keys = await (await open()).getAllKeys('kv');
+			return keys.map(keyIdOfKvKey).filter((keyId): keyId is KeyId => keyId !== undefined);
 		},
 	};
 }
 
-function requireOwnerSlot(keyId: KeyId): void {
-	if (keyId !== DEFAULT_OWNER_KEY_ID) {
-		throw new Error(`The tab's owner-key store holds only ${DEFAULT_OWNER_KEY_ID}, not ${keyId}`);
-	}
+/**
+ * The edge node's node-local store over the same database. Values are text; a non-string value
+ * under a key is read as absent, so the loader behind it (`node-local-snapshot.ts` for the
+ * snapshot records, `enrolled-machine-store.ts` for the count, `parseSavedStart` for the start)
+ * cold-starts rather than failing on a corrupt record. Each `put` is its own transaction,
+ * committed when it resolves, so `flush` has nothing to do.
+ *
+ * NOTE: two same-origin tabs open the same IndexedDB database and each snapshot-writes its own
+ * full view on `save`, so the last writer wins and the other tab's newly-recorded entries (a
+ * bootstrap peer, a trust anchor) can be dropped. Acceptable — re-seeding refills them — but
+ * real; see the ticket `2.1-web-durable-node-local-stores` for the fuller rationale. The same
+ * two tabs share the saved start too: a join in one switches the other only on its next load,
+ * and a removal of the left party in one stops at that party's database while the other still
+ * runs it (`strand-storage.ts` → `deleteStore`).
+ */
+export function nodeLocalKv(open: OpenNodeLocal): NodeLocalKv {
+	return {
+		async get(key) {
+			const raw = await (await open()).get('kv', key);
+			return typeof raw === 'string' ? raw : undefined;
+		},
+		async set(key, value) {
+			await (await open()).put('kv', value, key);
+		},
+		async delete(key) {
+			await (await open()).delete('kv', key);
+		},
+		flush: () => Promise.resolve(),
+	};
 }

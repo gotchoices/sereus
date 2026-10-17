@@ -84,12 +84,9 @@
 			<dd>
 				<span
 					class="badge"
-					class:bad={diag.cadre.owner === 'error'}
+					class:bad={diag.cadre.owner === 'failed' || diag.cadre.owner === 'timed-out'}
 					data-testid="diag-owner">{diag.cadre.owner}</span
 				>
-				{#if diag.cadre.ownerError}
-					<span class="bad">{diag.cadre.ownerError}</span>
-				{/if}
 			</dd>
 			<dt>Chat strand</dt>
 			<dd>

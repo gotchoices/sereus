@@ -119,8 +119,8 @@ export interface CadreInfo {
 	controlPeerIdShort: string | null;
 	cadrePeerCount: number | null;
 	cadrePeerError: string | null;
+	/** The owner step's outcome (`cadre-web.ts` → `OwnerStanding`). */
 	owner: string;
-	ownerError: string | null;
 	strand: CadreStrandInfo | null;
 }
 
@@ -182,7 +182,6 @@ function emptyCadre(): CadreInfo {
 		cadrePeerCount: null,
 		cadrePeerError: null,
 		owner: 'pending',
-		ownerError: null,
 		strand: null,
 	};
 }
@@ -396,7 +395,6 @@ async function collectCadre(): Promise<CadreInfo> {
 	const control = getControlNode();
 	const strandId = getChatStrandId();
 	const strand = getChatStrand();
-	const auth = getOwnerState();
 
 	let cadrePeerCount: number | null = null;
 	let cadrePeerError: string | null = null;
@@ -417,8 +415,7 @@ async function collectCadre(): Promise<CadreInfo> {
 		controlPeerIdShort: shortPeerId(controlPeerId),
 		cadrePeerCount,
 		cadrePeerError,
-		owner: auth.state,
-		ownerError: auth.error,
+		owner: getOwnerState(),
 		strand: strandId
 			? {
 					id: strandId,

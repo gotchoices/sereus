@@ -1,67 +1,62 @@
 /**
- * store.svelte.ts — Svelte 5 runes store owning the browser CadreNode singleton.
+ * store.svelte.ts — Svelte 5 runes store over the tab's edge node (`cadre-web.ts` → `edgeNode`).
  *
- * Replaces the old bare-libp2p store. Exposes node status, peer id, party id,
- * control-network connection state, chat-strand status, and the owner
- * self-genesis outcome to the UI. Also owns a small ring buffer of CadreNode
- * lifecycle events (`control:*`, `strand:*`, `seed:*`) that powers the Activity
- * (`/log`) page.
+ * Exposes node status, peer id, party id, control-network connection state, chat-strand status,
+ * the owner step's outcome and the relay posture to the UI, and owns a small ring buffer of
+ * CadreNode lifecycle events (`control:*`, `strand:*`, `seed:*`, `cadre:removed`) that powers the
+ * Activity (`/log`) page.
  *
  * Phase 1 is a solo single-node cadre, so `mode` is always `'solo'` (one node,
  * no peers). Phase 2 introduces multi-node cadres / cross-party strands.
  *
- * The store also runs the join of an existing cadre ({@link joinCadre}) and the removal of
- * the cadre the tab left ({@link dissolveFormerParty}): each tears down what it attached to
- * the running node, drives `web-join.ts`'s steps, and attaches to whichever node runs
- * afterwards. When the node reports that an owner removed this tab from its cadre
- * (`cadre:removed`), the store lets go of it and `web-join.ts` stops it and deletes that
- * cadre's data (status `removing`, then `removed`), never in the middle of another of these
- * transitions ({@link inTransition}).
+ * The store subscribes once, at module load, through the edge node, which re-applies every
+ * handler to each node a start, restart, join or dissolve builds before that node starts, so an
+ * event raised during a start (`control:connected`, a joined strand's `strand:started`) is seen.
+ * `status` follows the edge node's ({@link followStatus}); whenever a `running` report names a
+ * node the store has not attached yet, the page layer (the chat strand, the refresh poll) is
+ * attached to it, which covers the start after a join, the restart after a dissolve and the left
+ * party coming back after a failed join, none of which the store drives itself. The actions here
+ * (start, stop, restart, join, retry the move, dissolve, import an owner key) are the edge node's,
+ * which runs them one at a time; an owner's removal of this tab is acted on by the edge node too
+ * (it stops the node and deletes that cadre's data), and reaches the store as status `removed`.
  */
 
 import {
-	startCadre,
-	stopCadre,
 	addChatStrand,
-	getCadreNode,
+	edgeNode,
 	getChatStrand,
 	getChatStrandId,
 	getPartyId,
-	getOwnerState,
 	getRelayState,
-	importOwnerKey as importOwnerKeyIntoTab,
 	noRelayState,
-	type OwnerState,
+	type OwnerStanding,
 	type RelayState,
 } from './cadre-web.js';
+import { decodeInvitationForThisTab } from './web-join.js';
+import { resolveRelayAddrs } from './relay-config.js';
 import {
-	decodeInvitationForThisTab,
-	finishStrandMove,
-	forgetRemovedParty,
-	planDissolve,
-	redeemInPlace,
-	recordStrandMove,
-	removeFormerParty,
-	switchToParty,
-	returnToStoredParty,
-	type JoinOptions,
-	type JoinOutcome,
-} from './web-join.js';
-import type { StrandMoveOutcome } from './web-strand-move.js';
-import type { CadreNode, CadreRemoval, ImportedOwnerKey, StrandStatus } from '@serfab/cadre-core';
+	DEFAULT_EDGE_NODE_NAMES,
+	type EdgeJoinProgress,
+	type EdgeNodeOptions,
+	type EdgeNodeStatus,
+	type JoinCadreResult,
+	type OwnerGenesisResult,
+} from '@serfab/cadre-core/edge-node';
+import type { CadreNode, ImportedOwnerKey, StrandMoveReport, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
 import { markDelivered } from './messages.svelte.js';
 import { resetAddDeviceCard } from './add-device.svelte.js';
 import { resetMachinesCard } from './machines.svelte.js';
-import { ownerFingerprint } from './cadre-format.js';
+import { errorMessage, ownerFingerprint } from './cadre-format.js';
 
 /**
- * `joining`: started in the party an invitation names and redeeming it there; not admitted yet.
- * `removing`: an owner removed this tab from the party it ran; the node is stopping and the
- * party's data being deleted. `removed`: that is done ({@link NodeState.removed}); nothing runs
- * until the next start.
+ * The edge node's status, plus the store's own `idle` before the first start and `error` for its
+ * `failed`. `joining`: started in the party an invitation names and redeeming it there; not
+ * admitted yet. `removed`: an owner removed this tab from the party it ran, and the edge node has
+ * stopped the node and deleted that party's data ({@link NodeState.removed}); nothing runs until
+ * the next start.
  */
-export type NodeStatus = 'idle' | 'starting' | 'joining' | 'running' | 'stopped' | 'removing' | 'removed' | 'error';
+export type NodeStatus = 'idle' | 'starting' | 'joining' | 'running' | 'stopped' | 'removed' | 'error';
 /** Phase 1 is a single-node cadre. Kept for the header badge + Phase-2 growth. */
 export type CadreMode = 'solo';
 
@@ -70,7 +65,7 @@ export interface RemovedFrom {
 	partyId: string;
 	/** The owner key that signed the removal, when it is anchored here (`CadreRemoval.signerKey`). */
 	signerKey: string | null;
-	/** The party this tab founded and left, which the start record names now: the next start runs it. */
+	/** The party this tab founded and left, which the saved start names now: the next start runs it. */
 	formerPartyId?: string;
 }
 
@@ -84,7 +79,7 @@ interface NodeState {
 	strandStatus: StrandStatus | null;
 	strandConnectedPeers: number | null;
 	strandError: string | null;
-	owner: OwnerState;
+	owner: OwnerStanding;
 	relay: RelayState;
 	/** Set when an owner removed this tab from its cadre, until a start reaches `running` again. */
 	removed: RemovedFrom | null;
@@ -96,8 +91,19 @@ export interface CadreEvent {
 	detail: string;
 }
 
+/** What a join reports to its caller: the redemption's passes and pauses, then the steps after a member admitted the tab. */
+export interface JoinOptions {
+	/** Cancels the join while it waits for a member; the tab then goes back to the party it left. */
+	signal?: AbortSignal;
+	/** A listener that throws is logged and ignored. */
+	onProgress?: (progress: EdgeJoinProgress) => void;
+}
+
 const EVENT_LIMIT = 50;
 const REFRESH_POLL_MS = 4_000;
+
+/** The founding owner key's name on its `OwnerKey` row; the phone kit's default is `phone`. */
+const TAB_OWNER_KEY_LABEL = 'browser';
 
 const state = $state<NodeState>({
 	status: 'idle',
@@ -116,12 +122,13 @@ const state = $state<NodeState>({
 
 const events = $state<{ list: CadreEvent[] }>({ list: [] });
 
-let subscribed = false;
 let refreshPoll: ReturnType<typeof setInterval> | null = null;
-/** Starts, stops, joins, dissolves and removals in progress ({@link inTransition}). */
-let transitions = 0;
-/** A removal a node reported that has not been acted on yet ({@link actOnReportedRemoval}). */
-let removalReported: CadreRemoval | null = null;
+/** The node the page layer is attached to ({@link attach}); null while none is. */
+let attached: CadreNode | null = null;
+/** The last {@link attach} begun, settled or not, so an action can resolve once the store has caught up with the edge node ({@link attachSettled}). */
+let attaching: Promise<void> | null = null;
+/** Joins, dissolves and restarts the store is running ({@link midTransition}): a stop inside one is a step, not an outcome. */
+let midTransitions = 0;
 
 export function nodeState(): NodeState {
 	return state;
@@ -142,44 +149,147 @@ export function clearEvents(): void {
 	events.list = [];
 }
 
-function subscribe(node: CadreNode): void {
-	if (subscribed) return;
-	subscribed = true;
-	node.on('control:disconnected', () => {
-		state.controlConnected = false;
-		record('control:disconnected');
-	});
-	node.on('strand:started', ({ strandId }) => {
-		record('strand:started', strandId);
-		syncStrand();
-	});
-	node.on('strand:stopped', ({ strandId }) => {
-		record('strand:stopped', strandId);
-		syncStrand();
-	});
-	node.on('strand:error', ({ strandId, error }) => {
-		state.strandError = error.message;
-		record('strand:error', `${strandId}: ${error.message}`);
-		syncStrand();
-	});
-	node.on('strand:writable', ({ strandId }) => {
-		record('strand:writable', strandId);
-		syncStrand();
-	});
-	node.on('strand:commit-held', markDelivered);
-	node.on('strand:idle', ({ strandId }) => record('strand:idle', strandId));
-	node.on('strand:hibernating', ({ strandId }) => record('strand:hibernating', strandId));
-	node.on('strand:waking', ({ strandId }) => record('strand:waking', strandId));
-	node.on('strand:revoked', ({ strandId }) => record('strand:revoked', strandId));
-	node.on('strand:rejoin-blocked', ({ strandId }) => record('strand:rejoin-blocked', strandId));
-	node.on('seed:received', ({ peerId }) => record('seed:received', peerId));
-	node.on('seed:applied', ({ peersAdded }) => record('seed:applied', `${peersAdded} peers`));
-	node.on('seed:error', ({ error }) => record('seed:error', error));
-	// NOTE: a tab removed while it was closed never sees its own row live after the next start, so
-	// it never reports (docs/architecture.md → "The removed machine learns it"), and runs that cadre
-	// while every other machine refuses it. If users meet this, persist "seen live" per party, as the
-	// phone kit's note at `watchRemoval` says.
-	node.on('cadre:removed', onRemoved);
+// ── The edge node's events and status ─────────────────────────────────────────
+// Subscribed once, for the life of the edge node: it attaches these to every node before it starts.
+
+edgeNode.on('control:connected', () => {
+	state.controlConnected = true;
+	record('control:connected', getPartyId() ?? '');
+});
+edgeNode.on('control:disconnected', () => {
+	state.controlConnected = false;
+	record('control:disconnected');
+});
+edgeNode.on('strand:started', ({ strandId }) => {
+	record('strand:started', strandId);
+	syncStrand();
+});
+edgeNode.on('strand:stopped', ({ strandId }) => {
+	record('strand:stopped', strandId);
+	syncStrand();
+});
+edgeNode.on('strand:error', ({ strandId, error }) => {
+	state.strandError = error.message;
+	record('strand:error', `${strandId}: ${error.message}`);
+	syncStrand();
+});
+edgeNode.on('strand:writable', ({ strandId }) => {
+	record('strand:writable', strandId);
+	syncStrand();
+});
+edgeNode.on('strand:commit-held', markDelivered);
+edgeNode.on('strand:idle', ({ strandId }) => record('strand:idle', strandId));
+edgeNode.on('strand:hibernating', ({ strandId }) => record('strand:hibernating', strandId));
+edgeNode.on('strand:waking', ({ strandId }) => record('strand:waking', strandId));
+edgeNode.on('strand:revoked', ({ strandId }) => record('strand:revoked', strandId));
+edgeNode.on('strand:rejoin-blocked', ({ strandId }) => record('strand:rejoin-blocked', strandId));
+edgeNode.on('seed:received', ({ peerId }) => record('seed:received', peerId));
+edgeNode.on('seed:applied', ({ peersAdded }) => record('seed:applied', `${peersAdded} peers`));
+edgeNode.on('seed:error', ({ error }) => record('seed:error', error));
+// The edge node acts on the removal itself; the log keeps the report.
+edgeNode.on('cadre:removed', (removal) => {
+	const by = removal.signerKey ? ` by ${ownerFingerprint(removal.signerKey)}` : '';
+	record('cadre:removed', `${removal.partyId}${by}`);
+});
+edgeNode.onStatus(followStatus);
+
+/**
+ * `status` follows the edge node's. A `running` report for a node not attached yet attaches the
+ * page layer; one for the attached node (its owner key wired after the start, by an import or a
+ * retried move) only updates the owner standing. A `stopped` inside a store-run transition is a
+ * step on the way to the next node, shown as `starting`.
+ */
+function followStatus(status: EdgeNodeStatus): void {
+	switch (status.state) {
+		case 'starting':
+			detach();
+			state.status = 'starting';
+			break;
+		case 'joining':
+			detach();
+			forgetPartyCards();
+			state.status = 'joining';
+			state.partyId = status.node.partyId;
+			state.peerId = peerIdOf(status.node);
+			break;
+		case 'running':
+			if (status.node === attached) syncOwner(status.owner);
+			else attaching = attach(status.node, status.owner);
+			break;
+		case 'stopped':
+			detach();
+			state.status = midTransitions > 0 ? 'starting' : 'stopped';
+			break;
+		case 'removed':
+			detach();
+			forgetPartyCards();
+			state.removed = {
+				partyId: status.partyId,
+				signerKey: status.removal.signerKey,
+				...(status.formerPartyId !== undefined && { formerPartyId: status.formerPartyId }),
+			};
+			state.status = 'removed';
+			record('removal:done', status.formerPartyId ?? '');
+			break;
+		case 'failed':
+			detach();
+			failed('edge node', status.error);
+			break;
+	}
+}
+
+/**
+ * Attach the page layer to a node that has just come up: fill the reactive state, bring up the
+ * signed chat strand and start the refresh poll. Reports `running`, or `error` when the chat
+ * strand cannot be added (a `SchemaVerificationError` surfaces here). A node replaced meanwhile
+ * (the status moved on while the strand was being added) is left as the later status says.
+ */
+async function attach(node: CadreNode, owner: OwnerGenesisResult): Promise<void> {
+	attached = node;
+	state.peerId = peerIdOf(node);
+	state.partyId = getPartyId();
+	state.controlConnected = node.isRunning;
+	syncOwner(owner);
+	// Relay reservation (dialability for formation) is driven inside start(); the
+	// poll below keeps it current if the reservation is later lost or regained.
+	syncRelay();
+	try {
+		await addChatStrand();
+	} catch (err) {
+		if (attached === node) failed('addChatStrand', err);
+		return;
+	}
+	if (attached !== node) return;
+	syncStrand();
+	startRefreshPoll();
+	state.removed = null;
+	state.error = null;
+	state.status = 'running';
+}
+
+/**
+ * Resolves once the attach the last `running` report began has settled, so an action returns
+ * with `status` at `running` (or `error`) rather than a step behind the edge node: the join card
+ * goes on to remove the old cadre as soon as the join resolves, and that needs the node running.
+ */
+async function attachSettled(): Promise<void> {
+	let awaited: Promise<void> | null = null;
+	// A report during the wait begins another attach; wait for the last.
+	while (attaching && attaching !== awaited) {
+		awaited = attaching;
+		await awaited;
+	}
+}
+
+/** Let go of the attached node: stop polling it and clear what was read off it. */
+function detach(): void {
+	stopRefreshPoll();
+	attached = null;
+	resetNodeState();
+}
+
+function peerIdOf(node: CadreNode): string | null {
+	return node.peerId?.toString() ?? null;
 }
 
 /** Pull the current chat-strand status/peers/error into reactive state. */
@@ -205,14 +315,11 @@ function syncRelay(): void {
 	}
 }
 
-/** Pull the owner step's outcome into reactive state, recording it. */
-function syncOwner(): void {
-	state.owner = getOwnerState().state;
-	if (state.owner === 'error') {
-		record('owner:error', getOwnerState().error ?? 'unknown');
-	} else {
-		record(`owner:${state.owner}`);
-	}
+/** Put the owner step's outcome into reactive state, recording it. */
+function syncOwner(owner: OwnerStanding): void {
+	if (state.owner === owner) return;
+	state.owner = owner;
+	record(`owner:${owner}`);
 }
 
 // NOTE: relay posture refreshes on this 4s tick, so a lost reservation shows up
@@ -236,137 +343,16 @@ function stopRefreshPoll(): void {
 	}
 }
 
-/**
- * Start the party the start record names and attach to it. From `removed`, that is the party the
- * tab founded and left, or a fresh one of its own: the Cadre page's "Go back to your own cadre".
- */
-export async function start(): Promise<void> {
-	if (['starting', 'joining', 'running', 'removing'].includes(state.status)) return;
-	await inTransition(async () => {
-		state.status = 'starting';
-		state.error = null;
-		await startStoredParty('startCadre');
-	});
-}
-
-/**
- * Attach the page layer to a node that has just come up: subscribe to its events, fill the
- * reactive state, bring up the signed chat strand and start the refresh poll. Reports
- * `running`, or `error` when the chat strand cannot be added (a `SchemaVerificationError`
- * surfaces here).
- */
-async function attachRunningNode(node: CadreNode): Promise<void> {
-	try {
-		subscribe(node);
-
-		state.peerId = node.peerId?.toString() ?? null;
-		state.partyId = getPartyId();
-		state.controlConnected = node.isRunning;
-		// control:connected fires inside start(), before we can subscribe; record
-		// it synthetically so the event log opens with the real lifecycle step.
-		record('control:connected', state.partyId ?? '');
-		syncOwner();
-
-		// Relay reservation (dialability for formation) settles inside start(); the
-		// poll below keeps it current if the reservation is later lost or regained.
-		syncRelay();
-
-		// Bring up the signed chat strand. SchemaVerificationError surfaces here.
-		await addChatStrand();
-		syncStrand();
-		startRefreshPoll();
-
-		state.removed = null;
-		state.status = 'running';
-	} catch (err) {
-		failed('startCadre', err);
-	}
-}
-
-/**
- * Run `change`, a start, stop, join, dissolve or removal, as a transition: a removal a node reports
- * meanwhile is acted on once no transition runs, so it never stops the node or deletes storage under
- * one. The status checks at each entry point keep transitions from overlapping otherwise.
- */
-async function inTransition<T>(change: () => Promise<T>): Promise<T> {
-	transitions += 1;
-	try {
-		return await change();
-	} finally {
-		transitions -= 1;
-		if (transitions === 0) actOnReportedRemoval();
-	}
-}
-
-/**
- * `cadre:removed` from a node the store attached: acted on once the node's emit has returned (as
- * the kit's queue does, so its `stop` is not entered from inside its own event), or after the
- * transition in progress.
- */
-function onRemoved(removal: CadreRemoval): void {
-	const by = removal.signerKey ? ` by ${ownerFingerprint(removal.signerKey)}` : '';
-	record('cadre:removed', `${removal.partyId}${by}`);
-	removalReported = removal;
-	queueMicrotask(() => {
-		if (transitions === 0) actOnReportedRemoval();
-	});
-}
-
-/**
- * Leave the running party when a node of it reported the tab's removal: the running node itself,
- * before or after the store subscribed, or an earlier node of the party, while a transition held
- * the store. A report waits while no node runs, for the next start of its party.
- *
- * NOTE: a report for a party the tab has since left (a join was leaving it when the report came) is
- * dropped. That party's storage stays in this browser, as a joined party's does whenever the tab
- * leaves it, and a founded one is offered for removal by the join card. The phone kit deletes it; if
- * this window (a join's first steps, before it stops the old node) is ever hit, delete it here too.
- */
-function actOnReportedRemoval(): void {
-	const removal = removalReported ?? getCadreNode()?.removedFromCadre() ?? null;
-	if (removal === null || state.status !== 'running') return;
-	removalReported = null;
-	if (removal.partyId === state.partyId) void leaveRemovedParty(removal);
-}
-
-/**
- * Let go of the node and have `web-join.ts` stop it, point the start record away from the party and
- * delete the party's storage, then report `removed` for the Cadre page's card. A failure reading or
- * rewriting the start record is the store's `error`, with the storage left as the record names it.
- *
- * NOTE: after that failure the next start runs the removed party again, on its storage, and its new
- * node does not report the removal. It takes an IndexedDB fault; if it is seen, keep the report and
- * act on it after that start.
- */
-async function leaveRemovedParty(removal: CadreRemoval): Promise<void> {
-	await inTransition(async () => {
-		record('removal:leaving', removal.partyId);
-		releaseNode();
-		resetNodeState();
-		forgetPartyCards();
-		state.status = 'removing';
-		try {
-			const formerPartyId = await forgetRemovedParty(removal.partyId);
-			state.removed = { partyId: removal.partyId, signerKey: removal.signerKey, ...(formerPartyId !== undefined && { formerPartyId }) };
-			state.status = 'removed';
-			record('removal:done', formerPartyId ?? '');
-		} catch (err) {
-			failed('forgetRemovedParty', err);
-		}
-	});
-}
-
 function failed(where: string, err: unknown): void {
-	state.error = err instanceof Error ? err.message : String(err);
+	state.error = errorMessage(err);
 	state.status = 'error';
 	pushError(where, err);
 	console.error(`[reference-app-web] ${where} failed:`, err);
 }
 
-/** Let go of the running node: stop polling it and forget the subscriptions, which die with it. */
-function releaseNode(): void {
-	stopRefreshPoll();
-	subscribed = false;
+/** Whether the edge node's `failed` has already been taken by {@link followStatus}; read here, since a status assigned above narrows `state.status` for the compiler. */
+function alreadyFailed(): boolean {
+	return state.status === 'error';
 }
 
 function resetNodeState(): void {
@@ -380,176 +366,176 @@ function resetNodeState(): void {
 	state.relay = noRelayState();
 }
 
-/** The cards' state that belongs to the party the node ran: a join, its rollback and a removal forget it. */
+/** The cards' state that belongs to the party the node ran: a join (and its rollback) and a removal forget it. */
 function forgetPartyCards(): void {
 	resetAddDeviceCard();
 	resetMachinesCard();
 }
 
-export async function stop(): Promise<void> {
-	if (state.status !== 'running') return;
-	await inTransition(async () => {
-		try {
-			releaseNode();
-			await stopCadre();
-			resetNodeState();
-			state.status = 'stopped';
-		} catch (err) {
-			failed('stopCadre', err);
-		}
-	});
+/**
+ * Run `change`, a join, dissolve or restart, which stops the node on its way to the next one: a
+ * `stopped` the edge node reports meanwhile shows as `starting`, and one it ends on is a stop.
+ * Resolves (or throws `change`'s error) once the store has attached to the node it ends on.
+ */
+async function midTransition<T>(change: () => Promise<T>): Promise<T> {
+	midTransitions += 1;
+	try {
+		return await change();
+	} finally {
+		midTransitions -= 1;
+		await attachSettled();
+		if (midTransitions === 0 && state.status === 'starting' && edgeNode.status.state === 'stopped') state.status = 'stopped';
+	}
 }
 
-/** Stop then re-start the cadre (Home's "Restart node"). */
-export async function restart(): Promise<void> {
-	if (state.status === 'running') {
-		await stop();
+// ── Actions ───────────────────────────────────────────────────────────────────
+
+/**
+ * Start the party the saved start names and attach to it. From `removed`, that is the party the
+ * tab founded and left, or a fresh one of its own: the Cadre page's "Go back to your own cadre".
+ */
+export async function start(): Promise<void> {
+	if (['starting', 'joining', 'running'].includes(state.status)) return;
+	state.status = 'starting';
+	state.error = null;
+	let options: EdgeNodeOptions;
+	try {
+		options = await startOptions();
+	} catch (err) {
+		failed('loadSavedStart', err);
+		return;
 	}
-	await start();
+	try {
+		await edgeNode.start(options);
+	} catch (err) {
+		// The edge node reported `failed` first, and the status listener took it.
+		if (!alreadyFailed()) failed('start', err);
+	}
+	await attachSettled();
+}
+
+/**
+ * The saved start with the current relays, or a fresh founded party when none is saved. A tab
+ * starts on load, so the record's `autoStart` is ignored. A record that is present but unusable
+ * (the edge node logs and drops one it cannot parse) is refused rather than founded over: a fresh
+ * party would orphan the one the record names, the same posture as an unreadable trusted-owner
+ * anchor; clear the site's data to start over.
+ */
+async function startOptions(): Promise<EdgeNodeOptions> {
+	const relayAddrs = resolveRelayAddrs();
+	const saved = await edgeNode.loadSavedStart();
+	if (saved) return { ...saved.options, relayAddrs };
+	const { savedStartKey } = DEFAULT_EDGE_NODE_NAMES;
+	if ((await edgeNode.nodeLocalRecords().get(savedStartKey)) !== undefined) {
+		throw new Error(`The saved start (kv "${savedStartKey}") cannot be read; clear this site's data to start over`);
+	}
+	return { partyId: crypto.randomUUID(), bootstrapAddrs: [], relayAddrs, origin: 'founded', ownerKeyLabel: TAB_OWNER_KEY_LABEL };
+}
+
+export async function stop(): Promise<void> {
+	if (state.status !== 'running') return;
+	try {
+		await edgeNode.stop();
+	} catch (err) {
+		failed('stop', err);
+	}
+}
+
+/** Rebuild the running node with the current relays (Home's "Restart node"); with none running, a start. */
+export async function restart(): Promise<void> {
+	const running = edgeNode.options;
+	if (!running) {
+		await start();
+		return;
+	}
+	await midTransition(async () => {
+		try {
+			await edgeNode.restart({ ...running, relayAddrs: resolveRelayAddrs() });
+		} catch (err) {
+			if (!alreadyFailed()) failed('restart', err);
+		}
+	});
 }
 
 /**
  * Join the cadre a pasted invitation names (docs/architecture.md → "An app joins an existing
- * cadre"). Already running in that party: redeem in place. Otherwise the running party's
- * strands are recorded for the move (refused up front when the invitation does not make the
- * tab an owner and there is something to move), the node is stopped and started in the
- * invitation's party (status `joining`), and the invitation redeemed there, waiting for a
- * member until one answers or `options.signal` aborts. Admitted: the start record names the
- * joined party, its strands are adopted, and the store attaches as after any start. Anything
- * else: the tab goes back to the party it left and the join's error is thrown; a failure
- * going back leaves the store in `error` with that message, the join's error still thrown.
- *
- * The "Add a device or app" card's minted invitation and pending approval, and an open removal
- * confirmation on "Devices and nodes", belong to the party the node ran when they were made, so
- * a switch, and a rollback, forget them.
+ * cadre"): `EdgeNode.joinCadre`, once the invitation is decoded and found to be this tab's.
+ * Already running in that party: the edge node redeems in place. Otherwise it records the
+ * running party's strands for the move (refused up front when the invitation does not make the
+ * tab an owner and there is something to move), stops the node and starts one in the invitation's
+ * party (status `joining`; the "Add a device or app" and "Devices and nodes" cards forget what
+ * belongs to the party left), and redeems there, waiting for a member until one answers or
+ * `options.signal` aborts. Admitted: the saved start names the joined party, its strands are
+ * adopted, and the store attaches as after any start. Anything else: the edge node starts the
+ * party the tab left again and the join's error is thrown; a failure going back is the store's
+ * `error`, the join's error still thrown.
  */
-export async function joinCadre(encoded: string, options: JoinOptions = {}): Promise<JoinOutcome> {
+export async function joinCadre(encoded: string, options: JoinOptions = {}): Promise<JoinCadreResult> {
 	if (state.status !== 'running') throw new Error('The node is not running.');
-	return inTransition(async () => {
-		const invitation = decodeInvitationForThisTab(encoded);
-		if (invitation.partyId === state.partyId) {
-			const outcome = await redeemInPlace(invitation, options);
-			record('join:admitted', invitation.partyId);
-			syncOwner();
-			return outcome;
-		}
-		const movingFrom = await recordStrandMove(invitation);
-		record('join:leaving', state.partyId ?? '');
-		releaseNode();
-		resetNodeState();
-		forgetPartyCards();
-		state.status = 'joining';
-		state.partyId = invitation.partyId;
-		state.peerId = getCadreNode()?.peerId?.toString() ?? null;
-		try {
-			const outcome = await switchToParty(invitation, options, movingFrom);
-			record('join:admitted', invitation.partyId);
-			await attachRunningNode(requireNode());
-			return outcome;
-		} catch (err) {
-			record('join:failed', err instanceof Error ? err.message : String(err));
-			await startLeftPartyAgain(movingFrom);
-			throw err;
-		}
-	});
+	const invitation = decodeInvitationForThisTab(encoded);
+	record('join:started', invitation.partyId);
+	try {
+		const result = await midTransition(() => edgeNode.joinCadre(invitation, { ...options, relayAddrs: resolveRelayAddrs() }));
+		record('join:admitted', invitation.partyId);
+		return result;
+	} catch (err) {
+		record('join:failed', errorMessage(err));
+		throw err;
+	}
 }
 
 /**
- * Adopt the strands a join left waiting, on the running node (Retry on the Cadre page). The
- * owner standing is read again: the adoption needs the tab's key wired as an owner, and asks the
- * party for it first.
+ * Adopt the strands a join left waiting, on the running node (Retry on the Cadre page):
+ * `EdgeNode.finishStrandMove`, which first asks a joined party again whether it lists the tab's
+ * key as an owner. `undefined` when no move waits. Throws what the adoption throws,
+ * `StrandMoveNotOwnerError` while the tab's key is no owner there.
  */
-export async function retryStrandMove(): Promise<StrandMoveOutcome | undefined> {
+export async function retryStrandMove(): Promise<StrandMoveReport | undefined> {
 	if (state.status !== 'running') throw new Error('The node is not running.');
-	return inTransition(async () => {
-		const outcome = await finishStrandMove();
-		syncOwner();
-		record('move:retried', outcome?.state ?? 'nothing waiting');
-		return outcome;
-	});
+	try {
+		const report = await edgeNode.finishStrandMove();
+		record('move:retried', report ? (report.failed.length === 0 ? 'done' : 'partial') : 'nothing waiting');
+		return report;
+	} catch (err) {
+		record('move:failed', errorMessage(err));
+		throw err;
+	}
 }
 
 /**
- * Import owner-key text into the tab's owner slot (`cadre-web.ts` `importOwnerKey`). A key the
- * import wires changes the owner state with the node still `running`, so the state is pulled in
- * here, and the cards that follow it read their standing again.
+ * Import owner-key text into the tab's owner slot (`EdgeNode.importOwnerKey`). A key the import
+ * wires makes the edge node report `running` again with the owner `enrolled`, which
+ * {@link followStatus} puts in `owner`; the cards that follow it then read their standing again.
  */
-export async function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
-	const imported = await importOwnerKeyIntoTab(text, passphrase);
-	if (imported.wired) syncOwner();
-	return imported;
+export function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
+	return edgeNode.importOwnerKey(text, passphrase);
 }
 
 /**
  * Remove the cadre this tab founded and left (docs/architecture.md → "Dissolving the party it
- * left"); `discard` gives up the strand and join ids the running party does not hold. Refused
- * with nothing stopped when the running start names no such party or a move from it waits
- * (`StrandMovePendingError`). Otherwise the store lets go of the node, `web-join.ts` stops it,
- * reads the old party alone and removes it, and the stored party is started and attached
- * again, status `starting` meanwhile. A refusal (`FormerPartyNotEmptyError`, nothing deleted)
- * or a failure is thrown once the party has started again; a failure of that start is then the
- * store's `error` only. After a removal, a failed start is both the store's `error` and the
- * call's.
+ * left"): `EdgeNode.dissolveFormerParty`; `discard` gives up the strand and join ids the running
+ * party does not hold. Refused with nothing stopped when the running start names no such party or
+ * a move from it waits (`StrandMovePendingError`). Otherwise the edge node stops the node, reads
+ * the old party alone, removes it, and starts the running party again, which the store attaches
+ * to; status `starting` meanwhile. A refusal (`FormerPartyNotEmptyError`, nothing deleted) or a
+ * failure (`StoreDeleteBlockedError` with the marker kept for the next start) is thrown once the
+ * party has started again; a failure of that start is the call's error, and the store's.
  */
 export async function dissolveFormerParty(discard: readonly string[] = []): Promise<void> {
 	if (state.status !== 'running') throw new Error('The node is not running.');
-	await inTransition(async () => {
-		const plan = await planDissolve();
-		record('dissolve:removing', plan.formerPartyId);
-		releaseNode();
-		resetNodeState();
-		state.status = 'starting';
-		try {
-			await removeFormerParty(plan, discard);
-		} catch (err) {
-			record('dissolve:stopped', err instanceof Error ? err.message : String(err));
-			await startStoredParty('dissolveFormerParty');
-			throw err;
-		}
-		record('dissolve:removed', plan.formerPartyId);
-		if (!(await startStoredParty('dissolveFormerParty'))) throw new Error(state.error ?? 'The node did not start again.');
-	});
-}
-
-/**
- * Start the stored party and attach to it, as a load does. False when it did not reach
- * `running`; the failure is then the store's `error`, reported under `where`.
- */
-async function startStoredParty(where: string): Promise<boolean> {
-	let node: CadreNode;
+	const formerPartyId = edgeNode.options?.formerPartyId ?? '';
+	record('dissolve:removing', formerPartyId);
 	try {
-		node = await startCadre();
+		await midTransition(() => edgeNode.dissolveFormerParty({ discard }));
 	} catch (err) {
-		failed(where, err);
-		return false;
+		record('dissolve:stopped', errorMessage(err));
+		throw err;
 	}
-	await attachRunningNode(node);
-	return state.status === 'running';
-}
-
-/** After a failed join: start the party the tab left and attach to it; a failure here is the store's `error`, not the join's. */
-async function startLeftPartyAgain(movingFrom: string | undefined): Promise<void> {
-	resetNodeState();
-	forgetPartyCards();
-	state.status = 'starting';
-	let node: CadreNode;
-	try {
-		node = await returnToStoredParty(movingFrom);
-	} catch (err) {
-		failed('returnToStoredParty', err);
-		return;
-	}
-	await attachRunningNode(node);
-}
-
-function requireNode(): CadreNode {
-	const node = getCadreNode();
-	if (!node) throw new Error('CadreNode not started');
-	return node;
+	record('dissolve:removed', formerPartyId);
 }
 
 export function currentPeerId(): string | null {
-	return getCadreNode()?.peerId?.toString() ?? null;
+	return edgeNode.node?.peerId?.toString() ?? null;
 }
 
 export function currentStrandId(): string | null {

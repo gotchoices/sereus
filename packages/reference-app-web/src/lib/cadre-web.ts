@@ -1,125 +1,68 @@
 /**
- * cadre-web.ts — CadreNode lifecycle for the browser reference.
+ * cadre-web.ts — the browser reference's cadre node: `@serfab/cadre-core/edge-node`'s edge node
+ * over IndexedDB (`web-edge-platform.ts`), built once here ({@link edgeNode}), and the tab's own
+ * surface over it. The browser counterpart of `reference-app-rn/src/cadre-phone.ts`.
  *
- * This is the browser counterpart to `reference-app-rn/src/cadre-phone.ts`. It
- * brings up a real Sereus stack in the browser:
- *   CadreNode → control network (`CadreControl`) → signed open chat strand.
+ * The edge node owns the lifecycle: starting the party the saved start names (`store.svelte.ts`
+ * → `start`), owner genesis on a party the tab founded, the start saved for the next load, joining
+ * another cadre by invitation with the founded party's strands carried along, dissolving the cadre
+ * left, and acting on an owner's removal of this tab (docs/architecture.md → "The edge node"). It
+ * runs those one at a time, re-applies the store's event handlers to every node it builds before
+ * that node starts, and bounds the owner step.
  *
- * Browser specifics vs the phone:
- *   - WebSocket + circuit-relay + WebRTC(+direct) transports (no TCP in a tab).
- *   - IndexedDB-backed raw storage via `strand-storage.ts` (per-scope handles
- *     pre-opened before the synchronous cadre-core storage provider is hit).
- *   - Ed25519 identity, the tab's owner key (in a slot of its own) and the start record
- *     (`party-start.ts`: the party and how the tab came to it) persisted in the node-local
- *     IndexedDB database across reloads, alongside the per-party durable trusted-owner
- *     anchor and bootstrap-peer store (`node-local-slots.ts`) — same database, shared
- *     fate. That database is
- *     deliberately NOT the control block store: cadre-core scopes the control blocks
- *     by party id, and the party id is read out of this one.
- *   - Transaction profile — the browser is an edge node, like the phone.
+ * This module keeps what is the tab's: the diagnostics getters (the control and node-local
+ * database handles, the control storage, when the identity was first seen, the relay posture),
+ * the signed open chat strand, strand formation (the consent / invitation flow: relay-backed
+ * dialability, responder-side `createOpenInvitation` / `encodeInvitation`, initiator-side
+ * `decodeInvitation` / `formStrand` + closed-strand `addStrand`), cadre invitations, the
+ * `CadreControl` authorization gates ("RBAC") surfaced to diagnostics, the formed-strand e2e hooks
+ * and the `__cadre` debug hook, plus pass-throughs to the edge node's owner-key calls.
  *
- * A tab founds a party on its first load and self-seeds as its owner, under an owner key
- * of its own; the solo chat strand coordinates its own writes, so DML
- * lands on the strand's IndexedDB without any peers. A tab can then join the user's
- * existing cadre by invitation, which moves its one node to that party, carrying the
- * founded party's strands along, and later remove the party it left. The web app has no
- * kit: `web-join.ts` follows the phone kit's sequence (architecture.md → "An app joins an
- * existing cadre"; `packages/cadre-core/src/edge-node/edge-node.ts`) itself, over this module's
- * lifecycle exports.
- *
- * Beyond the solo strand, this module also drives the **consent/invitation
- * strand-formation** flow: relay reservation for dialability, responder-side
- * `createOpenInvitation` / `encodeInvitation`, initiator-side `decodeInvitation`
- * / `formStrand` + closed-strand `addStrand`, plus read-only helpers that surface
- * the `CadreControl` authorization gates ("RBAC") to diagnostics. Live two-party
- * cross-cohort convergence still needs relay infra + a dialable second cadre.
+ * Browser specifics vs the phone: WebSocket + circuit-relay + WebRTC(+direct) transports (no TCP
+ * in a tab); a database per storage scope opened on first use; a plaintext key store, the identity
+ * and owner key in the node-local database, origin-scoped (`node-local-slots.ts`).
  */
 
-import {
-	addBackupOwnerKey as addBackupOwnerKeyTo,
-	CadreNode,
-	createOwnerKey,
-	exportOwnerKey as exportOwnerKeyFrom,
-	generateStrandMemberKey,
-	importOwnerKeyInto,
-	loadOwnerSigner,
-	PersistentTrustedOwnerStore,
-	PersistentBootstrapPeerStore,
-	PersistentEnrolledMachineStore,
-	PersistentStrandNetworkStateStore,
-	controlStorageScope,
-	resolveStunServers,
-} from '@serfab/cadre-core';
+import { generateStrandMemberKey, controlStorageScope } from '@serfab/cadre-core';
 import type {
-	CadreNodeConfig,
-	ExportedOwnerKey,
-	ImportedOwnerKey,
-	KeyStore,
-	OwnerKeyExportOptions,
-	OwnerSigner,
-	StrandInstance,
-	OpenInvitation,
-	FormStrandResult,
-	StrandFormationDisclosure,
-	TrustedOwnerStore,
-	BootstrapPeerStore,
-	EnrolledMachineStore,
-	RelayReservationState,
+	CadreNode,
+	CadreInviteStatus,
+	CadreOwnerKey,
 	CreateCadreInvitationOptions,
 	CreateCadreInvitationResult,
-	CadreInviteStatus,
+	ExportedOwnerKey,
+	FormStrandResult,
+	ImportedOwnerKey,
+	OpenInvitation,
+	OwnerKeyExportOptions,
+	OwnerKeyRemovalPlan,
+	OwnerKeyRemovalResult,
+	RelayReservationState,
+	RemoveOwnerOptions,
+	StrandFormationDisclosure,
+	StrandInstance,
 } from '@serfab/cadre-core';
+import type { EdgeNode, OwnerGenesisResult } from '@serfab/cadre-core/edge-node';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Database } from '@quereus/quereus';
-import {
-	loadOrCreateBrowserPeerKey,
-	DEFAULT_PEER_KEY_NAME,
-	type OptimysticWebDBHandle,
-} from '@optimystic/db-p2p-storage-web';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
-import { webRTC, webRTCDirect } from '@libp2p/webrtc';
-import { resolveRelayAddrs } from './relay-config.js';
-import {
-	openStores,
-	closeStores,
-	storageProvider,
-	getStoreHandle,
-	getStoreStorage,
-	NODE_LOCAL_STORE_KEY,
-} from './strand-storage.js';
-import {
-	kvSlot,
-	ownerKeyStore,
-	partyKvKey,
-	TRUSTED_OWNERS_KV_KEY,
-	BOOTSTRAP_PEERS_KV_KEY,
-	ENROLLED_MACHINES_KV_KEY,
-	STRAND_NETWORK_KV_KEY,
-} from './node-local-slots.js';
-import {
-	foundedStart,
-	newFoundedStart,
-	readPartyStart,
-	writePartyStart,
-	type PartyOrigin,
-	type PartyStart,
-} from './party-start.js';
-import { adoptMovesInto, StrandMoveRecords } from './web-strand-move.js';
-import { finishRemovalAtStart, type UnfinishedRemoval } from './web-dissolve.js';
+import type { OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
+import { createWebEdgeNode } from './web-edge-platform.js';
+import { getStoreHandle, getStoreStorage, NODE_LOCAL_STORE_KEY } from './strand-storage.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
 
+/** The tab's edge node. One per tab: a development reload re-runs this module, which replaces a stopped one. */
+export const edgeNode: EdgeNode = createWebEdgeNode();
+
 /**
- * How the start settled this tab's owner key. A party the tab founded runs owner genesis:
- * `genesis` (this start inserted the founding `OwnerKey` row) or `existing` (the party
- * already lists the tab's owner key). A party the tab joined never does: `enrolled` when
- * the party lists a key the tab holds and it is wired for signing. `member` when the party
- * lists none (on a founded party: the tab's owner key was lost, or removed).
+ * How the start settled this tab's owner key (`EdgeNodeStatus.owner`): `enrolled` when a key
+ * the tab holds is an owner and wired for signing (a founded party's genesis, or a joined party
+ * listing it), `member` when the party lists none, `failed` and `timed-out` for an owner step that
+ * failed (logged by the edge node) or did not settle within its bound. `pending` while no node runs.
  */
-export type OwnerState = 'pending' | 'genesis' | 'existing' | 'enrolled' | 'member' | 'error';
+export type OwnerStanding = OwnerGenesisResult | 'pending';
 
 /**
  * Relay-reservation posture for the dialable side of formation — cadre-core owns
@@ -192,77 +135,48 @@ export interface ControlAuthorizationState {
 	strands: ControlStrandRow[];
 }
 
+/** Node-local record of when this tab's identity was first seen; an app record beside the saved start, so dot-free. */
 const IDENTITY_FIRST_SEEN_KEY = 'identity-first-seen';
 
-/**
- * How often {@link wireJoinedOwnerKey} asks again for an owner key a redemption just granted,
- * and for how long, as the phone kit's `wireJoinedOwnerKey` does. A start that gives up wires
- * the key on the next start.
- */
-const GRANTED_OWNER_RECHECK_MS = 2_000;
-const GRANTED_OWNER_WAIT_MS = 60_000;
-
-/** The founding owner key's name on its `OwnerKey` row; the phone kit's default is `phone`. */
-const TAB_OWNER_KEY_LABEL = 'browser';
-
-let node: CadreNode | null = null;
-let controlStorage: IRawStorage | null = null;
-/**
- * The party-scoped key of the control BLOCK store, set by {@link bringUp} once it knows
- * the party id. Held rather than re-derived at each getter, so there is exactly one
- * place the key is computed and the diagnostics getters cannot drift from the store the
- * node was actually handed. Null before a start and after {@link stopCadre}.
- */
-let controlStoreKey: string | null = null;
-/**
- * The start the running node was started with. The stored record, except during a join,
- * when it is the joined party's unwritten start until a member admits the tab
- * (`web-join.ts` → `switchToParty`), and while a dissolve reads the party it removes
- * ({@link readPartyAlone}). Null before a start and after {@link stopCadre}.
- */
-let partyStart: PartyStart | null = null;
-/** The removal a dissolve marker names that the running node's start could not finish. */
-let unfinishedRemoval: UnfinishedRemoval | null = null;
 let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
-let ownerState: OwnerState = 'pending';
-let ownerError: string | null = null;
-/** The tab's owner-key slot, over the node-local database; open while a node runs. */
-let ownerKeys: KeyStore | null = null;
-let trustedOwnerStore: TrustedOwnerStore | null = null;
-let bootstrapPeerStore: BootstrapPeerStore | null = null;
-let enrolledMachineStore: EnrolledMachineStore | null = null;
-/** The strand move records, over the node-local database; open while a node runs. */
-let moveRecords: StrandMoveRecords | null = null;
-// NOTE: accepted tradeoff — joins live only here and the node is built with `privateKey` and no durable `joinedStrands.store`, with no `strand:discovered` handler, so a strand joined from another party is lost on reload (named in the #18 release note); the plan for `cadre-core-remembers-joined-strands` left the web app as is; revisit if the web app is expected to survive a reload as a joiner. The same applies to strands a join moves into the party the tab joined (`adoptMovesInto`): their rows, party keys and invitations reach that party, and the strands sit in the node's discovered map, carried but not opened here.
+// NOTE: accepted tradeoff — joins live only here. The node is built over the tab's key store, so
+// cadre-core keeps a record of every strand joined from another party there
+// (`KeyStoreJoinedStrandStore`) and the records survive a reload, but the tab registers no
+// `strand:discovered` handler that opens them, so after a reload they are carried, not opened, as
+// are the strands a join moves into the party the tab joined (their rows, party keys and
+// invitations reach that party, and the strands sit in the node's discovered map). Revisit if the
+// web app is expected to survive a reload as a joiner.
 const formedStrands = new Map<string, FormedStrand>();
+
+// The tab's own state follows the edge node's status: the debug hook and the identity's first-seen
+// time exist while a node runs; the chat strand and the formed strands die with it.
+edgeNode.onStatus((status) => {
+	if (status.state === 'running') {
+		exposeDebugHook(status.node);
+		void trackIdentityFirstSeen();
+	} else if (status.state === 'stopped') {
+		clearDebugHook();
+		activeStrandId = null;
+		identityFirstSeenMs = null;
+		formedStrands.clear();
+	}
+});
 
 // ── Getters (read by the store + diagnostics) ─────────────────────────────────
 
+/** The running node, or null; null as soon as a stop, restart, join or dissolve begins tearing it down. */
 export function getCadreNode(): CadreNode | null {
-	return node;
+	return edgeNode.node;
 }
 
 /** The underlying control-network libp2p node — feeds the existing diagnostics. */
 export function getControlNode(): Libp2p | null {
-	return node?.getControlNode() ?? null;
+	return edgeNode.node?.getControlNode() ?? null;
 }
 
 export function getPartyId(): string | null {
-	return partyStart?.partyId ?? null;
-}
-
-/** The start the running node was started with (see {@link partyStart}); null while no node runs. */
-export function getPartyStart(): PartyStart | null {
-	return partyStart;
-}
-
-/**
- * The old cadre's removal a marker names that the running node's start tried to finish and could
- * not (`web-dissolve.ts` → `finishRemovalAtStart`); null when there was none. The next start retries.
- */
-export function getUnfinishedRemoval(): UnfinishedRemoval | null {
-	return unfinishedRemoval;
+	return edgeNode.options?.partyId ?? null;
 }
 
 export function getChatStrandId(): string | null {
@@ -270,30 +184,33 @@ export function getChatStrandId(): string | null {
 }
 
 export function getChatStrand(): StrandInstance | undefined {
+	const node = edgeNode.node;
 	if (!node || !activeStrandId) return undefined;
 	return node.getStrand(activeStrandId);
 }
 
 /**
  * The control BLOCK store's IndexedDB handle — used by diagnostics for per-store row
- * counts. Party-scoped, so it is null until {@link startCadre} has read the party id.
- * NOT the node-local `kv` database (`NODE_LOCAL_STORE_KEY`), which holds identity and
- * anchors rather than blocks.
+ * counts. Party-scoped and opened on the node's first control read, so it is null until
+ * then. NOT the node-local `kv` database (`NODE_LOCAL_STORE_KEY`), which holds the key store
+ * and the node-local records rather than blocks.
  */
 export function getControlDbHandle(): OptimysticWebDBHandle | null {
-	return controlStoreKey ? getStoreHandle(controlStoreKey) : null;
+	const partyId = getPartyId();
+	return partyId ? getStoreHandle(controlStorageScope(partyId)) : null;
 }
 
-/** Control raw storage — used by diagnostics for the backend label + byte estimate. */
+/** Control raw storage — used by diagnostics for the backend label + byte estimate; null until the node has opened it. */
 export function getControlStorage(): IRawStorage | null {
-	return controlStorage;
+	const partyId = getPartyId();
+	return partyId ? getStoreStorage(controlStorageScope(partyId)) : null;
 }
 
 /**
- * The node-local IndexedDB handle — the tab's identity, party id and durable slots
+ * The node-local IndexedDB handle — the tab's key store and node-local records
  * (`node-local-slots.ts`). Separate from {@link getControlDbHandle} since the control
  * block store became party-scoped: diagnostics counts the block object stores on that
- * one and the `kv` object store on this one.
+ * one and the `kv` object store on this one. Null until the edge node's first read opens it.
  */
 export function getNodeLocalDbHandle(): OptimysticWebDBHandle | null {
 	return getStoreHandle(NODE_LOCAL_STORE_KEY);
@@ -303,8 +220,15 @@ export function getIdentityFirstSeenMs(): number | null {
 	return identityFirstSeenMs;
 }
 
-export function getOwnerState(): { state: OwnerState; error: string | null } {
-	return { state: ownerState, error: ownerError };
+/** How the running node's start settled the tab's owner key; `pending` while no node runs. */
+export function getOwnerState(): OwnerStanding {
+	const status = edgeNode.status;
+	return status.state === 'running' ? status.owner : 'pending';
+}
+
+/** Whether this tab's key is wired for owner signing on the running node. */
+export function ownerKeyWired(): boolean {
+	return getOwnerState() === 'enrolled';
 }
 
 /**
@@ -314,17 +238,7 @@ export function getOwnerState(): { state: OwnerState; error: string | null } {
  * circuit addresses that no longer route.
  */
 export function getRelayState(): RelayState {
-	return node?.getRelayReservationState() ?? noRelayState();
-}
-
-/** Node-local trusted-owner anchor — durable across reload once `startCadre` resolves. */
-export function getTrustedOwnerStore(): TrustedOwnerStore | null {
-	return trustedOwnerStore;
-}
-
-/** Node-local bootstrap-peer store — durable across reload once `startCadre` resolves. */
-export function getBootstrapPeerStore(): BootstrapPeerStore | null {
-	return bootstrapPeerStore;
+	return edgeNode.node?.getRelayReservationState() ?? noRelayState();
 }
 
 /** Strands joined this session via the consent/invitation formation flow. */
@@ -332,427 +246,79 @@ export function getFormedStrands(): FormedStrand[] {
 	return [...formedStrands.values()];
 }
 
-// ── Persistence helpers (identity-first-seen, on the node-local DB) ───────────
-
-async function trackIdentityFirstSeen(
-	handle: OptimysticWebDBHandle,
-	keyName: string,
-): Promise<number> {
-	const existingFirstSeen = await handle.get('kv', IDENTITY_FIRST_SEEN_KEY);
-	if (typeof existingFirstSeen === 'string') {
-		const parsed = Number(existingFirstSeen);
-		if (Number.isFinite(parsed)) return parsed;
-	}
-	const now = Date.now();
-	await handle.put('kv', String(now), IDENTITY_FIRST_SEEN_KEY);
-	// Touch the identity key so the first-seen we record is anchored to the same
-	// db the peer key lives in. (Same caveat as the bare-libp2p version: on an
-	// upgrade where the key predates tracking, "first seen" understates age.)
-	void keyName;
-	return now;
+function requireNode(): CadreNode {
+	const node = edgeNode.node;
+	if (!node) throw new Error('CadreNode not started');
+	return node;
 }
 
-// ── Lifecycle ─────────────────────────────────────────────────────────────────
+// ── Identity first seen (a node-local record of the tab's own) ─────────────────
 
 /**
- * Start (or return the running) browser CadreNode and bring the control network
- * up. Idempotent. Does NOT start the chat strand — call {@link addChatStrand}
- * after this resolves so the caller can subscribe to events first.
- *
- * Starts the party `start` names, or the stored start record's, minting a party of
- * this tab's own when there is no record yet. A passed `start` is never written here:
- * a join passes the joined party's start and writes it only once a member admitted the
- * tab, and a rollback passes nothing, so the stored record is read again. Before the
- * node is built, a removal a dissolve marker names is finished (`finishRemovalAtStart`),
- * and the start drops that party as `formerPartyId`.
- *
- * The owner step depends on how the tab came to the party: a founded party runs owner
- * genesis, a joined one only wires the key when the party lists it as an owner
- * ({@link settleOwnerKey}). Then, with the key wired, every strand move record naming
- * this party is adopted ({@link adoptMovesInto}) before the start resolves, so a tab
- * closed after a join's admission finishes the move on its next load. A move record
- * IndexedDB refuses to read fails the start, as an unreadable anchor does.
+ * Read when this identity was first seen, recording now when nothing is recorded yet. A failure
+ * is logged: the age is a diagnostics figure, not something a start depends on. (On an upgrade
+ * where the key predates tracking, "first seen" understates age.)
  */
-export async function startCadre(start?: PartyStart): Promise<CadreNode> {
-	if (node) return node;
+async function trackIdentityFirstSeen(): Promise<void> {
+	const records = edgeNode.nodeLocalRecords();
 	try {
-		const cadre = await bringUp(start);
-		await settleOwnerKey(cadre, requireStart().origin);
-		if (ownerKeyWired()) await adoptMovesInto(cadre, requireMoveRecords());
-		return cadre;
-	} catch (err) {
-		// A failed start closes everything it opened, so the next call starts afresh. Its own
-		// error is the one to report; a failure tearing down after it is only logged.
-		await stopCadre().catch((cleanupErr: unknown) => {
-			console.warn('[reference-app-web] cleaning up after a failed start failed:', cleanupErr);
-		});
-		throw err;
-	}
-}
-
-/**
- * Start a node for `partyId` alone to run `read` on it, then stop it, whatever `read` does: a
- * dissolve reads the party it removes this way (`web-join.ts` → `removeFormerParty`). Nothing
- * is written to the start record, no strand launches, no relay is reserved, no owner step runs
- * and no move is adopted; the node never reaches the store. Throws while a node runs.
- */
-export async function readPartyAlone<T>(partyId: string, read: (cadre: CadreNode) => Promise<T>): Promise<T> {
-	if (node) throw new Error('A node is running; stop it before reading another party');
-	try {
-		return await read(await bringUp(foundedStart(partyId), 'read'));
-	} finally {
-		// The read's own error, if any, is the one to report.
-		await stopCadre().catch((err: unknown) => {
-			console.warn(`[reference-app-web] stopping the node started to read party ${partyId} failed:`, err);
-		});
-	}
-}
-
-/** `run`: the tab's node. `read`: a node started only to read a party ({@link readPartyAlone}). */
-type BringUpPurpose = 'run' | 'read';
-
-/**
- * Open the stores, build and start the node for `start` (the stored record's, or a fresh
- * founded party's, when none is given), set every module-level getter's source, and
- * reserve the relay. The owner step is the caller's: {@link startCadre} settles it by
- * origin, while a join redeems its invitation first (`web-join.ts` → `switchToParty`).
- *
- * `read` builds the node {@link readPartyAlone} needs: no strand admitted, no relay, no debug
- * hook, and no dissolve marker finished, since the party read may be the one a marker names.
- */
-export async function bringUp(start?: PartyStart, purpose: BringUpPurpose = 'run'): Promise<CadreNode> {
-	// Two databases, opened in order, because the second's NAME depends on the first's
-	// contents. The node-local database holds this tab's identity, its start record and
-	// its per-party durable slots; cadre-core's control block store is keyed by party id,
-	// so it cannot be opened until the party id has been read out of the first.
-	await openStores([NODE_LOCAL_STORE_KEY]);
-	const nodeLocalHandle = getStoreHandle(NODE_LOCAL_STORE_KEY)!;
-
-	const named = start ?? (await loadOrCreatePartyStart(nodeLocalHandle));
-	const resolved = purpose === 'run' ? await finishBegunRemoval(nodeLocalHandle, named) : named;
-	const { partyId } = resolved;
-	identityFirstSeenMs = await trackIdentityFirstSeen(nodeLocalHandle, DEFAULT_PEER_KEY_NAME);
-	const privateKey = await loadOrCreateBrowserPeerKey(nodeLocalHandle);
-
-	// Now the party id is known, pre-open the party-scoped control block store — the key
-	// cadre-core's synchronous provider will ask for during `node.start()` below.
-	controlStoreKey = controlStorageScope(partyId);
-	await openStores([controlStoreKey]);
-	controlStorage = getStoreStorage(controlStoreKey);
-
-	// Relay multiaddr(s) from the runtime manifest. When configured, the tab
-	// listens on `/p2p-circuit` (+`/webrtc`) so it can hold a relay reservation
-	// and become dialable for strand formation. Empty → Phase-1 solo posture.
-	const relayAddrs = purpose === 'run' ? resolveRelayAddrs() : [];
-
-	// STUN for the WebRTC upgrade: each relay is also a STUN server. `[]` with no
-	// relay configured and no override (host/LAN candidates still work).
-	const iceServers = resolveStunServers(relayAddrs, import.meta.env.VITE_STUN_URLS);
-
-	// Durable node-local records, in the same node-local IndexedDB database as the
-	// identity/start record above (shared fate — see `node-local-slots.ts`), each under
-	// the party's own key: a tab that joins another cadre switches party, and comes
-	// back to the founded one if the join fails, so one key per tab would have the
-	// joined party's first save overwrite the founded party's records. A read
-	// failure here must propagate (fail the start), unlike the fail-soft owner step
-	// and `reserveRelay` below — an unreadable anchor is a refusal to start, not a
-	// silent downgrade to trusting nobody.
-	trustedOwnerStore = await PersistentTrustedOwnerStore.open(
-		kvSlot(nodeLocalHandle, partyKvKey(TRUSTED_OWNERS_KV_KEY, partyId)),
-		partyId,
-	);
-	bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
-		kvSlot(nodeLocalHandle, partyKvKey(BOOTSTRAP_PEERS_KV_KEY, partyId)),
-		partyId,
-	);
-	// The party's enrolled-machine count, from which the control node declares its
-	// block-repair yardstick at bring-up — before the database that could answer the
-	// question live exists. Unlike the two records above, an unreadable slot here does
-	// NOT fail the start: the count is a repair hint, so `open` cold-starts and the
-	// tab simply declares nothing.
-	enrolledMachineStore = await PersistentEnrolledMachineStore.open(
-		kvSlot(nodeLocalHandle, partyKvKey(ENROLLED_MACHINES_KV_KEY, partyId)),
-		partyId,
-	);
-	// Each strand node's saved network state — the FRET routing table it re-imports
-	// after a reload, with every peer's signed address record. Same database, its own
-	// key; FRET verifies each record at import.
-	const strandNetworkStateStore = await PersistentStrandNetworkStateStore.open(
-		kvSlot(nodeLocalHandle, partyKvKey(STRAND_NETWORK_KV_KEY, partyId)),
-		partyId,
-	);
-	moveRecords = new StrandMoveRecords(nodeLocalHandle);
-	ownerKeys = ownerKeyStore(nodeLocalHandle);
-
-	const config: CadreNodeConfig = {
-		privateKey,
-		controlNetwork: {
-			partyId,
-			// None: a founded party is solo, and a joined one dials the member that admitted
-			// the tab from the bootstrap-peer store, where the redemption retained it.
-			bootstrapNodes: [],
-		},
-		profile: 'transaction', // browser is an edge node, like the phone
-		storage: { provider: storageProvider },
-		network: {
-			transports: [
-				webSockets(),
-				circuitRelayTransport(),
-				webRTC({ rtcConfiguration: { iceServers } }),
-				webRTCDirect(),
-			],
-			// Dialable side of formation listens via circuit relay + WebRTC; solo
-			// tabs (no relay configured) keep the Phase-1 no-listen posture.
-			//
-			// The BARE `/p2p-circuit` entry is load-bearing and deliberate: it puts
-			// libp2p's circuit-relay listener in SEARCH mode, which registers a pending
-			// reservation and never throws when a relay is unreachable. It does NOT make
-			// the tab depend on libp2p's relay *discovery* — cadre-core fills that pending
-			// reservation by asking the relay directly (discovery could never see this
-			// relay; see `relay-reservation.ts`). `network.relayAddrs` would produce the
-			// same bare entry on the control node, and is not set here for a reason that
-			// has since been lifted: it used to make a first reservation attempt that does
-			// not land FATAL to `start()`, and a browser tab must still boot solo when its
-			// relay is down. `network.requireRelay: false` (cadre-core `types.ts`) is now
-			// that same tolerance for a CONFIGURED relay, so the tab could switch — it has
-			// not, so for now it keeps the explicit `reserveRelays` call below: same drive,
-			// fail-soft posture.
-			//
-			// NOTE: `reserveRelays` reaches the CONTROL node only. `network.relayAddrs` is
-			// what gives a strand node a supervised reservation of its own (one per relay,
-			// `strand-network-config.ts`); this tab's strand nodes inherit the bare entry
-			// below and nothing drives it, so they publish no circuit addr of their own and
-			// are not dialable inbound. Switching this config to
-			// `relayAddrs` + `requireRelay: false` is what closes it; the phone takes that
-			// route first (ticket `phone-becomes-reachable-through-a-relay`), and the tab
-			// should follow it rather than invent a second shape.
-			listenAddrs: relayAddrs.length > 0 ? ['/p2p-circuit', '/webrtc'] : [],
-			// Permissive dial gater. libp2p's browser default denies dialing
-			// insecure-WebSocket and private/loopback addresses, which blocks the
-			// reference app from dialing a local/unsecured peer — e.g. an
-			// out-of-band invitation pointing at a `127.0.0.1/.../ws` responder, or
-			// the strand-cohort dial in the formation→convergence e2e. This is a
-			// dev/reference surface (see README), so allow those dials; the
-			// canonical libp2p pattern is `denyDialMultiaddr: () => false`
-			// (per @libp2p/webrtc docs). Applies to both the control node and every
-			// formed strand's cohort node (cadre-core threads it to both).
-			connectionGater: { denyDialMultiaddr: () => false },
-		},
-		strandFilter: purpose === 'run' ? { mode: 'all' } : { mode: 'none' },
-		hibernation: { enabled: false },
-		trustedOwners: { store: trustedOwnerStore },
-		bootstrapPeers: { store: bootstrapPeerStore },
-		enrolledMachines: { store: enrolledMachineStore },
-		strandNetworkState: { store: strandNetworkStateStore },
-	};
-
-	const cadre = new CadreNode(config);
-	node = cadre;
-	partyStart = resolved;
-	await cadre.start();
-	if (purpose === 'read') return cadre;
-
-	exposeDebugHook(cadre);
-	// Fail-soft in cadre-core: an unreachable relay leaves the tab in the solo
-	// posture rather than aborting startup. This resolves once the FIRST attempt
-	// settles — `retrying` if it failed — and cadre-core keeps a supervisor going
-	// that recovers the reservation on its own if the relay shows up later.
-	await cadre.reserveRelays(relayAddrs);
-
-	return cadre;
-}
-
-/**
- * The stored start record, or a fresh founded party's, written in one `put` before it is
- * used. A tab with only the old `party-id` key (before the start record) starts a fresh
- * party: no compatibility read.
- */
-async function loadOrCreatePartyStart(handle: OptimysticWebDBHandle): Promise<PartyStart> {
-	const stored = await readPartyStart(handle);
-	if (stored) return stored;
-	const fresh = newFoundedStart();
-	await writePartyStart(handle, fresh);
-	return fresh;
-}
-
-/** `finishRemovalAtStart`, keeping what it could not finish for {@link getUnfinishedRemoval}. */
-async function finishBegunRemoval(handle: OptimysticWebDBHandle, starting: PartyStart): Promise<PartyStart> {
-	const { start, unfinished } = await finishRemovalAtStart(handle, starting);
-	unfinishedRemoval = unfinished;
-	return start;
-}
-
-/** {@link getPartyStart}, throwing while no node runs. */
-export function requireStart(): PartyStart {
-	if (!partyStart) throw new Error('CadreNode not started');
-	return partyStart;
-}
-
-/** The strand move records, over the node-local database; throws while no node runs. */
-export function requireMoveRecords(): StrandMoveRecords {
-	if (!moveRecords) throw new Error('CadreNode not started');
-	return moveRecords;
-}
-
-/** The tab's owner-key slot, over the node-local database; throws while no node runs. */
-function requireOwnerKeys(): KeyStore {
-	if (!ownerKeys) throw new Error('CadreNode not started');
-	return ownerKeys;
-}
-
-// ── Owner step ────────────────────────────────────────────────────────────────
-
-/**
- * A founded party runs owner genesis; a joined one only wires a key the party already lists
- * (`granted`: a redemption has just made the key an owner, so wait for the row).
- */
-function settleOwnerKey(cadre: CadreNode, origin: PartyOrigin, granted = false): Promise<void> {
-	return origin === 'founded' ? runOwnerGenesis(cadre) : wireJoinedOwnerKey(cadre, granted);
-}
-
-/** Whether this tab's key is wired for owner signing on the running node, whichever way the start settled it. */
-export function ownerKeyWired(): boolean {
-	return ownerState === 'genesis' || ownerState === 'existing' || ownerState === 'enrolled';
-}
-
-/**
- * Solo owner self-genesis, for a party this tab founded. A single-node cadre must
- * seed itself as the owner before it can author control-network writes. The phone
- * kit's founded-party rule (`cadre-core` `edge-node/config.ts` → `enrollFoundedOwner`;
- * one shared copy is `edge-node-bring-up-shared-by-every-kit`): on a party
- * with no `OwnerKey` row, the owner slot's key (created now unless the slot holds one)
- * is inserted as the founding row and wired; on a party that has owners, the slot's
- * key is wired only when it is a live owner, and no key is created, since a new one
- * could not be seated without another owner's signature. Never for a party the tab
- * joined: genesis on a party whose control store has not arrived would seat the tab's
- * key as a founding owner.
- *
- * Fail-soft: the Phase-1 chat round-trip needs no peers and does not
- * depend on owner, so a genesis failure is captured for diagnostics rather
- * than aborting node startup.
- *
- * NOTE: fail-soft covers thrown errors, not a call that never settles — a hung
- * `ensureOwnerKey` would leave `startCadre` awaiting forever with `ownerState`
- * stuck at its initial value. Nothing hangs today: `e2e/solo/diagnostics.spec.ts`
- * asserts `diag-owner` reaches `genesis|existing` on a solo boot, and
- * `cadre-core/test/control-database-solo.spec.ts` covers the no-listen-address
- * control path under explicit deadlines. If that changes, bound the operation in
- * cadre-core rather than wrapping each call site here. The same holds for the joined
- * party's {@link wireJoinedOwnerKey}: its deadline bounds the re-asks, not one
- * `wireOwnKeyIfOwner` call (the kit races each against a timer; this copy does not).
- */
-async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
-	try {
-		ownerState = await settleFoundedOwnerKey(cadre, requireOwnerKeys());
-		ownerError = null;
-	} catch (err) {
-		ownerState = 'error';
-		ownerError = err instanceof Error ? err.message : String(err);
-		console.warn('[reference-app-web] owner self-genesis failed:', err);
-	}
-}
-
-async function settleFoundedOwnerKey(cadre: CadreNode, keyStore: KeyStore): Promise<OwnerState> {
-	const controlDb = cadre.getControlDatabase();
-	if (!controlDb) {
-		throw new Error('control database unavailable after start; cannot run owner genesis');
-	}
-	const held = await loadOwnerSigner(keyStore);
-	if (await controlDb.hasOwnerKey()) {
-		return held ? existingIfOwner(cadre, held) : 'member';
-	}
-	const founding = held ?? (await createOwnerKey(keyStore));
-	if (!(await controlDb.ensureOwnerKey(founding.publicKey, TAB_OWNER_KEY_LABEL))) {
-		// A row arrived between the two reads: the party has an owner now, so judge the key as above.
-		return existingIfOwner(cadre, founding);
-	}
-	await cadre.useOwnerSigner(founding);
-	return 'genesis';
-}
-
-async function existingIfOwner(cadre: CadreNode, signer: OwnerSigner): Promise<OwnerState> {
-	return (await cadre.wireOwnKeyIfOwner(signer)) ? 'existing' : 'member';
-}
-
-/**
- * The owner step of a party this tab joined: wire a key only when the party lists it as a
- * live owner, never insert an `OwnerKey` row, so a joined tab can neither seat itself as a
- * founder nor anchor a key that is no owner's. The owner slot's key is tried first (a backup
- * imported here), then `CadreNode.wireOwnKeyIfOwner`'s default, the identity key, which an
- * owner-granting invitation seats until owner grants seat a key of their own. `enrolled` when
- * wired, `member` otherwise. Fail-soft as genesis is.
- *
- * `granted`: a redemption has just made this key an owner, so a key not listed yet means
- * the row has not reached this node, not that it is no owner. It is asked again every 2 s
- * for up to a minute; a start that gives up wires it on the next start.
- */
-export async function wireJoinedOwnerKey(cadre: CadreNode, granted: boolean): Promise<void> {
-	try {
-		const deadline = Date.now() + GRANTED_OWNER_WAIT_MS;
-		const held = await loadOwnerSigner(requireOwnerKeys());
-		while (!(await wireJoinedOwner(cadre, held))) {
-			if (!granted || Date.now() >= deadline) {
-				ownerState = 'member';
-				ownerError = null;
-				return;
-			}
-			await new Promise((resolve) => setTimeout(resolve, GRANTED_OWNER_RECHECK_MS));
+		const stored = await records.get(IDENTITY_FIRST_SEEN_KEY);
+		const parsed = stored === undefined ? Number.NaN : Number(stored);
+		if (Number.isFinite(parsed)) {
+			identityFirstSeenMs = parsed;
+			return;
 		}
-		ownerState = 'enrolled';
-		ownerError = null;
+		const now = Date.now();
+		await records.set(IDENTITY_FIRST_SEEN_KEY, String(now));
+		identityFirstSeenMs = now;
 	} catch (err) {
-		ownerState = 'error';
-		ownerError = err instanceof Error ? err.message : String(err);
-		console.warn('[reference-app-web] wiring the joined owner key failed:', err);
+		console.warn('[reference-app-web] could not read or record when this identity was first seen:', err);
 	}
-}
-
-/**
- * Wire `held`, the owner slot's key, when the party lists it, else `wireOwnKeyIfOwner`'s
- * default: the signer already wired, else the identity key. A node takes one owner signer, so
- * `held` is tried only while none is wired.
- */
-async function wireJoinedOwner(cadre: CadreNode, held: OwnerSigner | undefined): Promise<boolean> {
-	if (held && cadre.getOwnerSigner() === null && (await cadre.wireOwnKeyIfOwner(held))) return true;
-	return await cadre.wireOwnKeyIfOwner();
 }
 
 // ── Owner keys (the Cadre page's owner-key section) ───────────────────────────
-// Listing and removal are the node's own calls (`listOwnerKeys`, `planOwnerKeyRemoval`,
-// `removeOwner`), as the machine list calls the node; these three also need the tab's owner slot.
+// Pass-throughs to the edge node, which runs them in turn with its transitions: genesis creates
+// the owner slot's key inside a start, and the slot's check-then-set must not race an import.
+
+/** The cadre's live owner keys (`CadreNode.listOwnerKeys`); throws while no node runs. */
+export function listOwnerKeys(): Promise<CadreOwnerKey[]> {
+	return edgeNode.listOwnerKeys();
+}
 
 /**
  * Make a backup owner key: seat a new key as an owner, signed by this tab's owner key, and
  * return its export (cadre-core's `addBackupOwnerKey`). Nothing is kept in the tab, so the page
  * shows or saves `exportText` once.
  */
-export async function addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
-	if (!node) throw new Error('CadreNode not started');
-	return await addBackupOwnerKeyTo(node, options);
+export function addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
+	return edgeNode.addBackupOwnerKey(options);
 }
 
 /**
  * This tab's own owner key as export text, with the key it holds, which is not the key the node
  * signs with on a tab signing with the identity key an owner-granting invitation seated; throws
- * when the tab holds none of its own.
+ * when the tab holds none of its own. Works with no node running.
  */
-export async function exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
-	return await exportOwnerKeyFrom(requireOwnerKeys(), options);
+export function exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
+	return edgeNode.exportOwnerKey(options);
 }
 
 /**
  * Import owner-key text into the tab's owner slot, wiring the key when the running party lists
- * it (cadre-core's `importOwnerKeyInto`); the owner state then reads as the key being wired. The
- * page imports through `store.svelte.ts` `importOwnerKey`, which pulls that state into the store.
+ * it; the edge node then reports `running` again with the owner `enrolled`, which the store follows.
  */
-export async function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
-	if (!node) throw new Error('CadreNode not started');
-	const imported = await importOwnerKeyInto(requireOwnerKeys(), node, text, passphrase);
-	if (imported.wired && !ownerKeyWired()) {
-		ownerState = requireStart().origin === 'founded' ? 'existing' : 'enrolled';
-		ownerError = null;
-	}
-	return imported;
+export function importOwnerKey(text: string, passphrase?: string): Promise<ImportedOwnerKey> {
+	return edgeNode.importOwnerKey(text, passphrase);
+}
+
+/** What `removeOwner(key)` would do, for the confirmation step. */
+export function planOwnerKeyRemoval(key: string): Promise<OwnerKeyRemovalPlan> {
+	return edgeNode.planOwnerKeyRemoval(key);
+}
+
+/** Remove an owner key, re-vouching first the dependents `options.revouch` keeps. */
+export function removeOwner(key: string, options: RemoveOwnerOptions = {}): Promise<OwnerKeyRemovalResult> {
+	return edgeNode.removeOwner(key, options);
 }
 
 // ── Strand formation (consent / invitation flow) ──────────────────────────────
@@ -795,9 +361,6 @@ export interface CreatedInvitation {
  * stays valid, since a joiner redeeming it before the strand runs is refused
  * retryably.
  *
- * The strand's raw storage is pre-opened before founding (the provider is
- * synchronous), mirroring the Phase-1 chat-strand bring-up in {@link addChatStrand}.
- *
  * Returns the generated strand id + the membership key the strand ACTUALLY runs
  * under (the resolved row's, not necessarily the one minted here) so the caller
  * can bind a `FormationInvite` to the strand (provision-then-record) and track it.
@@ -806,7 +369,6 @@ async function createClosedChatStrand(
 	cadre: CadreNode,
 ): Promise<{ strandId: string; memberPrivateKey: string }> {
 	const strandId = crypto.randomUUID();
-	await openStores([strandId]);
 	const { strandRow, ready } = await cadre.foundStrand({
 		strandId,
 		type: 'c',
@@ -847,8 +409,7 @@ async function createClosedChatStrand(
 export async function createInvitation(
 	expirationMs: number = 24 * 60 * 60 * 1000,
 ): Promise<CreatedInvitation> {
-	if (!node) throw new Error('CadreNode not started');
-	const cadre = node;
+	const cadre = requireNode();
 	// Live read: a reservation lost since start now fails this guard, so the
 	// invitation is refused with a clear message instead of embedding circuit
 	// addresses that no longer route.
@@ -884,31 +445,26 @@ export async function createInvitation(
  * against the responder's cadre, then launch the resulting **closed** strand
  * against the same signed chat schema using the host's read-gating membership key
  * (`FormStrandResult.memberPrivateKey`, delivered after consent).
- *
- * The closed strand's raw storage is pre-opened before `addStrand` (the provider
- * is synchronous), mirroring the Phase-1 chat-strand bring-up.
  */
 export async function joinViaInvitation(
 	encoded: string,
 	disclosure: StrandFormationDisclosure = {},
 ): Promise<FormedStrand> {
-	if (!node) throw new Error('CadreNode not started');
-	const cadre = node;
+	const cadre = requireNode();
 	const invitation: OpenInvitation = cadre.decodeInvitation(encoded.trim());
 	const result: FormStrandResult = await cadre.formStrand(invitation, {
-		partyId: partyStart?.partyId,
+		partyId: getPartyId() ?? undefined,
 		...disclosure,
 	});
 
-	// Provision the closed strand locally: pre-open its IndexedDB store, then add
-	// it with the host's read-gating membership key. That key is `memberPrivateKey`
-	// — the closed strand's secret the host provisions and returns over the
-	// formation protocol after consent (provision-then-record) — NOT
-	// `invitePrivateKey` (the initiator's own generated signing key, which is `''`
-	// on the manager's dial path and cannot authorize reads). A closed-strand
-	// `formStrand` always returns this key; its absence means the host strand was
-	// not closed or the responder provisioned none, so fail loudly rather than
-	// attach with a key that cannot read. Mirrors RN
+	// Provision the closed strand locally with the host's read-gating membership
+	// key. That key is `memberPrivateKey` — the closed strand's secret the host
+	// provisions and returns over the formation protocol after consent
+	// (provision-then-record) — NOT `invitePrivateKey` (the initiator's own generated
+	// signing key, which is `''` on the manager's dial path and cannot authorize
+	// reads). A closed-strand `formStrand` always returns this key; its absence
+	// means the host strand was not closed or the responder provisioned none, so
+	// fail loudly rather than attach with a key that cannot read. Mirrors RN
 	// `joinClosedChatStrandFromFormation` (`reference-app-rn/src/chat-strand.ts`).
 	if (!result.memberPrivateKey) {
 		throw new Error(
@@ -916,7 +472,6 @@ export async function joinViaInvitation(
 				'responder provisioned no member key; cannot attach a closed chat strand',
 		);
 	}
-	await openStores([result.strandId]);
 	await cadre.addStrand({
 		strandRow: {
 			Id: result.strandId,
@@ -947,8 +502,7 @@ export async function joinViaInvitation(
  * for signing and enrolled in `OwnerKey`): only an owner can mint a cadre invitation.
  */
 export async function isOwner(): Promise<boolean> {
-	if (!node) throw new Error('CadreNode not started');
-	return await node.isOwner();
+	return await requireNode().isOwner();
 }
 
 /**
@@ -956,8 +510,7 @@ export async function isOwner(): Promise<boolean> {
  * revoked), so an owner is not offered an invitation for an app the cadre holds.
  */
 export async function isMemberPeer(peerId: string): Promise<boolean> {
-	if (!node) throw new Error('CadreNode not started');
-	const controlDb = node.getControlDatabase();
+	const controlDb = requireNode().getControlDatabase();
 	if (!controlDb) throw new Error('control database unavailable');
 	return (await controlDb.queryCadrePeers()).some((row) => row.peerId === peerId);
 }
@@ -969,14 +522,12 @@ export async function isMemberPeer(peerId: string): Promise<boolean> {
 export async function createCadreInvitation(
 	options: CreateCadreInvitationOptions,
 ): Promise<CreateCadreInvitationResult> {
-	if (!node) throw new Error('CadreNode not started');
-	return node.createCadreInvitation(options);
+	return requireNode().createCadreInvitation(options);
 }
 
 /** Every cadre invitation the node holds, with its standing. Thin pass-through to `CadreNode.listCadreInvitations`. */
 export async function listCadreInvitations(): Promise<CadreInviteStatus[]> {
-	if (!node) throw new Error('CadreNode not started');
-	return node.listCadreInvitations();
+	return requireNode().listCadreInvitations();
 }
 
 /**
@@ -984,8 +535,7 @@ export async function listCadreInvitations(): Promise<CadreInviteStatus[]> {
  * held here. Thin pass-through to `CadreNode.withdrawCadreInvitation`.
  */
 export async function withdrawCadreInvitation(key: string): Promise<boolean> {
-	if (!node) throw new Error('CadreNode not started');
-	return node.withdrawCadreInvitation(key);
+	return requireNode().withdrawCadreInvitation(key);
 }
 
 // ── RBAC / authorization gate (observability) ─────────────────────────────────
@@ -1001,7 +551,7 @@ export async function withdrawCadreInvitation(key: string): Promise<boolean> {
  * succeeds — a regression worth surfacing.
  */
 export async function attemptUnauthorizedStrandWrite(): Promise<OwnerGateProbe> {
-	if (!node) throw new Error('CadreNode not started');
+	const node = requireNode();
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) throw new Error('control database unavailable');
 	const db = controlDb.getDatabase();
@@ -1036,8 +586,7 @@ export async function attemptUnauthorizedStrandWrite(): Promise<OwnerGateProbe> 
  * over the control database's Quereus handle — no network round-trips.
  */
 export async function readControlAuthorizationState(): Promise<ControlAuthorizationState> {
-	if (!node) throw new Error('CadreNode not started');
-	const controlDb = node.getControlDatabase();
+	const controlDb = requireNode().getControlDatabase();
 	if (!controlDb) throw new Error('control database unavailable');
 	const db = controlDb.getDatabase();
 
@@ -1084,11 +633,12 @@ async function countRows(db: Database, table: string): Promise<number> {
 	return 0;
 }
 
+// ── The chat strand ───────────────────────────────────────────────────────────
+
 /**
- * Add the signed open chat strand. Pre-opens the strand's IndexedDB handle
- * (the provider is synchronous), then `addStrand`s an open strand. On a solo
- * node the strand's cohort is itself — it coordinates its own writes — so DML
- * lands on the strand's IndexedDB with no other peers needed.
+ * Add the signed open chat strand. On a solo node the strand's cohort is itself — it
+ * coordinates its own writes — so DML lands on the strand's IndexedDB with no other
+ * peers needed. Its database opens on first use (`strand-storage.ts`).
  *
  * Local to the tab, whichever party the node runs: `founder: true` with no control row
  * puts it in no strand bundle, so a join does not move it, and its database is keyed by
@@ -1098,48 +648,13 @@ async function countRows(db: Database, table: string): Promise<number> {
  * schema/version — the signature gate the reference is meant to exercise.
  */
 export async function addChatStrand(): Promise<StrandInstance> {
-	if (!node) throw new Error('CadreNode not started');
-	await openStores([CHAT_STRAND_ID]);
-	const instance = await node.addStrand({
+	const instance = await requireNode().addStrand({
 		strandRow: { Id: CHAT_STRAND_ID, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
 		sAppConfig: getChatSAppConfig(),
 		founder: true,
 	});
 	activeStrandId = CHAT_STRAND_ID;
 	return instance;
-}
-
-/**
- * Stop the node and release all IndexedDB handles. The node's references are cleared and
- * the stores closed even when `node.stop()` throws (a node whose start failed partway),
- * so a join's rollback can start the left party again over a clean slate; the throw is
- * rethrown after.
- */
-export async function stopCadre(): Promise<void> {
-	const stopping = node;
-	node = null;
-	try {
-		if (stopping) await stopping.stop();
-	} finally {
-		clearDebugHook();
-		await closeStores();
-		controlStorage = null;
-		controlStoreKey = null;
-		partyStart = null;
-		activeStrandId = null;
-		identityFirstSeenMs = null;
-		ownerState = 'pending';
-		ownerError = null;
-		unfinishedRemoval = null;
-		formedStrands.clear();
-		// The slot closures captured `nodeLocalHandle`, now closed by `closeStores()`
-		// above — drop the references so nothing can write through a closed handle.
-		trustedOwnerStore = null;
-		bootstrapPeerStore = null;
-		enrolledMachineStore = null;
-		moveRecords = null;
-		ownerKeys = null;
-	}
 }
 
 // ── Formed-strand connectivity + DML (e2e formation→convergence hooks) ────────
@@ -1159,8 +674,7 @@ export async function stopCadre(): Promise<void> {
  * Targets the **strand-level** instance (`getStrand`), never the control node.
  */
 function requireStrandInstance(strandId: string): StrandInstance {
-	if (!node) throw new Error('CadreNode not started');
-	const instance = node.getStrand(strandId);
+	const instance = requireNode().getStrand(strandId);
 	if (!instance) {
 		throw new Error(`strand ${strandId} not found on this node`);
 	}
@@ -1262,21 +776,21 @@ export async function readChatMessages(
 // ── Debug hook ────────────────────────────────────────────────────────────────
 
 /**
- * Read-only `__cadre` global for devtools / future e2e — mirrors the old
- * `__optimystic` hook but surfaces cadre state (party id, control peer id +
- * connection count, chat strand status) without reaching into module scope.
+ * Read-only `__cadre` global for devtools / e2e — installed whenever a node reaches `running`
+ * and removed on `stopped`. Surfaces cadre state (party id, the running start, control peer id +
+ * connection count, chat strand status, the owner standing) without reaching into module scope.
  */
 function exposeDebugHook(cadre: CadreNode): void {
 	if (typeof window === 'undefined') return;
 	(window as unknown as { __cadre?: unknown }).__cadre = {
-		getPartyId: () => partyStart?.partyId ?? null,
-		// The start record as the running node was started from, so a test can see how
-		// the tab came to its party (`origin`) and which party it left (`formerPartyId`).
-		getPartyStart: () => partyStart,
+		getPartyId: () => getPartyId(),
+		// The options the running node was started with, so a test can see how the tab came to
+		// its party (`origin`) and which party it left (`formerPartyId`).
+		getPartyStart: () => edgeNode.options,
 		getControlPeerId: () => cadre.getControlNode()?.peerId.toString() ?? null,
 		getConnectionCount: () => cadre.getControlNode()?.getConnections().length ?? 0,
 		getStrandStatus: () => getChatStrand()?.status ?? null,
-		getOwnerState: () => ownerState,
+		getOwnerState: () => getOwnerState(),
 		// Whether this tab's key is one of the running party's `OwnerKey` rows — what a joined
 		// member must NOT be after a reload (genesis on a joined party would insert it).
 		isOwner: () => isOwner(),

@@ -6,18 +6,25 @@
  *
  * Module state, not component state: the router unmounts the page on every route change, and
  * a join waits for a member for as long as the invitation allows, so the flow has to survive
- * a visit to Home. The node it switches is the store's (`store.svelte.ts` → `joinCadre`,
+ * a visit to Home. The node it switches is the edge node's (`store.svelte.ts` → `joinCadre`,
  * `retryStrandMove`, `dissolveFormerParty`).
  */
-import { getPartyStart, getUnfinishedRemoval, ownerKeyWired } from './cadre-web.js';
-import { joinRequestText, pendingStrandMove, type JoinOutcome } from './web-join.js';
+import { StrandMoveNotOwnerError, type StrandMoveReport } from '@serfab/cadre-core';
+import {
+	FormerPartyNotEmptyError,
+	StrandMovePendingError,
+	type EdgeNodeOptions,
+	type JoinCadreResult,
+	type StrandMoveOutcome,
+	type UnfinishedRemoval,
+} from '@serfab/cadre-core/edge-node';
+import { edgeNode, ownerKeyWired } from './cadre-web.js';
+import { joinRequestText } from './web-join.js';
 import { dissolveFormerParty, joinCadre, nodeState, retryStrandMove as retryMoveOnNode } from './store.svelte.js';
 import { pushError } from './diagnostics.svelte.js';
 import { flowForProgress, JoinCancelledError, joinFailureNotice, type JoinFlow } from './join-flow.js';
-import { FormerPartyNotEmptyError, StrandMovePendingError, type UnfinishedRemoval } from './web-dissolve.js';
 import { StoreDeleteBlockedError } from './strand-storage.js';
-import type { PartyStart } from './party-start.js';
-import type { StrandMoveOutcome } from './web-strand-move.js';
+import { errorMessage } from './cadre-format.js';
 
 /** This tab's join request, read off the running node; it is the same in every party. */
 export type JoinRequest =
@@ -49,7 +56,7 @@ let joinAbort: AbortController | null = null;
  */
 let movedSoFar = 0;
 /** The start {@link resumeUnfinishedJoin} last looked at: it shows what a start left once, not on every visit. */
-let resumedFor: PartyStart | null = null;
+let resumedFor: EdgeNodeOptions | null = null;
 
 export function joinCadreState(): JoinCadreState {
 	return state;
@@ -66,7 +73,7 @@ export function refreshJoinRequest(): void {
 		state.request = { state: 'ready', text: joinRequestText(), peerId };
 	} catch (err) {
 		console.warn('[cadre] could not encode this tab’s join request:', err);
-		state.request = { state: 'failed', error: err instanceof Error ? err.message : String(err) };
+		state.request = { state: 'failed', error: errorMessage(err) };
 	}
 }
 
@@ -83,7 +90,7 @@ export async function joinExistingCadre(): Promise<void> {
 	joinAbort = controller;
 	state.failure = null;
 	state.flow = { step: 'joining' };
-	let joined: JoinOutcome;
+	let joined: JoinCadreResult;
 	try {
 		joined = await joinCadre(encoded, {
 			signal: controller.signal,
@@ -111,7 +118,7 @@ export async function joinExistingCadre(): Promise<void> {
  * Admitted: finish the move the join reported, then remove the cadre the tab left, as far as each
  * goes now; what is left shows as a step.
  */
-async function settleAfterJoin(joined: JoinOutcome): Promise<void> {
+async function settleAfterJoin(joined: JoinCadreResult): Promise<void> {
 	const move = joined.strandMove;
 	movedSoFar = move && 'report' in move ? move.report.moved.length : 0;
 	const stall = moveStall(move);
@@ -134,6 +141,12 @@ function moveStall(move: StrandMoveOutcome | undefined): MoveStall | null {
 	return { reason: 'adoption-failed', message: move.error.message };
 }
 
+/** Why a retried move threw: the tab's key is still no owner of the joined party, or the adoption failed (or the node stopped meanwhile). */
+function retryStall(err: unknown): MoveStall {
+	if (err instanceof StrandMoveNotOwnerError) return { reason: 'owner-key-not-wired' };
+	return { reason: 'adoption-failed', message: errorMessage(err) };
+}
+
 /**
  * Why a move the tab still records has not finished, when nothing reported it: the tab's key is
  * not an owner of the joined party yet, or an adoption failed.
@@ -146,7 +159,7 @@ function recordedMoveStall(): MoveStall {
 async function incompleteMoveFlow(stall: MoveStall): Promise<JoinFlow> {
 	let waiting: string[] = [];
 	try {
-		waiting = (await pendingStrandMove())?.strandIds ?? [];
+		waiting = (await edgeNode.pendingStrandMove())?.strandIds ?? [];
 	} catch (err) {
 		// The step still shows, its count read as "some".
 		console.warn('[cadre] could not read the strands still waiting to move:', err);
@@ -177,7 +190,7 @@ async function dissolveOldCadre(discard?: string[]): Promise<void> {
 /** The step a refused or failed dissolve leaves the flow at. */
 function flowAfterRefusedDissolve(err: unknown): JoinFlow {
 	if (err instanceof StrandMovePendingError) {
-		return { step: 'move-incomplete', moved: movedSoFar, waiting: err.strandIds, ...recordedMoveStall() };
+		return { step: 'move-incomplete', moved: movedSoFar, waiting: err.pending.strandIds, ...recordedMoveStall() };
 	}
 	if (err instanceof FormerPartyNotEmptyError) {
 		// Other machines may hold the old cadre's data, so they are never discarded from here.
@@ -195,15 +208,15 @@ function flowAfterRefusedDissolve(err: unknown): JoinFlow {
  *
  * NOTE: a removal that finished and whose start then failed lands on `old-cadre-remains` (no node
  * runs, so nothing says the old cadre is gone; Home shows the start's error). If that shows up in
- * practice, read the start record here to tell the two apart.
+ * practice, read the saved start here to tell the two apart.
  */
 function flowAfterFailedDissolve(err: unknown): JoinFlow {
 	if (err instanceof StoreDeleteBlockedError) return { step: 'removal-unfinished', blocked: true };
-	const unfinished = getUnfinishedRemoval();
+	const unfinished = edgeNode.unfinishedRemoval;
 	if (unfinished) return unfinishedRemovalFlow(unfinished);
-	const start = getPartyStart();
+	const start = edgeNode.options;
 	if (start && start.formerPartyId === undefined) return doneFlow();
-	return { step: 'old-cadre-remains', error: err instanceof Error ? err.message : String(err) };
+	return { step: 'old-cadre-remains', error: errorMessage(err) };
 }
 
 function unfinishedRemovalFlow(unfinished: UnfinishedRemoval): JoinFlow {
@@ -222,11 +235,11 @@ function unfinishedRemovalFlow(unfinished: UnfinishedRemoval): JoinFlow {
  * the answer per old party in the node-local database.
  */
 export async function resumeUnfinishedJoin(): Promise<void> {
-	const start = getPartyStart();
+	const start = edgeNode.options;
 	if (!start || start === resumedFor) return;
 	resumedFor = start;
 	if (state.flow) return;
-	const unfinished = getUnfinishedRemoval();
+	const unfinished = edgeNode.unfinishedRemoval;
 	if (unfinished) {
 		movedSoFar = 0;
 		state.flow = unfinishedRemovalFlow(unfinished);
@@ -235,7 +248,7 @@ export async function resumeUnfinishedJoin(): Promise<void> {
 	if (start.formerPartyId === undefined) return;
 	let waiting: string[] | undefined;
 	try {
-		waiting = (await pendingStrandMove())?.strandIds;
+		waiting = (await edgeNode.pendingStrandMove())?.strandIds;
 	} catch (err) {
 		// Removing the old cadre reads the same record, and says what failed.
 		console.warn('[cadre] could not read the strand move a join left:', err);
@@ -251,19 +264,17 @@ export async function resumeUnfinishedJoin(): Promise<void> {
 export async function retryStrandMove(): Promise<void> {
 	if (flowRunning(state.flow)) return;
 	state.flow = { step: 'moving-strands' };
-	let outcome: StrandMoveOutcome | undefined;
+	let report: StrandMoveReport | undefined;
 	try {
-		outcome = await retryMoveOnNode();
+		report = await retryMoveOnNode();
 	} catch (err) {
-		// Only when the node stopped meanwhile; an adoption failure comes back as `deferred`.
-		state.flow = await incompleteMoveFlow({ reason: 'adoption-failed', message: err instanceof Error ? err.message : String(err) });
+		state.flow = await incompleteMoveFlow(retryStall(err));
 		return;
 	}
 	// An adoption counts as moved every strand seated so far, those an earlier attempt seated included.
-	if (outcome && 'report' in outcome) movedSoFar = outcome.report.moved.length;
-	const stall = moveStall(outcome);
-	if (stall) {
-		state.flow = await incompleteMoveFlow(stall);
+	if (report) movedSoFar = report.moved.length;
+	if (report && report.failed.length > 0) {
+		state.flow = await incompleteMoveFlow({ reason: 'partial' });
 	} else {
 		await dissolveOldCadre();
 	}

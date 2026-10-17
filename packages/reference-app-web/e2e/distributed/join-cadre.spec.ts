@@ -16,8 +16,8 @@ import { startCadreMember, type CadreMemberHandle } from '../fixtures/cadre-memb
  * member invitation is allowed.
  *
  * The reload is the point. A party the tab JOINED must never run owner genesis: with the
- * start record's `origin` ignored, every start would run `ensureOwnerKey` on A and wire the
- * tab's key as an owner, so Home would read `genesis` or `existing` instead of `member`, and
+ * saved start's `origin` ignored, every start would run `ensureOwnerKey` on A and wire the
+ * tab's key as an owner, so Home would read `enrolled` instead of `member`, and
  * the tab could seat its own key as a founding `OwnerKey` row of a cadre it merely joined.
  * After the reload the tab must still be in A, still a `member`, with its key absent from A's
  * `OwnerKey` rows (`__cadre.isOwner()` false) and its start record saying `joined`.
@@ -33,7 +33,8 @@ import { startCadreMember, type CadreMemberHandle } from '../fixtures/cadre-memb
 /** The `__cadre` debug hook surface this spec drives (see src/lib/cadre-web.ts). */
 interface CadreHooks {
 	isOwner(): Promise<boolean>;
-	getPartyStart(): { partyId: string; origin: 'founded' | 'joined'; formerPartyId?: string } | null;
+	/** The options the running node was started with (`EdgeNode.options`). */
+	getPartyStart(): { partyId: string; origin?: 'founded' | 'joined'; formerPartyId?: string } | null;
 }
 
 async function isOwner(page: Page): Promise<boolean> {
@@ -106,7 +107,7 @@ test.describe('Tier 2 / join an existing cadre', () => {
 		expect(peerId).toBeTruthy();
 		expect(partyB).toBeTruthy();
 		expect(partyB).not.toBe(a.partyId);
-		await expect(page.getByTestId('home-owner')).toHaveText(/genesis|existing/);
+		await expect(page.getByTestId('home-owner')).toHaveText('enrolled');
 
 		// 2. A mints a MEMBER invitation for this tab alone, as the owner's "Add a device or
 		//    app" would from the tab's pasted request.
@@ -130,14 +131,16 @@ test.describe('Tier 2 / join an existing cadre', () => {
 		expect(await a.listMembers()).toContain(peerId);
 		expect(await isOwner(page)).toBe(false);
 
-		// 5. Reload: the start record names A as joined, so the start wires no owner key and
-		//    inserts none. `member`, not `genesis`/`existing`, is what tells the two apart.
+		// 5. Reload: the saved start names A as joined, so the start wires no owner key and
+		//    inserts none. `member`, not `enrolled`, is what tells the two apart.
 		await page.reload();
 		await expect(page.getByTestId('home-status')).toHaveText('running', { timeout: 60_000 });
 		await expect(page.getByTestId('home-party-id')).toHaveText(a.partyId);
 		await expect(page.getByTestId('home-owner')).toHaveText('member');
 		expect(await isOwner(page)).toBe(false);
-		expect(await partyStart(page)).toEqual({ v: 1, partyId: a.partyId, origin: 'joined' });
+		const start = await partyStart(page);
+		expect(start).toMatchObject({ partyId: a.partyId, origin: 'joined' });
+		expect(start?.formerPartyId).toBeUndefined();
 
 		// 6. B's control block database is gone; A's is not.
 		const databases = await databaseNames(page);

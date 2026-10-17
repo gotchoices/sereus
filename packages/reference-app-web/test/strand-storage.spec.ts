@@ -1,7 +1,7 @@
 /**
  * `deleteStore` — removing a party's block database when another tab of this site still holds it
  * open. The browser then fires `blocked` and waits for as long as that tab runs, so a dissolve
- * that waited on the request would never finish (`web-dissolve.ts`). Real IndexedDB is not
+ * that waited on the request would never finish (the edge node's `destroyScope`). Real IndexedDB is not
  * needed: the branch is how the request's events are handled, so a fake `indexedDB` global that
  * hands back the request and lets the test fire its events is enough.
  */

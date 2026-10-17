@@ -13,8 +13,7 @@ import {
 	CadreInviteReplyInvalidError,
 	CadreInviteUnreachableError,
 } from '@serfab/cadre-core';
-import type { WebJoinProgress } from './web-join.js';
-import { strands, StrandsNeedOwnerJoinError } from './web-strand-move.js';
+import { StrandsNeedOwnerJoinError, type EdgeJoinProgress } from '@serfab/cadre-core/edge-node';
 
 export type JoinFlow =
 	/** Redeeming the invitation; `wait` while no member of the cadre is ready, until `retryAtMs`. Cancellable. */
@@ -58,7 +57,7 @@ export class JoinCancelledError extends Error {
 }
 
 /** The step a join's progress report puts the flow in. */
-export function flowForProgress(progress: WebJoinProgress): JoinFlow {
+export function flowForProgress(progress: EdgeJoinProgress): JoinFlow {
 	switch (progress.state) {
 		case 'redeeming':
 			return { step: 'joining' };
@@ -124,6 +123,11 @@ function joiningLine(flow: Extract<JoinFlow, { step: 'joining' }>): string {
 	}
 }
 
+/** "1 strand", "3 strands". */
+function strands(n: number): string {
+	return n === 1 ? '1 strand' : `${n} strands`;
+}
+
 /** `waiting` is 0 when the record of the move could not be read. */
 function incompleteMoveLine(moved: number, waiting: number): string {
 	const still = waiting === 0 ? 'some' : String(waiting);
@@ -179,9 +183,14 @@ export function describeJoinFailure(err: unknown): string {
 	if (err instanceof CadreInviteRejectedError) return REJECTION_TEXT[err.code];
 	if (err instanceof CadreInviteUnreachableError) return 'No member named in the invitation could be reached';
 	if (err instanceof CadreInviteReplyInvalidError) return 'A member answered, but its answer did not verify';
-	// Its message is already the page's words (see the class).
-	if (err instanceof StrandsNeedOwnerJoinError) return err.message;
+	if (err instanceof StrandsNeedOwnerJoinError) return ownerJoinNeededLine(err.strandCount);
 	return err instanceof Error ? err.message : String(err);
+}
+
+/** The edge node refused a member join that would leave the founded party's strands behind; the phone app's `join-failure.ts` says the same of "this app". */
+function ownerJoinNeededLine(strandCount: number): string {
+	const held = strandCount > 0 ? `its ${strands(strandCount)}` : 'what its own cadre holds';
+	return `This invitation makes the tab a member, and only an owner can bring ${held} along. Ask for one with “Also an owner” on.`;
 }
 
 /** The notice for a join that did not happen: the user cancelled it, or it failed. */
