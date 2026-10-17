@@ -9,11 +9,14 @@
  * an owner with the grant ({@link redeemStartupOwnerGrant}).
  */
 import os from 'node:os';
+import debug from 'debug';
 import { OWNER_KEY_MAX_LABEL, type CadreNode, type ControlDatabase, type OwnerGrantBundle, type OwnerSigner } from '@serfab/cadre-core';
 import { loadOrCreateOwnerKeyFile, ownerKeyFingerprint } from './owner-key-file.js';
 import { modeOpenToOtherAccounts } from './private-file.js';
 import { describeRedemptionFailure } from './start-invitation.js';
 import type { OwnerGrantRedemptionStatus } from '../server/health.js';
+
+const log = debug('cadre:cli:start-owner');
 
 /** The owner key a `--owner` start signs with, and the file it lives in. */
 export interface ServerOwnerKey {
@@ -154,7 +157,9 @@ async function redeemForServerKey(node: CadreNode, owner: ServerOwnerKey, grant:
   if (self !== undefined && await node.isMember(self)) {
     // The local path refuses `alone`, and a node that has just started has opened no control
     // connection yet: one dial pass first, so a member whose siblings answer is not refused for that.
-    await node.reconcileControlCohort();
+    // A failed pass is only logged: the redemption then reports `alone` (retryable) itself, where
+    // the pass's own error would be reported as final.
+    await node.reconcileControlCohort().catch((err: unknown) => log('Dial pass before the owner grant redemption failed: %o', err));
     const { alreadyOwner } = await node.redeemOwnerGrant(grant, signer);
     return reportGrantRedeemed(node, owner, { alreadyOwner, ownerWired: await node.wireOwnKeyIfOwner(signer) });
   }

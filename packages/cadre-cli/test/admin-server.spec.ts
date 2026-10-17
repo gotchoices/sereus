@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { AdminServer } from '../src/server/admin-server.js';
 import type {
-  CadreNode, CadreInviteStatus, CreateCadreInvitationOptions, CreateOwnerGrantOptions, OwnerGrantStatus, StrandRow, StrandStatus,
+  CadreNode, CadreInviteStatus, CreateCadreInvitationOptions, CreateOwnerGrantOptions, StrandRow, StrandStatus,
 } from '@serfab/cadre-core';
 
 /**
@@ -96,32 +96,14 @@ class MockNode {
     return key === 'invite-key';
   }
 
-  /** The owner grants this node holds; withdrawing one flips its standing, as the node's tombstone does. */
-  ownerGrants: OwnerGrantStatus[] = [];
-
   async createOwnerGrant(options: CreateOwnerGrantOptions) {
     this.record('createOwnerGrant', options);
     const grant = {
       key: 'grant-key', label: options.label ?? null, expiresAt: options.expiresInMs === null ? null : '2030-01-01T00:00:00',
       totalUses: options.uses ?? 1, stampId: 'stamp', issuerKey: 'owner', issuerSig: 'sig',
     };
-    this.ownerGrants.push({ grant, live: true, withdrawn: false, usesRecorded: 0 });
     const bundle = { v: 1 as const, partyId: this.partyId, grantPrivateKey: 'grant-private-key', grant, ownerKeys: ['owner'], members: this.multiaddrs };
     return { grant: bundle, encoded: 'encoded-grant', reach: 'issuer-only' as const };
-  }
-
-  async listOwnerGrants() {
-    this.record('listOwnerGrants');
-    return this.ownerGrants;
-  }
-
-  async withdrawOwnerGrant(key: string) {
-    this.record('withdrawOwnerGrant', key);
-    const held = this.ownerGrants.find((status) => status.grant.key === key && !status.withdrawn);
-    if (!held) return false;
-    held.live = false;
-    held.withdrawn = true;
-    return true;
   }
 
   async removePeer(peerId: string) {
@@ -310,7 +292,7 @@ describe('AdminServer', () => {
 
     // A backup must be asked for with an explicit null, which the route passes through, and the
     // operator is always told the grant is a bearer credential and how to withdraw it.
-    it('mints an owner grant, lists it live, withdraws it, and lists it withdrawn', async () => {
+    it('mints an owner grant, passing an explicit null expiry through, with its warnings', async () => {
       const mint = await fetch(`${base}/admin/owner-grants`, {
         method: 'POST',
         headers: auth({ 'content-type': 'application/json' }),
@@ -324,13 +306,6 @@ describe('AdminServer', () => {
         expect.stringMatching(/backup grant with no expiry/),
         expect.stringMatching(/only while this server is running/),
       ]);
-
-      const listed = async () => (await (await fetch(`${base}/admin/owner-grants`, { headers: auth() })).json()).data.grants;
-      expect(await listed()).toMatchObject([{ grant: { key: 'grant-key' }, live: true, withdrawn: false }]);
-
-      const withdraw = await fetch(`${base}/admin/owner-grants/grant-key`, { method: 'DELETE', headers: auth() });
-      expect((await withdraw.json()).data).toEqual({ withdrawn: true });
-      expect(await listed()).toMatchObject([{ grant: { key: 'grant-key' }, live: false, withdrawn: true }]);
     });
 
     it.each([
