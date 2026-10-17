@@ -108,6 +108,16 @@ export interface SereusPluginResult {
 	 * fires for a forgotten one. Passed through like {@link onCommitDurability}.
 	 */
 	onCommitFullyHeld: (listener: CommitFullyHeldListener) => () => void;
+	/**
+	 * Commit an empty collection for every table declared in the `Strand` and `App` schemas that
+	 * has none yet (main, index and unique-enforcement trees), and resolve to how many were
+	 * committed. A founder calls it before writing `Strand.Header`, so a read of a table nobody
+	 * has written is answered from local storage rather than by the cohort proving absence.
+	 *
+	 * Run it only while no other writer can reach this connection's `Database`: each collection's
+	 * `sync()` commits whatever is staged in it, outside any SQL transaction.
+	 */
+	createEmptyCollections: () => Promise<number>;
 	/** Shuts down the libp2p node and collection factory. Call when done. */
 	shutdown: () => Promise<void>;
 }
