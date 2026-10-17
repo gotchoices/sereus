@@ -9,6 +9,7 @@ import type { StrandConnectionOptions, SereusPluginResult, StrandTransactor, Lib
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
 import { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
+import { createEmptyCollections, type CollectionRegistrySource } from './empty-collections.js';
 
 const log = debug('sereus:plugin:strand');
 const timing = debug('sereus:plugin:strand:timing');
@@ -74,8 +75,12 @@ interface OptimysticPluginResult {
 	hydrate: (db: Database) => Promise<{ tables: number; indexes: number }>;
 	onCommitDurability: (listener: SqlCommitDurabilityListener) => () => void;
 	onCommitFullyHeld: (listener: CommitFullyHeldListener) => () => void;
-	/** Holds the durability follower's subscription to the node's `StorageRepo`; see {@link releaseOptimysticPlugin}. */
-	txnBridge: { dispose(): void };
+	/**
+	 * Holds the durability follower's subscription to the node's `StorageRepo` (see
+	 * {@link releaseOptimysticPlugin}) and the registry of every collection a table opened (see
+	 * {@link createEmptyCollections}).
+	 */
+	txnBridge: { dispose(): void } & CollectionRegistrySource;
 	[key: string]: unknown;
 }
 
@@ -375,7 +380,8 @@ export async function composeStrand(
 		throw err;
 	}
 
-	// 8. Return result with hydrate counts, the commit-durability listeners + shutdown handler.
+	// 8. Return result with hydrate counts, the commit-durability listeners, the founder's
+	// empty-collection step + shutdown handler.
 	// `shutdown` releases the plugin and stops the node only if this composition created it.
 	return {
 		vtables: [],
@@ -385,6 +391,7 @@ export async function composeStrand(
 		transactor: resolvedTransactor,
 		onCommitDurability: listener => pluginResult.onCommitDurability(listener),
 		onCommitFullyHeld: listener => pluginResult.onCommitFullyHeld(listener),
+		createEmptyCollections: () => createEmptyCollections(db, pluginResult.txnBridge),
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
 			await releaseOptimysticPlugin(pluginResult, createdNode);

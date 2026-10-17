@@ -2,6 +2,13 @@ description: When a strand is founded, create an empty storage collection for ev
 architecture: docs/strands.md#joining-no-writes-before-the-first-sync
 files: packages/quereus-plugin-sereus/src/compose-strand.ts (`OptimysticPluginResult` shim ~62-80, `composeStrand` result ~380-395), packages/quereus-plugin-sereus/src/types.ts (`SereusPluginResult` ~78-113), packages/cadre-core/src/strand-database.ts (`initialize` ~94-150, `bootstrapFounder` ~173), packages/cadre-core/src/strand-membership-writer.ts (`FounderBootstrapParams`, `bootstrapFounderMembership` ~532-561, `strandHasManagerRevocation` NOTE ~350-372), packages/cadre-core/src/strand-first-sync-gate.ts (~245, how App tables are enumerated), packages/integration-tests/src/scenarios/strand-read-cost-over-relay.integration.ts (new), docs/strands.md (~244, first residual under "Joining"), docs/architecture.md (§ Strand Membership Bootstrap ~1374)
 ----
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-10-16T22:40:45.353Z (agent: claude)
+  Log file: c:\projects\sereus\tickets\.logs\strand-founder-commits-every-table-collection.implement.2026-10-16T22-40-45-353Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 
 # The founder commits every declared table's collection before its Header
 
