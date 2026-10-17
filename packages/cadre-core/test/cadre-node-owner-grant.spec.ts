@@ -43,6 +43,20 @@ function countingSigner(signer: OwnerSigner): OwnerSigner & { approvals: number 
   return counting;
 }
 
+/**
+ * The peers other than `node` that its control node's FRET still places in a cohort — the
+ * cohort a control write needs a super-majority of. A peer that stops leaves it when its leave
+ * notice is handled (or its contact strikes run out), which can come after libp2p has reported
+ * the connection closed, so a connection count of zero does not yet mean a write commits alone.
+ */
+function othersInControlCohort(node: CadreNode): string[] {
+  const services = node.getControlNode()?.services as { fret?: { assembleCohort(key: Uint8Array, wants: number): string[] } } | undefined;
+  if (!services?.fret) throw new Error('the control node has no FRET service');
+  const self = node.peerId!.toString();
+  // Any coordinate: on a ring this small every live peer is within two of it.
+  return services.fret.assembleCohort(new Uint8Array(32), 2).filter((id) => id !== self);
+}
+
 async function pollUntil(condition: () => boolean | Promise<boolean>, what: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {
@@ -153,6 +167,7 @@ describe('CadreNode owner grants', () => {
       // The member, connected to the joiner, redeems a grant locally for a key it does not wire.
       // The bundle's `ownerKeys` are not pinned on this path: a member's anchor is not widened by pasted text.
       expect(member.node.getControlConnectionCount()).toBeGreaterThan(0);
+      expect(othersInControlCohort(member.node)).toEqual([joiner.peerId!.toString()]);
       const local = softwareOwnerSigner(freshKeyPair().privateKey);
       const { grant: second } = await member.node.createOwnerGrant({ label: 'yubikey' });
       const strangerKey = freshKeyPair().publicKey;
@@ -180,8 +195,9 @@ describe('CadreNode owner grants', () => {
 
   it('a member redeeming locally while alone is refused by name, before the approval', async () => {
     // The joiner above left the member with another member in its snapshot and, once its
-    // connection is gone, none: the add-while-alone rule.
-    await pollUntil(() => member.node.getControlConnectionCount() === 0, 'the member to be alone');
+    // connection is gone, none: the add-while-alone rule. The grant minted below is a control
+    // write, so the joiner must also be out of the member's cohort, or the write waits on it.
+    await pollUntil(() => member.node.getControlConnectionCount() === 0 && othersInControlCohort(member.node).length === 0, 'the member to be alone');
     const { grant } = await member.node.createOwnerGrant();
     const signer = countingSigner(softwareOwnerSigner(freshKeyPair().privateKey));
 
