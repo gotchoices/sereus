@@ -1,7 +1,7 @@
 description: Commit the reporter's test from GitHub #48, in which an app on two phones keeps writing and reading a shared strand, and run it once on the slow phone-shaped link to record which time limits in the stack fire and how often, so the fixes can be aimed at the ones that actually fire.
 prereq: strand-founder-commits-every-table-collection
 architecture: docs/cadre-consistency.md#deadlines-over-optimystics-reads-and-commits
-files: packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts (new), packages/integration-tests/src/harness/event-loop-load.ts (new), packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (`occupyEventLoop` ~174, `ENV_EVENT_LOOP_BUSY` ~183), docs/testing.md (the opt-in scenario paragraphs ~63-74), tickets/plan/strand-workload-count-driven-fixes.md (append the measurement)
+files: packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts (new), packages/integration-tests/src/harness/event-loop-load.ts (new), packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/harness/stream-counter.ts (`countOutboundStreams`, used as is), packages/integration-tests/src/harness/ws-latency.ts (its summary line), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (`occupyEventLoop` ~174, `ENV_EVENT_LOOP_BUSY` ~183), docs/testing.md (the opt-in scenario paragraphs ~63-74), tickets/plan/strand-workload-count-driven-fixes.md (append the measurement)
 ----
 
 # Commit the strand workload scenario and attribute its deadline events
@@ -55,7 +55,9 @@ Run it in the foreground (the progress line keeps the runner's idle timer alive)
 - per round: time and failures;
 - the pattern × namespace table;
 - whether A's strand node held a connection to B's after the rounds, and whether the two sides converged within 180 s, with what each side held if not;
-- the seating time.
+- the seating time;
+- the total the event counts are a share of: `ws-latency`'s summary line for the rounds (frames, busiest socket's frames, worst observed send wait) and the outbound streams each strand node opened during the rounds, per protocol, from `countOutboundStreams` (`harness/stream-counter.ts`) with `ignore: () => false` so FRET and libp2p upkeep are counted too. Take the tally from just before the first round to just after the last. Without these the follow-on ticket cannot say whether consults and retries are a large share of what the link carried, which is the question it decides on;
+- the workload's own demand: run the loopback arm once on its own with `WS_FRAME_STATS=1` (frames counted, no delay; leave `STRAND_WORKLOAD_PHONE` unset, since the env override installs the shim when the module loads and the phone arm's own install would then conflict with it) and record its `ws-latency` summary line and round count. Its busiest socket's frames per round, at the phone arm's 50 frames a second, is how long one clean round occupies a phone socket.
 
 Write these into the scenario's doc comment, and append them, with the log path, to `tickets/plan/strand-workload-count-driven-fixes.md` under a `## Measured` heading, so that ticket's planner starts from them. If the phone arm passes (no failed operation, converged), it is no longer `it.fails`: make it a plain `it` and say so in the handoff; the follow-on ticket then has only the upstream proposals the counts still justify.
 
