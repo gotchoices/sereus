@@ -249,8 +249,9 @@ type OwnerGrantRejection = RedemptionRejection<OwnerGrantRejectionCode>;
 // ── Errors the holder sees ───────────────────────────────────────────────────
 
 /**
- * A member answered and refused. `code` is `'unrecognized'` when the frame carried none this
- * build knows, and such a refusal counts as retryable, as the invitation's does.
+ * A member answered and refused (on `CadreNode.redeemOwnerGrant`'s local path, the member is
+ * this node). `code` is `'unrecognized'` when the frame carried none this build knows, and such
+ * a refusal counts as retryable, as the invitation's does.
  */
 export class OwnerGrantRejectedError extends Error {
   readonly code: OwnerGrantRejectionCode | 'unrecognized';

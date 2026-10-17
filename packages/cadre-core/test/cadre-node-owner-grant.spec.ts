@@ -151,11 +151,22 @@ describe('CadreNode owner grants', () => {
       expect(await member.node.listOwnerKeys()).toContainEqual(expect.objectContaining({ key: signer.publicKey, label: 'paper backup', trusted: true }));
 
       // The member, connected to the joiner, redeems a grant locally for a key it does not wire.
+      // The bundle's `ownerKeys` are not pinned on this path: a member's anchor is not widened by pasted text.
       expect(member.node.getControlConnectionCount()).toBeGreaterThan(0);
       const local = softwareOwnerSigner(freshKeyPair().privateKey);
       const { grant: second } = await member.node.createOwnerGrant({ label: 'yubikey' });
-      expect(await member.node.redeemOwnerGrant(second, local)).toEqual({ ownerKey: local.publicKey, alreadyOwner: false, memberPeerId: null });
+      const strangerKey = freshKeyPair().publicKey;
+      expect(await member.node.redeemOwnerGrant({ ...second, ownerKeys: [...second.ownerKeys, strangerKey] }, local))
+        .toEqual({ ownerKey: local.publicKey, alreadyOwner: false, memberPeerId: null });
       expect(await member.node.listOwnerKeys()).toContainEqual(expect.objectContaining({ key: local.publicKey, label: 'yubikey', heldHere: false }));
+      expect(member.node.getTrustedOwnerStore()!.has(strangerKey)).toBe(false);
+
+      // A grant no longer live is refused by name before the approval.
+      const { grant: withdrawn } = await member.node.createOwnerGrant();
+      expect(await member.node.withdrawOwnerGrant(withdrawn.grant.key)).toBe(true);
+      const unprompted = countingSigner(softwareOwnerSigner(freshKeyPair().privateKey));
+      await expect(member.node.redeemOwnerGrant(withdrawn, unprompted)).rejects.toMatchObject({ name: 'OwnerGrantRejectedError', code: 'grant-spent' });
+      expect(unprompted.approvals).toBe(0);
 
       // The gate: a live grant with no expiry does not count as expecting a stranger, so one is
       // admitted only provisionally while it is live (the member's party has other members now).

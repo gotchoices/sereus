@@ -148,6 +148,7 @@ import {
 } from './cadre-invite-protocol.js';
 import {
   OwnerGrantHandler,
+  OwnerGrantRejectedError,
   encodeOwnerGrant,
   redeemOwnerGrantInPasses,
   signOwnerGrantRequest,
@@ -5322,11 +5323,15 @@ export class CadreNode implements SAppIdLookup {
       this.strandAddrService = null;
     }
 
-    // Unregister the cadre invitation redemption handler, for the same reason.
+    // Unregister the two redemption handlers, for the same reason.
     if (this.cadreInviteHandler && this.controlNode) {
       await this.cadreInviteHandler.unregister(this.controlNode);
     }
     this.cadreInviteHandler = null;
+    if (this.ownerGrantHandler && this.controlNode) {
+      await this.ownerGrantHandler.unregister(this.controlNode);
+    }
+    this.ownerGrantHandler = null;
 
     // Tear down the push-wake fan-out (releases the notifier's APNs HTTP/2 session).
     if (this.pushFanoutService) {
@@ -9686,9 +9691,7 @@ export class CadreNode implements SAppIdLookup {
    * `OwnerKey` row by consent, with no owner online. `signer` holds the key to seat; its one
    * `approve` names the party and says the key becomes an owner of it, and signs the `'consent'`
    * digest. The grant's `'redeem'` signature is made with the bundle's private key in memory.
-   * A bundle for another party is refused before anything is pinned, dialed or written; then
-   * the bundle's `ownerKeys` are pinned into the node-local anchor (`'invite'` provenance, the
-   * pin a credential the owner handed out carries, as {@link redeemCadreInvitation} pins).
+   * A bundle for another party is refused before anything is pinned, dialed or written.
    *
    * Two paths, chosen by whether this node is a live member of the party ({@link isLiveMemberSelf})
    * or an enrolled owner of it ({@link isOwner}):
@@ -9698,9 +9701,14 @@ export class CadreNode implements SAppIdLookup {
    *   (`ControlDatabase.redeemOwnerGrant`), replicating like any other write. Refused `alone`
    *   under {@link addOwner}'s rule, before the approval: an `OwnerKey` row has no re-issue
    *   path, so one committed with no control connection while the party has other members would
-   *   stay here; connect, then try again.
+   *   stay here; connect, then try again. A grant that is not live here (withdrawn, expired,
+   *   spent, its issuer no longer an owner) is refused before the approval too, unless the key
+   *   is already an owner. The bundle's `ownerKeys` are NOT pinned: this node judges the issuer
+   *   by its own `OwnerKey` table, and its anchor must not be widened by pasted text.
    * - **Protocol**, otherwise (a device with no machine in the cadre; a node started in the
-   *   party on an empty store): dial the members the bundle names over
+   *   party on an empty store): the bundle's `ownerKeys` are pinned into the node-local anchor
+   *   (`'invite'` provenance, the pin a credential the owner handed out carries, as
+   *   {@link redeemCadreInvitation} pins), then the members the bundle names are dialed over
    *   `/sereus/owner-grant/1.0.0` (`redeemOwnerGrantInPasses`), one signed request for every
    *   address and every pass as {@link redeemCadreInvitation} dials, so a retry after a lost
    *   reply is answered `alreadyOwner`. The member that accepts pushes its control store here
@@ -9714,31 +9722,42 @@ export class CadreNode implements SAppIdLookup {
    * the party as a machine too, use {@link joinWithOwnerGrant}.
    *
    * @throws a plain `Error` for a node not started or a bundle naming another party;
-   *   {@link OwnerKeyAddRefusedError} `alone` on the local path, and `OwnerGrantIssuerUnknownError`
-   *   when the issuer is not an owner here; on the protocol path `OwnerGrantRejectedError` on a
-   *   final refusal, `OwnerGrantReplyInvalidError` on an acceptance that fails the reply check,
+   *   {@link OwnerKeyAddRefusedError} `alone` on the local path, `OwnerGrantIssuerUnknownError`
+   *   when the issuer is not an owner here, and `OwnerGrantRejectedError` `grant-spent` for a
+   *   grant no longer live here; on the protocol path `OwnerGrantRejectedError` on a final
+   *   refusal, `OwnerGrantReplyInvalidError` on an acceptance that fails the reply check,
    *   `OwnerGrantUnreachableError` when every address was tried (one pass only), and the
    *   signal's reason on an abort.
    */
   async redeemOwnerGrant(bundle: OwnerGrantBundle, signer: OwnerSigner, options: RedeemOwnerGrantOptions = {}): Promise<RedeemOwnerGrantResult> {
     const { controlDatabase } = this.requireStartedForGrant(bundle, 'redeeming an owner grant');
-    await this.trustOwnerKeys(bundle.ownerKeys, 'invite');
     // An enrolled owner machine is a party machine whether or not its own row is published yet
     // (the first self-record lands a second after start), so it writes locally too.
     if (await this.isLiveMemberSelf() || await this.isOwner()) {
       return await this.redeemOwnerGrantLocally(controlDatabase, bundle, signer);
     }
+    await this.trustOwnerKeys(bundle.ownerKeys, 'invite');
     const request = await signer.approve(ownerGrantApproval(bundle), (sign) => this.signOwnerGrantRequest(bundle, signer, sign));
     const { reply, memberPeerId } = await this.redeemOwnerGrantAtMembers(bundle, request, options);
     return { ownerKey: signer.publicKey, alreadyOwner: reply.alreadyOwner, memberPeerId };
   }
 
-  /** {@link redeemOwnerGrant}'s local path: the alone refusal, the seat, then one approval around the consent signature and the write. */
+  /**
+   * {@link redeemOwnerGrant}'s local path: the alone refusal, the seat, the liveness refusal,
+   * then one approval around the consent signature and the write. Every refusal comes before
+   * the approval, so a prompting signer never asks for a redemption this node would refuse.
+   */
   private async redeemOwnerGrantLocally(controlDatabase: ControlDatabase, bundle: OwnerGrantBundle, signer: OwnerSigner): Promise<RedeemOwnerGrantResult> {
     if (await this.ownerKeyWriteAlone()) {
       throw new OwnerKeyAddRefusedError(signer.publicKey, 'alone');
     }
     await controlDatabase.seatOwnerGrant(bundle.grant);
+    // The write answers a key that is already an owner without reading the grant, so only a
+    // key that is not one needs the grant live (the same permissive pre-check the handler's
+    // admission uses; the write enforces every condition).
+    if (!(await controlDatabase.getOwnerKeys()).has(signer.publicKey) && !await controlDatabase.isOwnerGrantLive(bundle.grant)) {
+      throw new OwnerGrantRejectedError('grant-spent', 'The grant is expired, withdrawn, exhausted, or its issuer is no longer an owner');
+    }
     const { alreadyOwner } = await signer.approve(ownerGrantApproval(bundle), async (sign) => {
       const request = await this.signOwnerGrantRequest(bundle, signer, sign);
       return await controlDatabase.redeemOwnerGrant({
