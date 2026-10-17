@@ -148,7 +148,6 @@ export type ControlAction = 'add' | 'remove' | 'vouch' | 'publish' | 'consent' |
 export interface CadreInviteSignedFields {
   key: string;
   peerId: string | null;
-  grantsOwner: boolean;
   expiresAt: string | null;
   totalUses: number | null;
   stampId: string;
@@ -159,14 +158,13 @@ export interface CadreInviteSignedFields {
  * (`control-database.ts`'s `cadreInviteAddMessage`, raw bytes) and the verifier
  * (`peer-authorization.ts`'s `cadreInviteAddDigest`, base64url) so the two cannot
  * drift. SQL mirror, in `CadreInvite.AuthorizedInsert`:
- * `new.Key, coalesce(new.PeerId, ''), cast(new.GrantsOwner as text),
- * coalesce(cast(new.ExpiresAt as text), ''), coalesce(cast(new.TotalUses as text), ''), new.StampId`.
+ * `new.Key, coalesce(new.PeerId, ''), coalesce(cast(new.ExpiresAt as text), ''),
+ * coalesce(cast(new.TotalUses as text), ''), new.StampId`.
  */
 export function cadreInviteRowFields(row: CadreInviteSignedFields): string[] {
   return [
     row.key,
     row.peerId ?? '',
-    row.grantsOwner ? '1' : '0',
     row.expiresAt ?? '',
     row.totalUses === null ? '' : String(row.totalUses),
     row.stampId,

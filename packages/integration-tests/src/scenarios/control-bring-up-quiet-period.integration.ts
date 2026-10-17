@@ -114,7 +114,7 @@ describe('E2E control-database bring-up holds no control connections', () => {
 			// refused — is precisely what makes a mid-bring-up connection fatal, and
 			// without it A would simply deny C's connection and there would be nothing to
 			// order around.
-			await A.createCadreInvitation({ grantsOwner: false });
+			await A.createCadreInvitation();
 			const aAddr = controlAddrs(A)[0];
 			expect(aAddr).toBeDefined();
 

@@ -106,7 +106,7 @@ const untouchable: CadreInviteStore = {
 
 /** An owner-signed row for `partyId` built by hand, as a stranger's machine would forge one for a known key. */
 function rowSignedBy(partyId: string, issuer: KeyPair, key: string): CadreInviteRow {
-  const signed = { key, peerId: null, grantsOwner: false, expiresAt: null, totalUses: null, stampId: freshStamp() };
+  const signed = { key, peerId: null, expiresAt: null, totalUses: null, stampId: freshStamp() };
   return { ...signed, issuerKey: issuer.publicKey, issuerSig: signAs(issuer, cadreInviteAddMessage(partyId, signed)) };
 }
 
@@ -158,12 +158,11 @@ describe('cadre invitation redemption protocol', () => {
   });
 
   /** Mint an invitation the owner way and wrap it in its bundle, naming `members`. */
-  async function mint(opts: { grantsOwner?: boolean; peerId?: string; expiresInMs?: number; totalUses?: number } = {}, members: string[] = [memberAddr]): Promise<CadreInvitation> {
+  async function mint(opts: { peerId?: string; expiresInMs?: number; totalUses?: number } = {}, members: string[] = [memberAddr]): Promise<CadreInvitation> {
     const invite = freshKeyPair();
     const row = await db.insertCadreInvite({
       key: invite.publicKey,
       peerId: opts.peerId ?? null,
-      grantsOwner: opts.grantsOwner ?? false,
       expiresAtMs: opts.expiresInMs === undefined ? undefined : Date.now() + opts.expiresInMs,
       totalUses: opts.totalUses ?? 1
     }, founder.publicKey, (message) => signAs(founder, message));
@@ -191,7 +190,7 @@ describe('cadre invitation redemption protocol', () => {
 
   it('accepts end to end: the member writes the chain, the device verifies the reply', async () => {
     const device = await mintContactJoiner();
-    const invitation = await mint({ grantsOwner: true });
+    const invitation = await mint();
     const addrs = ['/ip4/10.0.0.5/tcp/4001'];
     const { node } = dialerOver({ [memberAddr]: memberAs(device) });
 
@@ -204,13 +203,14 @@ describe('cadre invitation redemption protocol', () => {
     // The reply's dial hints are the member's own peer projection, the device's new row included.
     expect(result.reply.peers.map((peer) => peer.peerId)).toContain(device.partyId);
 
-    // On the member: an invitation-admitted peer row carrying the device's addresses, the
-    // owner row the grant seated, one usage row, and the device authorized through the chain.
+    // On the member: an invitation-admitted peer row carrying the device's addresses, no owner
+    // row (a machine invitation grants none), one usage row, and the device authorized through
+    // the chain.
     const peer = (await db.queryCadrePeers()).find((row) => row.peerId === device.partyId);
     expect(peer?.multiaddr).toBe(addrs.join(','));
     expect(peer?.vouchSig).toBeNull();
     expect(typeof peer?.vouchUsage).toBe('string');
-    expect(await db.getOwnerKeys()).toContain(device.peerKey);
+    expect(await db.getOwnerKeys()).not.toContain(device.peerKey);
     expect(await db.countCadreInviteUsage(invitation.invite.key)).toBe(1);
     expect((await member.listAuthorizedMembers()).map((row) => row.peerId)).toContain(device.partyId);
     // The device was admitted once, before its rows were written, and released after.

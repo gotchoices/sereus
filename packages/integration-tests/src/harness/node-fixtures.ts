@@ -276,18 +276,18 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
 }
 
 /**
- * Make a freshly-started node its own control owner (genesis): generate an owner key of its
- * own, apart from the node's libp2p identity, enroll it in `OwnerKey` under `label`, and wire
+ * Make a freshly-started node its own control owner (genesis): take `ownerKey`, an owner key
+ * apart from the node's libp2p identity (a fresh one unless the caller holds one already, as an
+ * app whose one key owns several cadres does), enroll it in `OwnerKey` under `label`, and wire
  * it as the node's owner signer, so the node can owner-sign `CadrePeer` inserts (and mint
  * seeds). Returns the key: its `publicKey` is what an enrollee pins into its node-local
  * trusted-owner anchor (`trustOwnerKeys`) so this owner's membership vouchers pass its
  * authorized-member predicate, and a scenario that restarts the node over its store wires
  * `signer` again with `useOwnerSigner` (the row survives on the store; the key does not).
  */
-export async function makeOwnOwner(node: CadreNode, label?: string): Promise<TestOwnerKey> {
+export async function makeOwnOwner(node: CadreNode, label?: string, ownerKey: TestOwnerKey = createTestOwnerKey()): Promise<TestOwnerKey> {
   const db = node.getControlDatabase();
   if (!db) throw new Error('control database missing after start');
-  const ownerKey = createTestOwnerKey();
   // A derivation from the node identity creeping back into the harness would make these equal.
   if (ownerKey.publicKey === ed25519PublicKeyB64FromPeerId(node.peerId!.toString())) {
     throw new Error('makeOwnOwner: the owner key is the key behind the peer id of the node; test owner keys must be independent of node identities');

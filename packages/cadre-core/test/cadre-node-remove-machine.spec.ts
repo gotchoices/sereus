@@ -3,7 +3,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
-import { cadreInviteConsentMessage, cadreInviteRedeemMessage, generateStampId } from '../src/control-database.js';
+import { cadreInviteConsentMessage, cadreInviteRedeemMessage, generateStampId, ownerGrantConsentMessage, ownerGrantRedeemMessage } from '../src/control-database.js';
 import { deviceTokenAddDigest } from '../src/peer-authorization.js';
 import { signDeviceTokenRecord } from '../src/device-token.js';
 import { expectConstraintFailure, freshKeyPair, freshStamp, signAs, signB64, type KeyPair } from './control-constraint-helpers.js';
@@ -12,10 +12,10 @@ import { mintContactJoiner, type TestContactJoiner } from './formation-consent-h
 /**
  * `CadreNode.removeMachine` and `CadreNode.removeOwner` against one real control database.
  *
- * A machine admitted through a multi-use owner-granting invitation, holding a push token and
- * having vouched one device with the owner key the invitation seated, is removed in one
- * transaction: its row, token and invitation go, and its owner key, with the device it vouched,
- * stays. An owner key that vouched a device, another owner key and this node's own row is
+ * A machine admitted through a multi-use machine invitation, holding a push token, whose user's
+ * owner key (seated through an owner grant; never the machine's identity key) vouched one
+ * device, is removed in one transaction: its row, token and invitation go, and the owner key,
+ * with the device it vouched, stays. An owner key that vouched a device, another owner key and this node's own row is
  * removed with the device kept by re-vouch and this node's row re-vouched unasked; a re-vouch naming a row the key never vouched, or re-vouching an owner row
  * while the node is alone, is refused before anything is written. The refusals by name run
  * first, while the founding key is the only owner.
@@ -54,11 +54,27 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     await node?.stop();
   });
 
-  /** An untargeted, owner-granting invitation the founder signs, with `uses` seats. */
-  async function issueOwnerInvitation(uses: number): Promise<KeyPair> {
+  /** An untargeted machine invitation the founder signs, with `uses` seats. */
+  async function issueInvitation(uses: number): Promise<KeyPair> {
     const invite = freshKeyPair();
-    await db.insertCadreInvite({ key: invite.publicKey, peerId: null, grantsOwner: true, totalUses: uses }, owner.publicKey, signOwner);
+    await db.insertCadreInvite({ key: invite.publicKey, peerId: null, totalUses: uses }, owner.publicKey, signOwner);
     return invite;
+  }
+
+  /** The founder mints an owner grant and its holder redeems it for `key`, both through the production writers, as `createOwnerGrant` and `redeemOwnerGrant` do. */
+  async function seatOwnerByGrant(key: KeyPair): Promise<void> {
+    const grant = freshKeyPair();
+    await db.insertOwnerGrant({ key: grant.publicKey, label: 'phone', totalUses: 1 }, owner.publicKey, signOwner);
+    const usageStampId = freshStamp();
+    const fields = { grantKey: grant.publicKey, usageStampId, seatedKey: key.publicKey };
+    const result = await db.redeemOwnerGrant({
+      grantKey: grant.publicKey,
+      seatedKey: key.publicKey,
+      usageStampId,
+      grantSig: signAs(grant, ownerGrantRedeemMessage(node.partyId, fields)),
+      ownerSig: signAs(key, ownerGrantConsentMessage(node.partyId, fields)),
+    });
+    expect(result.alreadyOwner).toBe(false);
   }
 
   /** `device` redeems `invite` through the production writer, with a fresh nonce and both signatures. */
@@ -121,17 +137,21 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     expect(await tombstonedKeys()).toEqual([]);
   }, 60_000);
 
-  it('removes a machine completely in one transaction, leaving its owner key and the device that key vouched', async () => {
-    const invite = await issueOwnerInvitation(3);
+  it('removes a machine completely in one transaction, leaving the owner key its user holds and the device that key vouched', async () => {
+    const invite = await issueInvitation(3);
     const machine = await mintContactJoiner();
     const admitted = await redeem(invite, machine);
     expect(admitted.alreadyMember).toBe(false);
+    // The machine's identity key is no owner; its user's owner key is seated through a grant.
     // The redemption's membership notification ran the anchor sync: the issuer is anchored, so
-    // the seated owner key is derived from the row the node itself wrote.
-    expect(node.getTrustedOwnerStore()!.sources().get(machine.peerKey)).toBe('chain');
+    // the seated key is derived from the row the node itself wrote.
+    expect((await db.getOwnerKeys()).has(machine.peerKey)).toBe(false);
+    const machineOwner = freshKeyPair();
+    await seatOwnerByGrant(machineOwner);
+    expect(node.getTrustedOwnerStore()!.sources().get(machineOwner.publicKey)).toBe('chain');
     await seatDeviceToken(machine);
     const dependent = await mintContactJoiner();
-    await vouchDevice(asSigner(machine), dependent, Date.now() - 1_000);
+    await vouchDevice(machineOwner, dependent, Date.now() - 1_000);
 
     const plan = await node.planMachineRemoval(machine.partyId);
     expect(plan).toEqual({
@@ -154,9 +174,9 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     // The machine cannot come back through the invitation it redeemed, seats left or not.
     await expectConstraintFailure(redeem(invite, machine), 'Authorized');
 
-    // The owner key the invitation seated is the person's: it stays, trusted, and so does what it vouched.
-    expect(tombstones.some((row) => row.rowKey === machine.peerKey)).toBe(false);
-    expect((await node.listOwnerKeys()).find((entry) => entry.key === machine.peerKey)).toMatchObject({ trusted: true });
+    // The owner key is the person's, not the machine's: it stays, trusted, and so does what it vouched.
+    expect(tombstones.some((row) => row.rowKey === machineOwner.publicKey)).toBe(false);
+    expect((await node.listOwnerKeys()).find((entry) => entry.key === machineOwner.publicKey)).toMatchObject({ trusted: true });
     expect((await node.listAuthorizedMembers()).map((row) => row.peerId)).toEqual([dependent.partyId]);
     expect((await node.listMachines()).map((entry) => entry.peerId)).not.toContain(machine.partyId);
   }, 60_000);

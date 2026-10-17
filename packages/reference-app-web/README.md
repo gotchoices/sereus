@@ -275,13 +275,16 @@ with the phone app's flows and wording (`lib/add-device.svelte.ts`, `AddDevice.s
 
 - **Paste request** — paste the join request the other app shows under *Join my existing
   cadre* and choose *Use request*. The tab refuses its own request and an app already in the
-  cadre, then asks for approval: the app's name (what it calls itself, unverified), its code
-  (the short peer id, to compare with the one the other app shows) and **Also an owner**.
-  *Add* mints an invitation only that app can redeem
-  (`createCadreInvitation({ peerId, grantsOwner })`). Paste only: no camera scanning.
+  cadre, then asks for approval: the app's name (what it calls itself, unverified) and its code
+  (the short peer id, to compare with the one the other app shows). *Add* mints an invitation
+  only that app can redeem (`createCadreInvitation({ peerId })`). Paste only: no camera scanning.
 - **Copy invitation** — an open, single-use invitation that whoever is given its text first
-  can redeem. With **Also an owner** on, it expires in 15 minutes, and the card warns that
-  its text grants admin rights until then.
+  can redeem.
+
+Either invitation admits the app as a machine and a member, for 24 hours, and grants no
+ownership. An app that is to be an owner too takes an owner grant, made under an owner app's
+Owner keys; this tab's own owner-grant card and a join field that takes a grant are
+`reference-app-web-owner-grants`.
 
 The minted invitation shows as a QR code (`lib/QrCode.svelte`) and as text with a copy
 button, with its expiry and, when no other machine of the cadre has an address a device
@@ -383,10 +386,8 @@ has no scanner (`lib/owner-keys.svelte.ts`, `OwnerKeys.svelte`, `OwnerKeyExportF
   seats the key as an owner, and the card shows its export once, the only copy.
 - **Export this tab's key** (owner, when the list marks a key "This tab"): the same form, the
   name defaulting to that key's, then `exportOwnerKey`, which exports the key in the tab's owner
-  slot and names it, and the export is titled with that key. On a tab that is an owner through
-  the identity key an owner-granting invitation seated, that is not the key it signs with: the
-  slot holds the key the tab founded its own cadre with, which this cadre does not list, so the
-  title shows its fingerprint alone.
+  slot and names it, and the export is titled with that key. The slot's key is the only key the
+  tab signs with, so the export is the key the list marks.
 - **The export** stays on the card until *Done*, including across visits to other pages:
   "Anyone who has this can control your cadre. Keep it somewhere safe and offline. This tab does
   not keep a copy.", the QR code, the text with a copy button, and *Download*, which saves it as
@@ -400,8 +401,8 @@ has no scanner (`lib/owner-keys.svelte.ts`, `OwnerKeys.svelte`, `OwnerKeyExportF
 - **Import an owner key** takes pasted export text; a locked one
   (`sereus-owner-key-locked:1.…`) shows a passphrase field. The outcomes are the phone's: an owner
   of this cadre ("This tab is now an owner of this cadre, with ‹name› (‹fingerprint›)."); an owner
-  this tab takes from its next start, when it already signs with the identity key an
-  owner-granting invitation seated; and "This key is not an owner of this cadre. An owner can add
+  this tab takes from its next start, when the node already signs with another key; and "This
+  key is not an owner of this cadre. An owner can add
   it.", the key kept in the slot. The last two both come back `wired: false`, and the card reads
   the owner keys again to tell them apart. A tab already holding a different key, a wrong
   passphrase and text that is not an owner key are refused by name. A wired key changes the
@@ -434,8 +435,8 @@ cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre)), called by th
   compare with what the owner's app shows. Paste it in that app under *Add a device or app*
   → *Paste request*, or ask it for an open invitation.
 - **Join** — paste the response or open invitation and choose *Join*. A response made for
-  another app's request is refused before anything stops. Already in the invitation's party
-  (a second invitation, say one granting owner), the tab redeems in place. Otherwise its one
+  another app's request is refused before anything stops. An invitation for the party the tab
+  already runs is redeemed in place, nothing switched or rolled back. Otherwise its one
   node moves: the founded party's strands, pending joins and invitations are exported and
   kept as a move record in the tab's key store (`cadre-core/src/edge-node/strand-move.ts`; a
   `keystore.cadre/strand-move/…` `kv` key), the node stops and starts in the invitation's
@@ -445,16 +446,17 @@ cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre)), called by th
   joining (with *Cancel* while it waits), admitted, moving strands, removing the old cadre,
   then done with the standing and the moved count. A join refused, expired or cancelled puts
   the tab back in the party it left, unchanged, and says why.
-- **The move needs an owner grant.** When the founded party holds anything to move and the
-  invitation makes the tab a member, the join is refused up front: every row a move seats is
-  owner-signed. The tab's own chat strand has no control row, so a fresh tab's export is
-  empty and a member invitation is fine; the chat strand keeps working in the joined party
-  as the same local strand.
+- **The move needs an owner grant.** When the founded party holds anything to move, a join by
+  invitation is refused up front (`StrandsNeedOwnerJoinError`): every row a move seats is
+  owner-signed, and an invitation admits a member. The card says to join with an owner grant
+  made in the owner tab under Owner keys; the join field takes one with
+  `reference-app-web-owner-grants`. The tab's own chat strand has no control row, so a fresh
+  tab's export is empty and an invitation is fine; the chat strand keeps working in the joined
+  party as the same local strand.
 - **After admission** the saved start names the joined party (`origin: 'joined'`, the
-  founded party as `formerPartyId`), and a key is wired for signing only when the party lists
-  it as an owner (`wireOwnKeyIfOwner`; after an owner grant it is asked again every 2 s within
-  the edge node's 60 s bound while the row arrives): the tab's owner key first, else its identity key, which
-  an owner-granting invitation seats until owner grants seat a key of their own. Home's
+  founded party as `formerPartyId`), and the tab's owner slot's key is wired for signing only
+  when the party lists it as an owner (`wireJoinedOwnerKey`; after an owner grant it is asked
+  again every 2 s within the edge node's 60 s bound while the row arrives). Home's
   **Owner** row reads `enrolled` or `member`. A joined party never runs owner genesis, so a
   reload cannot seat the tab's key as a founding `OwnerKey` row of a cadre it merely joined.
 - **Every start adopts** the move records naming its party, once the tab's key is wired as
@@ -683,7 +685,7 @@ yarn workspace @serfab/reference-app-web test:e2e
   data lives in a strand cohort.
 - **Tier 2 — join an existing cadre** (`e2e/distributed/join-cadre.spec.ts`) — an
   in-process headless cadre (`e2e/fixtures/cadre-member.ts`: owner genesis, a loopback
-  WebSocket listener) mints a **member** invitation targeted at the tab's peer id; the tab
+  WebSocket listener) mints a machine invitation targeted at the tab's peer id; the tab
   pastes it under *Join my existing cadre*, and Home then shows that party and `member`.
   After a reload the same two values hold, the tab's key is absent from the party's
   `OwnerKey` rows (`__cadre.isOwner()` is false) and the start record says `joined`: the

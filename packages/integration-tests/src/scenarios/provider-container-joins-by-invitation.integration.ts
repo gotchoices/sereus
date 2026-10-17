@@ -22,7 +22,7 @@
  * What the steps pin, in order, each its own `it` so a failure names the step:
  *
  *   1. the owner node is up with a `/ws` address and mints an untargeted single-use invitation
- *      (`grantsOwner: false`, 15-minute expiry) naming its own addresses
+ *      (a 15-minute expiry) naming its own addresses
  *   2. `POST /containers { join: { kind: 'invitation', invitation } }` is answered with the
  *      bundle's party and `join: { kind }` only; the record reaches `running`, and the fold
  *      reaches `{ kind: 'invitation', state: 'accepted', memberPeerId: <owner node> }`
@@ -189,12 +189,11 @@ describe('a provider container joins a cadre by invitation at an always-on membe
     expect(addrs.some((a) => a.includes('/ws/'))).toBe(true);
     expect(addrs.every((a) => a.endsWith(`/p2p/${ownerPeerId}`))).toBe(true);
 
-    const minted = await owner.createInvitation({ grantsOwner: false, expiresInMs: INVITATION_TTL_MS });
+    const minted = await owner.createInvitation({ expiresInMs: INVITATION_TTL_MS });
     invitation = minted.invitation;
     encodedInvitation = minted.encoded;
     expect(invitation.partyId).toBe(partyId);
     expect(invitation.invite.peerId).toBeNull();
-    expect(invitation.invite.grantsOwner).toBe(false);
     expect(invitation.invite.totalUses).toBe(1);
     // The only member there is: the owner node's own addresses, which is where the container dials.
     expect(invitation.members.length).toBeGreaterThan(0);

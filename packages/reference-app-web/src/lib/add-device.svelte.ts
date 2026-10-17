@@ -6,7 +6,8 @@
  *
  * **Paste request**: the other app's join request names its peer id, and after the owner
  * approves, only that app can redeem the invitation. **Copy invitation**: an open
- * invitation whoever holds the text can redeem. The cadre holds each invitation's row,
+ * invitation whoever holds the text can redeem. Either admits the app as a machine and grants
+ * nothing else; ownership is an owner grant. The cadre holds each invitation's row,
  * which Withdraw retires: an open one from the outstanding list here, one for a single app
  * from "Devices and nodes" (`machines.svelte.ts`).
  *
@@ -69,8 +70,6 @@ interface AddDeviceState {
 	requestText: string;
 	/** A read request waiting for the owner's approval; the approval panel shows while it is set. */
 	pending: CadreJoinRequest | null;
-	requestOwner: boolean;
-	openOwner: boolean;
 	/** Which flow's invitation is being made, while one is. */
 	minting: NoticeArea | null;
 	minted: MintedInvitation | null;
@@ -84,8 +83,6 @@ const state = $state<AddDeviceState>({
 	standing: 'checking',
 	requestText: '',
 	pending: null,
-	requestOwner: true,
-	openOwner: true,
 	minting: null,
 	minted: null,
 	invitations: [],
@@ -149,7 +146,6 @@ export async function useRequest(): Promise<void> {
 		state.notice = notice('request', 'Cannot use this request right now', 'Could not read this cadre\'s owners and machines. Try again.', errorMessage(err));
 		return;
 	}
-	state.requestOwner = true;
 	state.pending = request;
 }
 
@@ -162,13 +158,13 @@ export async function approveRequest(): Promise<void> {
 	const request = state.pending;
 	if (!request) return;
 	state.pending = null;
-	if (await mint({ peerId: request.peerId, grantsOwner: state.requestOwner }, `Invitation for ${request.appName}`, 'request')) {
+	if (await mint({ peerId: request.peerId }, `Invitation for ${request.appName}`, 'request')) {
 		state.requestText = '';
 	}
 }
 
 export async function makeOpenInvitation(): Promise<void> {
-	await mint({ grantsOwner: state.openOwner }, 'Open invitation', 'open');
+	await mint({}, 'Open invitation', 'open');
 }
 
 /** Take the minted invitation off the card; the cadre still holds its row. */
@@ -196,7 +192,7 @@ async function mint(options: CreateCadreInvitationOptions, title: string, area: 
 	try {
 		const { invitation, encoded, reach } = await createCadreInvitation(options);
 		const { key, expiresAt } = invitation.invite;
-		console.info(`[cadre] made cadre invitation ${key} (for ${options.peerId ?? 'anyone'}, owner ${options.grantsOwner}, reach ${reach})`);
+		console.info(`[cadre] made cadre invitation ${key} (for ${options.peerId ?? 'anyone'}, reach ${reach})`);
 		state.minted = { key, title, encoded, reach, expiresAtMs: parseNullableStoredDatetimeMs(expiresAt) };
 		void refreshInvitations();
 		// One made for a single app is listed there, as a device invited and not joined yet.

@@ -7,7 +7,10 @@
  *
  * A pre-approval is the security contract: it is used up by the one answer it allows, lasts
  * {@link RECOMMENDATION_TTL_MS}, and is never returned for a party other than the one the user
- * was in when they allowed it.
+ * was in when they allowed it. It admits a machine only: the invitation it answers with grants no
+ * ownership, and an app with strands to bring joins with a separately redeemed owner grant
+ * (whether a link join may also carry ownership is
+ * `tickets/blocked/decide-app-link-join-carries-ownership.md`).
  */
 import type { DurableSlot } from '@serfab/cadre-core';
 
@@ -22,8 +25,6 @@ export interface AppRecommendation {
 	appName: string;
 	/** The party the owner app was in when the user allowed it. */
 	partyId: string;
-	/** Whether the user also made the app an owner: the grant of the invitation minted for it. */
-	grantsOwner: boolean;
 	approvedAtMs: number;
 }
 
@@ -120,11 +121,12 @@ function parseRecommendations(text: string): AppRecommendation[] {
 	return entries;
 }
 
+/** Only the named fields are read, so a stored entry carrying a field this shape does not have parses without it. */
 function parseRecommendation(value: unknown): AppRecommendation | null {
-	const { scheme, appName, partyId, grantsOwner, approvedAtMs } = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
+	const { scheme, appName, partyId, approvedAtMs } = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
 	if (typeof scheme !== 'string' || typeof appName !== 'string' || typeof partyId !== 'string'
-		|| typeof grantsOwner !== 'boolean' || typeof approvedAtMs !== 'number' || !Number.isFinite(approvedAtMs)) {
+		|| typeof approvedAtMs !== 'number' || !Number.isFinite(approvedAtMs)) {
 		return null;
 	}
-	return { scheme, appName, partyId, grantsOwner, approvedAtMs };
+	return { scheme, appName, partyId, approvedAtMs };
 }

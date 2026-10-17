@@ -53,7 +53,7 @@ describe('CadreNode invite-address push model', () => {
   }
 
   async function mintedMembers(node: CadreNode): Promise<string[]> {
-    return (await node.createCadreInvitation({ grantsOwner: false })).invitation.members;
+    return (await node.createCadreInvitation()).invitation.members;
   }
 
   it('names libp2p getMultiaddrs() when nothing has been pushed', async () => {
@@ -102,6 +102,6 @@ describe('CadreNode invite-address push model', () => {
     node.setInviteAddresses([]);
 
     // Nothing to name: the mint refuses rather than falling back to libp2p's addresses.
-    await expect(node.createCadreInvitation({ grantsOwner: false })).rejects.toThrow(/no.*address/i);
+    await expect(node.createCadreInvitation()).rejects.toThrow(/no.*address/i);
   });
 });

@@ -172,7 +172,7 @@ describe('createCadreInvitation hands out the anchored owner keys', () => {
     await node.initializeSeedBootstrap(privateKeyB64);
     await node.getControlDatabase()!.ensureOwnerKey(ed25519PublicKeyFromPrivate(privateKeyB64));
 
-    const { invitation } = await node.createCadreInvitation({ grantsOwner: false });
+    const { invitation } = await node.createCadreInvitation();
     expect(invitation.ownerKeys).toEqual([ed25519PublicKeyFromPrivate(privateKeyB64)]);
   });
 });

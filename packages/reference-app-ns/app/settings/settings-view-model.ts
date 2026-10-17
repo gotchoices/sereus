@@ -8,7 +8,7 @@
 
 import { Observable, type EventData, type PropertyChangeData } from '@nativescript/core';
 import type { RedeemCadreInvitationResult } from '@serfab/cadre-core';
-import type { EdgeNodeOptions } from '@serfab/cadre-core/edge-node';
+import type { EdgeNodeOptions, OwnerGenesisResult } from '@serfab/cadre-core/edge-node';
 import { getCadreVm, type CadreViewModel } from '../../src/cadre-vm';
 import { describeJoinFailure } from '../../src/join-failure';
 
@@ -25,10 +25,14 @@ function splitAddrs(field: string): string[] {
 	return field.split(',').map((addr) => addr.trim()).filter((addr) => addr.length > 0);
 }
 
-/** The "Joined cadre" modal body: who admitted this phone, and with what standing. */
-function joinedCadreMessage(result: RedeemCadreInvitationResult): string {
+/**
+ * The "Joined cadre" modal body: who admitted this phone, and its standing in the cadre, read
+ * off the edge node's owner step after the join (`CadreViewModel.owner`), not the invitation:
+ * an invitation grants no ownership, and the phone's own key may already be an owner there.
+ */
+function joinedCadreMessage(result: RedeemCadreInvitationResult, owner: OwnerGenesisResult | null): string {
 	const member = result.peerId ?? 'a member';
-	const standing = result.grantsOwner ? 'This device is now an owner.' : 'This device is a member, not an owner.';
+	const standing = owner === 'enrolled' ? 'This device is now an owner.' : 'This device is a member, not an owner.';
 	return `Admitted by ${member}. ${standing}`;
 }
 
@@ -227,7 +231,7 @@ export class SettingsViewModel extends Observable {
 		try {
 			const result = await this.cadre.joinCadre(encoded, splitAddrs(this._relayAddr));
 			this.cadreInvitationInput = '';
-			this.showAlert('Joined cadre', joinedCadreMessage(result));
+			this.showAlert('Joined cadre', joinedCadreMessage(result, this.cadre.owner));
 		} catch (err) {
 			this.showAlert('Join failed', describeJoinFailure(err));
 		}

@@ -1,7 +1,7 @@
 /**
  * The join request: the text an app that wants to join a cadre copies (or shows as a QR code)
  * so the app that manages the cadre can mint an invitation for it alone
- * (`CadreNode.createCadreInvitation({ peerId: request.peerId, grantsOwner })`).
+ * (`CadreNode.createCadreInvitation({ peerId: request.peerId })`).
  *
  * `sereus-join-request:1.<base64url of canonical JSON>` where the JSON is
  * `{ appName, peerId, reply?, v }`. Nothing in it is secret or signed: the peer id is public, and

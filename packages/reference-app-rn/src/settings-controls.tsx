@@ -4,13 +4,11 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { TEST_IDS } from './test-ids';
 
 // Defined in `machines.ts`, which has no React import, so the Node-run modules can shorten a peer id too.
 export { shortPeerId } from './machines';
-
-const OWNER_SWITCH_LINE = 'An owner can add and remove devices and apps and approve everything in this cadre. Turn this off for an app that should only take part.';
 
 export function Section({ title, children }: { title: string; children: React.ReactNode }) {
 	return (
@@ -51,19 +49,6 @@ export function Fact({ label, value, note }: { label: string; value: string; not
 			<Text style={controlStyles.label}>{label}</Text>
 			<Text style={controlStyles.factValue} selectable>{value}</Text>
 			{note ? <Text style={controlStyles.factNote}>{note}</Text> : null}
-		</View>
-	);
-}
-
-/** "Also an owner", for what an invitation grants. `explained`: show what an owner can do under it; off where the prompt says it above. */
-export function OwnerSwitch({ value, onChange, testID, explained = true }: { value: boolean; onChange: (value: boolean) => void; testID: string; explained?: boolean }) {
-	return (
-		<View>
-			<View style={controlStyles.switchRow}>
-				<Text style={controlStyles.switchLabel}>Also an owner</Text>
-				<Switch value={value} onValueChange={onChange} testID={testID} />
-			</View>
-			{explained && <Text style={controlStyles.hint}>{OWNER_SWITCH_LINE}</Text>}
 		</View>
 	);
 }

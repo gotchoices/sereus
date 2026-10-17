@@ -41,7 +41,7 @@ export function describeJoinFailure(err: unknown): string {
   if (err instanceof StrandsNeedOwnerJoinError) {
     // No strands means pending joins or invitations only.
     const held = err.strandCount > 0 ? `this app's ${chats(err.strandCount)}` : 'what this app\'s own cadre holds';
-    return `This invitation makes the app a member, and only an owner can bring ${held} along. Ask for one with “Also an owner” on.`;
+    return `This invitation makes the app a member, and only an owner can bring ${held} along. Join with an owner grant instead, made in the app that holds your cadre under Owner keys.`;
   }
   return err instanceof Error ? err.message : String(err);
 }

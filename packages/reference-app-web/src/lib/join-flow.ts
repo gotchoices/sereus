@@ -18,7 +18,8 @@ import { StrandsNeedOwnerJoinError, type EdgeJoinProgress } from '@serfab/cadre-
 export type JoinFlow =
 	/** Redeeming the invitation; `wait` while no member of the cadre is ready, until `retryAtMs`. Cancellable. */
 	| { step: 'joining'; wait?: 'no-member-answered' | 'member-not-ready'; retryAtMs?: number }
-	| { step: 'admitted'; grantsOwner: boolean }
+	/** `asOwner`: the tab joined with an owner grant. */
+	| { step: 'admitted'; asOwner: boolean }
 	| { step: 'moving-strands' }
 	| { step: 'removing-old-cadre' }
 	/**
@@ -37,8 +38,8 @@ export type JoinFlow =
 	 * `blocked`: another tab of this site holds the old cadre's database open.
 	 */
 	| { step: 'removal-unfinished'; blocked: boolean; error?: string }
-	/** `grantsOwner`: the tab is an owner of the cadre it joined. */
-	| { step: 'done'; grantsOwner: boolean; moved: number };
+	/** `asOwner`: the tab is an owner of the cadre it joined. */
+	| { step: 'done'; asOwner: boolean; moved: number };
 
 export interface JoinFlowText {
 	line: string;
@@ -64,7 +65,7 @@ export function flowForProgress(progress: EdgeJoinProgress): JoinFlow {
 		case 'waiting':
 			return { step: 'joining', wait: progress.reason, retryAtMs: progress.retryAtMs };
 		case 'admitted':
-			return { step: 'admitted', grantsOwner: progress.grantsOwner };
+			return { step: 'admitted', asOwner: progress.asOwner };
 		case 'moving-strands':
 			return { step: 'moving-strands' };
 	}
@@ -81,7 +82,7 @@ export function joinFlowText(flow: JoinFlow): JoinFlowText {
 		case 'joining':
 			return { line: joiningLine(flow) };
 		case 'admitted':
-			return { line: flow.grantsOwner ? 'Admitted. Setting this tab up as an owner…' : 'Admitted as a member. Finishing the setup…' };
+			return { line: flow.asOwner ? 'Admitted. Setting this tab up as an owner…' : 'Admitted as a member. Finishing the setup…' };
 		case 'moving-strands':
 			return { line: 'Moving this tab’s strands into your cadre…' };
 		case 'removing-old-cadre':
@@ -107,7 +108,7 @@ export function joinFlowText(flow: JoinFlow): JoinFlowText {
 		case 'removal-unfinished':
 			return unfinishedRemovalText(flow);
 		case 'done':
-			return { line: doneLine(flow.grantsOwner, flow.moved) };
+			return { line: doneLine(flow.asOwner, flow.moved) };
 	}
 }
 
@@ -152,8 +153,8 @@ function unfinishedRemovalText(flow: Extract<JoinFlow, { step: 'removal-unfinish
 }
 
 /** The count is left out when nothing moved: a join with nothing to move, or a removal finished after a reload. */
-function doneLine(grantsOwner: boolean, moved: number): string {
-	const joined = `This tab is now part of your cadre, as ${grantsOwner ? 'an owner' : 'a member'}.`;
+function doneLine(asOwner: boolean, moved: number): string {
+	const joined = `This tab is now part of your cadre, as ${asOwner ? 'an owner' : 'a member'}.`;
 	return moved > 0 ? `${joined} ${strands(moved)} moved.` : joined;
 }
 
@@ -190,7 +191,7 @@ export function describeJoinFailure(err: unknown): string {
 /** The edge node refused a member join that would leave the founded party's strands behind; the phone app's `join-failure.ts` says the same of "this app". */
 function ownerJoinNeededLine(strandCount: number): string {
 	const held = strandCount > 0 ? `its ${strands(strandCount)}` : 'what its own cadre holds';
-	return `This invitation makes the tab a member, and only an owner can bring ${held} along. Ask for one with “Also an owner” on.`;
+	return `This invitation makes the tab a member, and only an owner can bring ${held} along. Join with an owner grant instead, made in the owner tab under Owner keys.`;
 }
 
 /** The notice for a join that did not happen: the user cancelled it, or it failed. */

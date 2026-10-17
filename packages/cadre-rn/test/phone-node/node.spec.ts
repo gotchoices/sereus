@@ -19,6 +19,7 @@ import {
 	StrandMoveNotOwnerError,
 	type CadreInvitation,
 	type CadreRemoval,
+	type OwnerGrantBundle,
 	type SAppConfig,
 } from '@serfab/cadre-core';
 import { fromString as uint8ArrayFromString } from 'uint8arrays';
@@ -74,7 +75,7 @@ function options(partyId: string, relayAddrs: string[] = []) {
  * A well-formed invitation to another party, signed by a key nobody holds, that expired a
  * minute ago: a waiting redemption refuses it by this device's clock before dialing anyone.
  */
-function expiredInvitation(partyId: string, grantsOwner = true): CadreInvitation {
+function expiredInvitation(partyId: string): CadreInvitation {
 	const ownerKey = ed25519PublicKeyFromPrivate(randomBytes(32).toString('base64url'));
 	const invitePrivateKey = randomBytes(32).toString('base64url');
 	return {
@@ -84,10 +85,35 @@ function expiredInvitation(partyId: string, grantsOwner = true): CadreInvitation
 		invite: {
 			key: ed25519PublicKeyFromPrivate(invitePrivateKey),
 			peerId: null,
-			grantsOwner,
 			expiresAt: new Date(Date.now() - 60_000).toISOString(),
 			totalUses: 1,
 			stampId: 'phone-node-spec-invite',
+			issuerKey: ownerKey,
+			issuerSig: 'never-checked-by-the-device',
+		},
+		ownerKeys: [ownerKey],
+		members: [],
+	};
+}
+
+/**
+ * A well-formed owner grant for another party, signed by a key nobody holds, that expired a
+ * minute ago: refused by this device's clock before dialing anyone, as the invitation is. The
+ * credential a join that moves strands needs, since a machine invitation grants no ownership.
+ */
+function expiredOwnerGrant(partyId: string): OwnerGrantBundle {
+	const ownerKey = ed25519PublicKeyFromPrivate(randomBytes(32).toString('base64url'));
+	const grantPrivateKey = randomBytes(32).toString('base64url');
+	return {
+		v: 1,
+		partyId,
+		grantPrivateKey,
+		grant: {
+			key: ed25519PublicKeyFromPrivate(grantPrivateKey),
+			label: null,
+			expiresAt: new Date(Date.now() - 60_000).toISOString(),
+			totalUses: 1,
+			stampId: 'phone-node-spec-grant',
 			issuerKey: ownerKey,
 			issuerSig: 'never-checked-by-the-device',
 		},
@@ -398,14 +424,13 @@ describe('createPhoneNode — its owner key', () => {
 		expect(phone.node).toBe(node);
 	}, LIFECYCLE_MS * 2);
 
-	it('wires the owner slot\'s key ahead of the identity key on a party it joined', async () => {
-		// Both are owners: the identity as an owner-granting invitation seats it, the slot's key as
-		// a backup the user imported. The slot's is this app's own owner key.
+	it('wires the owner slot\'s key on a party it joined', async () => {
+		// The slot holds a backup the user imported, not the key that founded the party: a joined
+		// start wires whichever key the slot holds, when the party lists it.
 		const { platform, secureStore, partyId } = device();
 		const phone = phoneNode(platform);
-		const founded = await phone.start(options(partyId));
+		await phone.start(options(partyId));
 		const backup = await phone.addBackupOwnerKey({ label: 'backup' });
-		await founded.addOwner(ed25519PublicKeyB64FromPeerId(await phone.identityPeerId())!);
 		await phone.stop();
 		await loseOwnerSlot(secureStore);
 		expect(await phone.importOwnerKey(backup.exportText)).toEqual({ publicKey: backup.publicKey, wired: false });
@@ -452,7 +477,7 @@ describe('createPhoneNode — joining another party', () => {
 		const left = await phone.start(options(partyId));
 		await left.foundStrand({ strandId: `${partyId}-strand`, type: 'o', sAppConfig: NOTES_SAPP });
 
-		await expect(phone.joinCadre(expiredInvitation(`${partyId}-joined`, false)))
+		await expect(phone.joinCadre(expiredInvitation(`${partyId}-joined`)))
 			.rejects.toMatchObject({ name: 'StrandsNeedOwnerJoinError', strandCount: 1 });
 
 		expect(phone.node).toBe(left);
@@ -461,15 +486,19 @@ describe('createPhoneNode — joining another party', () => {
 	}, LIFECYCLE_MS);
 
 	it('discards the strands it recorded for the move when the join fails', async () => {
+		// With strands to move, the join needs an owner grant; it seats the slot's key, which a
+		// founded party already holds, so a failed join leaves the slot as it was.
 		const { platform, secureStore, partyId } = device();
 		const phone = phoneNode(platform);
 		const left = await phone.start(options(partyId));
 		await left.foundStrand({ strandId: `${partyId}-strand`, type: 'o', sAppConfig: NOTES_SAPP });
+		const ownerKey = phone.ownerPublicKey();
 
-		await expect(phone.joinCadre(expiredInvitation(`${partyId}-joined`)))
-			.rejects.toMatchObject({ name: 'CadreInviteRejectedError', code: 'invite-spent' });
+		await expect(phone.joinCadre(expiredOwnerGrant(`${partyId}-joined`)))
+			.rejects.toMatchObject({ name: 'OwnerGrantRejectedError', code: 'grant-spent' });
 
 		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+		expect(phone.ownerPublicKey()).toBe(ownerKey);
 		expect(secureStore.setOptionsByKey.has(moveRecordKey(partyId)), 'recorded before the switch').toBe(true);
 		expect(secureStore.map.has(moveRecordKey(partyId)), 'discarded by the rollback').toBe(false);
 	}, LIFECYCLE_MS * 3);
@@ -483,8 +512,8 @@ describe('createPhoneNode — joining another party', () => {
 		await left.foundStrand({ strandId: `${partyId}-strand`, type: 'o', sAppConfig: NOTES_SAPP });
 		await phone.stop();
 
-		await expect(phone.joinCadre(expiredInvitation(`${partyId}-joined`)))
-			.rejects.toMatchObject({ name: 'CadreInviteRejectedError', code: 'invite-spent' });
+		await expect(phone.joinCadre(expiredOwnerGrant(`${partyId}-joined`)))
+			.rejects.toMatchObject({ name: 'OwnerGrantRejectedError', code: 'grant-spent' });
 
 		expect(phone.status).toEqual({ state: 'stopped' });
 		expect(secureStore.setOptionsByKey.has(moveRecordKey(partyId)), 'recorded before the switch').toBe(true);

@@ -2,19 +2,21 @@
  * `createEdgeNode` — build, start, stop and rebuild an edge device's `CadreNode` the prescribed
  * way: identity and owner key in the app's key store, the four node-local stores durable and
  * party-scoped, raw storage per scope from the app's storage, owner genesis, the last start
- * remembered for unattended starts, and the switch to another party's cadre by invitation.
+ * remembered for unattended starts, and the switch to another party's cadre by machine
+ * invitation or owner grant.
  *
  * Nothing platform-specific is imported here. The app passes in its key store, its storage and
  * its transports (`EdgeNodePlatform`), so a Node test runs this code over fakes, and the React
  * Native kit's `createPhoneNode` is this over the secure store and rn-leveldb.
  */
 
-import type { CadreInvitation } from '../cadre-invite-protocol.js';
 import { CadreNode } from '../cadre-node.js';
 import { DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../key-store.js';
 import { loadOrCreateIdentityKey } from '../identity-key.js';
 import { addBackupOwnerKey, exportOwnerKey, importOwnerKeyInto } from '../owner-key-flows.js';
 import type { ExportedOwnerKey, ImportedOwnerKey, OwnerKeyExportOptions } from '../owner-key-flows.js';
+import { createOwnerKey, loadOwnerSigner } from '../owner-key-store.js';
+import type { OwnerSigner } from '../owner-signer.js';
 import { PersistentBootstrapPeerStore } from '../bootstrap-peer-store.js';
 import { PersistentEnrolledMachineStore } from '../enrolled-machine-store.js';
 import { PersistentStrandNetworkStateStore } from '../strand-network-state.js';
@@ -50,6 +52,7 @@ import {
 	type RemovalAtStart,
 } from './dissolve.js';
 import { joinCadre, type JoinRuntime } from './edge-join.js';
+import type { JoinCredential } from './join-credential.js';
 import {
 	bootstrapPeersKvKey,
 	enrolledMachinesKvKey,
@@ -81,8 +84,11 @@ export type EdgeNodeStatus =
 /** A join's progress: the redemption's passes and pauses, then the steps after a member admitted the app. */
 export type EdgeJoinProgress =
 	| CadreJoinProgress
-	/** A member admitted the app; the edge node is wiring its owner key and saving the start. */
-	| { state: 'admitted'; grantsOwner: boolean }
+	/**
+	 * A member admitted the app; the edge node is wiring its owner key and saving the start.
+	 * `asOwner`: the app joined with an owner grant, so its owner slot's key is an owner of the party.
+	 */
+	| { state: 'admitted'; asOwner: boolean }
 	/** The app's key is wired as an owner and the strands this join recorded are being adopted. */
 	| { state: 'moving-strands' };
 
@@ -104,6 +110,8 @@ export interface JoinCadreOptions {
 
 /** What an admitted {@link EdgeNode.joinCadre} returns. */
 export interface JoinCadreResult extends RedeemCadreInvitationResult {
+	/** The app joined with an owner grant: its owner slot's key is an owner of the party (`status.owner` says whether it is wired). */
+	asOwner: boolean;
 	/** The party this app founded and has left, when it founded one; saved as `EdgeNodeOptions.formerPartyId`. */
 	formerPartyId?: string;
 	/** How moving that party's strands into this one settled; absent when there was nothing to move. */
@@ -156,18 +164,24 @@ export interface EdgeNode {
 	 */
 	restart(options: EdgeNodeOptions): Promise<CadreNode>;
 	/**
-	 * Join the cadre `invitation` names: this app's one node moves to that party, keeping its
-	 * identity, so the peer id an owner targeted is the one that redeems. Runs in turn with
-	 * start, stop and restart; a start called meanwhile runs after it, and a `stop` cancels it.
+	 * Join the cadre `credential` names: this app's one node moves to that party, keeping its
+	 * identity, so the peer id an owner targeted is the one that redeems. A machine invitation
+	 * admits the app as a machine; an owner grant makes it a machine and an owner at once
+	 * (`CadreNode.joinWithOwnerGrant`), seating the owner slot's key, created when the slot is
+	 * empty, which is how an app brings the strands of the party it founded along. Runs in turn
+	 * with start, stop and restart; a start called meanwhile runs after it, and a `stop` cancels it.
 	 *
 	 * Already running in that party: redeems on the running node (a device already admitted is
-	 * answered as such) and wires its owner key. Otherwise: stops the running node, starts one
-	 * for the invitation's party with `origin: 'joined'` (status `joining`), and redeems there,
-	 * waiting for a member to answer until one accepts, one refuses, the invitation expires
-	 * (`invite-spent`) or `options.signal` aborts. Admitted: wires the owner key when the party
-	 * lists it, saves the start (`autoStart: true`) and reports `running`. Anything else: stops
-	 * that node, starts again what was running before (a node that was stopped stays stopped),
-	 * and throws the join's error; a failure restarting is logged and leaves status `failed`.
+	 * answered as such; an owner grant is redeemed for the slot's key, `CadreNode.redeemOwnerGrant`)
+	 * and wires its owner key. Otherwise: stops the running node, starts one for the credential's
+	 * party with `origin: 'joined'` (status `joining`), and redeems there, waiting for a member to
+	 * answer until one accepts, one refuses, the credential expires (`invite-spent`,
+	 * `grant-spent`) or `options.signal` aborts. Admitted: wires the owner key when the party
+	 * lists the slot's key (after an owner grant, asking again until its row arrives or the
+	 * owner-step bound passes), saves the start (`autoStart: true`) and reports `running`.
+	 * Anything else: stops that node, starts again what was running before (a node that was
+	 * stopped stays stopped), and throws the join's error; a failure restarting is logged and
+	 * leaves status `failed`.
 	 *
 	 * The start is saved only once admitted, so an app killed while waiting relaunches into the
 	 * party it left. The left party's data stays on disk under its own names.
@@ -177,9 +191,9 @@ export interface EdgeNode {
 	 * adopted once the app's key is wired as an owner of the joined party, before the join reports
 	 * `running`; otherwise a later start adopts them (`result.strandMove` says which). Refused
 	 * before anything stops, with `StrandsNeedOwnerJoinError`, when there is something to move and
-	 * the invitation does not grant owner; and with the export's error when it fails.
+	 * the credential is a machine invitation; and with the export's error when it fails.
 	 */
-	joinCadre(invitation: CadreInvitation, options?: JoinCadreOptions): Promise<JoinCadreResult>;
+	joinCadre(credential: JoinCredential, options?: JoinCadreOptions): Promise<JoinCadreResult>;
 	/**
 	 * The move from `formerPartyId` (the running start's, else the saved one's) still waiting to be
 	 * adopted, or `undefined` when there is none. A read the key store refuses throws.
@@ -188,9 +202,9 @@ export interface EdgeNode {
 	/**
 	 * Adopt the waiting move on the running node now, in turn with start, stop and join; `undefined`
 	 * when no move from `formerPartyId` names the running party. On a joined party with no owner
-	 * signer wired, first asks the party once more whether it lists the app's key (the owner slot's,
-	 * then the identity key), so an owner grant whose row arrived after the join stopped waiting is
-	 * picked up here, `status.owner` becoming `enrolled`. Throws what the adoption throws,
+	 * signer wired, first asks the party once more whether it lists the owner slot's key, so an
+	 * owner grant whose row arrived after the join stopped waiting is picked up here,
+	 * `status.owner` becoming `enrolled`. Throws what the adoption throws,
 	 * `StrandMoveNotOwnerError` while the app's key is no owner there.
 	 */
 	finishStrandMove(): Promise<StrandMoveReport | undefined>;
@@ -243,8 +257,8 @@ export interface EdgeNode {
 	onStatus(listener: (status: EdgeNodeStatus) => void): () => void;
 	/**
 	 * The public key (base64url) of the owner key the running node signs with, for pairing and
-	 * approval prompts: the owner slot's, or on a joined party the identity key an owner-granting
-	 * invitation seated. Null unless running with one wired. Never private material.
+	 * approval prompts: the owner slot's key. Null unless running with it wired. Never private
+	 * material.
 	 */
 	ownerPublicKey(): string | null;
 	/**
@@ -261,11 +275,9 @@ export interface EdgeNode {
 	 */
 	addBackupOwnerKey(options?: OwnerKeyExportOptions): Promise<ExportedOwnerKey>;
 	/**
-	 * This app's own owner key, from the key store's owner slot, as export text, with the key it
-	 * holds: name the export by `publicKey`, not by the key the node signs with, which on an owner
-	 * through the identity key an owner-granting invitation seated is that identity key whatever the
-	 * slot holds. Works with no node running. Throws when the slot is empty: a member, or an owner
-	 * through that identity key alone, holds no key of its own.
+	 * This app's own owner key, from the key store's owner slot, which is the key the node signs
+	 * with, as export text, with the key it holds (`publicKey`). Works with no node running. Throws
+	 * when the slot is empty: a member holds no owner key of its own.
 	 */
 	exportOwnerKey(options?: OwnerKeyExportOptions): Promise<ExportedOwnerKey>;
 	/**
@@ -387,13 +399,13 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime {
 		});
 	}
 
-	joinCadre(invitation: CadreInvitation, options: JoinCadreOptions = {}): Promise<JoinCadreResult> {
+	joinCadre(credential: JoinCredential, options: JoinCadreOptions = {}): Promise<JoinCadreResult> {
 		// A start called from here on runs after this join rather than joining a start it replaces.
 		this.starting = null;
 		const cancel = new AbortController();
 		const release = relayAbort(options.signal, cancel);
 		this.joins.add(cancel);
-		const joining = this.inTurn(() => joinCadre(this, invitation, options, cancel.signal));
+		const joining = this.inTurn(() => joinCadre(this, credential, options, cancel.signal));
 		const settled = (): void => {
 			this.joins.delete(cancel);
 			release();
@@ -579,9 +591,9 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime {
 	}
 
 	// ── start ────────────────────────────────────────────────────────────────
-	// `bringUp`, `readAlone`, `buildAndStart`, `wireJoinedOwner`, `saveRunningStart` and
-	// `reportRunning` are public as the join's view of this runtime (`JoinRuntime`); the class
-	// itself never leaves this module.
+	// `bringUp`, `readAlone`, `buildAndStart`, `ownerSlotSigner`, `wireJoinedOwner`,
+	// `saveRunningStart` and `reportRunning` are public as the join's view of this runtime
+	// (`JoinRuntime`); the class itself never leaves this module.
 
 	async buildAndStart(options: EdgeNodeOptions): Promise<CadreNode> {
 		this.setStatus({ state: 'starting' });
@@ -656,7 +668,12 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime {
 		return runOwnerGenesis(node, { keyStore: this.keyStore, label: options.ownerKeyLabel, timeoutMs: this.platform.ownerGenesisTimeoutMs });
 	}
 
-	/** `granted`: a redemption has just granted owner, so wait for the row. */
+	/** The owner slot's key, created when the slot is empty: what an owner grant seats. Inside a transition, as the slot's check-then-set must be. */
+	async ownerSlotSigner(): Promise<OwnerSigner> {
+		return (await loadOwnerSigner(this.keyStore)) ?? (await createOwnerKey(this.keyStore));
+	}
+
+	/** `granted`: an owner grant has just seated the slot's key, so wait for the row. */
 	wireJoinedOwner(node: CadreNode, granted: boolean): Promise<OwnerGenesisResult> {
 		return wireJoinedOwnerKey(node, { keyStore: this.keyStore, timeoutMs: this.platform.ownerGenesisTimeoutMs, granted });
 	}

@@ -110,9 +110,10 @@ async function main() {
 
 	// Mint the cadre invitation the phone redeems at this drone (`_setup.yaml`
 	// pastes it into `input-cadre-invitation`). Its member address is the ws
-	// listener above, so the phone dials the drone directly. It makes the phone an
-	// owner, because the phone then creates a strand; an hour covers a slow device run.
-	const { encoded: cadreInvitation } = await node.createCadreInvitation({ grantsOwner: true, expiresInMs: 60 * 60_000 });
+	// listener above, so the phone dials the drone directly; an hour covers a slow
+	// device run. It admits the phone as a machine only, and the flow then creates a
+	// strand, which needs an owner: the owner-grant join arrives with `reference-app-rn-owner-grants`.
+	const { encoded: cadreInvitation } = await node.createCadreInvitation({ expiresInMs: 60 * 60_000 });
 
 	// Found the pre-configured chat strand: publish its row naming this machine as founder
 	// and launch it. A bare `addStrand` of an unpublished row would launch as a joiner and

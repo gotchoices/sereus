@@ -390,47 +390,23 @@ export function verifyCadreInviteRedemption(
 }
 
 /**
- * The links of an invitation admission that do not depend on WHICH table's row was
- * admitted — shared by {@link verifyInvitationAdmission} (`CadrePeer`) and
- * {@link verifyInvitationOwnerAdmission} (`OwnerKey`), which differ only in the row
- * columns the usage must name and, for an owner row, in `grantsOwner`. The chain is
- *
- *   row --vouchUsage--> usage --inviteKey--> invitation --issuerKey--> anchored owner
- *
- * and every link here is verified: the issuer is anchored (`isAnchored`) and is the row's
- * `vouchOwner`; the usage names this invitation and is the row's `vouchUsage`; a targeted
- * invitation names the redeeming device; the stored `peerKey` really is the key behind the
- * usage's `peerId` (the schema cannot unwrap a multihash, so a writer could assert any
- * pair); the invitation's stored `'add'` signature verifies over the row rebuilt from its
- * columns; the holder's `'redeem'` signature verifies with the invitation key and the
- * device's `'consent'` signature with its own key. All three signatures are judged for
- * `partyId`. Throws on malformed input; the two callers turn that into `false`.
- */
-function verifyAdmissionChain(
-  partyId: string,
-  vouchOwner: string,
-  vouchUsage: string,
-  usage: CadreInviteUsageRow,
-  invite: CadreInviteRow,
-  isAnchored: (ownerKey: string) => boolean,
-): boolean {
-  return isAnchored(vouchOwner)
-    && invite.issuerKey === vouchOwner
-    && usage.usageStampId === vouchUsage
-    && usage.inviteKey === invite.key
-    && (invite.peerId === null || invite.peerId === usage.peerId)
-    && ed25519PublicKeyB64FromPeerId(usage.peerId) === usage.peerKey
-    && verifyB64(cadreInviteAddDigest(partyId, invite), invite.issuerSig, invite.issuerKey)
-    && verifyB64(cadreInviteRedeemDigest(partyId, invite.key, usage.usageStampId, usage.peerKey), usage.inviteSig, invite.key)
-    && verifyB64(cadreInviteConsentDigest(partyId, invite.key, usage.usageStampId, usage.peerKey), usage.peerSig, usage.peerKey);
-}
-
-/**
  * Is an invitation-admitted `CadrePeer` row (`vouchSig` null, `vouchUsage` set) a
  * member this node should trust? The read-side mirror of the consent branch of
  * `CadrePeer.AuthorizedInsert`, re-checked against THIS node's anchor because the
- * replicated `OwnerKey` table can be polluted. The usage must name this peer id and this
- * exact row incarnation (`peerStampId`); every other link is {@link verifyAdmissionChain}.
+ * replicated `OwnerKey` table can be polluted. The chain is
+ *
+ *   row --vouchUsage--> usage --inviteKey--> invitation --issuerKey--> anchored owner
+ *
+ * and every link is verified: the issuer is anchored (`isAnchored`) and is the row's
+ * `vouchOwner`; the usage is the row's `vouchUsage`, names this peer id and this exact row
+ * incarnation (`peerStampId`), and names this invitation; a targeted invitation names the
+ * redeeming device; the stored `peerKey` really is the key behind the usage's `peerId` (the
+ * schema cannot unwrap a multihash, so a writer could assert any pair); the invitation's
+ * stored `'add'` signature verifies over the row rebuilt from its columns; the holder's
+ * `'redeem'` signature verifies with the invitation key and the device's `'consent'`
+ * signature with its own key. All three signatures are judged for `partyId`. A machine
+ * invitation admits a machine and nothing else, so no `OwnerKey` row is ever verified
+ * through this chain; a grant-seated owner row is {@link verifyOwnerGrantAdmission}'s.
  *
  * Expiry, use count and withdrawal are deliberately NOT re-checked: they were conditions
  * at redemption (`CadreInviteUsage.Authorized`), and membership persists until an owner
@@ -451,40 +427,19 @@ export function verifyInvitationAdmission(
     return row.stampId !== null
       && row.vouchOwner !== null
       && row.vouchUsage !== null
+      && isAnchored(row.vouchOwner)
+      && invite.issuerKey === row.vouchOwner
+      && usage.usageStampId === row.vouchUsage
       && usage.peerStampId === row.stampId
       && usage.peerId === row.peerId
-      && verifyAdmissionChain(partyId, row.vouchOwner, row.vouchUsage, usage, invite, isAnchored);
+      && usage.inviteKey === invite.key
+      && (invite.peerId === null || invite.peerId === usage.peerId)
+      && ed25519PublicKeyB64FromPeerId(usage.peerId) === usage.peerKey
+      && verifyB64(cadreInviteAddDigest(partyId, invite), invite.issuerSig, invite.issuerKey)
+      && verifyB64(cadreInviteRedeemDigest(partyId, invite.key, usage.usageStampId, usage.peerKey), usage.inviteSig, invite.key)
+      && verifyB64(cadreInviteConsentDigest(partyId, invite.key, usage.usageStampId, usage.peerKey), usage.peerSig, usage.peerKey);
   } catch (error) {
     log('verifyInvitationAdmission failed: %o', error);
-    return false;
-  }
-}
-
-/**
- * Is an invitation-admitted `OwnerKey` row (`vouchSig` null, `vouchUsage` set) an owner
- * this node should derive into its anchor? The read-side mirror of the consent branch of
- * `OwnerKey.Authorized` (`owner-anchor-sync.ts` → `deriveOwnerAnchor`): the invitation
- * must grant ownership, and the usage must name this key (`peerKey`) and this exact row
- * incarnation (`ownerStampId`); every other link is {@link verifyAdmissionChain}. Same
- * never-throws contract and the same deliberate omissions as
- * {@link verifyInvitationAdmission}.
- */
-export function verifyInvitationOwnerAdmission(
-  partyId: string,
-  row: OwnerKeyRow,
-  usage: CadreInviteUsageRow,
-  invite: CadreInviteRow,
-  isAnchored: (ownerKey: string) => boolean,
-): boolean {
-  try {
-    return row.vouchOwner !== null
-      && row.vouchUsage !== null
-      && invite.grantsOwner
-      && usage.peerKey === row.key
-      && usage.ownerStampId === row.stampId
-      && verifyAdmissionChain(partyId, row.vouchOwner, row.vouchUsage, usage, invite, isAnchored);
-  } catch (error) {
-    log('verifyInvitationOwnerAdmission failed: %o', error);
     return false;
   }
 }
@@ -572,7 +527,7 @@ export function verifyOwnerGrantRedemption(
  * signature with itself. All three signatures are judged for `partyId`.
  *
  * Expiry, use count and withdrawal are deliberately NOT re-checked, as
- * {@link verifyInvitationOwnerAdmission} omits them: they were conditions at redemption
+ * {@link verifyInvitationAdmission} omits them: they were conditions at redemption
  * (`OwnerGrantUsage.Authorized`), and ownership persists until an owner removes the row.
  * Same never-throws contract as the siblings.
  */

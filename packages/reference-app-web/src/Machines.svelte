@@ -45,7 +45,7 @@
 
 	function pendingMeta(status: CadreInviteStatus): string {
 		const { invite } = status;
-		return `${peerCode(invite.peerId ?? '')} · ${invite.grantsOwner ? 'owner' : 'member'} · ${validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}`;
+		return `${peerCode(invite.peerId ?? '')} · ${validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}`;
 	}
 
 	/** Close the confirmation and bring the Owner keys card, further down the page, into view. */

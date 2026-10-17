@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { CadreNode, CADRE_INVITATION_DEFAULT_TTL_MS, OWNER_INVITATION_DEFAULT_TTL_MS } from '../src/cadre-node.js';
+import { CadreNode, CADRE_INVITATION_DEFAULT_TTL_MS } from '../src/cadre-node.js';
 import { decodeCadreInvitation, type CadreInvitation } from '../src/cadre-invite-protocol.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { INVITATION_ADDRS_PER_SIBLING } from '../src/invitation-bootstrap.js';
@@ -9,7 +9,7 @@ import { anchorWith, createConfig, inject } from './membership-gate-helpers.js';
 
 /**
  * `CadreNode`'s cadre-invitation surface: what an owner mints (`createCadreInvitation`:
- * defaults by kind, the member list, the anchor precondition), lists and withdraws, and one
+ * the defaults, the member list, the anchor precondition), lists and withdraws, and one
  * redemption by a started device at a started member over a real TCP connection — the
  * handler `start()` registers, reached through the libp2p stack rather than a stream double
  * (the protocol's cases are in `cadre-invite-protocol.spec.ts`).
@@ -36,29 +36,24 @@ describe('CadreNode.createCadreInvitation', () => {
     await owner?.node.stop();
   });
 
-  it('defaults by kind: 15 minutes and one use for an untargeted owner grant, 24 hours otherwise', async () => {
+  it('defaults: 24 hours and one use, targeted or not; a machine invitation is never a short-lived admin credential', async () => {
     const now = Date.now();
-    const bearerOwner = (await owner.node.createCadreInvitation({ grantsOwner: true })).invitation;
-    expect(bearerOwner.invite.grantsOwner).toBe(true);
-    expect(bearerOwner.invite.peerId).toBeNull();
-    expect(bearerOwner.invite.totalUses).toBe(1);
-    expectAbout(expiresAtMs(bearerOwner), now + OWNER_INVITATION_DEFAULT_TTL_MS);
+    const open = (await owner.node.createCadreInvitation()).invitation;
+    expect(open.invite.peerId).toBeNull();
+    expect(open.invite.totalUses).toBe(1);
+    expectAbout(expiresAtMs(open), now + CADRE_INVITATION_DEFAULT_TTL_MS);
 
-    const memberOnly = (await owner.node.createCadreInvitation({ grantsOwner: false })).invitation;
-    expectAbout(expiresAtMs(memberOnly), now + CADRE_INVITATION_DEFAULT_TTL_MS);
-
-    // Targeted at one device, an owner grant is not a bearer credential: the long default.
-    const targeted = (await owner.node.createCadreInvitation({ grantsOwner: true, peerId: 'peer-target', uses: 3 })).invitation;
+    const targeted = (await owner.node.createCadreInvitation({ peerId: 'peer-target', uses: 3 })).invitation;
     expect(targeted.invite.peerId).toBe('peer-target');
     expect(targeted.invite.totalUses).toBe(3);
     expectAbout(expiresAtMs(targeted), now + CADRE_INVITATION_DEFAULT_TTL_MS);
 
-    await expect(owner.node.createCadreInvitation({ grantsOwner: false, uses: 0 })).rejects.toThrow(/positive integer/);
+    await expect(owner.node.createCadreInvitation({ uses: 0 })).rejects.toThrow(/positive integer/);
   });
 
   it('names this machine first, carries the anchored owner keys, and round-trips through its encoding', async () => {
     expect(await owner.node.isOwner()).toBe(true);
-    const { invitation, encoded, reach } = await owner.node.createCadreInvitation({ grantsOwner: false });
+    const { invitation, encoded, reach } = await owner.node.createCadreInvitation();
     expect(invitation.partyId).toBe(owner.node.partyId);
     // Alone in its party: no other machine could answer once this one is gone, and the
     // read-only judgement agrees with the one minted.
@@ -73,7 +68,7 @@ describe('CadreNode.createCadreInvitation', () => {
   });
 
   it('lists what it minted, and a withdrawal turns live off while the row stays', async () => {
-    const { invitation } = await owner.node.createCadreInvitation({ grantsOwner: false });
+    const { invitation } = await owner.node.createCadreInvitation();
     const key = invitation.invite.key;
     const before = (await owner.node.listCadreInvitations()).find((status) => status.invite.key === key);
     expect(before).toMatchObject({ live: true, withdrawn: false, usesRecorded: 0 });
@@ -95,7 +90,7 @@ describe('CadreNode.createCadreInvitation', () => {
       insertCadreInvite: async () => { throw new Error('must not be reached'); }
     };
 
-    await expect(node.createCadreInvitation({ grantsOwner: false })).rejects.toThrow(/anchors no owner key/);
+    await expect(node.createCadreInvitation()).rejects.toThrow(/anchors no owner key/);
   });
 });
 
@@ -112,7 +107,7 @@ describe('CadreNode.redeemCadreInvitation', () => {
       profile: 'transaction'
     });
     try {
-      const { invitation } = await member.node.createCadreInvitation({ grantsOwner: true });
+      const { invitation } = await member.node.createCadreInvitation();
       await device.start();
 
       // Wrong party: refused before anything is dialed or pinned.
@@ -122,11 +117,12 @@ describe('CadreNode.redeemCadreInvitation', () => {
       const result = await device.redeemCadreInvitation(invitation);
 
       expect(result.peerId).toBe(member.node.peerId!.toString());
-      expect(result.grantsOwner).toBe(true);
-      // The member admitted the device through the chain its database now holds.
+      // The member admitted the device through the chain its database now holds, as a machine
+      // only: its identity key is never an owner key.
       const devicePeerId = device.peerId!.toString();
       expect((await member.node.listAuthorizedMembers()).map((row) => row.peerId)).toContain(devicePeerId);
-      expect(await member.node.getControlDatabase()!.getOwnerKeys()).toContain(ed25519KeyPairFromLibp2p(deviceKey).publicKeyB64);
+      expect(await member.node.getControlDatabase()!.getOwnerKeys()).not.toContain(ed25519KeyPairFromLibp2p(deviceKey).publicKeyB64);
+      expect(await device.wireOwnKeyIfOwner()).toBe(false);
       // The device pinned the bundle's owner keys and remembers the member as a dial target.
       expect(device.getTrustedOwnerStore()!.has(member.ownerKey.publicKeyB64)).toBe(true);
       expect(device.getBootstrapPeerStore()!.all().get(result.peerId!)?.addrs.length).toBeGreaterThan(0);

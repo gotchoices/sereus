@@ -130,8 +130,8 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 		}
 	});
 
-	// Titled from the key the kit exported, the owner slot's, which is not the key this device signs
-	// with on one signing with the identity key an owner-granting invitation seated.
+	// Titled from the key the kit exported, the owner slot's: the key this device signs with, named
+	// as the list names it.
 	const exportOwn = (form: ExportForm) => void exclusive(async () => {
 		try {
 			const { publicKey, exportText } = await cadre.exportOwnerKey(exportOptions(form));

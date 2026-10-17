@@ -92,23 +92,20 @@ export const TEST_IDS = {
 		scanJoinRequestBtn: 'btn-scan-join-request',
 		useJoinRequestBtn: 'btn-use-join-request',
 		/**
-		 * The join request's approval prompt: its "Also an owner" switch, and mint the invitation or not
-		 * (Add / Cancel; Allow / Deny for a request another app on this phone opened this one with).
+		 * The join request's approval prompt: mint the invitation or not (Add / Cancel; Allow / Deny
+		 * for a request another app on this phone opened this one with).
 		 */
-		requestOwnerSwitch: 'switch-request-owner',
 		approveJoinRequestBtn: 'btn-approve-join-request',
 		cancelJoinRequestBtn: 'btn-cancel-join-request',
 		/** What became of the last join request another app opened this one with (sent, or ignored). */
 		joinRequestLinkNotice: 'text-join-request-link-notice',
 		/** On the Node card: a join request another app opened this one with waits for Connect. */
 		waitingJoinRequest: 'text-waiting-join-request',
-		/** The open invitation's "Also an owner" switch, and the button that mints it. */
-		openInviteOwnerSwitch: 'switch-open-invite-owner',
+		/** Mints the open invitation. */
 		makeInvitationBtn: 'btn-make-invitation',
 		/** Recommend an app: one other Sereus app (Get ‹app› or Open ‹app›); pass its scheme. */
 		recommendAppBtn: (scheme: string) => `btn-recommend-app-${scheme}`,
-		/** The recommend prompt's "Also an owner" switch, and Allow and get / open ‹app›, or Cancel. */
-		recommendOwnerSwitch: 'switch-recommend-owner',
+		/** The recommend prompt: Allow and get / open ‹app›, or Cancel. */
 		allowRecommendedAppBtn: 'btn-allow-recommended-app',
 		cancelRecommendedAppBtn: 'btn-cancel-recommended-app',
 		/** Per-row Withdraw on an app allowed to join; pass its scheme. */

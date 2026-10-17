@@ -121,7 +121,7 @@ export interface AdminStrandRemoval {
  * - `GET    /admin/authorized-members/:peerId` → `{ member: boolean }` (AUTHORIZED)
  * - `GET    /admin/strands`           → `{ strands: AdminStrandSummary[], controlConnections }`
  * - `GET    /admin/invites`           → `{ invitations: CadreInviteStatus[] }` (every invitation this node holds, with its standing)
- * - `POST   /admin/invites`           → `{ invitation, encoded }` (mint a cadre invitation; body `{ peerId?, grantsOwner?, expiresInMs?, uses? }`)
+ * - `POST   /admin/invites`           → `{ invitation, encoded }` (mint a cadre invitation; body `{ peerId?, expiresInMs?, uses? }`)
  * - `DELETE /admin/invites/:key`      → `{ withdrawn: boolean }` (owner-signed withdrawal; `false` when not held here or already withdrawn)
  * - `POST   /admin/add-drone`         → `{ seed, encodedSeed }` (mint a seed authorizing a drone/donated node)
  * - `DELETE /admin/members/:peerId`   → `{ ok: true }`
@@ -359,14 +359,16 @@ export class AdminServer {
 /**
  * The mint request from its JSON body, each field checked for shape so a caller's mistake is
  * a `bad_request` naming the field rather than a node fault. `uses` is checked here too,
- * ahead of the node's own check, for the same reason.
+ * ahead of the node's own check, for the same reason. `grantsOwner` is refused rather than
+ * ignored: a machine invitation grants no ownership, and a caller still asking for it would
+ * otherwise be handed a membership-only invitation it believes grants more.
  */
 function parseInvitationOptions(body: Record<string, unknown>): CreateCadreInvitationOptions {
   if (body.peerId !== undefined && (typeof body.peerId !== 'string' || body.peerId.length === 0)) {
     throw new AdminError('bad_request', 'peerId must be a non-empty string when given');
   }
-  if (body.grantsOwner !== undefined && typeof body.grantsOwner !== 'boolean') {
-    throw new AdminError('bad_request', 'grantsOwner must be a boolean when given');
+  if ('grantsOwner' in body) {
+    throw new AdminError('bad_request', 'grantsOwner is not accepted: a machine invitation grants no ownership; mint an owner grant instead');
   }
   if (body.expiresInMs !== undefined && (typeof body.expiresInMs !== 'number' || !Number.isFinite(body.expiresInMs))) {
     throw new AdminError('bad_request', 'expiresInMs must be a finite number when given');
@@ -375,7 +377,6 @@ function parseInvitationOptions(body: Record<string, unknown>): CreateCadreInvit
     throw new AdminError('bad_request', 'uses must be a positive integer when given');
   }
   return {
-    grantsOwner: body.grantsOwner === true,
     ...(body.peerId !== undefined ? { peerId: body.peerId as string } : {}),
     ...(body.expiresInMs !== undefined ? { expiresInMs: body.expiresInMs as number } : {}),
     ...(body.uses !== undefined ? { uses: body.uses as number } : {}),

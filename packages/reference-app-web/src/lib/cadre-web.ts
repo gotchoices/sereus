@@ -295,9 +295,9 @@ export function addBackupOwnerKey(options: OwnerKeyExportOptions = {}): Promise<
 }
 
 /**
- * This tab's own owner key as export text, with the key it holds, which is not the key the node
- * signs with on a tab signing with the identity key an owner-granting invitation seated; throws
- * when the tab holds none of its own. Works with no node running.
+ * This tab's own owner key as export text: the key in the tab's owner slot, the only key the node
+ * signs with when the tab is an owner; throws when the tab holds none of its own. Works with no
+ * node running.
  */
 export function exportOwnerKey(options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
 	return edgeNode.exportOwnerKey(options);

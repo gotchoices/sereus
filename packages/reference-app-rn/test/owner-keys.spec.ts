@@ -30,6 +30,7 @@ describe('the removal\'s Keep switches', () => {
 			dependents: { peers: ['peer-app', 'peer-gone'], owners: ['key-named', 'key-unlisted'] },
 			revouchesOwnRow: false,
 			ownDependency: false,
+			grants: [],
 		};
 		const machines: CadreMachine[] = [
 			{ peerId: 'peer-app', publicKey: 'abcdefgh-identity', isSelf: false, trusted: true, profile: 'transaction', lastPublishedAt: null, vouchedBy: 'lost-key' },

@@ -27,11 +27,11 @@ export interface CadreMemberHandle {
 	/** This machine's peer id: the one member the invitation names. */
 	peerId: string;
 	/**
-	 * Mint an invitation into this party, for `peerId` alone or for whoever redeems first
-	 * (`CadreNode.createCadreInvitation`). `reach` is `issuer-only` here: this machine is the
-	 * party's only one.
+	 * Mint a machine invitation into this party, for `peerId` alone or for whoever redeems first
+	 * (`CadreNode.createCadreInvitation`); it admits a member and no owner. `reach` is
+	 * `issuer-only` here: this machine is the party's only one.
 	 */
-	mintInvitation(options: { peerId?: string; grantsOwner: boolean }): Promise<{ encoded: string; reach: CadreInvitationReach }>;
+	mintInvitation(options: { peerId?: string }): Promise<{ encoded: string; reach: CadreInvitationReach }>;
 	/** The peer ids of the party's machines (`CadrePeer` rows), this one included. */
 	listMembers(): Promise<string[]>;
 	/** Stop the node and release its listener. */

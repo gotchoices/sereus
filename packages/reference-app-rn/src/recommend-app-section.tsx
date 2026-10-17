@@ -12,7 +12,7 @@ import { Modal, ScrollView, Text, View } from 'react-native';
 import { RECOMMENDATION_TTL_MS, type AppRecommendation } from '@serfab/cadre-rn/app-link';
 import { recommendations } from './cadre-phone';
 import { openRecommendedApp, recommendableApps, type RecommendableApp } from './join-link';
-import { Btn, controlStyles, errorMessage, OwnerSwitch, validUntilText } from './settings-controls';
+import { Btn, controlStyles, errorMessage, validUntilText } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 // The kit's RECOMMENDATION_TTL_MS in words: change the two together.
@@ -38,7 +38,6 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 	const [allowedError, setAllowedError] = useState<string | null>(null);
 	// The app the prompt is for; the prompt shows while it is set.
 	const [choosing, setChoosing] = useState<RecommendableApp | null>(null);
-	const [grantsOwner, setGrantsOwner] = useState(true);
 
 	const readApps = async () => {
 		try {
@@ -67,22 +66,17 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 		void readAllowed();
 	}, [refreshKey, partyId]);
 
-	const choose = (target: RecommendableApp) => {
-		setGrantsOwner(true);
-		setChoosing(target);
-	};
-
 	// Saved before the app opens, since it may ask before this app is in front again.
-	const allow = async (target: RecommendableApp, owner: boolean) => {
+	const allow = async (target: RecommendableApp) => {
 		const { app } = target;
 		try {
-			await recommendations.approve({ scheme: app.scheme, appName: app.name, partyId, grantsOwner: owner });
+			await recommendations.approve({ scheme: app.scheme, appName: app.name, partyId });
 		} catch (err) {
 			console.warn(`[settings] could not save that ${app.name} may join:`, err);
 			showAlert(`Could not allow ${app.name} to join`, errorMessage(err));
 			return;
 		}
-		console.info(`[settings] allowed ${app.name} to join as ${owner ? 'an owner' : 'a member'} for ${TTL_WORDS}`);
+		console.info(`[settings] allowed ${app.name} to join for ${TTL_WORDS}`);
 		void readAllowed();
 		if (!await openRecommendedApp(target)) {
 			const yourself = target.installed ? 'Open it yourself' : 'Install it and open it yourself';
@@ -96,7 +90,7 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 	const handleAllow = () => {
 		const target = choosing;
 		setChoosing(null);
-		if (target) void allow(target, grantsOwner);
+		if (target) void allow(target);
 	};
 
 	// No confirmation: nothing has been issued yet, and the app can be recommended again.
@@ -121,19 +115,13 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 				<Btn
 					key={target.app.scheme}
 					label={`${target.installed ? 'Open' : 'Get'} ${target.app.name}`}
-					onPress={() => choose(target)}
+					onPress={() => setChoosing(target)}
 					disabled={busy}
 					testID={TEST_IDS.settings.recommendAppBtn(target.app.scheme)}
 				/>
 			))}
 			<AllowedApps allowed={allowed} error={allowedError} onWithdraw={(entry) => void withdraw(entry)} />
-			<RecommendPrompt
-				target={choosing}
-				grantsOwner={grantsOwner}
-				onGrantsOwnerChange={setGrantsOwner}
-				onAllow={handleAllow}
-				onCancel={() => setChoosing(null)}
-			/>
+			<RecommendPrompt target={choosing} onAllow={handleAllow} onCancel={() => setChoosing(null)} />
 		</View>
 	);
 }
@@ -153,9 +141,7 @@ function AllowedApps({ allowed, error, onWithdraw }: {
 				<View key={entry.scheme} style={controlStyles.listRow}>
 					<View style={controlStyles.listRowText}>
 						<Text style={controlStyles.listRowTitle}>{entry.appName}</Text>
-						<Text style={controlStyles.listRowMeta}>
-							{entry.grantsOwner ? 'owner' : 'member'} · {validUntilText(entry.approvedAtMs + RECOMMENDATION_TTL_MS)}
-						</Text>
+						<Text style={controlStyles.listRowMeta}>{validUntilText(entry.approvedAtMs + RECOMMENDATION_TTL_MS)}</Text>
 					</View>
 					<View style={controlStyles.listRowBtn}>
 						<Btn label="Withdraw" onPress={() => onWithdraw(entry)} color="#444" testID={TEST_IDS.settings.withdrawRecommendationBtn(entry.scheme)} />
@@ -167,10 +153,8 @@ function AllowedApps({ allowed, error, onWithdraw }: {
 }
 
 /** Nothing is saved or opened until the owner allows it here; the system back button cancels. */
-function RecommendPrompt({ target, grantsOwner, onGrantsOwnerChange, onAllow, onCancel }: {
+function RecommendPrompt({ target, onAllow, onCancel }: {
 	target: RecommendableApp | null;
-	grantsOwner: boolean;
-	onGrantsOwnerChange: (value: boolean) => void;
 	onAllow: () => void;
 	onCancel: () => void;
 }) {
@@ -182,7 +166,6 @@ function RecommendPrompt({ target, grantsOwner, onGrantsOwnerChange, onAllow, on
 					<Text style={controlStyles.modalTitle}>{`Let ${name} join your cadre?`}</Text>
 					<ScrollView>
 						<Text style={controlStyles.promptText}>{`If ${name} asks to join within ${TTL_WORDS}, this app lets it in without asking again.`}</Text>
-						<OwnerSwitch value={grantsOwner} onChange={onGrantsOwnerChange} testID={TEST_IDS.settings.recommendOwnerSwitch} />
 					</ScrollView>
 					<Btn label={`Allow and ${target?.installed ? 'open' : 'get'} ${name}`} onPress={onAllow} testID={TEST_IDS.settings.allowRecommendedAppBtn} />
 					<Btn label="Cancel" onPress={onCancel} color="#444" testID={TEST_IDS.settings.cancelRecommendedAppBtn} />

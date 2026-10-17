@@ -3,7 +3,7 @@ import debug from 'debug';
 import type { CreateCadreInvitationOptions, CreateCadreInvitationResult } from '@serfab/cadre-core';
 import {
   adminRequest, resolveAdminConnection, describeAdminFailure, AdminOptionError, DEFAULT_ADMIN_TIMEOUT_MS,
-  type AdminConnection, type AdminConnectionOptions, type AdminFetch
+  type AdminConnectionOptions, type AdminFetch
 } from './admin-client.js';
 import { parseTargetPeerId } from './enroll-add.js';
 
@@ -16,30 +16,20 @@ const log = debug('cadre:cli:enroll-invite');
  * can be offline when the device redeems: any member holding the invitation's row admits it
  * (`docs/architecture.md` → "Enrollment Flow: Invitation Redeemed at Any Member").
  *
+ * A machine invitation admits a machine and grants nothing else: the device becomes a member,
+ * never an owner. Ownership is a credential of its own, an owner grant (`docs/architecture.md`
+ * → Owner Keys), which this CLI does not mint.
+ *
  * It goes through the admin channel for the same reason `cadre enroll add` does: the owner is
  * already running, and the invitation's row is a control write its running gate must see.
  */
 
 interface EnrollInviteOptions extends AdminConnectionOptions {
   peerId?: string;
-  owner?: boolean;
   ttl?: string;
   uses?: string;
   json?: boolean;
 }
-
-/** What the command reports; the `--json` body verbatim. */
-export interface EnrollInviteReport extends CreateCadreInvitationResult {
-  warnings: string[];
-}
-
-// NOTE: listing and withdrawing have no CLI command yet, so this warning names the admin
-// route. If operators withdraw often, add `cadre enroll invite --list` / `--withdraw <key>`
-// over the same admin client rather than a second command family.
-const UNTARGETED_OWNER_WARNING =
-  'This invitation makes WHOEVER redeems it an owner of the cadre: a bearer credential for admin rights. '
-  + 'Hand it over directly and withdraw it (DELETE /admin/invites/<key>) if it goes astray; it expires in 15 minutes '
-  + 'unless --ttl says otherwise.';
 
 const UNIT_MS: Record<string, number> = {
   ms: 1,
@@ -75,31 +65,20 @@ function parseUses(raw: string): number {
 /** The mint request, validated before anything is sent. */
 export function buildInvitationRequest(options: EnrollInviteOptions): CreateCadreInvitationOptions {
   return {
-    grantsOwner: Boolean(options.owner),
     ...(options.peerId !== undefined ? { peerId: parseTargetPeerId(options.peerId) } : {}),
     ...(options.ttl !== undefined ? { expiresInMs: parseDuration(options.ttl) } : {}),
     ...(options.uses !== undefined ? { uses: parseUses(options.uses) } : {}),
   };
 }
 
-export async function mintInvitation(
-  connection: AdminConnection,
-  request: CreateCadreInvitationOptions
-): Promise<EnrollInviteReport> {
-  const minted = await adminRequest<CreateCadreInvitationResult>(connection, 'POST', '/admin/invites', request);
-  const untargetedOwner = minted.invitation.invite.grantsOwner && minted.invitation.invite.peerId === null;
-  return { ...minted, warnings: untargetedOwner ? [UNTARGETED_OWNER_WARNING] : [] };
-}
-
 /** The human-mode stderr text: everything the operator carries to the device but the bundle. */
-export function formatEnrollInviteReport(report: EnrollInviteReport): string {
+export function formatEnrollInviteReport(report: CreateCadreInvitationResult): string {
   const { invite, members, partyId } = report.invitation;
   const addrs = members.map((addr) => `    - ${addr}`);
   return [
     `✓ Minted a cadre invitation for party ${partyId}`,
     `  Key:      ${invite.key}`,
     `  Admits:   ${invite.peerId === null ? 'any device' : `device ${invite.peerId}`}`,
-    `  Grants:   ${invite.grantsOwner ? 'membership and ownership' : 'membership'}`,
     `  Uses:     ${invite.totalUses ?? 'unlimited'}`,
     `  Expires:  ${invite.expiresAt === null ? 'never' : `${invite.expiresAt} (UTC)`}`,
     '  Member addresses the device can redeem at:',
@@ -107,7 +86,6 @@ export function formatEnrollInviteReport(report: EnrollInviteReport): string {
     'On the device (its config must set controlNetwork.partyId: ' + partyId + '):',
     '  cadre start -c cadre.yaml --identity-file <its key> --invitation <this invitation>',
     'or paste it into a reference app\'s "Paste cadre invitation" field. The owner may be offline.',
-    ...report.warnings.map((warning) => `⚠ ${warning}`),
   ].join('\n');
 }
 
@@ -117,7 +95,7 @@ export function formatEnrollInviteReport(report: EnrollInviteReport): string {
  * write is asynchronous on Windows and macOS, and exiting straight after it can cut the
  * bundle short.
  */
-function printReport(report: EnrollInviteReport, json: boolean): void {
+function printReport(report: CreateCadreInvitationResult, json: boolean): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return;
@@ -143,7 +121,8 @@ async function runEnrollInvite(options: EnrollInviteOptions, fetchImpl: AdminFet
     return;
   }
   try {
-    printReport(await mintInvitation(resolved.connection, request), Boolean(options.json));
+    const minted = await adminRequest<CreateCadreInvitationResult>(resolved.connection, 'POST', '/admin/invites', request);
+    printReport(minted, Boolean(options.json));
   } catch (err) {
     fail(describeAdminFailure(err, resolved.port), err);
   }
@@ -152,13 +131,12 @@ async function runEnrollInvite(options: EnrollInviteOptions, fetchImpl: AdminFet
 export const enrollInviteCommand = new Command('invite')
   .description('Have the running owner node mint a cadre invitation, and print the bundle a device redeems at any member (the owner may be offline by then)')
   .option('--peer-id <id>', 'Admit only this device (its peer ID, printed by `cadre enroll create`); omit to admit whichever device redeems first')
-  .option('--owner', 'Also make the device an owner. Without --peer-id this is a bearer credential for admin rights — whoever holds the bundle becomes an owner — so it expires in 15 minutes unless --ttl says otherwise')
-  .option('--ttl <duration>', 'Lifetime from now, e.g. 30m, 24h, 7d (default: 15m for an untargeted --owner invitation, 24h otherwise)')
+  .option('--ttl <duration>', 'Lifetime from now, e.g. 30m, 24h, 7d (default 24h)')
   .option('--uses <n>', 'How many devices may redeem it (default 1)')
   .option('--admin-port <port>', 'The owner node\'s admin port (env: CADRE_ADMIN_PORT)')
   .option('--token-file <path>', 'File holding the admin token, as `cadre start --startup-token-file` writes it (env: CADRE_STARTUP_TOKEN)')
   .option('--timeout <ms>', 'Per-request timeout in milliseconds', DEFAULT_ADMIN_TIMEOUT_MS)
-  .option('--json', 'Print { invitation, encoded, warnings } on stdout instead of the bare bundle')
+  .option('--json', 'Print { invitation, encoded } on stdout instead of the bare bundle')
   .action(async (options: EnrollInviteOptions) => {
     await runEnrollInvite(options, fetch);
   });

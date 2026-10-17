@@ -39,7 +39,7 @@ export function describeJoinFailure(err: unknown): string {
 	if (err instanceof StrandsNeedOwnerJoinError) {
 		// No strands means pending joins or invitations only.
 		const held = err.strandCount > 0 ? `this phone's ${err.strandCount} strand(s)` : "what this phone's own cadre holds";
-		return `This invitation makes the phone a member, and only an owner can bring ${held} along. Ask for an invitation that also grants owner.`;
+		return `This invitation makes the phone a member, and only an owner can bring ${held} along. Join with an owner grant instead, made in the owner app under Owner keys.`;
 	}
 	return err instanceof Error ? err.message : String(err);
 }

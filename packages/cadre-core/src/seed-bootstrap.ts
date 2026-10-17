@@ -787,8 +787,7 @@ export class SeedBootstrapService {
     // Fail fast on a signerless service before any DB work (see removePeer).
     const ownerKey = this.requireOwnerSigner().publicKey;
     const controlDatabase = this.requireControlDatabase();
-    const kind = invite.grantsOwner ? 'an owner invitation' : 'a membership invitation';
-    return await this.withOwnerSign(`Create ${kind} to the cadre`, sign, (approved) =>
+    return await this.withOwnerSign('Create a machine invitation to the cadre', sign, (approved) =>
       controlDatabase.insertCadreInvite(invite, ownerKey, approved));
   }
 

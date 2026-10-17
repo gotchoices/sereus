@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import {
-		OWNER_INVITATION_DEFAULT_TTL_MS,
 		parseNullableStoredDatetimeMs,
 		type CadreInvitationReach,
 		type CadreInviteStatus,
@@ -25,12 +24,6 @@
 	const node = nodeState();
 	const add = addDeviceState();
 
-	const OWNER_LINE =
-		'An owner can add and remove devices and apps and approve everything in this cadre. Turn this off for an app that should only take part.';
-
-	/** Shown before an open owner invitation is made: whoever holds its text becomes an owner. */
-	const BEARER_WARNING = `Anyone who gets this invitation in the next ${OWNER_INVITATION_DEFAULT_TTL_MS / 60_000} minutes can manage your cadre. Send it only to your own app, and not through a chat or email others can read.`;
-
 	/** What a minted invitation's reach means for the new app; nothing to add when it is `anywhere`. */
 	const REACH_LINE: Record<CadreInvitationReach, { text: string; warning: boolean } | null> = {
 		anywhere: null,
@@ -46,9 +39,9 @@
 
 	const reachLine = $derived(add.minted ? REACH_LINE[add.minted.reach] : null);
 
-	// The standing follows the owner step: a restart replaces the node, and an invitation
-	// redeemed in place (an owner grant for the party the tab already runs) changes it with
-	// the node still `running`, so the step's outcome is a dependency too.
+	// The standing follows the owner step: a restart replaces the node, and an owner grant
+	// redeemed in place (for the party the tab already runs) changes it with the node still
+	// `running`, so the step's outcome is a dependency too.
 	$effect(() => {
 		if (node.status !== 'running' || node.owner === 'pending') return;
 		untrack(() => void refreshAddDevice());
@@ -63,17 +56,9 @@
 	function inviteMeta(status: CadreInviteStatus): string {
 		const { invite } = status;
 		const uses = invite.totalUses !== null && invite.totalUses > 1 ? ` · ${status.usesRecorded} of ${invite.totalUses} used` : '';
-		return `${invite.grantsOwner ? 'owner' : 'member'} · ${validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}${uses}`;
+		return `${validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}${uses}`;
 	}
 </script>
-
-{#snippet ownerChoice(field: 'requestOwner' | 'openOwner', testId: string)}
-	<label class="check">
-		<input type="checkbox" bind:checked={add[field]} data-testid={testId} />
-		Also an owner
-	</label>
-	<p class="hint">{OWNER_LINE}</p>
-{/snippet}
 
 {#snippet noticeFor(area: NoticeArea)}
 	{#if add.notice?.area === area}
@@ -129,7 +114,6 @@
 					<span class="label">Code</span>
 					<code class="value">{peerCode(add.pending.peerId)}</code>
 				</div>
-				{@render ownerChoice('requestOwner', 'request-owner')}
 				<div class="buttons">
 					<button onclick={() => void approveRequest()} data-testid="btn-approve-request">Add</button>
 					<button onclick={cancelRequest} data-testid="btn-cancel-request">Cancel</button>
@@ -162,10 +146,6 @@
 
 			<h4>Copy invitation</h4>
 			<p class="hint">An open invitation: whichever app is given its text first can join with it.</p>
-			{@render ownerChoice('openOwner', 'open-invitation-owner')}
-			{#if add.openOwner}
-				<p class="hint warn" data-testid="bearer-warning">{BEARER_WARNING}</p>
-			{/if}
 			<div class="buttons">
 				<button onclick={() => void makeOpenInvitation()} disabled={add.minting !== null} data-testid="btn-make-invitation">
 					{add.minting === 'open' ? 'Making the invitation…' : 'Make invitation'}
@@ -247,15 +227,6 @@
 		font-size: 0.8125rem;
 		color: #6c6f76;
 		margin-bottom: 0.25rem;
-	}
-
-	label.check {
-		display: flex;
-		align-items: center;
-		gap: 0.375rem;
-		color: #1d1f24;
-		font-size: 0.875rem;
-		margin: 0.5rem 0 0.25rem 0;
 	}
 
 	textarea {

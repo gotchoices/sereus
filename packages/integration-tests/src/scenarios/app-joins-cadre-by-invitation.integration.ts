@@ -1,7 +1,8 @@
 /**
- * E2E: an app joins a cadre by invitation in the two ways one app hands an invitation to
- * another (`docs/architecture.md` → "Handing an invitation from app to app"), the first while
- * no always-on machine is up.
+ * E2E: an app joins a cadre with the two credentials an owner mints, a machine invitation and
+ * an owner grant, in the two ways one app hands a credential to another (`docs/architecture.md`
+ * → "Handing an invitation from app to app", "Owner grants"), the first while no always-on
+ * machine is up.
  *
  * Machines:
  * - **A**, the owner: phone-shaped (`listenAddrs: []`), founds the cadre.
@@ -12,13 +13,16 @@
  * - **C**, a second phone-shaped device.
  *
  * Arms, in one test so they share A and M:
- * 1. **Targeted.** B copies a join request; A decodes it and mints an owner-granting
- *    invitation for B's peer id (`reach` is `local-network`: M is named only on loopback), and
- *    stops. M stops too. B redeems with `waitForMember`; once a pass has found no member
- *    answering, M restarts on the same address and a later pass is accepted. B wires its key
- *    (`wireOwnKeyIfOwner`) and its owner-signed `JoinedStrand` row reaches M.
- * 2. **Open.** B, now an owner, mints an untargeted owner-granting invitation; C decodes and
- *    redeems it, wires its key, and its owner-signed write reaches M.
+ * 1. **Targeted.** B copies a join request; A decodes it and mints a machine invitation for B's
+ *    peer id (`reach` is `local-network`: M is named only on loopback) and an owner grant, and
+ *    stops. M stops too. B redeems the invitation with `waitForMember`; once a pass has found no
+ *    member answering, M restarts on the same address and a later pass is accepted. B is a
+ *    member and not an owner. B then redeems the grant with a key of its own — locally, as a
+ *    live member with a control connection to M — wires the key (`wireOwnKeyIfOwner`), and its
+ *    owner-signed `JoinedStrand` row reaches M.
+ * 2. **Open.** B, now an owner, mints an owner grant; C decodes and joins with it
+ *    (`joinWithOwnerGrant`: a machine and an owner at once, the key wired by the call), and its
+ *    owner-signed write reaches M.
  *
  * M is stopped rather than left out of the invitation so the waiting pass is a real one: the
  * dial of every address the invitation names is refused, which is what a phone sees while the
@@ -31,12 +35,12 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
-	CadreNode, decodeCadreInvitation, decodeCadreJoinRequest, encodeCadreJoinRequest,
+	CadreNode, decodeCadreInvitation, decodeOwnerGrant, decodeCadreJoinRequest, encodeCadreJoinRequest,
 	type CadreJoinProgress,
 } from '@serfab/cadre-core';
 import {
-	controlNodeConfig, makeOwnOwner, waitUntil, captureRawStorage, sameListenAddr,
-	startPinningMember, admitMember, buildPartyDevice, redeemWaitingForMember, type InviteMember,
+	controlNodeConfig, makeOwnOwner, createTestOwnerKey, waitUntil, captureRawStorage, sameListenAddr,
+	startPinningMember, admitMember, buildPartyDevice, redeemWaitingForMember, waitingForMember, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -63,8 +67,8 @@ async function ownerWriteReaches(device: CadreNode, member: InviteMember, strand
 	});
 }
 
-describe('E2E an app joins a cadre by invitation', () => {
-	it('targeted: B waits for M and joins as an owner; open: C joins as an owner from B\'s invitation', async () => {
+describe('E2E an app joins a cadre by invitation and by owner grant', () => {
+	it('targeted: B waits for M, joins as a member and is made an owner by a grant; open: C joins as a machine and an owner with B\'s grant', async () => {
 		const runTag = Date.now();
 		const partyId = `app-joins-cadre-by-invitation-${runTag}`;
 		const aKey = await generateKeyPair('Ed25519');
@@ -88,19 +92,23 @@ describe('E2E an app joins a cadre by invitation', () => {
 				timeoutMs: STARTUP_MS, intervalMs: 500, description: 'M\'s signed address record reaches A',
 			});
 
-			// ── Targeted: B asks, A mints for B's peer id and goes away, M goes down ──
+			// ── Targeted: B asks, A mints for B's peer id and a grant, goes away; M goes down ──
 			const bKey = await generateKeyPair('Ed25519');
 			const bPeerId = peerIdFromPrivateKey(bKey).toString();
 			B = await buildPartyDevice(partyId, bKey);
 			await B.start();
-			const asked = decodeCadreJoinRequest(encodeCadreJoinRequest({ v: 1, peerId: B.peerId!.toString(), appName: 'B' }));
-			const targeted = await A.createCadreInvitation({ peerId: asked.peerId, grantsOwner: true });
+			const device = B;
+			const asked = decodeCadreJoinRequest(encodeCadreJoinRequest({ v: 1, peerId: device.peerId!.toString(), appName: 'B' }));
+			const targeted = await A.createCadreInvitation({ peerId: asked.peerId });
 			expect(targeted.invitation.invite.peerId).toBe(bPeerId);
 			expect(targeted.reach).toBe('local-network');
 			const targetedKey = targeted.invitation.invite.key;
+			const bGrant = await A.createOwnerGrant({ label: 'B' });
+			const bGrantKey = bGrant.grant.grant.key;
 			const member = M;
-			await waitUntil(async () => (await member.node.listCadreInvitations()).some((status) => status.invite.key === targetedKey && status.live), {
-				timeoutMs: OP_MS, intervalMs: 500, description: 'M holds the targeted invitation\'s row',
+			await waitUntil(async () => (await member.node.listCadreInvitations()).some((status) => status.invite.key === targetedKey && status.live)
+				&& (await member.node.listOwnerGrants()).some((status) => status.grant.key === bGrantKey && status.live), {
+				timeoutMs: OP_MS, intervalMs: 500, description: 'M holds the targeted invitation\'s row and the grant\'s',
 			});
 			await A.stop();
 			A = undefined;
@@ -110,7 +118,7 @@ describe('E2E an app joins a cadre by invitation', () => {
 
 			// ── B waits; M comes back; a later pass is accepted ────────────────────
 			const waits: Array<Extract<CadreJoinProgress, { state: 'waiting' }>> = [];
-			const joining = redeemWaitingForMember(B, decodeCadreInvitation(targeted.encoded), WAIT_FOR_MEMBER_MS, 'targeted',
+			const joining = redeemWaitingForMember(device, decodeCadreInvitation(targeted.encoded), WAIT_FOR_MEMBER_MS, 'targeted',
 				(progress) => { if (progress.state === 'waiting') waits.push(progress); });
 			await waitUntil(() => waits.some((wait) => wait.reason === 'no-member-answered'), {
 				timeoutMs: STARTUP_MS, intervalMs: 250, description: 'B reports a pass on which no member answered',
@@ -122,24 +130,39 @@ describe('E2E an app joins a cadre by invitation', () => {
 			console.log('[targeted] B was admitted on pass %d, %d ms after M began restarting', passes, Date.now() - waitingSince);
 			expect(passes).toBeGreaterThan(1);
 			expect(joined.peerId).toBe(mPeerId);
-			expect(joined.grantsOwner).toBe(true);
-			expect(await B.wireOwnKeyIfOwner()).toBe(true);
-			await ownerWriteReaches(B, restarted, `joined-by-b-${runTag}`);
+			// The invitation admitted a machine and nothing else.
+			expect(await device.isOwner()).toBe(false);
 
-			// ── Open: B, now an owner, invites C ──────────────────────────────────
-			await waitUntil(async () => (await B!.resolvePeerAddrs(mPeerId)).length > 0, {
+			// ── B, a live member, redeems the grant locally with a key of its own ──
+			// B's own row is waited for, not assumed: B starts its address publish at once, and a
+			// control read made while a write runs can predate the row (`cadre-invite-row-unreplicated`).
+			// The grant's local path needs it, since it is what makes B a live member in its own eyes.
+			await waitUntil(async () => (await device.getControlDatabase()!.queryCadrePeers()).some((row) => row.peerId === bPeerId), {
+				timeoutMs: OP_MS, intervalMs: 250, description: 'B reads its own CadrePeer row',
+			});
+			const bOwner = createTestOwnerKey();
+			const seated = await device.redeemOwnerGrant(decodeOwnerGrant(bGrant.encoded), bOwner.signer, { waitForMember: true });
+			expect(seated).toEqual({ ownerKey: bOwner.publicKey, alreadyOwner: false, memberPeerId: null });
+			expect(await device.wireOwnKeyIfOwner(bOwner.signer)).toBe(true);
+			await ownerWriteReaches(device, restarted, `joined-by-b-${runTag}`);
+
+			// ── Open: B, now an owner, mints a grant and C joins with it ───────────
+			await waitUntil(async () => (await device.resolvePeerAddrs(mPeerId)).length > 0, {
 				timeoutMs: STARTUP_MS, intervalMs: 500, description: 'M\'s signed address record reaches B',
 			});
-			const open = await B.createCadreInvitation({ grantsOwner: true });
-			expect(open.invitation.invite.peerId).toBeNull();
+			const open = await device.createOwnerGrant({ label: 'C' });
 			expect(open.reach).toBe('local-network');
+			// C checks M's reply against the grant's pins, so the grant's issuer (B's key) is among them.
+			expect(open.grant.ownerKeys).toContain(bOwner.publicKey);
 			C = await buildPartyDevice(partyId);
 			await C.start();
-			const { joined: cJoined } = await redeemWaitingForMember(C, decodeCadreInvitation(open.encoded), STARTUP_MS, 'open');
-			expect(cJoined.peerId).toBe(mPeerId);
-			expect(cJoined.grantsOwner).toBe(true);
-			expect(await C.wireOwnKeyIfOwner()).toBe(true);
-			await ownerWriteReaches(C, restarted, `joined-by-c-${runTag}`);
+			const second = C;
+			const cOwner = createTestOwnerKey();
+			const { result: cJoined } = await waitingForMember(STARTUP_MS, 'open',
+				(options) => second.joinWithOwnerGrant(decodeOwnerGrant(open.encoded), cOwner.signer, options));
+			expect(cJoined).toMatchObject({ peerId: mPeerId, ownerKey: cOwner.publicKey, alreadyOwner: false, ownerWired: true });
+			expect(await second.isOwner()).toBe(true);
+			await ownerWriteReaches(second, restarted, `joined-by-c-${runTag}`);
 		} finally {
 			await Promise.allSettled([C?.stop(), B?.stop(), A?.stop(), M?.node.stop()]);
 		}

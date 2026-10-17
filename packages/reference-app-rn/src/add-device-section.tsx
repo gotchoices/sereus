@@ -1,7 +1,8 @@
 /**
  * add-device-section.tsx — Settings → "Add a device or app": an owner of this cadre makes
  * an invitation another app redeems to join it (docs/architecture.md → "Handing an
- * invitation from app to app").
+ * invitation from app to app"). An invitation admits the app as a machine, never as an
+ * owner: ownership is an owner grant, made under Owner keys.
  *
  * Two ways in. **Paste request** (recommended): the other app's join request names its
  * peer id, and after the owner approves, the invitation can be redeemed by that app alone.
@@ -22,7 +23,6 @@ import { Modal, ScrollView, Text, View } from 'react-native';
 import {
 	CADRE_JOIN_REQUEST_PREFIX,
 	decodeCadreJoinRequest,
-	OWNER_INVITATION_DEFAULT_TTL_MS,
 	parseNullableStoredDatetimeMs,
 	type CadreInvitationReach,
 	type CadreInviteStatus,
@@ -36,7 +36,7 @@ import { CodeScanner } from './code-scanner';
 import { answerJoinRequest, isAnswerable, OWN_REQUEST_LINE, type AnswerableJoinRequest } from './join-link';
 import { isOwnerKeyText, OWNER_KEY_SCANNED_LINE } from './owner-keys';
 import { RecommendAppSection } from './recommend-app-section';
-import { Btn, controlStyles, errorMessage, Fact, LabelledInput, OwnerSwitch, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
+import { Btn, controlStyles, errorMessage, Fact, LabelledInput, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
 import { ShareCode } from './share-code';
 import { TEST_IDS } from './test-ids';
 
@@ -44,7 +44,7 @@ const SECTION_TITLE = 'Add a device or app';
 
 const LINKED_PROMPT_TITLE = 'An app on this phone asks to join your cadre';
 
-const LINKED_GRANT_LINE = 'Allowing lets it take part in your cadre. With Also an owner on, it can also add and remove devices and apps and approve everything in the cadre.';
+const LINKED_GRANT_LINE = 'Allowing lets it take part in your cadre. It does not make it an owner.';
 
 /**
  * After a Deny, requests from another app are answered `denied` without a prompt for this long.
@@ -52,9 +52,6 @@ const LINKED_GRANT_LINE = 'Allowing lets it take part in your cadre. With Also a
  * the user sees such an app anyway, since opening another app needs it in the foreground.
  */
 const DENY_COOLDOWN_MS = 30_000;
-
-/** Shown before an open owner invitation is made: whoever holds its text becomes an owner. */
-const BEARER_WARNING = `Anyone who gets this invitation in the next ${OWNER_INVITATION_DEFAULT_TTL_MS / 60_000} minutes can manage your cadre. Send it only to your own app, and not through a chat or email others can read.`;
 
 // Chosen on the relay status, not on which error core threw, so it states only what that
 // status shows: the cadre's other machines are not checked here.
@@ -114,8 +111,6 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 	const [scannerOpen, setScannerOpen] = useState(false);
 	// The approval prompt shows while it is set.
 	const [pending, setPending] = useState<PendingRequest | null>(null);
-	const [requestOwner, setRequestOwner] = useState(true);
-	const [openOwner, setOpenOwner] = useState(true);
 	const [minting, setMinting] = useState(false);
 	// Catches the same-frame double tap that `disabled` cannot: the prop only takes effect
 	// after the re-render `setMinting` schedules.
@@ -217,7 +212,6 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 			return;
 		}
 		if (answerTo && await answerRecommended(request, answerTo)) return;
-		setRequestOwner(true);
 		setPending({ request, answerTo });
 	};
 
@@ -233,7 +227,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 		if (!recommendation) return false;
 		console.info(`[settings] answering ${recommendation.appName} without asking: it was allowed when recommended`);
 		setRecommendRead((n) => n + 1);
-		const made = await mint({ peerId: request.peerId, grantsOwner: recommendation.grantsOwner }, `Invitation for ${recommendation.appName}`);
+		const made = await mint({ peerId: request.peerId }, `Invitation for ${recommendation.appName}`);
 		if (made) {
 			await sendInvitation(answerTo, made, recommendation.appName, `Sent an invitation to ${recommendation.appName}, which you allowed when you recommended it.`);
 		}
@@ -296,7 +290,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 		try {
 			const { invitation, encoded, reach } = await cadre.createCadreInvitation(options);
 			const { key, expiresAt } = invitation.invite;
-			console.info(`[settings] made cadre invitation ${key} (for ${options.peerId ?? 'anyone'}, owner ${options.grantsOwner}, reach ${reach})`);
+			console.info(`[settings] made cadre invitation ${key} (for ${options.peerId ?? 'anyone'}, reach ${reach})`);
 			void refreshInvitations();
 			onInvitationsChanged?.();
 			return { key, title, encoded, reach, expiresAtMs: parseNullableStoredDatetimeMs(expiresAt) };
@@ -311,12 +305,12 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 	};
 
 	const makeOpenInvitation = async () => {
-		const made = await mint({ grantsOwner: openOwner }, 'Open invitation');
+		const made = await mint({}, 'Open invitation');
 		if (made) setMinted(made);
 	};
 
 	const approveRequest = async ({ request, answerTo }: PendingRequest) => {
-		const made = await mint({ peerId: request.peerId, grantsOwner: requestOwner }, `Invitation for ${request.appName}`);
+		const made = await mint({ peerId: request.peerId }, `Invitation for ${request.appName}`);
 		if (!made) return;
 		if (answerTo) {
 			await sendInvitation(answerTo, made, request.appName, `Sent an invitation to ${request.appName}.`);
@@ -404,10 +398,8 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 
 					<Text style={controlStyles.subTitle}>Copy invitation</Text>
 					<Text style={controlStyles.hint}>
-						An open invitation: whichever app is given its text first can join with it.
+						An open invitation: whichever app is given its text first can join with it, so send it only to your own app.
 					</Text>
-					<OwnerSwitch value={openOwner} onChange={setOpenOwner} testID={TEST_IDS.settings.openInviteOwnerSwitch} />
-					{openOwner && <Text style={controlStyles.slowHint}>{BEARER_WARNING}</Text>}
 					<Btn
 						label={minting ? 'Making the invitation…' : 'Make invitation'}
 						onPress={() => void makeOpenInvitation()}
@@ -436,13 +428,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 				onScanned={handleScanned}
 				onClose={() => setScannerOpen(false)}
 			/>
-			<RequestPrompt
-				pending={pending}
-				grantsOwner={requestOwner}
-				onGrantsOwnerChange={setRequestOwner}
-				onApprove={handleApprove}
-				onDeny={handleDeny}
-			/>
+			<RequestPrompt pending={pending} onApprove={handleApprove} onDeny={handleDeny} />
 			<WithdrawPrompt open={withdrawing !== null} onConfirm={handleConfirmWithdraw} onCancel={() => setWithdrawing(null)} />
 		</Section>
 	);
@@ -488,7 +474,7 @@ function InvitationRow({ status, onWithdraw }: { status: CadreInviteStatus; onWi
 			<View style={controlStyles.listRowText}>
 				<Text style={controlStyles.listRowTitle}>Anyone with the text</Text>
 				<Text style={controlStyles.listRowMeta}>
-					{invite.grantsOwner ? 'owner' : 'member'} · {validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}{uses}
+					{validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}{uses}
 				</Text>
 			</View>
 			<View style={controlStyles.listRowBtn}>
@@ -503,10 +489,8 @@ function InvitationRow({ status, onWithdraw }: { status: CadreInviteStatus; onWi
  * are letting in. A request another app opened this one with is worded for that (Allow / Deny);
  * the system back button denies it, so the asking app is not left waiting.
  */
-function RequestPrompt({ pending, grantsOwner, onGrantsOwnerChange, onApprove, onDeny }: {
+function RequestPrompt({ pending, onApprove, onDeny }: {
 	pending: PendingRequest | null;
-	grantsOwner: boolean;
-	onGrantsOwnerChange: (value: boolean) => void;
 	onApprove: () => void;
 	onDeny: () => void;
 }) {
@@ -535,7 +519,6 @@ function RequestPrompt({ pending, grantsOwner, onGrantsOwnerChange, onApprove, o
 								<Fact label="Code" value={code} />
 							</>
 						)}
-						<OwnerSwitch value={grantsOwner} onChange={onGrantsOwnerChange} explained={!linked} testID={TEST_IDS.settings.requestOwnerSwitch} />
 					</ScrollView>
 					<Btn label={linked ? 'Allow' : 'Add'} onPress={onApprove} testID={TEST_IDS.settings.approveJoinRequestBtn} />
 					<Btn label={linked ? 'Deny' : 'Cancel'} onPress={onDeny} color="#444" testID={TEST_IDS.settings.cancelJoinRequestBtn} />

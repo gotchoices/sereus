@@ -5,9 +5,8 @@
  * `CadreNode.removeMachine`'s and `ControlDatabase.removeMachine`'s.
  *
  * A machine is a `CadrePeer` row and nothing more: an owner key is the person's, so removing a
- * machine leaves every owner key standing, even the one an owner-granting invitation seated
- * under the machine's own identity key (removing one is `CadreNode.removeOwner`,
- * `owner-keys.ts`).
+ * machine leaves every owner key standing, the one the machine's user signed with included
+ * (removing one is `CadreNode.removeOwner`, `owner-keys.ts`).
  */
 
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';

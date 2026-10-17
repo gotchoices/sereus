@@ -780,9 +780,8 @@ export interface CadreNodeConfig {
    *
    * The node signs owner writes through whatever owner signer the embedder wires
    * (`CadreNode.useOwnerSigner`). An owner key has its own slot
-   * (`owner-key-store.ts`), which may be in this same store; this identity is an
-   * owner key only where an owner-granting invitation seated it (the interim
-   * default of `CadreNode.wireOwnKeyIfOwner`).
+   * (`owner-key-store.ts`), which may be in this same store; this identity is never
+   * an owner key.
    */
   keyStore?: KeyStore;
 
@@ -1953,12 +1952,11 @@ export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | '
 
 /**
  * One live `CadreControl.OwnerKey` row as `ControlDatabase.queryOwnerKeyRows` reads it: the
- * key, its label and the persisted proof of how it was seated. The four proof shapes are the
+ * key, its label and the persisted proof of how it was seated. The three proof shapes are the
  * schema's (`OwnerKey.Authorized`): the founding row (all three null), an owner-signed add
- * (`vouchOwner` and `vouchSig`, the signer's signature over `ownerKeyAddDigest(key, label, stampId)`), an
- * owner-granting invitation redeemed by consent (`vouchOwner` the issuer, `vouchSig` null,
- * `vouchUsage` the `CadreInviteUsage` row), or an owner grant redeemed by consent (`vouchOwner`
- * the issuer, `vouchSig` null, `vouchUsage` the `OwnerGrantUsage` row). Rows whose stamp is
+ * (`vouchOwner` and `vouchSig`, the signer's signature over `ownerKeyAddDigest(key, label, stampId)`), or an
+ * owner grant redeemed by consent (`vouchOwner` the issuer, `vouchSig` null, `vouchUsage` the
+ * `OwnerGrantUsage` row). Rows whose stamp is
  * retired in `Revocation`, and the stampless row the schema permits but no writer produces,
  * never reach a reader, so `stampId` is non-null here. The anchor sync (`deriveOwnerAnchor`)
  * judges the proof against the keys it already trusts, never against the table itself.
@@ -1966,15 +1964,15 @@ export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | '
 export interface OwnerKeyRow {
   /** ed25519 public key (base64url) — the row key. */
   key: string;
-  /** The user's name for the key, bound into an owner-signed add or into the grant that seated it; null when none was given, and always on an invitation-admitted row. */
+  /** The user's name for the key, bound into an owner-signed add or into the grant that seated it; null when none was given. */
   label: string | null;
   /** Single-use anti-replay nonce the voucher signature, or the usage row, is bound to. */
   stampId: string;
-  /** The owner that signed the add, or that issued the invitation or grant that seated it; null on the founding row. */
+  /** The owner that signed the add, or that issued the grant that seated it; null on the founding row. */
   vouchOwner: string | null;
   /** That owner's signature over the row's `'add'` digest, base64url; null on the founding row and on a consent-seated row. */
   vouchSig: string | null;
-  /** The `CadreInviteUsage.UsageStampId` or `OwnerGrantUsage.UsageStampId` that seated this row; null otherwise. The two tables' stamps are told apart by lookup, never by shape. */
+  /** The `OwnerGrantUsage.UsageStampId` that seated this row; null otherwise. */
   vouchUsage: string | null;
 }
 
@@ -2008,10 +2006,8 @@ export interface CadreInviteUsageRow {
   peerId: string;
   /** The admitted device's ed25519 public key (base64url). */
   peerKey: string;
-  /** The `CadrePeer.StampId` this redemption seated (or found seated). */
+  /** The `CadrePeer.StampId` this redemption seated. */
   peerStampId: string;
-  /** The `OwnerKey.StampId` this redemption seated, when the invitation grants ownership; else null. */
-  ownerStampId: string | null;
   /** The invitation private key's signature over the `'redeem'` digest, base64url. */
   inviteSig: string;
   /** The device's signature over the `'consent'` digest, base64url. */
@@ -2019,11 +2015,9 @@ export interface CadreInviteUsageRow {
 }
 
 /**
- * The usage and invitation rows an invitation-admitted row is verified through, keyed by
- * `UsageStampId` and `CadreInvite.Key`: a `CadrePeer` row through `verifyInvitationAdmission`
- * (`CadreNode.listAuthorizedMembers`) and an `OwnerKey` row through
- * `verifyInvitationOwnerAdmission` (`deriveOwnerAnchor`). Loaded once per membership refresh
- * (`CadreNode.loadInvitationChain`) and shared by both readers.
+ * The usage and invitation rows an invitation-admitted `CadrePeer` row is verified through
+ * (`verifyInvitationAdmission`, `CadreNode.listAuthorizedMembers`), keyed by `UsageStampId`
+ * and `CadreInvite.Key`. Loaded once per membership refresh (`CadreNode.loadInvitationChain`).
  */
 export interface InvitationChain {
   usages: Map<string, CadreInviteUsageRow>;
@@ -2089,7 +2083,7 @@ export interface OwnerGrantChain {
  */
 export interface CadreMachine {
   peerId: string;
-  /** The machine's ed25519 identity key (base64url) behind `peerId`; null when the id is not ed25519. Not read as an owner key here, though an owner-granting invitation seats the same key as one (`listOwnerKeys` lists owner keys). */
+  /** The machine's ed25519 identity key (base64url) behind `peerId`; null when the id is not ed25519. Never an owner key (`listOwnerKeys` lists those). */
   publicKey: string | null;
   /** This node itself. */
   isSelf: boolean;
@@ -2109,7 +2103,7 @@ export interface CadreOwnerKey {
   key: string;
   /** The user's name for the key ("phone", "paper backup"); null when none was given. */
   label: string | null;
-  /** `OwnerKey.VouchOwner`: the owner that signed its add, or that issued the owner-granting invitation that admitted it; null on the founding key. */
+  /** `OwnerKey.VouchOwner`: the owner that signed its add, or that issued the owner grant that seated it; null on the founding key. */
   vouchedBy: string | null;
   /** This node's owner signer holds it. */
   heldHere: boolean;
@@ -2237,14 +2231,12 @@ export interface CadreInviteStatus {
 
 /**
  * What `ControlDatabase.redeemCadreInvite` did. `alreadyMember` is the idempotent
- * retry after a dropped reply: the device's row (and, for an owner-granting
- * invitation, its `OwnerKey` row) was already present, so nothing was written and
- * no seat was spent. The stamps are the live rows' either way.
+ * retry after a dropped reply: the device's row was already present, so nothing was
+ * written and no seat was spent. The stamp is the live row's either way.
  */
 export interface CadreInviteRedemptionResult {
   alreadyMember: boolean;
   peerStampId: string;
-  ownerStampId: string | null;
 }
 
 /**
@@ -2745,18 +2737,13 @@ export type NodeTopology = 'public' | 'nat';
 
 /**
  * What an owner asks `CadreNode.createCadreInvitation` for. The invitation is a keypair the
- * node mints; whoever holds the returned bundle can redeem it at any member machine.
+ * node mints; whoever holds the returned bundle can redeem it at any member machine. It admits
+ * a machine and grants nothing else; ownership is an owner grant (`CreateOwnerGrantOptions`).
  */
 export interface CreateCadreInvitationOptions {
   /** The one device that may redeem it; omit for whoever redeems first. */
   peerId?: string;
-  /** Whether redemption also makes the device an owner (seats an `OwnerKey` row). */
-  grantsOwner: boolean;
-  /**
-   * Lifetime from now, in ms. Defaults to 15 minutes for an untargeted owner-granting
-   * invitation — a bearer credential for admin rights — and 24 hours otherwise. A negative
-   * value mints an already-expired invitation (tests).
-   */
+  /** Lifetime from now, in ms; default 24 hours. A negative value mints an already-expired invitation (tests). */
   expiresInMs?: number;
   /** How many redemptions it allows; default 1. */
   uses?: number;
@@ -2818,8 +2805,6 @@ export type CadreJoinProgress =
 export interface RedeemCadreInvitationResult {
   /** The member machine that admitted this device, when its address named one. */
   peerId: string | null;
-  /** Whether the invitation also seated this device's key as an owner. */
-  grantsOwner: boolean;
   /** When the member accepted, ISO 8601. */
   redeemedAt: string;
 }

@@ -61,7 +61,7 @@ async function loadWith({ nodeRunning }: { nodeRunning: boolean }): Promise<{ vm
 // ── Join a cadre ──────────────────────────────────────────────────────────────
 
 describe('onJoinCadre', () => {
-	it('joins with the trimmed paste, clears the field and names the member that admitted the phone', async () => {
+	it('joins with the trimmed paste, clears the field and names the admitting member and the standing the node reports', async () => {
 		// Pasting from a clipboard commonly drags a newline along, and base64url
 		// decoding is what would fail on it.
 		const { vm, H } = await loadSettings();
@@ -74,6 +74,8 @@ describe('onJoinCadre', () => {
 		expect(vm.cadreInvitationInput).toBe('');
 		expect(vm.modalTitle).toBe('Joined cadre');
 		expect(vm.modalMessage).toContain(H.state.joinResult.peerId);
+		// The standing is the owner step the edge node reported for the joined party, not a field of the invitation.
+		expect(vm.modalMessage).toContain('a member, not an owner');
 		expect(vm.modalVisibility).toBe('visible');
 	});
 

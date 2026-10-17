@@ -12,9 +12,9 @@
 
 import { adoptStrandBundle, StrandMoveNotOwnerError } from '../strand-move.js';
 import type { StrandBundle, StrandMoveReport } from '../strand-move.js';
-import type { CadreInvitation } from '../cadre-invite-protocol.js';
 import type { CadreNode } from '../cadre-node.js';
 import type { KeyId, KeyStore } from '../key-store.js';
+import { isOwnerGrant, type JoinCredential } from './join-credential.js';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 
 /** How a join's strand move settled: `JoinCadreResult.strandMove`. */
@@ -39,9 +39,9 @@ export interface PendingStrandMove {
 
 /**
  * `EdgeNode.joinCadre` refused before anything stopped: the party this app founded holds strands,
- * pending joins or invitations, and the invitation does not make the app an owner of the party it
- * joins. Every row a move seats there is owner-signed, so a member's join would leave them in a
- * party the app no longer runs.
+ * pending joins or invitations, and a machine invitation does not make the app an owner of the
+ * party it joins. Every row a move seats there is owner-signed, so a member's join would leave
+ * them in a party the app no longer runs. Joining with an owner grant moves them.
  */
 export class StrandsNeedOwnerJoinError extends Error {
 	readonly fromPartyId: string;
@@ -51,7 +51,7 @@ export class StrandsNeedOwnerJoinError extends Error {
 	constructor(bundle: StrandBundle, toPartyId: string) {
 		super(
 			`Cannot join party ${toPartyId} as a member: ${describeContent(bundle)} of party ${bundle.partyId} ` +
-			'would be left behind, and only an owner can move them. Ask for an invitation that grants owner.',
+			'would be left behind, and only an owner can move them. Join with an owner grant instead, made under the owner app\'s Owner keys.',
 		);
 		this.name = 'StrandsNeedOwnerJoinError';
 		this.fromPartyId = bundle.partyId;
@@ -144,13 +144,13 @@ export class StrandMoveRecords {
 
 /**
  * The record a join writes before the switch, or `undefined` when the bundle holds nothing to
- * move. Throws {@link StrandsNeedOwnerJoinError} when it does and the invitation does not make
- * the app an owner of the party it joins.
+ * move. Throws {@link StrandsNeedOwnerJoinError} when it does and `credential` is a machine
+ * invitation, which does not make the app an owner of the party it joins.
  */
-export function joinMoveRecord(bundle: StrandBundle, invitation: CadreInvitation): StrandMoveRecord | undefined {
+export function joinMoveRecord(bundle: StrandBundle, credential: JoinCredential): StrandMoveRecord | undefined {
 	if (bundle.strands.length + bundle.pendingJoins.length + bundle.formationInvites.length === 0) return undefined;
-	if (!invitation.invite.grantsOwner) throw new StrandsNeedOwnerJoinError(bundle, invitation.partyId);
-	return { v: RECORD_VERSION, targetPartyId: invitation.partyId, bundle, moved: [], refused: [] };
+	if (!isOwnerGrant(credential)) throw new StrandsNeedOwnerJoinError(bundle, credential.partyId);
+	return { v: RECORD_VERSION, targetPartyId: credential.partyId, bundle, moved: [], refused: [] };
 }
 
 /**

@@ -29,7 +29,7 @@ function fakeNode(reach: CadreInvitationReach): FakeNode {
 		claimed: [],
 		isOwner: async () => true,
 		invitationReach: async () => reach,
-		createCadreInvitation: async (options) => {
+		createCadreInvitation: async (options = {}) => {
 			node.minted.push(options);
 			return { invitation: { invite: { key: 'invite-key' } } as unknown as CadreInvitation, encoded: 'sereus-invite:1.bundle', reach };
 		},
@@ -106,7 +106,7 @@ describe('rentNode', () => {
 
 		const result = await rentNode(node, client, { onProgress: (step) => steps.push(step) });
 
-		expect(node.minted).toEqual([{ grantsOwner: false, uses: 1, expiresInMs: RENTAL_INVITATION_TTL_MS }]);
+		expect(node.minted).toEqual([{ uses: 1, expiresInMs: RENTAL_INVITATION_TTL_MS }]);
 		expect(client.created).toEqual([{ join: { kind: 'invitation', invitation: 'sereus-invite:1.bundle' }, profile: 'storage' }]);
 		expect(node.claimed).toEqual([]);
 		expect(client.codeRequests).toBe(0);

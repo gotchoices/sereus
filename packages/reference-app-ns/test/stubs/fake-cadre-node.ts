@@ -43,6 +43,7 @@ import type {
 	EdgeNodeStatus,
 	JoinCadreOptions,
 	JoinCadreResult,
+	OwnerGenesisResult,
 	SavedStart,
 } from '@serfab/cadre-core/edge-node';
 
@@ -86,7 +87,6 @@ export function invitation(): CadreInvitation {
 		invite: {
 			key: INVITE_KEY,
 			peerId: null,
-			grantsOwner: false,
 			expiresAt: '2026-10-08 00:00:00',
 			totalUses: 1,
 			stampId: 'stamp-1',
@@ -141,9 +141,9 @@ export function refusal(error?: string): ApplySeedResult {
 	return { success: false, peersAdded: 0, preferredDialsAttempted: 0, preferredDialsFailed: 0, ...(error ? { error } : {}) };
 }
 
-/** An invitation a member accepted, naming itself. */
+/** A machine invitation a member accepted, naming itself; it admits the phone as a member. */
 function admission(): JoinCadreResult {
-	return { peerId: '12D3KooWDroneDroneDroneDroneDroneDroneDroneDroneDrone', grantsOwner: false, redeemedAt: '2026-10-07T00:00:00.000Z' };
+	return { peerId: '12D3KooWDroneDroneDroneDroneDroneDroneDroneDroneDrone', redeemedAt: '2026-10-07T00:00:00.000Z', asOwner: false };
 }
 
 /**
@@ -279,21 +279,21 @@ export class FakeEdgeNode implements EdgeSurface {
 		};
 	}
 
-	/** Admitted: running in the invitation's party with the relays asked for. Refused: back in the party it left, throwing. */
+	/** Admitted: running in the invitation's party with the relays asked for, as a member. Refused: back in the party it left, throwing. */
 	async joinCadre(invitation: CadreInvitation, options: JoinCadreOptions = {}): Promise<JoinCadreResult> {
 		calls.push('joinCadre');
 		state.joined.push({ invitation, options });
 		if (state.joinError) throw state.joinError;
 		this.takeDown();
-		this.run({ partyId: invitation.partyId, bootstrapAddrs: [], relayAddrs: options.relayAddrs ?? [], origin: 'joined' });
+		this.run({ partyId: invitation.partyId, bootstrapAddrs: [], relayAddrs: options.relayAddrs ?? [], origin: 'joined' }, 'member');
 		return state.joinResult;
 	}
 
-	/** Bring {@link state}'s node up with `options`, every subscription attached, and report it running. */
-	run(options: EdgeNodeOptions): void {
+	/** Bring {@link state}'s node up with `options`, every subscription attached, and report it running with its owner step settled as `owner`. */
+	run(options: EdgeNodeOptions, owner: OwnerGenesisResult = 'enrolled'): void {
 		for (const { event, handler } of this.subscriptions) state.node.on(event, handler);
 		this.options = options;
-		this.report({ state: 'running', node: asCadreNode(state.node), owner: 'enrolled' });
+		this.report({ state: 'running', node: asCadreNode(state.node), owner });
 	}
 
 	/** Detach every subscription from the node going down, as the real edge node's stop does. */

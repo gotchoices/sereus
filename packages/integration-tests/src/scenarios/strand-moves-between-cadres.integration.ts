@@ -6,10 +6,12 @@
  * that the new cadre's always-on machine starts hosting it.
  *
  * Machines:
- * - **N**, the app's one node: `transaction` profile, one identity key for its whole life, its
- *   joined-strand records in one key store both incarnations share (the phone kit's secure
- *   store). It founds party B as its own owner, then is stopped, and a node with the same key over
- *   the same raw stores starts for party A with no owner genesis (the kit's `origin: 'joined'`).
+ * - **N**, the app's one node: `transaction` profile, one identity key for its whole life, one
+ *   owner key for its whole life (the kit's owner slot: it founds B and later owns A — one key,
+ *   several cadres), its joined-strand records in one key store both incarnations share (the
+ *   phone kit's secure store). It founds party B as its own owner, then is stopped, and a node
+ *   with the same key over the same raw stores starts for party A with no owner genesis (the
+ *   kit's `origin: 'joined'`).
  * - **P**, an external party: one `storage` node, its own owner.
  * - **O**, party A's owner, phone-shaped (`listenAddrs: []`), and **M**, A's always-on member
  *   (`storage`, `hostUnclaimedStrands`), admitted by O.
@@ -27,8 +29,9 @@
  *    uses; P founds open strand T and N joins it. Rows cross both ways on both strands. N then
  *    refuses P's S strand node in both directions (a dial gate) and, once P has left N's strand
  *    cohort, writes one row to S alone.
- * 2. O founds A, admits M, mints an owner-granting invitation for N's peer id, and goes away.
- * 3. N exports its bundle, stops, starts for A, redeems at M and wires its owner key.
+ * 2. O founds A, admits M, mints an owner grant, and goes away.
+ * 3. N exports its bundle, stops, starts for A and joins with the grant at M: a machine of A and
+ *    an owner of it under the key that owns B, wired by the join.
  * 4. N adopts the bundle, then adopts it again.
  * 5. N claims S and T from `strand:discovered`. P receives the row written alone; P's new rows on
  *    both strands reach N; M runs a replica of each and holds every block N holds; Q redeems the
@@ -47,15 +50,15 @@ import type { PrivateKey } from '@libp2p/interface';
 import type { Database } from '@quereus/quereus';
 import {
 	CadreNode, InMemoryKeyStore, KeyStoreJoinedStrandStore, MemoryStrandNetworkStateStore,
-	adoptStrandBundle, decodeCadreInvitation, exportStrandBundle,
+	adoptStrandBundle, decodeOwnerGrant, exportStrandBundle,
 	generateStrandMemberKey, strandMemberKeyPair,
 	type SAppConfig, type StrandBundle,
 } from '@serfab/cadre-core';
 import {
-	controlNodeConfig, createSignedSAppConfig, makeOwnOwner, waitUntil, captureRawStorage, sameListenAddr,
-	startPinningMember, admitMember, redeemWaitingForMember, ownerKeySeatedByInvitation, readCohort, peerDialGate, readBlockIndex,
+	controlNodeConfig, createSignedSAppConfig, makeOwnOwner, createTestOwnerKey, waitUntil, captureRawStorage, sameListenAddr,
+	startPinningMember, admitMember, waitingForMember, readCohort, peerDialGate, readBlockIndex,
 	awaitBlockCoverage, stopStartedNodes,
-	type InviteMember, type PeerDialGate, type RawStorageCapture,
+	type InviteMember, type PeerDialGate, type RawStorageCapture, type TestOwnerKey,
 } from '../harness/index.js';
 
 /** The one-table sApp the formation scenarios use; both strands run it. */
@@ -97,10 +100,12 @@ const BLOCK_FLOOR = 4;
 
 const ALONE_KEY = 's-n-alone';
 
-/** What the app keeps across its switch: its identity key, its raw stores and its secure store. */
+/** What the app keeps across its switch: its identity key, its owner key, its raw stores and its secure store. */
 interface AppHome {
 	key: PrivateKey;
 	peerId: string;
+	/** The owner slot's key: B's founding key, and the key the grant seats in A. */
+	owner: TestOwnerKey;
 	storage: RawStorageCapture;
 	secureStore: InMemoryKeyStore;
 }
@@ -256,12 +261,11 @@ async function writeAloneOnS(N: CadreNode, gate: PeerDialGate, S: string, pSPeer
 }
 
 /**
- * O founds A and admits M, mints an owner-granting invitation for N's peer id, then goes away and
- * leaves M's control cohort (a member write made while it is still there waits on it; see
- * `cadre-invite-any-member`).
+ * O founds A and admits M, mints an owner grant, then goes away and leaves M's control cohort (a
+ * member write made while it is still there waits on it; see `cadre-invite-any-member`).
  */
 async function startPartyA(
-	partyId: string, nPeerId: string, mStorage: RawStorageCapture, started: CadreNode[]
+	partyId: string, mStorage: RawStorageCapture, started: CadreNode[]
 ): Promise<{ M: InviteMember; encoded: string }> {
 	const oKey = await generateKeyPair('Ed25519');
 	const oPeerId = peerIdFromPrivateKey(oKey).toString();
@@ -277,11 +281,11 @@ async function startPartyA(
 	await waitUntil(async () => (await O.resolvePeerAddrs(M.peerId)).length > 0, {
 		timeoutMs: STARTUP_MS, intervalMs: 500, description: 'M\'s signed address record reaches O',
 	});
-	const minted = await O.createCadreInvitation({ peerId: nPeerId, grantsOwner: true });
-	expect(minted.invitation.invite.peerId).toBe(nPeerId);
-	const inviteKey = minted.invitation.invite.key;
-	await waitUntil(async () => (await M.node.listCadreInvitations()).some((status) => status.invite.key === inviteKey && status.live), {
-		timeoutMs: OP_MS, intervalMs: 500, description: 'M holds the invitation\'s row',
+	const minted = await O.createOwnerGrant({ label: 'the app' });
+	expect(minted.reach, 'redeemable once O is gone').toBe('local-network');
+	const grantKey = minted.grant.grant.key;
+	await waitUntil(async () => (await M.node.listOwnerGrants()).some((status) => status.grant.key === grantKey && status.live), {
+		timeoutMs: OP_MS, intervalMs: 500, description: 'M holds the grant\'s row',
 	});
 	await O.stop();
 	await waitUntil(async () => !(await readCohort(M.node.getControlNode()!, 'M control')).includes(oPeerId), {
@@ -312,7 +316,10 @@ async function expectBundle(
 	expect(bundle.pendingJoins).toEqual([]);
 }
 
-/** Stop N in B and start it for A on the same control port; it redeems at M and wires its owner key. */
+/**
+ * Stop N in B and start it for A on the same control port; it joins with the grant at M, a
+ * machine and an owner at once, the key that owns B seated in A and wired.
+ */
 async function switchToA(
 	nB: CadreNode, home: AppHome, partyA: string, encoded: string, M: InviteMember, started: CadreNode[]
 ): Promise<CadreNode> {
@@ -321,13 +328,11 @@ async function switchToA(
 	const nA = buildAppNode(home, partyA, { listenAddrs: [listenAddr] });
 	started.push(nA);
 	await nA.start();
-	const { joined, passes } = await redeemWaitingForMember(nA, decodeCadreInvitation(encoded), STARTUP_MS, 'switch');
-	console.log('[strand-move] N was admitted to A on pass %d', passes);
-	expect(joined.peerId).toBe(M.peerId);
-	expect(joined.grantsOwner).toBe(true);
-	await waitUntil(() => nA.wireOwnKeyIfOwner(), {
-		timeoutMs: STARTUP_MS, intervalMs: 500, description: 'N\'s owner key is listed in A and wired',
-	});
+	const { result: joined, passes } = await waitingForMember(STARTUP_MS, 'switch',
+		(options) => nA.joinWithOwnerGrant(decodeOwnerGrant(encoded), home.owner.signer, options));
+	console.log('[strand-move] N joined A as a machine and an owner (at most %d pass(es) per redemption)', passes);
+	expect(joined).toMatchObject({ peerId: M.peerId, ownerKey: home.owner.publicKey, alreadyOwner: false, ownerWired: true });
+	expect(await nA.isOwner()).toBe(true);
 	return nA;
 }
 
@@ -337,7 +342,7 @@ async function expectSeatedOnce(N: CadreNode, bundle: StrandBundle, s: InvitedSt
 	const control = N.getControlDatabase()!;
 	const strands = (await control.queryStrands()).filter((row) => row.Id === S);
 	expect(strands).toHaveLength(1);
-	// Adoption re-signs the row with N's owner key in A, not the key that founded S in B.
+	// Adoption signs the row with the key N wired in A: the one key that owns B and A.
 	expect(strands[0]!.FounderOwnerKey).toBe(nOwnerKey);
 	expect((await control.queryJoinedStrands()).filter((row) => row.Id === T)).toHaveLength(1);
 	expect((await control.queryFormationInvites()).filter((row) => row.token === s.token)).toHaveLength(1);
@@ -380,9 +385,10 @@ describe('E2E an app\'s strands move between cadres', () => {
 		const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 		const nKey = await generateKeyPair('Ed25519');
 		const home: AppHome = {
-			key: nKey, peerId: peerIdFromPrivateKey(nKey).toString(), storage: captureRawStorage(), secureStore: new InMemoryKeyStore(),
+			key: nKey, peerId: peerIdFromPrivateKey(nKey).toString(), owner: createTestOwnerKey(),
+			storage: captureRawStorage(), secureStore: new InMemoryKeyStore(),
 		};
-		const nOwnerKey = ownerKeySeatedByInvitation(home.peerId);
+		const nOwnerKey = home.owner.publicKey;
 		const mStorage = captureRawStorage();
 		const started: CadreNode[] = [];
 		try {
@@ -391,7 +397,7 @@ describe('E2E an app\'s strands move between cadres', () => {
 			const nB = buildAppNode(home, partyB, { gate, reconcileMs: RECONCILE_PARKED_MS });
 			started.push(nB);
 			await nB.start();
-			await makeOwnOwner(nB);
+			await makeOwnOwner(nB, undefined, home.owner);
 			const P = await startOwnParty(`strand-move-p-${runTag}`, 'storage', started);
 
 			const sMemberPrivateKey = await generateStrandMemberKey();
@@ -409,7 +415,7 @@ describe('E2E an app\'s strands move between cadres', () => {
 			await writeAloneOnS(nB, gate, S, pSPeerId, nSDb, pSDb);
 
 			// ── Step 2: party A, its owner away by the time N arrives ──
-			const { M, encoded } = await startPartyA(partyA, home.peerId, mStorage, started);
+			const { M, encoded } = await startPartyA(partyA, mStorage, started);
 
 			// ── Step 3: export, then the switch ──
 			const bundle = await exportStrandBundle(nB);

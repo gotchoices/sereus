@@ -170,7 +170,7 @@ function PendingRow({ status, onWithdraw }: { status: CadreInviteStatus; onWithd
 			<View style={controlStyles.listRowText}>
 				<Text style={controlStyles.listRowTitle}>Invited, not joined yet</Text>
 				<Text style={controlStyles.listRowMeta}>
-					{shortPeerId(invite.peerId ?? '')} · {invite.grantsOwner ? 'owner' : 'member'} · {validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}
+					{shortPeerId(invite.peerId ?? '')} · {validUntilText(parseNullableStoredDatetimeMs(invite.expiresAt))}
 				</Text>
 			</View>
 			{onWithdraw && (

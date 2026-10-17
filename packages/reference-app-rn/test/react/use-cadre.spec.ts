@@ -728,7 +728,7 @@ describe('useCadreInternal — joining an existing cadre', () => {
     await act(async () => {
       h.ctl.node = new h.MockNode(++h.ctl.nodeCounter);
       h.ctl.runningOptions = { partyId: 'party-a', bootstrapAddrs: [], relayAddrs: [], origin: 'joined' } satisfies PhoneNodeOptions;
-      admit({ peerId: 'member-a', grantsOwner: true, redeemedAt: new Date(0).toISOString() });
+      admit({ peerId: 'member-a', asOwner: false, redeemedAt: new Date(0).toISOString() });
       await joining;
     });
 

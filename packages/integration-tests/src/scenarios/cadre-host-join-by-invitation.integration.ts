@@ -18,7 +18,7 @@
  *
  * What the steps pin, each its own `it` so a failure names the step:
  *
- *   1. joined with an untargeted invitation (`grantsOwner: false`): the record goes `joined`
+ *   1. joined with an untargeted invitation: the record goes `joined`
  *      naming A as the admitting member and A's key as the owner, and A lists the node as an
  *      authorized member
  *   2. A stops; a second invitation, minted before step 1 and so naming only A, ends `error`
@@ -94,7 +94,7 @@ describe('cadre-host joins a cadre by invitation (real cadre-host, real cadre-cl
   }
 
   async function mint(options: { expiresInMs?: number } = {}): Promise<string> {
-    const { encoded } = await A!.createCadreInvitation({ grantsOwner: false, ...options });
+    const { encoded } = await A!.createCadreInvitation(options);
     invitations.push(encoded);
     return encoded;
   }

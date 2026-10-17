@@ -143,7 +143,7 @@ describe('E2E control-network membership connection gater', () => {
 			await connect(member, Rx, 'receiver admits its authorized member');
 
 			// ── 3. A live cadre invitation admits the outsider outright ─────────────
-			const { invitation } = await Rx.createCadreInvitation({ grantsOwner: false });
+			const { invitation } = await Rx.createCadreInvitation();
 			expect(invitation.partyId).toBe('gater-party');
 			await connect(outsider, Rx, 'receiver admits a stranger while an invitation is live');
 			await expectKeptPastDeadline(outsider, Rx);

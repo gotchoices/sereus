@@ -121,9 +121,10 @@ export function exportOptions(form: ExportForm): OwnerKeyExportOptions {
 
 /**
  * What an import came to. `importOwnerKey` answers `wired: false` both for a key that is no owner
- * of this cadre and for one that is, on a node already signing with another key (the identity key
- * an owner-granting invitation seated), which takes the imported key at its next start; `listed`,
- * the cadre's owner keys read after the import, tells the two apart.
+ * of this cadre and for one that is, on a node already signing with another key, which takes the
+ * imported key at its next start; `listed`, the cadre's owner keys read after the import, tells
+ * the two apart. This app's node signs only with its owner slot's key, so the second case is the
+ * kit's contract rather than a state this app reaches.
  */
 export type ImportOutcome = 'owner' | 'owner-from-next-start' | 'not-an-owner';
 

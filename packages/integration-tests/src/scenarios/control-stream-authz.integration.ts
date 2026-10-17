@@ -216,8 +216,7 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			await waitForControlConnection(A, mPeerId, 'owner admits its authorized member');
 
 			// ── Outsider O: a live cadre invitation is held → connection ADMITTED ──
-			const { invitation } = await A.createCadreInvitation({ grantsOwner: false });
-			expect(invitation.invite.grantsOwner).toBe(false);
+			await A.createCadreInvitation();
 			O = new CadreNode(nodeConfig({ partyId: 'stream-authz-outsider' }));
 			await O.start();
 			const oPeerId = O.peerId!.toString();

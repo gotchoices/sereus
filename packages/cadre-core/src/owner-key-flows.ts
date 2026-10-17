@@ -64,13 +64,10 @@ export async function addBackupOwnerKey(node: CadreNode, options: OwnerKeyExport
 }
 
 /**
- * Export the key in `keyStore`'s owner slot, the device's own owner key. The answer names the key,
- * since it can differ from the one the node signs with: a node signing with the identity key an
- * owner-granting invitation seated keeps signing with it whatever the slot holds (typically the key
- * the device founded its own cadre with, or one imported since).
+ * Export the key in `keyStore`'s owner slot, the device's own owner key, which is the key the
+ * kits' nodes sign with. The answer names the key, for a caller that shows the export under it.
  *
- * @throws when the slot is empty: a device signing with no key of its own (a member, or one an
- *   owner-granting invitation made an owner through its identity key) has none to export.
+ * @throws when the slot is empty: a member device holds no owner key of its own to export.
  * @throws {OwnerKeyExportError} `malformed` for an over-long label or an empty passphrase.
  */
 export async function exportOwnerKey(keyStore: KeyStore, options: OwnerKeyExportOptions = {}): Promise<ExportedOwnerKey> {
@@ -87,9 +84,9 @@ export async function exportOwnerKey(keyStore: KeyStore, options: OwnerKeyExport
  * it is a live owner of that node's party. Importing the key the slot already holds changes
  * nothing; a different one is refused.
  *
- * A node that already signs with another key (the identity key an owner-granting invitation
- * seated) keeps it, since a node takes one owner signer; the imported key is stored, `wired` is
- * false, and the next start wires it (the joined-party rule tries the slot's key first).
+ * A node that already signs with another key keeps it, since a node takes one owner signer; the
+ * imported key is stored, `wired` is false, and the next start wires it. The kits' nodes sign
+ * only with the slot's key, so there the case arises only for an embedder that wired another.
  *
  * @throws {OwnerKeyExportError} `passphrase-required` for locked text with no passphrase,
  *   `wrong-passphrase`, or the decoder's refusals (`not-an-owner-key` names an invitation, join

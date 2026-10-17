@@ -24,7 +24,7 @@ Every entry point is a subpath; there is no root import. An app loads only the p
 
 ## Phone node
 
-`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity and the app's owner key in the secure store, each in its own slot, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by invitation, deletes the cadre it left once that cadre is empty, and deletes a cadre whose owner removed the app. Call it once, at module scope; a second call over the same storage names throws while the first is running.
+`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity and the app's owner key in the secure store, each in its own slot, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by machine invitation or owner grant, deletes the cadre it left once that cadre is empty, and deletes a cadre whose owner removed the app. Call it once, at module scope; a second call over the same storage names throws while the first is running.
 
 It is `@serfab/cadre-core/edge-node`'s `createEdgeNode` over the secure store and rn-leveldb: the kit supplies the key store (`SecureStoreKeyStore`), the storage (a LevelDB database per storage scope and one for the node-local records, `src/phone-node/leveldb-storage.ts`) and the trusted-owner anchor's secure-store slot; the transitions, the owner step, the saved start, the join, the strand move, the dissolve and the removal are the edge node's, and `PhoneNode`, `PhoneNodeOptions`, `PhoneNodeStatus` and the other names below are its types under the kit's names. An app that runs a node on another platform (a browser, NativeScript) runs the edge node directly over a key store and storage of its own.
 
@@ -56,14 +56,14 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `start(options)` | Starts the node, or joins the start in flight; a running node is returned as is. A start called during a stop or restart runs after it, so it never builds on databases being closed. A failed start closes everything it opened and leaves `status` `failed`. A successful one saves its options with `autoStart: true`. |
 | `stop()` | The user's disconnect: waits for a start in flight, saves `autoStart: false`, stops the node, and closes every database it opened (rn-leveldb locks each name, so one left open fails the next start). |
 | `restart(options)` | Rebuilds the node with new relays or a new Noise mode, which libp2p reads only when the node is built. Leaves `autoStart` set. |
-| `joinCadre(invitation, options?)` | Joins the cadre a decoded cadre invitation names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result, `formerPartyId` and `strandMove` (see [Moving the app's strands](#moving-the-apps-strands)). On a refusal, an expiry while waiting (`invite-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause, then `admitted` and, when this join's strands are being adopted, `moving-strands`; a listener that throws is logged and ignored). |
+| `joinCadre(credential, options?)` | Joins the cadre a decoded machine invitation or owner grant names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result (`asOwner`: the credential was an owner grant), `formerPartyId` and `strandMove` (see [Moving the app's strands](#moving-the-apps-strands)). On a refusal, an expiry while waiting (`invite-spent`, `grant-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause, then `admitted` and, when this join's strands are being adopted, `moving-strands`; a listener that throws is logged and ignored). |
 | `identityPeerId()` | This app's peer id, the same in every party, for a join request before any cadre is started. Answers at once while a node is running or joining; otherwise reads the identity from the secure store (creating it on a fresh install) in turn with start, stop and join, so the first start uses the same key. |
 | `pendingStrandMove()` | The move from `formerPartyId` still waiting to be adopted: the party it moves to, the strands not seated there yet and those it refused. `undefined` when none waits. |
 | `finishStrandMove()` | Adopts the waiting move on the running node now, in turn with start, stop and join, and returns cadre-core's `StrandMoveReport`; `undefined` when no move names the running party. Throws `StrandMoveNotOwnerError` while the app's key is no owner there. |
 | `dissolveFormerParty(options?)` | Deletes the local storage of `formerPartyId` once the running party holds everything it holds and no other machine is in it, and starts the running party again without `formerPartyId` (see [Dissolving the left cadre](#dissolving-the-left-cadre)). |
 | `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`, and during a removal after the removal has replaced it. |
 | `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
-| `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the invitation's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), `removed` (an owner removed the app from `partyId`; see [Removed from the cadre](#removed-from-the-cadre)), or `failed` (with the error). |
+| `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the credential's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), `removed` (an owner removed the app from `partyId`; see [Removed from the cadre](#removed-from-the-cadre)), or `failed` (with the error). |
 | `ownerPublicKey()` | The public key of the owner key the running node signs with, for pairing and approval prompts; null unless running with one wired (a `member` has none). |
 | `listOwnerKeys()`, `addBackupOwnerKey(options?)`, `exportOwnerKey(options?)`, `importOwnerKey(text, passphrase?)`, `planOwnerKeyRemoval(key)`, `removeOwner(key, options?)` | The owner-key screen's calls; see [The phone's owner key](#the-phones-owner-key). |
 
@@ -82,14 +82,14 @@ How a start settles it (`status.owner`):
 
 - **Founded party with no `OwnerKey` row yet:** the slot's key becomes the founding row under `PhoneNodeOptions.ownerKeyLabel` (default `phone`) and is wired. It is created now unless the slot already holds one (a key imported before founding, or one an iOS reinstall kept in the Keychain); the kit creates a key nowhere else. `enrolled`.
 - **Founded party that has owners:** the slot's key is wired when it is a live owner (`enrolled`). Otherwise, the slot empty or its key not an owner, the app is a `member` and no key is created, since a new one could not be seated without another owner's signature. A lost slot is recovered by importing a backup.
-- **Joined party:** the slot's key is wired when it is a live owner; otherwise the identity key is, when the party lists it, which is what an owner-granting invitation seats until owner grants seat a key of their own. Otherwise `member`.
+- **Joined party:** the slot's key is wired when it is a live owner (`enrolled`): the key an owner grant seated, one imported here, or one an owner of the party added. Otherwise `member`. The identity key is never tried, since a machine's network identity is never an owner key.
 
 The owner-key calls run in turn with start, stop and join, and those that name the node throw while none is running:
 
 - **`listOwnerKeys()`**: cadre-core's `CadreOwnerKey` rows, with label, voucher, `heldHere` and `trusted`.
 - **`addBackupOwnerKey({ label?, passphrase? })`**: seats a new key as an owner, signed by this app's key, and returns `{ publicKey, exportText }`; the phone keeps nothing, so the app shows or saves the text once. Refused `alone` (cadre-core's `OwnerKeyAddRefusedError`) while the phone has no connection to a cadre with other machines.
-- **`exportOwnerKey({ label?, passphrase? })`**: the slot's key as `{ publicKey, exportText }`; name the export by `publicKey`, since a phone signing with the identity key an owner-granting invitation seated keeps signing with it whatever the slot holds. Works with no node running; throws when the slot is empty.
-- **`importOwnerKey(text, passphrase?)`**: stores the key in the slot and, with a node running, wires it when the party lists it (`{ wired: true }`, and `status.owner` becomes `enrolled`). Refused with `OwnerKeySlotOccupiedError` when the slot holds a different key, and with `OwnerKeyExportError` for text that is not an owner key (an invitation or join request is named), a locked export with no passphrase (`passphrase-required`) or a wrong one. A node already signing with the identity key keeps it until its next start.
+- **`exportOwnerKey({ label?, passphrase? })`**: the slot's key, the key the node signs with, as `{ publicKey, exportText }`. Works with no node running; throws when the slot is empty.
+- **`importOwnerKey(text, passphrase?)`**: stores the key in the slot and, with a node running, wires it when the party lists it (`{ wired: true }`, and `status.owner` becomes `enrolled`). Refused with `OwnerKeySlotOccupiedError` when the slot holds a different key, and with `OwnerKeyExportError` for text that is not an owner key (an invitation or join request is named), a locked export with no passphrase (`passphrase-required`) or a wrong one. A node already signing with another key keeps it until its next start.
 - **`planOwnerKeyRemoval(key)`**, **`removeOwner(key, { revouch })`**: cadre-core's, for the removal prompt and its keep-switches.
 
 One key imported on two devices signs on both; their concurrent writes conflict as any two owners' do.
@@ -98,11 +98,14 @@ One key imported on two devices signs on both; their concurrent writes conflict 
 
 An app that runs its own one-node cadre joins the user's main cadre with `joinCadre`, which switches the node rather than running a second one beside it: a node serves one party, and a second libp2p host on the same identity would compete for its peer id. The reasons and the full sequence are in [architecture.md → An app joins an existing cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre).
 
-```ts
-import { decodeCadreInvitation } from '@serfab/cadre-core';
+`joinCadre` takes either credential. A machine invitation admits the app as a machine. An owner grant, made under the owner app's Owner keys, makes it a machine and an owner at once: it seats the owner slot's key, created when the slot is empty ([The phone's owner key](#the-phones-owner-key)), which is how an app brings the strands of the party it founded along.
 
+```ts
+import { decodeCadreInvitation, decodeOwnerGrant, OWNER_GRANT_PREFIX } from '@serfab/cadre-core';
+
+const credential = pasted.startsWith(OWNER_GRANT_PREFIX) ? decodeOwnerGrant(pasted) : decodeCadreInvitation(pasted);
 const cancel = new AbortController();   // a Cancel button calls cancel.abort()
-const joined = await phone.joinCadre(decodeCadreInvitation(pasted), {
+const joined = await phone.joinCadre(credential, {
 	signal: cancel.signal,
 	onProgress: (p) => {
 		if (p.state === 'waiting') show(p.reason);   // 'no-member-answered' | 'member-not-ready'
@@ -124,7 +127,7 @@ Nothing is saved until a member admits the app, so a kill while waiting relaunch
 Leaving a party it founded, `joinCadre` carries that party's strands, pending joins and invitations into the party it joins, with cadre-core's `exportStrandBundle` and `adoptStrandBundle` ([architecture.md → Moving the app's strands](../../docs/architecture.md#moving-the-apps-strands)). Leaving a party it joined moves nothing: that party's strands are its owners' to move.
 
 - **Before anything stops**, the strands are exported from the running node, or from a node started for the export alone when none runs (status goes `starting` and back to `stopped`). The bundle is kept in the secure store, `cadre/strand-move/<base64url party id>`, one record per party left: it holds read secrets, party keys and bearer invitations. An empty export removes the party's earlier record instead.
-- **The join is refused** with `StrandsNeedOwnerJoinError`, the party left running and unchanged, when there is something to move and the invitation does not grant owner: every row a move seats is owner-signed. A failed export or record write is thrown the same way.
+- **The join is refused** with `StrandsNeedOwnerJoinError`, the party left running and unchanged, when there is something to move and the credential is a machine invitation: every row a move seats is owner-signed, so the app joins with an owner grant instead. A failed export or record write is thrown the same way.
 - **Admitted**, the start is saved, then the bundle is adopted if the app's key is wired as an owner, then the join reports `running`. A kill during the adoption relaunches into the joined party, which finishes it.
 - **`result.strandMove`** is `{ state: 'done' | 'partial', report }` (`partial`: `report.failed` lists what is retried), or `{ state: 'deferred', reason: 'owner-key-not-wired' }`, or `{ state: 'deferred', reason: 'adoption-failed', error }`. Absent when there was nothing to move.
 - **A deferred or partial move** is retried by every start whose owner key is wired, before it reports `running`, or at once by `finishStrandMove()`. The record is deleted when an adoption fails nothing; strands the joined party refuses permanently (it participates in them under its own identity) are left out of later retries and listed in each report.
@@ -199,7 +202,7 @@ The runner never imports `react-native`: `AppState` is assignable to its `AppSta
 
 ## App links (`@serfab/cadre-rn/app-link`)
 
-Two Sereus apps on one phone hand a join request and its answer to each other by opening each other with a link, so the user confirms once in the owner app instead of copying a request one way and an invitation back. [docs/architecture.md → Between apps on one phone](../../docs/architecture.md#between-apps-on-one-phone) has the flow, the link formats, the decisions and the security reasoning; this section is the API. The module imports nothing from React Native or Expo: the app passes `Linking.canOpenURL` in.
+Two Sereus apps on one phone hand a join request and its answer to each other by opening each other with a link, so the user confirms once in the owner app instead of copying a request one way and an invitation back. The answer is a machine invitation, which admits the asking app as a machine only; an app with strands of its own to bring joins with an owner grant instead. [docs/architecture.md → Between apps on one phone](../../docs/architecture.md#between-apps-on-one-phone) has the flow, the link formats, the decisions and the security reasoning; this section is the API. The module imports nothing from React Native or Expo: the app passes `Linking.canOpenURL` in.
 
 The asking app, which wants to join:
 
@@ -264,7 +267,7 @@ if (link?.kind === 'join-request') {
 
 ### Recommending another app
 
-An owner app recommends a Sereus app and lets it join on its first launch without a prompt: the user allows it in the owner app first, and the owner app answers that app's join request without asking again. [docs/architecture.md → Recommending another app](../../docs/architecture.md#recommending-another-app) has the flow and the security reasoning.
+An owner app recommends a Sereus app and lets it join on its first launch without a prompt: the user allows it in the owner app first, and the owner app answers that app's join request without asking again. [docs/architecture.md → Recommending another app](../../docs/architecture.md#recommending-another-app) has the flow and the security reasoning. The pre-approval, like a join answered by link, admits a machine only; a recommended app with strands of its own to bring joins with an owner grant pasted into it (whether these flows may also carry ownership is `tickets/blocked/decide-app-link-join-carries-ownership.md`).
 
 The owner app, which recommends:
 
@@ -274,14 +277,14 @@ import { AppRecommendationStore, recommendedByLink, storePageLink } from '@serfa
 
 const recommendations = new AppRecommendationStore(phone.recommendationSlot());   // one per app
 
-// The user picked `app` from the known list and allowed it, choosing grantsOwner.
-await recommendations.approve({ scheme: app.scheme, appName: app.name, partyId, grantsOwner });
+// The user picked `app` from the known list and allowed it.
+await recommendations.approve({ scheme: app.scheme, appName: app.name, partyId });
 const installed = await Linking.canOpenURL(`${app.scheme}://`);
 const url = installed ? recommendedByLink(app, ownScheme) : storePageLink(app, Platform.OS === 'ios' ? 'ios' : 'android', ownScheme);
 
 // Later, for a join request opened as a link, before prompting:
 const approved = request.reply ? await recommendations.take(request.reply.scheme, partyId) : null;
-// approved: mint the targeted invitation with approved.grantsOwner and answer by link, no prompt.
+// approved: mint the targeted machine invitation and answer by link, no prompt.
 ```
 
 The recommended app reads the hint once, at first launch (the Play Install Referrer, through the app's own install-referrer module) or from a `recommended-by` link:

@@ -35,14 +35,14 @@
 -- effective at the writer as soon as its tombstone arrives, whether or not the row's delete
 -- has. Only the founding count in OwnerKey.Authorized stays raw.
 declare schema CadreControl {
-    -- A key that can authorize control changes. A row is seated one of four ways, told apart
+    -- A key that can authorize control changes. A row is seated one of three ways, told apart
     -- by the vouch columns: the founding row (all three null), an owner-signed add (VouchOwner
-    -- and VouchSig pinned to the insert context, VouchUsage null), an owner-granting
-    -- invitation redeemed by consent (VouchOwner = the invitation's IssuerKey, VouchSig null,
-    -- VouchUsage = the CadreInviteUsage row that admitted it), or an owner grant redeemed by
-    -- consent (VouchOwner = the grant's IssuerKey, VouchSig null, VouchUsage = the
-    -- OwnerGrantUsage row that seated it). A reader judges the stored proof against its
-    -- node-local anchor, never against this replicated table.
+    -- and VouchSig pinned to the insert context, VouchUsage null), or an owner grant redeemed
+    -- by consent (VouchOwner = the grant's IssuerKey, VouchSig null, VouchUsage = the
+    -- OwnerGrantUsage row that seated it). A machine invitation (CadreInvite) admits a machine
+    -- and never seats a row here: a machine's identity key is never an owner key. A reader
+    -- judges the stored proof against its node-local anchor, never against this replicated
+    -- table.
     table OwnerKey (
         Key text primary key,
         Label text null,                -- the user's name for the key ("phone", "paper backup"); bound into the
@@ -79,15 +79,12 @@ declare schema CadreControl {
         -- deliberately raw, the one owner read here that ignores Revocation: a machine holding only
         -- a retired owner row must still be refused a second genesis, or a removed device could
         -- re-found the party on its own copy. An owner cannot sign its own removal.
-        -- The two consent branches seat an owner with no signature at all. Invitation: a
-        -- CadreInviteUsage row written in the same transaction names this exact row (Key and
-        -- stamp), and the invitation it redeemed grants ownership and was issued by the stored
-        -- VouchOwner; nothing signed names a label there, so the row carries none. Grant: an
-        -- OwnerGrantUsage row written in the same transaction names this exact row, and the
-        -- grant it redeemed was issued by the stored VouchOwner and carries the row's label
-        -- (the issuer's choice, bound into the grant's signature). Both read the redeemed row
-        -- from its committed table, so neither can be seated and redeemed in one transaction;
-        -- the usage rows carry the liveness conditions.
+        -- The consent branch seats an owner with no signature at all: an OwnerGrantUsage row
+        -- written in the same transaction names this exact row (Key and stamp), and the grant
+        -- it redeemed was issued by the stored VouchOwner and carries the row's label (the
+        -- issuer's choice, bound into the grant's signature). The grant is read from its
+        -- committed table, so it cannot be seated and redeemed in one transaction; the usage
+        -- row carries the liveness conditions.
         constraint Authorized check on insert, delete (
             (old.Key is null and (select count(1) from committed.OwnerKey) = 0
                 and new.VouchOwner is null and new.VouchSig is null and new.VouchUsage is null)
@@ -95,15 +92,6 @@ declare schema CadreControl {
                     and coalesce(new.VouchOwner, '') = context.OwnerKey
                     and coalesce(new.VouchSig, '') = context.Signature
                     and new.VouchUsage is null)
-                or (old.Key is null and new.VouchSig is null and new.VouchUsage is not null
-                    and new.Label is null
-                    and exists (
-                        select 1 from CadreInviteUsage U
-                            where U.UsageStampId = new.VouchUsage
-                                and U.PeerKey = new.Key
-                                and U.OwnerStampId = new.StampId
-                                and exists (select 1 from committed.CadreInvite I where I.Key = U.InviteKey and I.GrantsOwner = 1 and I.IssuerKey = new.VouchOwner)
-                    ))
                 or (old.Key is null and new.VouchSig is null and new.VouchUsage is not null
                     and exists (
                         select 1 from OwnerGrantUsage U
@@ -118,7 +106,7 @@ declare schema CadreControl {
         )
     -- The tag is the version of this whole schema (cadre-core CONTROL_SCHEMA_VERSION): every edit
     -- to the schema bumps it, and a warm start reads the store's copy before applying anything.
-    ) with tags ("sereus.controlSchemaVersion" = 2) with context (OwnerKey text null, Signature text null);
+    ) with tags ("sereus.controlSchemaVersion" = 3) with context (OwnerKey text null, Signature text null);
 
     -- A key that can validate a strand formation disclosure (FormationUsage.Authorized).
     table ValidationKey (
@@ -644,11 +632,13 @@ declare schema CadreControl {
     -- convergence is guarded by the integration scenario strand-formation-concurrent-redemption.
     index FormationUsageByToken on FormationUsage (Token);
 
-    -- An owner-signed invitation to join this cadre, redeemable on the owner's behalf by any
-    -- member machine (ControlDatabase.redeemCadreInvite). The invitation is a keypair, not a
+    -- An owner-signed invitation to join this cadre as a machine, redeemable on the owner's
+    -- behalf by any member machine (ControlDatabase.redeemCadreInvite). It admits a machine
+    -- and grants nothing else; ownership is an OwnerGrant. The invitation is a keypair, not a
     -- bearer token: the row holds the public half and the holder proves possession by signing
-    -- with the private half (CadreInviteUsage.InvitePossessed), so the member that redeems it
-    -- can verify but never redeem it for itself. Rows are never deleted: a device admitted
+    -- with the private half (CadreInviteUsage.InvitePossessed), so a member that only relays
+    -- it can neither admit a machine of its own choosing with it nor spend its uses. Rows are
+    -- never deleted: a device admitted
     -- through one carries no owner signature of its own, and its membership is the chain
     -- invitation -> usage -> peer row, verified at read time, so the row must outlive every
     -- device it admitted. Withdrawing an invitation is an owner-signed Revocation tombstone
@@ -661,7 +651,6 @@ declare schema CadreControl {
     table CadreInvite (
         Key text primary key,       -- the invitation's ed25519 public key (base64url)
         PeerId text null,           -- the device this invitation is for; null: whoever redeems first designates it
-        GrantsOwner integer check (GrantsOwner = 0 or GrantsOwner = 1),   -- 1: redemption also seats an OwnerKey row
         ExpiresAt datetime null,
         TotalUses int null check (TotalUses >= 0),
         IssuerKey text,             -- the owner that signed the row (== insert context.OwnerKey). A reader checks it
@@ -682,7 +671,6 @@ declare schema CadreControl {
                     'CadreControl.CadreInvite', 'add', party_id(),
                     new.Key,
                     coalesce(new.PeerId, ''),
-                    cast(new.GrantsOwner as text),
                     coalesce(cast(new.ExpiresAt as text), ''),
                     coalesce(cast(new.TotalUses as text), ''),
                     new.StampId
@@ -697,8 +685,7 @@ declare schema CadreControl {
     ) with context (OwnerKey text, Signature text);
 
     -- Append-only record of cadre invitation redemptions, one row per redemption: the proof a
-    -- CadrePeer row (and, for an owner-granting invitation, an OwnerKey row) was admitted by
-    -- consent rather than by an owner signature.
+    -- CadrePeer row was admitted by consent rather than by an owner signature.
     table CadreInviteUsage (
         UsageStampId text primary key,  -- nonce minted by the redeeming device and signed into both signatures
                                         -- below. The primary key: this table never deletes, so the key alone
@@ -712,22 +699,20 @@ declare schema CadreControl {
         PeerStampId text,               -- the CadrePeer.StampId this usage seats: one row incarnation, not a peer id
                                         -- forever. Minted by the writer inside the redeeming transaction and not
                                         -- signed (FormationUsage.StrandStampId).
-        OwnerStampId text null,         -- the OwnerKey.StampId this usage seats when the invitation grants ownership
         InviteSig text,                 -- by the invitation's private key over the 'redeem' digest: proof of possession
         PeerSig text,                   -- by PeerKey over the 'consent' digest: the device agreed to join
         constraint InsertOnly check on update, delete (false),
         -- The invitation is read from the pre-transaction snapshot, so an invitation cannot be
-        -- seated and redeemed in one transaction (the OwnerKey consent branch rests on that).
+        -- seated and redeemed in one transaction (the CadrePeer consent branch rests on that).
         -- NOTE: accepted tradeoff — the use cap counts committed usage, so two redeemers racing
-        -- for a single-use invitation on different machines may both be admitted until merge,
-        -- and after merge both rows stand (FormationUsage.Authorized), for owner grants too.
-        -- Serializing would need cross-machine coordination the control plane does not have;
-        -- the mitigations are the defaults the redemption protocol sets (untargeted owner
-        -- invitations single-use with a short expiry), the targeted form for owner grants, and
-        -- the owner seeing the extra owner and removing it. Revisit if the control plane gains
-        -- a cross-machine sequencer. An issuer removed since issuing takes its outstanding
-        -- invitations with it (the committed.OwnerKey clause, which a tombstone alone
-        -- satisfies); devices it already admitted stay members.
+        -- for a single-use machine invitation on different machines may both be admitted until
+        -- merge, and after merge both rows stand (FormationUsage.Authorized). Serializing would
+        -- need cross-machine coordination the control plane does not have; the mitigations are
+        -- the single-use default, the targeted form, and the owner seeing the extra machine and
+        -- removing it. Revisit if the control plane gains a cross-machine sequencer. The owner
+        -- grant's half of this tradeoff is at OwnerGrantUsage.Authorized. An issuer removed
+        -- since issuing takes its outstanding invitations with it (the committed.OwnerKey
+        -- clause, which a tombstone alone satisfies); devices it already admitted stay members.
         constraint Authorized check on insert (
             exists (
                 select 1 from committed.CadreInvite I
@@ -752,15 +737,10 @@ declare schema CadreControl {
         ),
         -- Deferred, so the same-transaction peer insert counts: a usage row can never be held in
         -- reserve to seat a row later (FormationUsage.StrandExists). PeerKey must be the key the
-        -- peer row stores: a redemption that only completes an already-admitted device with its
-        -- OwnerKey row (no peer insert to pin it) cannot name a key other than that device's.
+        -- peer row stores, so the usage names the admitted machine's own key and no other.
         constraint PeerExists check (exists (
             select 1 from CadrePeer P where P.PeerId = new.PeerId and P.StampId = new.PeerStampId and P.PublicKey = new.PeerKey
-        )),
-        constraint OwnerExists check (
-            new.OwnerStampId is null
-                or exists (select 1 from OwnerKey K where K.Key = new.PeerKey and K.StampId = new.OwnerStampId)
-        )
+        ))
     ) with context (Now datetime);
 
     -- Serves the cap count above and the liveness reads (cadre-core countCadreInviteUsage,

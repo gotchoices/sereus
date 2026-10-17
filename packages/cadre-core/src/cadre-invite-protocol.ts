@@ -79,8 +79,8 @@ const MAX_REPLY_PEERS = 256;
  * What an owner hands out (QR, paste, link) and a device redeems. An invitation is an
  * ed25519 keypair: the row holds the public half, `invitePrivateKey` is the proof of
  * possession, and whoever holds this bundle can redeem it — treat it as a bearer
- * credential for the row's lifetime (an untargeted owner-granting one defaults to a
- * 15-minute expiry for that reason).
+ * credential for the row's lifetime. It admits a machine and grants nothing else; an owner
+ * grant (`owner-grant-protocol.ts`) is the credential that makes a key an owner.
  *
  * Carrying the signed row is what makes redemption work at a member that has not received
  * the row by replication: the member seats it from the bundle under its stored issuer
@@ -329,7 +329,6 @@ export function isWellFormedCadreInviteRow(value: unknown): value is CadreInvite
   const row = value as Record<string, unknown>;
   return isEd25519KeyB64(row.key)
     && isNullableBoundedString(row.peerId)
-    && typeof row.grantsOwner === 'boolean'
     && isNullableBoundedString(row.expiresAt)
     && isNullableUseCap(row.totalUses)
     && isBoundedString(row.stampId)
@@ -478,7 +477,7 @@ export interface CadreInviteHandlerOptions extends MemberRedemptionHandlerOption
 /** Constraint names the schema refuses a redemption with, and the code each maps to. */
 const REDEEM_CONSTRAINT_CODES: ReadonlyArray<ConstraintRefusalRow<CadreInviteRejectionCode>> = [
   [/CHECK constraint failed: Authorized\b/, 'invite-spent', 'The invitation is expired, withdrawn, exhausted, or its issuer is no longer an owner'],
-  [/CHECK constraint failed: (InvitePossessed|PeerConsented|PeerExists|OwnerExists)\b/, 'invite-invalid', 'The redemption does not satisfy the invitation'],
+  [/CHECK constraint failed: (InvitePossessed|PeerConsented|PeerExists)\b/, 'invite-invalid', 'The redemption does not satisfy the invitation'],
   [/CHECK constraint failed: NotRevoked\b/, 'invite-spent', 'The invitation was withdrawn'],
 ];
 

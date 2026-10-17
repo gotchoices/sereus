@@ -399,9 +399,9 @@ function exportOptions(form: ExportForm): OwnerKeyExportOptions {
 
 /**
  * What an import came to. `importOwnerKey` answers `wired: false` both for a key that is no owner
- * of this cadre and for one that is, on a node already signing with another key (the identity key
- * an owner-granting invitation seated), which takes the imported key at its next start; `listed`,
- * the cadre's owner keys read after the import, tells the two apart.
+ * of this cadre and for one that is, on a node already signing with another key, which takes the
+ * imported key at its next start; `listed`, the cadre's owner keys read after the import, tells
+ * the two apart.
  */
 type ImportOutcome = 'owner' | 'owner-from-next-start' | 'not-an-owner';
 

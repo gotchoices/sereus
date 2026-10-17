@@ -251,13 +251,6 @@ export const STRAND_PEER_ADDR_RETRY_MS = 60 * 1000;
 export const OWNER_GRANT_DEFAULT_TTL_MS = 15 * 60 * 1000;
 
 /**
- * Default lifetime of an UNTARGETED, OWNER-GRANTING cadre invitation
- * ({@link CadreNode.createCadreInvitation}): an owner grant's, for the same reason.
- * `machine-invitation-grants-no-ownership` removes it with the owner-granting invitation.
- */
-export const OWNER_INVITATION_DEFAULT_TTL_MS = OWNER_GRANT_DEFAULT_TTL_MS;
-
-/**
  * Lifetime of the invitation {@link CadreNode.joinWithOwnerGrant} issues to itself: redeemed in
  * the same call at the member that just wrote the grant, so the grant's short default is plenty,
  * and a later call signs a fresh one.
@@ -275,7 +268,7 @@ const OWNER_ROW_SYNC_RECHECK_MS = 2_000;
 // eslint-disable-next-line no-restricted-syntax -- cuts off by design: the call goes on with the key unwired rather than wait out a stalled control sync; `wireOwnKeyIfOwner` wires it later
 const OWNER_ROW_SYNC_TIMEOUT_MS = 60_000;
 
-/** Default lifetime of every other cadre invitation: targeted, or granting membership only. */
+/** Default lifetime of a cadre invitation ({@link CadreNode.createCadreInvitation}): it admits a machine and grants nothing else, so it need not be short. */
 export const CADRE_INVITATION_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
 type EventHandler<T> = (data: T) => void;
@@ -358,10 +351,10 @@ type RevocationSource = () => Promise<RevocationRow[]>;
 
 /**
  * Whether a `CadrePeer` or `OwnerKey` row's proof is a consent admission rather than an owner
- * voucher (`types.ts` → `CadrePeerRow`, `OwnerKeyRow`): a machine invitation for either table,
- * or an owner grant for an `OwnerKey` row.
+ * voucher (`types.ts` → `CadrePeerRow`, `OwnerKeyRow`): a machine invitation for a `CadrePeer`
+ * row, an owner grant for an `OwnerKey` row.
  */
-function isInvitationAdmitted(row: { vouchSig: string | null; vouchUsage: string | null }): boolean {
+function isConsentSeated(row: { vouchSig: string | null; vouchUsage: string | null }): boolean {
   return row.vouchSig === null && row.vouchUsage !== null;
 }
 
@@ -2760,18 +2753,18 @@ export class CadreNode implements SAppIdLookup {
    *
    * The trusted-owner anchor sync ({@link syncOwnerAnchor}) runs FIRST, so the snapshot
    * built here judges `CadrePeer` rows against the anchor as the `OwnerKey` table now
-   * has it. The invitation chain both reads may need, and the tombstone list the sync and
-   * the two end-of-refresh checks ({@link hangUpRevokedControlPeers}, then
-   * {@link noteOwnRemoval}) read, are each loaded at most once per refresh.
+   * has it. The tombstone list the sync and the two end-of-refresh checks
+   * ({@link hangUpRevokedControlPeers}, then {@link noteOwnRemoval}) read is loaded at most
+   * once per refresh, as is the invitation chain the membership read may need.
    */
   private async refreshAuthorizedControlPeers(reason: string): Promise<void> {
     if (!this._running || !this.controlDatabase) {
       return;
     }
     try {
-      const loadChain = this.invitationChainSource(this.controlDatabase, false);
       const loadTombstones = this.revocationSource(this.controlDatabase, false);
-      await this.syncOwnerAnchor(reason, false, loadChain, loadTombstones);
+      await this.syncOwnerAnchor(reason, false, loadTombstones);
+      const loadChain = this.invitationChainSource(this.controlDatabase, false);
       const rows = await this.controlDatabase.queryCadrePeers(false);
       const members = this.authorizedAmong(rows, await this.chainFor(rows, loadChain));
       this.authorizedControlPeers = new Set(members.map((m) => m.peerId));
@@ -8240,7 +8233,7 @@ export class CadreNode implements SAppIdLookup {
 
   /** The invitation chain, loaded only when some row in `rows` is invitation-admitted. */
   private async chainFor(rows: readonly CadrePeerRow[], loadChain: InvitationChainSource): Promise<InvitationChain | null> {
-    return rows.some(isInvitationAdmitted) ? await loadChain() : null;
+    return rows.some(isConsentSeated) ? await loadChain() : null;
   }
 
   /**
@@ -8273,7 +8266,7 @@ export class CadreNode implements SAppIdLookup {
    * one an owner re-vouch leaves behind.
    */
   private hasAnchoredProof(row: CadrePeerVoucherFields, chain: InvitationChain | null): boolean {
-    if (!isInvitationAdmitted(row)) {
+    if (!isConsentSeated(row)) {
       return this.hasAnchoredVoucher(row);
     }
     const usage = chain?.usages.get(row.vouchUsage!);
@@ -8313,17 +8306,15 @@ export class CadreNode implements SAppIdLookup {
    * NOTE: cost per membership refresh is one `OwnerKey` read and one `Revocation` read (the
    * tombstone list, whose `OwnerKey` stamps are handed to `queryOwnerKeyRows` so it does not
    * read the retired set again, and which the hang-up of removed peers shares through
-   * `loadTombstones`), plus the invitation chain when some owner row is
-   * invitation-admitted — shared with the membership read through `loadChain`; the memo
-   * suggestion on {@link loadInvitationChain} covers that part. Before the Revocation ledger
-   * marker is filed that one read is a cohort consult per refresh, which
-   * `control-founding-consult-budget.spec.ts` pins.
+   * `loadTombstones`), plus the owner-grant chain when some owner row is grant-seated (the
+   * NOTE in the body). Before the Revocation ledger marker is filed that one read is a cohort
+   * consult per refresh, which `control-founding-consult-budget.spec.ts` pins.
    *
    * @param retry - forwarded to every read; `false` on the refresh path, for the reason on
    *   {@link refreshAuthorizedControlPeers}.
    * @param loadTombstones - the refresh's shared tombstone read ({@link revocationSource}).
    */
-  private async syncOwnerAnchor(reason: string, retry: boolean, loadChain: InvitationChainSource, loadTombstones: RevocationSource): Promise<void> {
+  private async syncOwnerAnchor(reason: string, retry: boolean, loadTombstones: RevocationSource): Promise<void> {
     const store = this.trustedOwnerStore;
     const controlDatabase = this.controlDatabase;
     if (!store || !controlDatabase) {
@@ -8338,15 +8329,11 @@ export class CadreNode implements SAppIdLookup {
       const tombstones = await loadTombstones();
       const retired = new Set(tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey').map(tombstone => tombstone.stampId));
       const rows = await controlDatabase.queryOwnerKeyRows(retry, retired);
-      // A consent-seated row's usage stamp names one of the two usage tables, which cannot be
-      // told apart without reading, so both chains are loaded when any such row exists.
       // NOTE: the grant chain is two whole-table reads per membership refresh while any owner
       // row is grant-seated, over tables that are append-only; the memo suggested on
       // loadInvitationChain would cover it too.
-      const consentSeated = rows.some(isInvitationAdmitted);
-      const chain = consentSeated ? await loadChain() : null;
-      const grantChain = consentSeated ? await this.loadOwnerGrantChain(controlDatabase, retry) : null;
-      const derivation = deriveOwnerAnchor({ partyId: this.partyId, anchor: before, rows, tombstones, chain, grantChain });
+      const grantChain = rows.some(isConsentSeated) ? await this.loadOwnerGrantChain(controlDatabase, retry) : null;
+      const derivation = deriveOwnerAnchor({ partyId: this.partyId, anchor: before, rows, tombstones, grantChain });
       if (derivation.refusedRemovals.length > 0) {
         log('syncOwnerAnchor(%s): refused %d owner removal(s) that would empty the anchor: %o', reason, derivation.refusedRemovals.length, derivation.refusedRemovals);
       }
@@ -8408,9 +8395,9 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * The usage and invitation rows {@link hasAnchoredProof} and {@link syncOwnerAnchor}
-   * resolve an invitation-admitted row through, keyed for lookup. Both reads honour `retry`
-   * for {@link listAuthorizedMembers}' reason.
+   * The usage and invitation rows {@link hasAnchoredProof} resolves an invitation-admitted
+   * `CadrePeer` row through, keyed for lookup. Both reads honour `retry` for
+   * {@link listAuthorizedMembers}' reason.
    *
    * NOTE: once invitations are the only admission route (ticket
    * `cadre-invitations-redeemable-by-any-member`), every cadre with a member not yet
@@ -9360,10 +9347,10 @@ export class CadreNode implements SAppIdLookup {
    * owner key ({@link useOwnerSigner}).
    *
    * The invitation is an ed25519 keypair: the public half is the `CadreInvite` row's key,
-   * the private half rides in the returned bundle as the proof of possession. Whoever holds
-   * the bundle can redeem it, so an UNTARGETED, OWNER-GRANTING invitation — a bearer
-   * credential for admin rights — defaults to a 15-minute lifetime; every other kind to 24
-   * hours. One use unless `uses` says otherwise. The bundle carries the signed row (so a
+   * the private half rides in the returned bundle as the proof of possession. It admits a
+   * machine and grants nothing else (ownership is {@link createOwnerGrant}'s), so it defaults
+   * to a 24-hour lifetime ({@link CADRE_INVITATION_DEFAULT_TTL_MS}) and one use unless `uses`
+   * says otherwise. The bundle carries the signed row (so a
    * member that has not received it by replication seats it from the bundle), this node's
    * anchored owner keys — every current owner this node has verified, the out-of-band ones
    * and those derived along verifiable chains ({@link syncOwnerAnchor}) — (the device pins
@@ -9388,15 +9375,13 @@ export class CadreNode implements SAppIdLookup {
    * @throws when no owner key is wired, the anchor is empty, `uses` is not a positive
    *   integer, or neither this machine nor any other member has an address.
    */
-  async createCadreInvitation(options: CreateCadreInvitationOptions): Promise<CreateCadreInvitationResult> {
+  async createCadreInvitation(options: CreateCadreInvitationOptions = {}): Promise<CreateCadreInvitationResult> {
     const { service, ownerKeys, uses, members, reach } = await this.issuedBundleParts('createCadreInvitation', options.uses);
-    const expiresInMs = options.expiresInMs
-      ?? (options.grantsOwner && !options.peerId ? OWNER_INVITATION_DEFAULT_TTL_MS : CADRE_INVITATION_DEFAULT_TTL_MS);
+    const expiresInMs = options.expiresInMs ?? CADRE_INVITATION_DEFAULT_TTL_MS;
     const invitePrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
     const row = await service.insertCadreInvite({
       key: ed25519PublicKeyFromPrivate(invitePrivateKey),
       peerId: options.peerId ?? null,
-      grantsOwner: options.grantsOwner,
       expiresAtMs: Date.now() + expiresInMs,
       totalUses: uses,
     });
@@ -9408,8 +9393,8 @@ export class CadreNode implements SAppIdLookup {
       ownerKeys,
       members,
     };
-    log('Cadre invitation minted: %s (peer=%s owner=%s uses=%d, %d member address(es), reach=%s)',
-      row.key, row.peerId ?? 'any', row.grantsOwner, uses, members.length, reach);
+    log('Cadre invitation minted: %s (peer=%s uses=%d, %d member address(es), reach=%s)',
+      row.key, row.peerId ?? 'any', uses, members.length, reach);
     return { invitation, encoded: encodeCadreInvitation(invitation), reach };
   }
 
@@ -9498,11 +9483,9 @@ export class CadreNode implements SAppIdLookup {
    * pass whose reply was lost answers the next as already a member. `options.onProgress`
    * reports each pass and pause.
    *
-   * When the invitation grants ownership, the member seats this node's key as an `OwnerKey`
-   * row by consent. The caller still has to wire that key for signing afterwards, with
-   * {@link wireOwnKeyIfOwner}; never `ensureOwnerKey`, the row is already there. Other
-   * machines derive this node's key into their anchors from the row's stored proof on their
-   * next membership refresh ({@link syncOwnerAnchor}).
+   * The invitation admits this node as a machine and nothing else: ownership is an owner
+   * grant ({@link redeemOwnerGrant}, {@link joinWithOwnerGrant}). A key of this node's that is
+   * already an owner here is wired afterwards with {@link wireOwnKeyIfOwner}(signer).
    *
    * Limit: the reply check ({@link verifyRedeemReply}) does not authenticate the member. A
    * forged bundle, or a legitimate one whose addresses were swapped, dials a machine that
@@ -9545,7 +9528,7 @@ export class CadreNode implements SAppIdLookup {
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.onProgress ? { onProgress: options.onProgress } : {}),
     });
-    log('Cadre invitation %s redeemed at %s (owner=%s)', invitation.invite.key, memberAddr, reply.invite.grantsOwner);
+    log('Cadre invitation %s redeemed at %s', invitation.invite.key, memberAddr);
 
     const selfPeerId = controlNode.peerId.toString();
     await mergeSeedPeers(controlNode, reply.peers.filter((peer) => peer.peerId !== selfPeerId));
@@ -9561,18 +9544,17 @@ export class CadreNode implements SAppIdLookup {
     await this.refreshMembershipGate('invitation-redeemed');
     void this.reconcileControlCohort().catch((error) =>
       log('redeemCadreInvitation: the post-redemption reconcile pass failed: %o', error));
-    return { peerId: memberPeerId, grantsOwner: reply.invite.grantsOwner, redeemedAt: new Date().toISOString() };
+    return { peerId: memberPeerId, redeemedAt: new Date().toISOString() };
   }
 
   /**
    * If `signer`'s key is a live `OwnerKey` here, wire it ({@link useOwnerSigner}) and return
    * true; otherwise change nothing and return false. For a machine that joined someone else's
-   * cadre by invitation: after an owner-granting redemption, and on every later start.
+   * cadre: after an owner grant seated its key, and on every later start.
    *
-   * Without `signer` the candidate is the signer already wired, else a software signer over the
-   * node's identity key. The identity default is the interim path for an owner admitted by an
-   * owner-granting `CadreInvite`, which seats the request's `peerKey`, the key behind this
-   * node's peer id (`owner-grant-separate-from-machine-invitation` replaces it).
+   * Without `signer` the candidate is the signer already wired, so the call answers whether
+   * that key is still a live owner; with nothing wired it is false. The node's identity key is
+   * never a candidate: a machine's network identity is never an owner key.
    *
    * Unlike `ensureOwnerKey` it never inserts an `OwnerKey` row, so a machine that joined a
    * cadre can never genesis-insert itself into it, and a non-owner never anchors its own key.
@@ -9591,7 +9573,7 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode must be started before wiring its owner key');
     }
     const wired = this.getOwnerSigner();
-    const candidate = signer ?? wired ?? this.identityOwnerSigner();
+    const candidate = signer ?? wired;
     if (!candidate || !(await this.controlDatabase.getOwnerKeys()).has(candidate.publicKey)) {
       log('wireOwnKeyIfOwner: the candidate owner key is not an owner here; not wiring it');
       return false;
@@ -9602,12 +9584,6 @@ export class CadreNode implements SAppIdLookup {
       throw new Error(`wireOwnKeyIfOwner: this node already has the owner key ${wired.publicKey} wired; one owner signer per node`);
     }
     return true;
-  }
-
-  /** A software owner signer over this node's identity key ({@link getSelfSigningKey}), or null on an ephemeral identity. */
-  private identityOwnerSigner(): OwnerSigner | null {
-    const identity = this.getSelfSigningKey();
-    return identity ? softwareOwnerSigner(identity.privateKeyB64) : null;
   }
 
   // ============================================================================
@@ -9842,7 +9818,6 @@ export class CadreNode implements SAppIdLookup {
       selfInvite: await controlDatabase.signCadreInvite({
         key: ed25519PublicKeyFromPrivate(invitePrivateKey),
         peerId: controlNode.peerId.toString(),
-        grantsOwner: false,
         expiresAtMs: Date.now() + SELF_INVITATION_TTL_MS,
         totalUses: 1,
       }, signer.publicKey, sign),

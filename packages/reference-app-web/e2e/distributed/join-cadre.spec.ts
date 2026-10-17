@@ -10,10 +10,10 @@ import { startCadreMember, type CadreMemberHandle } from '../fixtures/cadre-memb
  * (`fixtures/cadre-member.ts`): it founds A, listens on loopback WebSocket and is the one
  * always-on member the invitation names. The browser tab founds its own party (B) on first
  * load, as every tab does, and then joins A through the Cadre page's "Join my existing
- * cadre": A mints a **member** invitation targeted at the tab's peer id, the tab pastes it
+ * cadre": A mints a machine invitation targeted at the tab's peer id, the tab pastes it
  * and joins, and its one node moves from B to A (docs/architecture.md → "An app joins an
  * existing cadre"). The tab's chat strand has no control row, so B's export is empty and a
- * member invitation is allowed.
+ * machine invitation, which admits a member and no owner, is allowed.
  *
  * The reload is the point. A party the tab JOINED must never run owner genesis: with the
  * saved start's `origin` ignored, every start would run `ensureOwnerKey` on A and wire the
@@ -109,9 +109,9 @@ test.describe('Tier 2 / join an existing cadre', () => {
 		expect(partyB).not.toBe(a.partyId);
 		await expect(page.getByTestId('home-owner')).toHaveText('enrolled');
 
-		// 2. A mints a MEMBER invitation for this tab alone, as the owner's "Add a device or
-		//    app" would from the tab's pasted request.
-		const { encoded } = await a.mintInvitation({ peerId, grantsOwner: false });
+		// 2. A mints an invitation for this tab alone, as the owner's "Add a device or app" would
+		//    from the tab's pasted request; it admits the tab as a member.
+		const { encoded } = await a.mintInvitation({ peerId });
 
 		// 3. The tab pastes it under "Join my existing cadre" and joins; the done line shows only
 		//    once B has been removed too.

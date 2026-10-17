@@ -20,7 +20,6 @@ export function encodedTestInvitation(partyId: string): string {
     invite: {
       key: Buffer.alloc(32, 4).toString('base64url'),
       peerId: null,
-      grantsOwner: false,
       expiresAt: null,
       totalUses: 1,
       stampId: 'stamp-1',

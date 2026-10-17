@@ -38,7 +38,7 @@ import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import { CadreNode, type CadreInviteRow } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectionsTo, waitUntil, readCohort, peerDialGate, captureRawStorage, awaitBlockCoverage,
-	startPinningMember, admitMember, buildPartyDevice, redeemWaitingForMember, ownerKeySeatedByInvitation, type InviteMember,
+	startPinningMember, admitMember, buildPartyDevice, redeemWaitingForMember, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment, replication and reconnect waits over loopback — each hides a CadreNode start or a reconcile pass. */
@@ -82,7 +82,7 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			});
 			// An earlier invitation, minted while connected, so M already holds the `CadreInvite`
 			// collection; the seat below then writes to blocks M holds and P does not.
-			const { invitation: earlier } = await A.createCadreInvitation({ grantsOwner: false });
+			const { invitation: earlier } = await A.createCadreInvitation();
 			await waitUntil(async () => (await member.node.listCadreInvitations()).some((status) => status.invite.key === earlier.invite.key), {
 				timeoutMs: OP_MS, intervalMs: 500, description: 'M holds the earlier invitation\'s row',
 			});
@@ -101,7 +101,7 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			});
 
 			// ── A mints; the row stays on A ─────────────────────────────────────────
-			const { invitation } = await A.createCadreInvitation({ grantsOwner: true });
+			const { invitation } = await A.createCadreInvitation();
 			const key = invitation.invite.key;
 			expect(invitation.members[0]).toBe(A.getMultiaddrs()[0]);
 			expect(invitation.members.some((addr) => addr.endsWith(`/p2p/${member.peerId}`))).toBe(true);
@@ -126,13 +126,11 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			console.log('[row-unreplicated] P was admitted on pass %d, %d ms after it first asked', passes, Date.now() - redeemStartedAt);
 			expect(passes).toBe(1);
 			expect(joined.peerId).toBe(member.peerId);
-			expect(joined.grantsOwner).toBe(true);
 			expect(P.getTrustedOwnerStore()!.has(aOwnerKey)).toBe(true);
 
 			// M seated the bundle's row and wrote P's rows on it.
 			expect(await member.node.getControlDatabase()!.queryCadreInvite(key)).toEqual(invitation.invite);
 			expect(await member.node.isAuthorizedMember(pPeerId)).toBe(true);
-			expect((await member.node.getControlDatabase()!.getOwnerKeys()).has(ownerKeySeatedByInvitation(pPeerId))).toBe(true);
 			// P holds M's control tables: the push before the seat landed, and the rows that make M
 			// a member in P's eyes (A's vouch, judged against the key P pinned) read there.
 			// The row is waited for, not read once: P's storage holds the seat before the

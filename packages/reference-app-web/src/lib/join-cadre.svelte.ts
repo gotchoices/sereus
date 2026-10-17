@@ -169,7 +169,7 @@ async function incompleteMoveFlow(stall: MoveStall): Promise<JoinFlow> {
 
 /** The last step. Standing is the running node's, which a dissolve has restarted. */
 function doneFlow(): JoinFlow {
-	return { step: 'done', grantsOwner: ownerKeyWired(), moved: movedSoFar };
+	return { step: 'done', asOwner: ownerKeyWired(), moved: movedSoFar };
 }
 
 /** The steps during which a join, a move or a removal runs; a button pressed twice must not start another. */

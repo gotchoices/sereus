@@ -20,7 +20,7 @@ import type {
 	StrandCommitHeld,
 	StrandInstance,
 } from '@serfab/cadre-core';
-import type { EdgeNodeOptions, EdgeNodeStatus, JoinCadreResult, SavedStart } from '@serfab/cadre-core/edge-node';
+import type { EdgeNodeOptions, EdgeNodeStatus, JoinCadreResult, OwnerGenesisResult, SavedStart } from '@serfab/cadre-core/edge-node';
 import { edge, dialPeer as dialPeerImpl } from './cadre-phone';
 import { createChatStrand } from './chat-strand';
 
@@ -47,6 +47,7 @@ export class CadreViewModel extends Observable {
 	private _status: CadreStatus = 'idle';
 	private _peerId = '';
 	private _error = '';
+	private _owner: OwnerGenesisResult | null = null;
 	private _strands = new Map<string, StrandInstance>();
 	private _savedStartOptions: EdgeNodeOptions | null = null;
 	private _savedStartFromLaunch = false;
@@ -71,6 +72,15 @@ export class CadreViewModel extends Observable {
 
 	get error(): string {
 		return this._error;
+	}
+
+	/**
+	 * How the running node's owner step settled (`EdgeNodeStatus.owner`): `enrolled` when this
+	 * phone signs as an owner of its party, `member` when the party lists no key it holds. Null
+	 * while no node runs.
+	 */
+	get owner(): OwnerGenesisResult | null {
+		return this._owner;
 	}
 
 	/**
@@ -161,6 +171,12 @@ export class CadreViewModel extends Observable {
 		this.notifyPropertyChange('error', error);
 	}
 
+	private setOwner(owner: OwnerGenesisResult | null): void {
+		if (owner === this._owner) return;
+		this._owner = owner;
+		this.notifyPropertyChange('owner', owner);
+	}
+
 	private setSavedStartOptions(options: EdgeNodeOptions | null, fromLaunch = false): void {
 		this._savedStartOptions = options;
 		this._savedStartFromLaunch = fromLaunch;
@@ -201,7 +217,7 @@ export class CadreViewModel extends Observable {
 	private applyStatus(status: EdgeNodeStatus): void {
 		switch (status.state) {
 			case 'running':
-				this.showRunning(status.node);
+				this.showRunning(status.node, status.owner);
 				return;
 			case 'starting':
 			case 'joining':
@@ -220,9 +236,10 @@ export class CadreViewModel extends Observable {
 		}
 	}
 
-	private showRunning(node: CadreNode): void {
+	private showRunning(node: CadreNode, owner: OwnerGenesisResult): void {
 		this.setPeerId(node.peerId?.toString() ?? '');
 		this.setStrands(new Map(node.getStrands()));
+		this.setOwner(owner);
 		this.setError('');
 		this.setStatus('connected');
 		// After the status, so a listener reading `connected` sees the node up.
@@ -232,6 +249,7 @@ export class CadreViewModel extends Observable {
 	private showStopped(status: CadreStatus, error: string): void {
 		this.setPeerId('');
 		this.setStrands(new Map());
+		this.setOwner(null);
 		this.setError(error);
 		this.setStatus(status);
 	}

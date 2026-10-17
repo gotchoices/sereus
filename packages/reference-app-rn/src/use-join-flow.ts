@@ -148,7 +148,7 @@ function flowAfterRefusedDissolve(err: unknown, moved: number): JoinFlow {
 
 /** The last step. Standing is read off the kit, which reports an owner key only once it is wired. */
 function doneFlow(moved: number): JoinFlow {
-  return { step: 'done', grantsOwner: getOwnerPublicKey() !== null, moved };
+  return { step: 'done', asOwner: getOwnerPublicKey() !== null, moved };
 }
 
 /** The steps during which the kit is joining, moving or removing; a button tapped twice must not queue another. */

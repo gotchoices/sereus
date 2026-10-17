@@ -8,9 +8,10 @@ appId: ${MAESTRO_APP_ID}
 #
 # Env vars (injected by scripts/run-e2e.mjs):
 #   CADRE_INVITATION         — drone's cadre invitation (pins the drone owner key
-#                              and admits the phone at the drone as an owner, so
-#                              the phone trusts what it then syncs and can found
-#                              a strand)
+#                              and admits the phone at the drone as a machine, so
+#                              the phone trusts what it then syncs; founding a
+#                              strand needs an owner, which the owner-grant join
+#                              of `reference-app-rn-owner-grants` makes it)
 #   STRAND_ID                — drone's pre-created strand
 #   SIDECAR_URL              — drone HTTP base URL
 #   MAESTRO_APP_ID           — phone app bundle id
@@ -51,8 +52,8 @@ appId: ${MAESTRO_APP_ID}
 - tapOn:
     id: "btn-join-cadre"
 # The join starts a node in the drone's party (the build's default relay and
-# encryption), dials the drone, waits for its answer and wires the phone's owner
-# key. No cadre of the app's own exists, so nothing moves and nothing is removed.
+# encryption), dials the drone and waits for its answer. No cadre of the app's
+# own exists, so nothing moves and nothing is removed.
 # The connected sections come back above the join section when it is done, which
 # can push the done line below the fold.
 - scrollUntilVisible:

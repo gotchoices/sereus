@@ -143,7 +143,7 @@ async function requireOwner(node: RentingNode): Promise<void> {
 
 async function rentByInvitation(node: RentingNode, client: ProviderClient, options: RentNodeOptions): Promise<RentNodeResult> {
 	report(options, 'inviting');
-	const { invitation, encoded } = await node.createCadreInvitation({ grantsOwner: false, uses: 1, expiresInMs: RENTAL_INVITATION_TTL_MS });
+	const { invitation, encoded } = await node.createCadreInvitation({ uses: 1, expiresInMs: RENTAL_INVITATION_TTL_MS });
 	report(options, 'creating');
 	let container;
 	try {

@@ -96,12 +96,6 @@ export async function redeemStartupInvitation(node: CadreNode, invitation: Cadre
   try {
     const joined = await node.redeemCadreInvitation(invitation);
     console.log(`✓ Invitation accepted by member ${joined.peerId ?? '(unnamed address)'}: this node is a member of party ${invitation.partyId}`);
-    // NOTE: an owner-granting invitation seats the node's identity key as an owner, and cadre-cli
-    // signs owner writes only with its owner key file, so that grant goes unused here until owner
-    // grants seat a key of their own (`owner-grant-separate-from-machine-invitation`).
-    if (joined.grantsOwner) {
-      console.warn('⚠ The invitation also made this node\'s identity key an owner key; cadre-cli signs owner writes only with its owner key file (`cadre owner-key`), so this node makes none with it.');
-    }
     return { state: 'accepted', ...(joined.peerId ? { memberPeerId: joined.peerId } : {}) };
   } catch (err) {
     const failure = describeRedemptionFailure(err);

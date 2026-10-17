@@ -24,7 +24,6 @@ export function testInvitationBundle(partyId: string = TEST_INVITATION_PARTY): R
     invite: {
       key: Buffer.alloc(32, 4).toString('base64url'),
       peerId: null,
-      grantsOwner: false,
       expiresAt: null,
       totalUses: 1,
       stampId: 'stamp-1',

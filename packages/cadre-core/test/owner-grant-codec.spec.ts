@@ -30,7 +30,7 @@ describe('owner grant codec', () => {
   const encodedGrant = encodeOwnerGrant(bundle);
 
   const inviteKey = freshKeyPair();
-  const signedInvite = { key: inviteKey.publicKey, peerId: null, grantsOwner: false, expiresAt: null, totalUses: 1, stampId: freshStamp() };
+  const signedInvite = { key: inviteKey.publicKey, peerId: null, expiresAt: null, totalUses: 1, stampId: freshStamp() };
   const invitation: CadreInvitation = {
     v: 1,
     partyId,

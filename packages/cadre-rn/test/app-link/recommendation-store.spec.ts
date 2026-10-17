@@ -15,8 +15,8 @@ function memorySlot(initial?: string): DurableSlot {
 }
 
 const PARTY = 'party-a';
-const CHAT = { scheme: 'sereus-chat', appName: 'Sereus P2P Chat', partyId: PARTY, grantsOwner: true };
-const NOTES = { scheme: 'sereus-notes', appName: 'Sereus Notes', partyId: PARTY, grantsOwner: false };
+const CHAT = { scheme: 'sereus-chat', appName: 'Sereus P2P Chat', partyId: PARTY };
+const NOTES = { scheme: 'sereus-notes', appName: 'Sereus Notes', partyId: PARTY };
 
 /** The owner app's security contract: a pre-approval admits one request, from that app, into that party, within the hour. */
 describe('AppRecommendationStore', () => {
@@ -42,13 +42,14 @@ describe('AppRecommendationStore', () => {
 
 	it('replaces the pre-approval when the same app is approved again, and keeps another app\'s', async () => {
 		let now = 1_000;
-		const store = new AppRecommendationStore(memorySlot(), () => now);
-		await store.approve(CHAT);
+		// A stored entry with a field the shape does not have reads without it.
+		const store = new AppRecommendationStore(memorySlot(JSON.stringify([{ ...CHAT, grantsOwner: true, approvedAtMs: 1_000 }])), () => now);
+		expect(await store.live(PARTY)).toEqual([{ ...CHAT, approvedAtMs: 1_000 }]);
 		await store.approve(NOTES);
 		now += 10;
-		await store.approve({ ...CHAT, grantsOwner: false });
+		await store.approve(CHAT);
 		expect(await store.live(PARTY)).toEqual([
-			{ ...CHAT, grantsOwner: false, approvedAtMs: 1_010 },
+			{ ...CHAT, approvedAtMs: 1_010 },
 			{ ...NOTES, approvedAtMs: 1_000 },
 		]);
 
@@ -62,7 +63,7 @@ describe('AppRecommendationStore', () => {
 	it('reads a malformed record as none, and the next approval replaces it', async () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 		try {
-			const malformed = JSON.stringify([{ ...CHAT, approvedAtMs: 1_000 }, { ...NOTES, grantsOwner: 'yes', approvedAtMs: 1_000 }]);
+			const malformed = JSON.stringify([{ ...CHAT, approvedAtMs: 1_000 }, { ...NOTES, approvedAtMs: 'yesterday' }]);
 			const store = new AppRecommendationStore(memorySlot(malformed), () => 1_000);
 			expect(await store.take(CHAT.scheme, PARTY)).toBeNull();
 			expect(warn).toHaveBeenCalledTimes(1);

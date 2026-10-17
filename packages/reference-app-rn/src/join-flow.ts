@@ -10,7 +10,8 @@ import type { PhoneJoinProgress } from '@serfab/cadre-rn/phone-node';
 export type JoinFlow =
 	/** Redeeming the invitation; `wait` while no member of the cadre is ready, until `retryAtMs`. Cancellable. */
 	| { step: 'joining'; wait?: 'no-member-answered' | 'member-not-ready'; retryAtMs?: number }
-	| { step: 'admitted'; grantsOwner: boolean }
+	/** `asOwner`: the app joined with an owner grant, so it is being set up as an owner. */
+	| { step: 'admitted'; asOwner: boolean }
 	| { step: 'moving-strands' }
 	| { step: 'removing-old-cadre' }
 	/** Some of the old cadre's strands are not in the joined one yet; the old cadre cannot be removed until they are. */
@@ -21,7 +22,7 @@ export type JoinFlow =
 	| { step: 'confirm-discard'; strandIds: string[]; pendingJoinIds: string[] }
 	/** The old cadre is on this phone and nothing is removing it; `error` when the last removal failed. */
 	| { step: 'old-cadre-remains'; error?: string }
-	| { step: 'done'; grantsOwner: boolean; moved: number };
+	| { step: 'done'; asOwner: boolean; moved: number };
 
 export interface JoinFlowText {
 	line: string;
@@ -47,7 +48,7 @@ export function flowForProgress(progress: PhoneJoinProgress): JoinFlow {
 		case 'waiting':
 			return { step: 'joining', wait: progress.reason, retryAtMs: progress.retryAtMs };
 		case 'admitted':
-			return { step: 'admitted', grantsOwner: progress.grantsOwner };
+			return { step: 'admitted', asOwner: progress.asOwner };
 		case 'moving-strands':
 			return { step: 'moving-strands' };
 	}
@@ -64,7 +65,7 @@ export function joinFlowText(flow: JoinFlow): JoinFlowText {
 		case 'joining':
 			return { line: joiningLine(flow) };
 		case 'admitted':
-			return { line: flow.grantsOwner ? 'Admitted. Setting this app up as an owner…' : 'Admitted as a member. Finishing the setup…' };
+			return { line: flow.asOwner ? 'Admitted. Setting this app up as an owner…' : 'Admitted as a member. Finishing the setup…' };
 		case 'moving-strands':
 			return { line: 'Moving this app\'s chats into your cadre…' };
 		case 'removing-old-cadre':
@@ -88,7 +89,7 @@ export function joinFlowText(flow: JoinFlow): JoinFlowText {
 				...(flow.error ? { detail: `Removing it failed: ${flow.error}` } : {}),
 			};
 		case 'done':
-			return { line: doneLine(flow.grantsOwner, flow.moved) };
+			return { line: doneLine(flow.asOwner, flow.moved) };
 	}
 }
 
@@ -118,8 +119,8 @@ function discardQuestion(count: number): string {
 }
 
 /** The count is left out when nothing moved: a join with nothing to move, or a removal finished after a relaunch. */
-function doneLine(grantsOwner: boolean, moved: number): string {
-	const joined = `This app is now part of your cadre, as ${grantsOwner ? 'an owner' : 'a member'}.`;
+function doneLine(asOwner: boolean, moved: number): string {
+	const joined = `This app is now part of your cadre, as ${asOwner ? 'an owner' : 'a member'}.`;
 	return moved > 0 ? `${joined} ${chats(moved)} moved.` : joined;
 }
 

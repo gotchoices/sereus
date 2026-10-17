@@ -40,7 +40,6 @@ describe('cadre invitation addresses', () => {
 		const signed = {
 			key: freshKeyPair().publicKey,
 			peerId: await newPeerId(),
-			grantsOwner: true,
 			expiresAt: '2026-10-12T16:00:00',
 			totalUses: 1,
 			stampId: generateStampId(issuer),

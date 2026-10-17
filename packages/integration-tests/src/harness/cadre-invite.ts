@@ -10,7 +10,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import {
-	CadreNode, ed25519PublicKeyB64FromPeerId,
+	CadreNode,
 	type CadreInvitation, type CadreJoinProgress, type RawStorageProvider,
 	type RedeemCadreInvitationOptions, type RedeemCadreInvitationResult,
 } from '@serfab/cadre-core';
@@ -70,18 +70,6 @@ export async function startPinningMember(partyId: string, ownerKey: string, opti
 		await node.enableSeedListener();
 	}
 	return { node, peerId: peerIdFromPrivateKey(key).toString(), key };
-}
-
-/**
- * The owner key an owner-granting invitation seats for the machine `peerId`: the key behind its
- * peer id (the redemption's `peerKey`), which `wireOwnKeyIfOwner()` wires with no signer given.
- * The one place a test owner key is a machine identity, and cadre-core's rule rather than the
- * harness's; `owner-grant-separate-from-machine-invitation` replaces it with a generated key.
- */
-export function ownerKeySeatedByInvitation(peerId: string): string {
-	const key = ed25519PublicKeyB64FromPeerId(peerId);
-	if (!key) throw new Error(`${peerId} is not an Ed25519 peer id`);
-	return key;
 }
 
 /** The owner-online path: `owner` vouches the member, delivers the seed, and dials it from the retained address. */

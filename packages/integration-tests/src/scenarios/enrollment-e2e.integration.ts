@@ -214,7 +214,7 @@ describe('E2E Enrollment', () => {
 		const { owner, ownerKey } = await startOwner(partyId);
 		let device: CadreNode | undefined;
 		try {
-			const { invitation, encoded } = await owner.createCadreInvitation({ grantsOwner: false });
+			const { invitation, encoded } = await owner.createCadreInvitation();
 			expect(invitation.ownerKeys).toEqual([ownerKey]);
 			expect(invitation.members).toEqual(owner.getMultiaddrs());
 			expect(typeof encoded).toBe('string');
@@ -223,7 +223,8 @@ describe('E2E Enrollment', () => {
 			const devicePeerId = device.peerId!.toString();
 			const result = await device.redeemCadreInvitation(invitation);
 			expect(result.peerId).toBe(owner.peerId!.toString());
-			expect(result.grantsOwner).toBe(false);
+			// The invitation admits a machine and nothing else.
+			expect(await device.isOwner()).toBe(false);
 
 			// The owner wrote the device's row itself (no owner signature on it: the
 			// consent chain through the invitation), and judges it a member.
@@ -363,7 +364,7 @@ describe('E2E Enrollment', () => {
 			const { owner } = await startOwner(partyId);
 			let device: CadreNode | undefined;
 			try {
-				const { invitation } = await owner.createCadreInvitation({ grantsOwner: false, expiresInMs: -1000 });
+				const { invitation } = await owner.createCadreInvitation({ expiresInMs: -1000 });
 				expect(new Date(`${invitation.invite.expiresAt}Z`).getTime()).toBeLessThan(Date.now());
 
 				device = await startDevice(partyId);

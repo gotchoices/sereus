@@ -33,15 +33,16 @@ import { mintContactJoiner } from './formation-consent-helper.js';
 import type { TestContactJoiner } from './formation-consent-helper.js';
 
 /**
- * The cadre invitation tables (`CadreInvite`, `CadreInviteUsage`) and the consent branches
- * they authorize on `CadrePeer` and `OwnerKey`, driven through `ControlDatabase` against a
- * real control database — so every constraint name below is the engine's own.
+ * The cadre invitation tables (`CadreInvite`, `CadreInviteUsage`) and the consent branch
+ * they authorize on `CadrePeer`, driven through `ControlDatabase` against a real control
+ * database — so every constraint name below is the engine's own.
  *
  * An invitation is an ed25519 keypair whose public half is the row key: the holder redeems
  * by signing with the private half, the admitted device signs its consent with its own key,
  * and a member machine writes both into a usage row that then seats the device's `CadrePeer`
- * row (and `OwnerKey` row, when granted) with NO owner signature. Withdrawal is a tombstone
- * over a row that stays, because the admitted rows prove their membership through it.
+ * row with NO owner signature, and no `OwnerKey` row: a machine invitation grants no
+ * ownership. Withdrawal is a tombstone over a row that stays, because the admitted rows prove
+ * their membership through it.
  *
  * `expectConstraintFailure` names exactly one constraint per case; where two constraints
  * refuse at once they carry the same name (`Authorized`), which the case says.
@@ -69,7 +70,6 @@ function mintInviteRow(partyId: string, issuer: KeyPair, invite: KeyPair, overri
   const signed = {
     key: invite.publicKey,
     peerId: null,
-    grantsOwner: false,
     expiresAt: null,
     totalUses: null,
     stampId: freshStamp(),
@@ -112,12 +112,11 @@ describe('cadre invitations: schema and ControlDatabase', () => {
   // ── Fixtures ──────────────────────────────────────────────────────────────
 
   /** Issue an invitation the production way: a fresh keypair, the founder signing the row. */
-  async function issue(opts: { peerId?: string | null; grantsOwner?: boolean; expiresAtMs?: number; totalUses?: number } = {}): Promise<{ invite: KeyPair; row: CadreInviteRow }> {
+  async function issue(opts: { peerId?: string | null; expiresAtMs?: number; totalUses?: number } = {}): Promise<{ invite: KeyPair; row: CadreInviteRow }> {
     const invite = freshKeyPair();
     const row = await db.insertCadreInvite({
       key: invite.publicKey,
       peerId: opts.peerId ?? null,
-      grantsOwner: opts.grantsOwner ?? false,
       expiresAtMs: opts.expiresAtMs,
       totalUses: opts.totalUses,
     }, founder.publicKey, signFounder);
@@ -152,35 +151,38 @@ describe('cadre invitations: schema and ControlDatabase', () => {
    * The bare `CadreInviteUsage` insert `redeemCadreInvite` issues, with every writer-derived
    * field under the case's control, and valid signatures over whatever it carries.
    */
-  async function rawInsertUsage(invite: KeyPair, device: TestContactJoiner, fields: { peerStampId: string; ownerStampId?: string | null; usageStampId?: string }): Promise<string> {
+  async function rawInsertUsage(invite: KeyPair, device: TestContactJoiner, fields: { peerStampId: string; usageStampId?: string }): Promise<string> {
     const usageStampId = fields.usageStampId ?? generateStampId(device.partyId);
     const { inviteSig, peerSig } = redemptionSignatures(node.partyId, invite, device, usageStampId);
     await rawDb.exec(
-      `insert into CadreControl.CadreInviteUsage (UsageStampId, InviteKey, PeerId, PeerKey, PeerStampId, OwnerStampId, InviteSig, PeerSig)
+      `insert into CadreControl.CadreInviteUsage (UsageStampId, InviteKey, PeerId, PeerKey, PeerStampId, InviteSig, PeerSig)
          with context Now = ?
-         values (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [await canonicalDatetime(rawDb, Date.now()), usageStampId, invite.publicKey, device.partyId, device.peerKey, fields.peerStampId, fields.ownerStampId ?? null, inviteSig, peerSig],
+         values (?, ?, ?, ?, ?, ?, ?)`,
+      [await canonicalDatetime(rawDb, Date.now()), usageStampId, invite.publicKey, device.partyId, device.peerKey, fields.peerStampId, inviteSig, peerSig],
     );
     return usageStampId;
   }
 
-  /** The bare consent-branch `OwnerKey` insert `redeemCadreInvite` issues for an owner-granting invitation. */
-  function rawInsertOwnerByConsent(device: TestContactJoiner, ownerStampId: string, usageStampId: string, issuerKey: string, label: string | null = null): Promise<void> {
+  /**
+   * An `OwnerKey` insert by consent naming a `CadreInviteUsage` row: the shape an owner-granting
+   * invitation once seated, which nothing in the schema authorizes now.
+   */
+  function rawInsertOwnerByConsent(device: TestContactJoiner, ownerStampId: string, usageStampId: string, issuerKey: string): Promise<void> {
     return rawDb.exec(
       `insert into CadreControl.OwnerKey (Key, Label, StampId, VouchOwner, VouchSig, VouchUsage)
          with context OwnerKey = null, Signature = null
-         values (?, ?, ?, ?, null, ?)`,
-      [device.peerKey, label, ownerStampId, issuerKey, usageStampId],
+         values (?, null, ?, ?, null, ?)`,
+      [device.peerKey, ownerStampId, issuerKey, usageStampId],
     );
   }
 
   /** The bare `CadreInvite` insert, so a case can seat a row inside a larger transaction. */
   function rawInsertInvite(row: CadreInviteRow): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.CadreInvite (Key, PeerId, GrantsOwner, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId)
+      `insert into CadreControl.CadreInvite (Key, PeerId, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [row.issuerKey, row.issuerSig, row.key, row.peerId, row.grantsOwner ? 1 : 0, row.expiresAt, row.totalUses, row.issuerKey, row.issuerSig, row.stampId],
+         values (?, ?, ?, ?, ?, ?, ?)`,
+      [row.issuerKey, row.issuerSig, row.key, row.peerId, row.expiresAt, row.totalUses, row.issuerKey, row.issuerSig, row.stampId],
     );
   }
 
@@ -229,7 +231,8 @@ describe('cadre invitations: schema and ControlDatabase', () => {
 
     const first = await redeem(invite, device);
     expect(first.alreadyMember).toBe(false);
-    expect(first.ownerStampId).toBeNull();
+    // A machine invitation seats no owner row: the device's identity key is never an owner key.
+    expect(await ownerRow(device.peerKey)).toBeUndefined();
 
     const peer = await peerRow(device.partyId);
     expect(peer?.PublicKey).toBe(device.peerKey);
@@ -241,66 +244,14 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     expect(usages).toHaveLength(1);
     expect(usages[0].usageStampId).toBe(peer?.VouchUsage);
     expect(usages[0].peerStampId).toBe(first.peerStampId);
-    expect(usages[0].ownerStampId).toBeNull();
     expect((await db.queryCadrePeers()).find(member => member.peerId === device.partyId)?.vouchUsage).toBe(peer?.VouchUsage);
 
     // The reader walks the chain row -> usage -> invitation -> anchored issuer.
     expect((await node.listAuthorizedMembers()).map(member => member.peerId)).toContain(device.partyId);
 
     const retry = await redeem(invite, device);
-    expect(retry).toEqual({ alreadyMember: true, peerStampId: first.peerStampId, ownerStampId: null });
+    expect(retry).toEqual({ alreadyMember: true, peerStampId: first.peerStampId });
     expect(await db.countCadreInviteUsage(invite.publicKey)).toBe(1);
-  });
-
-  it('redeems: an owner-granting invitation also seats the OwnerKey row by consent', async () => {
-    const { invite } = await issue({ grantsOwner: true });
-    const device = await mintContactJoiner();
-
-    const result = await redeem(invite, device);
-    expect(result.alreadyMember).toBe(false);
-    const owner = await ownerRow(device.peerKey);
-    expect(owner?.StampId).toBe(result.ownerStampId);
-    expect(owner?.VouchOwner).toBe(founder.publicKey);
-    expect(owner?.VouchSig).toBeNull();
-    expect(owner?.VouchUsage).toBe((await peerRow(device.partyId))?.VouchUsage);
-    expect(await db.getOwnerKeys()).toContain(device.peerKey);
-
-    const retry = await redeem(invite, device);
-    expect(retry).toEqual({ alreadyMember: true, peerStampId: result.peerStampId, ownerStampId: result.ownerStampId });
-  });
-
-  it('redeems: an owner-granting invitation completes an already-admitted device with its OwnerKey row only', async () => {
-    const device = await mintContactJoiner();
-    const peerStampId = await admit(device);
-    const { invite } = await issue({ grantsOwner: true });
-
-    const result = await redeem(invite, device);
-    expect(result.alreadyMember).toBe(false);
-    expect(result.peerStampId).toBe(peerStampId);
-    expect((await ownerRow(device.peerKey))?.StampId).toBe(result.ownerStampId);
-    // The usage names the EXISTING peer incarnation; the peer row itself was not rewritten.
-    expect((await peerRow(device.partyId))?.StampId).toBe(peerStampId);
-    const usage = (await db.queryCadreInviteUsages()).find(row => row.inviteKey === invite.publicKey);
-    expect(usage?.peerStampId).toBe(peerStampId);
-    expect(usage?.ownerStampId).toBe(result.ownerStampId);
-  });
-
-  it('refuses: completing an already-admitted device under a key other than its peer row\'s (PeerExists)', async () => {
-    // With no peer insert in the transaction nothing else pins PeerKey, so a holder redeeming
-    // an owner-granting invitation for an admitted peer id must still present THAT device's key:
-    // otherwise an OwnerKey row would be seated for a key the targeted device never held.
-    const device = await mintContactJoiner();
-    const other = await mintContactJoiner();
-    await admit(device);
-    const { invite } = await issue({ grantsOwner: true, peerId: device.partyId });
-    const usageStampId = generateStampId(device.partyId);
-    const { inviteSig, peerSig } = redemptionSignatures(node.partyId, invite, other, usageStampId);
-
-    await expectConstraintFailure(db.redeemCadreInvite({
-      inviteKey: invite.publicKey, peerId: device.partyId, peerKey: other.peerKey, usageStampId, inviteSig, peerSig,
-    }), 'PeerExists');
-    expect(await ownerRow(other.peerKey)).toBeUndefined();
-    expect(await db.countCadreInviteUsage(invite.publicKey)).toBe(0);
   });
 
   it('re-vouch: an owner re-touching an invitation-admitted row moves it onto the signature and clears VouchUsage', async () => {
@@ -416,18 +367,17 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     expect(await db.countCadreInviteUsage(invite.publicKey)).toBe(0);
   });
 
-  it('refuses: an OwnerKey row seated under an invitation that does not grant ownership (OwnerKey.Authorized)', async () => {
+  it('refuses: an OwnerKey row seated by consent through a CadreInviteUsage row (OwnerKey.Authorized): a machine invitation seats no owner', async () => {
     const device = await mintContactJoiner();
     const peerStampId = await admit(device);
-    const { invite, row } = await issue({ grantsOwner: false });
-    const ownerStampId = freshStamp();
+    const { invite, row } = await issue();
 
-    // The usage row itself is valid (its invitation is live and OwnerExists sees the owner
-    // row in the transaction); only the OwnerKey consent branch refuses, on GrantsOwner.
+    // The usage row itself is valid (its invitation is live and it names the admitted peer row);
+    // no branch of OwnerKey.Authorized reads CadreInviteUsage, so the owner row is refused.
     await expectConstraintFailure(
       inTransaction(async () => {
-        const usageStampId = await rawInsertUsage(invite, device, { peerStampId, ownerStampId });
-        await rawInsertOwnerByConsent(device, ownerStampId, usageStampId, row.issuerKey);
+        const usageStampId = await rawInsertUsage(invite, device, { peerStampId });
+        await rawInsertOwnerByConsent(device, freshStamp(), usageStampId, row.issuerKey);
       }),
       'Authorized',
     );
@@ -435,42 +385,22 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     expect(await db.countCadreInviteUsage(invite.publicKey)).toBe(0);
   });
 
-  it('refuses: an OwnerKey row seated by consent with a label (OwnerKey.Authorized); the same row unlabelled seats', async () => {
-    const device = await mintContactJoiner();
-    const peerStampId = await admit(device);
-    const { invite, row } = await issue({ grantsOwner: true });
-    const ownerStampId = freshStamp();
-    const seat = (label: string | null) => inTransaction(async () => {
-      const usageStampId = await rawInsertUsage(invite, device, { peerStampId, ownerStampId });
-      await rawInsertOwnerByConsent(device, ownerStampId, usageStampId, row.issuerKey, label);
-    });
-
-    // Nothing signed on this branch names a label, so the redeemer could otherwise pick one.
-    await expectConstraintFailure(seat('phone'), 'Authorized');
-    expect(await ownerRow(device.peerKey)).toBeUndefined();
-    await seat(null);
-    expect((await ownerRow(device.peerKey))?.StampId).toBe(ownerStampId);
-  });
-
-  it('refuses: an invitation seated and redeemed in one transaction (Authorized, from the committed reads)', async () => {
+  it('refuses: an invitation seated and redeemed in one transaction (Authorized, from the committed read)', async () => {
     const device = await mintContactJoiner();
     const peerStampId = await admit(device);
     const holder = freshKeyPair();
-    const signedRow = mintInviteRow(node.partyId, founder, holder, { grantsOwner: true });
-    const ownerStampId = freshStamp();
+    const signedRow = mintInviteRow(node.partyId, founder, holder);
 
-    // Both the usage row and the owner row read committed.CadreInvite, and both refusals carry
-    // the name Authorized; the engine reports one of them.
+    // The usage row reads committed.CadreInvite, which does not hold a row seated in its own transaction.
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawInsertInvite(signedRow);
-        const usageStampId = await rawInsertUsage(holder, device, { peerStampId, ownerStampId });
-        await rawInsertOwnerByConsent(device, ownerStampId, usageStampId, signedRow.issuerKey);
+        await rawInsertUsage(holder, device, { peerStampId });
       }),
       'Authorized',
     );
     expect(await db.queryCadreInvite(holder.publicKey)).toBeNull();
-    expect(await ownerRow(device.peerKey)).toBeUndefined();
+    expect(await db.countCadreInviteUsage(holder.publicKey)).toBe(0);
   });
 
   // ── Seating a row from its bundle ─────────────────────────────────────────
@@ -525,7 +455,7 @@ describe('cadre invitations: liveness (hasLiveCadreInvite)', () => {
 
   async function issueBy(issuer: KeyPair, opts: { expiresAtMs?: number; totalUses?: number } = {}): Promise<KeyPair> {
     const invite = freshKeyPair();
-    await db.insertCadreInvite({ key: invite.publicKey, grantsOwner: false, ...opts }, issuer.publicKey, message => signAs(issuer, message));
+    await db.insertCadreInvite({ key: invite.publicKey, ...opts }, issuer.publicKey, message => signAs(issuer, message));
     return invite;
   }
 
@@ -585,7 +515,7 @@ describe('verifyInvitationAdmission (no database)', () => {
   async function chainFor(device: TestContactJoiner, inviteOverrides: Partial<CadreInviteRow> = {}): Promise<Chain> {
     const issuer = freshKeyPair();
     const inviteKeys = freshKeyPair();
-    const signed = { key: inviteKeys.publicKey, peerId: null, grantsOwner: false, expiresAt: null, totalUses: null, stampId: freshStamp(), ...inviteOverrides };
+    const signed = { key: inviteKeys.publicKey, peerId: null, expiresAt: null, totalUses: null, stampId: freshStamp(), ...inviteOverrides };
     const invite: CadreInviteRow = { ...signed, issuerKey: issuer.publicKey, issuerSig: signB64(issuer, cadreInviteAddDigest(PARTY_ID, signed)) };
     const usageStampId = freshStamp();
     const peerStampId = freshStamp();
@@ -595,7 +525,6 @@ describe('verifyInvitationAdmission (no database)', () => {
       peerId: device.partyId,
       peerKey: device.peerKey,
       peerStampId,
-      ownerStampId: null,
       inviteSig: signB64(inviteKeys, cadreInviteRedeemDigest(PARTY_ID, invite.key, usageStampId, device.peerKey)),
       peerSig: signB64(asSigner(device), cadreInviteConsentDigest(PARTY_ID, invite.key, usageStampId, device.peerKey)),
     };

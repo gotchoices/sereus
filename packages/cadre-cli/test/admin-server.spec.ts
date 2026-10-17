@@ -72,7 +72,7 @@ class MockNode {
       partyId: this.partyId,
       invitePrivateKey: 'invite-private-key',
       invite: {
-        key: 'invite-key', peerId: options.peerId ?? null, grantsOwner: options.grantsOwner,
+        key: 'invite-key', peerId: options.peerId ?? null,
         expiresAt: '2030-01-01T00:00:00', totalUses: options.uses ?? 1, stampId: 'stamp', issuerKey: 'owner', issuerSig: 'sig',
       },
       ownerKeys: ['owner'],
@@ -224,27 +224,27 @@ describe('AdminServer', () => {
       const res = await fetch(`${base}/admin/invites`, {
         method: 'POST',
         headers: auth({ 'content-type': 'application/json' }),
-        body: JSON.stringify({ peerId: '12D3KooWDevice', grantsOwner: true, expiresInMs: 60000, uses: 2 }),
+        body: JSON.stringify({ peerId: '12D3KooWDevice', expiresInMs: 60000, uses: 2 }),
       });
       const body = await res.json();
       expect(body.ok).toBe(true);
-      expect(body.data.invitation.invite).toMatchObject({ peerId: '12D3KooWDevice', grantsOwner: true, totalUses: 2 });
+      expect(body.data.invitation.invite).toMatchObject({ peerId: '12D3KooWDevice', totalUses: 2 });
       expect(body.data.encoded).toMatch(/^encoded-/);
       const call = node.calls.find((c) => c.method === 'createCadreInvitation');
-      expect(call?.args).toEqual([{ peerId: '12D3KooWDevice', grantsOwner: true, expiresInMs: 60000, uses: 2 }]);
+      expect(call?.args).toEqual([{ peerId: '12D3KooWDevice', expiresInMs: 60000, uses: 2 }]);
     });
 
-    it('POST /admin/invites with an empty body mints an untargeted, member-only invitation', async () => {
+    it('POST /admin/invites with an empty body mints an untargeted invitation with the defaults', async () => {
       const res = await fetch(`${base}/admin/invites`, { method: 'POST', headers: auth() });
       const body = await res.json();
       expect(body.ok).toBe(true);
       const call = node.calls.find((c) => c.method === 'createCadreInvitation');
-      expect(call?.args).toEqual([{ grantsOwner: false }]);
+      expect(call?.args).toEqual([{}]);
     });
 
     it.each([
       ['a non-string peerId', { peerId: 7 }],
-      ['a non-boolean grantsOwner', { grantsOwner: 'yes' }],
+      ['a grantsOwner field, even false (a machine invitation grants no ownership)', { grantsOwner: false }],
       ['a non-numeric expiresInMs', { expiresInMs: '1h' }],
       ['a zero uses', { uses: 0 }],
     ])('POST /admin/invites rejects %s (400)', async (_case, payload) => {
@@ -260,7 +260,7 @@ describe('AdminServer', () => {
 
     it('GET /admin/invites lists the invitations the node holds', async () => {
       node.invitations = [{
-        invite: { key: 'invite-key', peerId: null, grantsOwner: false, expiresAt: '2030-01-01T00:00:00', totalUses: 1, stampId: 's', issuerKey: 'o', issuerSig: 'g' },
+        invite: { key: 'invite-key', peerId: null, expiresAt: '2030-01-01T00:00:00', totalUses: 1, stampId: 's', issuerKey: 'o', issuerSig: 'g' },
         live: true, withdrawn: false, usesRecorded: 0,
       }];
       const res = await fetch(`${base}/admin/invites`, { headers: auth() });

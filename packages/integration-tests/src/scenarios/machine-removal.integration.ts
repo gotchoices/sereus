@@ -9,9 +9,11 @@
  * - **M**, an always-on member pinning A's key and nothing else, admitted the owner-online way
  *   (`addDrone` plus seed delivery). Nothing on M is driven by the scenario: it follows the
  *   removal from the rows and tombstones that replicate to it, at its next membership refresh.
- * - **B**, a phone-shaped device (no listen address) that joins by redeeming an owner-granting
- *   invitation at A, so it holds a control connection to A, wires the owner key the invitation
- *   seated and vouches C. The machine removed, and the owner key removed after it.
+ * - **B**, a phone-shaped device (no listen address) that joins by redeeming a machine
+ *   invitation at A, so it holds a control connection to A, then becomes an owner by redeeming an
+ *   owner grant A minted — locally, as a live member: B writes its own `OwnerKey` row and A and M
+ *   follow by replication — wires that key and vouches C. The machine removed, and the owner key
+ *   removed after it.
  * - **C**, a device B's key vouches: a bare peer id with no node, because what is asserted is the
  *   membership predicate on A and M. The dependent A keeps by re-vouching it under its own key.
  *
@@ -31,8 +33,8 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Connection } from '@libp2p/interface';
 import { CadreNode } from '@serfab/cadre-core';
 import {
-	controlNodeConfig, makeOwnOwner, waitUntil, randomPeerId,
-	startPinningMember, admitMember, ownerKeySeatedByInvitation, type InviteMember,
+	controlNodeConfig, makeOwnOwner, createTestOwnerKey, waitUntil, randomPeerId,
+	startPinningMember, admitMember, type InviteMember,
 } from '../harness/index.js';
 
 /** Bring-up, enrollment and the first sync over loopback; each hides a CadreNode start or a reconcile pass. */
@@ -64,24 +66,34 @@ describe('E2E an owner removes a machine from the cadre', () => {
 			const member = M.node;
 			await admitMember(owner, M, STARTUP_MS);
 
-			// ── B joins at A by an owner-granting invitation with a seat to spare ────
-			const { invitation } = await owner.createCadreInvitation({ grantsOwner: true, uses: 2 });
+			// ── B joins at A by an invitation with a seat to spare, then redeems a grant ──
+			const { invitation } = await owner.createCadreInvitation({ uses: 2 });
 			const inviteKey = invitation.invite.key;
+			const { grant } = await owner.createOwnerGrant();
 			B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', listenAddrs: [], strandFilter: 'none' }));
 			await B.start();
 			const removed = B;
 			const bPeerId = removed.peerId!.toString();
-			const bOwnerKey = ownerKeySeatedByInvitation(bPeerId);
+			const bOwner = createTestOwnerKey();
+			const bOwnerKey = bOwner.publicKey;
 			const joined = await removed.redeemCadreInvitation(invitation);
-			expect(joined).toMatchObject({ peerId: aPeerId, grantsOwner: true });
-			// A wrote B's rows itself and is the invitation's issuer, so its anchor derived B's key
-			// in the refresh the redemption notified.
-			expect(owner.getTrustedOwnerStore()!.sources().get(bOwnerKey)).toBe('chain');
-			// B signs as an owner once its own OwnerKey row has synced to it.
-			await waitUntil(() => holdsOwnerRow(removed, bOwnerKey), {
-				timeoutMs: STARTUP_MS, intervalMs: 500, description: 'B holds its own OwnerKey row',
+			expect(joined.peerId).toBe(aPeerId);
+			expect(await removed.isOwner()).toBe(false);
+			// B's own row is waited for, not assumed: B starts its address publish at once, and a
+			// control read made while a write runs can predate the row (`cadre-invite-row-unreplicated`).
+			// The grant's local path needs it, since it is what makes B a live member in its own eyes.
+			await waitUntil(async () => (await removed.getControlDatabase()!.queryCadrePeers()).some((row) => row.peerId === bPeerId), {
+				timeoutMs: OP_MS, intervalMs: 250, description: 'B reads its own CadrePeer row',
 			});
-			expect(await removed.wireOwnKeyIfOwner()).toBe(true);
+			expect(await removed.redeemOwnerGrant(grant, bOwner.signer)).toEqual({ ownerKey: bOwnerKey, alreadyOwner: false, memberPeerId: null });
+			expect(await removed.wireOwnKeyIfOwner(bOwner.signer)).toBe(true);
+			// A is the grant's issuer, so it derives B's key from the replicated row's stored proof at
+			// its next membership refresh; a replicated row raises none, so drive one per poll, as
+			// `cadre-invite-any-member` does for a returning owner.
+			await waitUntil(async () => {
+				await owner.refreshMembershipGate('replicated-owner-row');
+				return owner.getTrustedOwnerStore()!.sources().get(bOwnerKey) === 'chain';
+			}, { timeoutMs: OP_MS, intervalMs: 500, description: 'A derives B\'s owner key into its anchor' });
 
 			// ── B vouches C; A and M hold the row ──────────────────────────────────
 			const cPeerId = await randomPeerId();
@@ -91,6 +103,10 @@ describe('E2E an owner removes a machine from the cadre', () => {
 			});
 			await waitUntil(async () => (await member.listMembers()).some((row) => row.peerId === cPeerId) && await holdsOwnerRow(member, bOwnerKey), {
 				timeoutMs: OP_MS, intervalMs: 250, description: 'C\'s row and B\'s owner key reach M',
+			});
+			// M's anchor derives B's key at its timed refresh, so its drop below is a change, not a vacuity.
+			await waitUntil(() => member.getTrustedOwnerStore()!.sources().get(bOwnerKey) === 'chain', {
+				timeoutMs: REFRESH_MS, intervalMs: 250, description: 'M derives B\'s owner key into its anchor',
 			});
 			expect(connectedTo(owner, bPeerId)).toBe(true);
 

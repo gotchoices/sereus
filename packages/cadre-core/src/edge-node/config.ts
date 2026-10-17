@@ -158,11 +158,11 @@ export interface JoinedOwnerKeyOptions {
 	keyStore: KeyStore;
 	/** Default {@link DEFAULT_OWNER_GENESIS_TIMEOUT_MS}. */
 	timeoutMs?: number;
-	/** A redemption has just granted owner: keep asking until the row arrives. */
+	/** An owner grant has just seated the slot's key: keep asking until the row arrives. */
 	granted?: boolean;
 }
 
-/** How often {@link wireJoinedOwnerKey} asks again for an owner key a redemption just granted. */
+/** How often {@link wireJoinedOwnerKey} asks again for an owner key an owner grant just seated. */
 const GRANTED_OWNER_RECHECK_MS = 2_000;
 
 /**
@@ -191,14 +191,14 @@ export function runOwnerGenesis(node: CadreNode, options: OwnerGenesisOptions): 
 /**
  * The owner step of a party this app joined: wire a key only when the party lists it as a live
  * owner, never insert an `OwnerKey` row, so a joined app can neither seat itself as a founder nor
- * anchor a key that is no owner's. The owner slot's key is tried first (a backup imported here);
- * then `CadreNode.wireOwnKeyIfOwner`'s default, the identity key, which is the key an
- * owner-granting invitation seats until owner grants seat one of their own. Fail-soft and bounded
- * as {@link runOwnerGenesis} is.
+ * anchor a key that is no owner's. Only the owner slot's key is tried: the key an owner grant
+ * seated, one imported here, or one an owner of the party added. The identity key is never
+ * tried, since a machine's network identity is never an owner key. Fail-soft and bounded as
+ * {@link runOwnerGenesis} is.
  *
- * `granted`: a redemption has just made this app an owner, so a key not listed yet means the row
- * has not reached this node, not that it is no owner. It is asked again every 2 s until it is
- * wired or the bound passes; a start that timed out wires it on the next start.
+ * `granted`: an owner grant has just made this app an owner, so a key not listed yet means the
+ * row has not reached this node, not that it is no owner. It is asked again every 2 s until it
+ * is wired or the bound passes; a start that timed out wires it on the next start.
  */
 export function wireJoinedOwnerKey(node: CadreNode, options: JoinedOwnerKeyOptions): Promise<OwnerGenesisResult> {
 	let expired = false;
@@ -268,11 +268,10 @@ async function wiredIfOwner(node: CadreNode, signer: OwnerSigner): Promise<Owner
 }
 
 /**
- * Wire `held`, the owner slot's key, when the party lists it, else `wireOwnKeyIfOwner`'s default:
- * the signer already wired, else the identity key. A node takes one owner signer, so `held` is
- * tried only while none is wired.
+ * Wire `held`, the owner slot's key, when the party lists it. A node takes one owner signer, so
+ * a signer already wired is asked about instead (is it still a live owner?) and never replaced.
  */
 async function wireJoinedOwner(node: CadreNode, held: OwnerSigner | undefined): Promise<boolean> {
-	if (held && node.getOwnerSigner() === null && (await node.wireOwnKeyIfOwner(held))) return true;
-	return await node.wireOwnKeyIfOwner();
+	if (node.getOwnerSigner() !== null) return await node.wireOwnKeyIfOwner();
+	return held !== undefined && (await node.wireOwnKeyIfOwner(held));
 }
