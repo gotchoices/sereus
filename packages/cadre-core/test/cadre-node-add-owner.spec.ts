@@ -6,7 +6,7 @@ import { startSelfOwnerNode } from './self-owner-node-helpers.js';
  * `CadreNode.addOwner` while this node has no control connection. An `OwnerKey` add has no
  * re-issue path, so one committed alone in a party with other members would stay on this node:
  * refused by name. A party with no other members cannot fork, so a solo founder adding its
- * backup key commits.
+ * second owner key commits.
  */
 describe('CadreNode.addOwner while alone', () => {
 	it('commits while the party has no other member, and is refused once it has one', async () => {

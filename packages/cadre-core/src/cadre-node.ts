@@ -8803,7 +8803,7 @@ export class CadreNode implements SAppIdLookup {
    * {@link removeOwner}'s re-vouch) is refused `alone`: this node holds no control connection
    * while the party has other members. An `OwnerKey` row has no update to re-touch, so nothing
    * re-issues it on cohort growth, and a row written now would fork this node's history. A
-   * party with no other members cannot fork, so a solo founder adding its backup key is not
+   * party with no other members cannot fork, so a solo founder adding an owner key is not
    * refused.
    *
    * Waits out an in-flight membership refresh first: until `start`'s first one lands the
