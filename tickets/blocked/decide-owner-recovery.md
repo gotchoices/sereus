@@ -16,16 +16,16 @@ Owner keys belong to the user, not to any machine, and a user may hold backups (
 
 The same thing happens when the last owner app is uninstalled while the host keeps running.
 
-## What exists now: backup owner keys
+## What exists now: backup grants, and exported keys
 
-Both reference apps can make a **backup owner key** (phone: Settings → Owner keys; browser: the Cadre page's Owner keys card; `docs/architecture.md` → Owner Keys → Exporting and importing an owner key). It is a new key added as an owner of the cadre, shown once as a QR code and text (the browser also saves it as a file), optionally locked with a passphrase, and kept by nobody but the user. Importing it on a new phone or browser makes that device an owner again.
+The phone reference app's **Make a backup** (Settings → Owner keys) makes a **backup owner grant** (`docs/architecture.md` → Owner grants → Backups; `docs/reference-app-rn.md` → Owner Keys): a code with no expiry, shown once as a QR code and text to print or save. Redeeming it on a new device (Join my existing cadre, or Owner keys → Redeem an owner grant on a device already in the cadre) makes that device an owner. The browser app still makes a backup owner key, a new key added as an owner and exported, until `reference-app-web-owner-grants` gives it the same backup grant.
 
-- **Option A without a second device.** A backup key is the "second owner" of option A, held on paper or in a file instead of on another device, so a single-device user has one too.
-- **Most of option B.** It covers what the printed recovery invitation was for, with the differences B listed: the backup key is a standing owner from the moment it is made (B's paper is not until used), it is withdrawn by removing that key under Owner keys rather than by withdrawing an invitation, and it needs no always-on member to redeem at, since importing it needs no network.
+- **Option B, as a grant.** The backup grant is B's printed recovery invitation: nothing enters `OwnerKey` until it is used, so the paper is not a standing owner; it is listed under Outstanding owner grants, where it can be withdrawn and made again, e.g. after the paper is lost; and it needs a machine of the cadre reachable at an address it carries to redeem at, which a cadre worth recovering normally has. It is a bearer credential: whoever finds it can become an owner until it is withdrawn.
+- **Option A without a second device.** Exporting this device's key (Owner keys → Export this device's key) is still the backup that needs no network: importing the export makes a new device the same owner, with no machine of the cadre to answer. It is a standing owner key, held on paper or in a file.
 
 **Still open:**
 
-- Whether the apps nudge the user to make a backup key when they found a cadre, or later (neither app does today).
+- Whether the apps nudge the user to make a backup when they found a cadre, or later (neither app does today).
 - Options C and D below.
 
 ## Options

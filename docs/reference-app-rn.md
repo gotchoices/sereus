@@ -246,7 +246,7 @@ Gating: the store is opened **ungated** (no `requireAuthentication`) with `keych
 
 ### Owner key (secure enclave)
 
-The phone's owner key, when it holds one, sits in the same `SecureStoreKeyStore` as the identity, in a slot of its own (`cadre/owner`), with the same ungated options: background owner writes sign with no user present. It is never derived from the identity. The kit creates it only when this app founds a party that has no owner yet; otherwise it arrives by import under Settings → [Owner Keys](#owner-keys) ([kit README → The phone's owner key](../packages/cadre-rn/README.md#the-phones-owner-key)). One per install, not per party. An iOS reinstall keeps it with the identity, so a fresh install that founds a party founds it with the surviving key; an Android uninstall loses it, and the phone is then an owner of nothing until it imports a backup.
+The phone's owner key, when it holds one, sits in the same `SecureStoreKeyStore` as the identity, in a slot of its own (`cadre/owner`), with the same ungated options: background owner writes sign with no user present. It is never derived from the identity. The kit creates it only when this app founds a party that has no owner yet, or redeems or joins with an owner grant while the slot is empty; otherwise it arrives by import under Settings → [Owner Keys](#owner-keys) ([kit README → The phone's owner key](../packages/cadre-rn/README.md#the-phones-owner-key)). One per install, not per party. An iOS reinstall keeps it with the identity, so a fresh install that founds a party founds it with the surviving key; an Android uninstall loses it, and the phone is then an owner of nothing until it imports a backup.
 
 ### Trusted-owner anchor (secure enclave)
 
@@ -484,8 +484,9 @@ packages/reference-app-rn/
     machines-section.tsx      # Settings → Devices and nodes: the cadre's machines and the devices invited; an owner removes one
     machine-removal.tsx       # Removing a machine: the plan, the confirmation, removeMachine; shared with the provider section
     machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, a rented node's provider
-    owner-keys-section.tsx    # Settings → Owner keys: the cadre's owner keys; make a backup, export, import, remove one
-    owner-keys.ts             # What Owner keys shows: a key's name and facts, the export form's check, an import's outcome, the removal's Keep switches, the refusals' words
+    owner-keys-section.tsx    # Settings → Owner keys: the cadre's owner keys; make an owner grant or a backup, redeem one, export, import, remove a key
+    owner-grant-views.tsx     # Owner keys' grant parts: the grant form, the grant shown once, the outstanding grants, Redeem an owner grant
+    owner-keys.ts             # What Owner keys shows: a key's name and facts, the forms' checks, an import's or a redemption's outcome, the removal's Keep switches and grant lines, the refusals' words
     provider-store-section.tsx # Settings → Rent an always-on node: the provider, sign-in in the browser, rent, the rows for rented nodes
     use-rental-poll.ts        # The rows' re-read from the provider every few seconds, only while Settings is in front and the app is in the foreground
     provider-session.ts       # One provider's descriptor, tokens and client; sign-in again, once, when the provider refuses the tokens
@@ -886,7 +887,7 @@ The section shows only while the node is connected. Switching tabs does not stop
 
 ## Adding a Device or App
 
-**Settings → Add a device or app** is the owner's side of [architecture.md → Handing an invitation from app to app](architecture.md#handing-an-invitation-from-app-to-app): this app makes an invitation another Sereus app redeems to join this cadre. An invitation admits the app as a machine, never as an owner; an app that should be an owner is given an owner grant under [Owner Keys](#owner-keys), whose grant screens and the grant-taking join field come with the ticket `reference-app-rn-owner-grants`. The section shows while the node is connected. A member that is not an owner sees one line saying only an owner can add a device or app; the check reads the cadre's owner keys when the section appears, after a join, and on Refresh.
+**Settings → Add a device or app** is the owner's side of [architecture.md → Handing an invitation from app to app](architecture.md#handing-an-invitation-from-app-to-app): this app makes an invitation another Sereus app redeems to join this cadre. An invitation admits the app as a machine, never as an owner; an app that should be an owner is given an owner grant under [Owner Keys](#owner-keys) → Add an owner key, which its join field takes too. The section shows while the node is connected. A member that is not an owner sees one line saying only an owner can add a device or app; the check reads the cadre's owner keys when the section appears, after a join, and on Refresh.
 
 **Paste request** (recommended). The other app's request (`sereus-join-request:1.…`) is pasted, or scanned with **Scan request**, then **Use request**. Before anything is made, the section refuses this app's own request and a request from a machine already in the cadre (a `CadrePeer` row). The approval prompt names the app (what it calls itself, unverified) and its peer id shortened to the first 12 and last 6 characters, for the user to compare with what the other app shows. **Add** makes an invitation for that peer id alone, valid for 24 hours.
 
@@ -992,7 +993,7 @@ The card is screen state, since the kit keeps no record of the removal: after a 
 
 ## Owner Keys
 
-**Settings → Owner keys** lists this cadre's owner keys, makes a backup key, exports this device's key, imports a key from another device, and removes a key ([architecture.md → Owner Keys](architecture.md#owner-keys)). It is `src/owner-keys-section.tsx`, with its words in `src/owner-keys.ts`, shown below Devices and nodes while the node is connected, and has not had a device run yet.
+**Settings → Owner keys** lists this cadre's owner keys, makes owner grants (an owner grant is a code that makes the device or app that uses it an owner of this cadre) for another device or app and as a backup, lists and withdraws the grants outstanding, redeems a grant, exports this device's key, imports a key from another device, and removes a key ([architecture.md → Owner Keys](architecture.md#owner-keys), [Owner grants](architecture.md#owner-grants)). It is `src/owner-keys-section.tsx`, with the grant parts in `src/owner-grant-views.tsx` and its words in `src/owner-keys.ts`, shown below Devices and nodes while the node is connected, and has not had a device run yet.
 
 **The list** has one row per live owner key `listOwnerKeys` reports:
 
@@ -1000,18 +1001,49 @@ The card is screen state, since the kit keeps no record of the removal: after a 
 - **Facts**: the key's fingerprint, its first 8 characters as the approval prompts and cadre-host show it; and "This device" on the key this phone signs with.
 - **Not trusted here** (warning colour): the key is not in this phone's trusted-owner anchor, so this phone does not accept what it signs.
 
-The list is read when the section appears, when a join replaces the node, after each backup, import or removal here, and on **Refresh**; it is not polled. A read that finishes after the node was replaced is dropped. A member sees the list, one line saying only an owner can add or remove owner keys, and Import, since importing a key is how a member becomes an owner.
+The list is read when the section appears, when a join replaces the node, after each redemption, import or removal here, and on **Refresh**; it is not polled. A read that finishes after the node was replaced is dropped. A member sees the list, one line saying only an owner can add or remove owner keys, Redeem and Import, since redeeming a grant and importing a key are how a member becomes an owner.
 
-### Making a backup key, and exporting this device's key
+### Adding an owner key, and making a backup
 
-**Make a backup key** (owner only) opens a form: a name (default "Backup", at most 64 characters) and **Protect with a passphrase**, on by default, with two passphrase fields. The button stays disabled while the passphrase is empty or the two differ. **Make backup key** runs `addBackupOwnerKey`: a new key is added as an owner of this cadre under that name, signed by this phone's owner key, and its export is shown once. The phone keeps no copy.
+**Add an owner key** and **Make a backup** (owner only) each make an owner grant, signed by this phone's owner key (`createOwnerGrant`). Each opens a form with a **Name**, the name the owner key the grant adds is listed under (at most 64 characters), then shows the grant once, in place of the section's controls until **Done**: a warning, a line under it, the QR code, **Copy**, **Share** (the system share sheet) and the selectable text.
 
-**Export this device's key**, on an owner device, opens the same form with the name defaulting to this key's, then shows the export (`exportOwnerKey`), titled with the key the export holds: the owner slot's, which `exportOwnerKey` names and which is the key this device signs with, by its listed name, or by its fingerprint when this cadre does not list it. A device whose slot is empty holds no key of its own, and the alert says so.
+| | Add an owner key | Make a backup |
+| --- | --- | --- |
+| For | another device or another app of the user's | printing or saving, so a new device can become an owner if this one is lost |
+| Name | blank by default: an unnamed key | "Backup" |
+| Valid | 15 minutes, once | no expiry, once |
+| Warning (warning colour) | "Whoever uses this first becomes an owner of this cadre. Show or send it only to your own device or app." | "Whoever holds this can become an owner of this cadre until it is used or withdrawn. Keep it like a key: somewhere safe and offline. This phone does not keep a copy." |
+| Under it | the time it is valid until, and where the other device takes it: Owner keys → Redeem an owner grant, or Join my existing cadre in an app not part of this cadre yet | it works only while one of this cadre's machines can be reached at an address it carries; a copy that works with no network is Export this device's key |
+
+A reach line follows, as for an invitation ([Adding a Device or App](#adding-a-device-or-app)): for `local-network`, the device that uses it must be on the same Wi-Fi as the cadre's other machines; for `issuer-only` (warning colour), only this phone can answer it, and a backup then cannot stand in for this phone if it is lost, so add an always-on node and make a new backup.
+
+This phone keeps no copy of a grant's text; the cadre keeps its row. A grant on screen when the node stops is gone with the screen, and stays outstanding until it expires or is withdrawn below.
+
+**Outstanding owner grants** (owner only) lists each live grant this phone holds, made here or on another owner device, backups first: its name ("Unnamed backup" or "Unnamed grant" without one), when it expires ("Never expires" for a backup) and the uses left. **Withdraw** asks once ("Nobody can become an owner with it afterwards. Owner keys it already added stay owners"), then files the withdrawal (`withdrawOwnerGrant`), which reaches the cadre's other machines like any other control write. A withdrawn, expired or used grant drops off the list. It is read with the keys, after a grant is made or withdrawn here, and on Refresh.
+
+### Redeeming an owner grant
+
+**Redeem an owner grant** (any device of the cadre) takes a grant's text, pasted or read with **Scan owner grant**; a scanned grant is redeemed at once. **Redeem** runs the kit's `redeemOwnerGrant`: this phone's owner slot's key ([Owner key](#owner-key-secure-enclave)), made now when the slot is empty, becomes an owner of this cadre, and the phone signs with it from then on. A slot that already holds a key, as on a phone that founded its own cadre before it joined this one, makes that key an owner of this cadre too, and nothing is created.
+
+| Outcome | Alert |
+| --- | --- |
+| Became an owner | "Now an owner", naming the key as the list does |
+| Already an owner | "Already an owner": the grant was not used and still works for another device until it expires or is withdrawn. Answered before anything is signed, connected or not |
+| Accepted at another machine, the key's record not here yet | "Owner grant accepted": the device acts as an owner once the cadre's records reach it, at the latest from its next start |
+| Expired, withdrawn or used up, or its maker removed (`grant-spent`) | "This owner grant is expired, withdrawn or used up, or the owner key that made it was removed." |
+| For another cadre (`party-mismatch`) | "This owner grant is for another cadre." No key is made |
+| No connection to the cadre's other machines (`alone`), or none of those the grant names reachable | Says to connect and try again |
+| The maker's key unknown here, or a machine's answer that does not verify | Says which, and to try again shortly for the first |
+
+The field and the scanner refuse an owner key, an invitation and a join request by name, with the grant decoder's message; Import and the join field refuse a grant pasted in the wrong place with their decoders' message.
+
+### Exporting this device's key
+
+**Export this device's key**, on an owner device, opens a form: a name (default this key's, at most 64 characters) and **Protect with a passphrase**, on by default, with two passphrase fields; the button stays disabled while the passphrase is empty or the two differ. It then shows the export (`exportOwnerKey`), titled with the key the export holds: the owner slot's, which `exportOwnerKey` names and which is the key this device signs with, by its listed name, or by its fingerprint when this cadre does not list it. A device whose slot is empty holds no key of its own, and the alert says so. The export is the copy that works with no network: importing it needs no machine of the cadre, where a backup grant needs one to answer.
 
 **The export** replaces the section's controls until **Done**: "Anyone who has this can control your cadre. Keep it somewhere safe and offline. This phone does not keep a copy.", then the QR code, **Copy**, **Share** (the system share sheet) and the selectable text. Done clears it, and it is not shown again.
 
-- **Refused while alone.** A backup made while this phone has no connection and the cadre has other machines would reach no other machine (`alone`): "Connect to your cadre first; a new owner key made now would not reach your other machines."
-- **Screen capture is a known exposure.** The export screen is not hidden from screenshots, screen recording or the app switcher's snapshot. Android's `FLAG_SECURE` and iOS's app-switcher cover come from `expo-screen-capture`, a native module this app does not include (`tickets/backlog/feat-rn-owner-key-export-hidden-from-screen-capture.md`).
+**Screen capture is a known exposure.** The export and a shown grant are not hidden from screenshots, screen recording or the app switcher's snapshot. Android's `FLAG_SECURE` and iOS's app-switcher cover come from `expo-screen-capture`, a native module this app does not include (`tickets/backlog/feat-rn-owner-key-export-hidden-from-screen-capture.md`).
 
 ### Importing an owner key
 
@@ -1025,23 +1057,25 @@ The list is read when the section appears, when a join replaces the node, after 
 | This phone already holds a different owner key | Refused: a phone holds one owner key. |
 | The passphrase does not open it | Refused, with the decoder's message. |
 
-The field and the scanner refuse an invitation, a join request and a node code by name, with the owner-key decoder's message. The other way round, Join my existing cadre and Add a device or app refuse a pasted owner key with their decoders' message, and a scanned one with "That is an owner key, which is private. Import it only under Owner keys."
+The field and the scanner refuse an invitation, an owner grant, a join request and a node code by name, with the owner-key decoder's message. The other way round, Join my existing cadre, Add a device or app and Redeem an owner grant refuse a pasted owner key with their decoders' message, and the first two a scanned one with "That is an owner key, which is private. Import it only under Owner keys."
 
 ### Removing an owner key
 
 On an owner device every row has **Remove** except this device's own key, under which a line says "A device cannot remove its own owner key; use another owner key." Remove reads `planOwnerKeyRemoval` and opens "Remove owner key ‹name› (‹fingerprint›)?":
 
+- **Owner grants it made**: the live grants the key made (the plan's `grants`) are listed, since redeeming one needs its maker to be an owner: `Backup "‹name›" stops working.` for a backup, `The owner grant "‹name›" stops working.` for another, with a line to make new ones with another owner key if they are still needed.
 - **Keep switches**: one per device or owner key the removed key added (the plan's `dependents`), on by default. A device is named as Devices and nodes names it, an owner key by its name and fingerprint. A kept row is re-vouched with this phone's key before the removal; a device switched off stops counting as a member of the cadre, and a key switched off keeps its place only on machines that already trust it.
 - **This device's own key**, when the removed key added it (`ownDependency`): a line says it stays an owner on the machines that already trust it, and that another owner key can vouch for it again later. This device's own machine row, when the removed key added it, is re-vouched without asking (`revouchesOwnRow`).
 - **Refusals**: "It cannot be removed: it is the only owner key of this cadre." (`last-owner`), and the own-key line for `self`, with only **Close**.
 
-**Remove** runs `removeOwner(key, { revouch })` with the kept rows, and this list and Devices and nodes refresh; **Cancel**, or the system back button, does nothing. A key another owner removed meanwhile shows "Already removed". Keeping an owner key while alone is refused like a backup (`alone`). Any other failure shows its error in an alert.
+**Remove** runs `removeOwner(key, { revouch })` with the kept rows, and this list and Devices and nodes refresh; **Cancel**, or the system back button, does nothing. A key another owner removed meanwhile shows "Already removed". Keeping an owner key while alone is refused (`alone`): "Connect to your cadre first; the owner keys you keep would not reach your other machines." Any other failure shows its error in an alert.
 
 **Uses.**
 
 - **A lost or stolen phone that held an owner key**: remove its machine under Devices and nodes, then its key here. The machine removal prompt says so and scrolls here.
-- **A backup to keep offline**: make a backup key, print or save the QR code or the text, then Done.
-- **A new phone**: join the cadre, then import a backup key there.
+- **A backup to keep offline**: Make a backup, print or save the QR code or the text, then Done. It is listed under Outstanding owner grants, where Withdraw retires it if the paper is lost; make a new one then.
+- **Another device or app as an owner**: Add an owner key here, then Redeem an owner grant on that device, or Join my existing cadre in an app not part of this cadre yet.
+- **A new phone after losing the old one**: Join my existing cadre with the backup, which makes it a machine and an owner of the cadre at once.
 
 
 ## Joining an Existing Cadre
@@ -1075,11 +1109,13 @@ On an owner device every row has **Remove** except this device's own key, under 
 
 **Open invitation.** An invitation from the other app's **Copy invitation** goes into the same field: both are `sereus-invite:1.` text.
 
+**Owner grant.** A grant from the other app's **Owner keys → Add an owner key** goes into the same field too (`sereus-owner-grant:1.`, told apart by its prefix; the scanner takes either). It joins the app as a machine and an owner at once, with its owner slot's key, made then when the slot is empty ([kit README → Joining another cadre](../packages/cadre-rn/README.md#joining-another-cadre)): an app with chats of its own needs that to bring them along, and a line above the field says so ("To make this app an owner of your cadre too…" on a first launch). A grant names no app, so nothing is checked against this app's request.
+
 **The steps.** From Join on, one line and its buttons replace the inputs. The app-wide hook holds the flow (`use-join-flow.ts`, part of `use-cadre.ts`), so it survives a tab switch; the words are `join-flow.ts`'s.
 
 | Step | Line | Buttons |
 | --- | --- | --- |
-| joining | "Joining your cadre…"; while no member is ready, waiting for an always-on machine (or for the cadre to catch up) and the next try's time | Cancel |
+| joining | "Joining your cadre…" ("…, and setting this app up as an owner…" with an owner grant); while no member is ready, waiting for an always-on machine (or for the cadre to catch up) and the next try's time | Cancel |
 | admitted | admitted as an owner, or as a member | none |
 | moving | moving this app's chats into the cadre | none |
 | removing | removing this app's old cadre from this phone | none |
@@ -1089,8 +1125,8 @@ Nothing is cancellable once a member admitted the app, since the kit never rolls
 
 **What each failure leaves.**
 
-- **Before admission** (refused, expired, no member reachable, or **Cancel**): the kit puts the app back in its own cadre unchanged, or leaves it stopped if it was stopped, and an alert says why (`join-failure.ts`).
-- **A machine invitation while the app's own cadre holds chats** is refused before anything stops: every row the move seats is owner-signed, so the alert says to join with an owner grant made in the owner app under Owner keys. The join field takes an owner grant with the ticket `reference-app-rn-owner-grants`; until then an app with chats of its own has no way in here.
+- **Before admission** (refused, expired, no member reachable, or **Cancel**): the kit puts the app back in its own cadre unchanged, or leaves it stopped if it was stopped, and an alert says why (`join-failure.ts`; an owner grant's refusals in the words Redeem an owner grant uses, from `owner-keys.ts`).
+- **A machine invitation while the app's own cadre holds chats** is refused before anything stops: every row the move seats is owner-signed, so the alert says to make an owner grant in the app that holds the cadre, under Owner keys → Add an owner key, and paste it here.
 - **The move did not finish** (this app's key is not an owner of the joined cadre yet, or an adoption failed): the line counts the chats moved and those waiting. **Retry moving** tries again (`finishStrandMove`); **Later** leaves it, and every start retries by itself. The old cadre is not removed while chats wait.
 - **The old cadre holds what the joined one does not** (a moved chat since left in the joined cadre, a dismissed join): the section asks whether to **Delete them** with the old cadre or **Keep old cadre**.
 - **The old cadre has other machines**: it is kept on this phone, and the line says nothing was lost. Removing those machines is done in that cadre.
@@ -1098,7 +1134,7 @@ Nothing is cancellable once a member admitted the app, since the kit never rolls
 
 **After a relaunch.** A start (at launch or on Connect) in a party whose saved start still names the old cadre (`formerPartyId`) shows the step the app stopped at: chats still waiting, else the old cadre still on this phone, with **Remove it now** and **Later**. That covers a kill between the steps and a **Later**. An old cadre kept on purpose is still named, so it shows again at each start.
 
-**An app that never connected.** `joinCadreByInvitation` passes the build's relay (`EXPO_PUBLIC_RELAY_ADDR`) when the kit has neither a running nor a saved start to take relays from; the Noise mode falls back to the kit's platform default, which is Connect's default too.
+**An app that never connected.** `joinCadre` (`cadre-phone.ts`) passes the build's relay (`EXPO_PUBLIC_RELAY_ADDR`) when the kit has neither a running nor a saved start to take relays from; the Noise mode falls back to the kit's platform default, which is Connect's default too.
 
 
 ## Build & Development Workflow
@@ -1252,14 +1288,7 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 
 Flows 1–3 share `_setup.yaml` for the join/strand bootstrap. Flow 4 does not use it: it answers the first-launch question with **No, start fresh** (a conditional tap, since the NativeScript app that reuses the flow has no question) and connects alone. The orchestrator still runs it with the rest of the directory, and it can be run by itself with `maestro test -e MAESTRO_APP_ID=… maestro/flows/4-solo-create-strand.yaml`.
 
-The phone joins the drone's cadre the way a fresh install of a user who already has a cadre would: `_setup.yaml` answers the first-launch question with **Yes, join my cadre**, pastes the drone's invitation and taps **Join**, so the app never founds a cadre of its own and nothing moves or is removed. The fixture enrolls its own owner key (`ensureOwnerKey`) and
-mints a cadre invitation valid for an hour
-(`createCadreInvitation`) whose member address is the drone's ws listener;
-`start.mjs` writes it as `cadreInvitation`, and the orchestrator threads it in as
-`CADRE_INVITATION`. Redeeming it pins the drone's owner key and admits the phone
-at the drone as a machine, after which the control database syncs under a trusted
-anchor. The flow then creates a strand, which only an owner can: flows 1–3 stop
-there until the join field takes an owner grant (the ticket `reference-app-rn-owner-grants`).
+The phone joins the drone's cadre the way a fresh install of a user who already has a cadre would: `_setup.yaml` answers the first-launch question with **Yes, join my cadre**, pastes what the orchestrator passes as `JOIN_CODE` and taps **Join**, so the app never founds a cadre of its own and nothing moves or is removed. The fixture enrolls its own owner key (`ensureOwnerKey`) and mints an owner grant valid for an hour (`createOwnerGrant`) whose member address is the drone's ws listener; `start.mjs` writes it as `ownerGrant`, and this orchestrator passes it as `JOIN_CODE`. Redeeming it pins the drone's owner key, makes the phone's own key an owner and admits the phone at the drone as a machine, after which the control database syncs under a trusted anchor and the flow can create a strand, which only an owner can. The fixture also writes a machine invitation (`cadreInvitation`), which reference-app-ns's orchestrator passes as `JOIN_CODE` instead, since that app's join field takes no owner grant yet. The owner-grant join has not had a Maestro run yet.
 
 After the phone creates its strand, `_helpers/discover-phone-strand.js`
 polls the drone's `/status` endpoint to discover the strand the drone has

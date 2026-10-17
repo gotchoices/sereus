@@ -7,14 +7,15 @@
  * "Choose the app that holds your cadre" opens an owner app on this phone with this app's request
  * (the hook's `askOwnerApp`); its answer comes back as a link Settings takes, since this section
  * may not be mounted then. The request and the paste field below it are the way in from another
- * device, and the fallback. A pasted or scanned response enters through the hook's
- * `joinExistingCadre`, which also refuses a response made for another app. From Join on, the flow
- * the hook holds replaces the inputs.
+ * device, and the fallback. The field also takes an owner grant, which makes this app an owner
+ * too: how an app with chats of its own brings them. A pasted or scanned response enters through
+ * the hook's `joinExistingCadre`, which also refuses a response made for another app. From Join
+ * on, the flow the hook holds replaces the inputs.
  */
 
 import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
-import { CADRE_INVITATION_PREFIX } from '@serfab/cadre-core';
+import { CADRE_INVITATION_PREFIX, OWNER_GRANT_PREFIX } from '@serfab/cadre-core';
 import type { SereusApp } from '@serfab/cadre-rn/app-link';
 import { useCadre } from './cadre-context';
 import { CodeScanner } from './code-scanner';
@@ -29,8 +30,12 @@ import { TEST_IDS } from './test-ids';
 const INTRO_LINE = 'If another Sereus app already holds your cadre, this app can join it. Its chats move with it, and its own cadre is then removed from this phone.';
 const FIRST_LAUNCH_LINE = 'If another Sereus app already holds your cadre, this app can join it.';
 
-const SCAN_HINT = 'Point the camera at the invitation the app holding your cadre shows.';
-const SCAN_OTHER_CODE_HINT = 'That is not an invitation. Point the camera at the invitation the app holding your cadre shows under Add a device or app.';
+const SCAN_HINT = 'Point the camera at the invitation or owner grant the app holding your cadre shows.';
+const SCAN_OTHER_CODE_HINT = 'That is not an invitation or an owner grant. Point the camera at what the app holding your cadre shows under Add a device or app, or under Owner keys → Add an owner key.';
+
+/** Where an owner grant comes from, and why this app would want one. */
+const OWNER_GRANT_LINE = 'To bring this app\'s chats along, it joins as an owner: in the app that holds your cadre, make an owner grant (a code that makes the app that uses it an owner) under Owner keys → Add an owner key, and paste it below.';
+const FIRST_LAUNCH_OWNER_GRANT_LINE = 'To make this app an owner of your cadre too, paste an owner grant (a code that makes the app that uses it an owner) below instead, made in the app that holds your cadre under Owner keys → Add an owner key.';
 
 const NO_OTHER_APP_LINE = `No other Sereus app is installed on this phone. ${COPY_REQUEST_LINE}`;
 const CAME_BACK_LINE = 'That opened this app again. Choose the app that holds your cadre, or copy this app\'s request into it.';
@@ -82,14 +87,15 @@ export function JoinCadreSection({ showAlert, firstLaunch = false }: {
 				<>
 					<AskOwnerApp showAlert={showAlert} />
 					<RequestView />
-					<LabelledInput label="Paste response or invitation" value={invitationText} onChangeText={setInvitationText} placeholder="sereus-invite:1.…" multiline testID={TEST_IDS.settings.cadreInvitationInput} />
+					<Text style={controlStyles.hint}>{firstLaunch ? FIRST_LAUNCH_OWNER_GRANT_LINE : OWNER_GRANT_LINE}</Text>
+					<LabelledInput label="Paste response, invitation or owner grant" value={invitationText} onChangeText={setInvitationText} placeholder="sereus-invite:1.… or sereus-owner-grant:1.…" multiline testID={TEST_IDS.settings.cadreInvitationInput} />
 					<Btn label="Scan" onPress={() => setScannerOpen(true)} color="#444" testID={TEST_IDS.settings.scanCadreInvitationBtn} />
 					<Btn label="Join" onPress={() => void join(invitationText)} disabled={!invitationText.trim()} testID={TEST_IDS.settings.joinCadreBtn} />
 				</>
 			)}
 			<CodeScanner
 				visible={scannerOpen}
-				accepts={isInvitation}
+				accepts={isJoinCredential}
 				hint={SCAN_HINT}
 				otherCodeHint={(text) => isOwnerKeyText(text) ? OWNER_KEY_SCANNED_LINE : SCAN_OTHER_CODE_HINT}
 				onScanned={handleScanned}
@@ -287,8 +293,9 @@ function useJoinRequest(): JoinRequest {
 	return request;
 }
 
-function isInvitation(text: string): boolean {
-	return text.trim().startsWith(CADRE_INVITATION_PREFIX);
+function isJoinCredential(text: string): boolean {
+	const trimmed = text.trim();
+	return trimmed.startsWith(CADRE_INVITATION_PREFIX) || trimmed.startsWith(OWNER_GRANT_PREFIX);
 }
 
 const styles = StyleSheet.create({

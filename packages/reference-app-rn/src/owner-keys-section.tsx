@@ -1,11 +1,13 @@
 /**
  * owner-keys-section.tsx — Settings → "Owner keys": this cadre's owner keys; on an owner device,
- * Make a backup key, Export this device's key and Remove; and Import on any device
- * (docs/reference-app-rn.md → "Owner Keys"; docs/architecture.md → "Owner Keys"). The words are
- * `owner-keys.ts`'s. Also `SigningKeyFact`, the line the approval prompts name the signing key with.
+ * Add an owner key and Make a backup (owner grants, `owner-grant-views.tsx`), Export this device's
+ * key, the outstanding grants and Remove; and Redeem an owner grant and Import on any device
+ * (docs/reference-app-rn.md → "Owner Keys"; docs/architecture.md → "Owner Keys", "Owner grants").
+ * The words are `owner-keys.ts`'s. Also `SigningKeyFact`, the line the approval prompts name the
+ * signing key with.
  *
- * An export's text is the private key, and so is the text pasted into Import: log neither, nor a
- * passphrase. Log a key's fingerprint.
+ * An export's text is the private key, and so is the text pasted into Import; a grant's text makes
+ * whoever holds it an owner: log none of them, nor a passphrase. Log a key's fingerprint, a grant's key.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -13,32 +15,39 @@ import { Modal, ScrollView, Share, Switch, Text, View } from 'react-native';
 import {
 	decodeOwnerKeyExport,
 	OwnerKeyRemovalRefusedError,
+	parseNullableStoredDatetimeMs,
 	type CadreMachine,
 	type CadreOwnerKey,
 	type ImportedOwnerKey,
+	type OwnerGrantStatus,
 	type OwnerKeyRemovalPlan,
 } from '@serfab/cadre-core';
+import type { RedeemedOwnerGrant } from '@serfab/cadre-rn/phone-node';
 import { useCadre } from './cadre-context';
 import { CodeScanner } from './code-scanner';
 import { ownerFingerprint } from './node-claim';
+import { GrantFormView, GrantView, OutstandingGrants, RedeemForm, type ShownGrant } from './owner-grant-views';
 import {
-	DEFAULT_BACKUP_LABEL,
 	dependentRows,
 	describeOwnerKeyFailure,
 	EXPORT_WARNING,
 	exportFormProblem,
 	exportOptions,
+	grantRemovalLines,
 	importOutcome,
 	importOutcomeAlert,
 	isLockedOwnerKeyText,
 	isOwnerKeyText,
 	listedKeyName,
+	liveGrants,
 	OWN_KEY_LINE,
 	ownerKeyFacts,
 	ownerKeyName,
 	ownerKeyTitle,
+	redemptionAlert,
 	REMOVAL_REFUSAL_LINE,
 	revouchOf,
+	shownGrantTitle,
 	signingKeyText,
 	type DependentRow,
 	type ExportForm,
@@ -50,9 +59,11 @@ import { TEST_IDS } from './test-ids';
 
 type ShowAlert = (title: string, message: string, detail?: string) => void;
 
-/** What the section shows in place of its controls: a form, or an export shown once. */
+/** What the section shows in place of its controls: a form, or an export or a grant shown once. */
 type Panel =
-	| { kind: 'backup-form' }
+	/** `backup`: Make a backup; otherwise Add an owner key. */
+	| { kind: 'grant-form'; backup: boolean }
+	| { kind: 'grant'; grant: ShownGrant }
 	| { kind: 'export-form'; ownKey: CadreOwnerKey }
 	| { kind: 'export'; title: string; text: string };
 
@@ -66,12 +77,13 @@ interface PendingRemoval {
 }
 
 // NOTE: screen state, as in AddDeviceSection: the tab navigator keeps Settings mounted, so an export
-// on screen stays across a tab switch. The section unmounts with the connected view, so a backup
-// key's export on screen when the node stops is gone with it, and the key stays an owner nobody
-// holds until it is removed here. If that is seen in practice, hold the export in the cadre context.
+// or a grant on screen stays across a tab switch. The section unmounts with the connected view, so a
+// grant on screen when the node stops is gone with it: nobody holds it, and it stays listed under
+// Outstanding owner grants until it expires or is withdrawn there (a backup never expires). If that
+// is seen in practice, hold the shown grant in the cadre context.
 export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 	showAlert: ShowAlert;
-	/** After a key is added, imported or removed here: Devices and nodes re-reads which machines are trusted. */
+	/** After a key is redeemed, imported or removed here: Devices and nodes re-reads which machines are trusted. */
 	onOwnerKeysChanged: () => void;
 }) {
 	const cadre = useCadre();
@@ -80,9 +92,11 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 	const standing = useOwnerStanding(refreshes);
 	const [keys, setKeys] = useState<CadreOwnerKey[]>([]);
 	const [listError, setListError] = useState<string | null>(null);
+	const [grants, setGrants] = useState<OwnerGrantStatus[]>([]);
+	const [grantsError, setGrantsError] = useState<string | null>(null);
 	const [panel, setPanel] = useState<Panel | null>(null);
 	const [confirming, setConfirming] = useState<PendingRemoval | null>(null);
-	// A backup, an export, an import, a plan read or a removal, one at a time.
+	// A grant made or withdrawn, a redemption, an export, an import, a plan read or a removal, one at a time.
 	const { busy, exclusive } = useExclusive();
 	// The node now, so a read that finishes after a join or a stop replaced it is dropped.
 	const nodeRef = useRef(cadre.node);
@@ -104,30 +118,87 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 		}
 	};
 
-	// A join replaces the node, and an import changes the key this device signs with.
+	/** The live owner grants, shown; a read that finishes after the node was replaced is dropped. */
+	const refreshGrants = async (): Promise<void> => {
+		const node = nodeRef.current;
+		try {
+			const listed = await cadre.listOwnerGrants();
+			if (nodeRef.current !== node) return;
+			setGrants(liveGrants(listed));
+			setGrantsError(null);
+		} catch (err) {
+			console.warn('[settings] could not read this cadre\'s owner grants:', err);
+			if (nodeRef.current === node) setGrantsError(errorMessage(err));
+		}
+	};
+
+	// A join replaces the node, and an import or a redemption changes the key this device signs with.
 	useEffect(() => {
 		void refresh();
+		void refreshGrants();
 	}, [cadre.node, cadre.ownerPublicKey]);
 
 	const showAlreadyRemoved = (ownerKey: CadreOwnerKey) => {
 		showAlert('Already removed', `${ownerKeyName(ownerKey)} is no longer an owner key of this cadre.`);
 	};
 
+	// A removed key's grants stop being live with it.
 	const changed = () => {
 		onOwnerKeysChanged();
 		void refresh();
+		void refreshGrants();
 	};
 
-	const makeBackup = (form: ExportForm) => void exclusive(async () => {
+	// A backup is a grant with no expiry; Add an owner key takes the 15-minute, one-use default.
+	const makeGrant = (backup: boolean, label: string) => void exclusive(async () => {
+		const trimmed = label.trim();
 		try {
-			const { publicKey, exportText } = await cadre.addBackupOwnerKey(exportOptions(form));
-			console.info(`[settings] added backup owner key ${ownerFingerprint(publicKey)}`);
-			setPanel({ kind: 'export', title: `New owner key ${ownerKeyName({ key: publicKey, label: form.label.trim() || null })}`, text: exportText });
-			changed();
+			const { grant, encoded, reach } = await cadre.createOwnerGrant({
+				...(trimmed !== '' && { label: trimmed }),
+				...(backup && { expiresInMs: null }),
+			});
+			const { key, label: named, expiresAt } = grant.grant;
+			console.info(`[settings] made ${backup ? 'backup ' : ''}owner grant ${key} (reach ${reach})`);
+			setPanel({
+				kind: 'grant',
+				grant: { backup, title: shownGrantTitle(backup, named), text: encoded, expiresAtMs: parseNullableStoredDatetimeMs(expiresAt), reach },
+			});
 		} catch (err) {
-			console.warn('[settings] making a backup owner key failed:', err);
-			showAlert('Could not make a backup key', describeOwnerKeyFailure(err));
+			console.warn('[settings] making an owner grant failed:', err);
+			showAlert(backup ? 'Could not make a backup' : 'Could not make an owner grant', describeOwnerKeyFailure(err));
 		}
+		await refreshGrants();
+	});
+
+	const withdrawGrant = (key: string) => void exclusive(async () => {
+		try {
+			const withdrawn = await cadre.withdrawOwnerGrant(key);
+			console.info(withdrawn ? `[settings] withdrew owner grant ${key}` : `[settings] owner grant ${key} was already withdrawn`);
+		} catch (err) {
+			console.warn(`[settings] withdrawing owner grant ${key} failed:`, err);
+			showAlert('Could not withdraw the owner grant', describeOwnerKeyFailure(err));
+		}
+		await refreshGrants();
+	});
+
+	const runRedeem = (text: string, onRedeemed: () => void) => void exclusive(async () => {
+		let redeemed: RedeemedOwnerGrant;
+		try {
+			redeemed = await cadre.redeemOwnerGrant(text);
+		} catch (err) {
+			// The refusals never carry the grant's text.
+			console.warn('[settings] redeeming an owner grant failed:', err);
+			showAlert('Could not redeem the owner grant', describeOwnerKeyFailure(err));
+			return;
+		}
+		console.info(`[settings] redeemed an owner grant for ${ownerFingerprint(redeemed.ownerKey)} (already an owner ${redeemed.alreadyOwner}, wired ${redeemed.wired})`);
+		onRedeemed();
+		onOwnerKeysChanged();
+		// This device may be an owner now: re-read its standing, which decides what the section offers.
+		setRefreshes((n) => n + 1);
+		const listed = await refresh();
+		const { title, message } = redemptionAlert(redeemed, listed ?? []);
+		showAlert(title, message);
 	});
 
 	// Titled from the key the kit exported, the owner slot's: the key this device signs with, named
@@ -220,6 +291,7 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 	const handleRefresh = () => {
 		setRefreshes((n) => n + 1);
 		void refresh();
+		void refreshGrants();
 	};
 
 	const owner = standing === 'owner';
@@ -241,16 +313,10 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 
 			{panel?.kind === 'export' ? (
 				<ExportView title={panel.title} text={panel.text} onDone={() => setPanel(null)} />
-			) : panel?.kind === 'backup-form' ? (
-				<ExportFormView
-					title="Make a backup key"
-					intro="A new owner key for this cadre, to keep somewhere safe. It is shown once; this phone keeps no copy."
-					defaultLabel={DEFAULT_BACKUP_LABEL}
-					submitLabel="Make backup key"
-					busy={busy}
-					onSubmit={makeBackup}
-					onCancel={() => setPanel(null)}
-				/>
+			) : panel?.kind === 'grant' ? (
+				<GrantView grant={panel.grant} onDone={() => setPanel(null)} />
+			) : panel?.kind === 'grant-form' ? (
+				<GrantFormView backup={panel.backup} busy={busy} onSubmit={(label) => makeGrant(panel.backup, label)} onCancel={() => setPanel(null)} />
 			) : panel?.kind === 'export-form' ? (
 				<ExportFormView
 					title="Export this device's key"
@@ -263,10 +329,17 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 				/>
 			) : (
 				<>
-					{owner && <Btn label="Make a backup key" onPress={() => setPanel({ kind: 'backup-form' })} disabled={busy} testID={TEST_IDS.settings.makeBackupKeyBtn} />}
+					{owner && (
+						<>
+							<Btn label="Add an owner key" onPress={() => setPanel({ kind: 'grant-form', backup: false })} disabled={busy} testID={TEST_IDS.settings.addOwnerKeyBtn} />
+							<Btn label="Make a backup" onPress={() => setPanel({ kind: 'grant-form', backup: true })} disabled={busy} testID={TEST_IDS.settings.makeBackupBtn} />
+						</>
+					)}
 					{owner && ownKey && (
 						<Btn label="Export this device's key" onPress={() => setPanel({ kind: 'export-form', ownKey })} disabled={busy} color="#444" testID={TEST_IDS.settings.exportOwnKeyBtn} />
 					)}
+					{owner && <OutstandingGrants grants={grants} listError={grantsError} busy={busy} onWithdraw={withdrawGrant} />}
+					<RedeemForm busy={busy} onRedeem={runRedeem} />
 					<ImportForm busy={busy} onImport={runImport} />
 				</>
 			)}
@@ -403,7 +476,7 @@ function ImportForm({ busy, onImport }: {
 		<View>
 			<Text style={controlStyles.subTitle}>Import an owner key</Text>
 			<Text style={controlStyles.hint}>
-				An owner key exported on another device, or a backup key. This phone keeps it, and is an owner of every cadre that lists it.
+				An owner key exported under Export this device&apos;s key. This phone keeps it, and is an owner of every cadre that lists it.
 			</Text>
 			<LabelledInput label="Owner key" value={text} onChangeText={setText} placeholder="sereus-owner-key…" multiline testID={TEST_IDS.settings.importOwnerKeyInput} />
 			<Btn label="Scan owner key" onPress={() => setScannerOpen(true)} disabled={busy} color="#444" testID={TEST_IDS.settings.scanOwnerKeyBtn} />
@@ -471,11 +544,19 @@ function RemovePrompt({ removal, onKeep, onConfirm, onCancel }: {
 
 function RemovalDetails({ removal, onKeep }: { removal: PendingRemoval; onKeep: (id: string, keep: boolean) => void }) {
 	const { plan, rows, kept } = removal;
+	const grantLines = grantRemovalLines(plan.grants);
 	return (
 		<>
 			<Text style={controlStyles.promptText}>
 				Whoever holds this key can no longer act as an owner of this cadre. The devices it was used on stay in the cadre.
 			</Text>
+			{grantLines.length > 0 && (
+				<>
+					<Text style={controlStyles.promptText}>It made these owner grants, which stop working with it:</Text>
+					{grantLines.map((line, index) => <Text key={index} style={controlStyles.promptText}>{line}</Text>)}
+					<Text style={controlStyles.hint}>Make new ones with another owner key if they are still needed.</Text>
+				</>
+			)}
 			{rows.length > 0 && (
 				<>
 					<Text style={controlStyles.promptText}>These were added with this key. Keep each one?</Text>

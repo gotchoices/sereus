@@ -2,16 +2,18 @@ appId: ${MAESTRO_APP_ID}
 ---
 # Shared bootstrap for all e2e flows.
 # Launches the phone app fresh, answers the first-launch question "Do you already
-# use Sereus apps?" with Yes, joins the drone's cadre by redeeming its invitation
-# (the app never founds a cadre of its own), creates a chat strand, and switches
-# to the Chat tab.
+# use Sereus apps?" with Yes, joins the drone's cadre by pasting what the drone
+# made (the app never founds a cadre of its own), creates a chat strand, and
+# switches to the Chat tab.
 #
 # Env vars (injected by scripts/run-e2e.mjs):
-#   CADRE_INVITATION         — drone's cadre invitation (pins the drone owner key
-#                              and admits the phone at the drone as a machine, so
-#                              the phone trusts what it then syncs; founding a
-#                              strand needs an owner, which the owner-grant join
-#                              of `reference-app-rn-owner-grants` makes it)
+#   JOIN_CODE                — what the join field takes. The phone app's run passes
+#                              the drone's owner grant: redeeming it pins the drone
+#                              owner key, makes the phone's own key an owner and admits
+#                              the phone as a machine, and founding a strand needs an
+#                              owner. reference-app-ns's run passes the drone's machine
+#                              invitation, since that app's join field takes no owner
+#                              grant yet, so its run stops at Create strand.
 #   STRAND_ID                — drone's pre-created strand
 #   SIDECAR_URL              — drone HTTP base URL
 #   MAESTRO_APP_ID           — phone app bundle id
@@ -43,7 +45,7 @@ appId: ${MAESTRO_APP_ID}
     direction: DOWN
 - tapOn:
     id: "input-cadre-invitation"
-- inputText: ${CADRE_INVITATION}
+- inputText: ${JOIN_CODE}
 - hideKeyboard
 - scrollUntilVisible:
     element:

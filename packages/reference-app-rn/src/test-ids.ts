@@ -138,10 +138,29 @@ export const TEST_IDS = {
 		removeOwnerKeyBtn: (key: string) => `btn-remove-owner-key-${key}`,
 		/** Re-reads the owner keys and this app's standing. */
 		refreshOwnerKeysBtn: 'btn-refresh-owner-keys',
-		/** Open the form for a backup key, or for exporting this device's key. */
-		makeBackupKeyBtn: 'btn-make-backup-key',
+		/** Open the owner-grant form: for another device or app, or for a backup. */
+		addOwnerKeyBtn: 'btn-add-owner-key',
+		makeBackupBtn: 'btn-make-backup',
+		/** That form: the name, then Make it and Cancel. */
+		ownerGrantLabelInput: 'input-owner-grant-label',
+		confirmOwnerGrantBtn: 'btn-confirm-owner-grant',
+		cancelOwnerGrantBtn: 'btn-cancel-owner-grant',
+		/** The `ShareCode` prefix of a minted owner grant; see `shareCodeText` and `shareCodeCopyBtn`. Then Share, and Done. */
+		ownerGrantShare: 'owner-grant',
+		shareOwnerGrantBtn: 'btn-share-owner-grant',
+		ownerGrantDoneBtn: 'btn-owner-grant-done',
+		/** Outstanding owner grants: one listed grant and its Withdraw (pass the grant's key), the confirmation's buttons, and Refresh. */
+		ownerGrantRow: (key: string) => `row-owner-grant-${key}`,
+		withdrawOwnerGrantBtn: (key: string) => `btn-withdraw-owner-grant-${key}`,
+		confirmWithdrawOwnerGrantBtn: 'btn-confirm-withdraw-owner-grant',
+		cancelWithdrawOwnerGrantBtn: 'btn-cancel-withdraw-owner-grant',
+		/** Redeem an owner grant: the pasted text, Scan, and Redeem. */
+		redeemOwnerGrantInput: 'input-redeem-owner-grant',
+		scanOwnerGrantBtn: 'btn-scan-owner-grant',
+		redeemOwnerGrantBtn: 'btn-redeem-owner-grant',
+		/** Open the form for exporting this device's key. */
 		exportOwnKeyBtn: 'btn-export-own-key',
-		/** That form: the name, Protect with a passphrase, the passphrase twice, then Make backup key (or Export) and Cancel. */
+		/** That form: the name, Protect with a passphrase, the passphrase twice, then Export and Cancel. */
 		ownerKeyLabelInput: 'input-owner-key-label',
 		ownerKeyPassphraseSwitch: 'switch-owner-key-passphrase',
 		ownerKeyPassphraseInput: 'input-owner-key-passphrase',

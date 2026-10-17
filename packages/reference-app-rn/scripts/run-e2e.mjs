@@ -211,7 +211,8 @@ async function main() {
 
 	console.log('→ Launching maestro…');
 	const maestroEnv = {
-		CADRE_INVITATION: testData.cadreInvitation,
+		// The owner grant, so the phone joins as an owner and can create the strand `_setup.yaml` creates.
+		JOIN_CODE: testData.ownerGrant,
 		STRAND_ID: testData.strandId,
 		SIDECAR_URL,
 		MAESTRO_APP_ID,

@@ -405,9 +405,10 @@ The orchestrator:
 4. runs `adb reverse tcp:4002` and `tcp:4080` so the Android emulator can reach
    the host-bound fixture;
 5. runs `maestro test` over the RN `maestro/flows/`, passing the test-data fields
-   (`PARTY_ID`, `BOOTSTRAP_ADDR`, `CADRE_INVITATION`, `STRAND_ID`) +
+   (`PARTY_ID`, `BOOTSTRAP_ADDR`, `JOIN_CODE` from `cadreInvitation`, `STRAND_ID`) +
    `SIDECAR_URL` + `MAESTRO_APP_ID` as `-e KEY=VALUE` env vars (and
-   `--format junit`). `CADRE_INVITATION` is what `_setup.yaml` types into
+   `--format junit`). `JOIN_CODE` is the drone's machine invitation, not the owner grant the
+   phone app's run passes, since this app's join field takes no grant yet; it is what `_setup.yaml` types into
    `input-cadre-invitation` before tapping `btn-join-cadre` and asserting the
    `Joined cadre` modal: redeeming it pins the drone's owner key and admits the
    phone at the drone;

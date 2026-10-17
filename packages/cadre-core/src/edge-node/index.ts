@@ -45,6 +45,7 @@ export {
 export { attachStrandWhenWritable, DEFAULT_STRAND_PATIENCE_MS, retryAfterRestart } from './strands.js';
 export { StrandsNeedOwnerJoinError, type PendingStrandMove, type StrandMoveOutcome } from './strand-move.js';
 export { isOwnerGrant, type JoinCredential } from './join-credential.js';
+export { type RedeemedOwnerGrant } from './owner-grant.js';
 export { FormerPartyNotEmptyError, StrandMovePendingError, type DissolveFormerPartyOptions } from './dissolve.js';
 export {
 	bootstrapPeersKvKey,

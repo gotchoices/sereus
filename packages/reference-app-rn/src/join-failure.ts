@@ -1,7 +1,8 @@
 /**
  * join-failure.ts — the plain words the alert shows for each way a join can fail before a
- * member admits the app: `CadreNode.redeemCadreInvitation`'s errors, and the kit's refusals
- * before it switches party.
+ * member admits the app: `CadreNode.redeemCadreInvitation`'s errors, an owner grant's
+ * (`owner-keys.ts` words those, since Owner keys shows them too), and the kit's refusals before
+ * it switches party.
  *
  * reference-app-ns carries a hand-copied twin (`src/join-failure.ts` there), without the
  * cancelled-join alert, since it offers no cancel; the two apps share no code by design
@@ -15,6 +16,7 @@ import {
 } from '@serfab/cadre-core';
 import { StrandsNeedOwnerJoinError } from '@serfab/cadre-rn/phone-node';
 import { chats, JoinCancelledError } from './join-flow';
+import { describeOwnerGrantFailure } from './owner-keys';
 
 const TRY_AGAIN = 'The member could not complete the join right now; try again';
 
@@ -41,9 +43,9 @@ export function describeJoinFailure(err: unknown): string {
   if (err instanceof StrandsNeedOwnerJoinError) {
     // No strands means pending joins or invitations only.
     const held = err.strandCount > 0 ? `this app's ${chats(err.strandCount)}` : 'what this app\'s own cadre holds';
-    return `This invitation makes the app a member, and only an owner can bring ${held} along. Join with an owner grant instead, made in the app that holds your cadre under Owner keys.`;
+    return `This invitation makes the app a member, and only an owner can bring ${held} along. In the app that holds your cadre, make an owner grant under Owner keys → Add an owner key, and paste it here.`;
   }
-  return err instanceof Error ? err.message : String(err);
+  return describeOwnerGrantFailure(err) ?? (err instanceof Error ? err.message : String(err));
 }
 
 /** The alert for a join that did not happen: the user cancelled it, or it failed. */

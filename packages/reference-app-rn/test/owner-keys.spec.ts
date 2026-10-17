@@ -1,10 +1,20 @@
 /**
- * `owner-keys.ts` — what Owner keys makes of an import's answer, and what a removal re-vouches
- * from its Keep switches.
+ * `owner-keys.ts` — what Owner keys makes of an import's answer and of an owner grant's
+ * redemption, what a removal re-vouches from its Keep switches, and which owner grants its prompt
+ * says stop working. The error classes are the real ones from `@serfab/cadre-core`, so an
+ * `instanceof` that stops matching fails here rather than on a phone.
  */
 import { describe, it, expect } from 'vitest';
-import type { CadreMachine, CadreOwnerKey, OwnerKeyRemovalPlan } from '@serfab/cadre-core';
-import { dependentRows, importOutcome, revouchOf } from '../src/owner-keys';
+import {
+	OwnerGrantRejectedError,
+	OwnerGrantUnreachableError,
+	OwnerKeyAddRefusedError,
+	type CadreMachine,
+	type CadreOwnerKey,
+	type OwnerGrantRow,
+	type OwnerKeyRemovalPlan,
+} from '@serfab/cadre-core';
+import { dependentRows, describeOwnerKeyFailure, grantRemovalLines, importOutcome, redemptionAlert, revouchOf } from '../src/owner-keys';
 
 function ownerKey(key: string, label: string | null, heldHere = false): CadreOwnerKey {
 	return { key, label, vouchedBy: null, heldHere, trusted: true };
@@ -46,3 +56,39 @@ describe('the removal\'s Keep switches', () => {
 		expect(revouchOf(rows, new Set(['peer-gone', 'key-named']))).toEqual({ peers: ['peer-gone'], owners: ['key-named'] });
 	});
 });
+
+describe('redeeming an owner grant', () => {
+	const listed = [ownerKey('slot-key', 'tablet', true)];
+
+	it('tells becoming an owner from being one already and from a key whose row has not arrived', () => {
+		expect(redemptionAlert({ ownerKey: 'slot-key', alreadyOwner: false, wired: true }, listed).title).toBe('Now an owner');
+		expect(redemptionAlert({ ownerKey: 'slot-key', alreadyOwner: true, wired: true }, listed).message).toMatch(/not used/);
+		expect(redemptionAlert({ ownerKey: 'slot-key', alreadyOwner: false, wired: false }, listed).message).toMatch(/next start/);
+	});
+
+	it.each<[string, unknown, RegExp]>([
+		['a spent or withdrawn grant', new OwnerGrantRejectedError('grant-spent', 'withdrawn'), /expired, withdrawn or used up/],
+		['a grant for another cadre', new OwnerGrantRejectedError('party-mismatch', 'other'), /another cadre/],
+		['no member reachable', new OwnerGrantUnreachableError([]), /could be reached/],
+		['a member with no connection to the others', new OwnerKeyAddRefusedError('slot-key', 'alone'), /^Connect to your cadre/],
+		['text that is not an owner grant, refused by the decoder', new Error('This is an owner key, not an owner grant'), /^This is an owner key/],
+	])('words the refusal of %s', (_label, err, expected) => {
+		expect(describeOwnerKeyFailure(err)).toMatch(expected);
+	});
+});
+
+describe('the removal prompt\'s owner grants', () => {
+	it('names each live grant the removed key made, a backup as a backup', () => {
+		const grants = [grantRow('Paper', null), grantRow(null, null), grantRow('tablet', '2026-10-17 12:00:00')];
+
+		expect(grantRemovalLines(grants)).toEqual([
+			'Backup "Paper" stops working.',
+			'A backup with no name stops working.',
+			'The owner grant "tablet" stops working.',
+		]);
+	});
+});
+
+function grantRow(label: string | null, expiresAt: string | null): OwnerGrantRow {
+	return { key: `grant-${label}`, label, expiresAt, totalUses: 1, stampId: 'stamp', issuerKey: 'lost-key', issuerSig: 'sig' };
+}

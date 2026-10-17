@@ -108,11 +108,13 @@ async function main() {
 	if (!controlDb) throw new Error('Control database unavailable; cannot enroll drone owner');
 	await controlDb.ensureOwnerKey(owner.publicKey, 'drone');
 
-	// Mint the cadre invitation the phone redeems at this drone (`_setup.yaml`
-	// pastes it into `input-cadre-invitation`). Its member address is the ws
-	// listener above, so the phone dials the drone directly; an hour covers a slow
-	// device run. It admits the phone as a machine only, and the flow then creates a
-	// strand, which needs an owner: the owner-grant join arrives with `reference-app-rn-owner-grants`.
+	// Mint what the phone joins with at this drone (`_setup.yaml` pastes it into
+	// `input-cadre-invitation`). The member address of each is the ws listener above,
+	// so the phone dials the drone directly; an hour covers a slow device run. The
+	// owner grant makes the phone a machine and an owner, which creating the strand
+	// that follows needs; the machine invitation admits a machine only, and is for
+	// reference-app-ns, whose join field takes no owner grant yet.
+	const { encoded: ownerGrant } = await node.createOwnerGrant({ label: 'e2e phone', expiresInMs: 60 * 60_000 });
 	const { encoded: cadreInvitation } = await node.createCadreInvitation({ expiresInMs: 60 * 60_000 });
 
 	// Found the pre-configured chat strand: publish its row naming this machine as founder
@@ -129,7 +131,7 @@ async function main() {
 	);
 
 	// The WS address, logged for a manual run; the e2e phone reaches the drone through
-	// the invitation's member address instead.
+	// the owner grant's member address instead.
 	const multiaddrs = node.getMultiaddrs();
 	const bootstrapAddr = multiaddrs.find((a) => a.includes('/ws')) ?? multiaddrs[0];
 	console.log(`  Bootstrap addr: ${bootstrapAddr}`);
@@ -144,6 +146,7 @@ async function main() {
 	// Write test-data.json
 	const testData = {
 		strandId,
+		ownerGrant,
 		cadreInvitation,
 	};
 	const testDataPath = join(__dirname, 'test-data.json');

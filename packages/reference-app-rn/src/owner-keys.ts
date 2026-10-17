@@ -1,32 +1,43 @@
 /**
- * owner-keys.ts — what Settings → "Owner keys" (`owner-keys-section.tsx`) shows from
- * `CadreNode.listOwnerKeys` and `planOwnerKeyRemoval`, how an owner key is named in a prompt, the
- * export form's check, what an import came to, and the words for each way a backup, an export, an
- * import or a removal is refused. No React and no native imports.
+ * owner-keys.ts — what Settings → "Owner keys" (`owner-keys-section.tsx`, `owner-grant-views.tsx`)
+ * shows from `CadreNode.listOwnerKeys`, `listOwnerGrants` and `planOwnerKeyRemoval`, how an owner
+ * key is named in a prompt, the forms' checks, what an import or a grant's redemption came to, and
+ * the words for each way an owner grant, an export, an import or a removal is refused. No React and
+ * no native imports. The browser app copies these words (`reference-app-web`'s `owner-keys.svelte.ts`).
  *
- * An export's text is the private key: never log it, or a passphrase.
+ * An export's text is the private key, and a grant's text makes whoever holds it an owner: never
+ * log either, or a passphrase.
  */
 
 import {
 	LOCKED_OWNER_KEY_EXPORT_PREFIX,
+	OWNER_GRANT_PREFIX,
 	OWNER_KEY_EXPORT_STEM,
 	OWNER_KEY_MAX_LABEL,
+	OwnerGrantIssuerUnknownError,
+	OwnerGrantRejectedError,
+	OwnerGrantReplyInvalidError,
+	OwnerGrantUnreachableError,
 	OwnerKeyAddRefusedError,
 	OwnerKeyExportError,
 	OwnerKeyRemovalRefusedError,
 	OwnerKeySlotOccupiedError,
+	parseNullableStoredDatetimeMs,
+	type CadreInvitationReach,
 	type CadreMachine,
 	type CadreOwnerKey,
 	type ImportedOwnerKey,
-	type OwnerKeyAddRefusal,
+	type OwnerGrantRow,
+	type OwnerGrantStatus,
 	type OwnerKeyExportOptions,
 	type OwnerKeyRemovalPlan,
 	type OwnerKeyRemovalRefusal,
 } from '@serfab/cadre-core';
+import type { RedeemedOwnerGrant } from '@serfab/cadre-rn/phone-node';
 import { machineCode, machineKind, shortPeerId } from './machines';
 import { ownerFingerprint } from './node-claim';
 
-/** The name a backup key is offered under. */
+/** The name a backup is offered under. */
 export const DEFAULT_BACKUP_LABEL = 'Backup';
 
 /** Under this device's own key: an owner key cannot sign its own removal (`self`). */
@@ -34,12 +45,6 @@ export const OWN_KEY_LINE = 'A device cannot remove its own owner key; use anoth
 
 /** Above an export, the one time it is shown. */
 export const EXPORT_WARNING = 'Anyone who has this can control your cadre. Keep it somewhere safe and offline. This phone does not keep a copy.';
-
-const ALONE_LINE = 'Connect to your cadre first; a new owner key made now would not reach your other machines.';
-
-const ADD_REFUSAL_LINE: Record<OwnerKeyAddRefusal, string> = {
-	alone: ALONE_LINE,
-};
 
 /** Why a removal cannot go ahead: in the prompt from the plan, and in the alert when `removeOwner` refuses. */
 export const REMOVAL_REFUSAL_LINE: Record<OwnerKeyRemovalRefusal, string> = {
@@ -101,16 +106,22 @@ export interface ExportForm {
 	repeat: string;
 }
 
+/** Why a name cannot be used, for the line under its form; null when it can. A blank name is none. */
+export function labelProblem(label: string): string | null {
+	return label.trim().length > OWNER_KEY_MAX_LABEL ? `A name has at most ${OWNER_KEY_MAX_LABEL} characters.` : null;
+}
+
 /** Why the form cannot be sent yet, for the line under it; null when it can. */
 export function exportFormProblem(form: ExportForm): string | null {
-	if (form.label.trim().length > OWNER_KEY_MAX_LABEL) return `A name has at most ${OWNER_KEY_MAX_LABEL} characters.`;
+	const label = labelProblem(form.label);
+	if (label) return label;
 	if (!form.locked) return null;
 	if (form.passphrase === '') return 'Enter a passphrase, or turn off Protect with a passphrase.';
 	if (form.passphrase !== form.repeat) return 'The two passphrases do not match.';
 	return null;
 }
 
-/** The form as `addBackupOwnerKey` and `exportOwnerKey` take it: a blank name is none, and an unlocked export has no passphrase. */
+/** The form as `exportOwnerKey` takes it: a blank name is none, and an unlocked export has no passphrase. */
 export function exportOptions(form: ExportForm): OwnerKeyExportOptions {
 	const label = form.label.trim();
 	return {
@@ -152,12 +163,13 @@ export function importOutcomeAlert(outcome: ImportOutcome, imported: ImportedOwn
 	}
 }
 
-/** What the alert says for a backup, an export, an import or a removal that failed. */
+/** What the alert says for an owner grant made, withdrawn or redeemed, an export, an import or a removal that failed. */
 export function describeOwnerKeyFailure(err: unknown): string {
+	const grantLine = describeOwnerGrantFailure(err);
+	if (grantLine !== null) return grantLine;
 	// The export module's messages are written for the user and never carry key material.
 	if (err instanceof OwnerKeyExportError) return err.message;
 	if (err instanceof OwnerKeySlotOccupiedError) return SLOT_OCCUPIED_LINE;
-	if (err instanceof OwnerKeyAddRefusedError) return ADD_REFUSAL_LINE[err.code];
 	if (err instanceof OwnerKeyRemovalRefusedError) return REMOVAL_REFUSAL_LINE[err.code];
 	return err instanceof Error ? err.message : String(err);
 }
@@ -187,4 +199,138 @@ export function dependentRows(plan: OwnerKeyRemovalPlan, owners: readonly CadreO
 export function revouchOf(rows: readonly DependentRow[], kept: ReadonlySet<string>): { peers: string[]; owners: string[] } {
 	const keptIds = (kind: DependentRow['kind']) => rows.filter((row) => row.kind === kind && kept.has(row.id)).map((row) => row.id);
 	return { peers: keptIds('device'), owners: keptIds('owner-key') };
+}
+
+/** The removal prompt's lines for the live owner grants the key made (the plan's `grants`): each stops working with it. */
+export function grantRemovalLines(grants: readonly OwnerGrantRow[]): string[] {
+	return grants.map((grant) => {
+		const backup = isBackupGrant(grant);
+		if (grant.label === null) return backup ? 'A backup with no name stops working.' : 'An owner grant with no name stops working.';
+		return backup ? `Backup "${grant.label}" stops working.` : `The owner grant "${grant.label}" stops working.`;
+	});
+}
+
+// ── Owner grants ────────────────────────────────────────────────────────────
+
+/** Said the first time a screen names an owner grant. */
+export const OWNER_GRANT_MEANING = 'An owner grant is a code that makes the device or app that uses it an owner of this cadre.';
+
+/** Above a backup, the one time it is shown. */
+export const BACKUP_WARNING = 'Whoever holds this can become an owner of this cadre until it is used or withdrawn. Keep it like a key: somewhere safe and offline. This phone does not keep a copy.';
+
+/** Under a backup's warning: it is redeemed at a machine of the cadre, which an exported key needs none of. */
+export const BACKUP_NEEDS_A_MACHINE = 'It works only while one of this cadre\'s machines can be reached at an address it carries. To keep a copy that works with no network, use Export this device\'s key.';
+
+/** Above an owner grant for another device or app, the one time it is shown. */
+export const GRANT_WARNING = 'Whoever uses this first becomes an owner of this cadre. Show or send it only to your own device or app.';
+
+/** Where the other device or app takes an owner grant. */
+export const GRANT_WHERE_LINE = 'On the other device or app, paste or scan it under Owner keys → Redeem an owner grant. An app that is not part of this cadre yet takes it under Join my existing cadre.';
+
+/** What a minted grant's reach means for whoever redeems it; nothing to add when it is `anywhere`. */
+export function grantReachLine(reach: CadreInvitationReach, backup: boolean): { text: string; warning: boolean } | null {
+	switch (reach) {
+		case 'anywhere':
+			return null;
+		case 'local-network':
+			return { text: 'Your cadre\'s other machines are reachable only on their home network: the device that uses this must be on the same Wi-Fi.', warning: false };
+		case 'issuer-only':
+			return {
+				text: backup
+					? 'No always-on machine of your cadre can answer this backup, so it works only while this phone is open and reachable, and cannot stand in for this phone if it is lost. Add an always-on node, then make a new backup.'
+					: 'No always-on machine of your cadre can answer this code, so it works only while this phone is open and reachable.',
+				warning: true,
+			};
+	}
+}
+
+/** A backup is a grant with no expiry; any other grant is short-lived. */
+export function isBackupGrant(grant: Pick<OwnerGrantRow, 'expiresAt'>): boolean {
+	return grant.expiresAt === null;
+}
+
+/** A listed grant's title: the name the keys it seats will carry, or "Unnamed backup" / "Unnamed grant". */
+export function grantTitle(grant: Pick<OwnerGrantRow, 'label' | 'expiresAt'>): string {
+	return grant.label ?? (isBackupGrant(grant) ? 'Unnamed backup' : 'Unnamed grant');
+}
+
+/** "1 use left", "3 uses left", "No limit on uses". */
+export function usesLeftText(totalUses: number | null, usesRecorded: number): string {
+	if (totalUses === null) return 'No limit on uses';
+	const left = Math.max(totalUses - usesRecorded, 0);
+	return left === 1 ? '1 use left' : `${left} uses left`;
+}
+
+/** Whether scanned or pasted text is an owner grant. */
+export function isOwnerGrantText(text: string): boolean {
+	return text.trim().startsWith(OWNER_GRANT_PREFIX);
+}
+
+/** The alert after a redemption, naming this device's key as the list does when the cadre lists it. */
+export function redemptionAlert(redeemed: RedeemedOwnerGrant, listed: readonly CadreOwnerKey[]): { title: string; message: string } {
+	const name = listedKeyName(listed, redeemed.ownerKey);
+	if (redeemed.alreadyOwner) {
+		return {
+			title: 'Already an owner',
+			message: `This device is already an owner of this cadre, with ${name}. The grant was not used: it still works for another device until it expires or is withdrawn.`,
+		};
+	}
+	if (!redeemed.wired) {
+		return {
+			title: 'Owner grant accepted',
+			message: `This device's key (${name}) is now an owner of this cadre. The device acts as one once your cadre's records reach it, at the latest from its next start.`,
+		};
+	}
+	return { title: 'Now an owner', message: `This device is now an owner of this cadre, with ${name}.` };
+}
+
+const GRANT_TRY_AGAIN = 'Your cadre could not take the grant right now; try again.';
+
+/**
+ * One line per refusal a member, or this device on its own behalf, answers a redemption with.
+ * Keyed by the error's own `code` type, so a code added to cadre-core fails typecheck here until
+ * it has words.
+ */
+const GRANT_REJECTION_LINE: Record<OwnerGrantRejectedError['code'], string> = {
+	'grant-spent': 'This owner grant is expired, withdrawn or used up, or the owner key that made it was removed.',
+	'grant-invalid': 'This owner grant is not valid.',
+	'party-mismatch': 'This owner grant is for another cadre.',
+	'issuer-unknown': 'The machine asked does not know the owner who made this grant yet; try again shortly.',
+	busy: GRANT_TRY_AGAIN,
+	conflict: GRANT_TRY_AGAIN,
+	internal: GRANT_TRY_AGAIN,
+	unrecognized: GRANT_TRY_AGAIN,
+};
+
+/**
+ * What to say about an owner grant's redemption that failed, under Owner keys or in a join; null
+ * for an error that is not a redemption's, which the caller words. The decoder's refusal of other
+ * text is written for the user and reaches the caller as a plain error.
+ */
+export function describeOwnerGrantFailure(err: unknown): string | null {
+	if (err instanceof OwnerGrantRejectedError) return GRANT_REJECTION_LINE[err.code];
+	if (err instanceof OwnerGrantUnreachableError) {
+		return 'None of your cadre\'s machines named in this grant could be reached. Connect to the internet, or to your cadre\'s Wi-Fi, and try again.';
+	}
+	if (err instanceof OwnerGrantReplyInvalidError) return 'A machine answered, but its answer did not verify.';
+	if (err instanceof OwnerGrantIssuerUnknownError) {
+		return 'This device does not know the owner who made this grant: that owner key was removed, or its record has not reached this device yet. Try again shortly.';
+	}
+	// A redemption's local path refuses `alone` with the add's error; nothing else on these screens adds a key.
+	if (err instanceof OwnerKeyAddRefusedError) {
+		return 'Connect to your cadre and try again: this phone reaches none of its other machines, so they would not learn that it is an owner.';
+	}
+	return null;
+}
+
+/** The grants still redeemable, latest expiry first, so backups lead. A row records no creation time. */
+export function liveGrants(statuses: readonly OwnerGrantStatus[]): OwnerGrantStatus[] {
+	const expiry = (status: OwnerGrantStatus) => parseNullableStoredDatetimeMs(status.grant.expiresAt) ?? Number.MAX_SAFE_INTEGER;
+	return statuses.filter((status) => status.live).sort((a, b) => expiry(b) - expiry(a));
+}
+
+/** A grant's title the one time it is shown: "Backup", `Backup "Paper"`, "Owner grant", `Owner grant "tablet"`. */
+export function shownGrantTitle(backup: boolean, label: string | null): string {
+	const kind = backup ? 'Backup' : 'Owner grant';
+	return label === null || (backup && label === DEFAULT_BACKUP_LABEL) ? kind : `${kind} "${label}"`;
 }

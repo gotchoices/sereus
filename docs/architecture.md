@@ -877,6 +877,8 @@ The row travels for the invitation's reason (a member that has not received it s
 
 Neither path wires the signer: the caller calls `wireOwnKeyIfOwner(signer)` once the row is present locally, at once on the local path and after the control store syncs on the protocol path. A key that is already a live owner is answered `alreadyOwner` with no use spent, on both paths, and so is the retry after a lost reply, which carries the same `usageStampId`.
 
+**On an edge node.** `EdgeNode.redeemOwnerGrant(text)` (`edge-node/owner-grant.ts`), the apps' Redeem an owner grant, decodes the text, refuses a grant of another party with `OwnerGrantRejectedError` `party-mismatch` before any key is made, and redeems for the owner slot's key, created when the slot is empty, then wires it as a joined start does. A slot key that is already a live owner is answered `alreadyOwner` before anything is signed: the local path refuses `alone` before it asks, and a device that is an owner hears so whether or not it is connected. `EdgeNode.joinCadre` takes a grant for a party the app is not in ([An app joins an existing cadre](#an-app-joins-an-existing-cadre)).
+
 **The exchange** is one frame each way over `control-stream.ts`, capped at 64 KiB:
 
 ```typescript
@@ -919,7 +921,7 @@ The member checks in cost order: shape, party, both signatures, then database wo
 
 **The single-use race.** Two holders redeeming one single-use grant at two members at once can both be seated, as for invitations; the accepted tradeoff and its mitigations are recorded at `OwnerGrantUsage.Authorized`.
 
-Proof: `owner-grant-codec.spec.ts` (the codec and the cross-refusals), `cadre-node-owner-grant.spec.ts` (two in-process nodes: a holder with no machine, a join with a backup grant, the local path and its `alone` refusal, the gate, the removal plan) and `control-owner-grant.spec.ts` (the tables); over real libp2p nodes, `owner-grant-without-machine.integration.ts` (a holder that is not in the cadre seats a key through the only always-on member, derived on that member and on the owner, no machine admitted, a second holder refused `grant-spent`) and `owner-grant-backup-recovery.integration.ts` (a backup grant joined with at that member while the issuing phone is offline, then the phone's machine and owner key removed with the member re-vouched).
+Proof: `owner-grant-codec.spec.ts` (the codec and the cross-refusals), `cadre-node-owner-grant.spec.ts` (two in-process nodes: a holder with no machine, a join with a backup grant, the local path and its `alone` refusal, the gate, the removal plan) and `control-owner-grant.spec.ts` (the tables); over real libp2p nodes, `owner-grant-without-machine.integration.ts` (a holder that is not in the cadre seats a key through the only always-on member, derived on that member and on the owner, no machine admitted, a second holder refused `grant-spent`) and `owner-grant-backup-recovery.integration.ts` (a backup grant joined with at that member while the issuing phone is offline, then the phone's machine and owner key removed with the member re-vouched). The edge node's redemption is `phone-node/node.spec.ts` in cadre-rn (a phone whose owner slot was lost redeems a backup grant and is an owner again; another party's grant makes no key).
 
 ### Removing a machine
 
@@ -2443,8 +2445,9 @@ identity, not import the old one.
   (`applySeed` with the inviting cadre's owner keys pinned — see
   [Enrollment and Bootstrap](#enrollment-and-bootstrap)), receiving a fresh
   identity. A lost owner slot means the device is no longer an owner: importing a
-  backup of the key (`EdgeNode.importOwnerKey`) makes it one again, as does
-  another owner adding a new key. The settings screen surfaces the **owner public
+  backup of the key (`EdgeNode.importOwnerKey`) or redeeming a backup grant
+  (`EdgeNode.redeemOwnerGrant`) makes it one again, as does another owner
+  adding a new key. The settings screen surfaces the **owner public
   key** (base64url) the node signs with, so it can be shared for (re-)pairing.
 
 #### Closed-strand member keys — accepted residual risk

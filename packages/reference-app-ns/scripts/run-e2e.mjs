@@ -252,9 +252,11 @@ async function main() {
 	const maestroEnv = {
 		PARTY_ID: testData.partyId,
 		BOOTSTRAP_ADDR: testData.droneBootstrapAddr,
-		// Drone's cadre invitation — `_setup.yaml` types it into `input-cadre-invitation`
-		// and taps Join cadre, which pins the drone owner key and admits the phone.
-		CADRE_INVITATION: testData.cadreInvitation,
+		// Drone's machine invitation — `_setup.yaml` types it into `input-cadre-invitation`
+		// and taps Join cadre, which pins the drone owner key and admits the phone as a
+		// machine. Not the owner grant the phone app's run passes: this app's join field
+		// takes no grant yet (tickets/backlog/feat-reference-app-ns-owner-grant-join.md).
+		JOIN_CODE: testData.cadreInvitation,
 		STRAND_ID: testData.strandId,
 		SIDECAR_URL,
 		MAESTRO_APP_ID,

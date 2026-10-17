@@ -66,6 +66,7 @@ if (saved?.autoStart) await phone.start(saved.options);
 | `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the credential's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), `removed` (an owner removed the app from `partyId`; see [Removed from the cadre](#removed-from-the-cadre)), or `failed` (with the error). |
 | `ownerPublicKey()` | The public key of the owner key the running node signs with, for pairing and approval prompts; null unless running with one wired (a `member` has none). |
 | `listOwnerKeys()`, `addBackupOwnerKey(options?)`, `exportOwnerKey(options?)`, `importOwnerKey(text, passphrase?)`, `planOwnerKeyRemoval(key)`, `removeOwner(key, options?)` | The owner-key screen's calls; see [The phone's owner key](#the-phones-owner-key). |
+| `createOwnerGrant(options?)`, `listOwnerGrants()`, `withdrawOwnerGrant(key)`, `redeemOwnerGrant(text)` | The owner-grant calls on the same screen; see [Owner grants](#owner-grants). |
 
 Platform options with defaults:
 
@@ -93,6 +94,18 @@ The owner-key calls run in turn with start, stop and join, and those that name t
 - **`planOwnerKeyRemoval(key)`**, **`removeOwner(key, { revouch })`**: cadre-core's, for the removal prompt and its keep-switches.
 
 One key imported on two devices signs on both; their concurrent writes conflict as any two owners' do.
+
+### Owner grants
+
+An owner grant is a code whose holder becomes an owner of the cadre, with a key of its own, through any machine of the cadre ([architecture.md → Owner grants](../../docs/architecture.md#owner-grants)). The owner side mints and withdraws grants; the other side redeems one here, or joins with one ([Joining another cadre](#joining-another-cadre)). These calls run in turn with start, stop and join, and throw while no node is running:
+
+- **`createOwnerGrant({ label?, expiresInMs?, uses? })`**: cadre-core's `CadreNode.createOwnerGrant`, signed by this app's key: `{ grant, encoded, reach }`. 15 minutes and one use by default; `expiresInMs: null` is a backup with no expiry, shown once and kept like a key. `reach` says whether anyone could redeem it once this phone is gone.
+- **`listOwnerGrants()`**: every grant the node holds, minted here or replicated in, with `live`, `withdrawn` and `usesRecorded`.
+- **`withdrawOwnerGrant(key)`**: files the withdrawal; `false` when the grant is not held here or was already withdrawn. Keys it already seated stay owners.
+- **`redeemOwnerGrant(text)`**: makes this app an owner of the running party with the owner slot's key, created when the slot is empty, and wires it (`status.owner` becomes `enrolled`). Answers `{ ownerKey, alreadyOwner, wired }`:
+  - **`alreadyOwner`**: the slot's key is a live owner already, answered before anything is signed or written, connected or not, so the grant spends no use.
+  - **`wired: false`**: the redemption went to another member (this node is not a member machine) and the key's row had not arrived within `ownerGenesisTimeoutMs`; a later start wires it.
+  - **Refused** with the decoder's error for text that is not an owner grant, with cadre-core's `OwnerGrantRejectedError` `party-mismatch` for a grant of another party (before any key is created), and with what `CadreNode.redeemOwnerGrant` throws: `OwnerKeyAddRefusedError` `alone` on a member with no connection to the others, `OwnerGrantRejectedError` (`grant-spent` for an expired, withdrawn or used grant), `OwnerGrantIssuerUnknownError`, `OwnerGrantUnreachableError`.
 
 ### Joining another cadre
 

@@ -15,6 +15,7 @@ import {
 	DEFAULT_OWNER_KEY_ID,
 	ed25519PublicKeyB64FromPeerId,
 	ed25519PublicKeyFromPrivate,
+	encodeOwnerGrant,
 	exportStrandBundle,
 	StrandMoveNotOwnerError,
 	type CadreInvitation,
@@ -439,6 +440,30 @@ describe('createPhoneNode — its owner key', () => {
 
 		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
 		expect(phone.ownerPublicKey()).toBe(backup.publicKey);
+	}, LIFECYCLE_MS * 2);
+
+	it('is an owner again with a fresh key once it redeems a backup grant, and makes no key for another cadre\'s', async () => {
+		// A grant names the issuer's address, so the phone listens on one.
+		const { platform, secureStore, partyId } = device({ listenAddrs: () => ['/ip4/127.0.0.1/tcp/0/ws'] });
+		const phone = phoneNode(platform);
+		const founded = await phone.start(options(partyId));
+		// The machine row the member's own-store redemption is judged by; otherwise written a second after start.
+		await founded.registerSelf();
+		const backup = await phone.createOwnerGrant({ label: 'Paper', expiresInMs: null });
+		await phone.stop();
+		await loseOwnerSlot(secureStore);
+		await phone.start(options(partyId));
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'member' });
+
+		await expect(phone.redeemOwnerGrant(encodeOwnerGrant(expiredOwnerGrant('another-party')))).rejects.toMatchObject({ code: 'party-mismatch' });
+		expect(await new SecureStoreKeyStore(secureStore).get(DEFAULT_OWNER_KEY_ID), 'no key made for another cadre\'s grant').toBeUndefined();
+
+		const redeemed = await phone.redeemOwnerGrant(backup.encoded);
+
+		expect(redeemed).toMatchObject({ alreadyOwner: false, wired: true });
+		expect(phone.status).toMatchObject({ state: 'running', owner: 'enrolled' });
+		expect(phone.ownerPublicKey()).toBe(redeemed.ownerKey);
+		expect((await phone.listOwnerKeys()).find((row) => row.key === redeemed.ownerKey)?.label).toBe('Paper');
 	}, LIFECYCLE_MS * 2);
 });
 

@@ -33,7 +33,7 @@ Follow `docs/reference-app-rn.md` → "Adding a Device or App", "Devices and Nod
 
 Also note how long each joining step runs, whether the wording fits the screen, and how the modals behave when a scanner closes and an alert opens at once.
 
-**Since `machine-invitation-grants-no-ownership` landed, an invitation admits a machine only.** The **Also an owner** switch, the bearer warning and the owner/member word in the lists are gone, so "approve as owner" above is a plain Add or Allow, and every join by invitation ends "as a member". The rows that need the new app to be an owner (the first two as an owner, Open invitation, App that founded first) need an owner grant made under Owner keys and a join field that takes one, which `reference-app-rn-owner-grants` adds; run those rows once it has landed.
+**Since `machine-invitation-grants-no-ownership` landed, an invitation admits a machine only.** The **Also an owner** switch, the bearer warning and the owner/member word in the lists are gone, so "approve as owner" above is a plain Add or Allow, and every join by invitation ends "as a member". The rows that need the new app to be an owner (the first two as an owner, Open invitation, App that founded first) need an owner grant: on the owner app, Owner keys → Add an owner key, then paste or scan the grant into the new app's join field in place of the invitation (`reference-app-rn-owner-grants`). Also try Owner keys → Make a backup, Outstanding owner grants → Withdraw, and Redeem an owner grant on a member device, as `docs/reference-app-rn.md` → "Owner Keys" describes; the Maestro row's fixture now passes an owner grant (`JOIN_CODE`), so flows 1–3 should get past Create strand.
 
 ## If the run finds bugs
 

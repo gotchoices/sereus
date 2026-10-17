@@ -21,8 +21,11 @@ import type {
   MachineRemovalPlan,
   MachineRemovalResult,
   CadreOwnerKey,
+  CreateOwnerGrantOptions,
+  CreateOwnerGrantResult,
   ExportedOwnerKey,
   ImportedOwnerKey,
+  OwnerGrantStatus,
   OwnerKeyExportOptions,
   OwnerKeyRemovalPlan,
   OwnerKeyRemovalResult,
@@ -57,15 +60,19 @@ import {
   planMachineRemoval as planMachineRemovalImpl,
   removeMachine as removeMachineImpl,
   listOwnerKeys as listOwnerKeysImpl,
-  addBackupOwnerKey as addBackupOwnerKeyImpl,
   exportOwnerKey as exportOwnerKeyImpl,
   importOwnerKey as importOwnerKeyImpl,
   planOwnerKeyRemoval as planOwnerKeyRemovalImpl,
   removeOwner as removeOwnerImpl,
+  createOwnerGrant as createOwnerGrantImpl,
+  listOwnerGrants as listOwnerGrantsImpl,
+  withdrawOwnerGrant as withdrawOwnerGrantImpl,
+  redeemOwnerGrant as redeemOwnerGrantImpl,
   identityPeerId,
   joinRequestText,
   type PhoneNodeOptions,
   type PhoneNodeStatus,
+  type RedeemedOwnerGrant,
   type SavedStartOptions,
 } from './cadre-phone';
 import { useJoinFlow, type JoinFlowActions } from './use-join-flow';
@@ -287,12 +294,6 @@ export interface UseCadreResult extends JoinFlowActions {
   /** The cadre's live owner keys (`CadreNode.listOwnerKeys`). */
   listOwnerKeys: () => Promise<CadreOwnerKey[]>;
   /**
-   * Seat a new owner key under `options.label`, signed by this device's owner key, and return its
-   * export, the only copy. Throws `OwnerKeyAddRefusedError` `alone` while this phone has no
-   * connection to a cadre that has other machines.
-   */
-  addBackupOwnerKey: (options: OwnerKeyExportOptions) => Promise<ExportedOwnerKey>;
-  /**
    * This app's own owner key as export text, with the key it holds, which can differ from
    * {@link ownerPublicKey} (the kit's `exportOwnerKey`); throws when it holds none of its own.
    */
@@ -307,6 +308,22 @@ export interface UseCadreResult extends JoinFlowActions {
   planOwnerKeyRemoval: (key: string) => Promise<OwnerKeyRemovalPlan>;
   /** Remove an owner key, re-vouching first the rows `options.revouch` keeps (`CadreNode.removeOwner`). Throws `OwnerKeyRemovalRefusedError` on a refusal. */
   removeOwner: (key: string, options: RemoveOwnerOptions) => Promise<OwnerKeyRemovalResult>;
+  /**
+   * Mint an owner grant, signed by this device's owner key (`CadreNode.createOwnerGrant`): 15
+   * minutes and one use by default, a backup with no expiry for `expiresInMs: null`. The returned
+   * text is the only copy.
+   */
+  createOwnerGrant: (options: CreateOwnerGrantOptions) => Promise<CreateOwnerGrantResult>;
+  /** Every owner grant this node holds, live or not (`CadreNode.listOwnerGrants`). */
+  listOwnerGrants: () => Promise<OwnerGrantStatus[]>;
+  /** Withdraw an owner grant by its key; false when it was already withdrawn. */
+  withdrawOwnerGrant: (key: string) => Promise<boolean>;
+  /**
+   * Make this device an owner of this cadre with owner-grant text, seating its owner slot's key,
+   * made now when it holds none (the kit's `redeemOwnerGrant`); {@link ownerPublicKey} follows once
+   * the key is wired. Throws the decoder's error for other text, and the redemption's refusals.
+   */
+  redeemOwnerGrant: (text: string) => Promise<RedeemedOwnerGrant>;
   /**
    * Rent a node from the provider `client` talks to and add it to this cadre (cadre-core's
    * `rentNode`, by claim or by invitation as the cadre's reach decides). The rental is recorded for
@@ -887,11 +904,6 @@ export function useCadreInternal(): UseCadreResult {
     return await listOwnerKeysImpl();
   }, []);
 
-  const addBackupOwnerKey = useCallback(async (options: OwnerKeyExportOptions) => {
-    if (!nodeRef.current) throw new Error('Node not started');
-    return await addBackupOwnerKeyImpl(options);
-  }, []);
-
   const exportOwnerKey = useCallback(async (options: OwnerKeyExportOptions) => {
     return await exportOwnerKeyImpl(options);
   }, []);
@@ -912,6 +924,29 @@ export function useCadreInternal(): UseCadreResult {
   const removeOwner = useCallback(async (key: string, options: RemoveOwnerOptions) => {
     if (!nodeRef.current) throw new Error('Node not started');
     return await removeOwnerImpl(key, options);
+  }, []);
+
+  const createOwnerGrant = useCallback(async (options: CreateOwnerGrantOptions) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await createOwnerGrantImpl(options);
+  }, []);
+
+  const listOwnerGrants = useCallback(async () => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await listOwnerGrantsImpl();
+  }, []);
+
+  const withdrawOwnerGrant = useCallback(async (key: string) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await withdrawOwnerGrantImpl(key);
+  }, []);
+
+  // As an import: a wired key changes what this device signs with.
+  const redeemOwnerGrant = useCallback(async (text: string) => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    const redeemed = await redeemOwnerGrantImpl(text);
+    setOwnerPublicKey(getOwnerPublicKey());
+    return redeemed;
   }, []);
 
   // ── Renting a node from a hosting provider ─────────────────────────────
@@ -987,7 +1022,8 @@ export function useCadreInternal(): UseCadreResult {
     createClosedStrandWithInvite, joinViaInvite, isOwnerDevice, claimHostNode,
     isMemberPeer, createCadreInvitation, listCadreInvitations, withdrawCadreInvitation,
     listMachines, planMachineRemoval, removeMachine,
-    listOwnerKeys, addBackupOwnerKey, exportOwnerKey, importOwnerKey, planOwnerKeyRemoval, removeOwner,
+    listOwnerKeys, exportOwnerKey, importOwnerKey, planOwnerKeyRemoval, removeOwner,
+    createOwnerGrant, listOwnerGrants, withdrawOwnerGrant, redeemOwnerGrant,
     rentProviderNode, finishProviderRental, listRentals, noteRentalPeer, forgetRental,
   };
 }

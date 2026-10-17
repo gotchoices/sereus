@@ -29,6 +29,9 @@ import type {
 	CadreNodeEvents,
 	CadreOwnerKey,
 	CadreRemoval,
+	CreateOwnerGrantOptions,
+	CreateOwnerGrantResult,
+	OwnerGrantStatus,
 	OwnerKeyRemovalPlan,
 	OwnerKeyRemovalResult,
 	RedeemCadreInvitationResult,
@@ -63,6 +66,7 @@ import {
 	type NodeLocalKv,
 } from './node-local.js';
 import { parseSavedStart, serializeSavedStart, startAfterRemoval, type EdgeNodeOptions, type NoiseCryptoMode, type SavedStart } from './options.js';
+import { redeemOwnerGrantText, type OwnerGrantRuntime, type RedeemedOwnerGrant } from './owner-grant.js';
 import { DEFAULT_EDGE_NODE_NAMES, type EdgeNodeNames, type EdgeNodePlatform, type RemovableSlot } from './platform.js';
 import { adoptMoveRecord, adoptMovesInto, pendingMove, StrandMoveRecords, toError, type PendingStrandMove, type StrandMoveOutcome } from './strand-move.js';
 
@@ -295,6 +299,34 @@ export interface EdgeNode {
 	planOwnerKeyRemoval(key: string): Promise<OwnerKeyRemovalPlan>;
 	/** Remove an owner key, re-vouching first the dependents `options.revouch` keeps (cadre-core's `CadreNode.removeOwner`). */
 	removeOwner(key: string, options?: RemoveOwnerOptions): Promise<OwnerKeyRemovalResult>;
+	/**
+	 * Mint an owner grant (cadre-core's `CadreNode.createOwnerGrant`): whoever redeems the
+	 * returned text first becomes an owner of the cadre. 15 minutes and one use by default;
+	 * `expiresInMs: null` is a backup grant, with no expiry.
+	 */
+	createOwnerGrant(options?: CreateOwnerGrantOptions): Promise<CreateOwnerGrantResult>;
+	/** Every owner grant the running node holds, with its standing (cadre-core's `CadreNode.listOwnerGrants`). */
+	listOwnerGrants(): Promise<OwnerGrantStatus[]>;
+	/** Withdraw an owner grant by its key (cadre-core's `CadreNode.withdrawOwnerGrant`); false when it is not held here or was already withdrawn. */
+	withdrawOwnerGrant(key: string): Promise<boolean>;
+	/**
+	 * Become an owner of the running party with owner-grant text: the owner slot's key, created
+	 * when the slot is empty, is seated (cadre-core's `CadreNode.redeemOwnerGrant`) and wired, and
+	 * `status.owner` becomes `enrolled`. A slot key that is already a live owner of the party is
+	 * answered `alreadyOwner` before anything is signed or written, connected or not. A member
+	 * machine writes the row in its own store and wires the key at once; any other node redeems
+	 * at the grant's members and asks for the row until the owner-step bound passes (`wired:
+	 * false` then, and a later start wires it). A strand move waiting on an owner key is adopted
+	 * by the next start or `finishStrandMove()`.
+	 *
+	 * Refused with the decoder's error for text that is not an owner grant (an owner key, an
+	 * invitation and a join request are named), with `OwnerGrantRejectedError` `party-mismatch`
+	 * for a grant of another party, and with what `CadreNode.redeemOwnerGrant` throws:
+	 * `OwnerKeyAddRefusedError` `alone` on a member with no connection to the party's other
+	 * machines, `OwnerGrantRejectedError` (`grant-spent` for an expired, withdrawn or used grant),
+	 * `OwnerGrantIssuerUnknownError`, `OwnerGrantUnreachableError`.
+	 */
+	redeemOwnerGrant(text: string): Promise<RedeemedOwnerGrant>;
 }
 
 /** One handler, closed over its event, so re-applying it to a new node needs no cast. */
@@ -322,7 +354,7 @@ export function createEdgeNode(platform: EdgeNodePlatform): EdgeNode {
 	return created;
 }
 
-class EdgeNodeRuntime implements EdgeNode, JoinRuntime {
+class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 	private readonly keyStore: KeyStore;
 	readonly moves: StrandMoveRecords;
 	private current: CadreNode | null = null;
@@ -538,6 +570,26 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime {
 		return this.onRunningNode((node) => node.removeOwner(key, options));
 	}
 
+	createOwnerGrant(options: CreateOwnerGrantOptions = {}): Promise<CreateOwnerGrantResult> {
+		return this.onRunningNode((node) => node.createOwnerGrant(options));
+	}
+
+	listOwnerGrants(): Promise<OwnerGrantStatus[]> {
+		return this.onRunningNode((node) => node.listOwnerGrants());
+	}
+
+	withdrawOwnerGrant(key: string): Promise<boolean> {
+		return this.onRunningNode((node) => node.withdrawOwnerGrant(key));
+	}
+
+	redeemOwnerGrant(text: string): Promise<RedeemedOwnerGrant> {
+		return this.onRunningNode(async (node) => {
+			const redeemed = await redeemOwnerGrantText(this, node, text);
+			if (redeemed.wired) this.reportEnrolled(node);
+			return redeemed;
+		});
+	}
+
 	/** Run `op` on the running node, in turn with start, stop and join; throws when none is running. */
 	private onRunningNode<T>(op: (node: CadreNode) => Promise<T>): Promise<T> {
 		return this.inTurn(async () => {
@@ -592,8 +644,9 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime {
 
 	// ── start ────────────────────────────────────────────────────────────────
 	// `bringUp`, `readAlone`, `buildAndStart`, `ownerSlotSigner`, `wireJoinedOwner`,
-	// `saveRunningStart` and `reportRunning` are public as the join's view of this runtime
-	// (`JoinRuntime`); the class itself never leaves this module.
+	// `saveRunningStart` and `reportRunning` are public as the join's and the owner-grant
+	// redemption's view of this runtime (`JoinRuntime`, `OwnerGrantRuntime`); the class itself
+	// never leaves this module.
 
 	async buildAndStart(options: EdgeNodeOptions): Promise<CadreNode> {
 		this.setStatus({ state: 'starting' });
@@ -745,10 +798,11 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime {
 	}
 
 	// ── dissolve ─────────────────────────────────────────────────────────────
-	// NOTE: this file is about 1000 lines (`wc -l`), the dissolve's and the removal's transitions
-	// the largest part (the storage they delete is in `dissolve.ts`; the join is `edge-join.ts`),
-	// then the owner-key pass-throughs. If any of them grows further, move it to a module of its
-	// own over a narrow view of this runtime, as the join is.
+	// NOTE: this file is about 1050 lines (`wc -l`), the dissolve's and the removal's transitions
+	// the largest part (the storage they delete is in `dissolve.ts`; the join is `edge-join.ts`,
+	// the owner-grant redemption `owner-grant.ts`), then the owner-key and owner-grant
+	// pass-throughs. If any of them grows further, move it to a module of its own over a narrow
+	// view of this runtime, as the join is.
 
 	/** docs/architecture.md → "Dissolving the party it left". */
 	private async dissolve(discard: readonly string[]): Promise<void> {

@@ -4,7 +4,7 @@
  * The kit does the bring-up: identity in the secure store, durable node-local records,
  * LevelDB storage per scope, owner genesis, single-flight start, a stop that closes
  * every database, the saved start for unattended starts, and the switch to another
- * party's cadre by invitation. This module supplies what
+ * party's cadre by machine invitation or owner grant. This module supplies what
  * is this app's: `expo-secure-store`, rn-leveldb, the WebRTC transport, native Noise,
  * the demo's unsigned schema policy, and the storage names its devices already hold.
  * The functions below keep the module's earlier surface, so `use-cadre.ts` and the
@@ -13,7 +13,6 @@
 
 import { CADRE_JOIN_REQUEST_MAX_APP_NAME, encodeCadreJoinRequest, resolveStunServers } from '@serfab/cadre-core';
 import type {
-  CadreInvitation,
   CadreJoinReply,
   CadreInviteStatus,
   CadreMachine,
@@ -23,8 +22,11 @@ import type {
   ControlNetworkSeed,
   ApplySeedResult,
   CadreOwnerKey,
+  CreateOwnerGrantOptions,
+  CreateOwnerGrantResult,
   ExportedOwnerKey,
   ImportedOwnerKey,
+  OwnerGrantStatus,
   OwnerKeyExportOptions,
   OwnerKeyRemovalPlan,
   OwnerKeyRemovalResult,
@@ -52,9 +54,11 @@ import {
   type DissolveFormerPartyOptions,
   type JoinCadreOptions,
   type JoinCadreResult,
+  type JoinCredential,
   type PendingStrandMove,
   type PhoneNodeOptions,
   type PhoneNodeStatus,
+  type RedeemedOwnerGrant,
   type SavedStart,
 } from '@serfab/cadre-rn/phone-node';
 import { buildNoiseCrypto, type NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
@@ -64,7 +68,7 @@ import { defaultNoiseCryptoMode } from './noise-crypto-config';
 import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE_PREFIX } from './node-local-names';
 import { resolveRelayAddrs } from './relay-config';
 
-export type { JoinCadreResult, PhoneJoinProgress, PhoneNodeOptions, PhoneNodeStatus, StrandMoveOutcome } from '@serfab/cadre-rn/phone-node';
+export type { JoinCadreResult, JoinCredential, PhoneJoinProgress, PhoneNodeOptions, PhoneNodeStatus, RedeemedOwnerGrant, StrandMoveOutcome } from '@serfab/cadre-rn/phone-node';
 // The errors `use-join-flow.ts` tells apart after a join, re-exported so the hook reaches the kit only
 // through this module, which its tests mock.
 export { FormerPartyNotEmptyError, StrandMovePendingError } from '@serfab/cadre-rn/phone-node';
@@ -156,12 +160,13 @@ export function stopPhoneNode(): Promise<void> {
 }
 
 /**
- * Join the cadre an invitation names: the kit stops this app's node and starts it in that
- * party, waiting for one of its always-on machines to admit this phone. On any failure it
- * goes back to the party it left (or stays stopped when none was running) and rethrows.
+ * Join the cadre a machine invitation or an owner grant names: the kit stops this app's node and
+ * starts it in that party, waiting for one of its always-on machines to admit this phone, as a
+ * machine, and with a grant as an owner too. On any failure it goes back to the party it left (or
+ * stays stopped when none was running) and rethrows.
  */
-export async function joinCadreByInvitation(invitation: CadreInvitation, options: JoinCadreOptions = {}): Promise<JoinCadreResult> {
-  return phone.joinCadre(invitation, { ...await firstLaunchJoinDefaults(), ...options });
+export async function joinCadre(credential: JoinCredential, options: JoinCadreOptions = {}): Promise<JoinCadreResult> {
+  return phone.joinCadre(credential, { ...await firstLaunchJoinDefaults(), ...options });
 }
 
 /**
@@ -437,11 +442,6 @@ export function listOwnerKeys(): Promise<CadreOwnerKey[]> {
   return phone.listOwnerKeys();
 }
 
-/** Seat a new owner key and return its only export. Thin pass-through to the kit's `addBackupOwnerKey`. */
-export function addBackupOwnerKey(options: OwnerKeyExportOptions): Promise<ExportedOwnerKey> {
-  return phone.addBackupOwnerKey(options);
-}
-
 /** This app's own owner key as export text, with the key it holds. Thin pass-through to the kit's `exportOwnerKey`. */
 export function exportOwnerKey(options: OwnerKeyExportOptions): Promise<ExportedOwnerKey> {
   return phone.exportOwnerKey(options);
@@ -460,6 +460,26 @@ export function planOwnerKeyRemoval(key: string): Promise<OwnerKeyRemovalPlan> {
 /** Remove an owner key, re-vouching first the rows `options.revouch` keeps. Thin pass-through to the kit's `removeOwner`. */
 export function removeOwner(key: string, options: RemoveOwnerOptions): Promise<OwnerKeyRemovalResult> {
   return phone.removeOwner(key, options);
+}
+
+/** Mint an owner grant: a short-lived one by default, a backup with `expiresInMs: null`. Thin pass-through to the kit's `createOwnerGrant`. */
+export function createOwnerGrant(options: CreateOwnerGrantOptions): Promise<CreateOwnerGrantResult> {
+  return phone.createOwnerGrant(options);
+}
+
+/** Every owner grant the node holds, with its standing. Thin pass-through to the kit's `listOwnerGrants`. */
+export function listOwnerGrants(): Promise<OwnerGrantStatus[]> {
+  return phone.listOwnerGrants();
+}
+
+/** Withdraw an owner grant by its key. Thin pass-through to the kit's `withdrawOwnerGrant`. */
+export function withdrawOwnerGrant(key: string): Promise<boolean> {
+  return phone.withdrawOwnerGrant(key);
+}
+
+/** Make this app an owner of the running cadre with owner-grant text, with its owner slot's key. Thin pass-through to the kit's `redeemOwnerGrant`. */
+export function redeemOwnerGrant(text: string): Promise<RedeemedOwnerGrant> {
+  return phone.redeemOwnerGrant(text);
 }
 
 // ── Formation helpers (closed-strand consent flow) ────────────────────────────

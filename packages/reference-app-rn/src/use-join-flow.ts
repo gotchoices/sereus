@@ -7,12 +7,11 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import { decodeCadreInvitation } from '@serfab/cadre-core';
-import type { CadreInvitation } from '@serfab/cadre-core';
+import { decodeCadreInvitation, decodeOwnerGrant, OWNER_GRANT_PREFIX } from '@serfab/cadre-core';
 import {
   getOwnerPublicKey,
   getRunningOptions,
-  joinCadreByInvitation,
+  joinCadre,
   identityPeerId,
   pendingStrandMove,
   finishStrandMove,
@@ -21,6 +20,7 @@ import {
   StrandMoveNotOwnerError,
   StrandMovePendingError,
   type JoinCadreResult,
+  type JoinCredential,
   type PhoneNodeOptions,
   type StrandMoveOutcome,
 } from './cadre-phone';
@@ -52,10 +52,12 @@ export interface JoinFlowActions extends LinkRequestActions {
    */
   joinFlow: JoinFlow | null;
   /**
-   * Join the cadre a pasted response or invitation (`sereus-invite:1.…`) names, then move this
-   * app's chats into it and remove the cadre it leaves, each step shown in {@link joinFlow}.
-   * The kit's `PhoneNode.joinCadre` stops the node, starts it in the invitation's party and
-   * redeems there, waiting for one of the members it lists to answer; needs no started node.
+   * Join the cadre a pasted response, invitation (`sereus-invite:1.…`) or owner grant
+   * (`sereus-owner-grant:1.…`) names, then move this app's chats into it and remove the cadre it
+   * leaves, each step shown in {@link joinFlow}. An owner grant makes the app an owner too, which
+   * moving chats needs. The kit's `PhoneNode.joinCadre` stops the node, starts it in the
+   * credential's party and redeems there, waiting for one of the members it lists to answer;
+   * needs no started node.
    *
    * Throws, with no flow left on screen and the app back in the cadre it ran before, when the
    * join itself does not happen: the decoder's error, a response made for another app's request,
@@ -85,11 +87,20 @@ export interface UseJoinFlowResult extends JoinFlowActions {
 }
 
 /**
- * Refuse, before anything stops, a response the owner app made from another app's request: the
- * members would refuse it too, but only after this app had left its own cadre to ask.
+ * The pasted text as the credential it is: an owner grant by its prefix, else a machine
+ * invitation, whose decoder names every other kind of text (an owner key, a join request).
  */
-async function refuseResponseForAnotherApp(invitation: CadreInvitation): Promise<void> {
-  const target = invitation.invite.peerId;
+function decodeJoinCredential(encoded: string): JoinCredential {
+  return encoded.trim().startsWith(OWNER_GRANT_PREFIX) ? decodeOwnerGrant(encoded) : decodeCadreInvitation(encoded);
+}
+
+/**
+ * Refuse, before anything stops, a response the owner app made from another app's request: the
+ * members would refuse it too, but only after this app had left its own cadre to ask. An owner
+ * grant names no app.
+ */
+async function refuseResponseForAnotherApp(credential: JoinCredential): Promise<void> {
+  const target = 'invite' in credential ? credential.invite.peerId : null;
   if (target && target !== await identityPeerId()) throw new Error(RESPONSE_FOR_ANOTHER_APP);
 }
 
@@ -239,20 +250,21 @@ export function useJoinFlow({ holdNoNode, adoptRunningNode, setSavedStartOptions
   }, [setJoinFlow, dissolveOldCadre]);
 
   const joinExistingCadre = useCallback(async (encoded: string) => {
-    const invitation = decodeCadreInvitation(encoded);
-    await refuseResponseForAnotherApp(invitation);
+    const credential = decodeJoinCredential(encoded);
+    const asOwner = !('invite' in credential);
+    await refuseResponseForAnotherApp(credential);
     // After the last await before the flow is set, so two taps in one frame cannot both pass.
     if (joinFlowRef.current) throw new Error('A join is already on screen; finish it first.');
     const controller = new AbortController();
     joinAbortRef.current = controller;
     movedRef.current = 0;
     setError(null);
-    showSwitching({ step: 'joining' });
+    showSwitching({ step: 'joining', asOwner });
     let joined: JoinCadreResult;
     try {
-      joined = await joinCadreByInvitation(invitation, {
+      joined = await joinCadre(credential, {
         signal: controller.signal,
-        onProgress: (progress) => setJoinFlow(flowForProgress(progress)),
+        onProgress: (progress) => setJoinFlow(flowForProgress(progress, asOwner)),
       });
     } catch (err) {
       setJoinFlow(null);

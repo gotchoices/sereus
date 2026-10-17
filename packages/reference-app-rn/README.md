@@ -285,7 +285,7 @@ The orchestrator (`scripts/run-e2e.mjs`):
    HTTP sidecar on port 4080
 2. Waits for `/health`
 3. `adb reverse tcp:4002` + `tcp:4080` so the emulator can reach host loopback
-4. Runs `maestro test maestro/flows/ -e CADRE_INVITATION=… -e STRAND_ID=… …`
+4. Runs `maestro test maestro/flows/ -e JOIN_CODE=… -e STRAND_ID=… …` (`JOIN_CODE`: the drone's owner grant, so the phone joins as an owner)
 
 ### Prerequisites
 

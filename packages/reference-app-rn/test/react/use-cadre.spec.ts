@@ -30,7 +30,7 @@ import { connectionBanner } from '../../src/connection-status';
 import {
   createOpenInvitation,
   getRelayState,
-  joinCadreByInvitation,
+  joinCadre,
   loadSavedStartOptions,
   startPhoneNode,
   type JoinCadreResult,
@@ -193,7 +193,7 @@ vi.mock('../../src/cadre-phone', () => ({
     h.ctl.statusListeners.add(listener);
     return () => h.ctl.statusListeners.delete(listener);
   },
-  joinCadreByInvitation: vi.fn(),
+  joinCadre: vi.fn(),
   identityPeerId: vi.fn(),
   joinRequestText: vi.fn(),
   // Read once at mount for the waiting line; no request is open.
@@ -225,6 +225,8 @@ vi.mock('../../src/chat-strand', () => ({
 
 vi.mock('@serfab/cadre-core', () => ({
   decodeCadreInvitation: vi.fn(),
+  decodeOwnerGrant: vi.fn(),
+  OWNER_GRANT_PREFIX: 'sereus-owner-grant:1.',
   rentNode: vi.fn(),
   finishRental: vi.fn(),
 }));
@@ -710,7 +712,7 @@ describe('useCadreInternal — joining an existing cadre', () => {
     expect(sink.current!.node).not.toBeNull();
     vi.mocked(decodeCadreInvitation).mockReturnValueOnce({ partyId: 'party-a', invite: { peerId: null } } as never);
     let admit!: (result: JoinCadreResult) => void;
-    vi.mocked(joinCadreByInvitation).mockImplementationOnce(() => {
+    vi.mocked(joinCadre).mockImplementationOnce(() => {
       // The kit stops the running node as the join begins, and holds none until admitted.
       h.ctl.node = null;
       return new Promise((resolve) => {

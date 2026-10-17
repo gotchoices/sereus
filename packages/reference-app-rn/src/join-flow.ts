@@ -8,8 +8,11 @@
 import type { PhoneJoinProgress } from '@serfab/cadre-rn/phone-node';
 
 export type JoinFlow =
-	/** Redeeming the invitation; `wait` while no member of the cadre is ready, until `retryAtMs`. Cancellable. */
-	| { step: 'joining'; wait?: 'no-member-answered' | 'member-not-ready'; retryAtMs?: number }
+	/**
+	 * Redeeming the credential; `wait` while no member of the cadre is ready, until `retryAtMs`.
+	 * `asOwner`: it is an owner grant, so the app joins as an owner. Cancellable.
+	 */
+	| { step: 'joining'; asOwner: boolean; wait?: 'no-member-answered' | 'member-not-ready'; retryAtMs?: number }
 	/** `asOwner`: the app joined with an owner grant, so it is being set up as an owner. */
 	| { step: 'admitted'; asOwner: boolean }
 	| { step: 'moving-strands' }
@@ -40,13 +43,13 @@ export class JoinCancelledError extends Error {
 	}
 }
 
-/** The step a join's progress report puts the flow in. */
-export function flowForProgress(progress: PhoneJoinProgress): JoinFlow {
+/** The step a join's progress report puts the flow in; `asOwner` says whether the credential is an owner grant. */
+export function flowForProgress(progress: PhoneJoinProgress, asOwner: boolean): JoinFlow {
 	switch (progress.state) {
 		case 'redeeming':
-			return { step: 'joining' };
+			return { step: 'joining', asOwner };
 		case 'waiting':
-			return { step: 'joining', wait: progress.reason, retryAtMs: progress.retryAtMs };
+			return { step: 'joining', asOwner, wait: progress.reason, retryAtMs: progress.retryAtMs };
 		case 'admitted':
 			return { step: 'admitted', asOwner: progress.asOwner };
 		case 'moving-strands':
@@ -101,7 +104,7 @@ function joiningLine(flow: Extract<JoinFlow, { step: 'joining' }>): string {
 		case 'member-not-ready':
 			return `Your cadre is catching up.${next}`;
 		default:
-			return 'Joining your cadre…';
+			return flow.asOwner ? 'Joining your cadre, and setting this app up as an owner…' : 'Joining your cadre…';
 	}
 }
 
