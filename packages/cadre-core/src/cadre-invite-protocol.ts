@@ -208,7 +208,7 @@ export type CadreInviteRejectionCode =
   | 'party-mismatch'
   /** The member is at its cap on concurrent redemptions. */
   | 'busy'
-  /** The write failed transiently (the write retry gave up); nothing was recorded. */
+  /** The write failed transiently (the write retry gave up), or the member has not synced the invitation row the cadre holds; nothing was recorded. */
   | 'conflict'
   /**
    * An unexpected member-side failure, or a request frame the member could not read (timed

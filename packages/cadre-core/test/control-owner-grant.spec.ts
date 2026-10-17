@@ -8,6 +8,7 @@ import {
   ownerGrantRedeemMessage,
   OwnerGrantIssuerUnknownError,
   InvitationExhaustedError,
+  isIssuedRowKeyConflict,
 } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
@@ -373,6 +374,19 @@ describe('owner grants: schema and ControlDatabase', () => {
     await tombstoneGrant(withdrawn.key, withdrawn.stampId);
     await expectConstraintFailure(db.seatOwnerGrant(withdrawn), 'NotRevoked');
     expect(await db.queryOwnerGrant(withdrawn.key)).toBeNull();
+  });
+
+  it('a repeat insert of a held grant is classified as an OwnerGrant key conflict, the refusal a lagging member\'s seat counts as seated', async () => {
+    // A member whose store lags the cohort misses the row on its guard read, and a member holding
+    // it refuses the commit; the seat adopts the row on exactly this classification, so pin it
+    // against the live engine error.
+    const held = mintGrantRow(founder, freshKeyPair());
+    expect(await db.seatOwnerGrant(held)).toBe(true);
+
+    const error = await rawInsertGrant(held).then(() => undefined, (e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(isIssuedRowKeyConflict(error, 'OwnerGrant')).toBe(true);
+    expect(isIssuedRowKeyConflict(error, 'CadreInvite')).toBe(false);
   });
 
   it('standing: listOwnerGrantStatuses and isOwnerGrantLive read live, withdrawn, expired and exhausted the way the redemption does', async () => {

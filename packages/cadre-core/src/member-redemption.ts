@@ -26,7 +26,7 @@ import type { Connection, Libp2p } from '@libp2p/interface';
 import { type ControlStream, withDeadline, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
-import { parseNullableStoredDatetimeMs } from './control-database.js';
+import { IssuedRowNotHereYetError, parseNullableStoredDatetimeMs } from './control-database.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { dialAddr, nextMacrotask, trailingPeerId } from './peer-dial.js';
 import { chainMessages } from './control-retry.js';
@@ -121,8 +121,14 @@ export function constraintRefusal<Code extends string>(error: unknown, table: Re
   return null;
 }
 
-/** A write failure that is not a refusal: the retry gave up (`conflict`), or something else (`internal`). */
+/**
+ * A write failure that is not a refusal: this member cannot read the credential row the cadre
+ * holds yet, or the retry gave up (`conflict`), or something else (`internal`).
+ */
 export function writeFailureRefusal(error: unknown): RedemptionRejection<'conflict' | 'internal'> {
+  if (error instanceof IssuedRowNotHereYetError) {
+    return rejection('conflict', 'This member has not synced the credential yet; nothing was recorded');
+  }
   // NOTE: a seat torn on a member alone with an uncaught-up device was measured answering
   // `internal`, not `conflict` (cadre-invite-redeemed-at-a-member-without-the-row). Both are
   // retryable, so the holder is unaffected; if the two codes ever diverge in retryability,

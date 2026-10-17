@@ -173,6 +173,25 @@ export class OwnerGrantIssuerUnknownError extends Error {
 }
 
 /**
+ * An issued row (a `CadreInvite` or an `OwnerGrant`) the cadre holds that this node cannot read
+ * yet: {@link ControlDatabase.seatCadreInvite} / {@link ControlDatabase.seatOwnerGrant} had its
+ * insert refused by a cohort member already holding the row, and a refreshed read here still
+ * finds nothing; or the redemption that follows the seat finds no row. It clears once this
+ * node's store catches up, which is why the redemption paths answer it with the retryable
+ * `conflict` code.
+ */
+export class IssuedRowNotHereYetError extends Error {
+  constructor(
+    readonly table: IssuedTable,
+    readonly key: string,
+    options?: { cause?: unknown }
+  ) {
+    super(`${table} ${key} is held by the cadre but not readable on this node yet; try again once it has synced`, options);
+    this.name = 'IssuedRowNotHereYetError';
+  }
+}
+
+/**
  * The refusal {@link CadreInviteIssuerUnknownError} and {@link OwnerGrantIssuerUnknownError}
  * wrap — the constraint named, as the engine words it; both tables name theirs `AuthorizedInsert`.
  */
@@ -598,20 +617,23 @@ async function signGuardedRemoval(
 /** The control tables keyed by a strand id whose repeat insert a caller may treat as idempotent. */
 type StrandIdTable = Extract<RevocableTable, 'Strand' | 'JoinedStrand'>;
 
-/** The control tables keyed by an `Id` column whose repeat insert a caller may classify. */
-type IdKeyedTable = StrandIdTable | Extract<RevocableTable, 'JoinRequest'>;
+/** The control tables whose repeat insert of a held key a caller may classify. */
+type KeyConflictTable = StrandIdTable | IssuedTable | Extract<RevocableTable, 'JoinRequest'>;
 
 /**
- * The rejection a second insert of an already-seated id into `table` produces, as the
+ * The rejection a second insert of an already-seated key into `table` produces, as the
  * optimystic vtab words it (`uniqueConstraintMessage`, qualified by table name only — no
- * schema prefix, matching `test/control-constraint-helpers.ts`'s `expectUniqueViolation`).
+ * schema prefix, matching `test/control-constraint-helpers.ts`'s `expectUniqueViolation`),
+ * naming the table's {@link GUARDED_KEY_COLUMN}.
  *
  * Each table's `StampId` is unique too, but a fresh stamp is minted per insert attempt, so
- * only the primary key can collide on a repeat insert. Matching the column explicitly
- * keeps any OTHER uniqueness failure out of the caller's idempotency branch.
+ * only the primary key can collide on a repeat insert. An issued row's bundle copy repeats its
+ * stamp as well, and the engine still names the key (`control-owner-grant.spec.ts` pins it).
+ * Matching the column explicitly keeps any OTHER uniqueness failure out of the caller's
+ * idempotency branch.
  */
-function idConflictPattern(table: IdKeyedTable): RegExp {
-  return new RegExp(`UNIQUE constraint failed: ${table}\\.Id\\b`, 'i');
+function keyConflictPattern(table: KeyConflictTable): RegExp {
+  return new RegExp(`UNIQUE constraint failed: ${table}\\.${GUARDED_KEY_COLUMN[table]}\\b`, 'i');
 }
 
 /**
@@ -630,7 +652,17 @@ function idConflictPattern(table: IdKeyedTable): RegExp {
  * reword reddens there.
  */
 export function isStrandIdConflict(error: unknown, table: StrandIdTable): boolean {
-  return errorChainMatches(error, idConflictPattern(table));
+  return errorChainMatches(error, keyConflictPattern(table));
+}
+
+/**
+ * Did a seat of an issued row fail because a cohort member already holds a row under its key?
+ * {@link ControlDatabase.seatCadreInvite} / {@link ControlDatabase.seatOwnerGrant} reach this
+ * on a node whose store lags the cohort: its guard read missed the row, and the member that
+ * checked the commit refused the insert. Text-matched, failing closed, like {@link isStrandIdConflict}.
+ */
+export function isIssuedRowKeyConflict(error: unknown, table: IssuedTable): boolean {
+  return errorChainMatches(error, keyConflictPattern(table));
 }
 
 /**
@@ -643,7 +675,7 @@ export function isStrandIdConflict(error: unknown, table: StrandIdTable): boolea
  * until the next reap pass.
  */
 export function isPendingJoinConflict(error: unknown): boolean {
-  return errorChainMatches(error, idConflictPattern('JoinRequest'));
+  return errorChainMatches(error, keyConflictPattern('JoinRequest'));
 }
 
 /**
@@ -690,7 +722,7 @@ export const REVOCATION_LEDGER_MARKER = {
 
 /**
  * The rejection a second insert of the ledger marker produces: the optimystic vtab's
- * primary-key wording (see {@link idConflictPattern}), naming both columns of
+ * primary-key wording (see {@link keyConflictPattern}), naming both columns of
  * `Revocation`'s composite key. Applied only to the marker's own insert, whose key
  * ('Revocation', 'opened') no row but the marker can hold (`RowIsGone`), and `Revocation`
  * has no other unique constraint.
@@ -4375,12 +4407,14 @@ export class ControlDatabase {
   /**
    * Seat an owner-signed `CadreInvite` row received inside an invitation bundle, under its own
    * stored `IssuerKey`/`IssuerSig` as the write context — insert-if-absent, so a member that
-   * already holds the row (by replication, or from an earlier redemption attempt) is a no-op.
+   * already holds the row (by replication, or from an earlier redemption attempt) is a no-op,
+   * and so is one whose insert the cohort refuses because a member there holds it.
    *
    * @returns `true` when this call inserted the row, `false` when it was already present.
    * @throws {CadreInviteIssuerUnknownError} when `CadreInvite.AuthorizedInsert` refuses it: the
    *   issuer is not an owner on this node (not replicated yet, or removed), or the signature does
-   *   not verify. Every other refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
+   *   not verify. {@link IssuedRowNotHereYetError} when the cohort holds the row and this node
+   *   cannot read it yet. Every other refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
    */
   async seatCadreInvite(row: CadreInviteRow): Promise<boolean> {
     return this.seatIssuedRow('CadreInvite', row.key, () => this.execCadreInviteInsert(row),
@@ -4392,9 +4426,12 @@ export class ControlDatabase {
    * {@link seatCadreInvite} and {@link seatOwnerGrant}. `exec` runs the bare insert under the
    * row's own stored issuer pair.
    *
-   * @returns `true` when this call inserted the row, `false` when it was already present.
-   * @throws `refuse(cause)` when the table's `AuthorizedInsert` refuses the row; every other
-   *   refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
+   * @returns `true` when this call inserted the row, `false` when it was already present —
+   *   here, or at the cohort member that refused the insert for holding it
+   *   ({@link adoptCohortHeldRow}).
+   * @throws `refuse(cause)` when the table's `AuthorizedInsert` refuses the row;
+   *   {@link IssuedRowNotHereYetError} when the cohort holds the row and this node still cannot
+   *   read it; every other refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
    */
   private async seatIssuedRow(table: IssuedTable, key: string, exec: () => Promise<void>, refuse: (cause: unknown) => Error): Promise<boolean> {
     this.ensureInitialized();
@@ -4413,8 +4450,27 @@ export class ControlDatabase {
       if (errorChainMatches(error, ISSUER_UNAUTHORIZED)) {
         throw refuse(error);
       }
+      if (isIssuedRowKeyConflict(error, table)) {
+        return await this.adoptCohortHeldRow(table, key, error);
+      }
       throw error;
     }
+  }
+
+  /**
+   * The seat's insert was refused because a cohort member already holds a row under `key`, which
+   * this node's guard read missed because its store lags the cohort. A bundle's copy is verbatim
+   * and every column is under the issuer's signature, so the held row is this one: it counts as
+   * seated once a refreshing read (unlocked, so retried as any read) finds it here.
+   *
+   * @throws {IssuedRowNotHereYetError} when the read still does not find it.
+   */
+  private async adoptCohortHeldRow(table: IssuedTable, key: string, conflict: unknown): Promise<false> {
+    if (await this.queryStampId(table, key) === null) {
+      throw new IssuedRowNotHereYetError(table, key, { cause: conflict });
+    }
+    log('%s %s is held by the cohort; seat skipped', table, key);
+    return false;
   }
 
   /** Bare `CadreInvite` insert shared by {@link insertCadreInvite} and {@link seatCadreInvite}; the caller holds the lock. */
@@ -4730,7 +4786,8 @@ export class ControlDatabase {
    * {@link lockedWithRetry} re-run starts clean.
    *
    * @throws {InvitationExhaustedError} when the invitation's seats are all spent (by name,
-   *   ahead of the schema's generic `Authorized` refusal — see {@link assertSeatRemains}).
+   *   ahead of the schema's generic `Authorized` refusal — see {@link assertSeatRemains});
+   *   {@link IssuedRowNotHereYetError} when no `CadreInvite` row is readable here.
    */
   async redeemCadreInvite(params: {
     inviteKey: string;
@@ -4756,7 +4813,7 @@ export class ControlDatabase {
     return this.mutateCadrePeer('cadre-invite-redeem', async () => {
       const invite = await this.queryCadreInvite(inviteKey, false);
       if (invite === null) {
-        throw new Error(`Cannot redeem cadre invitation ${inviteKey}: no CadreInvite row is seated on this node (seatCadreInvite first)`);
+        throw new IssuedRowNotHereYetError('CadreInvite', inviteKey);
       }
       // A raw stamp read (queryStampId), so a physically present row counts; inside the locked
       // body, so never retried.
@@ -4863,7 +4920,8 @@ export class ControlDatabase {
    * @returns `true` when this call inserted the row, `false` when it was already present.
    * @throws {OwnerGrantIssuerUnknownError} when `OwnerGrant.AuthorizedInsert` refuses it: the
    *   issuer is not an owner on this node (not replicated yet, or removed), or the signature does
-   *   not verify. Every other refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
+   *   not verify. {@link IssuedRowNotHereYetError} when the cohort holds the row and this node
+   *   cannot read it yet. Every other refusal (a withdrawn stamp, `NotRevoked`) propagates as is.
    */
   async seatOwnerGrant(row: OwnerGrantRow): Promise<boolean> {
     return this.seatIssuedRow('OwnerGrant', row.key, () => this.execOwnerGrantInsert(row),
@@ -4993,6 +5051,7 @@ export class ControlDatabase {
    *
    * @throws {InvitationExhaustedError} when the grant's uses are all spent (by name, ahead of
    *   the schema's generic `Authorized` refusal); its `token` is the grant key.
+   *   {@link IssuedRowNotHereYetError} when no `OwnerGrant` row is readable here.
    */
   async redeemOwnerGrant(params: {
     grantKey: string;
@@ -5014,7 +5073,7 @@ export class ControlDatabase {
     return this.mutateCadrePeer('owner-grant-redeem', async () => {
       const grant = await this.queryOwnerGrant(grantKey, false);
       if (grant === null) {
-        throw new Error(`Cannot redeem owner grant ${grantKey}: no OwnerGrant row is seated on this node (seatOwnerGrant first)`);
+        throw new IssuedRowNotHereYetError('OwnerGrant', grantKey);
       }
       const heldStamp = await this.liveOwnerKeyStamp(seatedKey);
       if (heldStamp !== null) {

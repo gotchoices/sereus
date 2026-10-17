@@ -138,7 +138,7 @@ import {
 import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
-import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, pendingJoinId, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
+import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
 import {
   CadreInviteHandler,
   encodeCadreInvitation,
@@ -293,6 +293,22 @@ function ownerGrantApproval(bundle: OwnerGrantBundle, scope: 'redeem' | 'join' =
       ? `Join the cadre with this device and make this key one of its owners, with the owner grant ${grant}`
       : `Make this key an owner of the cadre, with the owner grant ${grant}`,
   };
+}
+
+/**
+ * Run one of the local grant path's writes, refusing `conflict` (retryable) when the grant row
+ * the cadre holds is not readable here yet, as a member answers the same failure over the protocol.
+ */
+async function refusingUnsyncedGrant<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    if (error instanceof IssuedRowNotHereYetError) {
+      log('owner grant write refused until this node syncs: %s', error.message);
+      throw new OwnerGrantRejectedError('conflict', 'The cadre holds the grant, and this node has not synced it yet; try again shortly');
+    }
+    throw error;
+  }
 }
 
 /** `members` with the addresses naming `peerId` (by their trailing `/p2p/`) first, order otherwise kept; unchanged for a null `peerId`. */
@@ -9699,9 +9715,11 @@ export class CadreNode implements SAppIdLookup {
    *
    * @throws a plain `Error` for a node not started or a bundle naming another party;
    *   {@link OwnerKeyAddRefusedError} `alone` on the local path, `OwnerGrantIssuerUnknownError`
-   *   when the issuer is not an owner here, and `OwnerGrantRejectedError` `grant-spent` for a
-   *   grant no longer live here; on the protocol path `OwnerGrantRejectedError` on a final
-   *   refusal, `OwnerGrantReplyInvalidError` on an acceptance that fails the reply check,
+   *   when the issuer is not an owner here, `OwnerGrantRejectedError` `grant-spent` for a
+   *   grant no longer live here, and `OwnerGrantRejectedError` `conflict` (retryable) when the
+   *   cadre holds the grant row and this node has not synced it yet; on the protocol path
+   *   `OwnerGrantRejectedError` on a final refusal, `OwnerGrantReplyInvalidError` on an
+   *   acceptance that fails the reply check,
    *   `OwnerGrantUnreachableError` when every address was tried (one pass only), and the
    *   signal's reason on an abort.
    */
@@ -9727,7 +9745,7 @@ export class CadreNode implements SAppIdLookup {
     if (await this.ownerKeyWriteAlone()) {
       throw new OwnerKeyAddRefusedError(signer.publicKey, 'alone');
     }
-    await controlDatabase.seatOwnerGrant(bundle.grant);
+    await refusingUnsyncedGrant(() => controlDatabase.seatOwnerGrant(bundle.grant));
     // The write answers a key that is already an owner without reading the grant, so only a
     // key that is not one needs the grant live (the same permissive pre-check the handler's
     // admission uses; the write enforces every condition).
@@ -9736,13 +9754,13 @@ export class CadreNode implements SAppIdLookup {
     }
     const { alreadyOwner } = await signer.approve(ownerGrantApproval(bundle), async (sign) => {
       const request = await this.signOwnerGrantRequest(bundle, signer, sign);
-      return await controlDatabase.redeemOwnerGrant({
+      return await refusingUnsyncedGrant(() => controlDatabase.redeemOwnerGrant({
         grantKey: bundle.grant.key,
         seatedKey: signer.publicKey,
         usageStampId: request.usageStampId,
         grantSig: request.grantSig,
         ownerSig: request.ownerSig,
-      });
+      }));
     });
     // NOTE: the refusal is checked before the approval, and a connection can drop while the user
     // approves; a redemption that still commits alone is logged, as an add's is.
