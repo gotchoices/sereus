@@ -25,8 +25,8 @@
  * The workload: once both parties are seated (in `beforeAll`, so a setup failure fails the file
  * instead of passing the phone arm's `it.fails`; the joiner's seat is retried, `seatJoiner`),
  * `ROUNDS` rounds, alternating sides. One side writes a row; the other reads every table, one of
- * which (`CloseRequest`) nobody writes, as an app's often are. Each round is timed and every failed operation recorded. Over the rounds, and
- * only over them, the scenario counts:
+ * which (`CloseRequest`) nobody writes, as an app's often are. Each round is timed and every failed
+ * operation recorded. Over the rounds, and only over them, the scenario counts:
  * - the stack's deadline events, from stderr, with `DEBUG` set (any copy of `debug` writes there,
  *   which is why stderr is hooked and not one `debug` instance), tallied by pattern and by the
  *   `debug` namespace of the line they appear in (`DEADLINE_EVENTS`);
@@ -43,8 +43,8 @@
  *
  * The loopback arm runs by default and takes seconds. The phone arm runs only with
  * `STRAND_WORKLOAD_PHONE=1`: minutes of seating, minutes of rounds and up to 180 s of convergence
- * waiting, about 10 minutes in all. It prints a line each minute a round is still running, so a slow round does
- * not leave a runner's idle timer with no output. `libp2p:connection-monitor*` is what logs the
+ * waiting, about 10 minutes in all. It prints a line each minute a round is still running, so a
+ * slow round does not leave a runner's idle timer with no output. `libp2p:connection-monitor*` is what logs the
  * ping failures. The debug lines are counted and dropped during the rounds; `WORKLOAD_SHOW_DEBUG=1`
  * passes them through as well, which matching events against the rounds' start times needs. The
  * third line is the workload's own demand on a link that holds nothing back; leave
@@ -119,8 +119,8 @@
  * repo 1 each; no FRET stream.
  *
  * The divergence, by the debug log's timestamps: through rounds 1-3 the connection monitor aborted a
- * strand or relay connection every 8-46 s (nine times), and the nodes redialled within about 5 s. At 10:39:53.8
- * FRET marked A's strand node `dead` (its third contact strike), at 10:39:55.5 B's; the five
+ * strand or relay connection every 8-46 s (nine times), and the nodes redialled within about 5 s.
+ * At 10:39:53.8 FRET marked A's strand node `dead` (its third contact strike), at 10:39:55.5 B's; the five
  * remaining rounds started at 10:39:57.0 and each committed with a cohort of only its writer
  * (`commit:solo-cohort`), which is every row that differs. The strand nodes reconnected at
  * 10:40:04, and the rows made alone were not exchanged in the 180 s that followed
@@ -481,10 +481,11 @@ interface RoundsMeasured {
 
 /** Start every count the rounds are measured by; `stop` reads them and ends counting. */
 function measureRounds(f: WorkloadFixture): { stop(): RoundsMeasured } {
-	const events = countDeadlineEvents();
-	const frames = openWsFrameWindow();
 	// Upkeep included: the question is what share of what the link carried the retries and consults took.
+	// Started first: it is the one that can throw, and a throw after the stderr hook would leave it installed.
 	const streams = countOutboundStreams([['A', f.aStrand.libp2pNode!], ['B', f.bStrand.libp2pNode!]], { ignore: () => false });
+	const frames = openWsFrameWindow();
+	const events = countDeadlineEvents();
 	return {
 		stop: () => {
 			events.stop();
@@ -577,7 +578,7 @@ describe("an app's steady work on a two-party strand, on loopback", () => {
 	}, ROUNDS_TIMEOUT_MS);
 });
 
-// Opt-in: about 15 minutes. Being opt-in, this `it.fails` does not flip by itself when a fix lands;
+// Opt-in (see "Running it" above). Being opt-in, this `it.fails` does not flip by itself when a fix lands;
 // the tickets that change a deadline name this run as their check.
 describe.skipIf(!process.env.STRAND_WORKLOAD_PHONE)("an app's steady work on a two-party strand, on a phone-shaped link (20 ms serial frame cap, event loop 70% busy)", () => {
 	const seated = seatedWorkload('phone', { latency: PHONE_LINK, eventLoopBusy: PHONE_EVENT_LOOP_BUSY });
