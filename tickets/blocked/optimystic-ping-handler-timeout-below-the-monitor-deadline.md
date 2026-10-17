@@ -43,3 +43,5 @@ Tried in memory, test-only: the scenario's fourth arm with the handler timeout o
 ## Also measured by
 
 `packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts` (GitHub #48, opt-in `STRAND_WORKLOAD_PHONE=1`) counts `aborting connection due to ping failure` on a two-party strand's steady work over the same phone-shaped link; its doc comment holds the count.
+
+Measured there on 2026-10-17 (sereus 1.16.0, Optimystic 1.15.0, `strand-workload-count-driven-fixes`): over the 188.6 s of rounds that crossed the link, 9 `aborting connection due to ping failure`, every 8-46 s, each `StreamResetError` (5), `UnexpectedEOFError` (3) or `ConnectionClosedError` (1) and none a timeout, the shape this ticket describes. The nodes redialled within about 5 s each time. Those redials account for most of the 28 circuit-relay hop streams the strand nodes opened over the rounds (none on loopback; relay reservation renewals use the same protocol), 24% of the requests beyond the clean workload with pings excluded.

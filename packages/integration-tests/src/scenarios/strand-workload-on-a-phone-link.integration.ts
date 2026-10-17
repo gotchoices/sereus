@@ -90,16 +90,17 @@
  *
  * Deadline events over the phone rounds, by `debug` namespace (node names as the run printed them;
  * FRET's and libp2p's namespaces carry no node). Zero: read timed out, get retried, transaction
- * expired, read-repair deferred, FRET peer revived. On loopback every count is zero except 7
- * read-repair consults on A's strand node.
+ * expired, read-repair deferred, FRET peer revived (the peers FRET marked `dead` came back on a new
+ * connection, logged as `peer:connect` then `contact run cleared`, which writes no `revived` line).
+ * On loopback every count is zero except 7 read-repair consults on A's strand node.
  *
  * | event | count | where |
  * |---|---|---|
- * | read-repair consult | 309 | coordinator-repo: A control 116, B control 108, A strand 45, B strand 40 |
+ * | read-repair consult | 309 | coordinator-repo: A control 116, B control 108 (every one `solo-self-skip`: each party's cadre is one machine, so none crossed the link), A strand 45, B strand 40 |
  * | FRET contact strike | 74 | fret:service:fret |
  * | cohort silent | 56 | coordinator-repo: A strand 32, B strand 24 |
  * | stream reset | 31 | sync-service:error 14, connection-monitor:error 5, cluster-service:error 5, fret 3, repo-service:error 3, batch-coordinator 1 |
- * | commit retried | 16 | batch-coordinator |
+ * | commit retried | 12 | batch-coordinator: 8 went to the next coordinator; 4 found none, the `no coordinator` row (the run printed 16, its pattern then also matching `retry:setup-failed`) |
  * | ping failure | 9 | connection-monitor:error |
  * | FRET peer marked dead | 5 | fret:service:fret (twice the relay, which FRET sees as a foreign peer; once A strand; twice B strand) |
  * | solo commit | 5 | coordinator-repo: B strand 3, A strand 2 |
@@ -124,7 +125,38 @@
  * remaining rounds started at 10:39:57.0 and each committed with a cohort of only its writer
  * (`commit:solo-cohort`), which is every row that differs. The strand nodes reconnected at
  * 10:40:04, and the rows made alone were not exchanged in the 180 s that followed
- * (`blocked/optimystic-write-made-alone-owes-no-one`).
+ * (`blocked/optimystic-write-made-alone-owes-no-one`). Read repair did not heal them either: in
+ * those 180 s every consult on both strand nodes (224) found the other silent, each block re-asked
+ * about every 8 s, since a consult that finds the peer silent leaves the block unchecked.
+ *
+ * ── What the measurement calls for (`strand-workload-count-driven-fixes`) ──
+ *
+ * Seconds one round occupies the busiest socket at the cap's 20 ms a frame: loopback 9.4 and 9.5 s,
+ * phone 17.2 s (2 586 frames over the 3 rounds that crossed the link, not 8). The busy event loop
+ * releases fewer than 50 frames a second, so both understate. So 45% of what the phone socket
+ * carried was beyond what the clean workload needed, and one clean round alone occupies the socket
+ * longer than the 7 s a cohort peer gets to answer a read.
+ *
+ * Requests beyond the clean workload over those 3 rounds, both strand nodes, counting a consult as
+ * one request and a retried write as three (pend, commit, broadcast). Shares exclude / include the
+ * last two rows, FRET's and libp2p's own pings.
+ *
+ * | source | requests | share |
+ * |---|---|---|
+ * | read-repair consults beyond loopback's rate: 54 sent, all silent (32 more found a cohort of only the node itself and sent nothing) | 51 | 44% / 26% |
+ * | of those, re-asks of a block whose previous consult went silent | 31 | 27% / 16% |
+ * | of those, inside 81 s of the block's last check (what a strand read-repair window as long as the commit broadcast's retries would skip) | 16 | 14% / 8% |
+ * | commit retries sent, 8 × 3 (an upper bound: one coordinated by a node whose ring had marked the peer `dead` commits alone) | 24 | 21% / 12% |
+ * | read retries | 0 | 0 |
+ * | circuit-relay hop streams: mostly the redials after the connection monitor's 9 aborts | 28 | 24% / 14% |
+ * | block-transfer streams beyond loopback's rate | 13 | 11% / 7% |
+ * | libp2p pings (streams opened) | 12 | excluded / 6% |
+ * | FRET maintenance pings that failed against a strand node (contact strikes) | 67 | excluded / 34% |
+ *
+ * The streams the strand nodes opened for sync, cluster, repo and block transfer (36) were at
+ * loopback's rate for three rounds (38): what grew was requests that never opened in time, redials
+ * and pings. Proposals filed from this: `blocked/decide-link-deadlines-from-measured-response-time`
+ * and `blocked/optimystic-retries-do-not-back-off`.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -186,9 +218,11 @@ const DEADLINE_EVENTS: readonly EventPattern[] = [
 	{ label: 'cohort silent', pattern: /cluster-fetch:peers-silent/g, fault: true },
 	{ label: 'stream reset', pattern: /StreamResetError/g, fault: true },
 	{ label: 'transaction expired', pattern: /Transaction expired/g, fault: true },
-	{ label: 'commit retried', pattern: /batch-coordinator retry/g, fault: true },
+	// Not `retry:setup-failed`: that retry found no coordinator and sent nothing (the `no coordinator` row).
+	{ label: 'commit retried', pattern: /batch-coordinator retry peer=/g, fault: true },
 	// A read of a held block last checked more than `readRepairWindowMs` ago (Optimystic's 10 s,
-	// which cadre does not set) starts a background cohort consult: phone rounds outlast it.
+	// which cadre does not set) starts a background cohort consult: phone rounds outlast it. A
+	// consult that finds the peer silent leaves the block unchecked, so the next read consults again.
 	{ label: 'read-repair consult', pattern: /cluster-tx:read-repair-triggered/g, fault: false },
 	{ label: 'read-repair deferred', pattern: /cluster-tx:read-repair-deferred/g, fault: false },
 	// libp2p's connection monitor dropping a connection

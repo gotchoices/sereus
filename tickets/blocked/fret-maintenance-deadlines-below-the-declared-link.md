@@ -47,7 +47,7 @@ The redial that opens a connection already follows the link: FRET 1.1.0 runs it 
 
 ## What this does not fix
 
-On the phone link of #48 the delay is not the declared round trip: each outbound frame waits behind every frame already queued, and frames were measured waiting 10-22 s (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). A ping derived from a 3 500 ms declaration (7 s) still misses there. Whether to reduce the traffic or to size these deadlines from measured response times is the question in `strand-workload-count-driven-fixes`; this ticket fixes the case where the link is inside its declaration, which is a defect on its own.
+On the phone link of #48 the delay is not the declared round trip: each outbound frame waits behind every frame already queued, and frames were measured waiting 10-22 s (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). A ping derived from a 3 500 ms declaration (7 s) still misses there. Sizing deadlines from the measured response time above the declared floor is proposed in `blocked/decide-link-deadlines-from-measured-response-time`; this ticket fixes the case where the link is inside its declaration, which is a defect on its own.
 
 ## How to confirm
 
@@ -60,3 +60,14 @@ Every relayed strand member whose ping takes more than 2 s drops out of the othe
 ## Reversibility
 
 An optional configuration field whose absence is today's behaviour. Fully reversible.
+
+## Measured on the phone-shaped link (2026-10-17, `strand-workload-count-driven-fixes`)
+
+The phone arm of `strand-workload-on-a-phone-link.integration.ts` (20 ms serial frame cap, event loop 70% busy), on sereus 1.16.0, Optimystic 1.15.0 and p2p-fret 1.1.0, over the three rounds that crossed the link (188.6 s). Every line below is under the namespace `optimystic:fret:service:fret`, which carries no node, so each is attributed by the peer id it names.
+
+- **Contact strikes: 74.** 37 on A's strand node (so logged by B's), 30 on B's, 7 on the relay. At most 8 followed a failed redial (`redial to … failed`); the rest are maintenance pings that missed 2 s. No FRET stream opened successfully during the rounds, against one ping and one neighbours request from each strand node on loopback.
+- **Marked `dead`: 5.** The relay at 10:38:08.0 and 10:39:05.9; B's strand node at 10:38:50.6 (A's next 4 consults then found a cohort of only itself); A's at 10:39:53.8 and B's at 10:39:55.5. The last two are where the run's divergence starts: each of the remaining five rounds, from 10:39:57.0, committed alone on its writer (`commit:solo-cohort`), and those five rows never reached the other side.
+- **`revived`: 0, though both strand nodes came back.** They returned on a new connection after each connection-monitor abort, 4-5 s later: `peer:connect` sets the peer `connected` and then logs `contact run cleared`, which writes no `revived` line. 47 `contact run cleared` in all.
+- **Strikes keep the loop at its fastest.** Each strike calls `noteChange`, which resets the stabilization interval to its 1 500 ms base, so while pings keep failing the ring maintenance never backs off: B's ring struck A's strand node about every 5 s, A's struck B's about every 6 s. With deadlines that follow the link, fewer pings fail and the loop can back off. No separate change is proposed.
+
+Above the declared link the queue, not the declaration, sets how long a ping takes: the worst observed send wait was 17.3 s during the rounds. See "What this does not fix" above.
