@@ -4466,6 +4466,9 @@ export class ControlDatabase {
    * @throws {IssuedRowNotHereYetError} when the read still does not find it.
    */
   private async adoptCohortHeldRow(table: IssuedTable, key: string, conflict: unknown): Promise<false> {
+    // NOTE: while another locked body runs here, this read takes readRowsOnce's committed path,
+    // which does not refresh from the cohort, so it can miss the row and refuse a retryable
+    // `conflict`; if that refusal shows up in practice, wait for the running body before reading.
     if (await this.queryStampId(table, key) === null) {
       throw new IssuedRowNotHereYetError(table, key, { cause: conflict });
     }
