@@ -85,6 +85,7 @@ interface OpenStrand {
   db: Database;
   strandId: string;
   storage: MemoryRawStorage;
+  createEmptyCollections: () => Promise<number>;
   shutdown: () => Promise<void>;
 }
 
@@ -104,6 +105,7 @@ async function openStrandDb(
     db,
     strandId,
     storage,
+    createEmptyCollections: result.createEmptyCollections,
     shutdown: async () => {
       await result.shutdown();
       db.close();
@@ -123,11 +125,11 @@ describe('bootstrapFounderMembership', () => {
 
   it('closed strand: writes exactly one Header(c), Member, and Manager sharing the founder key', async () => {
     open = await openStrandDb();
-    const { db, strandId } = open;
+    const { db, strandId, createEmptyCollections } = open;
     const founderKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
     const sApp = makeSAppConfig();
 
-    await bootstrapFounderMembership(db, { strandId, type: 'c', sApp, founderKeyPair });
+    await bootstrapFounderMembership(db, { strandId, type: 'c', sApp, founderKeyPair, createEmptyCollections });
 
     expect(await tableCount(db, 'Header')).toBe(1);
     expect(await tableCount(db, 'Member')).toBe(1);
@@ -152,9 +154,9 @@ describe('bootstrapFounderMembership', () => {
 
   it('open strand: writes a Header(o) only — no Member/Manager (OnlyClosed)', async () => {
     open = await openStrandDb();
-    const { db, strandId } = open;
+    const { db, strandId, createEmptyCollections } = open;
 
-    await bootstrapFounderMembership(db, { strandId, type: 'o', sApp: makeSAppConfig() });
+    await bootstrapFounderMembership(db, { strandId, type: 'o', sApp: makeSAppConfig(), createEmptyCollections });
 
     expect(await tableCount(db, 'Header')).toBe(1);
     expect(await tableCount(db, 'Member')).toBe(0);
@@ -166,9 +168,9 @@ describe('bootstrapFounderMembership', () => {
 
   it('is idempotent: a second run inserts nothing and does not throw (InsertOnly safe)', async () => {
     open = await openStrandDb();
-    const { db, strandId } = open;
+    const { db, strandId, createEmptyCollections } = open;
     const founderKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
-    const params = { strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair };
+    const params = { strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair, createEmptyCollections };
 
     await bootstrapFounderMembership(db, params);
     // Re-running (founder restart / re-addStrand) must be a no-op, not an
@@ -188,7 +190,7 @@ describe('bootstrapFounderMembership', () => {
     const cold = await openStrandDb();
     const { strandId, storage } = cold;
     const params = { strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair };
-    await bootstrapFounderMembership(cold.db, params);
+    await bootstrapFounderMembership(cold.db, { ...params, createEmptyCollections: cold.createEmptyCollections });
     await cold.shutdown();
 
     // Warm session: a brand-new Database hydrates the persisted strand. The rows
@@ -203,7 +205,8 @@ describe('bootstrapFounderMembership', () => {
     // Re-running the founder bootstrap against the reopened DB (the real
     // cross-process restart path) is a no-op — the count guards see the hydrated
     // rows and skip, so no duplicate Header / InsertOnly violation.
-    await expect(bootstrapFounderMembership(db, params)).resolves.toBeUndefined();
+    await expect(bootstrapFounderMembership(db, { ...params, createEmptyCollections: open.createEmptyCollections }))
+      .resolves.toBeUndefined();
     expect(await tableCount(db, 'Header')).toBe(1);
     expect(await tableCount(db, 'Member')).toBe(1);
     expect(await tableCount(db, 'Manager')).toBe(1);
@@ -223,7 +226,7 @@ describe('bootstrapFounderMembership', () => {
     const cold = await openStrandDb();
     const { strandId, storage } = cold;
     const params = { strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair };
-    await bootstrapFounderMembership(cold.db, params);
+    await bootstrapFounderMembership(cold.db, { ...params, createEmptyCollections: cold.createEmptyCollections });
     await addMemberByManager(cold.db, { managerKeyPair: founderKeyPair, memberKey: secondManager.publicKeyB64 });
     await addMemberByManager(cold.db, { managerKeyPair: founderKeyPair, memberKey: plainMember.publicKeyB64 });
     await addManager(cold.db, { byManagerKeyPair: founderKeyPair, newManagerKey: secondManager.publicKeyB64 });
@@ -248,11 +251,11 @@ describe('bootstrapFounderMembership', () => {
 
   it('coalesces a missing sApp signature to empty string (NOT NULL Header column)', async () => {
     open = await openStrandDb();
-    const { db, strandId } = open;
+    const { db, strandId, createEmptyCollections } = open;
     // Unsigned config (dev requireSignedSchemas:false) — signature is undefined.
     const sApp = makeSAppConfig({ signature: undefined });
 
-    await bootstrapFounderMembership(db, { strandId, type: 'o', sApp });
+    await bootstrapFounderMembership(db, { strandId, type: 'o', sApp, createEmptyCollections });
 
     const header = await db.get('select sAppSignature from Strand.Header');
     expect(header?.sAppSignature).toBe('');
@@ -260,10 +263,10 @@ describe('bootstrapFounderMembership', () => {
 
   it('throws for a closed strand with no founder key pair (would seat no manager)', async () => {
     open = await openStrandDb();
-    const { db, strandId } = open;
+    const { db, strandId, createEmptyCollections } = open;
 
     await expect(
-      bootstrapFounderMembership(db, { strandId, type: 'c', sApp: makeSAppConfig() }),
+      bootstrapFounderMembership(db, { strandId, type: 'c', sApp: makeSAppConfig(), createEmptyCollections }),
     ).rejects.toThrow(/no founder key pair/i);
 
     // Fail-before-write: no closed Header is left stranded without a founding
@@ -290,15 +293,17 @@ describe('bootstrapFounderMembership: pre-split detection', () => {
     const sharedKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
     const partyKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
     const sApp = makeSAppConfig();
-    await bootstrapFounderMembership(open.db, { strandId: open.strandId, type: 'c', sApp, founderKeyPair: sharedKeyPair });
-    return { db: open.db, strandId: open.strandId, sApp, sharedKeyPair, partyKeyPair };
+    const { db, strandId, createEmptyCollections } = open;
+    await bootstrapFounderMembership(db, { strandId, type: 'c', sApp, founderKeyPair: sharedKeyPair, createEmptyCollections });
+    return { db, strandId, sApp, sharedKeyPair, partyKeyPair, createEmptyCollections };
   }
 
   it('refuses a closed strand whose manager is the shared-derived key, writing nothing', async () => {
-    const { db, strandId, sApp, sharedKeyPair, partyKeyPair } = await preSplitStrand();
+    const { db, strandId, sApp, sharedKeyPair, partyKeyPair, createEmptyCollections } = await preSplitStrand();
 
     const refused = bootstrapFounderMembership(db, {
       strandId, type: 'c', sApp, founderKeyPair: partyKeyPair, sharedMemberPublicKey: sharedKeyPair.publicKeyB64,
+      createEmptyCollections,
     });
 
     await expect(refused).rejects.toThrow(PreSplitStrandIdentityError);
@@ -309,7 +314,7 @@ describe('bootstrapFounderMembership: pre-split detection', () => {
   }, 30_000);
 
   it('refuses a pre-split strand whose shared-derived founder handed management on and resigned', async () => {
-    const { db, strandId, sApp, sharedKeyPair, partyKeyPair } = await preSplitStrand();
+    const { db, strandId, sApp, sharedKeyPair, partyKeyPair, createEmptyCollections } = await preSplitStrand();
     const successor = strandMemberKeyPair(await generateStrandMemberKey());
     await addMemberByManager(db, { managerKeyPair: sharedKeyPair, memberKey: successor.publicKeyB64 });
     await addManager(db, { byManagerKeyPair: sharedKeyPair, newManagerKey: successor.publicKeyB64 });
@@ -318,14 +323,15 @@ describe('bootstrapFounderMembership: pre-split detection', () => {
     // The shared-derived key is no manager now, but its Member row still gives it away.
     await expect(bootstrapFounderMembership(db, {
       strandId, type: 'c', sApp, founderKeyPair: partyKeyPair, sharedMemberPublicKey: sharedKeyPair.publicKeyB64,
+      createEmptyCollections,
     })).rejects.toThrow(PreSplitStrandIdentityError);
   }, 30_000);
 
   it('without the shared key supplied, the same rows are skipped as insert-if-absent always did', async () => {
-    const { db, strandId, sApp, sharedKeyPair, partyKeyPair } = await preSplitStrand();
+    const { db, strandId, sApp, sharedKeyPair, partyKeyPair, createEmptyCollections } = await preSplitStrand();
 
     await expect(
-      bootstrapFounderMembership(db, { strandId, type: 'c', sApp, founderKeyPair: partyKeyPair }),
+      bootstrapFounderMembership(db, { strandId, type: 'c', sApp, founderKeyPair: partyKeyPair, createEmptyCollections }),
     ).resolves.toBeUndefined();
     const manager = await db.get('select MemberKey from Strand.Manager');
     expect(manager?.MemberKey).toBe(sharedKeyPair.publicKeyB64);
@@ -333,12 +339,12 @@ describe('bootstrapFounderMembership: pre-split detection', () => {
 
   it('with the shared key supplied, a fresh closed strand founds under the party key', async () => {
     open = await openStrandDb();
-    const { db, strandId } = open;
+    const { db, strandId, createEmptyCollections } = open;
     const sharedKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
     const partyKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
     const params = {
       strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair: partyKeyPair,
-      sharedMemberPublicKey: sharedKeyPair.publicKeyB64,
+      sharedMemberPublicKey: sharedKeyPair.publicKeyB64, createEmptyCollections,
     };
 
     await bootstrapFounderMembership(db, params);
@@ -352,10 +358,10 @@ describe('bootstrapFounderMembership: pre-split detection', () => {
 
   it('never checks an open strand (no managers to compare)', async () => {
     open = await openStrandDb();
-    const { db, strandId } = open;
+    const { db, strandId, createEmptyCollections } = open;
 
     await bootstrapFounderMembership(db, {
-      strandId, type: 'o', sApp: makeSAppConfig(), sharedMemberPublicKey: freshPublicKey(),
+      strandId, type: 'o', sApp: makeSAppConfig(), sharedMemberPublicKey: freshPublicKey(), createEmptyCollections,
     });
     expect(await tableCount(db, 'Header')).toBe(1);
   }, 30_000);

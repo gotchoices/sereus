@@ -305,6 +305,12 @@ export interface FounderBootstrapParams {
    * holds no shared key has nothing to compare against). Ignored for an open strand.
    */
   sharedMemberPublicKey?: string;
+  /**
+   * Commit an empty collection for every table the strand declares, resolving to how many
+   * it committed: the composition's `createEmptyCollections`. Run once, on the founding run
+   * that finds no `Header` — see {@link createDeclaredCollections}.
+   */
+  createEmptyCollections: () => Promise<number>;
 }
 
 /**
@@ -356,12 +362,6 @@ async function strandTableCount(db: Database, table: 'Header' | 'Member' | 'Mana
  * `Revocation` schema comment already flags, tracked by `debt-strand-tombstone-reap`
  * — this wants a stored "founding closed" marker rather than a scan per call.
  *
- * NOTE: on a strand that has never revoked anyone, `Strand.Revocation` has never been
- * written, so this node does not hold its block, and the storage layer consults the
- * block's cohort on every read of a block it does not hold — this scan and every
- * `NotRevoked` insert check pay that per call. Not measured, and cheap while strand
- * membership writes are rare; if they become frequent, file a singleton marker row in
- * the strand schema the way the control schema does (`ControlDatabase.openRevocationLedger`).
  */
 async function strandHasManagerRevocation(db: Database): Promise<boolean> {
   for await (const row of db.eval('select TableName from Strand.Revocation')) {
@@ -373,7 +373,50 @@ async function strandHasManagerRevocation(db: Database): Promise<boolean> {
 }
 
 /**
- * Insert the singleton `Strand.Header` if absent.
+ * Found the strand if its `Strand.Header` is absent: commit every declared table's
+ * collection ({@link createDeclaredCollections}), then insert the Header. A Header
+ * already present means the strand was founded before, so both are skipped.
+ */
+async function foundIfHeaderAbsent(db: Database, params: FounderBootstrapParams): Promise<void> {
+  if (await strandTableCount(db, 'Header') > 0) {
+    log('Header already present for strand %s; skipping', params.strandId);
+    return;
+  }
+  await createDeclaredCollections(params);
+  await insertHeader(db, params);
+}
+
+/**
+ * Commit an empty collection for every table the strand declares, so a read of a table
+ * nobody has written is answered from local storage instead of asking the block's cohort
+ * to prove the collection absent, and still answers with the other members offline.
+ * Peer-join backfill hands these collections to every joiner.
+ *
+ * Only while the Header is absent, and before it is written: a machine cannot write to a
+ * strand before it holds the Header (`strand-first-sync-gate.ts`), so no other machine can
+ * yet have created any of these collections and this cannot fork one. On a founder restart
+ * the Header is present and this does not run; running it there could commit an empty
+ * second history beside a table a joiner wrote while the founder was away. A crash between
+ * this and the Header repeats it on the next run, which commits only the collections still
+ * missing.
+ *
+ * NOTE: one `sync()` per collection, in sequence. Measured 2026-10-17 on a lone node over the
+ * network transactor (`connectToStrand`, then the step alone, 3 runs each): a nine-table app
+ * schema (20 collections with the strand's own) took 32–82 ms in memory and 465–486 ms on
+ * `FileRawStorage`; the reference chat schema (13 collections) 19–30 ms and 298–350 ms. About
+ * 23 ms per collection on disk, once per strand, before `foundStrand` returns. If founding
+ * latency starts to matter (slower phone storage, much larger schemas), commit them as one
+ * batch through a coordinator, the way the transaction bridge's `commitBatchLegacy` does.
+ */
+async function createDeclaredCollections(params: FounderBootstrapParams): Promise<void> {
+  const t0 = performance.now();
+  const committed = await params.createEmptyCollections();
+  log('Committed %d empty collections for strand %s in %dms',
+    committed, params.strandId, Math.round(performance.now() - t0));
+}
+
+/**
+ * Insert the singleton `Strand.Header`.
  *
  * Every `Header` column is NOT NULL (Quereus defaults unqualified columns to NOT
  * NULL; the table declares no `null` columns), so all eight are supplied non-null.
@@ -381,11 +424,7 @@ async function strandHasManagerRevocation(db: Database): Promise<boolean> {
  * rather than inserting null. `Header` carries only `InsertOnly` + a singleton PK,
  * so the insert needs no `with context`.
  */
-async function insertHeaderIfAbsent(db: Database, params: FounderBootstrapParams): Promise<void> {
-  if (await strandTableCount(db, 'Header') > 0) {
-    log('Header already present for strand %s; skipping', params.strandId);
-    return;
-  }
+async function insertHeader(db: Database, params: FounderBootstrapParams): Promise<void> {
   await db.exec(
     `insert into Strand.Header
        (Id, Type, sAppId, sAppVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
@@ -504,6 +543,10 @@ export async function assertNotPreSplitStrand(db: Database, strandId: string, sh
  * Optimystic sync. Every write is insert-if-absent (guarded by a row count) so a
  * restart / founder re-`addStrand` is a no-op and never double-inserts.
  *
+ * On the run that finds no `Header`, it first commits an empty collection for every
+ * table the `Strand` and `App` schemas declare, so no read of a declared table ever
+ * needs another member to prove it empty ({@link createDeclaredCollections}).
+ *
  * Behavior by strand type:
  * - **Open (`'o'`)**: insert `Header` only. `Member`/`Manager`/`Invite` are
  *   `OnlyClosed` and would trip that constraint — they are skipped entirely.
@@ -523,8 +566,9 @@ export async function assertNotPreSplitStrand(db: Database, strandId: string, sh
  * key seated.
  *
  * @param db - The strand's Quereus database (schema already applied).
- * @param params - Strand id/type, the sApp config for the Header, and (closed only)
- *   the derived founder keypair and the shared-derived public key to refuse.
+ * @param params - Strand id/type, the sApp config for the Header, the composition's
+ *   empty-collection step, and (closed only) the derived founder keypair and the
+ *   shared-derived public key to refuse.
  * @throws If `type === 'c'` and no `founderKeyPair` is supplied.
  * @throws {PreSplitStrandIdentityError} If `type === 'c'` and a `Strand.Member` or
  *   `Strand.Manager` row is `sharedMemberPublicKey`.
@@ -546,8 +590,9 @@ export async function bootstrapFounderMembership(db: Database, params: FounderBo
     await assertNotPreSplitStrand(db, strandId, sharedMemberPublicKey);
   }
 
-  // Header is written for every strand; Member/Manager are closed-only.
-  await insertHeaderIfAbsent(db, params);
+  // Every table's collection and the Header are written for every strand; Member/Manager
+  // are closed-only.
+  await foundIfHeaderAbsent(db, params);
 
   if (type === 'o') {
     // Open strand: Member/Manager/Invite are OnlyClosed — nothing else to write.

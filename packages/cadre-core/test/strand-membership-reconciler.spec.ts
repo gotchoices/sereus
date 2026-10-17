@@ -65,6 +65,7 @@ async function openClosedStrand(): Promise<{
     type: 'c',
     sApp: makeSAppConfig(),
     founderKeyPair: founder,
+    createEmptyCollections: raw.createEmptyCollections,
   });
   return { db: raw.db, strandId: raw.strandId, founder, founderPrivateKey };
 }

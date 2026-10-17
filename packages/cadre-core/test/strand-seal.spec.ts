@@ -204,7 +204,7 @@ describe('sealStrand', () => {
   }, 30_000);
 
   it('a founder restart of a SEALED strand is a quiet no-op, while a fresh closed strand still founds', async () => {
-    const { db, strandId, founder } = await openStrand('c');
+    const { db, strandId, founder, createEmptyCollections } = await openStrand('c');
     await sealStrand(db, { managerKeyPair: founder });
 
     // insertFounderManagerIfAbsent mirrors the schema's own Revocation gate rather
@@ -215,6 +215,7 @@ describe('sealStrand', () => {
       type: 'c',
       sApp: makeSAppConfig(),
       founderKeyPair: founder,
+      createEmptyCollections,
     })).resolves.toBeUndefined();
     expect(await tableCount(db, 'Manager')).toBe(0);
 

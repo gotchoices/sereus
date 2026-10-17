@@ -111,7 +111,7 @@ const IDLE_TIMER_MS = 3_600_000;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-10-07';
+const MEASURED_ON = '2026-10-17';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -156,8 +156,16 @@ const MEASURED_ON = '2026-10-07';
  * idle reconcile before the marker measured 6 both before and after that change: the 5 the
  * previous paragraph recorded predates the review pass of that ticket, which reworked the anchor
  * sync, and the table below now says 6.
+ *
+ * Re-measured whole at `28e6e044` on 2026-10-17, with the working tree carrying
+ * `strand-founder-commits-every-table-collection`: the strand side of `foundStrand` moved, from
+ * this side (see {@link FOUNDING_STRAND}). Two control-side figures also differ from what was
+ * recorded, and measure the same with that ticket's founding step disabled, so it did not move
+ * them; neither has been attributed. The idle reconcile is 5 (`Revocation` ×3, `CadrePeer` ×2)
+ * where {@link RECONCILE} recorded 4, and the marker test's idle reconcile before the marker is
+ * 5 where its table recorded 6.
  */
-const BASELINE_UPSTREAM = 'optimystic ff150e0f';
+const BASELINE_UPSTREAM = 'optimystic 28e6e044';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
@@ -202,29 +210,37 @@ const GENESIS: Budget = { consults: 3, blocks: 3, commits: 2, consultBudget: 4, 
  * touches all three `Strand` trees and no longer refreshes each twice before flushing, which
  * was the `MemberPrivateKey` index's only consults; 8 over 5 once every owner lookup read
  * `Revocation` (2026-10-07, see {@link BASELINE_UPSTREAM}). Control and strand together now
- * sum to 29 consults and 6 commits, against 28 and 6 before that clause, 28 and 12 at
+ * sum to 38 consults and 18 commits, against 29 and 6 before the founder committed every
+ * declared table's collection (see {@link FOUNDING_STRAND}), 28 and 6 before that clause, 28 and 12 at
  * `8a0b48c7`, 34 and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47 and 12 in the trace
  * taken before upstream removed the absence memo.
  */
 const FOUNDING_CONTROL: Budget = { consults: 8, blocks: 5, commits: 3, consultBudget: 10, blockBudget: 7, commitBudget: 4 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
- * bootstrap. 21 consults over 15 blocks, 3 commits: the strand's schema catalog ×5,
- * `Header` ×3, one consult on each other strand table and index as its schema is applied
- * (11, all missing), and 1 each on two tree blocks the bootstrap created. History: 25 over
- * the same 15 blocks on 2026-09-15 (catalog ×7, `Header` ×5), 21 at optimystic `03ffadc4` —
- * only the two repeatedly-read blocks moved; the 11 apply-once blocks did not — and unchanged
- * since.
+ * bootstrap. 30 consults over 16 blocks, 15 commits: the strand's schema catalog ×5,
+ * `Header` ×3, each other strand table and `App.Note` ×2 (once as its schema is applied, all
+ * missing, and once as the founder commits its empty collection), each of the three unique
+ * stamp indexes ×1, and 1 each on three tree blocks the bootstrap created. The 15 commits are
+ * the 12 empty collections (8 strand tables, the 3 stamp indexes, `App.Note`) and the 3 the
+ * bootstrap made before them. All of it is local: nothing else holds the strand at founding.
+ * History: 25 over 15 blocks on 2026-09-15 (catalog ×7, `Header` ×5), 21 over 15 with 3
+ * commits at optimystic `03ffadc4` (only the two repeatedly-read blocks moved; the 11
+ * apply-once blocks did not), then 30 over 16 with 15 commits once the founder committed every
+ * declared table's collection before its Header (`strand-founder-commits-every-table-collection`):
+ * +1 consult on each of the 8 tables, +1 on a tree block, +12 commits.
  */
-const FOUNDING_STRAND: Budget = { consults: 21, blocks: 15, commits: 3, consultBudget: 26, blockBudget: 18, commitBudget: 4 };
+const FOUNDING_STRAND: Budget = { consults: 30, blocks: 16, commits: 15, consultBudget: 35, blockBudget: 19, commitBudget: 16 };
 /**
- * `reconcileControlCohort`, one idle pass on the founded solo party. 4 consults over 2
+ * `reconcileControlCohort`, one idle pass on the founded solo party. 5 consults over 2
  * blocks, no commits: the pass's two `CadrePeer` reads (the gate refresh and the sibling
  * enumeration — see the NOTE in `runReconcileControlCohort`), each consulting the
- * never-written `CadrePeer` and `Revocation` once. Nothing on the strand's repo. History:
- * 8 over the same 2 blocks on 2026-09-15 (twice each), 4 since `03ffadc4`.
+ * never-written `CadrePeer` and `Revocation` once, and a third `Revocation` consult not yet
+ * attributed (see {@link BASELINE_UPSTREAM}). Nothing on the strand's repo. History:
+ * 8 over the same 2 blocks on 2026-09-15 (twice each), 4 since `03ffadc4`, 5 when re-measured
+ * on 2026-10-17.
  */
-const RECONCILE: Budget = { consults: 4, blocks: 2, commits: 0, consultBudget: 5, blockBudget: 3, commitBudget: 0 };
+const RECONCILE: Budget = { consults: 5, blocks: 2, commits: 0, consultBudget: 5, blockBudget: 3, commitBudget: 0 };
 /** The strand's repo during the idle reconcile pass: nothing, and nothing allowed. */
 const RECONCILE_STRAND: Budget = { consults: 0, blocks: 0, commits: 0, consultBudget: 0, blockBudget: 0, commitBudget: 0 };
 /**
@@ -259,7 +275,7 @@ const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
  * | `queryRevokedStamps('CadrePeer')` per call | `Revocation` ×1, every call | 1 on the first call, then 0 |
  * | `queryCadrePeers()` per call | `Revocation` ×1, every call | 0 |
  * | `authorizePeer` of a new member | 5: `Revocation` ×4, 1 on a tree block | 0 |
- * | idle `reconcileControlCohort` | 6: `Revocation` ×6 | 0 |
+ * | idle `reconcileControlCohort` | 5: `Revocation` ×5 (6 on 2026-10-07; see {@link BASELINE_UPSTREAM}) | 0 |
  *
  * The one consult after is on the tree block the marker's own commit created, paid by whichever
  * read runs first. Filing the marker cost 3 consults (`Revocation` ×3; 2 before every owner

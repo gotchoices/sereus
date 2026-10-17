@@ -76,6 +76,7 @@ export class StrandDatabase {
   private db: Database | null = null;
   private shutdownStrand: SereusPluginResult['shutdown'] | null = null;
   private resolvedTransactor: SereusPluginResult['transactor'] | null = null;
+  private createEmptyCollections: SereusPluginResult['createEmptyCollections'] | null = null;
   private readonly config: StrandDatabaseConfig;
   private initialized = false;
   private readonly commits: StrandCommitRecord;
@@ -131,6 +132,7 @@ export class StrandDatabase {
     });
     this.shutdownStrand = result.shutdown;
     this.resolvedTransactor = result.transactor;
+    this.createEmptyCollections = result.createEmptyCollections;
     // Before the founder bootstrap, so its commits are reported like any other.
     this.subscribeToCommits(result);
     timing('[strandDb:%s] connectToStrand: %dms (hydrated tables=%d, indexes=%d)',
@@ -181,6 +183,7 @@ export class StrandDatabase {
       sharedMemberPublicKey: closed && memberPrivateKey
         ? strandMemberKeyPair(memberPrivateKey).publicKeyB64
         : undefined,
+      createEmptyCollections: this.createEmptyCollections!,
     });
   }
 

@@ -40,9 +40,10 @@
  * Every probe is a read (`Strand.Header`, then `select count(1)` on each `App` table). Reads
  * never invent a collection (Optimystic's `Collection.open` resolves undefined on an
  * authoritatively absent header, and throws on an unreachable one), so probing is safe to
- * repeat and a throw is just "not yet". A table nobody has written yet reads as absent on
- * every machine; the first write to it still creates its collection — see `docs/strands.md`
- * ("Joining") for that residual.
+ * repeat and a throw is just "not yet". Every table declared at founding has a collection
+ * from the start (the founder bootstrap commits them all before the Header), so a probe read
+ * fetches it; a table a later schema version adds reads as absent until its first write
+ * creates the collection — see `docs/strands.md` ("Joining") for that residual.
  *
  * Owned by `StrandInstanceManager`: created in `buildStrandRuntime` for every launch, armed
  * only for a non-founder launch whose first probe fails, stopped and dropped in

@@ -274,6 +274,10 @@ on shutdown.
 
 The result's `onCommitDurability(listener)` is called after every commit that wrote something, before the commit returns, with who holds what it wrote; `onCommitFullyHeld(listener)` is called once when a commit reported `followed` below full replication becomes held by its whole cohort. Both pass through from `@optimystic/quereus-plugin-optimystic`, whose README explains the report ([A commit's durability](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#a-commits-durability--pluginoncommitdurabilitylistener)); the `SqlCommitDurability` and `CommitFullyHeld` types are re-exported here. A cadre app reads the same reports through `@serfab/cadre-core` ([strands.md → A commit's durability](../../docs/strands.md#a-commits-durability)).
 
+### Founding a strand: `createEmptyCollections()`
+
+A table nobody has written has no collection, so no single machine can show it empty: every read of it asks the other members, and fails while they are offline. The result's `createEmptyCollections()` commits an empty collection for every table the `Strand` and `App` schemas declare that has none yet, and resolves to how many it committed. The founder calls it once, before writing `Strand.Header`, while no other machine can have written to the strand; cadre-core's founder bootstrap does this ([strands.md → Joining](../../docs/strands.md#joining-no-writes-before-the-first-sync)). Call it only while nothing else writes through the `Database`: it commits whatever is staged in those collections outside any SQL transaction.
+
 ---
 
 ## Configuration

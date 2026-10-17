@@ -72,6 +72,8 @@ export interface RawStrand extends ShutdownHandle {
    * this instead of assuming the option was honoured.
    */
   transactor: StrandTransactor;
+  /** The composition's empty-collection step, for a spec that runs the founder bootstrap itself. */
+  createEmptyCollections: () => Promise<number>;
 }
 
 export interface Strand extends RawStrand {
@@ -131,6 +133,7 @@ export async function openRawStrand(transactor: StrandTransactor = 'local'): Pro
     // The guard below proves these are the same value; this one is typed as the
     // narrower `StrandTransactor` these helpers deal in.
     transactor,
+    createEmptyCollections: result.createEmptyCollections,
     shutdown: async () => {
       await result.shutdown();
       db.close();
@@ -159,6 +162,7 @@ export async function openStrand(type: 'o' | 'c' = 'c', transactor: StrandTransa
     type,
     sApp: makeSAppConfig(),
     founderKeyPair: type === 'c' ? founder : undefined,
+    createEmptyCollections: raw.createEmptyCollections,
   });
   // `opened` already holds `raw`, and this copy shares its `shutdown` closure —
   // teardown runs exactly once either way.
