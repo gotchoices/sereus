@@ -9,6 +9,10 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts
 
 GitHub gotchoices/sereus#46. The maintainer decided (2026-10-15) that a change to the control schema is applied to each machine's existing control store when that machine starts on the new release, instead of the party being recreated, because phones receive an app update one at a time. `implement/control-store-migrates-on-start` is the Sereus side and waits on this ticket.
 
+**Upstream status (Optimystic main `0e71ee38`, unreleased).** Filed as Optimystic `2-catalog-only-alter-table` with `1-bug-optimystic-table-tag-changes-lost-on-restart` as its prereq. The tag persistence fix and catalog-only DROP CONSTRAINT for CHECK are done and reviewed. ADD nullable COLUMN and DROP COLUMN (Optimystic `implement/2.1`) are coded on main but not yet reviewed. Unblock only after a release that includes all of them.
+
+**Quereus constraint.** Quereus's schema differ emits `create index` before the `add column` that index depends on, in both the memory and Optimystic modules, so one apply that adds a column and indexes it fails. Until Quereus orders these correctly, a control-schema version may not add a column and an index on it together. Either the migratability spec refuses that combination, or the index ships in the following version. This needs a Quereus ticket. Optimystic will not work around it.
+
 ## What Sereus needs to do
 
 On a warm start `ControlDatabase.loadSchema` runs `apply schema CadreControl`, which diffs the declared schema against the catalog it hydrated and runs the difference as DDL. Between consecutive control-schema versions the difference is limited (enforced in Sereus by `implement/control-schema-versions-stay-migratable`) to:
