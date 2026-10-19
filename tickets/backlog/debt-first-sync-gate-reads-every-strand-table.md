@@ -25,3 +25,7 @@ What would confirm or rule it out: whether a joiner that has heard from the foun
 ## What is wanted
 
 The gate's invariant covers every table this machine may write: before the database is published, a read of each declared `Strand` table settles, as each `App` table's does now. Now that the founder commits every declared table's collection, a settled read of one of these tables means its collection was fetched (a table a later schema version adds stays the residual in docs/strands.md). The time this adds to a gated join on the relay scenarios should be measured and recorded against `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`.
+
+## Related
+
+`plan/first-sync-gate-probes-cheaply` changes the same probe loop (one-row probes, concurrent, woken on arrival), which makes the extra reads this ticket adds cheap. If this ticket is promoted while that one is open, implement both in one change.
