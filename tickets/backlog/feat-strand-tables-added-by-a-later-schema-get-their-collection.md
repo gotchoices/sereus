@@ -22,3 +22,7 @@ A rule for who commits a new table's empty collection when an app's schema versi
 - a member creates it only after a read of it settled "absent" with every other member connected.
 
 Out of scope until there is a versioning design to attach it to.
+
+## The control database has the same gap
+
+`control-collections-created-at-cadre-founding` commits every control table's empty collection at party genesis (`ControlDatabase.ensureOwnerKey`). A table that a later control schema version adds is created by `control-store-migrates-on-start`'s start-time apply, which every machine runs for itself, with no owner key and possibly while alone, so the same rule is needed there: no machine that cannot rule out another having created the collection may commit it. The control schema has a version (`CONTROL_SCHEMA_VERSION`), so a rule chosen for strands may apply to it first.
