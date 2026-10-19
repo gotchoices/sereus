@@ -5134,7 +5134,7 @@ export class ControlDatabase {
    * Close the database and cleanup resources.
    *
    * Disposes every {@link watchTables} subscription before anything else, so a commit that
-   * lands while the write chain drains schedules no run.
+   * lands while the write chain drains schedules no run, and again before dropping the handle.
    *
    * Then drains the local-write chain: {@link withWriteLock} can park a write behind
    * others across an await, and a queued closure evaluates `this.db!` only when it
@@ -5153,6 +5153,8 @@ export class ControlDatabase {
       await this.collectionFactory.shutdown();
       this.collectionFactory = null;
     }
+    // Again: a subscription taken during the awaits above would keep its timers past close.
+    this.tableWatches.disposeAll();
     if (this.db) {
       void this.db.close();
       this.db = null;

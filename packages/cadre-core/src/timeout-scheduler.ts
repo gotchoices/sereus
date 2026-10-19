@@ -1,7 +1,8 @@
 /**
  * The timer seam shared by the strand bring-up loops that re-arm themselves one step at a
  * time — the first-sync write gate's probe loop (`strand-first-sync-gate.ts`) and the
- * membership reconciler's retry ladder (`strand-membership-reconciler.ts`). `setTimeout`
+ * membership reconciler's retry ladder (`strand-membership-reconciler.ts`) — and by the table
+ * change subscription's coalescing, trigger and backstop timers (`table-change-watch.ts`). `setTimeout`
  * rather than a repeating interval because the next step is armed only once the previous
  * one settles, so a slow network read never stacks steps behind it, and because the delay
  * can differ per step.

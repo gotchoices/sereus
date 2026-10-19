@@ -322,6 +322,8 @@ export class StrandDatabase {
       await this.shutdownStrand();
       this.shutdownStrand = null;
     }
+    // Again: a subscription taken during the await above would keep its timers past close.
+    this.tableWatches.disposeAll();
     if (this.db) {
       void this.db.close();
       this.db = null;
