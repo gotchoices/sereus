@@ -11,7 +11,7 @@ GitHub gotchoices/sereus#46. The maintainer decided (2026-10-15) that a change t
 
 **Upstream status (Optimystic main `8a0053d2`, unreleased, `yarn check` green).** Everything proposed below is implemented and reviewed on main. That covers tag persistence, catalog-only ADD COLUMN (nullable, no default, no generated expression or inline constraint), DROP COLUMN (a column in no index and not in the primary key), and DROP CONSTRAINT for CHECK. Unblocks when the Optimystic maintainer cuts a release that includes them.
 
-**Quereus constraint.** Quereus's schema differ emits `create index` before the `add column` that index depends on, in both the memory and Optimystic modules, so one apply that adds a column and indexes it fails. Until Quereus orders these correctly, a control-schema version may not add a column and an index on it together. Either the migratability spec refuses that combination, or the index ships in the following version. Optimystic tracks it as `blocked/quereus-apply-schema-creates-indexes-before-added-columns`, and the plugin README documents the workaround. The fix belongs in Quereus.
+**Quereus floor.** When adopting that release, also raise Sereus's `@quereus/quereus` floors to `^4.20.3`. From 4.20.3 one `apply schema` can add a column and an index on it (Quereus `apply-schema-creates-indexes-before-added-columns`).
 
 ## What Sereus needs to do
 
