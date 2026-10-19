@@ -369,7 +369,7 @@ The seed is **cache pre-population**, not a separate database. After applying th
 
 ### Control Network Convergence
 
-How a party's control nodes come to hold the same control data once the seed has given a node somewhere to dial: the control tables replicate over the network; the nodes connect to each other without being told to; a node whose first connection failed keeps retrying, from a record that survives a restart; and writes and deletes committed while a node had no connection are re-sent when it gets one.
+How a party's control nodes come to hold the same control data once the seed has given a node somewhere to dial: the control tables replicate over the network; the nodes connect to each other without being told to; a node whose first connection failed keeps retrying, from a record that survives a restart; and writes and deletes committed while a node had no connection are re-sent when it gets one. A node learns that a control or strand table changed through one subscription, described last.
 
 #### Control tables are network-backed
 
@@ -486,6 +486,22 @@ A `removePeer` (or `clearDeviceToken`, or the owner-signed `ControlDatabase.dele
 **Test coverage.** End-to-end proof is `control-delete-while-alone-convergence.integration.ts`, backed by the unit layer (`cadre-node-control-replication.spec.ts`, `control-database-offline-peers.spec.ts`). **The reap sweep still has no live-network proof** — no integration scenario exercises it crossing a real network, only unit coverage of the authorization branch, the per-row delete, the enumeration, and the reconcile-pass scheduling (`control-revocation-reap.spec.ts`, `cadre-node-control-cohort.spec.ts`).
 
 Tickets: `control-revocation-reissuable-tombstone`, `control-revocation-drain-on-growth`, `control-revocation-reap-authorization`, `control-revocation-reap-sweep`.
+
+#### Table change subscriptions
+
+`table-change-watch.ts` is the one way cadre-core is told that a control or strand table changed, so a loop can wait for a change instead of re-reading on a timer (GitHub #50). `ControlDatabase.watchTables` and `StrandDatabase.watchTables` subscribe a consumer's `onChange` to a list of qualified tables (`'CadreControl.Strand'`, `'Strand.Member'`); each database's `close()` disposes its subscriptions before anything it awaits.
+
+**What it hears.** It is built on Quereus's `Database.watch`, which fires after every commit made on that `Database`, and also whenever the Optimystic plugin calls `notifyExternalChange` because this node's storage moved a table's collection forward: a consensus commit made on another machine that this node took part in as a cohort member, a block-transfer push such as [join backfill](#replication-cluster-size), and a read-repair landing. Events are table-wide; there are no row keys.
+
+**What it does not hear.** A change that never reaches this node's storage, which happens to a machine outside the block's cohort (a cadre larger than `CONTROL_REPLICATION_BREADTH`, a strand larger than its cluster size) until its next read of that block. A replicated change to a table this `Database` has not yet touched: the plugin arms its storage bridge per table on the table's first full initialization, so consumers' start runs, which read their tables, are what arm it.
+
+**Scheduling.** The watch handler runs inside the committing call, possibly under the control write lock, so it only sets flags and arms a timer; Quereus never awaits consumer work inside a commit. Changes inside the coalescing window (`TABLE_CHANGE_COALESCE_MS`, 50 ms) share one run, which also folds the two events one local commit raises (Quereus's own dispatch, then the plugin's storage event). At most one run is in flight; any number of changes during a run produce exactly one follow-up run. A consumer's own `trigger(delayMs)` (start, retry backoff) and the optional backstop go through the same rule, and the earliest pending one starts the run. An optional synchronous `onInvalidate` hook hears each changed table inline, for clearing a cache.
+
+**Why consumers keep a backstop.** Because of the gaps above, each consumer sets a `backstopMs`, which runs it that long after its last run settled whether or not a change arrived. The backstop is the only path for a machine outside a block's cohort.
+
+**What it does not replace.** `ControlDatabase.setMembershipChangeListener` stays an awaited in-write hook, so the membership gate is current before a local `authorizePeer` / `removePeer` call returns; a coalesced subscriber would refresh it up to a window later.
+
+Ticket: `control-and-strand-table-change-subscription`.
 
 ### Unified Node Behavior
 

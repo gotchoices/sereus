@@ -9,6 +9,8 @@ import { bootstrapFounderMembership } from './strand-membership-writer.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { StrandCommitRecord } from './strand-commit-durability.js';
 import type { StrandCommitDurability, StrandCommitListeners } from './strand-commit-durability.js';
+import { TableWatchRegistry } from './table-change-watch.js';
+import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
 
 const log = debug('sereus:cadre:strand-db');
 const timing = debug('sereus:cadre:timing');
@@ -81,6 +83,8 @@ export class StrandDatabase {
   private initialized = false;
   private readonly commits: StrandCommitRecord;
   private unsubscribeCommits: (() => void) | null = null;
+  /** Subscriptions handed out by {@link watchTables}. */
+  private readonly tableWatches = new TableWatchRegistry();
 
   constructor(config: StrandDatabaseConfig) {
     this.config = config;
@@ -267,6 +271,18 @@ export class StrandDatabase {
   }
 
   /**
+   * Subscribe `onChange` to changes in this strand's tables (`'Strand.Member'`, …): commits
+   * made here and changes replicated into this node's storage alike, on the single-flight
+   * schedule `table-change-watch.ts` describes. {@link close} disposes every subscription
+   * still live; a hibernated strand's database is closed and rebuilt on wake, so a consumer
+   * subscribes again on the new instance.
+   */
+  watchTables(tables: readonly string[], onChange: () => Promise<void>, options: TableChangeWatchOptions): TableChangeWatch {
+    this.ensureInitialized();
+    return this.tableWatches.watch(this.db!, tables, onChange, options);
+  }
+
+  /**
    * The durability of a recent commit on this database, by its `StampId()` — the id a single
    * `insert … returning StampId() as Tx` statement returns. Read it after that statement
    * resolves: the plugin reports the commit before the statement returns, and a commit already
@@ -298,9 +314,10 @@ export class StrandDatabase {
    * failed part-way.
    */
   async close(): Promise<void> {
-    // First, so an event from the closing connection reaches no app handler.
+    // First, so an event from the closing connection reaches no app handler or table watch.
     this.unsubscribeCommits?.();
     this.unsubscribeCommits = null;
+    this.tableWatches.disposeAll();
     if (this.shutdownStrand) {
       await this.shutdownStrand();
       this.shutdownStrand = null;

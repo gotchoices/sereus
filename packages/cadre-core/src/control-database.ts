@@ -22,6 +22,8 @@ import { isCohortUnreachableRead, retryControlRead } from './control-read-retry.
 import type { ControlReadRetryOptions } from './control-read-retry.js';
 import { chainMessages } from './control-retry.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
+import { TableWatchRegistry } from './table-change-watch.js';
+import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -1127,6 +1129,8 @@ export class ControlDatabase {
   private controlWriteAbandonedListener: ControlWriteAbandonedListener | null = null;
   /** Tail of the local-write chain — see {@link withWriteLock}. */
   private writeQueue: Promise<unknown> = Promise.resolve();
+  /** Subscriptions handed out by {@link watchTables}. */
+  private readonly tableWatches = new TableWatchRegistry();
   /**
    * Locked write bodies currently running (see {@link runWriteBody}); what
    * {@link readRowsOnce} consults to route an unlocked read around a write that has
@@ -3600,9 +3604,24 @@ export class ControlDatabase {
    * {@link CadreNode}, which wires this in `start()` and clears it on teardown. A
    * second call replaces the first rather than fanning out, so a stale node can
    * never keep receiving notifications for a database it no longer owns.
+   *
+   * Only this database's own writes notify here, awaited inside the write so the gate is
+   * current before the write returns; a membership change replicated in from another
+   * machine reaches the gate through the control-cohort reconcile pass, which refreshes it.
    */
   setMembershipChangeListener(listener: MembershipChangeListener | null): void {
     this.membershipListener = listener;
+  }
+
+  /**
+   * Subscribe `onChange` to changes in control tables (`'CadreControl.Strand'`, …): commits
+   * made here and changes replicated into this node's storage alike, on the single-flight
+   * schedule `table-change-watch.ts` describes. {@link close} disposes every subscription
+   * still live before it drains the write queue.
+   */
+  watchTables(tables: readonly string[], onChange: () => Promise<void>, options: TableChangeWatchOptions): TableChangeWatch {
+    this.ensureInitialized();
+    return this.tableWatches.watch(this.db!, tables, onChange, options);
   }
 
   /**
@@ -5114,7 +5133,10 @@ export class ControlDatabase {
   /**
    * Close the database and cleanup resources.
    *
-   * Drains the local-write chain first: {@link withWriteLock} can park a write behind
+   * Disposes every {@link watchTables} subscription before anything else, so a commit that
+   * lands while the write chain drains schedules no run.
+   *
+   * Then drains the local-write chain: {@link withWriteLock} can park a write behind
    * others across an await, and a queued closure evaluates `this.db!` only when it
    * finally runs — so nulling the handle out from under it would throw a TypeError on a
    * null handle instead of committing. The tail never rejects (it swallows both
@@ -5125,6 +5147,7 @@ export class ControlDatabase {
    * deadline) if a write can ever hang.
    */
   async close(): Promise<void> {
+    this.tableWatches.disposeAll();
     await this.writeQueue;
     if (this.collectionFactory) {
       await this.collectionFactory.shutdown();
