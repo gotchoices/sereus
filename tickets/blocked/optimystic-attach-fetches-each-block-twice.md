@@ -5,7 +5,7 @@ repro: verified
 ----
 # Optimystic fetches each missing block twice, one block at a time
 
-**Blocked on a dependency outside this repo.** Unblocks when Optimystic ships items 1–2 below in a version Sereus can adopt. Upstream issue: gotchoices/Optimystic#39 (open). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
+**Blocked on a dependency outside this repo.** Unblocks when Optimystic ships items 1–2 below in a version Sereus can adopt. Upstream issue: gotchoices/Optimystic#39 (open); upstream ticket `../optimystic/tickets/plan/a-cold-read-fetches-each-block-once` (filed 2026-10-19). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
 
 ## What happens
 

@@ -5,7 +5,7 @@ repro: verified
 ----
 # Optimystic's background consults cost one full-block request per block
 
-**Blocked on a dependency outside this repo.** Unblocks when Optimystic ships any of items 1–3 below in a version Sereus can adopt. Upstream issue: gotchoices/Optimystic#43 (filed 2026-10-19); Optimystic's own backlog also has item 1 (`feat-a-cohort-consult-batches-blocks-per-peer`). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
+**Blocked on a dependency outside this repo.** Unblocks when Optimystic ships any of items 1–3 below in a version Sereus can adopt. Upstream issue: gotchoices/Optimystic#43 (filed 2026-10-19); upstream ticket `../optimystic/tickets/plan/feat-a-cohort-consult-batches-blocks-per-peer` (promoted from its backlog 2026-10-19 with items 2–3 added). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
 
 ## What happens
 
