@@ -5,7 +5,7 @@ repro: verified
 ----
 # FRET keeps probing peers that are not on its ring
 
-**Blocked on a dependency outside this repo.** Unblocks when FRET skips peers that never negotiated its protocol (and Optimystic passes FRET's idle cap through `createLibp2pNode`). Not yet reported upstream. Read at FRET 1.1.0 (`48cb6b5`), Optimystic main (`f22a8cb7`). The FRET checkout was being edited during the read; line numbers may drift.
+**Blocked on a dependency outside this repo.** Unblocks when FRET stops re-probing peers it has labelled foreign, or stops letting those re-probes restart its idle back-off: gotchoices/Fret#3 (filed 2026-10-19) covers item 1. Items 2 and 3 (Optimystic: FRET idle-cap passthrough, `dcutr` off) are not filed, because `dcutr` costs only at join time and the idle cap matters only once Fret#3 lets the back-off reach it; file them if `message-cost-accounting` still shows the cost after Fret#3 lands. Read at FRET 1.1.0 (`48cb6b5`), Optimystic main (`f22a8cb7`). The FRET checkout was being edited during the read; line numbers may drift.
 
 ## What happens
 

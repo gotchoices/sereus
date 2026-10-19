@@ -5,7 +5,7 @@ repro: static
 ----
 # A transaction over several collections costs about 4 requests per collection
 
-**Blocked on a dependency outside this repo.** Unblocks when Optimystic batches a multi-collection transaction's pends and commits per coordinator. Related upstream issue: gotchoices/Optimystic#29 (write cost). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
+**Blocked on a dependency outside this repo.** Unblocks when Optimystic batches a multi-collection transaction's pends and commits per coordinator. Upstream issue: gotchoices/Optimystic#42 (per-index cost; our multi-table case added as a comment 2026-10-19), and #29 (write cost). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
 
 ## What happens (traced; upstream pins the numbers)
 
