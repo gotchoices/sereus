@@ -4860,21 +4860,33 @@ export class ControlDatabase {
     // Revocation twice (once per table, the two in parallel). If the stranger path's decision
     // ever nears the admission gate's 2 s deadline, read the retired stamps once for both.
     const [withdrawn, owners] = await Promise.all([this.queryRevokedStamps('CadreInvite'), this.getOwnerKeys()]);
-    // NOTE: walks every CadreInvite row (expired and withdrawn ones included, since rows are
-    // never deleted) from the membership view on the stranger path of an inbound connection.
-    // Cadre-scale invitation counts make that free today; if a long-lived cadre accumulates
-    // thousands and inbound upgrades slow down, prune withdrawn/expired rows (which first needs
-    // every device they admitted re-vouched, so the chain no longer needs them).
+    // NOTE: scans every CadreInvite row (expired and withdrawn ones included, since rows are
+    // never deleted) on the stranger path of an inbound connection. Cadre-scale invitation
+    // counts make that free today; if a long-lived cadre accumulates thousands and inbound
+    // upgrades slow down, add an expiry-ordered index or prune withdrawn/expired rows (which
+    // first needs every device they admitted re-vouched, so the chain no longer needs them).
+    // NOTE: this scan reaches storage while queryCadreInvites serves the same rows from the
+    // membership view; if the stranger path's reads ever near the gate's 2 s deadline, walk
+    // queryCadreInvites() here instead.
     const metered: Array<{ key: string; totalUses: number }> = [];
     let unlimitedLive = false;
-    for (const row of await this.queryCadreInvites()) {
-      if (!issuedRowStillOpen(row, withdrawn, owners, nowMs)) {
+    for (const row of await this.readRows(
+      'select Key, ExpiresAt, TotalUses, IssuerKey, StampId from CadreControl.CadreInvite',
+      undefined,
+      'live-cadre-invites'
+    )) {
+      const open = issuedRowStillOpen(
+        { stampId: row.StampId as string, issuerKey: row.IssuerKey as string, expiresAt: (row.ExpiresAt as string | null) ?? null },
+        withdrawn, owners, nowMs
+      );
+      if (!open) {
         continue;
       }
-      if (row.totalUses === null) {
+      const totalUses = (row.TotalUses as number | null) ?? null;
+      if (totalUses === null) {
         unlimitedLive = true;
       } else {
-        metered.push({ key: row.key, totalUses: row.totalUses });
+        metered.push({ key: row.Key as string, totalUses });
       }
     }
     if (unlimitedLive) {
