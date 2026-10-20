@@ -940,6 +940,10 @@ export class CadreNode implements SAppIdLookup {
    * (deleted) by the {@link resolveStrandPartyKey} that uses it, so any later launch reads
    * the row; dropped by {@link detachStrand}. The joiner's counterpart of the founder's
    * `StrandConfig.partyMemberPrivateKey`, without the app carrying the secret.
+   *
+   * NOTE: an entry is not dropped when the row is removed, because no `CadreNode` path removes
+   * it; an embedder calling `getControlDatabase().deleteStrandPartyKey` between a join and its
+   * launch would get the deleted key. If a node-level rotation is added, drop the entry there.
    */
   private readonly formedPartyKeys = new Map<string, string>();
 
@@ -5617,6 +5621,7 @@ export class CadreNode implements SAppIdLookup {
     this.strandLaunchRefusals.clear();
     this.discoveredStrands.clear();
     this.replicaSAppIds.clear();
+    this.formedPartyKeys.clear();
 
     // Drop delegate-admission state: the grants are scoped to the session that
     // recorded them, so a stop()/start() cycle on this object must not keep
@@ -7949,8 +7954,8 @@ export class CadreNode implements SAppIdLookup {
    * The stop + emit are skipped when the strand manager holds no instance for `strandId` —
    * e.g. a party owner that published a strand's row but never ran it locally, or an
    * explicit {@link stopStrand} for an id this node never started. `hibernationManager`
-   * untrack and the `sAppConfigs` / {@link strandLaunchRefusals} / {@link discoveredStrands}
-   * deletes stay unconditional (all no-ops when there is nothing to remove), so a launch
+   * untrack and the `sAppConfigs` / {@link strandLaunchRefusals} / {@link discoveredStrands} /
+   * {@link formedPartyKeys} deletes stay unconditional (all no-ops when there is nothing to remove), so a launch
    * that failed before an instance was ever tracked still gets its stray entries cleared.
    *
    * Dropping the {@link discoveredStrands} entry here covers both callers, and both

@@ -370,7 +370,7 @@ export class JoinedStrandSession {
 	async rememberForeign(row: StrandRow): Promise<void> {
 		this.pendingRemovals.delete(row.Id);
 		const early = await this.storedRecord(row.Id).catch((error: unknown) => {
-			// Asked again below only when the party does not name the strand, where it throws.
+			// Asked again below only when the party does not name the strand; a second failure throws.
 			log('joined strand %s: store lookup failed; asking the control database first: %o', row.Id, error);
 			return null;
 		});
