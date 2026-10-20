@@ -661,7 +661,10 @@ export async function bootstrapFounderMembership(db: Database, params: FounderBo
   // create that collection itself (its reconciler binding its own peer into MemberPeer). The
   // re-run's guards, and this machine's reconciler, read each table before writing it, and a
   // networked read asks the cohort, so the healing write appends to the sibling's collection
-  // unless the sibling is unreachable at that moment. If torn founding commits are ever
+  // unless the sibling is unreachable at that moment. A torn founding that saves this
+  // machine's MemberPeer without its Member also leaves an orphaned binding, which every
+  // machine's revocation enforcer (this one's and any joiner's) reads as a removed founder
+  // until a later run of this bootstrap seats the Member. If torn founding commits are ever
   // observed, commit the founding tables a sibling writes (MemberPeer) as empty collections
   // before this batch again.
   await execStrandTransaction(db, combineStatements(...rows.map((row) => row.statements)));

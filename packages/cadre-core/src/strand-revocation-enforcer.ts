@@ -9,15 +9,15 @@
  * every `Strand.MemberPeer.PeerId` whose `MemberKey` has no live `Strand.Member`
  * row. `MemberPeer.MemberExists` runs on insert, so an orphaned binding can only
  * mean "this member existed and was removed" — it is exactly the durable,
- * replicated record of a removed party's machines. Everything NOT in the set is
- * admitted. That holds on the network only because every writer commits a
- * party's `Member` row before its `MemberPeer` row, as separate commits (the
- * membership reconciler does, and `registerMemberPeer` requires an existing
- * member): Optimystic can save a multi-collection transaction's tables
- * separately, and remaining members can apply them in either order. The one
- * exception is the founder's bootstrap, which writes its own `Member` and
- * `MemberPeer` in one transaction; that is acceptable because it commits before
- * any other party has joined, so no other party's enforcer is reading yet.
+ * replicated record of a removed party's machines. That holds on the network
+ * only because every writer commits a party's `Member` row before its
+ * `MemberPeer` row, as separate commits (the membership reconciler does, and
+ * `registerMemberPeer` requires an existing member): Optimystic can save a
+ * multi-collection transaction's tables separately, and remaining members can
+ * apply them in either order. The one exception is the founder's bootstrap,
+ * which writes its own `Member` and `MemberPeer` in one transaction; that is
+ * acceptable because it commits before any other party has joined, so no other
+ * party's enforcer is reading yet. Everything NOT in the set is admitted.
  * Deliberate consequences:
  *
  * - **Open strands are untouched.** `Member`/`MemberPeer` carry `OnlyClosed`
@@ -305,10 +305,10 @@ async function scanMemberKeys(db: Database): Promise<Set<string>> {
  * separate reads with nothing holding them to one snapshot, so a write that
  * lands between them is seen by the second scan and not the first. A member
  * joins as `Member` row then `MemberPeer` row (`MemberExists` forces that
- * order), so reading `Member` first would let a join that commits mid-read
- * produce a binding whose member key is absent from the key set — a brand-new
- * member classified as REVOKED, the one fail-CLOSED outcome this module exists
- * to avoid. Reading bindings first inverts the skew: the new binding is simply
+ * order; the module doc says why it holds on the network), so reading `Member`
+ * first would let a join that commits mid-read produce a binding whose member
+ * key is absent from the key set — a brand-new member classified as REVOKED,
+ * the one fail-CLOSED outcome this module exists to avoid. Reading bindings first inverts the skew: the new binding is simply
  * not in the older bindings snapshot, so the joiner is unclassified and
  * admitted, and a revocation that lands mid-read is still seen (the key is
  * missing from the NEWER key scan). Every skew window then resolves fail-open,
