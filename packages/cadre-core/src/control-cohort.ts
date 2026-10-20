@@ -24,17 +24,36 @@
 import type { CohortPeerRow } from './strand-cohort.js';
 
 /**
- * Default recurring cadence for {@link CadreNode.reconcileControlCohort} (ms).
- * In the same spirit as the 5s strand-watch poll but lighter, since a control
- * cohort changes far less often than strand activity.
+ * Default backstop for {@link CadreNode.reconcileControlCohort} (ms): a pass runs this long
+ * after the last one settled whether or not anything woke it. Passes normally run on a
+ * change — a membership table changing, a sibling connecting or disconnecting, an address
+ * change — and on the retries a pass arms for itself ({@link nextReconcileWakeMs}); the
+ * backstop bounds how stale this node can be after a change it hears nothing of: one that
+ * reaches it with no storage event, which happens to a machine outside the block's cohort
+ * (a cadre larger than `CONTROL_REPLICATION_BREADTH`). The membership rows view's maximum
+ * age (`MEMBERSHIP_VIEW_MAX_AGE_MS`) follows this value, for the same case.
  *
- * An interval between pass starts, not a deadline on a pass. Passes are
- * single-flight, so a pass that runs longer than this is joined rather than
- * stacked, and the effective cadence becomes the pass length: one unreachable
- * sibling's dial alone can take the whole per-peer dial budget (86 s at the
- * default declared link).
+ * `network.controlCohort.reconcileMs` overrides it. An interval between a pass settling and
+ * the next start, not a deadline on a pass: passes are single-flight, and one unreachable
+ * sibling's dial alone can take the whole per-peer dial budget (86 s at the default
+ * declared link).
+ *
+ * NOTE: a cadre larger than `CONTROL_REPLICATION_BREADTH` (16 machines) has machines outside
+ * each block's cohort, which see a membership change only at this backstop or at the view's
+ * maximum age, 2 minutes, where the change-driven path serves a machine in the cohort within
+ * the 50 ms coalescing window. If a party that large ever needs a tighter bound, lower the
+ * backstop for its nodes or give the plugin's change bridge a path for outside-the-cohort
+ * reads.
  */
-export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 15_000;
+export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 120_000;
+
+/**
+ * First redial delay after a pass leaves a selected sibling, or a cold-start bootstrap peer,
+ * unconnected (ms). Doubles per consecutive such pass and is capped at the backstop, so a
+ * sibling that is offline costs one dial per backstop once the ladder saturates, and a
+ * stranded cold-start node keeps trying forever (15 s, 30 s, 60 s, then every backstop).
+ */
+export const CONTROL_COHORT_REDIAL_MS = 15_000;
 
 /**
  * Default cap on the number of **non-backbone** members a single reconcile pass
@@ -124,4 +143,52 @@ export function selectControlCohortDials(
     dials: [...backbone, ...fill],
     cappedNonBackbone: rest.length - fill.length,
   };
+}
+
+/** What {@link nextReconcileWakeMs} decides from, all times epoch milliseconds. */
+export interface ReconcileWakeInput {
+  /**
+   * Consecutive passes, this one included, that ended with a selected sibling or a cold-start
+   * bootstrap peer unconnected; 0 when this pass left none.
+   */
+  redialStreak: number;
+  /** When the pass that just ended began. */
+  passStartedAt: number;
+  /** Every (sibling, strand) strand-address due time this node holds. */
+  strandAddrDueAt: Iterable<number>;
+  now: number;
+  /** The scheduler's backstop (ms); no wake is later than it. */
+  backstopMs: number;
+}
+
+/**
+ * How long after a pass the next one should run for the pass's own reasons, or `undefined`
+ * when the backstop covers everything:
+ *
+ * - **Redial.** A streak of unconnected passes wakes after
+ *   `min(CONTROL_COHORT_REDIAL_MS × 2^(streak − 1), backstop)`.
+ * - **Strand addresses.** The earliest strand-address due time LATER THAN the pass's start,
+ *   when it is sooner than the backstop, wakes when it falls due (now at the latest). A due
+ *   time at or before the start belongs to a (sibling, strand) the pass skipped for another
+ *   reason — the strand stopped, the sibling disconnected — and waking for it would spin; the
+ *   strand watcher's launch retry keeps the same rule.
+ *
+ * The smaller wins.
+ */
+export function nextReconcileWakeMs(input: ReconcileWakeInput): number | undefined {
+  const { redialStreak, passStartedAt, strandAddrDueAt, now, backstopMs } = input;
+  let wake: number | undefined;
+  if (redialStreak > 0) {
+    wake = Math.min(CONTROL_COHORT_REDIAL_MS * 2 ** (redialStreak - 1), backstopMs);
+  }
+  for (const dueAt of strandAddrDueAt) {
+    if (dueAt <= passStartedAt) {
+      continue;
+    }
+    const delay = Math.max(0, dueAt - now);
+    if (delay < backstopMs && (wake === undefined || delay < wake)) {
+      wake = delay;
+    }
+  }
+  return wake;
 }

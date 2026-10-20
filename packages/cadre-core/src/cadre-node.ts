@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
+import type { Connection, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
@@ -123,10 +123,12 @@ import { deriveCohortMembers } from './strand-cohort.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
   selectControlCohortDials,
+  nextReconcileWakeMs,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
   type ControlCohortReconcileResult
 } from './control-cohort.js';
+import { scheduleRuns, type TableChangeWatch } from './table-change-watch.js';
 import {
   dialPeerAddrs,
   SelfRelayOnlyError,
@@ -226,8 +228,8 @@ const timing = debug('sereus:cadre:timing');
  *
  * Ten minutes sits comfortably inside the peerStore's one-hour address expiry
  * (`MAX_ADDRESS_AGE`, see `peer-addr-book.ts`) with headroom for several missed
- * passes, and far above the 15 s reconcile cadence the refresh rides on, so the
- * strand-addr RPC fan-out stays cheap.
+ * passes, and far above the reconcile pass's 2-minute backstop the refresh rides
+ * on, so the strand-addr RPC fan-out stays cheap.
  */
 export const STRAND_PEER_ADDR_REFRESH_MS = 10 * 60 * 1000;
 
@@ -237,10 +239,39 @@ export const STRAND_PEER_ADDR_REFRESH_MS = 10 * 60 * 1000;
  * phone asking before its `CadrePeer` row has replicated to the sibling is refused
  * and its delegate grant goes unrecorded, and waiting the full
  * {@link STRAND_PEER_ADDR_REFRESH_MS} for the next try is the delay this bounds.
- * Four reconcile ticks, so a sibling that keeps failing costs one timed-out RPC a
- * minute rather than one a tick.
+ * A pass arms its own wake for the earliest due time it leaves behind
+ * (`nextReconcileWakeMs`), so a sibling that keeps failing costs one timed-out
+ * RPC a minute, with no pass in between.
  */
 export const STRAND_PEER_ADDR_RETRY_MS = 60 * 1000;
+
+/**
+ * The control tables the membership gate is built from: what
+ * {@link CadreNode.refreshMembershipGate} and the owner-anchor sync read. A change to any
+ * of them, local or replicated, re-materializes the gate and starts a reconcile pass
+ * (the gate watch {@link CadreNode.start} takes).
+ */
+const MEMBERSHIP_GATE_TABLES = [
+  'CadreControl.CadrePeer',
+  'CadreControl.OwnerKey',
+  'CadreControl.Revocation',
+  'CadreControl.CadreInvite',
+  'CadreControl.CadreInviteUsage',
+  'CadreControl.OwnerGrant',
+  'CadreControl.OwnerGrantUsage',
+] as const;
+
+/**
+ * What one reconcile pass did, for the wrapper that arms the next wake; callers get only
+ * its `dialed` ({@link ControlCohortReconcileResult}).
+ */
+interface ControlCohortPassOutcome extends ControlCohortReconcileResult {
+  /**
+   * The pass tried to connect a selected sibling, or a cold-start bootstrap peer, and could
+   * not: the dial failed, or no address of it was dialable.
+   */
+  unconnected: boolean;
+}
 
 /**
  * Default lifetime of an owner grant ({@link CadreNode.createOwnerGrant}): whoever holds the
