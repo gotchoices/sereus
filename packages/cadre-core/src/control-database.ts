@@ -489,7 +489,7 @@ interface OptimysticPluginResult {
    * compose-strand.ts).
    */
   hydrate: (db: Database) => Promise<{ tables: number; indexes: number }>;
-  /** The registry of every collection a control table opened; see {@link ControlDatabase.ensureOwnerKey}. */
+  /** The transaction bridge, whose registry holds every collection a control table opened; see {@link ControlDatabase.ensureOwnerKey}. */
   txnBridge: CollectionRegistrySource;
   [key: string]: unknown;
 }
