@@ -388,7 +388,8 @@ function admittedRecord(partyId: string, remotePeerId: string, request: Pick<Cad
   const { addrs: offered, updatedAt, profile, sig } = request.record as Partial<Record<keyof RedeemSelfRecord, unknown>>;
   const addrs = sanitizeAddrs(offered);
   const unsigned = (because: string): AdmittedRecord => ({ addrs, signed: null, unsignedBecause: because });
-  if (!Array.isArray(offered) || addrs.length !== offered.length || addrs.some((addr, i) => addr !== offered[i])) {
+  // Sanitizing only drops entries, so an unchanged length is an unchanged list.
+  if (!Array.isArray(offered) || addrs.length !== offered.length) {
     return unsigned('sanitizing changed the signed address list');
   }
   if (profile !== null && profile !== 'transaction' && profile !== 'storage') {
