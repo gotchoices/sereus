@@ -120,6 +120,19 @@ describe('CadreNode signs every owner write through the one signer it was given'
 		expect(signatures).toBe(3);
 		expect((await db.queryFormationInvite(inviteToken))?.strandId).toBe(invitedId);
 
+		// Repeated over the stored row: the stored invitation is kept without asking, a new one
+		// is published on its own.
+		const refound = async (token: string) => {
+			resetCounts();
+			await node.foundStrand({ strandId: invitedId, type: 'c', sAppConfig: signedSApp(), formationInvite: { token } });
+		};
+		await refound(inviteToken);
+		expect(approvals).toHaveLength(0);
+		const secondToken = 'invite-' + rand();
+		await refound(secondToken);
+		expect(approvals).toHaveLength(1);
+		expect((await db.queryFormationInvite(secondToken))?.strandId).toBe(invitedId);
+
 		const strandId = 'closed-' + rand();
 		await node.publishStrand(strandId, 'c', 'closed-read-secret');
 		expect(await db.queryStrandPartyKey(strandId)).not.toBeNull();

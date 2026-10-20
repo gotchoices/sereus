@@ -18,6 +18,7 @@ import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { CadreInviteSignedFields, OwnerGrantSignedFields, RevocableTable } from './control-authorization.js';
+import type { FoundingInvite } from './control-database.js';
 import type { CadreInvitation } from './cadre-invite-protocol.js';
 import type { OwnerGrantBundle } from './owner-grant-protocol.js';
 import type { RedemptionAddressOutcome } from './member-redemption.js';
@@ -1474,7 +1475,7 @@ export interface FoundStrandConfig {
    * published the invitation is published on its own, under its own approval, as
    * `publishFormationInvite` would; one already stored under `token` for this strand is kept.
    */
-  formationInvite?: { token: string; expiresAtMs?: number; totalUses?: number; validationUrl?: string };
+  formationInvite?: Omit<FoundingInvite, 'sAppId'>;
   /**
    * Forwarded to the attach ({@link StrandConfig.awaitFirstSync}). Matters only when the
    * call ATTACHES rather than founds — the stored row was published by a sibling machine

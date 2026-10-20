@@ -1,8 +1,10 @@
-description: Founding a strand now writes its control-database rows (the strand row, the party's membership key and, when the app asks for one, an invitation) as one transaction under one owner approval, and hands the new key to the strand's start instead of reading it back. Review the change, its conflict handling and the reference apps' switch to it.
+description: Founding a strand now writes its control-database rows (the strand row, the party's membership key and, when the app asks for one, an invitation) as one transaction under one owner approval, and hands the new key to the strand's start instead of reading it back. The reference apps found and invite in that one step.
 architecture: docs/architecture.md#strand-membership-bootstrap
 files: packages/cadre-core/src/control-database.ts (`FoundingRows`, `FoundingInvite`, `insertFoundingRows`, `signStrandInsert`, `signStrandPartyKeyInsert`, `signFormationInviteInsert`, `StrandIdTable`), packages/cadre-core/src/cadre-node.ts (`publishStrand`, `founderStrandRow`, `writeFoundingRows`, `insertOrAdoptFounding`, `seatFoundingRows`, `adoptConcurrentFounding`, `publishFoundingInviteIfAbsent`, `publishFoundingRow`, `publishFoundingStrand`, `resumeFounding`, `attachFoundingRow`, `registerPublishedInvitation`), packages/cadre-core/src/types.ts (`FoundStrandConfig.formationInvite`), packages/cadre-core/src/index.ts, packages/cadre-core/src/strand-move.ts (NOTE at `publishStrand`), packages/cadre-core/src/strand-database.ts (error text), packages/cadre-core/test/cadre-node-owner-signer.spec.ts, packages/cadre-core/test/strand-move.spec.ts, packages/reference-app-rn/src/chat-strand.ts (`createClosedChatStrand`), packages/reference-app-rn/src/use-cadre.ts (`createClosedStrandWithInvite`), packages/reference-app-rn/src/cadre-phone.ts, packages/reference-app-rn/test/react/use-cadre.spec.ts, packages/reference-app-rn/README.md, packages/reference-app-web/src/lib/cadre-web.ts (`createClosedChatStrand`, `createInvitation`), docs/architecture.md (Strand Membership Bootstrap → "Entry point", "Plumbing"), docs/strands.md (~370)
 ----
 # Strand founding writes its control rows in one transaction
+
+Implemented in `ticket(implement): strand-founding-control-writes-in-one-transaction`; reviewed below.
 
 ## What changed
 
@@ -60,3 +62,45 @@ files: packages/cadre-core/src/control-database.ts (`FoundingRows`, `FoundingInv
 - **Web host `createInvitation` has no automated coverage.** No unit test and no e2e drives the browser's host-side invitation; it is typechecked only.
 - **Build housekeeping.** `@serfab/cadre-cli`'s `dist` was stale from an earlier ticket's source edits and was rebuilt so the integration guard would pass. Nothing in cadre-cli changed.
 - **`control-collections-created-at-cadre-founding`'s unblock condition held on 2026-10-20 at 00:02.** The stale-build guard passed then, and optimystic rebuilt again at 00:13, still from uncommitted edits. Whoever gardens `blocked/` may want to look.
+
+## Review findings
+
+Read the implement diff first (`ticket(implement): strand-founding-control-writes-in-one-transaction`), then the handoff.
+
+**Checked, no defect found:**
+
+- **Conflict classification.** `isStrandIdConflict(error, 'Strand')` matches `UNIQUE constraint failed: Strand.Id` only; the pattern is anchored after `failed: `, so `StrandPartyKey.Id` and `JoinedStrand.Id` cannot match it, and the `StrandPartyKey` pattern cannot match `Strand.Id`. A `FormationInvite.Token` conflict surfaces raw, as the handoff says.
+- **Branch flow.** In `insertOrAdoptFounding`, a `Strand.Id` refusal from either attempt in `seatFoundingRows` (first write or the keyless re-write) reaches the outer catch and adopts. Every other error rethrows. The invitation in the conflict branch is published under the same open approval's `sign`; in `resumeFounding` it asks for its own.
+- **Schema claim in `insertFoundingRows`.** Checked against `schemas/control.qsql`: neither `StrandPartyKey.AuthorizedInsert` nor `FormationInvite.AuthorizedInsert` reads `Strand`, so the row order inside the transaction does not matter to the constraints.
+- **Locking.** All signing (and the invitation's `canonicalDatetime` read) happens before `lockedWithRetry`; the body uses bare `db.exec`, matching the existing `reap JoinRequest` transaction.
+- **Key handoff.** `partyKey` is only returned when this machine wrote the row, so `founded` is true whenever `addStrand` receives `partyMemberPrivateKey`; the watcher's retry path re-reads the same stored key (the existing NOTE in `addStrand` still holds).
+- **Reference apps.** `CHAT_SAPP_ID` equals `getChatSAppConfig().id` in both apps, so the invitation's app id and the founding's `sAppConfig.id` agree. Minting the invitation before founding means a failed founding leaves only an in-memory, expiring solicitation registration, where the old order could leave a published strand with no invitation.
+- **Docs.** Read every doc the change touches or names: `docs/architecture.md` (Entry point, Plumbing, "Composing an action" at ~242), `docs/strands.md` ~370, `docs/reference-app-rn.md` ~1248, `packages/reference-app-rn/README.md`. All reflect the new flow.
+
+**Fixed in this pass (minor):**
+
+- **Untested branch pinned.** The repeat-founding path (stored invitation kept without an approval, a new token published alone and bound to the strand) was verified only by reading. It has real branching and is part of `FoundStrandConfig.formationInvite`'s stated contract, so one block was added to the existing "asks once for an action that signs several rows" test in `cadre-node-owner-signer.spec.ts`. It reuses the strand already founded there, so it adds almost no run time.
+- **Duplicated type.** `FoundStrandConfig.formationInvite` repeated `FoundingInvite`'s fields inline; it is now `Omit<FoundingInvite, 'sAppId'>` (a type-only import in `types.ts`), so the field docs live in one place.
+- **Doc structure.** The architecture.md "Entry point" bullet had grown to cover four topics in one paragraph. It is now a one-sentence item with labelled sub-paragraphs ("One transaction", "Resuming", "A stored party key"), and the resume sentence now says a token already stored for the strand is kept.
+
+**Tripwires / accepted as-is:**
+
+- Strand moves take the `StrandPartyKey.Id` branch for every closed own strand. The implementer's `NOTE:` at `strand-move.ts` `adoptStrand` covers it; no change.
+- Commit-time conflict ordering (a concurrent founder's commit refused naming `StrandPartyKey` before `Strand`) resolves correctly by reading the code: re-write without a key, then `Strand.Id`, then adopt. Not tested; not worth a multi-node test for an ordering the code already handles.
+- A token reused across strands surfaces the raw uniqueness error. It is a caller error, documented in the handoff; no change.
+
+**Tests reviewed:** the implementer's added count test (approvals = 1, signatures = 3, invitation bound) pins the ticket's user-visible contract; kept. The `strand-move.spec.ts` spy retarget and the `use-cadre.spec.ts` expectation change are adjustments to the new call shape; kept. Nothing cut.
+
+**Not filed:**
+
+- `cadre-node.ts` is 10,794 lines (`wc -l`); `debt-cadre-node-single-file-size` already tracks it.
+- `control-database.ts` is 5,430 lines (`wc -l`) with no size ticket. This change added about 100 lines of signing halves that sit beside their single-row writers, which is the right place for them, so no ticket was filed for it here.
+- Re-pinning `FOUNDING_CONTROL` stays with `control-collections-created-at-cadre-founding`, as the handoff says.
+
+**Validation:**
+
+- `yarn lint` clean. cadre-core typecheck clean, and `@serfab/cadre-core` rebuilt after the `types.ts` change. RN and web typechecks clean.
+- `publish-strand`, `cadre-node-owner-signer` and `strand-move`: 47/47 passed. RN `use-cadre.spec.ts`: 24/24. Web unit tests: 11/11.
+- Full cadre-core suite: 2,530 passed, 3 failed, 1 skipped.
+  - `control-founding-consult-budget`: genesis overrun, already in `tickets/.pre-existing-known.md`.
+  - Two tests in `control-database-solo-warm-start.spec.ts`: genesis `ensureOwnerKey()` timed out at 15 s under full-suite load. The file passes 6/6 alone. This ticket does not touch the genesis path. Recorded in `tickets/.pre-existing-error.md` for triage.
