@@ -313,6 +313,9 @@ async function adoptStrand(
 			await node.ensureStrandPartyKey(strandId, entry.partyKey, approval.sign);
 		}
 		if (entry.kind === 'own') {
+			// NOTE: with the party key seated first, a closed strand's founding transaction is refused
+			// on `StrandPartyKey.Id` and written again without a key: a local refusal, no extra commit.
+			// If moves of many closed strands get slow, let publishStrand take a known party key.
 			await node.publishStrand(strandId, entry.row.Type, entry.row.MemberPrivateKey ?? undefined, approval.sign);
 		} else {
 			await seatJoinedStrand(database, approval, entry.row, live.joined);

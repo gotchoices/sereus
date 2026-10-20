@@ -77,7 +77,8 @@ describe('adoptStrandBundle', () => {
 		const { own, joined } = await twoClosedStrands();
 		const bundle = bundleOf(own, joined);
 		const partyKeyInsert = vi.spyOn(db, 'insertStrandPartyKey');
-		const strandInsert = vi.spyOn(db, 'insertStrand');
+		// `publishStrand` writes the Strand row through the founding transaction.
+		const strandInsert = vi.spyOn(db, 'insertFoundingRows');
 		const joinedInsert = vi.spyOn(db, 'insertJoinedStrand');
 
 		const first = await adoptStrandBundle(node, bundle);

@@ -200,16 +200,16 @@ through an explicit host→invitee consent handshake. The Settings screen's
 > [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md).
 
 1. **FormationInvite issuance (host).** *"Create Closed Strand + Invite"*:
+   - mints an `OpenInvitation` (`createOpenInvitation(CHAT_SAPP_ID, …)`),
    - mints a `MemberPrivateKey` and creates a closed strand in one resumable call
-     (`foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig }, { background: true })`,
+     (`foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig, formationInvite }, { background: true })`,
      which publishes the `Strand` row and returns, then attaches as founder in the
-     background); the key it carries onward is the one that call *resolved*, which
-     on a repeat of an already-published strand id is the stored key rather than
-     the freshly minted one,
-   - mints an `OpenInvitation` (`createOpenInvitation(CHAT_SAPP_ID, …)`) and
-     **persists** the matching `FormationInvite` row under the host's owner,
-     **bound to that strand** (`publishFormationInvite(token, sApp, { strandId })`),
-     so the token is redeemable and the responder knows which strand to provision,
+     background); the publish also **persists** the invitation's `FormationInvite`
+     row under the host's owner, **bound to that strand**, in the same control
+     transaction and owner approval, so the token is redeemable and the responder
+     knows which strand to provision. The key it carries onward is the one that call
+     *resolved*, which on a repeat of an already-published strand id is the stored
+     key rather than the freshly minted one,
    - shows a single copyable, base64url-encoded `OpenInvitation` code
      (`encodeInvitation`) for out-of-band delivery (paste / link / QR). The strand
      id and membership key are **not** in this code — they travel back over the
@@ -252,7 +252,8 @@ through an explicit host→invitee consent handshake. The Settings screen's
   consent path (`insertFormationInvite` / `recordFormationUsage` /
   `redeemInvitation`) is functional and exercised by the integration harness, and
   a pure `formStrand` round-trip now closes the loop over libp2p: binding the
-  invite to a host strand (`publishFormationInvite(..., { strandId })`) lets the
+  invite to a host strand (`foundStrand`'s `formationInvite`, or
+  `publishFormationInvite(..., { strandId })` for a strand already founded) lets the
   responder resolve that strand, write the `FormationUsage` consent record against
   it, and return the host's real strand id + membership key in the
   `FormStrandResult` (provision-then-record). That is why this app hands out a

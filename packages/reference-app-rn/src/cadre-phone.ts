@@ -496,23 +496,6 @@ export async function createOpenInvitation(
 }
 
 /**
- * Persist the owner-signed `FormationInvite` row backing a minted
- * invitation token, so a later redemption validates. Thin pass-through to
- * {@link CadreNode.publishFormationInvite}.
- *
- * `strandId` binds the invite to a pre-existing host strand so a redeeming
- * `formStrand` provisions THAT strand (provision-then-record) and returns its
- * membership key, rather than the responder minting a fresh one.
- */
-export async function publishFormationInvite(
-  token: string,
-  sAppId: string,
-  options?: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string },
-): Promise<void> {
-  return running().publishFormationInvite(token, sAppId, options);
-}
-
-/**
  * Perform the invitee-side consent handshake: dial the host's cadre with our
  * disclosure and let the host validate the formation token. Thin pass-through
  * to {@link CadreNode.formStrand}.

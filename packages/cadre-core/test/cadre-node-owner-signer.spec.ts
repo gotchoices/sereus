@@ -4,6 +4,7 @@ import type { ControlDatabase } from '../src/control-database.js';
 import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import type { JoinedStrandSession } from '../src/joined-strand-store.js';
 import { softwareOwnerSigner, type OwnerSigner, type OwnerSigningRequest } from '../src/owner-signer.js';
+import { generateStrandMemberKey } from '../src/strand-member-key.js';
 import type { FormStrandResult } from '../src/types.js';
 import { freshKeyPair, peerIdOf, signAs, type KeyPair } from './control-constraint-helpers.js';
 import { newUnstartedNode } from './self-owner-node-helpers.js';
@@ -104,6 +105,21 @@ describe('CadreNode signs every owner write through the one signer it was given'
 	}, 120_000);
 
 	it('asks once for an action that signs several rows', async () => {
+		// A closed founding with an invitation: the strand row, its party key and the invitation.
+		resetCounts();
+		const invitedId = 'invited-' + rand();
+		const inviteToken = 'invite-' + rand();
+		await node.foundStrand({
+			strandId: invitedId,
+			type: 'c',
+			memberPrivateKey: await generateStrandMemberKey(),
+			sAppConfig: signedSApp(),
+			formationInvite: { token: inviteToken },
+		});
+		expect(approvals).toHaveLength(1);
+		expect(signatures).toBe(3);
+		expect((await db.queryFormationInvite(inviteToken))?.strandId).toBe(invitedId);
+
 		const strandId = 'closed-' + rand();
 		await node.publishStrand(strandId, 'c', 'closed-read-secret');
 		expect(await db.queryStrandPartyKey(strandId)).not.toBeNull();

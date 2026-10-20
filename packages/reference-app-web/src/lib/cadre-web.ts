@@ -354,16 +354,19 @@ export interface CreatedInvitation {
 
 /**
  * Host side of closed-strand formation: mint a membership key, publish the
- * `Strand` row (`Type:'c'`) under this node's owner, and attach the local
- * instance against the signed chat schema. Mirrors RN `createClosedChatStrand`
+ * `Strand` row (`Type:'c'`) under this node's owner with the `FormationInvite`
+ * row for `invitation` bound to it, and attach the local instance against the
+ * signed chat schema. Mirrors RN `createClosedChatStrand`
  * (`reference-app-rn/src/chat-strand.ts`), except that the web app assigns no
  * owner/member role: the chat schema's `Participant.Role` column is left at its
  * `'member'` default, so bring-up is one `foundStrand` call.
  *
- * `foundStrand` does both control-plane steps (publish + attach as founder, which
- * runs the one-time genesis bootstrap seating Header/Member/Owner from this party's
- * own `StrandPartyKey` identity, minted by the publish — NOT from the shared
- * `MemberPrivateKey`) and is safe to re-run: a tab closed between them resumes
+ * `foundStrand` does both steps (publish + attach as founder, which runs the
+ * one-time genesis bootstrap seating Header/Member/Owner from this party's own
+ * `StrandPartyKey` identity, minted by the publish — NOT from the shared
+ * `MemberPrivateKey`). The publish writes the strand row, that key and the bound
+ * invitation in one control transaction under one owner approval, and the call is
+ * safe to re-run: a tab closed between publish and attach resumes
  * rather than failing forever on `UNIQUE constraint failed: Strand.Id`. The id
  * here is freshly minted per call, so the resume path is reached only if a caller
  * ever passes a stable id — but going through the one entry point is what keeps
@@ -377,10 +380,11 @@ export interface CreatedInvitation {
  *
  * Returns the generated strand id + the membership key the strand ACTUALLY runs
  * under (the resolved row's, not necessarily the one minted here) so the caller
- * can bind a `FormationInvite` to the strand (provision-then-record) and track it.
+ * can track it.
  */
 async function createClosedChatStrand(
 	cadre: CadreNode,
+	invitation: OpenInvitation,
 ): Promise<{ strandId: string; memberPrivateKey: string }> {
 	const strandId = crypto.randomUUID();
 	const { strandRow, ready } = await cadre.foundStrand({
@@ -388,6 +392,7 @@ async function createClosedChatStrand(
 		type: 'c',
 		memberPrivateKey: await generateStrandMemberKey(),
 		sAppConfig: getChatSAppConfig(),
+		formationInvite: { token: invitation.token, expiresAtMs: invitation.expiration.getTime() },
 	}, { background: true });
 	void ready.catch((err: unknown) => {
 		console.warn(`[reference-app-web] closed strand ${strandId} did not start; the node keeps retrying it:`, err);
@@ -407,13 +412,13 @@ async function createClosedChatStrand(
  * (copy/paste) delivery. Mirrors RN's `createClosedStrandWithInvite`
  * (`reference-app-rn/src/use-cadre.ts`):
  *
- *   1. create the host closed strand (mint member key + publish `Type:'c'` row;
- *      the local instance starts in the background) so the invite has a real
- *      strand to bind to,
- *   2. mint the `OpenInvitation`, then
- *   3. publish a `FormationInvite` **bound to that strand id** so a redeeming
- *      `formStrand` resolves the host strand and returns its real membership key
- *      (provision-then-record), rather than the responder minting a fresh one.
+ *   1. mint the `OpenInvitation`, then
+ *   2. found the host closed strand (mint member key + publish the `Type:'c'`
+ *      row; the local instance starts in the background) with a
+ *      `FormationInvite` **bound to that strand id** published beside it, so a
+ *      redeeming `formStrand` resolves the host strand and returns its real
+ *      membership key (provision-then-record), rather than the responder minting
+ *      a fresh one.
  *
  * Requires the tab to be **dialable** — the invitation embeds this cadre's
  * multiaddrs, so `createOpenInvitation` throws when no relay reservation has
@@ -436,12 +441,8 @@ export async function createInvitation(
 				(relay.error ? ` (${relay.error})` : ''),
 		);
 	}
-	const { strandId, memberPrivateKey } = await createClosedChatStrand(cadre);
 	const invitation = await cadre.createOpenInvitation(CHAT_SAPP_ID, expirationMs);
-	await cadre.publishFormationInvite(invitation.token, CHAT_SAPP_ID, {
-		expiresAtMs: invitation.expiration.getTime(),
-		strandId,
-	});
+	const { strandId, memberPrivateKey } = await createClosedChatStrand(cadre, invitation);
 	// Track the host strand so diagnostics / getFormedStrands() stay consistent
 	// with the joiner side (both record `type:'c'` + the gating member key).
 	formedStrands.set(strandId, { strandId, memberKey: memberPrivateKey, type: 'c' });

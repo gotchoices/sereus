@@ -200,7 +200,6 @@ vi.mock('../../src/cadre-phone', () => ({
   linkRequests: { current: vi.fn(async () => null) },
   dialPeer: vi.fn(async () => {}),
   createOpenInvitation: vi.fn(),
-  publishFormationInvite: vi.fn(),
   formStrand: vi.fn(),
   // The rental record store; nothing here rents, so it is never read.
   rentals: { list: vi.fn(), add: vi.fn(), update: vi.fn(), remove: vi.fn() },
@@ -395,7 +394,8 @@ describe('useCadreInternal — closed-strand invite', () => {
     const sink = await mountStarted();
     h.ctl.node!.multiaddrs = ['/ip4/127.0.0.1/tcp/4002/ws/p2p/relay/p2p-circuit/p2p/peer-1'];
     h.ctl.relay = { ...h.noRelay(), status: 'reserved', circuitAddrs: h.ctl.node!.multiaddrs };
-    vi.mocked(createOpenInvitation).mockResolvedValue({ token: 'tok', expiration: new Date(0) } as never);
+    const invitation = { token: 'tok', expiration: new Date(0) };
+    vi.mocked(createOpenInvitation).mockResolvedValue(invitation as never);
 
     let encoded = '';
     await act(async () => {
@@ -403,8 +403,9 @@ describe('useCadreInternal — closed-strand invite', () => {
     });
 
     expect(createClosedChatStrand).toHaveBeenCalledTimes(1);
-    // The caller's id is the strand founded, so Settings' logs name the same strand.
-    expect(createClosedChatStrand).toHaveBeenCalledWith(expect.anything(), 'closed-1');
+    // The caller's id is the strand founded, so Settings' logs name the same strand, and the
+    // invitation handed out is the one published with it.
+    expect(createClosedChatStrand).toHaveBeenCalledWith(expect.anything(), 'closed-1', invitation);
     expect(encoded).toBe('encoded-invite-1');
   });
 });

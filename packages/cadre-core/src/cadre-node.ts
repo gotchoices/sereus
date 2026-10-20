@@ -138,7 +138,7 @@ import {
 import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
-import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
+import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type FoundingInvite, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
 import {
   CadreInviteHandler,
   encodeCadreInvitation,
@@ -440,6 +440,19 @@ function requireMatchingStrandRow(live: StrandRow, desired: StrandRow, situation
   }
   return live;
 }
+
+/**
+ * What a founding's control write resolved: the live `Strand` row, and the party key the write
+ * seated for a closed strand. No key when it adopted a stored row or a stored key; the launch
+ * then reads the stored one.
+ */
+interface FoundingWrite {
+  strandRow: StrandRow;
+  partyKey?: string;
+}
+
+/** The publish half of `foundStrand`, handed to its start half. */
+type FoundingPublish = FoundingWrite & Pick<FoundStrandResult, 'founded'>;
 
 /**
  * Await `work` unless `signal` aborts first: `true` once `work` resolves, `false` when the
@@ -5914,7 +5927,8 @@ export class CadreNode implements SAppIdLookup {
    * (the key exists nowhere else). No app-data wipe is needed for either.
    *
    * The insert is signed through this node's owner signer ({@link getOwnerSigner}), in one
-   * approval with a closed strand's party-key mint. The signer's key is persisted on the row
+   * approval and one control transaction with a closed strand's party key
+   * ({@link ControlDatabase.insertFoundingRows}). The signer's key is persisted on the row
    * as `FounderOwnerKey` (the schema pins the column to the verified signer), and this node's
    * peer id as `FounderPeerId` (bound into the signature), which is what later lets any
    * launch derive "this machine is the founder" from the row alone.
@@ -5925,7 +5939,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * A CLOSED strand's publish also seats this party's own membership identity key —
    * the `StrandPartyKey` row {@link ensureStrandPartyKey} documents — which is what the
-   * founder bootstrap derives `Member.Key`/`Manager.MemberKey` from. The
+   * founder bootstrap derives `Member.Key`/`Manager.MemberKey` from; a key the party already
+   * holds for the id is kept. The
    * `memberPrivateKey` ARGUMENT stays the strand-wide read secret formation hands to
    * joiners; it derives nobody's identity.
    *
@@ -5945,23 +5960,8 @@ export class CadreNode implements SAppIdLookup {
    */
   async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string, sign?: OwnerSign): Promise<StrandRow> {
     const signer = this.requireOwnerSigner(`publish strand ${strandId}`);
-    // Trim/reject here so the id that lands matches the one unpublishStrand looks up: it
-    // trims too, and an untrimmed row would be unreachable by the same string.
-    const trimmed = requireNonBlank(strandId, 'strand id');
-    // Refuse an unusable id HERE, not only at launch. `addStrand` already asserts, but it
-    // runs after this row is written, and this row replicates: an id no node can turn into
-    // a storage scope key would otherwise reach the whole party's control database and be
-    // declined once per member. Asserted after the trim so the id checked is the id stored.
-    assertStrandScopeKey(trimmed);
-    // FounderPeerId records THIS machine as the founder, which is what later lets a relaunch
-    // derive founder-ness; ControlDatabase.insertStrand writes the same id (its own node's).
-    const desired: StrandRow = {
-      Id: trimmed,
-      Type: type,
-      MemberPrivateKey: memberPrivateKey ?? null,
-      FounderOwnerKey: signer.publicKey,
-      FounderPeerId: this.controlNode!.peerId.toString(),
-    };
+    const desired = this.founderStrandRow(strandId, type, memberPrivateKey, signer);
+    const trimmed = desired.Id;
 
     // Read first rather than leaning on the insert's collision for BOTH readings. The
     // ordinary resume (an app killed after its own publish committed) then needs no error
@@ -5982,59 +5982,169 @@ export class CadreNode implements SAppIdLookup {
       log('publishStrand(%s): already published (type %s) with identical content — no-op', trimmed, type);
       // A closed strand THIS machine published must hold a party key (its own membership
       // identity — see ensureStrandPartyKey). Insert-if-absent, so the ordinary repeat
-      // is a read-only no-op and a publish interrupted between the row insert and the
-      // mint heals here. A row another machine published is that machine's to mint for.
+      // is a read-only no-op and a closed row stored without its key heals here. A row
+      // another machine published is that machine's to mint for.
       if (type === 'c' && this.isSelfFoundedRow(matched)) {
         await this.ensureStrandPartyKey(trimmed, undefined, sign);
       }
       return matched;
     }
 
-    return await withinOwnerApproval(signer, { partyId: this.partyId, action: `Publish the strand ${trimmed} to the cadre` }, sign,
-      (approved) => this.insertStrandRow(desired, signer, approved));
+    return (await this.writeFoundingRows(desired, undefined, signer, sign)).strandRow;
   }
 
   /**
-   * The write half of {@link publishStrand}: insert `desired`, adopting a matching row a
-   * concurrent founder landed first, then mint a closed strand's party key, all under one
-   * owner approval's `sign`.
+   * The `Strand` row this machine publishes for `strandId`, as {@link publishStrand} and
+   * {@link foundStrand} write it: the id trimmed and checked, this node's owner key and peer id
+   * as its founder.
    */
-  private async insertStrandRow(desired: StrandRow, signer: OwnerSigner, sign: OwnerSign): Promise<StrandRow> {
-    const { Id: trimmed, Type: type } = desired;
+  private founderStrandRow(strandId: string, type: 'o' | 'c', memberPrivateKey: string | undefined, signer: OwnerSigner): StrandRow {
+    // Trim/reject here so the id that lands matches the one unpublishStrand looks up: it
+    // trims too, and an untrimmed row would be unreachable by the same string.
+    const trimmed = requireNonBlank(strandId, 'strand id');
+    // Refuse an unusable id HERE, not only at launch. `addStrand` already asserts, but it
+    // runs after this row is written, and this row replicates: an id no node can turn into
+    // a storage scope key would otherwise reach the whole party's control database and be
+    // declined once per member. Asserted after the trim so the id checked is the id stored.
+    assertStrandScopeKey(trimmed);
+    // FounderPeerId records THIS machine as the founder, which is what later lets a relaunch
+    // derive founder-ness; ControlDatabase.insertFoundingRows writes the same id (its own node's).
+    return {
+      Id: trimmed,
+      Type: type,
+      MemberPrivateKey: memberPrivateKey ?? null,
+      FounderOwnerKey: signer.publicKey,
+      FounderPeerId: this.controlNode!.peerId.toString(),
+    };
+  }
+
+  /**
+   * The write half of {@link publishStrand} and {@link foundStrand}: under one owner approval,
+   * insert `desired`, a closed strand's party key and the requested invitation in one control
+   * transaction ({@link ControlDatabase.insertFoundingRows}), adopting a matching row a
+   * concurrent founder landed first. Reads nothing first: the caller has just read the
+   * `Strand` row, and a stored key or row is resolved from the insert's own rejection.
+   */
+  private async writeFoundingRows(
+    desired: StrandRow,
+    invite: FoundingInvite | undefined,
+    signer: OwnerSigner,
+    sign?: OwnerSign
+  ): Promise<FoundingWrite> {
+    const action = invite
+      ? `Publish the strand ${desired.Id} to the cadre, with an invitation to the app ${invite.sAppId}`
+      : `Publish the strand ${desired.Id} to the cadre`;
+    return await withinOwnerApproval(signer, { partyId: this.partyId, action }, sign,
+      (approved) => this.insertOrAdoptFounding(desired, invite, signer, approved));
+  }
+
+  /** {@link writeFoundingRows} inside its approval. */
+  private async insertOrAdoptFounding(
+    desired: StrandRow,
+    invite: FoundingInvite | undefined,
+    signer: OwnerSigner,
+    sign: OwnerSign
+  ): Promise<FoundingWrite> {
+    let partyKey: string | undefined;
     try {
-      await this.controlDatabase!.insertStrand(trimmed, type, signer.publicKey, sign, desired.MemberPrivateKey ?? undefined);
+      partyKey = await this.seatFoundingRows(desired, invite, signer, sign);
     } catch (error) {
       // Only the uniqueness collision is a candidate for the idempotent reading; every
       // other rejection (unauthorized signer, retired stamp) must keep surfacing.
       if (!isStrandIdConflict(error, 'Strand')) {
         throw error;
       }
-      const landed = await this.controlDatabase!.queryStrand(trimmed);
-      if (!landed) {
-        // Collided, yet no row is readable: not the race this branch handles (a row
-        // deleted between the rejection and the re-read, or a stale local view). Surface
-        // the original rather than guessing.
+      const strandRow = await this.adoptConcurrentFounding(desired, error);
+      // The rejection rolled the invitation back with the row; a caller asking for one gets one.
+      if (invite) {
+        await this.publishFoundingInviteIfAbsent(strandRow.Id, invite, sign);
+      }
+      return { strandRow };
+    }
+    log('Published strand %s (type %s) to control DB under owner %s', desired.Id, desired.Type, signer.publicKey);
+    if (invite) {
+      this.registerPublishedInvitation(invite.token, invite.expiresAtMs);
+    }
+    return { strandRow: desired, partyKey };
+  }
+
+  /**
+   * Insert `desired`'s founding rows, minting a closed strand's party key — this party's own
+   * membership identity, which the founder bootstrap derives `Member`/`Manager` from, distinct
+   * from the row's shared `MemberPrivateKey` read secret. A key already stored for the id with
+   * no strand row (one {@link ensureStrandPartyKey} seated, which it would adopt too) refuses
+   * that transaction whole; the rows are then written again without a key.
+   *
+   * @returns The party key this seated; undefined when it seated none, so the launch reads the stored one.
+   */
+  private async seatFoundingRows(
+    desired: StrandRow,
+    invite: FoundingInvite | undefined,
+    signer: OwnerSigner,
+    sign: OwnerSign
+  ): Promise<string | undefined> {
+    const controlDatabase = this.controlDatabase!;
+    const strand = { id: desired.Id, type: desired.Type, memberPrivateKey: desired.MemberPrivateKey ?? undefined };
+    if (desired.Type !== 'c') {
+      await controlDatabase.insertFoundingRows({ strand, formationInvite: invite }, signer.publicKey, sign);
+      return undefined;
+    }
+    const partyKey = await generateStrandMemberKey();
+    try {
+      await controlDatabase.insertFoundingRows({ strand, partyKey, formationInvite: invite }, signer.publicKey, sign);
+      return partyKey;
+    } catch (error) {
+      if (!isStrandIdConflict(error, 'StrandPartyKey')) {
         throw error;
       }
-      log('publishStrand(%s): lost a concurrent founding race; re-read the landed row', trimmed);
-      return requireMatchingStrandRow(landed, desired, 'landed concurrently from another founder');
+      log('publishStrand(%s): this party already holds a key for the id; publishing the row and adopting that key', desired.Id);
+      await controlDatabase.insertFoundingRows({ strand, formationInvite: invite }, signer.publicKey, sign);
+      return undefined;
     }
-    log('Published strand %s (type %s) to control DB under owner %s', trimmed, type, signer.publicKey);
-    // A closed strand's publish also mints this party's own membership identity key
-    // (StrandPartyKey) — the key the founder bootstrap derives Member/Manager from,
-    // deliberately distinct from the row's shared MemberPrivateKey read secret. A failure
-    // here surfaces (the strand row has already committed, so a retried publish takes
-    // the idempotent branch and heals the mint; so does the next founder launch).
-    if (type === 'c') {
-      await this.ensureStrandPartyKey(trimmed, undefined, sign);
+  }
+
+  /**
+   * Resolve a founding refused on `Strand.Id`: re-read the row that landed and adopt it when it
+   * matches `desired` — a concurrent founder, such as two machines of one party on one id —
+   * or throw naming the columns that differ.
+   */
+  private async adoptConcurrentFounding(desired: StrandRow, error: unknown): Promise<StrandRow> {
+    const landed = await this.controlDatabase!.queryStrand(desired.Id);
+    if (!landed) {
+      // Collided, yet no row is readable: not the race this branch handles (a row
+      // deleted between the rejection and the re-read, or a stale local view). Surface
+      // the original rather than guessing.
+      throw error;
     }
-    return desired;
+    log('publishStrand(%s): lost a concurrent founding race; re-read the landed row', desired.Id);
+    return requireMatchingStrandRow(landed, desired, 'landed concurrently from another founder');
+  }
+
+  /**
+   * Publish a founding's invitation on its own, bound to `strandId`, for a founding that adopted
+   * a stored row rather than writing its own — unless the invitation is already stored, bound to
+   * this strand, as a repeat of a founding whose transaction committed leaves it.
+   *
+   * @param sign - The open approval's `sign`; omitted, the publish asks for its own.
+   */
+  private async publishFoundingInviteIfAbsent(strandId: string, invite: FoundingInvite, sign?: OwnerSign): Promise<void> {
+    if ((await this.controlDatabase!.queryFormationInvite(invite.token))?.strandId === strandId) {
+      log('foundStrand(%s): the invitation is already published', strandId);
+      return;
+    }
+    const { token, sAppId, ...options } = invite;
+    await this.publishFormationInvite(token, sAppId, { ...options, strandId }, sign);
   }
 
   /**
    * Found a strand — publish its row cadre-wide AND start the local instance as its
    * founder — in one resumable call. The single entry point for creating a strand; a
    * caller joining one someone else founded uses {@link addStrand} alone.
+   *
+   * The publish is one control transaction under one owner approval: the `Strand` row, a
+   * closed strand's `StrandPartyKey` row, and the invitation in
+   * {@link FoundStrandConfig.formationInvite} when one is given. The start then uses the party
+   * key the publish seated rather than reading it back.
    *
    * Safe to re-run from any point of interruption, which hand-rolling
    * {@link publishStrand} + {@link addStrand} is not. Either half can already have
@@ -6117,18 +6227,19 @@ export class CadreNode implements SAppIdLookup {
    * derive whether this machine founds it. Every check that can refuse the founding is here,
    * so both forms of `foundStrand` reject on it before returning.
    */
-  private async publishFoundingRow(config: FoundStrandConfig): Promise<Pick<FoundStrandResult, 'strandRow' | 'founded'>> {
-    const { strandId, type = 'o', memberPrivateKey } = config;
+  private async publishFoundingRow(config: FoundStrandConfig): Promise<FoundingPublish> {
+    const { strandId, type = 'o', memberPrivateKey, formationInvite, sAppConfig } = config;
     if (!this._running || !this.controlDatabase) {
       throw new Error(`CadreNode must be started before attempting to found strand ${strandId}`);
     }
     const controlDatabase = this.controlDatabase;
     const trimmed = requireNonBlank(strandId, 'strand id');
+    const invite: FoundingInvite | undefined = formationInvite && { ...formationInvite, sAppId: sAppConfig.id };
     const timed = <T>(step: string, op: () => Promise<T>) => timedStep('foundStrand', trimmed, step, op);
     const published = await timed('queryStrand', () => controlDatabase.queryStrand(trimmed));
-    const strandRow = published
-      ? this.adoptPublishedStrand(published, type, memberPrivateKey)
-      : await timed('publishStrand', () => this.publishStrand(trimmed, type, memberPrivateKey));
+    const { strandRow, partyKey } = published
+      ? await this.resumeFounding(published, type, memberPrivateKey, invite)
+      : await timed('publishStrand', () => this.publishFoundingStrand(trimmed, type, memberPrivateKey, invite));
     // Derived, not hardcoded `true`: adopting a row another machine published means that
     // machine runs the bootstrap — this one must attach or it would write a second Header.
     const founded = this.isSelfFoundedRow(strandRow);
@@ -6137,20 +6248,52 @@ export class CadreNode implements SAppIdLookup {
         '(FounderPeerId is not this node\'s peer id) — attaching as a joiner; ' +
         'the founder bootstrap runs on that machine', trimmed);
     }
-    return { strandRow, founded };
+    return { strandRow, founded, partyKey };
+  }
+
+  /** {@link publishFoundingRow} when no row is stored: write the founding rows under this node's owner. */
+  private publishFoundingStrand(
+    strandId: string,
+    type: 'o' | 'c',
+    memberPrivateKey: string | undefined,
+    invite: FoundingInvite | undefined
+  ): Promise<FoundingWrite> {
+    const signer = this.requireOwnerSigner(`publish strand ${strandId}`);
+    return this.writeFoundingRows(this.founderStrandRow(strandId, type, memberPrivateKey, signer), invite, signer);
+  }
+
+  /**
+   * {@link publishFoundingRow} over a stored row: adopt it ({@link adoptPublishedStrand}), then
+   * publish the requested invitation on its own, under its own approval.
+   */
+  private async resumeFounding(
+    published: StrandRow,
+    type: 'o' | 'c',
+    memberPrivateKey: string | undefined,
+    invite: FoundingInvite | undefined
+  ): Promise<FoundingWrite> {
+    const strandRow = this.adoptPublishedStrand(published, type, memberPrivateKey);
+    if (invite) {
+      await timedStep('foundStrand', strandRow.Id, 'publishFormationInvite',
+        () => this.publishFoundingInviteIfAbsent(strandRow.Id, invite));
+    }
+    return { strandRow };
   }
 
   /**
    * The start half of {@link foundStrand}. Its timing lines (`addStrand: start`, then the
    * duration or `failed after`) are logged when the start settles, also in the background
    * form, so a start that hangs still shows as a start line with no end line.
+   *
+   * A party key the publish half just seated is handed to the launch, which would otherwise
+   * read back the row the same founding wrote.
    */
   private attachFoundingRow(
-    { strandRow, founded }: Pick<FoundStrandResult, 'strandRow' | 'founded'>,
+    { strandRow, founded, partyKey }: FoundingPublish,
     { sAppConfig, awaitFirstSync }: FoundStrandConfig
   ): Promise<StrandInstance> {
     return timedStep('foundStrand', strandRow.Id, 'addStrand',
-      () => this.addStrand({ strandRow, sAppConfig, founder: founded, awaitFirstSync }));
+      () => this.addStrand({ strandRow, sAppConfig, founder: founded, awaitFirstSync, partyMemberPrivateKey: partyKey }));
   }
 
   /**
@@ -6309,9 +6452,11 @@ export class CadreNode implements SAppIdLookup {
    * as `MemberPrivateKey`; docs/strands.md → "Closed-Strand Member Key Handling") and is
    * never put on the formation wire.
    *
-   * Called internally by {@link publishStrand} (closed strands mint at publish) and by a
-   * founder launch that finds no row (a publish interrupted before its mint); public so a
-   * test harness — or a joiner flow that persists a formation-issued identity — can seat
+   * A founding seats the key in the same transaction as the strand row, not through here.
+   * Called internally by {@link publishStrand}'s repeat of a published closed strand and by a
+   * founder launch that finds no row, which heal a closed strand row stored without its key
+   * (one seated by `ControlDatabase.insertStrand` directly, or whose key was removed); public
+   * so a test harness — or a joiner flow that persists a formation-issued identity — can seat
    * a specific key deliberately.
    *
    * @param strandId - The strand the key is this party's identity for.
@@ -6362,8 +6507,8 @@ export class CadreNode implements SAppIdLookup {
    * Resolve the party membership key a closed strand's launch threads into the founder
    * bootstrap: the explicit attach-time key when given, else the party's persisted
    * `StrandPartyKey` row, else — on the one machine the row names as founder (`FounderPeerId`)
-   * — a freshly minted-and-persisted key, which seats the identity for a publish that was
-   * interrupted before its mint. Everyone else resolves undefined: non-founding
+   * — a freshly minted-and-persisted key, which seats the identity for a closed row stored
+   * without one (see {@link ensureStrandPartyKey}). Everyone else resolves undefined: non-founding
    * machines never mint (no mint race between a party's machines), and only a founder
    * bootstrap needs the key at all.
    *
@@ -6431,14 +6576,19 @@ export class CadreNode implements SAppIdLookup {
     const signer = this.requireOwnerSigner(`publish formation invite ${token}`);
     await withinOwnerApproval(signer, { partyId: this.partyId, action: `Publish an invitation to the app ${sAppId}` }, sign,
       (approved) => this.controlDatabase!.insertFormationInvite(token, sAppId, signer.publicKey, approved, options));
-    // A host may publish an invite whose token was minted elsewhere; registering
-    // it locally opens the connection gate's formation exemption immediately
-    // rather than waiting for the durable row to become readable.
-    this.strandSolicitationService?.registerMintedInvitation(
-      token,
-      options.expiresAtMs ?? Number.POSITIVE_INFINITY
-    );
+    this.registerPublishedInvitation(token, options.expiresAtMs);
     log('Published formation invite %s (sApp %s) under owner %s', token, sAppId, signer.publicKey);
+  }
+
+  /**
+   * Register an invitation this node just published with the strand solicitation service. A
+   * host may publish one whose token was minted elsewhere; registering it locally opens the
+   * connection gate's formation exemption immediately rather than waiting for the durable row
+   * to become readable. A token {@link createOpenInvitation} minted here is already registered,
+   * and this records the same expiry again.
+   */
+  private registerPublishedInvitation(token: string, expiresAtMs: number | undefined): void {
+    this.strandSolicitationService?.registerMintedInvitation(token, expiresAtMs ?? Number.POSITIVE_INFINITY);
   }
 
   /**
@@ -6613,8 +6763,8 @@ export class CadreNode implements SAppIdLookup {
 
     // A closed strand's launch carries the party's OWN membership identity key: the
     // explicit attach-time key, else the control-layer StrandPartyKey row — minted here
-    // when this machine is the row-derived founder and no row exists yet (a publish
-    // interrupted before its mint). A joiner with no persisted key threads undefined;
+    // when this machine is the row-derived founder and no row exists yet (a closed row
+    // stored without its key). A joiner with no persisted key threads undefined;
     // only a FOUNDER bootstrap needs the key, and that path throws loudly without one
     // (StrandDatabase).
     const partyMemberPrivateKey = strand.Type === 'c'

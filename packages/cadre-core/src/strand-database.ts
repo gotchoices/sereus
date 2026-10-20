@@ -217,8 +217,8 @@ export class StrandDatabase {
       throw new Error(
         `Cannot found closed strand ${strandId}: this party has no StrandPartyKey for it. ` +
         'A closed strand needs a founding Member/Manager derived from the party\'s own ' +
-        'membership key (minted at publishStrand, or at the founder launch that follows a ' +
-        'publish interrupted before its mint) — the shared MemberPrivateKey deliberately ' +
+        'membership key (minted when the strand is published, or at the founder launch for ' +
+        'a closed row stored without one) — the shared MemberPrivateKey deliberately ' +
         'no longer derives anyone\'s identity.',
       );
     }

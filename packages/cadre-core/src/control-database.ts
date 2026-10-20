@@ -594,6 +594,35 @@ export function ownerKeyLabel(label: string | null | undefined): string | null {
  */
 export type ControlSign = (message: Uint8Array) => string | Promise<string>;
 
+/** A formation invitation written with a founding ({@link FoundingRows}), bound to the strand founded. */
+export interface FoundingInvite {
+  /** The invitation token, the `FormationInvite` primary key. */
+  token: string;
+  /** The sApp a redeemed strand will use. */
+  sAppId: string;
+  /** Epoch ms after which it cannot be redeemed; omit for never. */
+  expiresAtMs?: number;
+  /** How many redemptions it allows; omit for unlimited. */
+  totalUses?: number;
+  /** Web hook sent the disclosure; a `ValidationKey` then signs off each redemption. */
+  validationUrl?: string;
+}
+
+/** The control rows one founding writes together; see {@link ControlDatabase.insertFoundingRows}. */
+export interface FoundingRows {
+  strand: { id: string; type: 'o' | 'c'; memberPrivateKey?: string };
+  /** This party's membership identity key for a closed strand; absent for an open strand, or when a stored key is adopted. */
+  partyKey?: string;
+  /** A formation invitation bound to this strand (its `StrandId` is `strand.id`). */
+  formationInvite?: FoundingInvite;
+}
+
+/** One owner-signed insert, stamped and signed: the statement and parameters to run under the write lock. */
+interface SignedInsert {
+  sql: string;
+  params: SqlParameters;
+}
+
 /** What an owner asks {@link ControlDatabase.insertCadreInvite} (or {@link ControlDatabase.signCadreInvite}) to sign. */
 export interface CadreInviteFields {
   /** The invitation public key (base64url ed25519), the row's primary key. */
@@ -622,7 +651,7 @@ async function signGuardedRemoval(
 }
 
 /** The control tables keyed by a strand id whose repeat insert a caller may treat as idempotent. */
-type StrandIdTable = Extract<RevocableTable, 'Strand' | 'JoinedStrand'>;
+type StrandIdTable = Extract<RevocableTable, 'Strand' | 'StrandPartyKey' | 'JoinedStrand'>;
 
 /** The control tables whose repeat insert of a held key a caller may classify. */
 type KeyConflictTable = StrandIdTable | IssuedTable | Extract<RevocableTable, 'JoinRequest'>;
@@ -649,7 +678,8 @@ function keyConflictPattern(table: KeyConflictTable): RegExp {
  * {@link CadreNode.publishStrand} uses this to tell "my own earlier publish already
  * landed" (re-read, and no-op when the row matches) apart from every other rejection —
  * an unauthorized signer, a retired stamp — which must keep surfacing. For `JoinedStrand`
- * the same test tells "another machine of this party already published this join" apart.
+ * the same test tells "another machine of this party already published this join" apart, and
+ * for `StrandPartyKey` it tells a founding that this party's key for the id is already seated.
  *
  * Matched by TEXT, not by type: the typed engine error does not survive the trip out of
  * optimystic (same constraint the retry classifiers in `control-write-retry.ts` document).
@@ -2610,7 +2640,19 @@ export class ControlDatabase {
   ): Promise<void> {
     this.ensureInitialized();
     log('Inserting strand: %s (type: %s)', strandId, type);
+    const insert = await this.signStrandInsert(strandId, type, ownerKey, signMessage, memberPrivateKey);
+    await this.execWrite(insert.sql, insert.params, 'strand-insert');
+    log('Strand inserted: %s', strandId);
+  }
 
+  /** The stamped, owner-signed `Strand` insert that {@link insertStrand} and {@link insertFoundingRows} run. */
+  private async signStrandInsert(
+    strandId: string,
+    type: 'o' | 'c',
+    ownerKey: string,
+    signMessage: ControlSign,
+    memberPrivateKey?: string
+  ): Promise<SignedInsert> {
     // Generate a unique stamp ID using the peer ID for distributed uniqueness
     const peerId = this.config.libp2pNode.peerId.toString();
     const stampId = generateStampId(peerId);
@@ -2624,13 +2666,55 @@ export class ControlDatabase {
 
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
     // FounderOwnerKey must equal the signing owner or the constraint rejects the row.
-    await this.execWrite(`
-      insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
-        with context OwnerKey = ?, Signature = ?
-        values (?, ?, ?, ?, ?, ?)
-    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId, ownerKey, peerId], 'strand-insert');
+    return {
+      sql: `
+        insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId, FounderOwnerKey, FounderPeerId)
+          with context OwnerKey = ?, Signature = ?
+          values (?, ?, ?, ?, ?, ?)
+      `,
+      params: [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId, ownerKey, peerId],
+    };
+  }
 
-    log('Strand inserted: %s', strandId);
+  /**
+   * Insert one founding's control rows — the `Strand` row, a closed strand's `StrandPartyKey`
+   * row, and a formation invitation bound to the strand — in ONE transaction: one commit, and
+   * never a strand row without the key or invitation written beside it.
+   *
+   * Each row is stamped and signed exactly as its single-row writer ({@link insertStrand},
+   * {@link insertStrandPartyKey}, {@link insertFormationInvite}) does it, and all of that — the
+   * invitation's {@link canonicalDatetime} read included — happens BEFORE the write lock is
+   * taken: signing may prompt the user, and the lock held across a prompt would stall every
+   * other control write. A {@link lockedWithRetry} re-run re-presents the same signed rows.
+   *
+   * No row's `AuthorizedInsert` reads another of these rows (`StrandPartyKey` and
+   * `FormationInvite` check only `OwnerKey` and `Revocation`), so their order is free; the
+   * `Strand` row goes first, so a founding repeated over a stored row is refused on `Strand.Id`.
+   *
+   * A uniqueness rejection rolls the whole transaction back. The caller resolves it and writes
+   * again: a `Strand.Id` conflict is another founder's row, a `StrandPartyKey.Id` conflict a key
+   * stored with no strand row ({@link isStrandIdConflict}; see `CadreNode.publishStrand`).
+   */
+  async insertFoundingRows(rows: FoundingRows, ownerKey: string, signMessage: ControlSign): Promise<void> {
+    this.ensureInitialized();
+    const { strand, partyKey, formationInvite } = rows;
+    log('Inserting founding rows: strand %s (type: %s, party key: %s, invitation: %s)',
+      strand.id, strand.type, partyKey !== undefined, formationInvite !== undefined);
+    const inserts = [await this.signStrandInsert(strand.id, strand.type, ownerKey, signMessage, strand.memberPrivateKey)];
+    if (partyKey !== undefined) {
+      inserts.push(await this.signStrandPartyKeyInsert(strand.id, partyKey, ownerKey, signMessage));
+    }
+    if (formationInvite) {
+      const { token, sAppId, ...options } = formationInvite;
+      inserts.push(await this.signFormationInviteInsert(token, sAppId, ownerKey, signMessage, { ...options, strandId: strand.id }));
+    }
+    // Bare `exec`: the lock is held, and `execWrite` would take it again and self-deadlock.
+    await this.lockedWithRetry(() => this.inTransaction('found strand', async () => {
+      for (const insert of inserts) {
+        await this.db!.exec(insert.sql, insert.params);
+      }
+    }), {}, 'strand-found');
+    log('Founding rows inserted: strand %s', strand.id);
   }
 
   /**
@@ -2739,22 +2823,33 @@ export class ControlDatabase {
   ): Promise<void> {
     this.ensureInitialized();
     log('Inserting strand party key for strand: %s', strandId);
+    const insert = await this.signStrandPartyKeyInsert(strandId, privateKey, ownerKey, signMessage);
+    await this.execWrite(insert.sql, insert.params, 'strand-party-key-insert');
+    log('Strand party key inserted for strand: %s', strandId);
+  }
 
-    const peerId = this.config.libp2pNode.peerId.toString();
-    const stampId = generateStampId(peerId);
+  /** The stamped, owner-signed `StrandPartyKey` insert that {@link insertStrandPartyKey} and {@link insertFoundingRows} run. */
+  private async signStrandPartyKeyInsert(
+    strandId: string,
+    privateKey: string,
+    ownerKey: string,
+    signMessage: ControlSign
+  ): Promise<SignedInsert> {
+    const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
 
     // Field order MUST match the schema's StrandPartyKey `AuthorizedInsert` verify:
     // Id, PrivateKey, StampId.
     const message = buildAuthorizationMessage('CadreControl.StrandPartyKey', 'add', this.config.partyId, [strandId, privateKey, stampId]);
     const signature = await signMessage(message);
 
-    await this.execWrite(`
-      insert into CadreControl.StrandPartyKey (Id, PrivateKey, StampId)
-        with context OwnerKey = ?, Signature = ?
-        values (?, ?, ?)
-    `, [ownerKey, signature, strandId, privateKey, stampId], 'strand-party-key-insert');
-
-    log('Strand party key inserted for strand: %s', strandId);
+    return {
+      sql: `
+        insert into CadreControl.StrandPartyKey (Id, PrivateKey, StampId)
+          with context OwnerKey = ?, Signature = ?
+          values (?, ?, ?)
+      `,
+      params: [ownerKey, signature, strandId, privateKey, stampId],
+    };
   }
 
   /**
@@ -4065,7 +4160,22 @@ export class ControlDatabase {
   ): Promise<void> {
     this.ensureInitialized();
     log('Inserting formation invite: %s', token);
+    const insert = await this.signFormationInviteInsert(token, sAppId, ownerKey, signMessage, options);
+    await this.execWrite(insert.sql, insert.params, 'formation-invite-insert');
+    log('Formation invite inserted: %s', token);
+  }
 
+  /**
+   * The stamped, owner-signed `FormationInvite` insert that {@link insertFormationInvite} and
+   * {@link insertFoundingRows} run. Reads the engine once, for the canonical `ExpiresAt`.
+   */
+  private async signFormationInviteInsert(
+    token: string,
+    sAppId: string,
+    ownerKey: string,
+    signMessage: ControlSign,
+    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string }
+  ): Promise<SignedInsert> {
     const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
 
     // Build each bound field exactly as the deferred CHECK sees it post-coercion:
@@ -4092,21 +4202,22 @@ export class ControlDatabase {
     // Persist the canonical ExpiresAt string (datetime parse is idempotent on it) so the
     // signed source-of-truth and the stored value are produced once. StampId is a real,
     // unique column (single-use anti-replay), no longer a context value.
-    await this.execWrite(`
-      insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId)
-        with context OwnerKey = ?, Signature = ?
-        values (?, ?, ?, ?, ?, ?, ?)
-    `, [
-      ownerKey, signature,
-      token, sAppId,
-      expiresAtCanonical,
-      options.totalUses ?? null,
-      options.validationUrl ?? null,
-      options.strandId ?? null,
-      stampId,
-    ], 'formation-invite-insert');
-
-    log('Formation invite inserted: %s', token);
+    return {
+      sql: `
+        insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId)
+          with context OwnerKey = ?, Signature = ?
+          values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      params: [
+        ownerKey, signature,
+        token, sAppId,
+        expiresAtCanonical,
+        options.totalUses ?? null,
+        options.validationUrl ?? null,
+        options.strandId ?? null,
+        stampId,
+      ],
+    };
   }
 
   /**

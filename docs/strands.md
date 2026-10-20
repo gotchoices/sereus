@@ -367,9 +367,9 @@ database, which Optimystic replicates to **every node the party owns**:
   gates reads; it deliberately derives **nobody's identity**.
 - **The party's own membership identity** — the control-layer
   `StrandPartyKey.PrivateKey`, one row per (party, strand). The founding
-  `Member.Key`/`Manager.MemberKey` are its public key. The **founder** mints it at
-  `publishStrand` for a closed strand (or at the next founder launch, when a publish
-  was interrupted before its mint); a **joiner** mints (or, on a re-formation, reuses) its own at
+  `Member.Key`/`Manager.MemberKey` are its public key. The **founder** mints it when it
+  publishes a closed strand, in the same control transaction as the `Strand` row (or at the
+  next founder launch, for a closed row stored without its key); a **joiner** mints (or, on a re-formation, reuses) its own at
   `formStrand`, when the approving closed-strand formation result carries a
   single-use strand membership invitation
   (`FormationProvisionResult.membershipInvite` — a `Strand.Invite` keypair the

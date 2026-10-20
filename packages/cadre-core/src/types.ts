@@ -1468,6 +1468,14 @@ export interface FoundStrandConfig {
   /** sApp configuration the hosting application provides, as for {@link StrandConfig}. */
   sAppConfig: SAppConfig;
   /**
+   * A formation invitation to publish bound to this strand, for the app `sAppConfig.id`, in the
+   * same control transaction and owner approval as the strand row. Mint it first with
+   * `createOpenInvitation` (its `expiration` is `expiresAtMs`). When the strand is already
+   * published the invitation is published on its own, under its own approval, as
+   * `publishFormationInvite` would; one already stored under `token` for this strand is kept.
+   */
+  formationInvite?: { token: string; expiresAtMs?: number; totalUses?: number; validationUrl?: string };
+  /**
    * Forwarded to the attach ({@link StrandConfig.awaitFirstSync}). Matters only when the
    * call ATTACHES rather than founds — the stored row was published by a sibling machine
    * that won the founding race — in which case this machine is a joiner whose database

@@ -13,6 +13,7 @@ import type {
   SAppConfig,
   StrandRow,
   FormStrandResult,
+  OpenInvitation,
 } from '@serfab/cadre-core';
 import { generateStrandMemberKey } from '@serfab/cadre-core';
 import { insertParticipant, participantDisplayName, type ChatRole } from './chat-operations';
@@ -149,18 +150,25 @@ export interface CreateClosedStrandResult {
  * was derived from. Handing back a fresh key there would produce invitations
  * that cannot read the strand.
  *
- * @param cadreNode  Running CadreNode (must be an enrolled owner to publish)
- * @param strandId   Unique strand identifier (caller-generated UUID)
+ * Given an `invitation`, its `FormationInvite` row is published bound to the
+ * strand in the same control transaction and owner approval as the strand row,
+ * which is what makes the token redeemable for THIS strand.
+ *
+ * @param cadreNode   Running CadreNode (must be an enrolled owner to publish)
+ * @param strandId    Unique strand identifier (caller-generated UUID)
+ * @param invitation  Optional invitation (from `createOpenInvitation`) to bind to the strand
  */
 export async function createClosedChatStrand(
   cadreNode: CadreNode,
   strandId: string,
+  invitation?: OpenInvitation,
 ): Promise<CreateClosedStrandResult> {
   const { strandRow, ready: started } = await cadreNode.foundStrand({
     strandId,
     type: 'c', // closed — invitation-only
     memberPrivateKey: await generateStrandMemberKey(),
     sAppConfig: getChatSAppConfig(),
+    formationInvite: invitation && { token: invitation.token, expiresAtMs: invitation.expiration.getTime() },
   }, { background: true });
 
   if (!strandRow.MemberPrivateKey) {

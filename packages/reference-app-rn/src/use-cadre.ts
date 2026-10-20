@@ -51,7 +51,6 @@ import {
   loadSavedStartOptions,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
-  publishFormationInvite,
   formStrand,
   createCadreInvitation as createCadreInvitationImpl,
   listCadreInvitations as listCadreInvitationsImpl,
@@ -775,9 +774,9 @@ export function useCadreInternal(): UseCadreResult {
 
   // ── Closed-strand consent flow ─────────────────────────────────────────
 
-  // Host: create a closed strand, then mint + persist a formation invite BOUND to
-  // that strand (the `strandId` option threads onto the FormationInvite row so the
-  // responder provisions the host's actual strand at redemption). The OpenInvitation
+  // Host: mint a formation invite, then create a closed strand with the invite's
+  // FormationInvite row BOUND to it, in one control write (the row's StrandId is
+  // what has the responder provision the host's actual strand at redemption). The OpenInvitation
   // alone is handed out — it carries the formation token + the host's bootstrap
   // addrs; the strand id + membership key are delivered over the protocol after
   // consent, no side-channel envelope.
@@ -795,13 +794,9 @@ export function useCadreInternal(): UseCadreResult {
       // reported as held.
       throw new Error(unreachableInviteMessage(getRelayState()));
     }
-    await createClosedChatStrand(current, strandId);
-    setSelectedStrandId(strandId);
     const invitation = await createOpenInvitation(CHAT_SAPP_ID, INVITE_EXPIRY_MS);
-    await publishFormationInvite(invitation.token, CHAT_SAPP_ID, {
-      expiresAtMs: invitation.expiration.getTime(),
-      strandId,
-    });
+    await createClosedChatStrand(current, strandId, invitation);
+    setSelectedStrandId(strandId);
     const encoded = current.encodeInvitation(invitation);
     refreshStrands();
     return encoded;
