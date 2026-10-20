@@ -482,12 +482,20 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		// shift nondeterministically. The automatic path has its own coverage
 		// (cadre-core's strand-membership-reconciler.spec.ts, and the closed-strand
 		// variant of strand-formation-cross-party-seed for the real network).
+		//
+		// The revoked-peer gate is SUSPENDED on both nodes for the same reason: the removal
+		// test binds the joiner node's real strand peer id to a member it then revokes, and
+		// goes on asserting that the joiner sees the manager's cleanup. On the production
+		// schedule the revocation commit would cut the joiner at once, and with it the second
+		// cohort member those writes need. Removal cutting the network is covered by
+		// strand-removal-cuts-network and strand-party-removal-via-formation-e2e.
 		founderNode = new CadreNode(controlNodeConfig({
 			partyId: `founder-${partyId}`,
 			storageProvider: founderCapture.provider,
 			profile: 'storage',
 			enableRelay: true,
 			membershipReconciliation: false,
+			revocationSuspended: true,
 		}));
 		await founderNode.start();
 
@@ -496,6 +504,7 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 			storageProvider: joinerCapture.provider,
 			bootstrapNodes: founderNode.getMultiaddrs(),
 			membershipReconciliation: false,
+			revocationSuspended: true,
 		}));
 		await joinerNode.start();
 
