@@ -33,7 +33,9 @@
  *    not narrated. The phone's reconcile backstop is parked for the same reason: publication
  *    happens when this test calls `reconcileControlCohort`, not when a backstop pass runs.
  *    Recording the join starts no pass, and neither does the formation connection to the
- *    host, another party's machine.
+ *    host, another party's machine. A membership change in the phone's party does start one,
+ *    so enrollment waits out the always-on machine's boot-time record write
+ *    (`ALWAYS_ON_BOOT_WRITE_SETTLE_MS`) before the first check's settle pass.
  *
  * 2. NO TEST-SIDE STRAND DIAL. The phone reaches the host's strand node from the addresses
  *    the formation result carried; the always-on machine reaches the phone's from the
@@ -66,6 +68,7 @@ import {
 	makeOwnOwner,
 	hasOutboundTo,
 	connectionsTo,
+	sleep,
 	captureRawStorage,
 	readBlockIndex,
 	awaitBlockCoverage,
@@ -90,6 +93,17 @@ const STRAND_WATCH_MS = 1_000;
 
 /** Longer than the test, so no backstop pass on the phone publishes on its own. */
 const PHONE_RECONCILE_PARKED_MS = 600_000;
+
+/**
+ * How long after the always-on machine starts its enrollment waits before returning: the
+ * machine's boot timer (`CadreNode.scheduleSelfRegistration`, 1 s after start) writes its
+ * `CadrePeer` record again, and that write replicates to the phone, whose gate watch starts a
+ * reconcile pass. A pass that runs during step 1 publishes the join the step expects to find
+ * local only, so the write is waited out here and the pass it starts is drained by the
+ * `freshReconcilePass` that follows enrollment. One second over the timer covers the write,
+ * its replication and the watch's 50 ms window on loopback.
+ */
+const ALWAYS_ON_BOOT_WRITE_SETTLE_MS = 2_000;
 
 /** One shared budget for every converge wait (enrollment, mesh, launch, coverage, removal). */
 const CONVERGE_BUDGET_MS = 30_000;
@@ -206,6 +220,7 @@ async function enrollAlwaysOn(
 		pinnedOwnerKeys: [phone.publicKey],
 	}));
 	handles.alwaysOn = node;
+	const startedAt = Date.now();
 	await node.start();
 	const applied = await node.applySeed(await phone.node.createSeed());
 	if (!applied.success) {
@@ -221,6 +236,9 @@ async function enrollAlwaysOn(
 	});
 	expect(await phone.node.isAuthorizedMember(peerId)).toBe(true);
 	expect(await node.isAuthorizedMember(phone.peerId)).toBe(true);
+	// See ALWAYS_ON_BOOT_WRITE_SETTLE_MS: the machine's boot-time record write must have
+	// started the phone's pass before the caller drains it.
+	await sleep(Math.max(0, startedAt + ALWAYS_ON_BOOT_WRITE_SETTLE_MS - Date.now()));
 	return { node, peerId };
 }
 
@@ -246,9 +264,11 @@ describe('Always-on machine hosts a strand joined from another party', () => {
 			// publish early and fail step 1: a `self:peer:update` on its control node (an
 			// address change), a membership change in its party, or a control connection to
 			// one of its own party's machines opening or closing (the always-on machine
-			// reconnecting). None occurs on loopback; the formation connection to the host
-			// (another party's machine) and the local join record start none. If step 1
-			// flakes on "join recorded on the phone", look there.
+			// reconnecting). The one that does occur on loopback, the always-on machine's
+			// boot-time record write, is waited out in enrollAlwaysOn so the pass it starts is
+			// drained here; the formation connection to the host (another party's machine)
+			// and the local join record start none. If step 1 flakes on "join recorded on the
+			// phone", look there.
 			await freshReconcilePass(phone.node);
 
 			// ── Step 1: the phone joins; the join is recorded on the phone only ──

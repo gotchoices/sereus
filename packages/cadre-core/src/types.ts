@@ -583,8 +583,9 @@ export interface NetworkConfig {
      * settled when nothing has started one sooner (a membership table change, a sibling
      * connecting or disconnecting, an address change, a redial or strand-address wake).
      * It also caps the redial ladder. Defaults to
-     * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS} (2 minutes), which the membership rows
-     * view's maximum age follows; this field does not change that age.
+     * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS} (2 minutes). The membership rows view's
+     * maximum age (`MEMBERSHIP_VIEW_MAX_AGE_MS`, 15 s) does not follow this field: a backstop
+     * longer than it reads storage on every backstop pass, a shorter one every 15 s at most.
      */
     reconcileMs?: number;
     /**

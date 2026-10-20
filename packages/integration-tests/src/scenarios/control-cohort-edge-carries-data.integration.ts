@@ -28,9 +28,12 @@
  *  5. The production routine `B.reconcileControlCohort()`, run with B's dials
  *     to C allowed for exactly that pass, opens B→C and reports dialling C —
  *     the only connection B gains (the gate still holds A out).
- *  6. B observes R1 — with the coordinator pinned to C again, so the read is
- *     answered BY C — while every open control connection B holds is to C, at
- *     every poll. Therefore R1 crossed the B↔C edge.
+ *  6. B observes R1 while every open control connection B holds is to C, at
+ *     every poll. Therefore R1 crossed the B↔C edge. Usually the pass that
+ *     connection open starts has already carried it (the open drops B's
+ *     membership views, and the pass's storage reads consult the cohort over
+ *     the new edge); the coordinator is pinned to C for the poll's own read in
+ *     case it has not.
  *
  * Both regressions the coverage gap names are caught here: a peer that never
  * gets seated in the other's replication cohort, and a connection opened on a
@@ -52,8 +55,13 @@
  *  - pin 2 brackets the carry read (step 6) onward: B's post-link reads must be
  *    answered by C, not out of B's own stale local state. B was absent from the
  *    {A, C} write that committed R1, so nothing B holds locally can contain R1
- *    — an unpinned carry read could serve B's own stale view forever and time
- *    the test out even though the edge works.
+ *    until a read of B's consults the cohort. The pass the B→C open starts makes
+ *    that read on its own (`CadreNode.onControlSiblingConnectionChange` drops
+ *    the membership views first), so by the first poll R1 is usually already in
+ *    B's storage and the poll's read is served locally without consulting any
+ *    coordinator — which is why the carry pin's call count is NOT asserted. It
+ *    stays in place for the run where the poll's read comes first: unpinned,
+ *    that read could serve B's own stale view until the view's maximum age.
  *  - the pin MUST be off while `B.reconcileControlCohort()` runs (step 5): the
  *    pass starts by reading the CadrePeer table on B (`listMembers`, the
  *    membership-gate refresh) and a live Optimystic read syncs from the network
@@ -334,10 +342,11 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			expect(outboundToC).toHaveLength(1);
 			const linkConnId = outboundToC[0]!.id;
 
-			// ── 7. Carry: B observes R1, with the coordinator pinned to C again so
-			//       the read is answered BY C across the just-formed edge — B's own
-			//       local state cannot contain R1 (B was absent from the write), so
-			//       an unpinned read could serve B's stale view forever. A manual
+			// ── 7. Carry: B observes R1. The pass the B→C open started has usually
+			//       carried it already (file header, PIN SCOPING, pin 2); the
+			//       coordinator is pinned to C for the poll's own read in case it has
+			//       not, since B's pre-link state cannot contain R1 (B was absent from
+			//       the write). A manual
 			//       poll loop, NOT `waitUntil` — the per-iteration invariant (every
 			//       open connection B holds is to C) must abort the test
 			//       immediately, and `waitUntil` swallows a throwing condition as
@@ -382,13 +391,13 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			expect(openNow.some((c) => c.id === linkConnId)).toBe(true);
 
 			// ── 8. Closing: C is seated in B's replication cohort (the first
-			//       regression the coverage gap names), and BOTH pins were actually
-			//       consulted, so neither can have silently no-opped: the write pin
-			//       served C's own reads around the R1 write, the carry pin routed
-			//       B's carry read to C.
+			//       regression the coverage gap names), and the write pin was
+			//       actually consulted, so it cannot have silently no-opped: it
+			//       served C's own reads around the R1 write. The carry pin's count
+			//       is legitimately zero when the open-started pass carried R1 first
+			//       (file header, PIN SCOPING, pin 2), so it is not asserted.
 			expect(await readCohort(B.getControlNode()!, 'B (post-carry)')).toContain(cPeerId);
 			expect(writePin.callCount()).toBeGreaterThan(0);
-			expect(carryPin.callCount()).toBeGreaterThan(0);
 		} finally {
 			// Reverse order of application; both restores are idempotent and the two
 			// pins never overlap (the write pin is restored before the carry pin is

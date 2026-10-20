@@ -61,11 +61,25 @@
  *   cadre (admitMember)  join 362 ms, 22 app streams, 75 gets    idle 60 s: 103 sync, 133 gets
  *   invite (redeem)      join 1013 ms, 50 app streams, 79 gets   idle 60 s: 134 sync, 148 gets
  *
- * The two-machine idle minute is the headline: with a sibling in the control cohort, nearly
- * every idle control read becomes a `sync` request to it (Optimystic's background check of a
- * block read more than 10 s after its last check, and a consult for every read of a
- * never-written table). In the strand case each party's control cohort is itself, so the same
- * reads stay local.
+ * MEASURED_ON 2026-10-20, one run per case, after `control-reconcile-woken-by-changes-reads-once`
+ * (the reconcile pass runs on change with a 2-minute backstop; membership reads are served from
+ * the membership rows view):
+ *
+ *   cadre (admitMember)  join 398 ms, 8 app streams, 52 gets     settle 15 s: 92 app, 23 gets
+ *                                                                idle 60 s: 34 app, 0 sync, 0 gets
+ *   invite (redeem)      join 776 ms, 38 app streams, 73 gets    settle 15 s: 85 app, 25 gets
+ *                                                                idle 60 s: 26 app, 0 sync, 0 gets
+ *
+ * The two-machine idle minute is the headline. On 2026-10-19 nearly every idle control read
+ * became a `sync` request to the sibling (Optimystic's background check of a block read more
+ * than 10 s after its last check, and a consult for every read of a never-written table). Now
+ * an idle minute reads no control block and opens no `sync` stream: no pass runs inside it, and
+ * the reads a pass makes are served from the view. Every remaining idle stream is a
+ * `block-transfer` push from Optimystic's under-replication drain, which re-sends the blocks
+ * the owner wrote alone before the member joined (`DEBUG=optimystic:db-p2p:*` shows them as
+ * `under-replication-drain push:ok`); that cadence is Optimystic's. In the strand case each
+ * party's control cohort is itself, so its idle reads stay local (2026-10-19 figures above; not
+ * re-measured).
  */
 
 import { describe, it } from 'vitest'

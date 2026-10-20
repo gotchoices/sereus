@@ -6,21 +6,25 @@
  * (`docs/architecture.md` → "Membership rows view"); this class holds only the caching rules, so
  * they are testable without a database.
  */
-import { DEFAULT_CONTROL_COHORT_RECONCILE_MS } from './control-cohort.js';
-
 /**
  * How long installed rows are served before the next read reloads them, change or no change.
- * The reload is the only path for a change that reaches this node with no storage event.
+ * The reload is the only path for a change that reaches this node with no storage event: a
+ * machine outside the block's cohort (a cadre larger than its replication breadth), or one in
+ * the cohort that the writer could not reach when it committed (one side of a NAT pair; the
+ * cohort auto-connect scenarios). Longer than Optimystic's read-repair window
+ * ({@link OPTIMYSTIC_READ_REPAIR_WINDOW_MS}), so the reload's storage read starts the cohort
+ * consult that brings such a change in instead of being served from the local copy, and
+ * shorter than any reconcile backstop (`DEFAULT_CONTROL_COHORT_RECONCILE_MS`, 2 minutes), so
+ * the backstop pass, the only reader on an idle party, reloads rather than serving kept rows.
+ * The reload rate on an idle party is therefore the pass rate, and the staleness bound for
+ * such a change is the backstop, not this value.
  *
- * NOTE: one case depends on this bound: a machine outside the block's cohort (a cadre larger
- * than its replication breadth), whose storage takes no event for a change there. A machine
- * that was offline when a sibling committed is covered without it: `CadreNode` drops every view
- * when a control connection to a sibling opens (`ControlDatabase.invalidateMembershipViews`),
- * so the pass that connection starts reads storage. The bound follows the reconcile pass's
- * backstop, which bounds the same case for the membership gate; a party that large and in need
- * of a tighter bound lowers `network.controlCohort.reconcileMs`, which does not lower this.
+ * A machine that was offline when a sibling committed is covered sooner than either:
+ * `CadreNode` drops every view when a control connection to a sibling opens
+ * (`ControlDatabase.invalidateMembershipViews`), so the pass that connection starts reads
+ * storage.
  */
-export const MEMBERSHIP_VIEW_MAX_AGE_MS = DEFAULT_CONTROL_COHORT_RECONCILE_MS;
+export const MEMBERSHIP_VIEW_MAX_AGE_MS = 15_000;
 
 /**
  * Optimystic's lazy read-repair window (`clusterPolicy.readRepairWindowMs`, which cadre does

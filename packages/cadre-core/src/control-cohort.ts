@@ -30,20 +30,22 @@ import type { CohortPeerRow } from './strand-cohort.js';
  * change — and on the retries a pass arms for itself ({@link nextReconcileWakeMs}); the
  * backstop bounds how stale this node can be after a change it hears nothing of: one that
  * reaches it with no storage event, which happens to a machine outside the block's cohort
- * (a cadre larger than `CONTROL_REPLICATION_BREADTH`). The membership rows view's maximum
- * age (`MEMBERSHIP_VIEW_MAX_AGE_MS`) follows this value, for the same case.
+ * (a cadre larger than `CONTROL_REPLICATION_BREADTH`) and to one in the cohort that the
+ * writer could not reach when it committed. The membership rows view's maximum age
+ * (`MEMBERSHIP_VIEW_MAX_AGE_MS`, 15 s) is shorter than this, so the backstop pass reads
+ * storage and starts the cohort consult that brings such a change in.
  *
  * `network.controlCohort.reconcileMs` overrides it. An interval between a pass settling and
  * the next start, not a deadline on a pass: passes are single-flight, and one unreachable
  * sibling's dial alone can take the whole per-peer dial budget (86 s at the default
  * declared link).
  *
- * NOTE: a cadre larger than `CONTROL_REPLICATION_BREADTH` (16 machines) has machines outside
- * each block's cohort, which see a membership change only at this backstop or at the view's
- * maximum age, 2 minutes, where the change-driven path serves a machine in the cohort within
- * the 50 ms coalescing window. If a party that large ever needs a tighter bound, lower the
- * backstop for its nodes or give the plugin's change bridge a path for outside-the-cohort
- * reads.
+ * NOTE: a machine whose storage takes no event for a change — one outside the block's cohort
+ * in a cadre larger than `CONTROL_REPLICATION_BREADTH` (16 machines), or one the writer could
+ * not reach when it committed — sees it only at this backstop, where the change-driven path
+ * serves a machine the commit reached within the 50 ms coalescing window. If a party ever
+ * needs a tighter bound, lower the backstop for its nodes or give the plugin's change bridge
+ * a path for outside-the-cohort reads.
  */
 export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 120_000;
 
