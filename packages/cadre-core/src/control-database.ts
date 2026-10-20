@@ -893,7 +893,7 @@ function revocationRowOf(row: Record<string, SqlValue>): RevocationRow {
  * Every `CadreInvite` column, in the order {@link cadreInviteRowOf} reads them: the full scan the
  * `CadreInvite` membership view loads, and the base the point reads append their `where` to.
  */
-const CADRE_INVITE_SELECT_SQL ='select Key, PeerId, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId from CadreControl.CadreInvite';
+const CADRE_INVITE_SELECT_SQL = 'select Key, PeerId, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId from CadreControl.CadreInvite';
 
 /**
  * A stored `CadreInvite` row as a {@link CadreInviteRow}. `ExpiresAt` is kept as the
