@@ -308,11 +308,11 @@ async function scanMemberKeys(db: Database): Promise<Set<string>> {
  * order; the module doc says why it holds on the network), so reading `Member`
  * first would let a join that commits mid-read produce a binding whose member
  * key is absent from the key set — a brand-new member classified as REVOKED,
- * the one fail-CLOSED outcome this module exists to avoid. Reading bindings first inverts the skew: the new binding is simply
- * not in the older bindings snapshot, so the joiner is unclassified and
- * admitted, and a revocation that lands mid-read is still seen (the key is
- * missing from the NEWER key scan). Every skew window then resolves fail-open,
- * matching the module doc.
+ * the one fail-CLOSED outcome this module exists to avoid. Reading bindings
+ * first inverts the skew: the new binding is simply not in the older bindings
+ * snapshot, so the joiner is unclassified and admitted, and a revocation that
+ * lands mid-read is still seen (the key is missing from the NEWER key scan).
+ * Every skew window then resolves fail-open, matching the module doc.
  *
  * NOTE: two whole-table scans per refresh (on each membership change and each
  * backstop, per closed strand). Fine at strand scale (a handful of members and bindings); if
