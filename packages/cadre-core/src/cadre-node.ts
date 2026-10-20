@@ -2167,7 +2167,9 @@ export class CadreNode implements SAppIdLookup {
    * for peers it knew about before the restart).
    *
    * Unlike the per-strand instances (see `strand-instance-manager.ts`), pushes
-   * are gated on {@link isAuthorizedMember}, judged at push time: the control
+   * are gated on the authorized-member snapshot ({@link authorizedControlPeers},
+   * which {@link refreshAuthorizedControlPeers} materializes from the same rows and
+   * rule {@link isAuthorizedMember} queries), judged at push time: the control
    * network's inbound connection gate deliberately admits non-members in
    * several states (seed delivery to an un-enrolled node, an open enrollment
    * window, an outstanding invitation, configured bootstrap/relay peers), and
@@ -2212,7 +2214,10 @@ export class CadreNode implements SAppIdLookup {
       // under — derived from the same networkName binding the node options
       // used, never re-spelled here.
       protocolPrefix: `/optimystic/${networkName}`,
-      authorizePeer: async (peerId) => this.admittingDevices.has(peerId) || await this.isAuthorizedMember(peerId)
+      // The membership snapshot, not {@link isControlNetworkMember}: that predicate admits
+      // everyone while the snapshot is empty and admits bootstrap/relay peers outright, and
+      // neither may receive the control store.
+      authorizePeer: async (peerId) => this.admittingDevices.has(peerId) || this.authorizedControlPeers.has(peerId)
     }, {
       // A shorter settle window than the strand default (1000 ms): the control
       // store is small (a party's membership — dozens of blocks), a re-push is
@@ -2268,8 +2273,8 @@ export class CadreNode implements SAppIdLookup {
     const release = this.countAdmittingDevice(peerId);
     try {
       const result = await backfill.forceCatchUpPeer(peerIdFromString(peerId));
-      log('Device %s caught up before its admission: offered=%d accepted=%d rejected=%d',
-        peerId, result.offered, result.accepted, result.rejected.length);
+      log('Device %s caught up before its admission: offered=%d alreadyHeld=%d accepted=%d rejected=%d',
+        peerId, result.offered, result.alreadyHeld, result.accepted, result.rejected.length);
       return release;
     } catch (error) {
       release();
@@ -2954,15 +2959,15 @@ export class CadreNode implements SAppIdLookup {
       // commit is what would authorize it), and the gate re-judges at push time.
       //
       // NOTE: every refresh re-arms every connected peer that is not yet caught
-      // up, and each re-armed pass costs one `CadrePeer` query at the gate. A
-      // connection that is admitted but never authorized — a configured
+      // up. A connection that is admitted but never authorized — a configured
       // bootstrap or relay peer, the steady state for a NAT'd node — is
       // therefore re-judged on every refresh, forever: every local membership
       // write, every replicated membership change (the gate watch), and every
-      // reconcile pass, down to the 2-minute backstop on an idle party. Negligible
-      // at a cadre's handful of connections; if a node ever holds many such
-      // connections, or refreshes get frequent, skip re-arming peers whose last
-      // pass was denied under the SAME membership snapshot instead of re-arming
+      // reconcile pass, down to the 2-minute backstop on an idle party. Each
+      // such pass is one timer and a lookup in the snapshot just set (the gate
+      // reads no control database). If a node ever holds many such connections,
+      // or refreshes get frequent, skip re-arming peers whose last pass was
+      // denied under the SAME membership snapshot instead of re-arming
       // unconditionally.
       void this.controlBackfill?.scheduleConnectedPeers();
       // Same join order for the growth edge: a sibling that identified before this commit

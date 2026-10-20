@@ -469,6 +469,30 @@ describe('StrandFirstSyncGate', () => {
     expect(scheduler.pending()).toBe(0);
   });
 
+  it('once listening, hears data that lands before start(), and start() then probes without waiting for the backstop', async () => {
+    // A first join listens while its database initializes, and a member's push can land in that
+    // window (measured on the message-cost strand: 76 ms before initialize returned). Unheard,
+    // the gate would sit out its whole backstop with the blocks already held.
+    const scheduler = fakeScheduler();
+    const feed = fakeStorageFeed();
+    const onHeaderHeld = vi.fn();
+    const gate = new StrandFirstSyncGate(
+      { label: 'l', database: fakeDatabase({ held: true }), onHeaderHeld, scheduler, subscribeStorageChanges: feed.subscribe },
+      { backstopMs: 2_000 }
+    );
+
+    gate.listen();
+    expect(gate.heardDataSinceProbe).toBe(false);
+    feed.emit();
+    expect(gate.heardDataSinceProbe).toBe(true);
+    expect(scheduler.pending()).toBe(0);
+
+    gate.start();
+    expect(feed.subscribers()).toBe(1);
+    expect(await scheduler.fire()).toBe(TABLE_CHANGE_COALESCE_MS);
+    expect(onHeaderHeld).toHaveBeenCalledTimes(1);
+  });
+
   it('open() force-opens without calling onHeaderHeld; stop() cancels the schedule and the feed', async () => {
     const scheduler = fakeScheduler();
     const feed = fakeStorageFeed();

@@ -860,9 +860,10 @@ export interface CadreNodeConfig {
   /**
    * Tuning for the strand peer-join block catch-up (see `peer-join-backfill.ts`):
    * when a strand's libp2p node connects to a peer this runtime has not yet
-   * caught up, every block in the strand's own raw store is pushed to that peer,
-   * so a machine that joined the strand after blocks were committed still ends
-   * up physically holding them. Applies to every strand this node starts.
+   * caught up, every block in the strand's own raw store that the peer is not
+   * known to hold is pushed to it, each block once per peer, so a machine that
+   * joined the strand after blocks were committed still ends up physically
+   * holding them. Applies to every strand this node starts.
    * Omit for the defaults (`DEFAULT_PEER_JOIN_BACKFILL`); `{ enabled: false }`
    * restores the no-backfill behaviour. The control network runs its own,
    * separately tuned catch-up — see {@link controlBackfill}.
@@ -892,12 +893,13 @@ export interface CadreNodeConfig {
    * Tuning for the CONTROL network's peer-join block catch-up (same module,
    * `peer-join-backfill.ts`, wired in `CadreNode.start`): when the control
    * libp2p node connects to an AUTHORIZED party member this runtime has not yet
-   * caught up, every block in the control database's own raw store is pushed to
-   * it. This is what makes a control block committed while the writer was alone
-   * (collection headers written at genesis above all) physically reach members
-   * that joined later — without it, such a member that restarts offline reads
-   * the affected tables as empty. Pushes are gated on
-   * `CadreNode.isAuthorizedMember`, checked at push time, because the control
+   * caught up, every block in the control database's own raw store that the
+   * member is not known to hold is pushed to it. This is what makes a control
+   * block committed while the writer was alone (collection headers written at
+   * genesis above all) physically reach members that joined later — without it,
+   * such a member that restarts offline reads the affected tables as empty.
+   * Pushes are gated on the node's authorized-member snapshot (the rule
+   * `CadreNode.isAuthorizedMember` reads), checked at push time, because the control
    * network's inbound gate deliberately admits non-members in several states
    * (seed delivery, enrollment, bootstrap/relay peers). Omit for the defaults
    * (`DEFAULT_PEER_JOIN_BACKFILL`); `{ enabled: false }` disables it.

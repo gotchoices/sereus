@@ -426,7 +426,11 @@ export class StrandFirstSyncGate {
   private readonly progress: FirstSyncProgress = { header: false, tables: new Set() };
   private probes: TableChangeWatch | undefined;
   private unsubscribeStorage: (() => void) | undefined;
-  /** Data landed since the last probe started, so one is already due and will read it. */
+  private listening = false;
+  /**
+   * Data landed since the last probe started (or, before any probe, since {@link listen}), so one
+   * is already due and will read it.
+   */
   private landedSinceProbe = false;
   private stopped = false;
   private opened = false;
@@ -446,10 +450,28 @@ export class StrandFirstSyncGate {
     return this.opened;
   }
 
+  /** Whether a block landed since the last probe started, or since {@link listen} when none has. */
+  get heardDataSinceProbe(): boolean {
+    return this.landedSinceProbe;
+  }
+
   /**
-   * Arm the probe schedule. It does not probe at once — the caller already probed once — but
-   * when data first lands, or one backstop later. Data that landed between the caller's probe
-   * and this call raised no event the gate heard, so that first backstop is what catches it.
+   * Subscribe to the storage change feed ahead of {@link start}, so a block landing before the
+   * gate is armed is heard: {@link heardDataSinceProbe} reports it, and `start` then probes at
+   * once. For a first join, which skips the caller's first probe unless a member's push already
+   * landed while the database was initializing.
+   */
+  listen(): void {
+    if (this.stopped || this.opened || this.listening) return;
+    this.listening = true;
+    this.unsubscribeStorage = this.subscribeStorage();
+  }
+
+  /**
+   * Arm the probe schedule. It probes when data lands, or one backstop later; and at once when
+   * data already landed since the last probe (or since {@link listen}). Without `listen`, data
+   * that landed between the caller's probe and this call raised no event the gate heard, so
+   * that first backstop is what catches it.
    */
   start(): void {
     if (this.stopped || this.opened || this.probes !== undefined) return;
@@ -458,7 +480,10 @@ export class StrandFirstSyncGate {
       backstopMs: this.backstopMs,
       scheduler: this.scheduler,
     });
-    this.unsubscribeStorage = this.subscribeStorage();
+    this.listen();
+    if (this.landedSinceProbe) {
+      this.probes.trigger(TABLE_CHANGE_COALESCE_MS);
+    }
     log('[%s] first-sync gate armed: probing when data lands, and %dms after the last probe otherwise',
       this.deps.label, this.backstopMs);
   }
@@ -491,6 +516,7 @@ export class StrandFirstSyncGate {
    * launch over it and the gate's log says what happened.
    */
   async probeOnce(): Promise<boolean> {
+    this.landedSinceProbe = false;
     try {
       return await strandFirstSyncComplete(this.deps.database.getDatabase(), this.deps.label, this.progress);
     } catch (error) {
@@ -529,7 +555,6 @@ export class StrandFirstSyncGate {
   private async probe(): Promise<void> {
     if (this.stopped || this.opened) return;
     log('[%s] first-sync probe (%s)', this.deps.label, this.landedSinceProbe ? 'data landed' : 'backstop');
-    this.landedSinceProbe = false;
     const held = await this.probeOnce();
     // Re-check after the await: a release or a force-open may have landed mid-read.
     if (this.stopped || this.opened || !held) return;

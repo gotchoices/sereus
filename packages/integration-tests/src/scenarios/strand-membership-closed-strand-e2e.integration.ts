@@ -1027,7 +1027,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	//
 	//   2. PEER-JOIN CATCH-UP (second gate, NO narrowing — `founder ⊆ joiner`): the
 	//      blocks committed BEFORE the dial reach the joiner too, pushed by cadre-core's
-	//      `peer-join-backfill.ts` one debounce (~1 s) after the strand connection opens.
+	//      `peer-join-backfill.ts` as soon as the strand connection is identified.
 	//      Before that module existed, a measured run showed 9 of the founder's 27
 	//      blocks never reached the joiner — the bootstrap Header/Member/Manager data
 	//      blocks, their `default/*/index/_uniq_*` index blocks, and the founder's

@@ -1,18 +1,24 @@
 import debug from 'debug';
 import type { IdentifyResult, Libp2p, PeerId } from '@libp2p/interface';
-import type { ActionId, IPeerNetwork } from '@optimystic/db-core';
+import type { ActionId, ActionRev, IPeerNetwork } from '@optimystic/db-core';
 import { BlockTransferClient, buildBlockTransferProtocol, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 import { peerJoinPushBudget } from './link-budget.js';
 
 // Peer-join whole-store block catch-up, shared by the STRAND networks and the CONTROL
 // network. On a new peer's `peer:identify` result — libp2p's identify protocol runs once per
 // connection and reports the protocols the remote supports — naming this network's own
-// block-transfer protocol, it schedules a debounced push of every committed, materialized
-// block in the local raw store to that peer, so a machine that joined after blocks were
-// committed still ends up physically holding them. Optimystic has no cohort-join catch-up
-// of its own; a block committed while its writer was alone has exactly one holder forever
-// without this (named collection-header blocks are written once, at collection creation,
-// and their revision never moves again — so no later commit ever carries them anywhere).
+// block-transfer protocol, it schedules a push of every committed, materialized block in the
+// local raw store that the peer does not already hold (see "What is pushed" below), so a
+// machine that joined after blocks were committed still ends up physically holding them.
+// Optimystic has no cohort-join catch-up of its own; a block committed while its writer was
+// alone has exactly one holder forever without this (named collection-header blocks are
+// written once, at collection creation, and their revision never moves again — so no later
+// commit ever carries them anywhere).
+//
+// A peer this instance has never started a run for is run at once; later schedules for it wait
+// out `debounceMs`. The joining machine's first-sync gate waits for this push rather than
+// fetching the same blocks one read at a time, so on first contact a settle window only delays
+// the joiner. Identify churn during that first run is replayed once the run ends.
 //
 // A peer whose identify does not name the protocol — a bare circuit relay, a bootstrap node,
 // or (on the control network) a stranger the inbound gate admits without membership — is
@@ -23,7 +29,7 @@ import { peerJoinPushBudget } from './link-budget.js';
 // printing exactly that warning about their own relay, forever, on every reconnect. See
 // {@link speaksBlockTransfer}.
 //
-// NOTE: this copies the WHOLE local store to every newly connected peer, which is right
+// NOTE: this offers the WHOLE local store to every newly connected peer, which is right
 // while a network is one party's handful of machines (see docs/architecture.md →
 // Replication cluster size — the control network replicates to the whole party by intent,
 // and "On a strand, the machine count is not a party count"). If these meshes ever get
@@ -35,10 +41,11 @@ import { peerJoinPushBudget } from './link-budget.js';
 // than running two.
 //
 // NOTE: strand nodes pass db-p2p no `kvStore`, so Optimystic's under-replication ledger (the
-// copies a node owes peers) dies at every restart. This module's whole-store push on connect is
-// what delivers a write a machine made alone after it restarts (`joiner-first-commit-over-slow-relay`,
-// restart arm). If this module is narrowed (the cohort filter above) or deleted, give strand
-// nodes a persistent kvStore first.
+// copies a node owes peers) dies at every restart. This module's push on connect is what
+// delivers a write a machine made alone after it restarts (`joiner-first-commit-over-slow-relay`,
+// restart arm): the peer did not sign that commit, so the block is still offered to it. If this
+// module is narrowed (the cohort filter above) or deleted, give strand nodes a persistent
+// kvStore first.
 //
 // Membership — the one place the two networks differ, expressed as the optional
 // `authorizePeer` dep:
@@ -53,11 +60,12 @@ import { peerJoinPushBudget } from './link-budget.js';
 //   invitation, configured bootstrap/relay peers — see docs/architecture.md, the
 //   control-network inbound connection gate). Pushing the whole control store to such a
 //   peer would hand a stranger the party's entire membership, addresses and strand list.
-//   `CadreNode` passes `isAuthorizedMember`; the gate is consulted at PUSH time, not at
-//   schedule time, and fails closed on a thrown check. A denied run is not memoized, so
-//   the peer is retried on its next `peer:identify` (a reconnect re-runs identify) — or
-//   sooner, via `scheduleConnectedPeers()` on a membership change (the production join order is
-//   connect-then-authorize, so the denial at dial time is the expected first pass).
+//   `CadreNode` passes a lookup in its in-memory authorized-member snapshot; the gate is
+//   consulted at PUSH time, not at schedule time, and fails closed on a thrown check. A denied
+//   run is not memoized, so the peer is retried on its next `peer:identify` (a reconnect
+//   re-runs identify) — or sooner, via `scheduleConnectedPeers()` on a membership change (the
+//   production join order is connect-then-authorize, so the denial at dial time is the
+//   expected first pass).
 //
 // Both per-push deadlines are DERIVED from the declared link round trip
 // (`link-budget.ts`), not fixed milliseconds. That is not tuning — it is what makes this
@@ -92,21 +100,17 @@ import { peerJoinPushBudget } from './link-budget.js';
 //   budgets its dial at `transferTimeoutMs ?? 30000` — the one dial budget in the stack
 //   above the measured relayed setup cost — so it succeeded where this one could not.
 //
-// A NON-CLEAN run is NOT on its own enough to re-arm, and the distinction is what keeps the
-// backoff from becoming a worse problem than the one it fixes. `clean` also goes false for
-// outcomes no amount of retrying can change: the membership gate DENIED the peer; this
-// network's raw storage implements no `listBlockIds`, so the catch-up is inert; or the
-// receiver reported blocks in `missing`, which it does per block for a payload it cannot
-// parse and for a revision whose retained commit proof this node does not hold (a push
-// carrying no proof is refused outright by a receiver running the default
-// `requirePushCertificate: true`, and an unretained proof is the ordinary case — see
-// {@link Chunk.proofs}). Re-arming on those would re-push the WHOLE store to that peer every
-// `maxRetryBackoffMs` for as long as the node runs, and report the failure below as a link
-// budget problem when nothing about the link is wrong. All three still leave the peer
-// un-memoized, so its next `peer:identify` retries — the behaviour that predates the
-// backoff, and the right one for a verdict rather than a timeout. Denial in particular is
-// re-driven on purpose by `scheduleConnectedPeers()` the moment the membership commit lands,
-// because the control network's join order is connect-then-authorize.
+// A retry re-sends only the blocks the peer has not yet accepted (see "What is pushed"), so a
+// run that died part-way through the store resumes where it stopped.
+//
+// Only a failed push re-arms. Two other outcomes also leave a run short of catching the peer
+// up, and no amount of retrying changes them: the membership gate DENIED the peer, or this
+// network's raw storage implements no `listBlockIds`, so the catch-up is inert. Re-arming on
+// those would retry every `maxRetryBackoffMs` for as long as the node runs, and report the
+// failure below as a link budget problem when nothing about the link is wrong. Neither marks
+// the peer caught up, so its next `peer:identify` retries. Denial in particular is re-driven on
+// purpose by `scheduleConnectedPeers()` the moment the membership commit lands, because the
+// control network's join order is connect-then-authorize.
 //
 // A re-arm is also skipped when the peer is no longer CONNECTED. This module's trigger is
 // `peer:identify`, so a peer that went away already has one: re-arming instead would leave
@@ -116,6 +120,37 @@ import { peerJoinPushBudget } from './link-budget.js';
 // names the peer and the budget, because otherwise a machine on a too-slow link says
 // nothing at all: the connection simply never appears and only a DEBUG log mentions a dial
 // timeout.
+//
+// WHAT IS PUSHED: each block once per peer. Per peer, this module remembers for the runtime the
+// revision of each block the peer accepted and the revision it refused ({@link PeerMemo}). A
+// refusal is the receiver's `missing` list: a payload it cannot parse, or a revision whose
+// retained commit proof this node does not hold (a receiver running the default
+// `requirePushCertificate: true` refuses a push carrying no proof, and an unretained proof is
+// the ordinary case — see {@link Chunk.proofs}). A refusal is a per-block verdict: logged once
+// when it happens, and the block is offered to that peer again only once its local revision
+// moves past the refused one. A run skips a block, counting it in `alreadyHeld`, when:
+//
+// - the peer accepted that revision or a later one from this node;
+// - the peer refused that revision;
+// - the commit proof retained for that revision carries the peer's own commit-round approval.
+//   A block's proof lists the cohort members that signed the commit round for exactly that
+//   revision, so a founder's solo commit is never pushed back to it by a joiner now holding it,
+//   and a revision two machines committed together is not pushed between them.
+//
+// The proof rule stands in for "do not push a block back to the peer it came from": Optimystic
+// reports a push's sender only to its own rebalance monitor and exposes it to no embedder.
+//
+// NOTE: accepted tradeoff — a signer that crashed between signing and applying, or later lost its
+// store, is not re-sent that revision by this path; read repair covers its reads, as for any block
+// a cohort member lacks. Revisit if Optimystic exposes who holds what to embedders
+// (`blocked/optimystic-embedder-cannot-report-block-holders`) or a measurement shows pushes this
+// rule misses.
+//
+// A peer is marked caught up (`done`) once a run finishes with no push that threw, the gate
+// admitted it and the store is listable. A refusal does not hold that back, since it is
+// remembered per block. `peer:identify` churn for a caught-up peer is dropped before any work.
+// {@link PeerJoinBackfill.forceCatchUpPeer} runs past `done`, but still skips what the memo
+// and the proofs say the peer holds.
 //
 // NOTE: the protocol check happens once — either when a connection's `peer:identify` fires,
 // or, for a peer already connected when this instance starts, when `scheduleConnectedPeers()`
@@ -140,6 +175,7 @@ import { peerJoinPushBudget } from './link-budget.js';
 // and clear the pending timer there.
 
 const log = debug('sereus:cadre:peer-join-backfill');
+const blockEncoder = new TextEncoder();
 
 /**
  * The block-transfer protocol's hard cap on one length-prefixed message. Mirrors
@@ -172,7 +208,10 @@ export const PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES = 3;
 export interface PeerJoinBackfillConfig {
   /** Default true. False disables the catch-up entirely (the pre-existing behaviour). */
   enabled?: boolean;
-  /** Settle time after a connection opens before catching that peer up, ms. Default 1000. */
+  /**
+   * Settle time before re-running a peer this instance has already run for (a denied or failed
+   * peer's next schedule), ms. Default 1000. A peer never run for is run at once.
+   */
   debounceMs?: number;
   /** Ceiling on blocks copied in one catch-up. Default 10_000. Reaching it is LOGGED, never silent. */
   maxBlocks?: number;
@@ -254,11 +293,21 @@ export interface PeerJoinBackfillDeps {
 
 /** What one peer's catch-up actually did. Returned for tests and logged at the end of each run. */
 export interface PeerJoinBackfillResult {
-  /** Blocks offered: had a committed `latest` AND materialized content locally. */
+  /** Blocks offered: had a committed `latest` AND materialized content locally, and the peer was not known to hold it. */
   offered: number;
+  /**
+   * Skipped: the peer already accepted or refused this revision from this node, or signed its
+   * commit (see "What is pushed" in the module comment). Not offered, so not counted toward
+   * `maxBlocks`.
+   */
+  alreadyHeld: number;
   /** Blocks the remote reported it persisted. */
   accepted: number;
-  /** Block ids the remote reported in `missing` (parse or persist failure on its side). */
+  /**
+   * Block ids the remote reported in `missing` (unparseable, not persisted, or pushed without a
+   * commit proof it accepts). Remembered per revision; not offered to that peer again until the
+   * local revision moves.
+   */
   rejected: string[];
   /** Skipped: metadata has no `latest` (pending-only — not yet a durability claim here). */
   uncommitted: number;
@@ -273,7 +322,50 @@ export interface PeerJoinBackfillResult {
 }
 
 function emptyResult(): PeerJoinBackfillResult {
-  return { offered: 0, accepted: 0, rejected: [], uncommitted: 0, unmaterialized: 0, capped: 0, oversized: [], denied: false };
+  return { offered: 0, alreadyHeld: 0, accepted: 0, rejected: [], uncommitted: 0, unmaterialized: 0, capped: 0, oversized: [], denied: false };
+}
+
+/**
+ * What one peer's replies said it holds from this node, per block. Lives for the runtime, like
+ * {@link PeerJoinBackfill.done}; nothing is persisted.
+ *
+ * NOTE: a peer that empties its store and comes back under the same peer id (a strand transport id
+ * is derived from the machine identity and the strand id, so a machine that deleted its strand
+ * storage and rejoins does) is not re-sent what this memo, or a proof it signed, says it holds,
+ * for the rest of this runtime; its reads are served by fetch. Nothing in Sereus identifies a
+ * store apart from its peer id. If a machine can rejoin a strand with an emptied store while other
+ * members' runtimes stay up, and must hold blocks physically before its first read, clear the
+ * peer's memo on a full disconnect.
+ *
+ * NOTE: size is at most (blocks in the store, capped by `maxBlocks`) × (peers ever identified this
+ * runtime) small entries. If a strand's peer count grows into the hundreds (open strands), drop a
+ * peer's memo on `peer:disconnect`.
+ */
+interface PeerMemo {
+  /** blockId → highest revision this peer accepted from this node. */
+  accepted: Map<string, number>;
+  /** blockId → revision this peer refused (its `missing` list). Not re-pushed until the local revision moves past it. */
+  rejected: Map<string, number>;
+}
+
+/** Whether the peer's replies already settled revision `rev` of `blockId`, either way. */
+function memoSettled(memo: PeerMemo, blockId: string, rev: number): boolean {
+  return (memo.accepted.get(blockId) ?? -Infinity) >= rev
+    || (memo.rejected.get(blockId) ?? -Infinity) >= rev;
+}
+
+/** Whether `peerId` approved the commit round that `proof` certifies. */
+function signedBy(proof: BlockCommitProof | undefined, peerId: string): boolean {
+  return proof?.commits[peerId]?.type === 'approve';
+}
+
+/** Record one push reply in the memo: each block as accepted or refused at the revision pushed. */
+function recordReply(memo: PeerMemo, revs: Readonly<Record<string, { rev: number }>>, ids: readonly string[], missing: ReadonlySet<string>): void {
+  for (const id of ids) {
+    const rev = revs[id]!.rev;
+    const verdicts = missing.has(id) ? memo.rejected : memo.accepted;
+    verdicts.set(id, Math.max(verdicts.get(id) ?? -Infinity, rev));
+  }
 }
 
 /** One in-flight push message being accumulated. */
@@ -313,8 +405,8 @@ function base64WireBytes(rawBytes: number): number {
  *
  * Best-effort throughout: nothing here throws into a libp2p event handler or into a
  * runtime bring-up; a failed chunk is logged and the run continues. A peer is marked
- * fully caught up ONLY after a run with no thrown chunk and an empty `missing` list, so
- * the next `peer:identify` from a peer whose catch-up failed retries it.
+ * caught up only after a run with no thrown chunk, so a peer whose catch-up failed is
+ * retried; each block is pushed to each peer once (see "What is pushed" in the module comment).
  */
 export class PeerJoinBackfill {
   private readonly config: Required<PeerJoinBackfillConfig>;
@@ -322,10 +414,17 @@ export class PeerJoinBackfill {
   private started = false;
   private stopped = false;
   /**
-   * Peers fully caught up this runtime (never rescheduled until the runtime is rebuilt; only
-   * {@link forceCatchUpPeer} pushes to one again).
+   * Peers caught up this runtime (never rescheduled until the runtime is rebuilt; only
+   * {@link forceCatchUpPeer} runs for one again).
    */
   private readonly done = new Set<string>();
+  /** Per-peer, per-block verdicts from push replies; see {@link PeerMemo}. */
+  private readonly memos = new Map<string, PeerMemo>();
+  /**
+   * Peers a run has been started for. A peer not in it is run at once on its first schedule;
+   * later schedules wait out `debounceMs`.
+   */
+  private readonly contacted = new Set<string>();
   /**
    * Peers with a catch-up currently running, each with that run (suppresses concurrent
    * duplicates; {@link forceCatchUpPeer} waits on the run).
@@ -442,7 +541,11 @@ export class PeerJoinBackfill {
     }
   }
 
-  /** Debounced entry point for connection churn: one run per peer per settle window. */
+  /**
+   * Entry point for connection churn: one run per peer per settle window, except that a peer
+   * never run for is run at once (on a zero-delay timer, so a burst of identify events in one
+   * turn still collapses, and no work happens inside the libp2p event dispatch).
+   */
   private schedulePeer(peerId: PeerId): void {
     const key = peerId.toString();
     if (this.stopped || this.done.has(key)) return;
@@ -460,10 +563,11 @@ export class PeerJoinBackfill {
     if (retryAt !== undefined && Date.now() < retryAt) return;
     const existing = this.timers.get(key);
     if (existing) clearTimeout(existing);
+    const delayMs = this.contacted.has(key) ? this.config.debounceMs : 0;
     this.timers.set(key, setTimeout(() => {
       this.timers.delete(key);
       void this.catchUpPeer(peerId);
-    }, this.config.debounceMs));
+    }, delayMs));
   }
 
   /**
@@ -480,14 +584,16 @@ export class PeerJoinBackfill {
   }
 
   /**
-   * Run one peer's catch-up now and wait for it, whatever this instance remembers about the
-   * peer: wait out a run already in flight for it, then push the whole store again even when
-   * the peer is memoized as caught up. Never rejects; an all-zero result only when stopped.
+   * Run one peer's catch-up now and wait for it, even when the peer is memoized as caught up:
+   * wait out a run already in flight for it, then run again. The run still skips every block the
+   * peer is known to hold (it accepted or refused that revision, or signed it), so for a peer that
+   * holds the whole store it pushes nothing and returns `alreadyHeld` equal to the store size.
+   * Never rejects; an all-zero result only when stopped.
    *
    * For a caller that must know the peer holds this store before it proceeds, where
    * {@link catchUpPeer}'s empty answer would hide a run that was denied (a `peer:identify`
-   * run can pass the gate a moment before the caller authorized the peer) or a memo older
-   * than the commits since.
+   * run can pass the gate a moment before the caller authorized the peer) or commits made
+   * since the peer was caught up.
    */
   async forceCatchUpPeer(peerId: PeerId): Promise<PeerJoinBackfillResult> {
     const key = peerId.toString();
@@ -506,6 +612,7 @@ export class PeerJoinBackfill {
    */
   private async trackRun(peerId: PeerId): Promise<PeerJoinBackfillResult> {
     const key = peerId.toString();
+    this.contacted.add(key);
     const run = this.settleRun(peerId);
     this.inFlight.set(key, run);
     try {
@@ -525,28 +632,28 @@ export class PeerJoinBackfill {
     const key = peerId.toString();
     try {
       const { result, clean, pushFailed } = await this.runCatchUp(peerId);
-      // NOTE: a run that hit `maxBlocks` is still "clean" and still memoizes the peer, so
-      // the tail past the ceiling never reaches it. Deliberate: enumeration is not
-      // resumable, so not memoizing would re-push the same prefix on every reconnect
-      // without ever advancing. Loud in the log below (capped > 0). If a store can
-      // realistically exceed maxBlocks, the fix is a resumable cursor, not either policy.
+      // NOTE: a run that hit `maxBlocks` is still "clean" and still marks the peer caught up,
+      // so no `peer:identify` run reaches the tail past the ceiling. Loud in the log below
+      // (capped > 0). Blocks the peer is known to hold are not offered and do not count toward
+      // the ceiling, so a forced run resumes past the prefix already sent. If a store can
+      // realistically exceed maxBlocks, leave a capped run out of `done` so each identify run
+      // sends the next `maxBlocks`.
       if (clean && !this.stopped) {
         this.done.add(key);
         this.failures.delete(key);
         this.retryAfter.delete(key);
         this.warned.delete(key);
       } else if (pushFailed && !this.stopped && this.started && this.isConnected(peerId)) {
-        // `pushFailed`, not `!clean`: a denial, an inert store and a receiver's per-block
-        // rejection are all verdicts a retry cannot change, and re-arming on them would
-        // re-push the whole store to that peer forever. See the module comment.
+        // `pushFailed`, not `!clean`: a denial and an inert store are verdicts a retry cannot
+        // change, and re-arming on them would retry forever. See the module comment.
         //
         // Gated on `started` too: the re-arm exists to REPLACE a peer:identify-driven retry,
         // so a caller driving `catchUpPeer` by hand against a backfill that was never started
         // owns its own retry policy and must not be left holding a background timer.
         this.scheduleRetryWithBackoff(peerId);
       }
-      log('[%s] catch-up peer=%s offered=%d accepted=%d rejected=%d uncommitted=%d unmaterialized=%d capped=%d oversized=%d denied=%s done=%s',
-        this.deps.label, key, result.offered, result.accepted, result.rejected.length,
+      log('[%s] catch-up peer=%s offered=%d alreadyHeld=%d accepted=%d rejected=%d uncommitted=%d unmaterialized=%d capped=%d oversized=%d denied=%s done=%s',
+        this.deps.label, key, result.offered, result.alreadyHeld, result.accepted, result.rejected.length,
         result.uncommitted, result.unmaterialized, result.capped, result.oversized.length, result.denied, clean);
       return result;
     } catch (error) {
@@ -606,14 +713,26 @@ export class PeerJoinBackfill {
     );
   }
 
+  /** This peer's memo, created empty on first use. */
+  private memoFor(key: string): PeerMemo {
+    let memo = this.memos.get(key);
+    if (!memo) {
+      memo = { accepted: new Map(), rejected: new Map() };
+      this.memos.set(key, memo);
+    }
+    return memo;
+  }
+
   /**
-   * The actual copy. `clean` = every chunk pushed and the remote persisted every block.
+   * The actual copy. `clean` = the gate admitted the peer, the store is listable and no push
+   * threw (a block the receiver refused is remembered per block instead, see {@link PeerMemo}).
    * `pushFailed` = at least one push THREW, which is the only non-clean outcome a retry can
-   * change; the others are verdicts (denied, inert store, blocks the receiver refused).
+   * change; the others are verdicts (denied, inert store).
    */
   private async runCatchUp(peerId: PeerId): Promise<{ result: PeerJoinBackfillResult; clean: boolean; pushFailed: boolean }> {
     const result = emptyResult();
     const { storage } = this.deps;
+    const key = peerId.toString();
 
     // The membership gate, judged at push time (never at schedule time — authorization can
     // change during the debounce window in either direction). Fails CLOSED on a throw: a
@@ -641,7 +760,7 @@ export class PeerJoinBackfill {
     }
 
     const client = this.createPushClient(peerId);
-    const encoder = new TextEncoder();
+    const memo = this.memoFor(key);
     let chunk: Chunk = { ids: [], buffers: [], meta: {}, proofs: {}, bytes: 0 };
     let chunkFailed = false;
     let anyChunkDelivered = false;
@@ -667,6 +786,7 @@ export class PeerJoinBackfill {
         });
         anyChunkDelivered = true;
         const missing = new Set(response.missing);
+        recordReply(memo, meta, ids, missing);
         for (const id of ids) {
           if (missing.has(id)) {
             result.rejected.push(id);
@@ -675,11 +795,12 @@ export class PeerJoinBackfill {
           }
         }
         if (response.missing.length > 0) {
-          log('[%s] peer=%s rejected %d block(s): %o', this.deps.label, peerId.toString(), response.missing.length, response.missing);
+          log('[%s] peer=%s rejected %d block(s), not offered to it again at these revisions: %o',
+            this.deps.label, key, response.missing.length, response.missing);
         }
       } catch (error) {
         chunkFailed = true;
-        log('[%s] push to peer=%s failed for %d block(s): %s', this.deps.label, peerId.toString(), ids.length, (error as Error).message);
+        log('[%s] push to peer=%s failed for %d block(s): %s', this.deps.label, key, ids.length, (error as Error).message);
       }
     };
 
@@ -692,57 +813,23 @@ export class PeerJoinBackfill {
         continue;
       }
 
-      const metadata = await storage.getMetadata(blockId);
-      const latest = metadata?.latest;
-      if (!latest) {
-        result.uncommitted += 1;
-        continue;
-      }
-      // NOTE: a block whose latest revision is a DELETE materializes to nothing (a
-      // tombstone), so it is skipped here — a peer that joins after such a delete never
-      // receives the tombstone from this path and relies on read repair for it. Fine
-      // while nothing deletes whole blocks pre-join; if the whole-store coverage gate in
-      // strand-membership-closed-strand-e2e ever reports a tombstone residue, teach this
-      // to push the promoted delete transform instead of skipping.
-      const block = await storage.getMaterializedBlock(blockId, latest.actionId);
-      if (!block) {
-        result.unmaterialized += 1;
-        log('[%s] block=%s has latest rev %d but no materialized content; skipped', this.deps.label, blockId, latest.rev);
-        continue;
-      }
-
-      const buffer = encoder.encode(JSON.stringify(block));
-      // NOTE: MAX_BLOCK_MESSAGE_BYTES caps the whole framed request, not one block, and
-      // this test ignores the request envelope (ids array, blockMeta, JSON punctuation).
-      // A lone block within a few KiB of the cap therefore still ships and is rejected by
-      // the receiver's length-prefix decoder — a permanent chunk failure for that peer. No
-      // block comes close today; if one ever can, subtract a measured envelope allowance
-      // here rather than raising the cap.
-      if (base64WireBytes(buffer.length) >= MAX_BLOCK_MESSAGE_BYTES) {
-        result.oversized.push(blockId);
-        log('[%s] block=%s is %d bytes (%d on the wire) — exceeds the %d-byte protocol cap alone; skipped',
-          this.deps.label, blockId, buffer.length, base64WireBytes(buffer.length), MAX_BLOCK_MESSAGE_BYTES);
-        continue;
-      }
+      const offer = await this.readOffer(blockId, key, memo, result);
+      if (!offer) continue;
 
       // Flush before adding when this block would overflow either budget. A single block
       // larger than maxChunkBytes still ships — alone, in its own chunk.
       if (chunk.ids.length > 0
-        && (chunk.ids.length + 1 > this.config.maxChunkBlocks || chunk.bytes + buffer.length > this.config.maxChunkBytes)) {
+        && (chunk.ids.length + 1 > this.config.maxChunkBlocks || chunk.bytes + offer.buffer.length > this.config.maxChunkBytes)) {
         await flush();
         if (this.stopped || peerUnreachable()) break;
       }
       chunk.ids.push(blockId);
-      chunk.buffers.push(buffer);
-      chunk.meta[blockId] = { rev: latest.rev, actionId: latest.actionId };
-      // Read the proof for EXACTLY the revision being pushed, from the same `latest` the meta
-      // above was written from. Absent is normal (nothing retained a proof for that revision);
-      // the block still ships with its meta and the receiver decides.
-      const proof = await storage.getBlockProof(blockId, latest.rev);
-      if (proof) {
-        chunk.proofs[blockId] = proof;
+      chunk.buffers.push(offer.buffer);
+      chunk.meta[blockId] = { rev: offer.latest.rev, actionId: offer.latest.actionId };
+      if (offer.proof) {
+        chunk.proofs[blockId] = offer.proof;
       }
-      chunk.bytes += buffer.length;
+      chunk.bytes += offer.buffer.length;
       result.offered += 1;
     }
 
@@ -752,10 +839,65 @@ export class PeerJoinBackfill {
 
     if (result.capped > 0) {
       log('[%s] peer=%s catch-up CAPPED at %d blocks; %d block id(s) not attempted',
-        this.deps.label, peerId.toString(), this.config.maxBlocks, result.capped);
+        this.deps.label, key, this.config.maxBlocks, result.capped);
     }
 
-    const clean = !chunkFailed && result.rejected.length === 0;
-    return { result, clean, pushFailed: chunkFailed };
+    return { result, clean: !chunkFailed, pushFailed: chunkFailed };
+  }
+
+  /**
+   * Read one block for the push to `key`, or count why it is skipped in `result` and return
+   * nothing: not committed, already held by the peer (memo or its own commit signature), not
+   * materialized, or too large for one message. The proof is read for EXACTLY the revision the
+   * meta will name, from the same `latest`; absent is normal (nothing retained a proof for that
+   * revision), and the block still ships with its meta for the receiver to decide.
+   */
+  private async readOffer(
+    blockId: string,
+    key: string,
+    memo: PeerMemo,
+    result: PeerJoinBackfillResult
+  ): Promise<{ latest: ActionRev; buffer: Uint8Array; proof: BlockCommitProof | undefined } | undefined> {
+    const { storage } = this.deps;
+    const latest = (await storage.getMetadata(blockId))?.latest;
+    if (!latest) {
+      result.uncommitted += 1;
+      return undefined;
+    }
+    if (memoSettled(memo, blockId, latest.rev)) {
+      result.alreadyHeld += 1;
+      return undefined;
+    }
+    const proof = await storage.getBlockProof(blockId, latest.rev);
+    if (signedBy(proof, key)) {
+      result.alreadyHeld += 1;
+      return undefined;
+    }
+    // NOTE: a block whose latest revision is a DELETE materializes to nothing (a
+    // tombstone), so it is skipped here — a peer that joins after such a delete never
+    // receives the tombstone from this path and relies on read repair for it. Fine
+    // while nothing deletes whole blocks pre-join; if the whole-store coverage gate in
+    // strand-membership-closed-strand-e2e ever reports a tombstone residue, teach this
+    // to push the promoted delete transform instead of skipping.
+    const block = await storage.getMaterializedBlock(blockId, latest.actionId);
+    if (!block) {
+      result.unmaterialized += 1;
+      log('[%s] block=%s has latest rev %d but no materialized content; skipped', this.deps.label, blockId, latest.rev);
+      return undefined;
+    }
+    const buffer = blockEncoder.encode(JSON.stringify(block));
+    // NOTE: MAX_BLOCK_MESSAGE_BYTES caps the whole framed request, not one block, and
+    // this test ignores the request envelope (ids array, blockMeta, JSON punctuation).
+    // A lone block within a few KiB of the cap therefore still ships and is rejected by
+    // the receiver's length-prefix decoder — a permanent chunk failure for that peer. No
+    // block comes close today; if one ever can, subtract a measured envelope allowance
+    // here rather than raising the cap.
+    if (base64WireBytes(buffer.length) >= MAX_BLOCK_MESSAGE_BYTES) {
+      result.oversized.push(blockId);
+      log('[%s] block=%s is %d bytes (%d on the wire) — exceeds the %d-byte protocol cap alone; skipped',
+        this.deps.label, blockId, buffer.length, base64WireBytes(buffer.length), MAX_BLOCK_MESSAGE_BYTES);
+      return undefined;
+    }
+    return { latest, buffer, proof };
   }
 }

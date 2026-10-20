@@ -579,8 +579,8 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 			const { strand: newcomerStrand, discoveredRow, newcomerStrandNode } = joined;
 
 			// ── Phase 3: the physical claim — RAW STORES ONLY (rule 3) ──────────
-			// The peer-join backfill PUSHES the founder's blocks one debounce (~1s) after the
-			// strand connection opens; a pull-on-read path could satisfy a select but not this.
+			// The peer-join backfill PUSHES the founder's blocks as soon as the newcomer's
+			// strand connection is identified; a pull-on-read path could satisfy a select but not this.
 			const newcomerStore = newcomerCapture.forStrand(strandId);
 			expect(newcomerStore).not.toBe(founderStore);
 			await awaitBlockCoverage(founderStore, newcomerStore, {

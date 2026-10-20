@@ -19,8 +19,8 @@ import type { CadreNodeConfig } from '../src/types.js';
  * provisionally otherwise), so a catch-up wired WITHOUT that gate would push the party's
  * entire membership, peer addresses and strand list to any of them. That regression is invisible to the
  * integration scenario, whose joiner is authorized before the dial — it would still pass.
- * Hence an explicit assertion here that the gate is wired and that it is
- * `isAuthorizedMember`, not some looser predicate.
+ * Hence an explicit assertion here that the gate is wired and that it reads the
+ * authorized-member snapshot, not the stream gate's looser predicate.
  *
  * Everything below runs on a bare `new CadreNode` with a fake control libp2p node
  * attached: no node is started, no database is opened. `PeerJoinBackfill` is mocked so the
@@ -128,19 +128,20 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     expect(lastConstruction().deps.storage).toBeDefined();
   });
 
-  it('wires the membership gate, and it is isAuthorizedMember', async () => {
+  it('wires the membership gate to the authorized-member snapshot, which admits no one while empty', async () => {
     const node = new CadreNode(createConfig());
-    const asked: string[] = [];
-    (node as unknown as { isAuthorizedMember(peerId: string): Promise<boolean> }).isAuthorizedMember =
-      async (peerId: string) => { asked.push(peerId); return peerId === 'member'; };
+    const priv = node as unknown as { authorizedControlPeers: Set<string> };
 
     armControlBackfill(node);
 
     const gate = lastConstruction().deps.authorizePeer;
     expect(gate).toBeTypeOf('function');
+    // Empty is the snapshot of an un-enrolled node, or of one whose rows have not arrived: the
+    // stream gate's predicate admits everyone then, and the control store must still go to no one.
+    expect(await gate!('stranger')).toBe(false);
+    priv.authorizedControlPeers = new Set(['member']);
     expect(await gate!('member')).toBe(true);
     expect(await gate!('stranger')).toBe(false);
-    expect(asked).toEqual(['member', 'stranger']);
   });
 
   it('defaults to a shorter settle window than the strand catch-up, and the embedder can override it', () => {

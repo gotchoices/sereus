@@ -46,10 +46,12 @@ function committed(id: string, rev = 1, fill = ''): FakeBlock {
 
 /**
  * A stand-in retained proof. The backfill only relays the artifact it read — it never verifies
- * one — so these cases pin identity through the wire, not proof validity.
+ * one — so these cases pin identity through the wire, not proof validity. Its commit round names
+ * `signers` as approving, which is all the backfill reads from a proof.
  */
-function fakeProof(marker: string): BlockCommitProof {
-  return { marker } as unknown as BlockCommitProof;
+function fakeProof(marker: string, signers: string[] = []): BlockCommitProof {
+  const commits = Object.fromEntries(signers.map((id) => [id, { type: 'approve', signature: `sig-${id}` }]));
+  return { marker, commits } as unknown as BlockCommitProof;
 }
 
 /**
@@ -285,7 +287,7 @@ describe('PeerJoinBackfill', () => {
     await backfill.catchUpPeer(peer('p1'));
 
     const certification = pushes[0]?.meta;
-    expect(certification?.blockProofs?.withProof).toEqual({ marker: 'proof-for-rev-3' });
+    expect(certification?.blockProofs?.withProof).toBe(blocks.withProof!.proof);
     // Absent, not null or an empty object: a proof is never invented for a block that has none,
     // and its meta still ships so a receiver migrating with the flag off can still land it.
     expect(certification?.blockProofs).not.toHaveProperty('bare');
@@ -398,22 +400,58 @@ describe('PeerJoinBackfill', () => {
     expect(pushes.flatMap((p) => p.ids).length).toBe(3);
   });
 
-  it('lands remote-reported missing ids in rejected and does NOT mark the peer done — a second run retries', async () => {
-    const { backfill, pushes } = makeBackfill(
-      { b1: committed('b1'), b2: committed('b2') },
-      undefined,
-      { respond: (push) => ({ missing: push.ids.filter((id) => id === 'b2') }) }
-    );
+  describe('pushes each block to each peer once', () => {
+    it('pushes nothing on a forced run after a clean one: every block is already held', async () => {
+      const { backfill, pushes } = makeBackfill({ b1: committed('b1'), b2: committed('b2', 3) });
 
-    const first = await backfill.catchUpPeer(peer('p1'));
-    expect(first.rejected).toEqual(['b2']);
-    expect(first.accepted).toBe(1);
+      const first = await backfill.catchUpPeer(peer('p1'));
+      const forced = await backfill.forceCatchUpPeer(peer('p1'));
 
-    const pushCountAfterFirst = pushes.length;
-    const second = await backfill.catchUpPeer(peer('p1'));
-    // The retry re-offers everything (the receiver's saveReplicatedBlock is idempotent).
-    expect(second.offered).toBe(2);
-    expect(pushes.length).toBeGreaterThan(pushCountAfterFirst);
+      expect(forced.offered).toBe(0);
+      expect(forced.alreadyHeld).toBe(first.offered);
+      expect(pushes.length).toBe(1);
+    });
+
+    it('remembers a refused block per revision: not offered again until its local revision moves', async () => {
+      // The receiver refuses a revision whose commit proof this node never retained (the default
+      // `requirePushCertificate: true`), and that verdict does not change on a retry. Re-pushing it
+      // on every identify is what made a join cost the whole store twice (Optimystic#39).
+      const blocks: Record<string, FakeBlock> = { b1: committed('b1'), b2: committed('b2', 1) };
+      const { backfill, pushes } = makeBackfill(blocks, undefined, {
+        respond: (push) => ({ missing: push.ids.filter((id) => id === 'b2' && push.meta?.blockMeta?.[id]?.rev === 1) })
+      });
+
+      const first = await backfill.catchUpPeer(peer('p1'));
+      expect(first.rejected).toEqual(['b2']);
+      // A refusal is a verdict, not a failure: the peer is caught up, so identify churn is dropped.
+      expect((await backfill.catchUpPeer(peer('p1'))).offered).toBe(0);
+      const forced = await backfill.forceCatchUpPeer(peer('p1'));
+      expect(forced.alreadyHeld).toBe(2);
+      expect(pushes.length).toBe(1);
+
+      blocks.b2 = committed('b2', 2);
+      const moved = await backfill.forceCatchUpPeer(peer('p1'));
+      expect(moved.accepted).toBe(1);
+      expect(pushes.map((push) => push.ids)).toEqual([['b1', 'b2'], ['b2']]);
+    });
+
+    it('does not push a revision to a peer whose approval its commit proof carries, and does push it to another', async () => {
+      // The joiner holding the founder's solo commits must not push them back to the founder; the
+      // proof's commit round is the only evidence of who already applied a revision.
+      const signedProof = fakeProof('rev-2', ['founder']);
+      const { backfill, pushes } = makeBackfill({
+        signed: { ...committed('signed', 2), proof: signedProof },
+        plain: committed('plain')
+      });
+
+      const toSigner = await backfill.catchUpPeer(peer('founder'));
+      expect(toSigner.alreadyHeld).toBe(1);
+      expect(pushes[0]!.ids).toEqual(['plain']);
+
+      await backfill.catchUpPeer(peer('other'));
+      expect(pushes[1]!.ids.sort()).toEqual(['plain', 'signed']);
+      expect(pushes[1]!.meta?.blockProofs?.signed).toBe(signedProof);
+    });
   });
 
   it('resolves (never rejects) when a push throws, and does not mark the peer done', async () => {
@@ -446,7 +484,7 @@ describe('PeerJoinBackfill', () => {
     expect(pushes.length).toBe(2);
   });
 
-  it('keeps pushing after a mid-run chunk failure once the peer has answered at least one push', async () => {
+  it('keeps pushing after a mid-run chunk failure once the peer has answered one push, and retries only the blocks not accepted', async () => {
     // A transient blip on a peer that demonstrably speaks the protocol must not abandon
     // the rest of the store — only a peer that has answered NOTHING is treated as dead.
     let calls = 0;
@@ -466,9 +504,10 @@ describe('PeerJoinBackfill', () => {
 
     expect(pushes.length).toBe(3);
     expect(result.accepted).toBe(2);
-    // Not clean, so the peer is not memoized — the next peer:identify re-offers everything.
+    // Not caught up, so the next run retries — resuming with the one block that did not land.
     const retry = await backfill.catchUpPeer(peer('p1'));
-    expect(retry.offered).toBe(3);
+    expect(retry.alreadyHeld).toBe(2);
+    expect(pushes[3]!.ids).toEqual(['b2']);
   });
 
   it('abandons the run after the first failed chunk instead of dialing an unreachable peer per chunk', async () => {
@@ -531,31 +570,6 @@ describe('PeerJoinBackfill', () => {
     backfill.stop();
   });
 
-  it('does not re-arm when the receiver REFUSED the blocks — only a failed push retries', async () => {
-    // A run is also non-clean when every chunk was delivered and the receiver reported the
-    // blocks in `missing` — which it does for a revision whose retained commit proof this node
-    // does not hold, the ordinary case. That verdict does not change on a retry, so re-arming
-    // on it would re-push the whole store to that peer every backoff for the node's lifetime.
-    const { backfill, pushes, fake } = makeBackfill(
-      { b1: committed('b1') },
-      { debounceMs: 1, retryBackoffMs: 30, maxRetryBackoffMs: 30 },
-      { respond: (push) => ({ missing: [...push.ids] }) }
-    );
-    backfill.start();
-
-    fake.dispatchConnectionOpen(peer('p1'));
-    await until(() => pushes.length === 1);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(pushes.length).toBe(1);
-
-    // The peer is not memoized either, so a reconnect still retries — which is what covers a
-    // refusal that turns out to have been transient after all.
-    fake.dispatchConnectionOpen(peer('p1'));
-    await until(() => pushes.length === 2);
-
-    backfill.stop();
-  });
-
   it('does not re-arm a peer that is no longer connected', async () => {
     // The trigger is peer:identify, so a peer that went away already has its retry. Re-arming
     // one anyway would leave the node dialing a peer it cannot see, once per backoff, for the
@@ -578,10 +592,10 @@ describe('PeerJoinBackfill', () => {
     backfill.stop();
   });
 
-  it('debounces reconnect flapping — many peer:identify events, one run', async () => {
+  it('runs a never-contacted peer without waiting out the debounce, and reconnect flapping costs one run', async () => {
     const { backfill, pushes, fake } = makeBackfill(
       { b1: committed('b1'), b2: committed('b2') },
-      { debounceMs: 25 }
+      { debounceMs: 10_000 }
     );
     backfill.start();
 
@@ -589,7 +603,7 @@ describe('PeerJoinBackfill', () => {
       fake.dispatchConnectionOpen(peer('p1'));
       await new Promise((resolve) => setTimeout(resolve, 2));
     }
-    await until(() => pushes.length > 0);
+    await until(() => pushes.length > 0, 1000);
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     // One debounced run — both blocks fit one chunk, so exactly one push.

@@ -1117,6 +1117,14 @@ export class StrandInstanceManager {
       subscribeStorageChanges: storageRepo && ((onChange) => storageRepo.onAnyCollectionChange(onChange))
     }, config.firstSync);
     this.firstSyncGates.set(strandId, gate);
+    // Judged before initialize, not at the first probe: initialize itself fetches and keeps the
+    // schema catalog's blocks (three on a first join of the message-cost strand), so the store is
+    // never empty by then. A first join listens from here, so a member's push landing while the
+    // database initializes is heard (initialize's own catalog fetch raises no change event).
+    const firstJoin = config.founder !== true && await this.strandStoreEmpty(strandId);
+    if (firstJoin) {
+      gate.listen();
+    }
     try {
       await strandDb.initialize();
     } catch (error) {
@@ -1147,8 +1155,18 @@ export class StrandInstanceManager {
     // phase reads `instance.database` lazily, so the reconciler and enforcer wait with it —
     // and `publishDatabase` kicks the reconciler when the wait ends, so a joiner's membership
     // rows land with the strand rather than one retry later.
+    //
+    // A first join (the store held nothing when this build began) on which nothing has landed yet
+    // skips this probe: a member's peer-join catch-up is pushing it the same blocks, and the probe
+    // would fetch them one read at a time meanwhile. The gate probes when that push lands, or at
+    // its backstop. A first join the push already reached, and a store that held anything (a
+    // restart, a hibernation wake), probe at once, so re-attaching offline is not delayed.
     t0 = performance.now();
-    const synced = config.founder === true || await gate.probeOnce();
+    const awaitPush = firstJoin && !gate.heardDataSinceProbe;
+    if (awaitPush) {
+      log('Strand %s: first join over an empty store; waiting for a member\'s push before the first sync probe', strandId);
+    }
+    const synced = config.founder === true || (!awaitPush && await gate.probeOnce());
     timing('[buildStrandRuntime:%s] first-sync probe: %dms', strandId, Math.round(performance.now() - t0));
     if (this.firstSyncGates.get(strandId) !== gate) {
       // A stop released the runtime during the probe and closed this database through its gate.
@@ -1160,6 +1178,24 @@ export class StrandInstanceManager {
       gate.start();
     }
     return 'built';
+  }
+
+  /**
+   * Whether this strand's raw store holds no block. False for a store that cannot list its
+   * blocks, or whose listing fails, so such a launch probes at once.
+   */
+  private async strandStoreEmpty(strandId: string): Promise<boolean> {
+    const storage = this.strandStorages.get(strandId);
+    if (!storage?.listBlockIds) return false;
+    try {
+      for await (const _blockId of storage.listBlockIds()) {
+        return false;
+      }
+      return true;
+    } catch (error) {
+      log('Strand %s: listing the raw store failed; probing first sync at once: %o', strandId, error);
+      return false;
+    }
   }
 
   /** Close a database attempt that failed to initialize, and drop its gate if it is still the registered one. */

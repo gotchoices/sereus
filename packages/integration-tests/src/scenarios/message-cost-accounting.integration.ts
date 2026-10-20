@@ -91,6 +91,31 @@
  * the owner wrote alone before the member joined (`DEBUG=optimystic:db-p2p:*` shows them as
  * `under-replication-drain push:ok`); that cadence is Optimystic's. The strand idle minute
  * opens no Optimystic or Sereus stream at all; its 30 streams are ping and FRET upkeep.
+ *
+ * MEASURED_ON 2026-10-20, one run per column, before and after `join-backfill-pushes-once-and-is-waited-for`
+ * (sereus `b1d85c22`, `@optimystic/*` 1.16.0 linked at `72ac338c`, the harness's in-memory storage).
+ * Streams per direction, summed over the joiner's window (strand: B addStrand through settle;
+ * invite: settle plus idle, the redemption itself being unchanged):
+ *
+ *   strand                before  after
+ *   B addStrand ms           487    365   the push landed while B's database initialized; first probe passed
+ *   B->A sync                 42     35   13 -> 2 inside B addStrand
+ *   B->A block-transfer        2      0   B no longer pushes A's solo commits back to A
+ *   A->B block-transfer       44     44   43 requests: one backfill push, 42 drain re-sends of its blocks
+ *
+ *   invite                before  after
+ *   A->B block-transfer       92    182   +90 single-block `reason=rebalance` pushes (below)
+ *   B->A block-transfer        6      5
+ *
+ * The invite case's growth is Optimystic's rebalance growth arm on the storage-profile owner: it
+ * pushes a joiner each block whose cohort the joiner entered unless the owner's rebalance monitor
+ * already counts the joiner as holding it, which the monitor learns only from pushes the owner
+ * receives. The joiner used to push the owner's own blocks back (101 blocks), which taught it; now
+ * the joiner skips blocks the owner signed. A run with that skip disabled showed no rebalance push
+ * (settle 73 app streams, idle 28). `cohort-join-catch-up-runs-once-per-node` turns the growth arm
+ * off where the backfill runs. The drain re-sends in both cases come about 7 s after the backfill
+ * delivered the same blocks (`under-replication-drain pass:done ... pushed=42`); the drain has no way
+ * to hear of the backfill's pushes (`blocked/optimystic-embedder-cannot-report-block-holders`).
  */
 
 import { describe, it } from 'vitest'
