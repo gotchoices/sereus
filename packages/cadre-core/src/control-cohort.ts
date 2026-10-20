@@ -48,8 +48,8 @@ import type { CohortPeerRow } from './strand-cohort.js';
 export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 120_000;
 
 /**
- * First redial delay after a pass leaves a selected sibling, or a cold-start bootstrap peer,
- * unconnected (ms). Doubles per consecutive such pass and is capped at the backstop, so a
+ * First redial delay after a pass's dial of a selected sibling, or a cold-start bootstrap peer,
+ * fails (ms). Doubles per consecutive such pass and is capped at the backstop, so a
  * sibling that is offline costs one dial per backstop once the ladder saturates, and a
  * stranded cold-start node keeps trying forever (15 s, 30 s, 60 s, then every backstop).
  */
@@ -148,8 +148,8 @@ export function selectControlCohortDials(
 /** What {@link nextReconcileWakeMs} decides from, all times epoch milliseconds. */
 export interface ReconcileWakeInput {
   /**
-   * Consecutive passes, this one included, that ended with a selected sibling or a cold-start
-   * bootstrap peer unconnected; 0 when this pass left none.
+   * Consecutive passes, this one included, whose dial of a selected sibling or a cold-start
+   * bootstrap peer failed; 0 when none of this pass's dials did.
    */
   redialStreak: number;
   /** When the pass that just ended began. */

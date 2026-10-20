@@ -145,11 +145,11 @@ table Data (
  * per-stream control-DB gate snapshot before this call resolves. That this
  * scenario passes with no explicit refresh is the end-to-end proof of the
  * automatic path. Were the owner left judging against a snapshot predating this
- * row it would DENY the very receiver it just vouched for until the next timed
- * cohort reconcile ~15s later — not cosmetic: it kills the receiver's own
- * control-DB schema load when the receiver starts inside the window (scenario
- * 2), and costs scenario 4 a burst of denied `db-p2p/sync` pulls that stretch a
- * ~3s run to ~17s.
+ * row it would DENY the very receiver it just vouched for until a later refresh
+ * (the gate watch's, 50 ms after the commit; before that watch existed, a reconcile
+ * pass up to 15 s later, which killed the receiver's own control-DB schema load when
+ * the receiver started inside the window (scenario 2) and cost scenario 4 a burst
+ * of denied `db-p2p/sync` pulls that stretched a ~3s run to ~17s).
  */
 async function seedReceiverRecord(
 	partyId: string,

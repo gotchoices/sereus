@@ -149,8 +149,9 @@ const { seed, encodedSeed } = await node.addDrone({ dronePeerId, droneMultiaddrs
 
 // The new machine starts with it: `cadre start --seed <encodedSeed> --pin-owner-key <owner key>`
 
-// Dial the drone now from the addresses addDrone kept (a drone cannot dial a
-// phone); otherwise the next reconcile pass, about every 15 s, does it
+// Await the dial of the drone from the addresses addDrone kept (a drone cannot
+// dial a phone); the row insert starts a pass that dials it anyway, about 50 ms
+// later, and retries a failed dial after 15 s, 30 s, 60 s, then every 2 minutes
 await node.reconcileControlCohort();
 ```
 

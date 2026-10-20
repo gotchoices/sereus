@@ -17,8 +17,8 @@
  * scenario checks is the `OwnerKey` row M wrote (its label, its voucher) and the absence of
  * any machine row for H. M pins only O, so M trusting the new key means M derived it from the
  * grant chain (`chain` provenance), and O, which did not write the row, derives it the same
- * way once the row replicates and its next membership refresh runs (its timed reconcile; no
- * refresh is driven here). H is a stranger to M, so M's connection gate admits it only
+ * way once the row replicates and its next membership refresh runs (the gate watch's, within
+ * 50 ms of the row reaching O's storage, or a reconcile pass's; no refresh is driven here). H is a stranger to M, so M's connection gate admits it only
  * provisionally (a live grant does not open the stranger window an invitation does); the
  * exchange completes well inside the provisional deadline, which this scenario therefore does
  * not exercise. M pushes its control store to H and counts H in its write cohort before the

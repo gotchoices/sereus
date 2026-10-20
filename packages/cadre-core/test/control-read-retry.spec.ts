@@ -641,7 +641,7 @@ describe('ControlDatabase — read retry', () => {
 	 *
 	 * The write itself must still SUCCEED: the notify is best-effort and swallows its
 	 * failures, keeping the previous snapshot. Asserted on the sleep counter rather than
-	 * the eval count because the node's timed reconcile can also drive this read.
+	 * the eval count because the node's own reconcile passes can also drive this read.
 	 */
 	it('does not retry the membership-gate refresh read the write lock is holding', async () => {
 		const slots = pacingSlots(db);

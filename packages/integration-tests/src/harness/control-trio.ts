@@ -364,10 +364,10 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 		},
 		{ timeoutMs: 45_000, intervalMs: 250, description: "B's start-time self-registration lands" }
 	);
-	// The eager pass is fired unawaited immediately after that registration, so the
-	// checkpoint above can observe the write a beat before the pass is even issued:
-	// wait it out, then join the pass. `reconcileControlCohort` hands back the
-	// in-flight pass, so this resolves only once no pass is running on B.
+	// The eager pass is scheduled (a 0 ms timer on the reconcile schedule) right after
+	// that registration, so the checkpoint above can observe the write a beat before
+	// the pass is even issued: wait it out, then join the pass. `reconcileControlCohort`
+	// hands back the in-flight pass, so this resolves only once no pass is running on B.
 	await sleep(1_000);
 	await atStage("B's start-time reconcile pass drains", () => B.reconcileControlCohort());
 

@@ -564,8 +564,9 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     const inner = db.queryCadrePeers.bind(db);
     db.queryCadrePeers = async () => { queries++; return inner(); };
 
-    // The pass runs on every 15 s tick to re-merge FRET's address records — the
-    // unbounded membership read must not ride along when nobody could answer it.
+    // The pass re-merges FRET's address records on every reconcile pass, change-driven
+    // or backstop — the unbounded membership read must not ride along when nobody
+    // could answer it.
     await refresh(harness.node, T0);
     await refresh(harness.node, T0 + 1);
 

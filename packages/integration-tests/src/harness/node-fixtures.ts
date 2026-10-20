@@ -119,7 +119,7 @@ export interface ControlNodeOpts {
    * `controlNodeConfig` throws rather than silently picking one.
    */
   storageProvider?: RawStorageProvider;
-  /** Override the proactive control-cohort reconcile cadence (ms). */
+  /** Override the control-cohort reconcile backstop (ms), which also caps the redial ladder. */
   reconcileMs?: number;
   /** Override the strand watcher backstop (ms; `CadreNode` default 300000). */
   strandWatchMs?: number;

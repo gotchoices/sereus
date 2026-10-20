@@ -267,11 +267,16 @@ const MEMBERSHIP_GATE_TABLES = [
  */
 interface ControlCohortPassOutcome extends ControlCohortReconcileResult {
   /**
-   * The pass tried to connect a selected sibling, or a cold-start bootstrap peer, and could
-   * not: the dial failed, or no address of it was dialable.
+   * The pass dialed a selected sibling, or a cold-start bootstrap peer, and the dial failed.
+   * A sibling the pass could not dial at all — no dialable address, or every address relays
+   * through this node — does not count: a retry would dial nothing, and every way it gains
+   * an address (its record replicating in, a connection it opens) starts a pass of its own.
    */
   unconnected: boolean;
 }
+
+/** How {@link CadreNode.dialControlSibling} ended: connected, a failed dial, or nothing to dial. */
+type SiblingDialOutcome = 'connected' | 'failed' | 'undialable';
 
 /**
  * Default lifetime of an owner grant ({@link CadreNode.createOwnerGrant}): whoever holds the
@@ -1093,9 +1098,10 @@ export class CadreNode implements SAppIdLookup {
    */
   private membershipGateWatch: TableChangeWatch | null = null;
   /**
-   * Consecutive passes that left a selected sibling or a cold-start bootstrap peer
-   * unconnected, for the redial ladder ({@link armReconcileWake}); 0 after a pass that
-   * left none. Per session: reset in {@link stopRecordRefresh}.
+   * Consecutive passes whose dial of a selected sibling or a cold-start bootstrap peer
+   * failed (`ControlCohortPassOutcome.unconnected`), for the redial ladder
+   * ({@link armReconcileWake}); 0 after a pass none of whose dials did. Per session:
+   * reset in {@link stopRecordRefresh}.
    */
   private reconcileRedialStreak = 0;
   /**
@@ -4141,8 +4147,8 @@ export class CadreNode implements SAppIdLookup {
     const connected = new Set(this.controlNode.getConnections().map((c) => c.remotePeer.toString()));
 
     // 5. Dial each selected, not-yet-connected sibling, best-effort, from the
-    //    addresses step 3 already resolved for it. One left unconnected earns the
-    //    pass a redial wake (armReconcileWake).
+    //    addresses step 3 already resolved for it. A failed dial earns the pass a
+    //    redial wake (armReconcileWake); a sibling with nothing to dial does not.
     const dialed: string[] = [];
     let unconnected = false;
     for (const sibling of dials) {
@@ -4152,9 +4158,10 @@ export class CadreNode implements SAppIdLookup {
       if (connected.has(sibling.peerId)) {
         continue;
       }
-      if (await this.dialControlSibling(sibling, resolved.get(sibling.peerId) ?? [])) {
+      const outcome = await this.dialControlSibling(sibling, resolved.get(sibling.peerId) ?? []);
+      if (outcome === 'connected') {
         dialed.push(sibling.peerId);
-      } else {
+      } else if (outcome === 'failed') {
         unconnected = true;
       }
     }
@@ -4349,27 +4356,28 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Dial one sibling from its already-resolved addresses, best-effort. Returns
-   * whether the dial resolved (false when no address resolves or the dial fails).
+   * Dial one sibling from its already-resolved addresses, best-effort.
    *
    * A per-peer failure (NAT, offline, relay down, connection-gater denial, or
    * the {@link controlDialBudget} expiring) is logged and swallowed so one
    * unreachable sibling never aborts the pass — exactly like
    * {@link SeedBootstrapService.applySeed}'s owner-dial loop. A failed dial is
    * retried on the pass's redial ladder ({@link armReconcileWake}: 15 s, 30 s, 60 s,
-   * then every backstop) and on any pass a change starts sooner. A sibling whose every address relays
-   * through this node ({@link SelfRelayOnlyError}) is not dialed at all and gets
-   * a one-line log instead: only the sibling can reconnect.
+   * then every backstop) and on any pass a change starts sooner. A sibling with no
+   * dialable address, or whose every address relays through this node
+   * ({@link SelfRelayOnlyError}), is not dialed at all and is `undialable`: it gets a
+   * one-line log and no redial, since only a change — its record replicating in, or
+   * the sibling connecting — can make it dialable, and each of those starts a pass.
    */
-  private async dialControlSibling(sibling: CohortPeerRow, resolved: Multiaddr[]): Promise<boolean> {
+  private async dialControlSibling(sibling: CohortPeerRow, resolved: Multiaddr[]): Promise<SiblingDialOutcome> {
     const controlNode = this.controlNode;
     if (!controlNode) {
-      return false;
+      return 'undialable';
     }
     const addrs = await this.resolveControlDialAddrs(sibling.peerId, resolved);
     if (addrs.length === 0) {
       log('reconcileControlCohort: no dialable control address for sibling %s; skipping', sibling.peerId);
-      return false;
+      return 'undialable';
     }
     try {
       log('reconcileControlCohort: dialing sibling %s (%d addr(s))', sibling.peerId, addrs.length);
@@ -4380,14 +4388,14 @@ export class CadreNode implements SAppIdLookup {
         this.controlDialBudget(),
         `reconcileControlCohort dial of sibling ${sibling.peerId}`
       );
-      return true;
+      return 'connected';
     } catch (error) {
       if (error instanceof SelfRelayOnlyError) {
         log('reconcileControlCohort: sibling %s is reachable only by relaying through this node; waiting for it to reconnect', sibling.peerId);
-      } else {
-        log('reconcileControlCohort: dial of sibling %s failed (continuing): %o', sibling.peerId, error);
+        return 'undialable';
       }
-      return false;
+      log('reconcileControlCohort: dial of sibling %s failed (continuing): %o', sibling.peerId, error);
+      return 'failed';
     }
   }
 
@@ -5093,6 +5101,12 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     if (change === 'open') {
+      // NOTE: a machine removed from the cadre that has not learned of it keeps redialing
+      // its siblings, each of which admits it provisionally and hangs up at the deadline
+      // (28.5 s at the default link), and every such open drops the views here: one
+      // storage reload, with its cohort consult refused, per cycle until it learns. If a
+      // removed machine's churn ever shows up, skip the drop for a peer whose previous
+      // connection the remote closed inside the provisional deadline.
       this.controlDatabase?.invalidateMembershipViews();
     }
     log('Control connection to sibling %s %s; reconcile pass triggered', remotePeer, change);

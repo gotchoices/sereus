@@ -47,8 +47,9 @@
  *
  * Step 3's node-to-claimant half rests on the claimed node publishing its own address record
  * once the row its owner wrote after the claim reaches it by replication. The publish step 3
- * can count on is the node's control-cohort reconcile pass, every 15 s by default, which tries
- * until its first publish lands (`publishFirstSelfRecord` in cadre-core). An earlier publish
+ * can count on is the node's control-cohort reconcile pass, which the row's arrival starts
+ * (a membership-table change) and which tries until its first publish lands
+ * (`publishFirstSelfRecord` in cadre-core). An earlier publish
  * often lands first when the row is already there (step 3 has taken about 2 s), but none of
  * those finds it every time; without the reconcile-pass publish the record can wait for the
  * 7.5-minute heartbeat.

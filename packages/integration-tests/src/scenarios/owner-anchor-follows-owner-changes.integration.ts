@@ -22,9 +22,11 @@
  * its tombstone authorizes nothing either, by the live-owner clause on every owner lookup in
  * `schemas/control.qsql` (pinned on one database by `control-revocation-replay.spec.ts`).
  *
- * M follows a replicated change at its next membership refresh, and on M nothing but the timed
- * control-cohort reconcile runs one (every 15 s by default, 2 s here): a row that arrives by
- * replication raises no local notification. The scenario never drives a refresh, so each step
+ * M follows a replicated change at its next membership refresh, and on M nothing but its own
+ * machinery runs one: the gate watch within 50 ms of the row or tombstone reaching M's storage,
+ * or the control-cohort reconcile backstop (2 minutes by default, 2 s here) when no storage
+ * event does; a row that arrives by replication raises no local write notification. The
+ * scenario never drives a refresh, so each step
  * covers the whole path, and each wait on M's anchor follows a wait on the replicated row or
  * tombstone itself, so a timeout names which of the two did not arrive.
  */
