@@ -1229,7 +1229,7 @@ export class ControlDatabase {
   private readonly cadreInviteUsageView = this.membershipView(CADRE_INVITE_USAGE_SELECT_SQL, 'cadre-invite-usages');
   private readonly ownerGrantView = this.membershipView(OWNER_GRANT_SELECT_SQL, 'owner-grants');
   private readonly ownerGrantUsageView = this.membershipView(OWNER_GRANT_USAGE_SELECT_SQL, 'owner-grant-usages');
-  /** Each membership view by the qualified table it copies, for {@link watchMembershipTables} and {@link invalidateMembershipViews}. */
+  /** Each membership view by the qualified table it copies, for {@link watchMembershipViews}, {@link watchMembershipTables} and {@link invalidateMembershipViews}. */
   private readonly membershipViews = new Map<string, MembershipView<Record<string, SqlValue>>>([
     ['CadreControl.Revocation', this.revocationView],
     ['CadreControl.CadrePeer', this.cadrePeerView],
@@ -1369,7 +1369,7 @@ export class ControlDatabase {
     await this.loadSchema();
     timing('[controlDb] loadSchema: %dms', Math.round(performance.now() - t0));
 
-    this.watchMembershipTables();
+    this.watchMembershipViews();
     this.initialized = true;
     log('ControlDatabase initialized successfully');
   }
@@ -1380,11 +1380,22 @@ export class ControlDatabase {
    * does nothing; no backstop, since {@link MEMBERSHIP_VIEW_MAX_AGE_MS} bounds what the
    * subscription cannot hear. {@link close} disposes it with the rest.
    */
-  private watchMembershipTables(): void {
+  private watchMembershipViews(): void {
     this.tableWatches.watch(this.db!, [...this.membershipViews.keys()], () => Promise.resolve(), {
       label: 'membership-view',
       onInvalidate: (table) => this.membershipViews.get(table)?.invalidate(),
     });
+  }
+
+  /**
+   * {@link watchTables} on the membership tables: the seven the membership views copy
+   * (`CadrePeer`, `OwnerKey`, `Revocation`, `CadreInvite`, `CadreInviteUsage`, `OwnerGrant`,
+   * `OwnerGrantUsage`), which are exactly what the membership gate and the owner-anchor sync
+   * read. `CadreNode.start` takes its gate watch here, so the gate hears every table its
+   * reads can depend on and no list of them lives outside this class.
+   */
+  watchMembershipTables(onChange: () => Promise<void>, options: TableChangeWatchOptions): TableChangeWatch {
+    return this.watchTables([...this.membershipViews.keys()], onChange, options);
   }
 
   /**

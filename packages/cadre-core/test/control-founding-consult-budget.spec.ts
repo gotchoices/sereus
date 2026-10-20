@@ -454,7 +454,7 @@ async function settleStart(node: CadreNode, counter: ConsultCounter): Promise<Fi
 
 /**
  * Wait for the membership gate refresh a phase's membership-table write earns: the gate
- * watch (`CadreNode.start`, on `MEMBERSHIP_GATE_TABLES`) runs it 50 ms after the commit, and
+ * watch (`CadreNode.start`, through `ControlDatabase.watchMembershipTables`) runs it 50 ms after the commit, and
  * it would otherwise land inside whatever phase is measured next. The reconcile schedule it
  * would also trigger is never built here (the self-registration timer is disarmed), so the
  * refresh is all it starts. Called inside the phase, so the refresh's reads are charged to

@@ -246,22 +246,6 @@ export const STRAND_PEER_ADDR_REFRESH_MS = 10 * 60 * 1000;
 export const STRAND_PEER_ADDR_RETRY_MS = 60 * 1000;
 
 /**
- * The control tables the membership gate is built from: what
- * {@link CadreNode.refreshMembershipGate} and the owner-anchor sync read. A change to any
- * of them, local or replicated, re-materializes the gate and starts a reconcile pass
- * (the gate watch {@link CadreNode.start} takes).
- */
-const MEMBERSHIP_GATE_TABLES = [
-  'CadreControl.CadrePeer',
-  'CadreControl.OwnerKey',
-  'CadreControl.Revocation',
-  'CadreControl.CadreInvite',
-  'CadreControl.CadreInviteUsage',
-  'CadreControl.OwnerGrant',
-  'CadreControl.OwnerGrantUsage',
-] as const;
-
-/**
  * What one reconcile pass did, for the wrapper that arms the next wake; callers get only
  * its `dialed` ({@link ControlCohortReconcileResult}).
  */
@@ -745,9 +729,9 @@ export class CadreNode implements SAppIdLookup {
    * timeout, unlike the fail-open connection gater). Optimystic's predicate is
    * synchronous by contract. So the set is refreshed OUT OF BAND instead — after
    * start, at the head of every {@link reconcileControlCohort} pass, whenever a
-   * membership table changes (the gate watch {@link start} takes on
-   * `MEMBERSHIP_GATE_TABLES`, which hears a local commit and a change replicated
-   * into this node's storage alike, within a 50 ms window), and immediately
+   * membership table changes (the gate watch {@link start} takes through
+   * `ControlDatabase.watchMembershipTables`, which hears a local commit and a change
+   * replicated into this node's storage alike, within a 50 ms window), and immediately
    * after every LOCAL membership mutation so a just-vouched peer is admitted
    * before the writer's call returns. That last refresh is AUTOMATIC: the
    * control database notifies {@link refreshMembershipGate} after every
@@ -1091,8 +1075,9 @@ export class CadreNode implements SAppIdLookup {
    */
   private controlReconcileRuns: TableChangeWatch | null = null;
   /**
-   * The subscription on `MEMBERSHIP_GATE_TABLES` that re-materializes the membership gate
-   * and triggers {@link controlReconcileRuns} on every change ({@link onMembershipGateTablesChanged}).
+   * The subscription on the membership tables (`ControlDatabase.watchMembershipTables`) that
+   * re-materializes the membership gate and triggers {@link controlReconcileRuns} on every
+   * change ({@link onMembershipGateTablesChanged}).
    * Taken in {@link start} right after the membership listener is wired, disposed in
    * {@link cleanup} before the control database closes.
    */
@@ -1491,8 +1476,8 @@ export class CadreNode implements SAppIdLookup {
       // arms no bridge, so a chain row that replicates in before then waits for the next
       // change on a touched table or the backstop. Nothing depends on a chain row until a
       // `CadrePeer` or `OwnerKey` row refers to it, and that row is itself such a change.
-      this.membershipGateWatch = this.controlDatabase.watchTables(
-        MEMBERSHIP_GATE_TABLES, () => this.onMembershipGateTablesChanged(), { label: 'membership-gate' });
+      this.membershipGateWatch = this.controlDatabase.watchMembershipTables(
+        () => this.onMembershipGateTablesChanged(), { label: 'membership-gate' });
       // Committed-delete seam → write-while-alone revocation queue. Same wiring
       // window argument as the membership listener above.
       this.controlDatabase.setGuardedDeleteListener((revocation) => this.noteGuardedDelete(revocation));
