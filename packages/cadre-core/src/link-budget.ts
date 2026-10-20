@@ -392,11 +392,12 @@ export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
  *   every members-only protocol from the materialized snapshot, and unplaced
  *   relay reservations stay capped (`MAX_UNAUTHORIZED_RELAY_RESERVATIONS`).
  * - **The slow case is bring-up, not steady state.** A membership read consults
- *   the cohort only for a block this node does not hold, or before the
- *   `Revocation` ledger marker exists; once the marker exists every block the
- *   decision reads is held (`control-founding-consult-budget.spec.ts` pins both
- *   states). So the gate always fails open only on a node whose membership reads
- *   still consult: one consult costs about two link round trips, and asking a
+ *   the cohort only for a block this node does not hold: before a joining
+ *   machine has read it from the cohort, or for a table nobody has written on a
+ *   party founded before genesis created every control collection. Otherwise
+ *   every block the decision reads is held
+ *   (`control-founding-consult-budget.spec.ts` pins that). So the gate always
+ *   fails open only on a node whose membership reads still consult: one consult costs about two link round trips, and asking a
  *   silent peer costs the per-peer read deadline ({@link cohortReadDeadlineMs}, 7 s
  *   at the default declaration).
  * - **The decision is spent on the dialing machine's clock.** libp2p's listener

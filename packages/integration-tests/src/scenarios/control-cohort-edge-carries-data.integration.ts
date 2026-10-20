@@ -243,10 +243,9 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			//       neither).
 			//
 			// The resolvability read is served from B's local pre-sever replicated
-			// state (no pin is active). B has never received the `Revocation` block:
-			// an owner files its ledger marker only on a connected reconcile pass,
-			// and A has not run one when B is severed. So each lookup's revoked-stamp
-			// read reaches no cohort member (`cohort-unreachable`), which
+			// state (no pin is active). If B had not received the `Revocation` block
+			// before the sever, each lookup's revoked-stamp read reaches no cohort
+			// member (`cohort-unreachable`), which
 			// `ControlDatabase.queryRevokedStamps` answers as "no revocations known"
 			// (see the NOTE there). Before that treatment this read threw at every
 			// checkpoint. The one failure still tolerated is optimystic refusing to

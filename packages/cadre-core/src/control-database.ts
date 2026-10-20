@@ -9,7 +9,7 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { createEmptyCollections } from '@serfab/quereus-plugin-sereus';
 import type { CollectionRegistrySource } from '@serfab/quereus-plugin-sereus';
-import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalResult } from './types.js';
+import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalResult } from './types.js';
 import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, CONTROL_SCHEMA_NAME, controlSchemaFileDeclaration } from './control-schema.js';
 import { refuseIncompatibleControlStore } from './control-schema-version.js';
 import { canonicalDatetime } from './canonical-datetime.js';
@@ -549,10 +549,9 @@ interface GuardedRemoval {
 
 /**
  * The exact bytes an owner signs to append one `Revocation` tombstone — `Revocation.Authorized`
- * binds the whole (TableName, RowKey, StampId) row under its own domain tag. Shared by every
- * tombstone writer (a guarded removal, an issued row's withdrawal, the ledger marker) so the
- * field order lives in one place; the base64url verifier is `peer-authorization.ts`'s
- * `revocationDigest`.
+ * binds the whole (TableName, RowKey, StampId) row under its own domain tag. Shared by both
+ * tombstone writers (a guarded removal, an issued row's withdrawal) so the field order lives
+ * in one place; the base64url verifier is `peer-authorization.ts`'s `revocationDigest`.
  */
 function revocationTombstoneMessage(partyId: string, ref: { tableName: string; rowKey: string; stampId: string }): Uint8Array {
   return buildAuthorizationMessage('CadreControl.Revocation', 'remove', partyId, [ref.tableName, ref.rowKey, ref.stampId]);
@@ -746,30 +745,16 @@ export class PendingJoinChangedError extends Error {
 }
 
 /**
- * The one `CadreControl.Revocation` row that retires nothing, filed once by an owner
- * ({@link ControlDatabase.openRevocationLedger}) so the table is never a never-written
- * block. The schema's table comment says why that matters and why the row can never read
- * as a retirement; `RowIsGone` pins this exact triple.
+ * A `CadreControl.Revocation` row that retires nothing, which parties founded before
+ * `control-collections-created-at-cadre-founding` may hold: an owner filed it so the table
+ * had a collection, which genesis now creates. Nothing files it now. `RowIsGone` still admits
+ * this exact triple, and {@link ControlDatabase.queryRevocations} skips it.
  */
-export const REVOCATION_LEDGER_MARKER = {
+const REVOCATION_LEDGER_MARKER = {
   tableName: 'Revocation',
   rowKey: 'ledger',
   stampId: 'opened',
 } as const;
-
-/**
- * The rejection a second insert of the ledger marker produces: the optimystic vtab's
- * primary-key wording (see {@link keyConflictPattern}), naming both columns of
- * `Revocation`'s composite key. Applied only to the marker's own insert, whose key
- * ('Revocation', 'opened') no row but the marker can hold (`RowIsGone`), and `Revocation`
- * has no other unique constraint.
- */
-const REVOCATION_LEDGER_CONFLICT = /UNIQUE constraint failed: Revocation\.TableName, Revocation\.StampId\b/i;
-
-/** Did the ledger marker's insert fail because the marker is already filed? Text-matched, failing closed, like {@link isStrandIdConflict}. */
-function isRevocationLedgerConflict(error: unknown): boolean {
-  return errorChainMatches(error, REVOCATION_LEDGER_CONFLICT);
-}
 
 /** Whether any message in `error`'s cause chain matches `pattern`; false for a non-`Error`. */
 function errorChainMatches(error: unknown, pattern: RegExp): boolean {
@@ -877,7 +862,7 @@ function cadrePeerRowOf(row: Record<string, SqlValue>): CadrePeerRow {
   };
 }
 
-/** A stored `Revocation` row as a {@link RevocationRow}; the caller has already skipped the ledger marker. */
+/** A stored `Revocation` row as a {@link RevocationRow}; the caller has already skipped {@link REVOCATION_LEDGER_MARKER}. */
 function revocationRowOf(row: Record<string, SqlValue>): RevocationRow {
   return {
     tableName: row.TableName as RevocableTable,
@@ -1693,9 +1678,9 @@ export class ControlDatabase {
    * rows that never existed. No reader of these tables runs inside {@link inTransaction} today;
    * this keeps one added later, or a spec's raw-handle transaction, correct.
    *
-   * Reads that stay plain SQL on purpose: {@link queryStampId} (sees retired rows), the ledger
-   * marker's presence read, the schema's CHECK constraints, which read inside the committing
-   * transaction, the redemption's one read of the held credential row ({@link queryCadreInvite},
+   * Reads that stay plain SQL on purpose: {@link queryStampId} (sees retired rows), the
+   * schema's CHECK constraints, which read inside the committing transaction, the redemption's
+   * one read of the held credential row ({@link queryCadreInvite},
    * {@link queryOwnerGrant}), and the indexed usage counts.
    */
   private readMembershipRows(view: MembershipView<Record<string, SqlValue>>, retry: boolean): Promise<readonly Record<string, SqlValue>[]> {
@@ -2187,8 +2172,9 @@ export class ControlDatabase {
    * view (a failed load keeps nothing), so the next call asks again.
    *
    * Without this, a machine cut off from every other machine in its party before it ever
-   * received the block — the block does not exist anywhere until the owner files the
-   * ledger marker ({@link openRevocationLedger}) on a connected reconcile pass — cannot
+   * received the block — a joining machine gets it only by reading it from the cohort, and
+   * on a party founded before genesis created every control collection it exists nowhere
+   * until the first tombstone or the marker ({@link REVOCATION_LEDGER_MARKER}) — cannot
    * answer ANY membership, peer-record or device-token lookup, although it holds those
    * rows locally.
    *
@@ -2232,10 +2218,10 @@ export class ControlDatabase {
    * `where`, so the composite-primary-key point-lookup hazard (see the statement comment in
    * {@link reissueRevocations}) does not arise. Unlocked, like every other read.
    *
-   * Skips the ledger marker ({@link REVOCATION_LEDGER_MARKER}): it retires nothing, so
-   * neither sweep may reap or re-sign it, and skipping it keeps `RevocationRow.tableName`
-   * a {@link RevocableTable}. Filtered on `TableName` alone, in TypeScript: `RowIsGone`
-   * admits no other row under `'Revocation'`.
+   * Skips the ledger marker ({@link REVOCATION_LEDGER_MARKER}) an older party may hold: it
+   * retires nothing, so neither sweep may reap or re-sign it, and skipping it keeps
+   * `RevocationRow.tableName` a {@link RevocableTable}. Filtered on `TableName` alone, in
+   * TypeScript: `RowIsGone` admits no other row under `'Revocation'`.
    *
    * `retry: false` from a caller that reads under the write lock, for the reason on
    * {@link queryCadrePeers}.
@@ -3467,9 +3453,8 @@ export class ControlDatabase {
   /**
    * File the owner-signed `Revocation` tombstone retiring one row incarnation — the second
    * statement of every guarded removal ({@link execGuardedRemoval}) and the whole of an
-   * issued row's withdrawal ({@link withdrawIssuedRow}), whose row stays — or the ledger
-   * marker ({@link openRevocationLedger}), which retires nothing. The caller supplies the
-   * lock and, where one is needed, the transaction.
+   * issued row's withdrawal ({@link withdrawIssuedRow}), whose row stays. The caller
+   * supplies the lock and, where one is needed, the transaction.
    *
    * `ReissuedAt` is named explicitly at 0 (the only value `FreshTombstone` accepts) rather
    * than leaning on the column default — the seat-at-zero rule is load-bearing for
@@ -3478,11 +3463,7 @@ export class ControlDatabase {
    * `SignerKey` / `SignerSig` store the context pair (`Revocation.Authorized` pins them
    * equal), so a node that receives the row by replication can tell which owner filed it.
    */
-  private async execTombstone(
-    ref: RevokedRowRef | typeof REVOCATION_LEDGER_MARKER,
-    revocationSignature: string,
-    ownerKey: string
-  ): Promise<void> {
+  private async execTombstone(ref: RevokedRowRef, revocationSignature: string, ownerKey: string): Promise<void> {
     await this.db!.exec(`
       insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt, SignerKey, SignerSig)
         with context OwnerKey = ?, Signature = ?
@@ -3648,8 +3629,8 @@ export class ControlDatabase {
    *
    * NOTE: cost is O(tombstones), not O(live rows) — one {@link queryRevocations} scan plus
    * one {@link queryStampId} point lookup per tombstone, and the empty early return makes
-   * the common case (a party that has never revoked anyone; {@link queryRevocations} skips
-   * the ledger marker) a single scan per pass, served from the `Revocation` membership view
+   * the common case (a party that has never revoked anyone) a single scan per pass, served
+   * from the `Revocation` membership view
    * ({@link readMembershipRows}) unless the table changed since the last read.
    * But `Revocation` is append-only and unbounded, so this is O(all tombstones ever) point
    * lookups on every connected reconcile pass. Fine while revocations stay rare for a cadre-sized
@@ -3768,78 +3749,6 @@ export class ControlDatabase {
       log('Reissued %d revocation tombstone(s) at %d', executed, reissuedAt);
       return executed;
     }, {}, 'revocation-reissue');
-  }
-
-  /**
-   * Owner-signed filing of the singleton `Revocation` ledger marker
-   * ({@link REVOCATION_LEDGER_MARKER}), the one row in that table that retires nothing.
-   *
-   * Why it exists: while `Revocation` has never been written, this node does not hold its
-   * block, and Optimystic consults a block's cohort on EVERY read of a block it does not
-   * hold — and every membership lookup, and every guarded insert's `NotRevoked` check,
-   * reads this table. Once any row exists the block is held and re-checked at most once per
-   * read-repair window, like every other populated table. The schema's table comment says
-   * why the row can never read as a retirement.
-   *
-   * Insert-if-absent, shaped like {@link reissueRevocations}: the signature is minted
-   * OUTSIDE the locked body so a retried attempt re-presents the same one, and the guard
-   * runs INSIDE it so it sees a concurrent local writer's committed row. The guard scans
-   * the `'Revocation'` rows and compares the stamp in TypeScript rather than seeking the
-   * full composite primary key, which is served as a point lookup that can miss an existing
-   * row on a networked database (tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked).
-   *
-   * Two owners filing at once: the loser either sees the marker in its guard or is refused
-   * on the primary key, and both answer `'already-open'`.
-   *
-   * The caller decides WHEN. A marker committed while the node is alone is local-only and
-   * can fork the collection, so {@link CadreNode} files it only while connected; this
-   * method does not look at connectivity.
-   *
-   * @param ownerKey - owner public key for the write context (`Revocation.Authorized`).
-   * @param signMessage - ed25519-signs the raw message bytes (no pre-hash) with that owner's
-   *   private key, returning a base64url signature.
-   * @returns `'opened'` when this call filed the marker, `'already-open'` when it was
-   *   already there.
-   */
-  async openRevocationLedger(
-    ownerKey: string,
-    signMessage: ControlSign
-  ): Promise<RevocationLedgerOpenResult> {
-    this.ensureInitialized();
-    const signature = await signMessage(revocationTombstoneMessage(this.config.partyId, REVOCATION_LEDGER_MARKER));
-    try {
-      return await this.lockedWithRetry<RevocationLedgerOpenResult>(async () => {
-        if (await this.revocationLedgerFiled()) {
-          return 'already-open';
-        }
-        // execTombstone is a bare `exec`: already inside the write lock, which is NOT re-entrant.
-        await this.execTombstone(REVOCATION_LEDGER_MARKER, signature, ownerKey);
-        log('Revocation ledger marker filed');
-        return 'opened';
-      }, {}, 'revocation-ledger-open');
-    } catch (error) {
-      if (!isRevocationLedgerConflict(error)) {
-        throw error;
-      }
-      log('Revocation ledger marker already filed (refused on the primary key, most likely by another owner filing first): %s', error);
-      return 'already-open';
-    }
-  }
-
-  /**
-   * Whether the ledger marker is present locally: a scan of the `'Revocation'` rows with the
-   * stamp compared in TypeScript (see {@link openRevocationLedger} for why not a seek).
-   * Called only inside the locked write body, so never retried (see queryStampId's NOTE).
-   */
-  private async revocationLedgerFiled(): Promise<boolean> {
-    const { tableName, stampId } = REVOCATION_LEDGER_MARKER;
-    const rows = await this.readRows(
-      'select StampId from CadreControl.Revocation where TableName = ?',
-      [tableName],
-      'revocation-ledger',
-      false
-    );
-    return rows.some(row => row.StampId === stampId);
   }
 
   /**

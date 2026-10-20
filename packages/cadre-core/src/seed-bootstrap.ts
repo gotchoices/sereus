@@ -31,7 +31,6 @@ import type {
   PeerAddressRecord,
   DeviceTokenRecord,
   RevocationRow,
-  RevocationLedgerOpenResult,
   MachineRemovalResult
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
@@ -751,26 +750,6 @@ export class SeedBootstrapService {
     const controlDatabase = this.requireControlDatabase();
     return await this.withOwnerSign(`Re-send ${rows.length} removal record(s) to the cadre`, sign, (approved) =>
       controlDatabase.reissueRevocations(rows, reissuedAt, ownerKey, approved));
-  }
-
-  /**
-   * Owner filing of the singleton `Revocation` ledger marker, so the table is never a
-   * never-written block that the storage layer re-consults on every read.
-   *
-   * The signature, the insert-if-absent guard and the `'already-open'` mapping are
-   * {@link ControlDatabase.openRevocationLedger}'s. What stays here is the owner-signer
-   * precondition.
-   *
-   * @throws if no owner signer is configured or the control database is not
-   *   initialized.
-   */
-  async openRevocationLedger(sign?: OwnerSign): Promise<RevocationLedgerOpenResult> {
-    // Fail fast on a signerless service before any DB work (see removePeer): a
-    // non-owner cannot sign the marker's append digest.
-    const ownerKey = this.requireOwnerSigner().publicKey;
-    const controlDatabase = this.requireControlDatabase();
-    return await this.withOwnerSign('Open the cadre\'s removal ledger', sign, (approved) =>
-      controlDatabase.openRevocationLedger(ownerKey, approved));
   }
 
   /**

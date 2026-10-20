@@ -864,16 +864,15 @@ declare schema CadreControl {
 
     -- Append-only retirement record for the stamps of removed rows of every guarded table, with
     -- the removed row's key. Every append is owner-signed, so the growth surface is the owner
-    -- keys. One singleton marker row, ('Revocation', 'ledger', 'opened'), retires nothing: an
-    -- owner's connected reconcile pass files it (ControlDatabase.openRevocationLedger) so this
-    -- table is never a never-written block, which the storage layer would consult the cohort
-    -- for on every guarded insert and membership lookup. Readers filter on their own guarded
+    -- keys. A party founded before genesis created every control collection may hold one marker
+    -- row, ('Revocation', 'ledger', 'opened'), which retires nothing: an owner filed it so this
+    -- table had a collection. Nothing files it now. Readers filter on their own guarded
     -- TableName, and queryRevocations skips it. A 'CadreInvite' or 'OwnerGrant' row withdraws
     -- an invitation or a grant whose row stays (the table comments).
     table Revocation (
         TableName text,             -- 'OwnerKey' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' |
                                     -- 'JoinRequest' | 'CadrePeer' | 'DeviceToken' | 'CadreInvite' | 'OwnerGrant', or
-                                    -- 'Revocation' for the marker
+                                    -- 'Revocation' for an older party's marker
         RowKey text,                -- primary key of the removed row
         StampId text,               -- the retired stamp
         ReissuedAt integer default 0,   -- bumped by an owner-signed re-issue so a tombstone committed while the
@@ -903,7 +902,9 @@ declare schema CadreControl {
         -- never existed is harmless: stamps carry 128 random bits (generateStampId). For
         -- 'CadreInvite' and 'OwnerGrant' there is no row-gone test: a tombstone there is a
         -- withdrawal, and the row stays (the table comments). The last branch admits the marker
-        -- row and nothing else under 'Revocation'.
+        -- row an older party may hold, and nothing else under 'Revocation'; nothing files it now.
+        -- NOTE: drop this branch, REVOCATION_LEDGER_MARKER and the readers' skip together with the
+        -- next CONTROL_SCHEMA_VERSION change that already needs a migration.
         constraint RowIsGone check on insert (
             (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
@@ -922,9 +923,8 @@ declare schema CadreControl {
         -- writer could evict a peer party-wide and block its re-admission. RowKey is not checked
         -- against the retired row here (that would reject a tombstone re-issued later, or filed on
         -- a node that never held the row); each guarded table's RevocationRecorded binds it
-        -- instead. Reads live OwnerKey like the sibling tables. The marker is signed under this
-        -- rule too, over ('Revocation', 'ledger', 'opened'). The stored signer pair must be the
-        -- pair verified here.
+        -- instead. Reads live OwnerKey like the sibling tables. An older party's marker was signed
+        -- under this rule too. The stored signer pair must be the pair verified here.
         constraint Authorized check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.Revocation', 'remove', party_id(), new.TableName, new.RowKey, new.StampId), context.Signature, A.Key, 'ed25519'))
                 and coalesce(new.SignerKey, '') = context.OwnerKey

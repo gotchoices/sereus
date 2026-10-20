@@ -173,7 +173,8 @@ const MEASURED_ON = '2026-10-20';
  * 5 where its table recorded 6.
  *
  * The marker test these paragraphs mention was removed by `control-collections-created-at-cadre-founding`,
- * since genesis now gives `Revocation` its collection and the marker no longer changes what a read costs.
+ * since genesis now gives `Revocation` its collection and the marker no longer changes what a read costs;
+ * the marker's filing path went with `revocation-ledger-marker-removed`.
  *
  * Re-measured whole at `009bbee0` on 2026-10-20 (clean tree), three runs identical, with three
  * changes from this side in the tree, each attributed by measuring with the other two disabled:

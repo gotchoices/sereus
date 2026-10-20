@@ -53,7 +53,7 @@ A member that answers a write's pend and goes silent before its commit costs mor
 
 The transaction budget is reached only by a phase that keeps retrying, for example one that re-picks a coordinator that does not answer.
 
-**A stalled member holds the control write lock.** Control writes run one at a time under `ControlDatabase.withWriteLock`. While a member stalls, each failing write therefore holds every other control write on the node (self-record updates, authorizations, revocation-ledger writes) for its whole failure: about 84 s, and up to the transaction budget plus the cancel budget on the retrying path. A write queued behind one failing write settles after about 168 s. The control-write retry adds nothing to this, because one such attempt already exceeds `CONTROL_WRITE_RETRY_BUDGET_MS`.
+**A stalled member holds the control write lock.** Control writes run one at a time under `ControlDatabase.withWriteLock`. While a member stalls, each failing write therefore holds every other control write on the node (self-record updates, authorizations, revocations) for its whole failure: about 84 s, and up to the transaction budget plus the cancel budget on the retrying path. A write queued behind one failing write settles after about 168 s. The control-write retry adds nothing to this, because one such attempt already exceeds `CONTROL_WRITE_RETRY_BUDGET_MS`.
 
 A cadre-core deadline that waits on one of those reads, or on a commit, does one of two things:
 

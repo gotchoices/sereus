@@ -32,7 +32,7 @@
  *  - never answers (> 10.5 s bar)→ clean failure at ~84 s per write (one pend
  *    round plus three cancel rounds). Measured 2026-10-01: a remove 84.4 s, and
  *    an authorize 168.9 s because it queued behind a background control write
- *    (`revocation-ledger-open`) that spent its own 84 s first. Naming
+ *    that spent its own 84 s first. Naming
  *    `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`.
  *
  * Control writes run one at a time under the node's write lock, so while a
@@ -272,9 +272,8 @@ const STALLED_WRITE_FAILURE_MS = (1 + STALLED_CANCEL_ROUNDS) * STALLED_ROUND_MS;
  * How long a write against the never-answering member takes to settle, measured from the call.
  * Control writes run one at a time under the node's write lock, so the write can queue behind
  * ONE background control write failing the same way (A's heartbeat self-record publish, for
- * one). A's `revocation-ledger-open` used to be that write; `beforeAll` now files the marker
- * while the cohort is healthy, so it no longer lands in a stalled window. 168 s at the default
- * declared link; measured 168.5–168.9 s on 2026-10-01 in both cases that awaited an authorize.
+ * one). 168 s at the default declared link; measured 168.5–168.9 s on 2026-10-01 in both cases
+ * that awaited an authorize.
  */
 const STALLED_SETTLE_MS = 2 * STALLED_WRITE_FAILURE_MS;
 /**
@@ -912,18 +911,6 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// path routes through the same seam — only A holds the genesis-era
 		// control blocks (see header).
 		pinned = pinCoordinator([A]);
-
-		// File A's Revocation ledger marker now, while the cohort is healthy. A's reconcile
-		// pass otherwise files it in the background, and an attempt that lands in a stalled
-		// window fails there, clears A's flag and retries in the next pass, possibly inside the
-		// NEXT case's window, where the case's own write queues behind it (186 s measured on
-		// 2026-10-15, past STALLED_WRITE_TIMEOUT_MS). The reconcile pass afterwards reads the
-		// filed marker locally and sets A's flag, so A makes no further marker write.
-		const ledger = await within('A opens the Revocation ledger', DELAYED_WRITE_TIMEOUT_MS,
-			() => A.getSeedBootstrapService()!.openRevocationLedger());
-		expect(['opened', 'already-open']).toContain(ledger);
-		await within('A reconcile after the ledger marker', DELAYED_WRITE_TIMEOUT_MS,
-			() => A.reconcileControlCohort());
 	}, 240_000);
 
 	afterAll(async () => {

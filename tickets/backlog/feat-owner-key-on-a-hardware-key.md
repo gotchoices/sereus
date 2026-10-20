@@ -15,7 +15,7 @@ The owner signer seam takes a sign-on-request backend; this ticket adds the hard
 
 From the owner-key implement tickets (`owner-signer-seam`, `owner-signing-through-one-signer`):
 
-- **Background owner writers sign with no user present**: `JoinedStrand` publication, the pending-join runner, the `Revocation` re-issue and ledger-marker drains, the self-row insert in `registerSelf`, the device-token publish. A signer that prompts needs a flag on `OwnerSigner` saying whether it may sign unattended, and these writers must skip (and say so) or queue for the app when it may not.
+- **Background owner writers sign with no user present**: `JoinedStrand` publication, the pending-join runner, the `Revocation` re-issue drain, the self-row insert in `registerSelf`, the device-token publish. A signer that prompts needs a flag on `OwnerSigner` saying whether it may sign unattended, and these writers must skip (and say so) or queue for the app when it may not.
 - **The write lock is held across signing**, because each `ControlDatabase` writer reads the stamps it signs inside its lock, and `lockedWithRetry` re-signs on retry. A prompt inside the lock stalls every other control write on that node (`NOTE:` at the signing callback alias). Signing outside the lock with a stamp re-check may be needed.
 - **One `approve` per action** assumes the backend can hold the user's presence for several signatures (PIV touch cache, Keychain `touchIDAuthenticationAllowableReuseDuration`, Android Keystore authentication validity). FIDO2 asks for a touch per assertion, which is a second reason (beside the assertion format) it may not fit.
 - **The phone's owner slot is ungated** (no `requireAuthentication`) for the background writers above; gating it is part of this ticket.
