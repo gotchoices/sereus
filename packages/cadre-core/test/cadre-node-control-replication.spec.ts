@@ -5,7 +5,7 @@ import type { CadreNodeConfig } from '../src/types.js';
 /**
  * Unit coverage for write-while-alone re-replication
  * (`control-write-ensure-replicated`): the in-memory queueing of control writes
- * that committed local-only (0 connections) and the cohort-growth drain that
+ * that committed local-only (no reachable sibling) and the cohort-growth drain that
  * re-issues them. The live-network convergence is covered separately by the
  * integration scenarios; here we stub the control node / DB / seed-bootstrap and
  * assert which re-issues fire.
@@ -36,12 +36,14 @@ interface FakeSeed {
   reissueRevocationsError: Error | null;
 }
 
+const siblingIds = (count: number): string[] => Array.from({ length: count }, (_, i) => `sibling-${i}`);
+
 /** A minimal control-node fake exposing only what the re-replication paths read. */
 function fakeControlNode(opts: { selfPeerId?: string; connections?: number }): unknown {
-  const count = opts.connections ?? 0;
+  const siblings = siblingIds(opts.connections ?? 0);
   return {
     peerId: { toString: () => opts.selfPeerId ?? 'self-peer' },
-    getConnections: () => new Array(count).fill({ remotePeer: { toString: () => 'peer' } }),
+    getConnections: () => siblings.map((id) => ({ remotePeer: { toString: () => id } })),
     addEventListener: () => {},
     removeEventListener: () => {}
   };
@@ -81,6 +83,10 @@ function inject(
     selfPeerId: opts.selfPeerId ?? 'self-peer',
     connections: opts.connections
   });
+  // Each connection is a sibling that has identified as serving the control database.
+  for (const id of siblingIds(opts.connections ?? 0)) {
+    (node as unknown as { identifiedControlPeers: Set<string> }).identifiedControlPeers.add(id);
+  }
   (node as unknown as { controlDatabase: unknown }).controlDatabase = {
     queryCadrePeers: async () => { queryCadrePeers++; return opts.members ?? []; },
     queryPeerRecord: async (peerId: string) =>
@@ -154,7 +160,7 @@ describe('CadreNode write-while-alone re-replication', () => {
       expect(pending(node).has('drone-X')).toBe(false);
     });
 
-    it('queues an authorize that committed while alone (0 connections)', async () => {
+    it('queues an authorize that committed while alone (no reachable sibling)', async () => {
       const node = new CadreNode(createConfig());
       inject(node, { connections: 0 });
       await node.authorizePeer('peer-X');
@@ -181,7 +187,7 @@ describe('CadreNode write-while-alone re-replication', () => {
   });
 
   describe('queueing (noteGuardedDelete via the committed-delete seam)', () => {
-    it('queues a guarded delete that committed while alone (0 connections)', () => {
+    it('queues a guarded delete that committed while alone (no reachable sibling)', () => {
       const node = new CadreNode(createConfig());
       inject(node, { connections: 0 });
       noteDelete(node, { tableName: 'CadrePeer', rowKey: 'peer-X', stampId: 'stamp-1' });
@@ -449,9 +455,9 @@ describe('CadreNode write-while-alone re-replication', () => {
     });
   });
 
-  // The public read of the same sample the write-while-alone seam is defined on
-  // (`committedAlone` calls it), exposed so an embedder — the admin channel's
-  // `controlConnections` / `alone` fields — can report replication reach.
+  // The public read the write-while-alone seam is defined on (`committedAlone` calls
+  // `hasReachableControlSibling`), exposed so an embedder — the admin channel's `alone`
+  // field — can report replication reach; `controlConnections` is the raw count beside it.
   describe('getControlConnectionCount', () => {
     it('is 0 on a node that never started (no control node)', () => {
       expect(new CadreNode(createConfig()).getControlConnectionCount()).toBe(0);
@@ -463,44 +469,90 @@ describe('CadreNode write-while-alone re-replication', () => {
       expect(node.getControlConnectionCount()).toBe(3);
     });
 
-    it('agrees with the write-while-alone seam: 0 connections queues the write', async () => {
+    it('hasReachableControlSibling agrees with the write-while-alone seam: none reachable queues the write', async () => {
       const node = new CadreNode(createConfig());
       inject(node, { connections: 0 });
-      expect(node.getControlConnectionCount()).toBe(0);
+      expect(node.hasReachableControlSibling()).toBe(false);
       await node.authorizePeer('peer-X');
       expect(pending(node).has('peer-X')).toBe(true);
     });
   });
 
+  // Driven through the real listeners (`wireControlConnectionListeners`) with libp2p's events,
+  // because which event counts a peer is the behaviour under test.
   describe('connection-growth transition', () => {
-    function withTransitionFake(node: CadreNode, connections: { value: number }): { drains: () => number } {
-      let drains = 0;
-      (node as unknown as { _running: boolean })._running = true;
-      (node as unknown as { controlNode: unknown }).controlNode = {
-        getConnections: () => new Array(connections.value).fill({})
-      };
-      (node as unknown as { drainPendingControlReplication: (r: string) => Promise<void> })
-        .drainPendingControlReplication = async () => { drains++; };
-      return { drains: () => drains };
+    const PARTY = 'growth-party';
+    const SERVES = [`/optimystic/control-${PARTY}/repo/1.0.0`, `/optimystic/control-${PARTY}/cluster/1.0.0`];
+
+    interface TransitionFake {
+      drains: () => number;
+      open: (peer: string) => void;
+      identify: (peer: string, protocols?: string[]) => void;
+      close: (peer: string) => void;
     }
 
-    it('drains only on the 0→≥1 edge and re-arms after a full disconnect', () => {
-      const node = new CadreNode(createConfig());
-      const conns = { value: 1 };
-      const { drains } = withTransitionFake(node, conns);
+    function withTransitionFake(node: CadreNode): TransitionFake {
+      let drains = 0;
+      const connected = new Set<string>();
+      const events = new EventTarget();
+      const peer = (id: string) => ({ toString: () => id });
+      (node as unknown as { _running: boolean })._running = true;
+      (node as unknown as { controlNode: unknown }).controlNode = Object.assign(events, {
+        getConnections: (peerId?: { toString(): string }) => [...connected]
+          .filter((id) => peerId === undefined || id === peerId.toString())
+          .map((id) => ({ remotePeer: peer(id) })),
+        peerStore: { get: async () => { throw Object.assign(new Error('no record'), { name: 'NotFoundError' }); } }
+      });
+      (node as unknown as { drainPendingControlReplication: (r: string) => Promise<void> })
+        .drainPendingControlReplication = async () => { drains++; };
+      (node as unknown as { wireControlConnectionListeners: () => void }).wireControlConnectionListeners();
+      return {
+        drains: () => drains,
+        open: (id) => {
+          connected.add(id);
+          events.dispatchEvent(new CustomEvent('connection:open', { detail: { remotePeer: peer(id) } }));
+        },
+        identify: (id, protocols = SERVES) =>
+          events.dispatchEvent(new CustomEvent('peer:identify', { detail: { peerId: peer(id), protocols } })),
+        close: (id) => {
+          connected.delete(id);
+          events.dispatchEvent(new CustomEvent('connection:close', { detail: { remotePeer: peer(id) } }));
+        }
+      };
+    }
 
-      const change = () => (node as unknown as { handleControlConnectionChange: () => void }).handleControlConnectionChange();
-      const close = () => (node as unknown as { handleControlConnectionClose: () => void }).handleControlConnectionClose();
+    const growthNode = () => new CadreNode(createConfig({ controlNetwork: { partyId: PARTY, bootstrapNodes: [] } }));
 
-      change(); // 0 → ≥1: drains
-      change(); // still ≥1: no second drain
-      expect(drains()).toBe(1);
+    it('drains on the first identified sibling only, and re-arms once the last one has gone', () => {
+      const node = growthNode();
+      const fake = withTransitionFake(node);
 
-      conns.value = 0;
-      close(); // back to 0: re-arm
-      conns.value = 1;
-      change(); // 0 → ≥1 again: drains
-      expect(drains()).toBe(2);
+      fake.open('A');
+      fake.identify('A'); // the first reachable sibling: drains
+      fake.identify('A'); // an identify-push from a peer already counted: nothing
+      fake.open('B');
+      fake.identify('B'); // a second sibling: nothing
+      expect(fake.drains()).toBe(1);
+
+      fake.close('A');
+      expect(node.hasReachableControlSibling()).toBe(true); // B is still there
+      fake.close('B'); // none left: re-arms
+      fake.open('A');
+      fake.identify('A');
+      expect(fake.drains()).toBe(2);
+    });
+
+    it('an open with no identify serving the control database neither drains nor counts as reachable', () => {
+      const node = growthNode();
+      const fake = withTransitionFake(node);
+
+      fake.open('sibling'); // still identifying
+      fake.open('relay');
+      fake.identify('relay', ['/libp2p/circuit/relay/0.2.0/hop', '/ipfs/ping/1.0.0']);
+
+      expect(node.getControlConnectionCount()).toBe(2);
+      expect(node.hasReachableControlSibling()).toBe(false);
+      expect(fake.drains()).toBe(0);
     });
   });
 

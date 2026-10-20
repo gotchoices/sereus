@@ -20,8 +20,8 @@
  * such a change is the backstop, not this value.
  *
  * A machine that was offline when a sibling committed is covered sooner than either:
- * `CadreNode` drops every view when a control connection to a sibling opens
- * (`ControlDatabase.invalidateMembershipViews`), so the pass that connection starts reads
+ * `CadreNode` drops every view when a sibling becomes reachable (its identify on a new
+ * connection; `ControlDatabase.invalidateMembershipViews`), so the pass that starts then reads
  * storage.
  */
 export const MEMBERSHIP_VIEW_MAX_AGE_MS = 15_000;
@@ -38,13 +38,13 @@ export const MEMBERSHIP_VIEW_MAX_AGE_MS = 15_000;
 const OPTIMYSTIC_READ_REPAIR_WINDOW_MS = 10_000;
 
 /**
- * How long after a control connection to a sibling opens `CadreNode` drops the views a
- * second time: one read-repair window, plus a second for timer slop. The drop at the open
- * is not enough by itself. A node's reads before the connection (its start pass, with no
- * cohort to ask) stamp the window, so the reload the open starts is served from the local
- * copy without a consult and the view would keep the pre-connection rows until
- * {@link MEMBERSHIP_VIEW_MAX_AGE_MS}. The reload past the window starts the consults that
- * bring in what the sibling committed while this node was away.
+ * How long after a sibling becomes reachable (its identify on a new connection) `CadreNode`
+ * drops the views a second time: one read-repair window, plus a second for timer slop. The
+ * drop at the identify is not enough by itself. A node's reads before the sibling arrived
+ * (its start pass, with no cohort to ask) stamp the window, so the reload the identify
+ * starts is served from the local copy without a consult and the view would keep the
+ * pre-connection rows until {@link MEMBERSHIP_VIEW_MAX_AGE_MS}. The reload past the window
+ * starts the consults that bring in what the sibling committed while this node was away.
  */
 export const MEMBERSHIP_VIEW_RECONNECT_RELOAD_MS = OPTIMYSTIC_READ_REPAIR_WINDOW_MS + 1_000;
 

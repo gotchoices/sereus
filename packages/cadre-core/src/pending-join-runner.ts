@@ -98,7 +98,7 @@ export interface PendingJoinRunnerDeps {
   rewrite(expectedStampId: string, next: PendingJoinFields): Promise<PendingJoin>;
   /** `ControlDatabase.deletePendingJoin`, owner-signed. */
   remove(id: string): Promise<boolean>;
-  /** Whether this machine has no control connection now, so a write it commits reaches no other machine. */
+  /** Whether this machine reaches no sibling now (`CadreNode.hasReachableControlSibling`), so a write it commits reaches no other machine. */
   isAlone(): boolean;
   /** The sApp the request's invitation names. */
   sAppIdOf(join: PendingJoin): string;
@@ -252,7 +252,7 @@ function stableFraction(key: string): number {
 
 export class PendingJoinRunner {
   private readonly tracked = new Map<string, TrackedJoin>();
-  /** Joins whose latest write by this machine committed with no control connection: id → the request stamp written. */
+  /** Joins whose latest write by this machine committed with no sibling reachable: id → the request stamp written. */
   private readonly writtenAlone = new Map<string, string>();
   private readonly dueQueue: TrackedJoin[] = [];
   private readonly scheduler: TimeoutScheduler;
@@ -360,8 +360,8 @@ export class PendingJoinRunner {
 
   /**
    * Re-write, with identical content under a fresh stamp, each join this machine last wrote while
-   * it had no control connection, so the other machines receive it. Called on the control
-   * connection growth edge. A join someone wrote since is left alone.
+   * no sibling was reachable, so the other machines receive it. Called on the control cohort's
+   * growth edge, when a sibling becomes reachable. A join someone wrote since is left alone.
    *
    * NOTE: in memory only, so a join written alone by a process that stopped before it reconnected
    * reaches the party only with that join's next write. A sweep of every join this machine wrote,

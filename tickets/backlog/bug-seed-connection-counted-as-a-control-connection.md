@@ -25,3 +25,7 @@ Run the node-claim scenario with `DEBUG='sereus:cadre:*'` and look for the first
 ## Fix direction
 
 Count a connection as a control connection only when the remote is an authorized member of this party's control network (the per-stream gate's authorized set already answers that). `claimed-node-rejoins-without-waiting` edits the same lines; fix it there if it is promoted first.
+
+## Status after `reconnect-writes-wait-for-sibling-identify`
+
+That ticket replaced the connection count behind "alone" and the first-connection drain with `CadreNode.hasReachableControlSibling`: a connected peer counts only once its identify lists this party's control `repo` or `cluster` protocol and the cohort's membership check accepts it. A placeholder control node serves another party's protocols, so a seed connection no longer ends the alone state or starts the drain. What remains is the confirmation step above; if it shows nothing, this ticket can be closed.

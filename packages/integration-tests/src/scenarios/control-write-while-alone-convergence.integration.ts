@@ -57,8 +57,9 @@ describe('Control-DB write-while-alone re-replication', () => {
 			// this assertion (and the write-while-alone premise) would break.
 			expect(A.getControlNode()!.getConnections().length).toBe(0);
 
-			// NOW connect. A's connection:open drains the queue and re-issues the X write,
-			// which — now that the cohort is ≥2 — broadcasts. Without the fix this hangs.
+			// NOW connect. B's identify on A makes a sibling reachable, which drains the queue
+			// and re-issues the X write, which — now that the cohort is ≥2 — broadcasts.
+			// Without the fix this hangs.
 			await connectControlNodes(B, A);
 
 			await waitForCadrePeerConverged(B.getControlDatabase()!, xPeerId, {

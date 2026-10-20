@@ -152,6 +152,10 @@ function injectCohort(
     mergeThrows: opts.mergeThrows,
     peerStoreGet: opts.peerStoreGet
   });
+  // Each connection is a peer that has identified as serving the control database.
+  for (const id of opts.connections ?? []) {
+    (node as unknown as { identifiedControlPeers: Set<string> }).identifiedControlPeers.add(id);
+  }
   (node as unknown as { controlDatabase: unknown }).controlDatabase = {
     queryCadrePeers: async () => { queries++; return opts.members; },
     // Consulted by the per-stream authz snapshot refresh that rides each pass.
@@ -740,13 +744,13 @@ describe('CadreNode.reconcileControlCohort — address-book warming', () => {
 // Revoked-row reap sweep
 //
 // The pass drops guarded rows a committed Revocation tombstone retires, before
-// the sibling enumeration and only while the node holds a control connection.
+// the sibling enumeration and only while a sibling is reachable (connected and identified).
 // The per-row delete and its authorization live in control-revocation-reap.spec.ts;
 // these cover the scheduling decisions the sweep itself cannot express.
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('CadreNode.reconcileControlCohort — revoked-row reap sweep', () => {
-  it('does NOT reap while alone (zero control connections)', async () => {
+  it('does NOT reap while alone (no reachable sibling)', async () => {
     // The gate, and the reason it is load-bearing: a reap is a write, and a write
     // committed alone is local-only and forks this node's own revision history —
     // the exact condition this line of work exists to stop creating. A regression

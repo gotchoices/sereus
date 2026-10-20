@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import type { Connection, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
+import type { Connection, IdentifyResult, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
@@ -188,7 +188,7 @@ import {
   UnauthorizedReservationBudget,
   type InboundConnectionVerdict
 } from './membership-connection-gater.js';
-import { controlNetworkName, installControlProtocolGuard } from './control-protocol-guard.js';
+import { controlNetworkName, installControlProtocolGuard, servesControlDatabase } from './control-protocol-guard.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
 import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer, type StrandAddrOutcome, type StrandAddrCollection } from './strand-addr-protocol.js';
 import {
@@ -1154,14 +1154,14 @@ export class CadreNode implements SAppIdLookup {
   // ── Write-while-alone re-replication (control-write-ensure-replicated) ──────
   /**
    * Re-replication queue for owner `authorizePeer` writes that committed while
-   * this node was alone — `controlNode.getConnections().length === 0` at write
-   * time means the Optimystic commit was local-only (the block's cluster was ≤1)
-   * and never broadcast. Maps the affected subject peerId → 'authorize', to
+   * this node was alone ({@link committedAlone}) — the Optimystic commit was
+   * local-only (the block's cohort was this node) and never broadcast. Maps the
+   * affected subject peerId → 'authorize', to
    * re-issue once the cohort grows. Removals are NOT tracked here — a delete
    * leaves a `Revocation` tombstone, tracked by {@link pendingRevocations}; a
    * removePeer also clears any queued authorize for the same subject (the row is
-   * gone, so re-issuing the insert would be wrong). Drained on the 0→≥1
-   * control-connection transition by {@link drainPendingControlReplication}.
+   * gone, so re-issuing the insert would be wrong). Drained when a sibling becomes
+   * reachable ({@link updateControlSiblingReachability}) by {@link drainPendingControlReplication}.
    */
   private pendingPeerWrites: Map<string, 'authorize'> = new Map();
   /**
@@ -1199,14 +1199,24 @@ export class CadreNode implements SAppIdLookup {
   /** Single-flight guard for the re-replication drain (mirrors {@link registerSelfInFlight}). */
   private drainControlReplicationInFlight: Promise<void> | null = null;
   /**
-   * Tracks the control-connection presence edge so the drain fires only on the
-   * 0→≥1 transition (the earliest point a re-issue can broadcast), not on every
-   * subsequent `connection:open`. Re-armed to false once connections return to 0.
+   * Connected control peers whose identify says they serve the control database
+   * ({@link onControlPeerIdentified}): the peers Optimystic can count into a control block's
+   * cohort, before its membership check. A peer joins on its first `peer:identify` of a
+   * connected period, not on `connection:open`: until it identifies, every control block's
+   * cohort is this node alone. It leaves when its last connection closes. Read through
+   * {@link hasReachableControlSibling}, which applies the membership check.
    */
-  private hasControlConnection = false;
-  /** `connection:open` listener: the growth-triggered drain, and a reconcile trigger for a sibling (teardown in {@link stopRecordRefresh}). */
-  private controlConnectionOpenHandler: ((event: CustomEvent<Connection>) => void) | null = null;
-  /** `connection:close` listener: re-arms the growth edge, and a reconcile trigger for a sibling (teardown in {@link stopRecordRefresh}). */
+  private readonly identifiedControlPeers = new Set<string>();
+  /**
+   * {@link hasReachableControlSibling} at its last evaluation, so the drain fires on the
+   * false→true edge only (the earliest point a re-issue reaches the cohort), not on every later
+   * identify. Re-armed to false when no reachable sibling remains
+   * ({@link updateControlSiblingReachability}).
+   */
+  private controlSiblingReachable = false;
+  /** `peer:identify` listener: {@link onControlPeerIdentified} (teardown in {@link stopRecordRefresh}). */
+  private controlPeerIdentifyHandler: ((event: CustomEvent<IdentifyResult>) => void) | null = null;
+  /** `connection:close` listener: {@link onControlConnectionClosed} (teardown in {@link stopRecordRefresh}). */
   private controlConnectionCloseHandler: ((event: CustomEvent<Connection>) => void) | null = null;
 
   constructor(config: CadreNodeConfig) {
@@ -1603,8 +1613,8 @@ export class CadreNode implements SAppIdLookup {
       log('CadreNode started successfully');
 
       // Wire the control-connection growth listeners immediately (not via the
-      // delayed refresh path) so no early `connection:open` is missed — the
-      // write-while-alone re-replication drain must fire on the first 0→≥1 edge.
+      // delayed refresh path) so no early `peer:identify` is missed — the
+      // write-while-alone re-replication drain must fire when the first sibling is reachable.
       this.wireControlConnectionListeners();
 
       // Arm the control network's peer-join block catch-up now that the control
@@ -2503,10 +2513,8 @@ export class CadreNode implements SAppIdLookup {
       // Who this node SENDS control writes to (cohort and coordinator choice), where
       // `authorizeInboundStream` is who may send to it. Without it Optimystic picks cohort
       // members from the protocols a peer's peer-store record lists, which any connected
-      // peer can fill. The stream gate's rule, unlogged (Optimystic asks several times per
-      // peer per cohort assembly and counts refusals on its own debug line), plus a device
-      // whose verified redemption is being written, which must hold the rows that admit it.
-      isNetworkMember: (peerId) => this.isControlNetworkMember(peerId) || this.admittingDevices.has(peerId)
+      // peer can fill.
+      isNetworkMember: (peerId) => this.isControlCohortMember(peerId)
     };
 
     return nodeOptions;
@@ -2823,6 +2831,18 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Whether this node sends control writes to `remotePeerId`: Optimystic's `isNetworkMember`
+   * for the control node (cohort and coordinator choice), and the membership half of
+   * {@link hasReachableControlSibling}. The stream gate's rule ({@link isControlNetworkMember}),
+   * unlogged, because Optimystic asks several times per peer per cohort assembly and counts
+   * refusals on its own debug line; plus a device whose verified redemption is being written
+   * ({@link admittingDevices}), which must hold the rows that admit it.
+   */
+  private isControlCohortMember(remotePeerId: string): boolean {
+    return this.isControlNetworkMember(remotePeerId) || this.admittingDevices.has(remotePeerId);
+  }
+
+  /**
    * Per-stream authorization for the protocol guard's `members-snapshot` class
    * (`control-protocol-guard.ts`): the four Optimystic control-DB protocols
    * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), FRET's
@@ -2950,6 +2970,9 @@ export class CadreNode implements SAppIdLookup {
       // pass was denied under the SAME membership snapshot instead of re-arming
       // unconditionally.
       void this.controlBackfill?.scheduleConnectedPeers();
+      // Same join order for the growth edge: a sibling that identified before this commit
+      // authorized it becomes reachable here.
+      this.updateControlSiblingReachability();
       await this.hangUpRevokedControlPeers(rows, loadTombstones);
       await this.noteOwnRemoval(rows, loadTombstones);
     } catch (error) {
@@ -3268,12 +3291,8 @@ export class CadreNode implements SAppIdLookup {
       void (async () => {
         try {
           // NOTE: after a refresh of a row an earlier process left (a restarted machine's
-          // first-growth drain re-touch), the timer still writes, as it did before the skip. On a
-          // restarted machine such a write can conflict with the cohort's newer revision (the
-          // ConcurrentModificationError below) and catch its control tables up on rows written
-          // while it was down, and until fix/membership-view-keeps-rows-a-deferred-consult-left-stale
-          // lands, catching up after a reconnect leans on writes like it (cadre-invite-any-member).
-          // Skip after a refresh too once that lands.
+          // first-growth drain re-touch), the timer still writes, as it did before the skip;
+          // implement/invited-machine-skips-its-first-publish skips it there too.
           await (this.lastSelfRecordRefreshedARow ? this.registerSelf() : this.publishSelfRecordUnlessCurrent());
         } catch (error) {
           // Background task — a failed publish must not crash the node. A restarted machine
@@ -3361,7 +3380,7 @@ export class CadreNode implements SAppIdLookup {
       return 'skipped';
     }
     // Collected only past that skip, which a node waiting for its row replicated in takes on
-    // every connected reconcile pass ({@link publishFirstSelfRecord}).
+    // reconcile pass made while a sibling is reachable ({@link publishFirstSelfRecord}).
     const addrs = await this.collectSelfAddrs();
 
     if (!existing && ownerService) {
@@ -3619,21 +3638,21 @@ export class CadreNode implements SAppIdLookup {
    * process does not learn it was removed ({@link noteOwnRemoval}), and pays that read on every
    * pass.
    *
-   * Connected-only: a row written elsewhere arrives over a connection, and an owner's publish
-   * committed alone is local-only and forks its own history — a restarted owner whose embedder
-   * runs a pass before it reconnects would write its row on the stale side of the fork, and
-   * then never see rows written while it was down (`cadre-invite-any-member` runs that pass and
-   * fails every time without this condition). The boot-time publish and the first-growth drain already try at the node's lone and
-   * first-connection moments; this retries on the passes after.
+   * Only while a sibling is reachable ({@link hasReachableControlSibling}): a row written
+   * elsewhere arrives from a sibling, and an owner's publish committed alone is local-only and
+   * forks its own history — a restarted owner whose embedder runs a pass before it reconnects
+   * would write its row on the stale side of the fork, and then never see rows written while it
+   * was down (`cadre-invite-any-member` runs that pass and fails every time without this
+   * condition). A connection is not enough: until the sibling identifies, the write's cohort is
+   * this node alone. The boot-time publish and the first-growth drain already try at the
+   * node's lone and first-sibling moments; this retries on the passes after.
    *
    * NOTE: a machine admitted by invitation still publishes here though its admission wrote its
-   * signed record. Skipping that publish waits on
-   * `fix/membership-view-keeps-rows-a-deferred-consult-left-stale`, whose defect this write masks
-   * (`implement/invited-machine-skips-its-first-publish`).
+   * signed record; `implement/invited-machine-skips-its-first-publish` skips it.
    */
   private async publishFirstSelfRecord(): Promise<void> {
     if (this.lastSelfRecordPublishAt !== null || this.isAwaitingClaim() || this.removal !== null
-      || this.getControlConnectionCount() === 0) {
+      || !this.hasReachableControlSibling()) {
       return;
     }
     const outcome = await this.registerSelf().catch((error: unknown) => {
@@ -3760,16 +3779,17 @@ export class CadreNode implements SAppIdLookup {
       if (this.selfPeerUpdateHandler) {
         this.controlNode.removeEventListener('self:peer:update', this.selfPeerUpdateHandler);
       }
-      if (this.controlConnectionOpenHandler) {
-        this.controlNode.removeEventListener('connection:open', this.controlConnectionOpenHandler);
+      if (this.controlPeerIdentifyHandler) {
+        this.controlNode.removeEventListener('peer:identify', this.controlPeerIdentifyHandler);
       }
       if (this.controlConnectionCloseHandler) {
         this.controlNode.removeEventListener('connection:close', this.controlConnectionCloseHandler);
       }
     }
     this.selfPeerUpdateHandler = null;
-    this.controlConnectionOpenHandler = null;
+    this.controlPeerIdentifyHandler = null;
     this.controlConnectionCloseHandler = null;
+    this.identifiedControlPeers.clear();
 
     // Reset the write-while-alone re-replication state so a stop()→start() cycle
     // re-arms the growth edge and re-runs BOTH one-shot passes. Any queued
@@ -3778,7 +3798,7 @@ export class CadreNode implements SAppIdLookup {
     // first-growth revocation sweep — which is why the sweep flag must reset too,
     // or the second lifetime would skip the sweep and strand exactly the
     // committed-alone tombstones it exists to carry.
-    this.hasControlConnection = false;
+    this.controlSiblingReachable = false;
     this.reconstructedLocalOnlyWrites = false;
     this.reissuedHeldRevocations = false;
     this.pendingPeerWrites.clear();
@@ -4111,9 +4131,10 @@ export class CadreNode implements SAppIdLookup {
 
     // Reap guarded rows this node still holds for incarnations an already-committed
     // Revocation tombstone retires — the half of a removal replication cannot carry
-    // (a delete of an already-absent row replays as nothing). Connected-only: a reap
-    // is a write, and a write committed alone is local-only and forks this node's own
-    // history, which is the condition this work exists to stop creating
+    // (a delete of an already-absent row replays as nothing). Only while a sibling is
+    // reachable (hasReachableControlSibling, not merely connected): a reap is a write, and a
+    // write committed alone is local-only and forks this node's own history, which is the
+    // condition this work exists to stop creating
     // (tickets/blocked/forked-control-collection-sync-livelocks.md). Nothing is urgent
     // here — the stale row already reads as absent everywhere — so waiting for
     // connectivity costs nothing and keeps the reap fork-CLOSING rather than
@@ -4135,7 +4156,7 @@ export class CadreNode implements SAppIdLookup {
     // avoid. Bounded by how long a sweep runs, which is bounded by the backlog of
     // unreaped rows (0 in steady state). If that backlog can ever be large, move the
     // check inside reapRevokedRows' loop via an injected predicate.
-    if (this.getControlConnectionCount() > 0) {
+    if (this.hasReachableControlSibling()) {
       try {
         const reaped = await this.controlDatabase.reapRevokedRows(selfPeerId);
         if (reaped > 0) {
@@ -4151,10 +4172,10 @@ export class CadreNode implements SAppIdLookup {
       }
 
       // Publish this machine's unpublished cross-party joins party-wide and remove the rows a
-      // self-revocation queued (JoinedStrandSession.syncWithParty). Connected-only for the
-      // reap's reason above; owner-only by the session's own signer check. Nothing is urgent:
+      // self-revocation queued (JoinedStrandSession.syncWithParty). Behind the reap's gate,
+      // for its reason; owner-only by the session's own signer check. Nothing is urgent:
       // a join recorded locally starts no pass, so it reaches the party on the next pass
-      // while this machine is connected — a membership change, a sibling connecting, or the
+      // while a sibling is reachable — a membership change, a sibling connecting, or the
       // backstop, 2 minutes at most.
       try {
         await this.joinedStrands?.syncWithParty();
@@ -4709,32 +4730,34 @@ export class CadreNode implements SAppIdLookup {
   //
   // Optimystic's coordinator commits a control write WITHOUT broadcasting when the
   // block's cluster has ≤1 member. An owner that authorizes/removes a peer or
-  // (re)publishes its own record while no sibling is connected therefore writes a
+  // (re)publishes its own record while no sibling is reachable therefore writes a
   // row that exists ONLY in its local control DB — a sibling that connects later
   // never observes it (pull-on-read routes to the block's cluster, which never
   // learned of the write). reconcileControlCohort shrinks the alone window but
-  // cannot close it (a write in the instant before any sibling connects is still
-  // local-only). The remedy: detect "wrote while alone" (0 connections is a sound
-  // lower bound), queue the affected row, and RE-ISSUE the write once the cohort
-  // grows (0→≥1 connection), as an idempotent monotonic update that now broadcasts.
+  // cannot close it (a write in the instant before any sibling identifies is still
+  // local-only). The remedy: detect "wrote while alone" (no identified sibling the
+  // cohort would admit: committedAlone), queue the affected row, and RE-ISSUE the write
+  // once one is reachable, as an idempotent monotonic update that now broadcasts.
   // See docs/architecture.md (Control Network Convergence → "Writes made while alone").
   // ============================================================================
 
   /**
-   * Whether a control write happening now would commit local-only. A sound lower
-   * bound is "no connected control peers": 0 connections ⇒ the block's cluster is
-   * ≤1 ⇒ Optimystic commits without broadcasting. This is the pragmatic proxy for
-   * the precise signal (the block's `getClusterSize`); it over-approximates safely
-   * — a connected-but-not-in-this-block's-cluster write may still be local-only and
-   * is caught by the cohort's periodic pull-on-read instead. Re-issuing an already-
-   * replicated row is harmless (an idempotent monotonic bump), so the coarse proxy
-   * is acceptable as the agreed first cut.
+   * Whether a control write happening now would commit local-only: no sibling is reachable
+   * ({@link hasReachableControlSibling}, the public form, so the two cannot drift). A relay, a
+   * bootstrap node or a peer that has not identified yet holds a connection without being in the
+   * write's cohort, so a write made with only those connected is queued too. One made alone at
+   * the revision the cohort reached meanwhile is a fork no later consult sees, because a consult
+   * compares revision numbers only; the re-issue on the growth edge is what conflicts with the
+   * cohort's copy and pulls it in.
    *
-   * Reads {@link getControlConnectionCount} — the public, embedder-facing form of
-   * the same sample — so the two cannot drift.
+   * Still a proxy for the precise signal (the block's own cohort): a reachable sibling outside
+   * this block's cohort leaves the write local-only, caught by the cohort's pull-on-read. On the
+   * control network every block's cohort is the whole party, so that gap is a party larger than
+   * `CONTROL_REPLICATION_BREADTH`. Re-issuing a replicated row is harmless (an idempotent
+   * monotonic bump).
    */
   private committedAlone(): boolean {
-    return this.getControlConnectionCount() === 0;
+    return !this.hasReachableControlSibling();
   }
 
   /**
@@ -4791,7 +4814,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Drain the write-while-alone re-replication queue: re-issue the writes that
    * committed local-only now that the cohort can broadcast them. Public so the
-   * 0→≥1 growth trigger ({@link handleControlConnectionChange}) and tests can drive
+   * growth trigger ({@link updateControlSiblingReachability}) and tests can drive
    * it; concurrent calls collapse into one in-flight drain
    * ({@link drainControlReplicationInFlight}) so two growth signals never
    * double-issue. Best-effort throughout — a per-row failure leaves that entry
@@ -5091,37 +5114,100 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * On a control connection opening, detect the 0→≥1 transition and drain the
-   * write-while-alone re-replication queue (single-flight; fires only on the edge,
-   * not on every subsequent `connection:open`). Best-effort — a drain failure is
-   * logged, not thrown.
+   * Re-evaluate {@link hasReachableControlSibling} and act on its edges: on false→true, drain
+   * the write-while-alone re-replication queue (single-flight; best-effort, a drain failure is
+   * logged, not thrown); on true→false, re-arm, so the next reachable sibling drains again.
+   * Called when a peer identifies, when a connection closes, and after every membership refresh,
+   * where a sibling that connected before this node authorized it (the production join order)
+   * becomes reachable. A device counted in for its admission ({@link admittingDevices}) is not
+   * a trigger: the admission's own writes are in flight, and its row landing refreshes
+   * membership.
    */
-  private handleControlConnectionChange(): void {
+  private updateControlSiblingReachability(): void {
     if (!this._running || !this.controlNode) {
       return;
     }
-    const connected = this.controlNode.getConnections().length > 0;
-    if (!connected || this.hasControlConnection) {
+    const reachable = this.hasReachableControlSibling();
+    if (reachable === this.controlSiblingReachable) {
       return;
     }
-    this.hasControlConnection = true;
-    log('Control cohort grew (0 → ≥1 connection); draining write-while-alone re-replication queue');
-    void this.drainPendingControlReplication('connection:open')
-      .catch((error) => log('Control re-replication drain (connection:open) failed: %o', error));
-  }
-
-  /** Re-arm the growth edge once all control connections drop, so a later reconnect re-drains. */
-  private handleControlConnectionClose(): void {
-    if (!this.controlNode) {
+    this.controlSiblingReachable = reachable;
+    if (!reachable) {
       return;
     }
-    if (this.controlNode.getConnections().length === 0) {
-      this.hasControlConnection = false;
-    }
+    log('Control cohort grew (a sibling is reachable); draining write-while-alone re-replication queue');
+    void this.drainPendingControlReplication('sibling-reachable')
+      .catch((error) => log('Control re-replication drain (sibling-reachable) failed: %o', error));
   }
 
   /**
-   * A control connection to an AUTHORIZED sibling opened or closed: start a reconcile
+   * A connected peer identified as serving the control database: count it
+   * ({@link identifiedControlPeers}), re-evaluate the growth edge, and run the sibling-open
+   * reactions, once per connected period. libp2p re-emits `peer:identify` on every
+   * identify-push from a connected peer, and those repeats start nothing.
+   */
+  private onControlPeerIdentified(peerId: PeerId): void {
+    const id = peerId.toString();
+    // An identify that reports after its connection closed counts nobody.
+    if (this.identifiedControlPeers.has(id) || !this.controlNode || this.controlNode.getConnections(peerId).length === 0) {
+      return;
+    }
+    this.identifiedControlPeers.add(id);
+    this.updateControlSiblingReachability();
+    this.onControlSiblingConnectionChange(id, 'open');
+  }
+
+  /**
+   * A control connection closed: `remotePeer` stops counting once it has none left, and the
+   * growth edge re-arms if no reachable sibling remains. The sibling-close reaction runs on every
+   * close. libp2p's connection manager drops the closed connection from `getConnections` before
+   * this listener runs (it subscribed first).
+   */
+  private onControlConnectionClosed(remotePeer: PeerId): void {
+    const id = remotePeer.toString();
+    if (!this.controlNode || this.controlNode.getConnections(remotePeer).length === 0) {
+      this.identifiedControlPeers.delete(id);
+    }
+    this.updateControlSiblingReachability();
+    this.onControlSiblingConnectionChange(id, 'close');
+  }
+
+  /**
+   * Count the peers that identified before {@link wireControlConnectionListeners} ran, whose
+   * `peer:identify` has already fired, from their peer-store records. Updates the growth edge
+   * but runs no sibling-open reaction, as a connection that predates the listeners never did. A
+   * peer not yet in the peer store is still identifying, and its own event counts it.
+   */
+  private async noteIdentifiedControlPeers(): Promise<void> {
+    const node = this.controlNode;
+    if (!node) {
+      return;
+    }
+    const connected = new Map<string, PeerId>();
+    for (const connection of node.getConnections()) {
+      connected.set(connection.remotePeer.toString(), connection.remotePeer);
+    }
+    const partyId = this.config.controlNetwork.partyId;
+    await Promise.all([...connected.values()].map(async (peerId) => {
+      try {
+        const { protocols } = await node.peerStore.get(peerId);
+        // Still wired to this node: a stop while the read was out cleared the set.
+        const wired = this.controlPeerIdentifyHandler !== null && this.controlNode === node;
+        if (wired && servesControlDatabase(partyId, protocols) && node.getConnections(peerId).length > 0) {
+          this.identifiedControlPeers.add(peerId.toString());
+        }
+      } catch (error) {
+        if ((error as Error).name !== 'NotFoundError') {
+          log('Peer store read for connected control peer %s failed — left to its identify: %o', peerId.toString(), error);
+        }
+      }
+    }));
+    this.updateControlSiblingReachability();
+  }
+
+  /**
+   * An AUTHORIZED sibling became reachable (its identify, once per connected period:
+   * {@link onControlPeerIdentified}) or one of its connections closed: start a reconcile
    * pass. On open the pass asks the new sibling for strand addresses and re-arms the
    * delegate grants; on close it re-dials. First, on open, drop the membership rows
    * views: a machine that was offline while a sibling committed learns of the commit
@@ -5129,7 +5215,11 @@ export class CadreNode implements SAppIdLookup {
    * pass's reads do that now rather than after the views' maximum age. Those reads can
    * fall inside the read-repair window, so the open also arms a second drop past it
    * ({@link armMembershipViewReload}). Any other
-   * connection — a relay, a bootstrap node, another party's machine — starts nothing.
+   * peer — a relay, a bootstrap node, another party's machine — starts nothing.
+   *
+   * On identify rather than `connection:open` because, until the sibling identifies,
+   * Optimystic's cohort for every control block is this node alone: a pass started at the
+   * open writes (the first self-record publish) and reads on a cohort of one.
    */
   private onControlSiblingConnectionChange(remotePeer: string, change: 'open' | 'close'): void {
     if (!this.authorizedControlPeers.has(remotePeer)) {
@@ -5159,6 +5249,11 @@ export class CadreNode implements SAppIdLookup {
    * The reload past the window starts the consults; one that brings a newer revision
    * raises the table change that drops the view and refreshes the gate. Re-armed by every
    * open, so it runs one window after the latest.
+   *
+   * NOTE: a consult Optimystic defers (16 already in flight) starts nothing and leaves the block
+   * unstamped, so the view keeps its rows until the first read past its maximum age, which on an
+   * idle node is the reconcile backstop. If `cluster-tx:read-repair-deferred` lines show at a
+   * reconnect, re-arm this reload once more instead of waiting for the backstop.
    */
   private armMembershipViewReload(): void {
     if (this.membershipViewReloadTimer) {
@@ -5175,26 +5270,27 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Wire the control-connection listeners: the growth edge that drives
-   * write-while-alone re-replication, and the sibling-connection reconcile trigger
-   * ({@link onControlSiblingConnectionChange}). Wired in {@link start} (not the delayed
-   * refresh path) so no early `connection:open` is missed; torn down in
+   * Wire the control-connection listeners, which keep {@link identifiedControlPeers}: the
+   * growth edge that drives write-while-alone re-replication, and the sibling reconcile
+   * trigger ({@link onControlSiblingConnectionChange}). Wired in {@link start} (not the
+   * delayed refresh path) so no early identify is missed, and reads back the peers that
+   * identified before it ran ({@link noteIdentifiedControlPeers}); torn down in
    * {@link stopRecordRefresh}. Idempotent.
    */
   private wireControlConnectionListeners(): void {
-    if (!this.controlNode || this.controlConnectionOpenHandler) {
+    if (!this.controlNode || this.controlPeerIdentifyHandler) {
       return;
     }
-    this.controlConnectionOpenHandler = (event) => {
-      this.handleControlConnectionChange();
-      this.onControlSiblingConnectionChange(event.detail.remotePeer.toString(), 'open');
+    const partyId = this.config.controlNetwork.partyId;
+    this.controlPeerIdentifyHandler = (event) => {
+      if (servesControlDatabase(partyId, event.detail.protocols)) {
+        this.onControlPeerIdentified(event.detail.peerId);
+      }
     };
-    this.controlConnectionCloseHandler = (event) => {
-      this.handleControlConnectionClose();
-      this.onControlSiblingConnectionChange(event.detail.remotePeer.toString(), 'close');
-    };
-    this.controlNode.addEventListener('connection:open', this.controlConnectionOpenHandler);
+    this.controlConnectionCloseHandler = (event) => this.onControlConnectionClosed(event.detail.remotePeer);
+    this.controlNode.addEventListener('peer:identify', this.controlPeerIdentifyHandler);
     this.controlNode.addEventListener('connection:close', this.controlConnectionCloseHandler);
+    void this.noteIdentifiedControlPeers();
   }
 
   // ============================================================================
@@ -8388,19 +8484,35 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Open control-network connections right now. A lower-bound proxy for replication
-   * reach: 0 connections ⇒ a control write commits local-only. The private
-   * `committedAlone` write-while-alone seam is defined in terms of this.
-   *
-   * It approximates the precise signal (the block's cluster size), and a caller that
-   * samples it AFTER a write samples a slightly wider window than `committedAlone`
-   * does inside the write itself. It exists so an embedder can warn an owner before a
-   * control write that this machine currently sees none of its siblings, and report
-   * after one that the write may not have travelled — a warning shown unconditionally
-   * is a warning people learn to ignore.
+   * Open control-network connections right now, of every kind: siblings, relays, bootstrap
+   * nodes and peers still identifying. A report of connectivity, not of replication reach: a
+   * control write can commit local-only with connections open, and whether one would is
+   * {@link hasReachableControlSibling}.
    */
   getControlConnectionCount(): number {
     return this.controlNode?.getConnections().length ?? 0;
+  }
+
+  /**
+   * Whether a control write made now reaches another machine: a connected peer has identified
+   * as serving the control database and is one this node sends control writes to (an
+   * authorized member, or a device whose admission it is writing). Optimystic counts a peer
+   * into a control block's cohort on those same terms; with none, a write commits on this node
+   * alone and is queued for re-issue once one is reachable (docs/architecture.md → "Writes made
+   * while alone").
+   *
+   * It exists so an embedder can warn an owner before a control write that this machine
+   * currently reaches none of its siblings, and report after one that the write may not have
+   * travelled; a warning shown unconditionally is a warning people learn to ignore. A caller
+   * that samples it AFTER a write samples a slightly wider window than the write did.
+   */
+  hasReachableControlSibling(): boolean {
+    for (const peerId of this.identifiedControlPeers) {
+      if (this.isControlCohortMember(peerId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

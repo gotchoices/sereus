@@ -1378,9 +1378,9 @@ export class ControlDatabase {
   /**
    * Empty every membership view, so the next read of each loads afresh and no load in
    * flight installs. Besides {@link initialize} and {@link close}, `CadreNode` calls it when
-   * a control connection to a sibling opens: a machine that was offline while that sibling
-   * committed learns of the commit only when it next reads the block from storage, and
-   * dropping the views makes the pass that connection starts read now rather than after
+   * a sibling becomes reachable (its identify on a new connection): a machine that was offline
+   * while that sibling committed learns of the commit only when it next reads the block from
+   * storage, and dropping the views makes the pass that starts then read now rather than after
    * `MEMBERSHIP_VIEW_MAX_AGE_MS`.
    */
   invalidateMembershipViews(): void {
@@ -3538,7 +3538,7 @@ export class ControlDatabase {
    * present clause are the shape {@link redeemInvitation}'s consent-branch insert ships).
    *
    * Driven automatically by {@link reapRevokedRows}, which the periodic control-cohort
-   * reconcile pass runs while the node has at least one control connection.
+   * reconcile pass runs while a sibling is reachable (`CadreNode.hasReachableControlSibling`).
    */
   async reapRevokedRow(table: ReapableTable, rowKey: string, stampId: string): Promise<boolean> {
     this.ensureInitialized();
@@ -3595,8 +3595,8 @@ export class ControlDatabase {
    * carry the delete (replaying a delete of an already-absent row is a no-op), so a node
    * that converged on a removal while holding the removed row keeps that row as inert
    * garbage until something walks the tombstones and drops it. `CadreNode`'s periodic
-   * control-cohort reconcile pass is that something, gated on the node having at least one
-   * control connection (a reap is a write, and a write committed alone is local-only).
+   * control-cohort reconcile pass is that something, gated on a sibling being reachable
+   * (a reap is a write, and a write committed alone is local-only).
    *
    * Enumerated UNLOCKED, deleted per-row LOCKED: {@link reapRevokedRow} takes the write
    * lock itself (via {@link mutateCadrePeer} / {@link execWrite}) and the lock is not
@@ -3903,8 +3903,8 @@ export class ControlDatabase {
    * class: every public write method of this class runs its statement(s) under it, and
    * `SeedBootstrapService` reaches it through {@link execWrite} rather than touching the
    * `Database` directly, so it is covered too. The race is
-   * real, not theoretical: the background self-record publish on a control connection
-   * opening (`CadreNode.drainPendingControlReplication` → `registerSelf`) collided with
+   * real, not theoretical: the background self-record publish when a sibling becomes
+   * reachable (`CadreNode.drainPendingControlReplication` → `registerSelf`) collided with
    * a foreground `authorizePeer` — both `CadrePeer` inserts — and tripped the boundary
    * assert.
    *

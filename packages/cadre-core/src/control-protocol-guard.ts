@@ -135,6 +135,21 @@ export function controlNetworkName(partyId: string): string {
 	return `control-${partyId}`;
 }
 
+/** The control database's two storage protocols, `repo` and `cluster`. */
+function controlDatabaseProtocols(partyId: string): readonly string[] {
+	const prefix = `/optimystic/${controlNetworkName(partyId)}`;
+	return [`${prefix}/repo/1.0.0`, `${prefix}/cluster/1.0.0`];
+}
+
+/**
+ * Whether a peer whose protocol list is `protocols` serves the control database. Optimystic
+ * counts a peer into a control block's cohort by the same test (`servesThisNetwork` in db-p2p's
+ * `libp2p-key-network.ts`), before its membership check.
+ */
+export function servesControlDatabase(partyId: string, protocols: readonly string[]): boolean {
+	return controlDatabaseProtocols(partyId).some((protocol) => protocols.includes(protocol));
+}
+
 /**
  * The class of every protocol a control node serves, by exact protocol id: the single
  * declaration the guard enforces. See the module doc for what each class admits and why each
@@ -152,8 +167,7 @@ export function controlProtocolClasses(partyId: string): ReadonlyMap<string, Con
 		[WAKE_PROTOCOL, 'members'],
 		[STRAND_ADDR_PROTOCOL, 'members'],
 
-		[`${prefix}/repo/1.0.0`, 'members-snapshot'],
-		[`${prefix}/cluster/1.0.0`, 'members-snapshot'],
+		...controlDatabaseProtocols(partyId).map((protocol): [string, ControlProtocolClass] => [protocol, 'members-snapshot']),
 		[`${prefix}/db-p2p/sync/1.0.0`, 'members-snapshot'],
 		[`${prefix}/db-p2p/block-transfer/1.0.0`, 'members-snapshot'],
 		[`${fret}/neighbors`, 'members-snapshot'],

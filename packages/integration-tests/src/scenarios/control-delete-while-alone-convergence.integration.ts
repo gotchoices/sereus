@@ -8,7 +8,7 @@
  * is gone), so durability rides entirely on the tombstone: `CadreNode` queues it
  * (in-session) or sweeps every locally-held tombstone (first cohort growth after
  * a process start) and re-issues it with an owner-signed monotonic `ReissuedAt`
- * bump on the 0→≥1 control-connection growth edge. A sibling that still holds
+ * bump when a sibling becomes reachable (the growth edge). A sibling that still holds
  * the removed row then retires its stamp — membership reads treat a retired
  * stamp as absent, even though the row is not physically deleted there.
  *
@@ -200,7 +200,7 @@ async function expectRemovalConverges(ctx: AloneRemoval, B: CadreNode): Promise<
 	// B still holds the row it converged on before going down.
 	expect(await B.isMember(ctx.xPeerId)).toBe(true);
 
-	// Reconnect — A's 0→≥1 growth edge re-issues the tombstone, which now broadcasts.
+	// Reconnect — B becoming reachable to A (the growth edge) re-issues the tombstone, which now broadcasts.
 	await connectControlNodes(B, ctx.A);
 
 	await waitUntil(async () => !(await B.isMember(ctx.xPeerId)), {

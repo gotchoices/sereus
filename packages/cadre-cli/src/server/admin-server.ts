@@ -78,7 +78,11 @@ export interface AdminStrandSummary {
 /** The body of `GET /admin/strands`. */
 export interface AdminStrandList {
   strands: AdminStrandSummary[];
-  /** Open control-network connections right now — 0 means a write commits local-only. */
+  /**
+   * Open control-network connections right now, of every kind (`CadreNode.getControlConnectionCount`).
+   * 0 means a write commits local-only; more than 0 does not mean it travels (a relay or a
+   * sibling still identifying counts here).
+   */
   controlConnections: number;
 }
 
@@ -99,9 +103,11 @@ export interface AdminStrandRemoval {
    */
   removed: boolean;
   /**
-   * Whether 0 control connections were sampled at the end of the call. Sampled on
-   * EVERY call, including one that found no row and wrote nothing — read it as "this
-   * machine currently sees no siblings", and only as "your delete may not have
+   * Whether no sibling was reachable at the end of the call
+   * (`CadreNode.hasReachableControlSibling`): a connection to a relay, a bootstrap node or a
+   * sibling still identifying does not count, since a write made then commits on this machine
+   * alone. Sampled on EVERY call, including one that found no row and wrote nothing — read it
+   * as "this machine currently reaches no siblings", and only as "your delete may not have
    * travelled" when `removed` is also true.
    */
   alone: boolean;
@@ -581,7 +587,7 @@ async function removeStrand(node: CadreNode, rawId: string, confirm: string | nu
     published: row !== null,
     type: row?.Type ?? null,
     removed: row !== null,
-    alone: node.getControlConnectionCount() === 0,
+    alone: !node.hasReachableControlSibling(),
   };
 }
 

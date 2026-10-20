@@ -39,6 +39,7 @@ class MockNode {
   /** When set, `unpublishStrand` rejects with this message. */
   unpublishError: string | null = null;
   controlConnections = 2;
+  siblingReachable = true;
 
   readonly partyId = 'party-xyz';
   get peerId() { return { toString: () => '12D3KooWSelf' }; }
@@ -129,6 +130,8 @@ class MockNode {
   getStrands() { return this.strandInstances; }
 
   getControlConnectionCount() { this.record('getControlConnectionCount'); return this.controlConnections; }
+
+  hasReachableControlSibling() { this.record('hasReachableControlSibling'); return this.siblingReachable; }
 
   getControlDatabase() {
     if (this.noControlDatabase) return null;
@@ -608,8 +611,8 @@ describe('AdminServer', () => {
         expect(node.calls.some((c) => c.method === 'queryStrand')).toBe(false);
       });
 
-      it('reports alone:true when the node has no control connections', async () => {
-        node.controlConnections = 0;
+      it('reports alone:true when the node reaches no sibling, though it holds connections', async () => {
+        node.siblingReachable = false;
         const body = await (await del('/strand-open')).json();
         expect(body.data.alone).toBe(true);
       });

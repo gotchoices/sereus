@@ -2131,7 +2131,7 @@ export interface CadreOwnerKey {
 
 /** Why `CadreNode.addOwner` refuses by name (`OwnerKeyAddRefusedError.code`). */
 export type OwnerKeyAddRefusal =
-  /** No control connection while the party has other members: the row would stay on this node, and nothing re-issues an `OwnerKey` add. */
+  /** No sibling reachable (`CadreNode.hasReachableControlSibling`) while the party has other members: the row would stay on this node, and nothing re-issues an `OwnerKey` add. */
   | 'alone';
 
 /** Why `CadreNode.removeMachine` refuses by name (`MachineRemovalRefusedError.code`). */
@@ -2172,7 +2172,7 @@ export type OwnerKeyRemovalRefusal =
   | 'last-owner'
   /** The key is this node's own owner key: an owner cannot sign its own row's removal (`A.Key <> old.Key`), so ask another owner key. */
   | 'self'
-  /** A re-vouch of an `OwnerKey` row was asked for while this node has no control connection and the party has other members: the re-added row has no re-issue path. Decided at call time, so never planned. */
+  /** A re-vouch of an `OwnerKey` row was asked for while this node reaches no sibling and the party has other members: the re-added row has no re-issue path. Decided at call time, so never planned. */
   | 'alone';
 
 /** The rows sharing the owner keys' voucher column that a removed owner key strands unless re-vouched first. */
