@@ -176,6 +176,14 @@ function makeLibp2p(
       const at = open.findIndex((c) => c.remotePeer.toString() === remotePeer.toString());
       if (at >= 0) open.splice(at, 1);
     },
+    /** Close a peer's last connection and fire libp2p's `peer:disconnect` (its detail is the PeerId). */
+    dispatchDisconnect(remotePeer: PeerId) {
+      const at = open.findIndex((c) => c.remotePeer.toString() === remotePeer.toString());
+      if (at >= 0) open.splice(at, 1);
+      for (const handler of handlers.get('peer:disconnect') ?? []) {
+        handler({ detail: remotePeer });
+      }
+    },
     listenerCount(type: string) {
       return handlers.get(type)?.size ?? 0;
     }
@@ -540,6 +548,24 @@ describe('PeerJoinBackfill', () => {
     fake.dispatchConnectionOpen(peer('p1'));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(pushes.length).toBe(1);
+
+    backfill.stop();
+  });
+
+  it('re-runs for a caught-up peer that disconnected and came back, pushing only what moved', async () => {
+    const blocks: Record<string, FakeBlock> = { b1: committed('b1', 1), b2: committed('b2', 1) };
+    const { backfill, pushes, fake } = makeBackfill(blocks, { debounceMs: 1 });
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 1);
+
+    fake.dispatchDisconnect(peer('p1'));
+    blocks.b1 = committed('b1', 2);
+    blocks.b3 = committed('b3', 1);
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 2, 500);
+    expect(pushes[1]!.ids.sort()).toEqual(['b1', 'b3']);
 
     backfill.stop();
   });
