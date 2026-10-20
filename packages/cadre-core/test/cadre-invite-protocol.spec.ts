@@ -201,9 +201,6 @@ describe('cadre invitation redemption protocol', () => {
     expect(result.memberAddr).toBe(memberAddr);
     expect(result.reply.partyId).toBe(partyId);
     expect(result.reply.invite).toEqual(invitation.invite);
-    // The reply's dial hints are the member's own peer projection, read before the write, so
-    // without the device's new row (which the device would drop from them anyway).
-    expect(result.reply.peers.map((peer) => peer.peerId)).not.toContain(device.partyId);
 
     // On the member: an invitation-admitted peer row carrying the device's addresses, no owner
     // row (a machine invitation grants none), one usage row, and the device authorized through

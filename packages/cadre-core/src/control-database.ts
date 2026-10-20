@@ -5128,9 +5128,9 @@ export class ControlDatabase {
     /**
      * The row this node holds under `inviteKey`, read before the call ({@link queryCadreInvite});
      * omitted, it is read inside the locked body. Never a bundle's copy: the requester chooses a
-     * copy's `TotalUses` and `IssuerKey`, and the seat check must judge the stored cap. The row
-     * is never deleted and every column is under the issuer's signature, so the earlier read is
-     * the row a locked read would return; withdrawal is a `Revocation` row, which the schema's
+     * copy's `TotalUses` and `IssuerKey`, and the seat check must judge the stored cap. The
+     * schema refuses every update and delete of the row (`NoUpdate`, `NoDelete`), so the earlier
+     * read is the row a locked read would return; withdrawal is a `Revocation` row, which the schema's
      * `NotRevoked` and `Authorized` checks still read at commit.
      */
     held?: CadreInviteRow;

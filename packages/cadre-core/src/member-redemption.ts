@@ -176,8 +176,8 @@ export interface MemberRedemptionHandlerOptions {
  * frame it could not read or a failure it did not expect).
  *
  * The held row is read once, after the checks, and carried to the liveness judgement and the
- * writes: an issued credential row is never deleted and every column is under its issuer's
- * signature, so the row read before the write lock is the row a read inside it would return.
+ * writes: the schema refuses every update and delete of an issued credential row, so the row
+ * read before the write lock is the row a read inside it would return.
  */
 export abstract class MemberRedemptionHandler<Request, Reply extends { accepted: boolean }, Held> {
   protected readonly partyId: string;
