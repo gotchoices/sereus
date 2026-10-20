@@ -181,12 +181,15 @@ describe('bootstrapFounderMembership', () => {
 
     await bootstrapFounderMembership(db, params);
     // Re-running (founder restart / re-addStrand) must be a no-op, not an
-    // InsertOnly / PK violation.
-    await expect(bootstrapFounderMembership(db, params)).resolves.toBeUndefined();
+    // InsertOnly / PK violation. Only the run that seats the founding Member binds the
+    // peer: on a restart the founder may since have been removed, and the binding's
+    // MemberExists check would then refuse the whole founding.
+    await expect(bootstrapFounderMembership(db, { ...params, founderPeerId: 'founder-peer' })).resolves.toBeUndefined();
 
     expect(await tableCount(db, 'Header')).toBe(1);
     expect(await tableCount(db, 'Member')).toBe(1);
     expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
   }, 30_000);
 
   it('is idempotent across a reopen: a fresh DB over persisted storage re-runs without duplicating rows', async () => {
