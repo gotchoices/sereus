@@ -9146,6 +9146,10 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode must be started before planning a machine removal');
     }
     const machines = await this.readMachines(this.controlDatabase);
+    // NOTE: the invitation and usage lists come from the membership views, so on a node that
+    // heard of a row with no storage event (outside the block's cohort) an invitation issued
+    // elsewhere in the last MEMBERSHIP_VIEW_MAX_AGE_MS can be missing and left unwithdrawn. If
+    // removal must close that window, read both tables fresh here.
     const [invites, usages, owners] = await Promise.all([
       this.controlDatabase.listCadreInviteStatuses(),
       this.controlDatabase.queryCadreInviteUsages(),
