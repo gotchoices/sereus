@@ -98,6 +98,7 @@ function canned(reply: CadreInviteRedeemReply): Responder {
 
 /** A store that must never be reached; every method throws. */
 const untouchable: CadreInviteStore = {
+  queryCadreInvite: async () => { throw new Error('store touched'); },
   seatCadreInvite: async () => { throw new Error('store touched'); },
   isCadreInviteLive: async () => { throw new Error('store touched'); },
   redeemCadreInvite: async () => { throw new Error('store touched'); },
@@ -200,8 +201,9 @@ describe('cadre invitation redemption protocol', () => {
     expect(result.memberAddr).toBe(memberAddr);
     expect(result.reply.partyId).toBe(partyId);
     expect(result.reply.invite).toEqual(invitation.invite);
-    // The reply's dial hints are the member's own peer projection, the device's new row included.
-    expect(result.reply.peers.map((peer) => peer.peerId)).toContain(device.partyId);
+    // The reply's dial hints are the member's own peer projection, read before the write, so
+    // without the device's new row (which the device would drop from them anyway).
+    expect(result.reply.peers.map((peer) => peer.peerId)).not.toContain(device.partyId);
 
     // On the member: an invitation-admitted peer row carrying the device's addresses, no owner
     // row (a machine invitation grants none), one usage row, and the device authorized through
@@ -230,6 +232,7 @@ describe('cadre invitation redemption protocol', () => {
       peerId: memberPeerId,
       store: {
         ...untouchable,
+        queryCadreInvite: async () => null,
         seatCadreInvite: async (row) => { throw new CadreInviteIssuerUnknownError(row.key, row.issuerKey); }
       }
     });

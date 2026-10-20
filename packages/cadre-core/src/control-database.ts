@@ -1695,8 +1695,9 @@ export class ControlDatabase {
    *
    * Reads that stay plain SQL on purpose: {@link queryStampId} (sees retired rows), the genesis
    * `count(1)` in {@link hasOwnerKey}, the ledger marker's presence read, the schema's CHECK
-   * constraints, which read inside the committing transaction, and the redemption pre-checks
-   * ({@link queryCadreInvite}, {@link queryOwnerGrant} and the indexed usage counts).
+   * constraints, which read inside the committing transaction, the redemption's one read of the
+   * held credential row ({@link queryCadreInvite}, {@link queryOwnerGrant}), and the indexed
+   * usage counts.
    */
   private readMembershipRows(view: MembershipView<Record<string, SqlValue>>, retry: boolean): Promise<readonly Record<string, SqlValue>[]> {
     this.ensureInitialized();
@@ -4821,8 +4822,10 @@ export class ControlDatabase {
    * the row is the holder's proof and never goes away; liveness is {@link hasLiveCadreInvite}'s
    * question, and `CadreInviteUsage.Authorized`'s at redemption.
    *
-   * `retry: false` is passed by {@link redeemCadreInvite}, which reads INSIDE its locked write
-   * body — the same per-call opt-out, for the same reason, as {@link queryStampId}'s.
+   * A redemption reads the row once, before its write, and carries it into
+   * {@link isCadreInviteLive} and {@link redeemCadreInvite}. `retry: false` is passed by
+   * {@link redeemCadreInvite} when it was handed none and reads INSIDE its locked write body —
+   * the same per-call opt-out, for the same reason, as {@link queryStampId}'s.
    */
   async queryCadreInvite(key: string, retry = true): Promise<CadreInviteRow | null> {
     this.ensureInitialized();
@@ -4935,16 +4938,21 @@ export class ControlDatabase {
 
   /**
    * Is this one cadre invitation still redeemable here — the conditions
-   * {@link hasLiveCadreInvite} applies, for one invitation? The row judged is the one this node
-   * holds under `invite.key`; when it holds none, `invite` itself (a bundle's copy, not seated
-   * yet), but only if its issuer signature verifies, because an unsigned copy would otherwise be
-   * judged by whichever owner it names as issuer. A permissive pre-check like
-   * {@link countCadreInviteUsage}: {@link seatCadreInvite} and the redemption's own write are
-   * what enforce every condition.
+   * {@link hasLiveCadreInvite} applies, for one invitation? The row judged is `held`, the one this
+   * node holds under `invite.key` ({@link queryCadreInvite}, read by the caller); when it holds
+   * none, `invite` itself (a bundle's copy, not seated yet), but only if its issuer signature
+   * verifies, because an unsigned copy would otherwise be judged by whichever owner it names as
+   * issuer. A permissive pre-check like {@link countCadreInviteUsage}: {@link seatCadreInvite}
+   * and the redemption's own write are what enforce every condition.
+   *
+   * The use count read here is read again inside the redemption's write lock
+   * ({@link assertCadreInviteSeatRemains}), on purpose: this one decides whether the device is
+   * pushed the control store before the write, so the holder of a spent invitation is refused
+   * without being sent anything; the in-lock one decides the seat, against a concurrent redemption.
    */
-  async isCadreInviteLive(invite: CadreInviteRow, nowMs: number = Date.now()): Promise<boolean> {
+  async isCadreInviteLive(invite: CadreInviteRow, held: CadreInviteRow | null, nowMs: number = Date.now()): Promise<boolean> {
     this.ensureInitialized();
-    const row = await this.queryCadreInvite(invite.key) ?? (verifyCadreInviteRow(this.config.partyId, invite) ? invite : null);
+    const row = held ?? (verifyCadreInviteRow(this.config.partyId, invite) ? invite : null);
     return this.issuedRowLive('CadreInvite', row, nowMs, key => this.countCadreInviteUsage(key));
   }
 
@@ -5117,6 +5125,15 @@ export class ControlDatabase {
    */
   async redeemCadreInvite(params: {
     inviteKey: string;
+    /**
+     * The row this node holds under `inviteKey`, read before the call ({@link queryCadreInvite});
+     * omitted, it is read inside the locked body. Never a bundle's copy: the requester chooses a
+     * copy's `TotalUses` and `IssuerKey`, and the seat check must judge the stored cap. The row
+     * is never deleted and every column is under the issuer's signature, so the earlier read is
+     * the row a locked read would return; withdrawal is a `Revocation` row, which the schema's
+     * `NotRevoked` and `Authorized` checks still read at commit.
+     */
+    held?: CadreInviteRow;
     peerId: string;
     /** The device's ed25519 public key (base64url); `peerId` is its identity multihash. */
     peerKey: string;
@@ -5137,7 +5154,7 @@ export class ControlDatabase {
     log('Redeeming cadre invitation %s for %s', inviteKey, peerId);
 
     return this.mutateCadrePeer('cadre-invite-redeem', async () => {
-      const invite = await this.queryCadreInvite(inviteKey, false);
+      const invite = params.held ?? await this.queryCadreInvite(inviteKey, false);
       if (invite === null) {
         throw new IssuedRowNotHereYetError('CadreInvite', inviteKey);
       }
@@ -5270,7 +5287,9 @@ export class ControlDatabase {
   /**
    * Read one `OwnerGrant` row by key, or null when absent. Withdrawn rows are returned too,
    * as {@link queryCadreInvite} returns them: the row is the holder's proof and never goes
-   * away. `retry: false` is passed by {@link redeemOwnerGrant}, inside its locked body.
+   * away. Read once per redemption and carried into {@link isOwnerGrantLive} and
+   * {@link redeemOwnerGrant}; `retry: false` is passed by {@link redeemOwnerGrant} when it was
+   * handed none and reads inside its locked body.
    */
   async queryOwnerGrant(key: string, retry = true): Promise<OwnerGrantRow | null> {
     this.ensureInitialized();
@@ -5305,14 +5324,16 @@ export class ControlDatabase {
 
   /**
    * Is this one owner grant still redeemable here — not withdrawn, unexpired, uses left, issuer
-   * still an owner — judged as {@link isCadreInviteLive} judges an invitation: by the row this
-   * node holds under `grant.key`, else by `grant` itself (a bundle's copy, not seated yet)
-   * when its issuer signature verifies. A permissive pre-check; {@link seatOwnerGrant} and the
-   * redemption's own write enforce every condition.
+   * still an owner — judged as {@link isCadreInviteLive} judges an invitation: by `held`, the row
+   * this node holds under `grant.key` ({@link queryOwnerGrant}, read by the caller), else by
+   * `grant` itself (a bundle's copy, not seated yet) when its issuer signature verifies. A
+   * permissive pre-check; {@link seatOwnerGrant} and the redemption's own write enforce every
+   * condition. Its use count is read again inside the write lock, for
+   * {@link isCadreInviteLive}'s reason.
    */
-  async isOwnerGrantLive(grant: OwnerGrantRow, nowMs: number = Date.now()): Promise<boolean> {
+  async isOwnerGrantLive(grant: OwnerGrantRow, held: OwnerGrantRow | null, nowMs: number = Date.now()): Promise<boolean> {
     this.ensureInitialized();
-    const row = await this.queryOwnerGrant(grant.key) ?? (verifyOwnerGrantRow(this.config.partyId, grant) ? grant : null);
+    const row = held ?? (verifyOwnerGrantRow(this.config.partyId, grant) ? grant : null);
     return this.issuedRowLive('OwnerGrant', row, nowMs, key => this.countOwnerGrantUsage(key));
   }
 
@@ -5374,6 +5395,8 @@ export class ControlDatabase {
    */
   async redeemOwnerGrant(params: {
     grantKey: string;
+    /** The row this node holds under `grantKey`, read before the call; omitted, it is read inside the locked body. Never a bundle's copy, for {@link redeemCadreInvite}'s reason. */
+    held?: OwnerGrantRow;
     /** The owner key to seat (base64url ed25519): the holder generated it, or already holds it. */
     seatedKey: string;
     /** Single-use nonce minted by the holder; both signatures cover it. */
@@ -5390,7 +5413,7 @@ export class ControlDatabase {
     log('Redeeming owner grant %s for %s', grantKey, seatedKey);
 
     return this.mutateCadrePeer('owner-grant-redeem', async () => {
-      const grant = await this.queryOwnerGrant(grantKey, false);
+      const grant = params.held ?? await this.queryOwnerGrant(grantKey, false);
       if (grant === null) {
         throw new IssuedRowNotHereYetError('OwnerGrant', grantKey);
       }

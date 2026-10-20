@@ -170,12 +170,16 @@ export interface MemberRedemptionHandlerOptions {
  * Registered only by a started `CadreNode`, after its control database is up, like the
  * formation responder; nothing here is reachable on a node without one.
  *
- * A subclass supplies the five credential-specific pieces: the request's shape, the checks after
- * it, the liveness read behind the push, the writes, and the two fixed refusals the base sends
- * on its own (`busy`, and `internal` for a frame it could not read or a failure it did not
- * expect).
+ * A subclass supplies the six credential-specific pieces: the request's shape, the checks after
+ * it, the read of the credential row this member holds, the liveness judgement behind the push,
+ * the writes, and the two fixed refusals the base sends on its own (`busy`, and `internal` for a
+ * frame it could not read or a failure it did not expect).
+ *
+ * The held row is read once, after the checks, and carried to the liveness judgement and the
+ * writes: an issued credential row is never deleted and every column is under its issuer's
+ * signature, so the row read before the write lock is the row a read inside it would return.
  */
-export abstract class MemberRedemptionHandler<Request, Reply extends { accepted: boolean }> {
+export abstract class MemberRedemptionHandler<Request, Reply extends { accepted: boolean }, Held> {
   protected readonly partyId: string;
   private readonly admitDevice: MemberRedemptionHandlerOptions['admitDevice'];
   private readonly readTimeoutMs: number;
@@ -204,10 +208,12 @@ export abstract class MemberRedemptionHandler<Request, Reply extends { accepted:
   protected abstract isWellFormedRequest(value: unknown): value is Request;
   /** The checks after the shape that cost no database work; null to go on to the writes. */
   protected abstract checkRequest(request: Request, remotePeerId: string): Reply | null;
-  /** Is the credential the (checked) request carries still live on this member? Decides whether the holder is pushed the store (see {@link admitIfLive}). */
-  protected abstract isLive(request: Request): Promise<boolean>;
-  /** The protocol's writes under the admission, each answered by name when it fails. */
-  protected abstract redeemAdmitted(request: Request, remotePeerId: string): Promise<Reply>;
+  /** The credential row this member holds under the (checked) request's key, or null; a failed read is answered `internal`. */
+  protected abstract readHeld(request: Request): Promise<Held | null>;
+  /** Is the credential the request carries still live on this member, judged on `held` (else the bundle's copy)? Decides whether the holder is pushed the store (see {@link admitIfLive}). */
+  protected abstract isLive(request: Request, held: Held | null): Promise<boolean>;
+  /** The protocol's writes under the admission, each answered by name when it fails; `held` is {@link readHeld}'s row. */
+  protected abstract redeemAdmitted(request: Request, remotePeerId: string, held: Held | null): Promise<Reply>;
 
   /** In-flight inbound redemptions. */
   get activeCount(): number {
@@ -274,9 +280,10 @@ export abstract class MemberRedemptionHandler<Request, Reply extends { accepted:
     if (!this.isWellFormedRequest(request)) return this.malformedRefusal;
     const refused = this.checkRequest(request, remotePeerId);
     if (refused) return refused;
-    const release = await this.admitIfLive(request, remotePeerId);
+    const held = await this.readHeld(request);
+    const release = await this.admitIfLive(request, remotePeerId, held);
     try {
-      return await this.redeemAdmitted(request, remotePeerId);
+      return await this.redeemAdmitted(request, remotePeerId, held);
     } finally {
       release();
     }
@@ -299,11 +306,11 @@ export abstract class MemberRedemptionHandler<Request, Reply extends { accepted:
    * the ordinary catch-up reaches a member. Best-effort: a failed check or push is logged and
    * the writes go ahead without the holder admitted, then commit or are answered retryably.
    */
-  private async admitIfLive(request: Request, remotePeerId: string): Promise<() => void> {
+  private async admitIfLive(request: Request, remotePeerId: string, held: Held | null): Promise<() => void> {
     const notAdmitted = (): void => undefined;
     if (!this.admitDevice) return notAdmitted;
     try {
-      if (!await this.isLive(request)) {
+      if (!await this.isLive(request, held)) {
         log('%s: the credential is not live here; %s is not admitted before the write', this.label, remotePeerId);
         return notAdmitted;
       }

@@ -537,7 +537,7 @@ Ticket: `control-and-strand-table-change-subscription`.
 
 **Maximum age.** Kept rows are served for at most `MEMBERSHIP_VIEW_MAX_AGE_MS` (the reconcile pass's default backstop, 2 minutes); the next read after that reloads them. That reload is the only path for a change that reaches this node with no storage event: a machine outside the block's cohort (a cadre larger than `CONTROL_REPLICATION_BREADTH`). A machine that was offline when a sibling committed is covered sooner: `CadreNode` drops every view when a control connection to an authorized sibling opens (`ControlDatabase.invalidateMembershipViews`), so the pass that connection starts reads storage. The reload is also what restarts read-repair for these blocks, since a served read touches no storage.
 
-**What stays plain SQL.** The stamp point reads (`queryStampId`, which sees retired rows), the genesis `hasOwnerKey` count, the ledger marker's presence read, the schema's CHECK constraints, which read inside the committing transaction, and the redemption path's reads: the invitation and grant point reads and the indexed usage counts, which are pre-checks the redemption's own write re-checks.
+**What stays plain SQL.** The stamp point reads (`queryStampId`, which sees retired rows), the genesis `hasOwnerKey` count, the ledger marker's presence read, the schema's CHECK constraints, which read inside the committing transaction, and the redemption path's reads: the invitation or grant point read, made once per redemption before the write lock and carried into the write (the row is never deleted and every column is under its issuer's signature, so a read inside the lock would return the same row), and the indexed usage counts, which are pre-checks the redemption's own write re-checks.
 
 Ticket: `control-membership-rows-cached-until-changed`.
 
@@ -703,7 +703,7 @@ interface CadreInviteRedeemReply {
 }
 ```
 
-The member checks in cost order so a stranger that cannot prove anything costs no database work: shape, party, the connecting identity (an ed25519 peer id embeds the key, and this layer is the only one that can check the pair), both signatures, a targeted invitation's device; then it hands the device its control store, seats the row, and redeems. Every refusal carries a fixed code; `CADRE_INVITE_REJECTION_RETRYABLE` is the one table that says which the device retries at the next address:
+The member checks in cost order so a stranger that cannot prove anything costs no database work: shape, party, the connecting identity (an ed25519 peer id embeds the key, and this layer is the only one that can check the pair), both signatures, a targeted invitation's device; then it hands the device its control store, seats the row when it holds none, and redeems. It reads the row it holds once, after those checks, and carries it into the liveness check below and the redemption. The reply's `peers` are read before the admission is written, so they lack the device's own row, which the device drops from them anyway. Every refusal carries a fixed code; `CADRE_INVITE_REJECTION_RETRYABLE` is the one table that says which the device retries at the next address:
 
 | Code | Retried | Sent when |
 | --- | --- | --- |

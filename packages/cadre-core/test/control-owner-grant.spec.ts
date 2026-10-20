@@ -404,11 +404,13 @@ describe('owner grants: schema and ControlDatabase', () => {
     expect(statuses.get(expired.grant.publicKey)).toEqual({ grant: expired.row, live: false, withdrawn: false, usesRecorded: 0 });
     expect(statuses.get(exhausted.grant.publicKey)).toEqual({ grant: exhausted.row, live: false, withdrawn: false, usesRecorded: 1 });
 
-    expect(await db.isOwnerGrantLive(live.row, now)).toBe(true);
-    expect(await db.isOwnerGrantLive(exhausted.row, now)).toBe(false);
+    // Judged as a redemption judges it: on the row held here, read first.
+    const liveHere = async (grant: OwnerGrantRow): Promise<boolean> => db.isOwnerGrantLive(grant, await db.queryOwnerGrant(grant.key), now);
+    expect(await liveHere(live.row)).toBe(true);
+    expect(await liveHere(exhausted.row)).toBe(false);
     // A bundle's copy not seated here is judged by its own signature: a valid one is live, a forged one is not.
     const carried = mintGrantRow(founder, freshKeyPair());
-    expect(await db.isOwnerGrantLive(carried, now)).toBe(true);
-    expect(await db.isOwnerGrantLive({ ...carried, issuerSig: mintGrantRow(freshKeyPair(), freshKeyPair()).issuerSig }, now)).toBe(false);
+    expect(await liveHere(carried)).toBe(true);
+    expect(await liveHere({ ...carried, issuerSig: mintGrantRow(freshKeyPair(), freshKeyPair()).issuerSig })).toBe(false);
   });
 });

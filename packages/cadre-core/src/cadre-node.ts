@@ -10087,25 +10087,31 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * {@link redeemOwnerGrant}'s local path: the alone refusal, the seat, the liveness refusal,
-   * then one approval around the consent signature and the write. Every refusal comes before
-   * the approval, so a prompting signer never asks for a redemption this node would refuse.
+   * {@link redeemOwnerGrant}'s local path: the alone refusal, the seat (only when this node holds
+   * no grant row), the liveness refusal, then one approval around the consent signature and the
+   * write. Every refusal comes before the approval, so a prompting signer never asks for a
+   * redemption this node would refuse. The held row is read once and carried into the liveness
+   * check and the write, as the member handler carries it (`MemberRedemptionHandler`).
    */
   private async redeemOwnerGrantLocally(controlDatabase: ControlDatabase, bundle: OwnerGrantBundle, signer: OwnerSigner): Promise<RedeemOwnerGrantResult> {
     if (await this.ownerKeyWriteAlone()) {
       throw new OwnerKeyAddRefusedError(signer.publicKey, 'alone');
     }
-    await refusingUnsyncedGrant(() => controlDatabase.seatOwnerGrant(bundle.grant));
+    const held = await controlDatabase.queryOwnerGrant(bundle.grant.key);
+    if (held === null) {
+      await refusingUnsyncedGrant(() => controlDatabase.seatOwnerGrant(bundle.grant));
+    }
     // The write answers a key that is already an owner without reading the grant, so only a
     // key that is not one needs the grant live (the same permissive pre-check the handler's
     // admission uses; the write enforces every condition).
-    if (!(await controlDatabase.getOwnerKeys()).has(signer.publicKey) && !await controlDatabase.isOwnerGrantLive(bundle.grant)) {
+    if (!(await controlDatabase.getOwnerKeys()).has(signer.publicKey) && !await controlDatabase.isOwnerGrantLive(bundle.grant, held)) {
       throw new OwnerGrantRejectedError('grant-spent', 'The grant is expired, withdrawn, exhausted, or its issuer is no longer an owner');
     }
     const { alreadyOwner } = await signer.approve(ownerGrantApproval(bundle), async (sign) => {
       const request = await this.signOwnerGrantRequest(bundle, signer, sign);
       return await refusingUnsyncedGrant(() => controlDatabase.redeemOwnerGrant({
         grantKey: bundle.grant.key,
+        ...(held ? { held } : {}),
         seatedKey: signer.publicKey,
         usageStampId: request.usageStampId,
         grantSig: request.grantSig,

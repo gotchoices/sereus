@@ -368,7 +368,7 @@ export function verifyOwnerGrantReply(
 // ── Member side (handler) ────────────────────────────────────────────────────
 
 /** The control-database surface a redemption needs; a `ControlDatabase` satisfies it. */
-export type OwnerGrantStore = Pick<ControlDatabase, 'seatOwnerGrant' | 'isOwnerGrantLive' | 'redeemOwnerGrant'>;
+export type OwnerGrantStore = Pick<ControlDatabase, 'queryOwnerGrant' | 'seatOwnerGrant' | 'isOwnerGrantLive' | 'redeemOwnerGrant'>;
 
 export interface OwnerGrantHandlerOptions extends MemberRedemptionHandlerOptions {
   store: OwnerGrantStore;
@@ -385,10 +385,11 @@ const REDEEM_CONSTRAINT_CODES: ReadonlyArray<ConstraintRefusalRow<OwnerGrantReje
  * Member side of the grant protocol (`MemberRedemptionHandler` has the shape): after the
  * request's shape, it checks the party and both signatures — nothing about the connecting
  * peer, whose identity is unrelated to the key it seats — then seats the row from the bundle
- * and redeems. An issuer this member does not know as an owner is the one retryable refusal
- * left: the holder tries the next address, which may hold the issuer's row.
+ * when this member holds none and redeems. An issuer this member does not know as an owner is
+ * the one retryable refusal left: the holder tries the next address, which may hold the
+ * issuer's row.
  */
-export class OwnerGrantHandler extends MemberRedemptionHandler<OwnerGrantRedeemRequest, OwnerGrantRedeemReply> {
+export class OwnerGrantHandler extends MemberRedemptionHandler<OwnerGrantRedeemRequest, OwnerGrantRedeemReply, OwnerGrantRow> {
   private readonly store: OwnerGrantStore;
   protected readonly busyRefusal = rejection('busy', 'Too many concurrent redemptions');
   protected readonly internalRefusal = rejection('internal', 'Internal redemption error');
@@ -414,25 +415,25 @@ export class OwnerGrantHandler extends MemberRedemptionHandler<OwnerGrantRedeemR
     return null;
   }
 
-  protected isLive(request: OwnerGrantRedeemRequest): Promise<boolean> {
-    return this.store.isOwnerGrantLive(request.grant);
+  protected readHeld(request: OwnerGrantRedeemRequest): Promise<OwnerGrantRow | null> {
+    return this.store.queryOwnerGrant(request.grant.key);
   }
 
-  /** The two writes — the seat (its own transaction; a no-op when held) and the redemption — each answered by name when it fails. */
-  protected async redeemAdmitted(request: OwnerGrantRedeemRequest, remotePeerId: string): Promise<OwnerGrantRedeemReply> {
-    try {
-      await this.store.seatOwnerGrant(request.grant);
-    } catch (error) {
-      if (error instanceof OwnerGrantIssuerUnknownError) {
-        return rejection('issuer-unknown', 'The grant\'s issuer is not known as an owner here');
-      }
-      log('seating grant %s from %s failed: %o', request.grant.key, remotePeerId, error);
-      return constraintRefusal(error, REDEEM_CONSTRAINT_CODES) ?? writeFailureRefusal(error);
+  protected isLive(request: OwnerGrantRedeemRequest, held: OwnerGrantRow | null): Promise<boolean> {
+    return this.store.isOwnerGrantLive(request.grant, held);
+  }
+
+  /** The two writes — the seat only when this member holds no row, and the redemption, carrying the held row — as `CadreInviteHandler.redeemAdmitted`. */
+  protected async redeemAdmitted(request: OwnerGrantRedeemRequest, remotePeerId: string, held: OwnerGrantRow | null): Promise<OwnerGrantRedeemReply> {
+    if (held === null) {
+      const refused = await this.seat(request, remotePeerId);
+      if (refused) return refused;
     }
     let alreadyOwner: boolean;
     try {
       const result = await this.store.redeemOwnerGrant({
         grantKey: request.grant.key,
+        ...(held ? { held } : {}),
         seatedKey: request.ownerKey,
         usageStampId: request.usageStampId,
         grantSig: request.grantSig,
@@ -447,8 +448,22 @@ export class OwnerGrantHandler extends MemberRedemptionHandler<OwnerGrantRedeemR
       log('redeeming grant %s for %s failed: %o', request.grant.key, request.ownerKey, error);
       return constraintRefusal(error, REDEEM_CONSTRAINT_CODES) ?? writeFailureRefusal(error);
     }
-    // The row as held: the seat inserted this copy verbatim, or found the same row.
-    return { accepted: true, partyId: this.partyId, grant: request.grant, alreadyOwner };
+    // The row as held: read before the write, or the bundle's copy the seat inserted verbatim or found.
+    return { accepted: true, partyId: this.partyId, grant: held ?? request.grant, alreadyOwner };
+  }
+
+  /** Seat the bundle's copy of the row; a refusal answered by name, or null once it is held. */
+  private async seat(request: OwnerGrantRedeemRequest, remotePeerId: string): Promise<OwnerGrantRejection | null> {
+    try {
+      await this.store.seatOwnerGrant(request.grant);
+      return null;
+    } catch (error) {
+      if (error instanceof OwnerGrantIssuerUnknownError) {
+        return rejection('issuer-unknown', 'The grant\'s issuer is not known as an owner here');
+      }
+      log('seating grant %s from %s failed: %o', request.grant.key, remotePeerId, error);
+      return constraintRefusal(error, REDEEM_CONSTRAINT_CODES) ?? writeFailureRefusal(error);
+    }
   }
 }
 

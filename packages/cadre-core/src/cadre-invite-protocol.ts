@@ -466,7 +466,7 @@ export function verifyRedeemReply(
 // ── Member side (handler) ────────────────────────────────────────────────────
 
 /** The control-database surface a redemption needs; a `ControlDatabase` satisfies it. */
-export type CadreInviteStore = Pick<ControlDatabase, 'seatCadreInvite' | 'isCadreInviteLive' | 'redeemCadreInvite' | 'querySeedPeers'>;
+export type CadreInviteStore = Pick<ControlDatabase, 'queryCadreInvite' | 'seatCadreInvite' | 'isCadreInviteLive' | 'redeemCadreInvite' | 'querySeedPeers'>;
 
 export interface CadreInviteHandlerOptions extends MemberRedemptionHandlerOptions {
   /** This member's peer id: the reply's peer list marks it preferred, since the device just reached it. */
@@ -485,11 +485,11 @@ const REDEEM_CONSTRAINT_CODES: ReadonlyArray<ConstraintRefusalRow<CadreInviteRej
  * Member side of the invitation protocol (`MemberRedemptionHandler` has the shape): after the
  * request's shape, it checks the party, the connecting identity (an ed25519 peer id is an
  * identity multihash of the very key, and this is the only layer that can check the pair),
- * both signatures and a targeted invitation's device, then seats the row from the bundle and
- * redeems. An issuer this member does not know as an owner is the one retryable refusal left:
- * the device tries the next address, which may hold the issuer's row.
+ * both signatures and a targeted invitation's device, then seats the row from the bundle when
+ * this member holds none and redeems. An issuer this member does not know as an owner is the
+ * one retryable refusal left: the device tries the next address, which may hold the issuer's row.
  */
-export class CadreInviteHandler extends MemberRedemptionHandler<CadreInviteRedeemRequest, CadreInviteRedeemReply> {
+export class CadreInviteHandler extends MemberRedemptionHandler<CadreInviteRedeemRequest, CadreInviteRedeemReply, CadreInviteRow> {
   private readonly peerId: string;
   private readonly store: CadreInviteStore;
   protected readonly busyRefusal = rejection('busy', 'Too many concurrent redemptions');
@@ -523,24 +523,33 @@ export class CadreInviteHandler extends MemberRedemptionHandler<CadreInviteRedee
     return null;
   }
 
-  protected isLive(request: CadreInviteRedeemRequest): Promise<boolean> {
-    return this.store.isCadreInviteLive(request.invite);
+  protected readHeld(request: CadreInviteRedeemRequest): Promise<CadreInviteRow | null> {
+    return this.store.queryCadreInvite(request.invite.key);
   }
 
-  /** The two writes — the seat (its own transaction; a no-op when held) and the redemption — each answered by name when it fails. */
-  protected async redeemAdmitted(request: CadreInviteRedeemRequest, remotePeerId: string): Promise<CadreInviteRedeemReply> {
-    try {
-      await this.store.seatCadreInvite(request.invite);
-    } catch (error) {
-      if (error instanceof CadreInviteIssuerUnknownError) {
-        return rejection('issuer-unknown', 'The invitation\'s issuer is not known as an owner here');
-      }
-      log('seating invitation %s from %s failed: %o', request.invite.key, remotePeerId, error);
-      return constraintRefusal(error, REDEEM_CONSTRAINT_CODES) ?? writeFailureRefusal(error);
+  protected isLive(request: CadreInviteRedeemRequest, held: CadreInviteRow | null): Promise<boolean> {
+    return this.store.isCadreInviteLive(request.invite, held);
+  }
+
+  /**
+   * The two writes — the seat (its own transaction), only when this member holds no row, and
+   * the redemption — each answered by name when it fails. The held row is carried into the
+   * redemption so it is not read again in the write lock; after a fresh seat nothing is carried
+   * and the redemption reads the row it seated, since the bundle's copy is the requester's.
+   */
+  protected async redeemAdmitted(request: CadreInviteRedeemRequest, remotePeerId: string, held: CadreInviteRow | null): Promise<CadreInviteRedeemReply> {
+    if (held === null) {
+      const refused = await this.seat(request, remotePeerId);
+      if (refused) return refused;
     }
+    // Built before the write: the `CadrePeer` membership view is normally warm then (the
+    // connection gate read it when the device connected), and the redemption's commit drops it.
+    // The list lacks the device's own row, which the device drops from it anyway.
+    const peers = await this.peersBestEffort();
     try {
       const result = await this.store.redeemCadreInvite({
         inviteKey: request.invite.key,
+        ...(held ? { held } : {}),
         peerId: remotePeerId,
         peerKey: request.peerKey,
         multiaddrs: sanitizeAddrs(request.multiaddrs),
@@ -556,9 +565,24 @@ export class CadreInviteHandler extends MemberRedemptionHandler<CadreInviteRedee
       log('redeeming invitation %s for %s failed: %o', request.invite.key, remotePeerId, error);
       return constraintRefusal(error, REDEEM_CONSTRAINT_CODES) ?? writeFailureRefusal(error);
     }
-    // The row as held: the seat inserted this copy verbatim, or found the same row (its key
-    // is the primary key and every column is under the issuer's signature).
-    return { accepted: true, partyId: this.partyId, invite: request.invite, peers: await this.peersBestEffort() };
+    // The row as held: read before the write, or the bundle's copy the seat inserted verbatim
+    // or found already held (its key is the primary key and every column is under the issuer's
+    // signature).
+    return { accepted: true, partyId: this.partyId, invite: held ?? request.invite, peers };
+  }
+
+  /** Seat the bundle's copy of the row; a refusal answered by name, or null once it is held. */
+  private async seat(request: CadreInviteRedeemRequest, remotePeerId: string): Promise<CadreInviteRejection | null> {
+    try {
+      await this.store.seatCadreInvite(request.invite);
+      return null;
+    } catch (error) {
+      if (error instanceof CadreInviteIssuerUnknownError) {
+        return rejection('issuer-unknown', 'The invitation\'s issuer is not known as an owner here');
+      }
+      log('seating invitation %s from %s failed: %o', request.invite.key, remotePeerId, error);
+      return constraintRefusal(error, REDEEM_CONSTRAINT_CODES) ?? writeFailureRefusal(error);
+    }
   }
 
   /** Dial hints are an optimization; a failed read costs the device its hints, not its membership. */
