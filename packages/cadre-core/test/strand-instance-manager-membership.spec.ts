@@ -35,7 +35,7 @@ const mocks = vi.hoisted(() => {
   const gateState = { headerHeld: true };
   const fakeDb = {
     fake: 'db',
-    eval: async function* () { yield { Count: gateState.headerHeld ? 1 : 0 }; },
+    eval: async function* () { if (gateState.headerHeld) yield { 1: 1 }; },
     schemaManager: { getSchema: () => undefined },
   } as unknown as Database;
   const createLibp2pNode = vi.fn(async () => ({
@@ -277,7 +277,7 @@ describe('membership reconciler arming', () => {
     const manager = new StrandInstanceManager();
     const instance = await manager.startStrand(createStartConfig('mem-gated', 'c', {
       partyMemberPrivateKey: partyKey,
-      firstSync: { pollIntervalMs: 10 },
+      firstSync: { backstopMs: 10 },
     }));
 
     expect(instance.status).toBe('syncing');

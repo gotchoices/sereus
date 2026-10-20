@@ -236,10 +236,7 @@ export {
 export {
   StrandAwaitingFirstSyncError,
   DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS,
-  DEFAULT_STRAND_FIRST_SYNC_POLL_MS,
-  strandHeaderHeld,
-  appTablesReadable,
-  strandFirstSyncComplete,
+  DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS,
   type StrandFirstSyncConfig
 } from './strand-first-sync-gate.js';
 

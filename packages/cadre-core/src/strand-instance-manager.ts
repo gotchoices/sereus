@@ -24,7 +24,6 @@ import { assertStrandScopeKey } from './storage-scope.js';
 import {
   StrandFirstSyncGate,
   StrandAwaitingFirstSyncError,
-  strandFirstSyncComplete,
   DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS,
   type StrandFirstSyncConfig
 } from './strand-first-sync-gate.js';
@@ -273,8 +272,8 @@ export interface StartStrandConfig {
 
   /**
    * Tuning for the JOINING machine's first-sync write gate (`strand-first-sync-gate.ts`),
-   * forwarded from {@link CadreNodeConfig.strandFirstSync}: the Header probe cadence while
-   * a non-founder launch is `'syncing'`, and the default budget {@link whenWritable} waits
+   * forwarded from {@link CadreNodeConfig.strandFirstSync}: the probe backstop while a
+   * non-founder launch is `'syncing'`, and the default budget {@link whenWritable} waits
    * before rejecting. Founders and machines that already hold the Header are never gated.
    */
   firstSync?: StrandFirstSyncConfig;
@@ -1110,10 +1109,12 @@ export class StrandInstanceManager {
       onCommitDurability: config.onCommitDurability,
       onCommitHeld: config.onCommitHeld
     });
+    const storageRepo = node.storageRepo;
     const gate = new StrandFirstSyncGate({
       label: strandId,
       database: strandDb,
-      onHeaderHeld: () => this.publishDatabase(instance, strandDb)
+      onHeaderHeld: () => this.publishDatabase(instance, strandDb),
+      subscribeStorageChanges: storageRepo && ((onChange) => storageRepo.onAnyCollectionChange(onChange))
     }, config.firstSync);
     this.firstSyncGates.set(strandId, gate);
     try {
@@ -1141,12 +1142,13 @@ export class StrandInstanceManager {
     // received from a peer (now, or on an earlier run over the same store) — and has read
     // each App table once, so their collections are fetched too. Publishing the database
     // is what makes the strand writable to the app; until then the instance stays
-    // `'syncing'` and the gate re-probes on its cadence. Everything armed after the database
+    // `'syncing'` and the gate re-probes when data lands. This first probe goes through the
+    // gate, so what it finds held is not read again. Everything armed after the database
     // phase reads `instance.database` lazily, so the reconciler and enforcer wait with it —
     // and `publishDatabase` kicks the reconciler when the wait ends, so a joiner's membership
     // rows land with the strand rather than one retry later.
     t0 = performance.now();
-    const synced = config.founder === true || await strandFirstSyncComplete(strandDb.getDatabase(), strandId);
+    const synced = config.founder === true || await gate.probeOnce();
     timing('[buildStrandRuntime:%s] first-sync probe: %dms', strandId, Math.round(performance.now() - t0));
     if (this.firstSyncGates.get(strandId) !== gate) {
       // A stop released the runtime during the probe and closed this database through its gate.

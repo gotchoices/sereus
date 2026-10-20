@@ -1,7 +1,7 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2';
 import type { IRawStorage, Libp2pConnectionMonitorInit, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
-import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
+import type { CollectionChangeListener, IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandReactivityConfig } from './strand-reactivity.js';
 import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
@@ -40,6 +40,14 @@ export interface Libp2pNodeWithRepo extends Libp2p {
    * backfill (`peer-join-backfill.ts`) logs once and stays inert when it is absent.
    */
   keyNetwork?: IPeerNetwork;
+  /**
+   * The node's block store, attached by the same factory (Optimystic's
+   * `OptimysticNodeAttachments.storageRepo`), narrowed to the storage-wide change feed: it
+   * fires for every block that lands in this node's store, a push or a commit. Optional for
+   * the same reason as `keyNetwork`; the first-sync gate (`strand-first-sync-gate.ts`) wakes
+   * on it, and logs once and probes on its backstop alone when it is absent.
+   */
+  storageRepo?: { onAnyCollectionChange(listener: CollectionChangeListener): () => void };
 }
 
 /**
@@ -932,12 +940,13 @@ export interface CadreNodeConfig {
    * another member and every `App` table has been read once, because a machine that writes
    * to a table it has never fetched creates a private copy of it that never merges.
    * `timeoutMs` bounds how long {@link CadreNode.addStrand} waits before rejecting with
-   * `StrandAwaitingFirstSyncError` (retryable — the launch stays up and keeps probing);
-   * `pollIntervalMs` is the probe cadence. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`,
+   * `StrandAwaitingFirstSyncError` (retryable — the launch stays up and keeps probing).
+   * While gated the machine probes whenever data lands in the strand's store, and
+   * `backstopMs` after its last probe when none has. Omit for the defaults (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`,
    * sized for a machine re-attaching through a relay on a slow link, the slowest attach
    * measured; that constant's doc comment carries the number, the measurement behind it and
-   * what the budget costs, and is the only copy of them; `DEFAULT_STRAND_FIRST_SYNC_POLL_MS`,
-   * 500 ms). There is deliberately no way to disable the gate: a machine whose store already
+   * what the budget costs, and is the only copy of them; `DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS`,
+   * 2 s). There is deliberately no way to disable the gate: a machine whose store already
    * holds the Header is never gated, so nothing that works today is blocked by it.
    */
   strandFirstSync?: StrandFirstSyncConfig;

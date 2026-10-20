@@ -1,6 +1,6 @@
 description: A machine joining a strand waits until it has read the strand's header and every app table before it may write, but not the membership tables it also writes to, so a join whose connection drops at the wrong moment could create a second, conflicting copy of one of those tables and lose its own membership rows.
 architecture: docs/strands.md#joining-no-writes-before-the-first-sync
-files: packages/cadre-core/src/strand-first-sync-gate.ts (`appTablesReadable`, `appTableNames`, the probe in the gate loop, the module comment's stated invariant), packages/cadre-core/src/strand-membership-reconciler.ts, docs/strands.md ("What the runtime does" bullets on the gate and on the founder's empty collections)
+files: packages/cadre-core/src/strand-first-sync-gate.ts (`strandFirstSyncComplete`, `appTables`, the module comment's stated invariant), packages/cadre-core/src/strand-membership-reconciler.ts, docs/strands.md ("What the runtime does" bullets on the gate and on the founder's empty collections)
 repro: static
 severity: corruption
 likelihood: unusual
@@ -28,4 +28,4 @@ The gate's invariant covers every table this machine may write: before the datab
 
 ## Related
 
-`plan/first-sync-gate-probes-cheaply` changes the same probe loop (one-row probes, concurrent, woken on arrival), which makes the extra reads this ticket adds cheap. If this ticket is promoted while that one is open, implement both in one change.
+`first-sync-gate-probes-cheaply` made each probe a one-row read that the gate does not repeat once it settles, woken when data lands in the strand's store. Adding the `Strand` tables is now a change to which tables `strandFirstSyncComplete` reads (it takes `{ schema, name }` entries from `appTables`), not to the loop. Each extra table costs one read per gated launch, made one after another: the reads stay serialized, for the reason in the `NOTE:` on that function.

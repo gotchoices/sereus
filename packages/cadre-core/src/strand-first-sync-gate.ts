@@ -15,12 +15,12 @@
  * The founder writes the Header in its bootstrap; every other machine can only receive it
  * from a peer, so "no local Header" means "never synced". The gate therefore holds the
  * freshly initialized `StrandDatabase` back from the app — `StrandInstance.database` stays
- * unset and the instance reports `'syncing'` — and probes on a cadence until the Header is
- * readable AND a read of each app table settles, at which point the database is published
- * and the instance goes `'active'`. A machine whose store already holds the Header and every
- * app table (a founder, and normally a restart or a hibernation resume) passes the probe on
- * the first try and is never gated, so offline-first writes on a machine that has synced
- * before keep working.
+ * unset and the instance reports `'syncing'` — and probes, whenever data lands in the strand's
+ * store and on a backstop timer, until the Header is readable AND a read of each app table
+ * settles, at which point the database is published and the instance goes `'active'`. A
+ * machine whose store already holds the Header and every app table (a founder, and normally a
+ * restart or a hibernation resume) passes the probe on the first try and is never gated, so
+ * offline-first writes on a machine that has synced before keep working.
  *
  * "Has synced before" is decided by what the local store actually holds, not by whether this
  * machine once read the strand: a machine that left soon after its first sync can hold less
@@ -37,10 +37,11 @@
  * written the instant `addStrand` resolved diverged in 3 of 4 runs. Reading each table once
  * pulls its collection while the founder is reachable, so the write that follows appends.
  *
- * Every probe is a read (`Strand.Header`, then `select count(1)` on each `App` table). Reads
- * never invent a collection (Optimystic's `Collection.open` resolves undefined on an
- * authoritatively absent header, and throws on an unreachable one), so probing is safe to
- * repeat and a throw is just "not yet". Every table declared at founding has a collection
+ * Every probe read is `select 1 from <table> limit 1` (`Strand.Header`, then each `App` table not
+ * yet seen settled): opening the table fetches its collection header, and one row walks the
+ * root to the first leaf. Reads never commit a collection (one ruled authoritatively absent is
+ * staged empty in memory only, and an unreachable one throws), so probing is safe to repeat
+ * and a throw is just "not yet". Every table declared at founding has a collection
  * from the start (the founder bootstrap commits the rest empty before its founding transaction
  * writes the Header and the membership rows), so a probe read
  * fetches it; a table a later schema version adds reads as absent until its first write
@@ -68,12 +69,25 @@
 import debug from 'debug';
 import type { Database } from '@quereus/quereus';
 import type { StrandDatabase } from './strand-database.js';
+import { scheduleRuns, TABLE_CHANGE_COALESCE_MS, type TableChangeWatch } from './table-change-watch.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
 
 const log = debug('sereus:cadre:strand-first-sync');
 
-/** How often a gated launch re-probes (`Strand.Header`, then every `App` table) while waiting for its first sync. */
-export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
+/**
+ * How long a gated launch goes without probing when no data lands in the strand's store: the
+ * gate probes when data arrives, and this long after its last probe settled when none has. It
+ * covers a probe that failed for a reason no storage event follows — a consult that missed its
+ * deadline while the founder held the block, or a push that never comes.
+ *
+ * Why 2 s: arrivals wake the gate, so this timer is the fallback rather than the main path. At
+ * the supported 3 s link round trip one consult takes about 6 s (two round trips, per the 1.8.0
+ * measurements on {@link DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS}), so a 2 s idle gap after a failed
+ * probe adds at most a third of one probe round, and it is under 1% of that 300 s budget. Shorter
+ * brings back the cost of polling (the gate re-probed every 500 ms before it woke on arrivals);
+ * much longer (5 s) delays the case with no storage event by most of a probe round for nothing.
+ */
+export const DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS = 2_000;
 
 /**
  * How long `CadreNode.addStrand` waits for a machine's first sync before rejecting with
@@ -104,6 +118,21 @@ export const DEFAULT_STRAND_FIRST_SYNC_POLL_MS = 500;
  * deadline makes a consult against a peer that cannot answer cost longer, and this phase runs
  * several of those — which is why both bands are recorded here, and why a change to either
  * number has to be weighed against the other.
+ *
+ * AT THE SUPPORTED LINK ON `@optimystic/*` 1.15.0 (2026-10-20), 1 500 ms one-way, the same
+ * scenario, one fresh-join run on each side of `first-sync-gate-probes-cheaply` (one-row probes
+ * that skip what they found settled, woken by data landing in the store):
+ *  - Fresh join: writable at 28.8 s in both, and NOT gated. The launch waits 27.3 s in
+ *    `connectToStrand` for its seed peer (it hydrates the founder's catalog, 9 tables), and by
+ *    then the store holds the strand: the first probe passed in 26 ms before and 24 ms after.
+ *  - The strand case of `message-cost-accounting` (two relay-only parties on loopback) agrees:
+ *    B's `addStrand` took 469 ms before and 471 ms after, with 13 `sync` streams to A, 4 block
+ *    reads from the Header probe and 8 from the table probes in both. Its two tables are empty,
+ *    so a full count and a one-row read fetch the same blocks.
+ *  - Neither arms the gate, so neither times the woken path. That was checked on
+ *    `harness-topology`'s cross-party share (a joiner launched with no seed, dialed afterwards)
+ *    with the backstop raised to 10 s: the founder's join backfill push opened the gate 2.1 s
+ *    after it armed.
  *
  * AT THE SUPPORTED LINK ON `@optimystic/*` 1.8.0 (2026-09-29), 1 500 ms one-way, the read
  * deadline derived from the declared link at 7 000 ms (`cohortReadDeadlineMs` in
@@ -193,8 +222,11 @@ export interface StrandFirstSyncConfig {
    * {@link DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS}.
    */
   timeoutMs?: number;
-  /** Probe cadence while gated. Default {@link DEFAULT_STRAND_FIRST_SYNC_POLL_MS}. */
-  pollIntervalMs?: number;
+  /**
+   * While gated, probe this long after the last probe settled when no data has landed in the
+   * strand's store. Default {@link DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS}.
+   */
+  backstopMs?: number;
 }
 
 /**
@@ -224,15 +256,43 @@ export class StrandAwaitingFirstSyncError extends Error {
 }
 
 /**
- * Whether this machine holds the strand's `Strand.Header` row — the "has synced at least
- * once (or founded)" signal. A read, never a write: it cannot invent the collection. A
- * throwing read (an unreachable cohort mid-sync, a store still hydrating) reports `false`
- * with a log, since the caller's only response to either answer is "probe again".
+ * What one gate has established, kept for the gate's lifetime so a later probe reads only what
+ * is still missing: whether the Header is held, and the tables (qualified, `'App.Message'`)
+ * whose probe read settled. It only ever gains entries; a collection this machine holds stays
+ * held.
  */
-export async function strandHeaderHeld(db: Database, label: string): Promise<boolean> {
+interface FirstSyncProgress {
+  header: boolean;
+  tables: Set<string>;
+}
+
+/** A table the probe reads. */
+interface ProbedTable {
+  schema: string;
+  name: string;
+}
+
+const STRAND_HEADER: ProbedTable = { schema: 'Strand', name: 'Header' };
+
+function qualifiedName(table: ProbedTable): string {
+  return `${table.schema}.${table.name}`;
+}
+
+/** The read `openTables` in `quereus-plugin-sereus/src/empty-collections.ts` opens a collection with. */
+function probeSql(table: ProbedTable): string {
+  return `select 1 from ${table.schema}."${table.name}" limit 1`;
+}
+
+/**
+ * Whether this machine holds the strand's `Strand.Header` row — the "has synced at least once
+ * (or founded)" signal: held when the read returns a row. A throwing read (an unreachable cohort
+ * mid-sync, a store still hydrating) reports `false` with a log, since the caller's only
+ * response to either answer is "probe again".
+ */
+async function headerHeld(db: Database, label: string): Promise<boolean> {
   try {
-    for await (const row of db.eval('select count(1) as Count from Strand.Header')) {
-      return ((row.Count as number) ?? 0) > 0;
+    for await (const _row of db.eval(probeSql(STRAND_HEADER))) {
+      return true;
     }
     return false;
   } catch (error) {
@@ -242,78 +302,137 @@ export async function strandHeaderHeld(db: Database, label: string): Promise<boo
   }
 }
 
-/** The tables the sApp declared in the `App` schema, by name; views excluded. */
-function appTableNames(db: Database): string[] {
+/**
+ * Whether a read of `table` settles on this machine — its collection has been fetched from the
+ * cohort, or is authoritatively absent. Only a throwing read (an unreachable cohort, a block not
+ * yet arrived) reports `false`; an empty table is a settled read, because the founder commits
+ * an empty collection for every declared table.
+ */
+async function tableReadable(db: Database, table: ProbedTable, label: string): Promise<boolean> {
+  try {
+    for await (const _row of db.eval(probeSql(table))) {
+      break;
+    }
+    return true;
+  } catch (error) {
+    log('[%s] %s probe failed (treated as not yet synced): %s', label, qualifiedName(table),
+      error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+/** The tables the sApp declared in the `App` schema; views excluded. */
+function appTables(db: Database): ProbedTable[] {
   const app = db.schemaManager.getSchema('App');
-  return app ? Array.from(app.getAllTables()).filter((table) => !table.isView).map((table) => table.name) : [];
+  return app
+    ? Array.from(app.getAllTables()).filter((table) => !table.isView).map((table) => ({ schema: 'App', name: table.name }))
+    : [];
 }
 
 /**
- * Whether a read of every `App` table settles on this machine — the "each app collection
- * has been fetched from the cohort, or is authoritatively absent" signal. Only a throwing
- * read (an unreachable cohort) reports `false`; an empty table is a settled read.
+ * The gate's whole probe: the Header is held AND a read of every `App` table has settled. Reads
+ * only what `progress` does not record yet, and records what it establishes.
+ *
+ * The Header is read first and alone: a joiner with no peer would otherwise pay one failing
+ * network read per table for nothing. The tables are then read one after another, stopping at
+ * the first that fails — the next probe starts there, and while the cohort is unreachable every
+ * read of a block this machine lacks fails the same way, each after a consult.
+ *
+ * NOTE: the reads are serialized (Quereus's default), not `readConcurrency: 'committed'`, though
+ * committed reads would let the table reads overlap. The Optimystic plugin's committed read
+ * serves the tree the table already holds and never refreshes it from the network, and schema
+ * apply initializes every table when the joiner has no catalog to hydrate, over an empty
+ * collection staged in memory when no peer could answer. A committed probe of such a table reads
+ * that empty collection as settled and opens the gate onto a fork. A serialized read refreshes
+ * the tree first (`Collection.update`), which adopts the founder's log once a peer holds it.
+ * Revisit if the plugin's committed read ever refreshes a tree it has never synced, or the gate
+ * can ask Optimystic directly whether a collection is held.
  */
-export async function appTablesReadable(db: Database, label: string): Promise<boolean> {
-  for (const table of appTableNames(db)) {
-    try {
-      for await (const _row of db.eval(`select count(1) as Count from App."${table}"`)) {
-        break;
-      }
-    } catch (error) {
-      log('[%s] App.%s probe failed (treated as not yet synced): %s', label, table,
-        error instanceof Error ? error.message : String(error));
+async function strandFirstSyncComplete(db: Database, label: string, progress: FirstSyncProgress): Promise<boolean> {
+  if (!progress.header) {
+    if (!await headerHeld(db, label)) {
       return false;
     }
+    progress.header = true;
+  }
+  for (const table of appTables(db)) {
+    const name = qualifiedName(table);
+    if (progress.tables.has(name)) {
+      continue;
+    }
+    if (!await tableReadable(db, table, label)) {
+      return false;
+    }
+    progress.tables.add(name);
   }
   return true;
-}
-
-/**
- * The gate's whole probe: the Header is held AND every app table has been read once. The
- * app tables are read only once the Header is — a joiner with no peer would otherwise pay
- * one failing network read per table per probe for nothing.
- */
-export async function strandFirstSyncComplete(db: Database, label: string): Promise<boolean> {
-  return await strandHeaderHeld(db, label) && await appTablesReadable(db, label);
 }
 
 export interface StrandFirstSyncGateDeps {
   /** Log tag naming which strand this gate holds (the strand id). */
   label: string;
-  /** The initialized database being held back from the app until the Header is held. */
+  /** The initialized database being held back from the app until the first sync completes. */
   database: StrandDatabase;
   /**
-   * Called exactly once, on the gate's own probe loop, when the first sync completes.
-   * NOT called by {@link StrandFirstSyncGate.open} — a caller that force-opens the gate
-   * (a founder bootstrap it just ran) publishes the database itself.
+   * Called exactly once, from the gate's own probe, when the first sync completes. NOT called
+   * by {@link StrandFirstSyncGate.open} — a caller that force-opens the gate (a founder
+   * bootstrap it just ran) publishes the database itself.
    */
   onHeaderHeld: () => void;
-  /** Timer seam for the probe loop; omit for real (unref'd) timeouts. */
+  /**
+   * Subscribe `onChange` to every block landing in this strand's store — a push such as join
+   * backfill, a fetched block, a commit — and return the unsubscribe. `buildStrandDatabase`
+   * passes the strand node's `storageRepo.onAnyCollectionChange`. Omitted (test doubles, a node
+   * without it), the gate probes on its backstop alone.
+   */
+  subscribeStorageChanges?: (onChange: () => void) => () => void;
+  /** Timer seam for the probe schedule; omit for real (unref'd) timeouts. */
   scheduler?: TimeoutScheduler;
 }
 
 /**
- * Holds one launch's `StrandDatabase` until {@link strandFirstSyncComplete}. Probes are
- * sequential (the next is scheduled only after the previous read settles), so a slow
- * network read never stacks probes.
+ * Holds one launch's `StrandDatabase` until the first sync completes: the `Strand.Header` row is
+ * held and a read of every `App` table has settled. What a probe established is remembered for
+ * the gate's lifetime, so a later probe — the gate's own, after the caller's
+ * {@link probeOnce} — reads only what is still missing. A gate lives for one database build, so a
+ * hibernation wake or a deferred-join retry starts over, and over a store that holds everything
+ * every read answers locally.
+ *
+ * While armed it probes when data lands in the strand's store
+ * ({@link StrandFirstSyncGateDeps.subscribeStorageChanges}, coalesced over
+ * `TABLE_CHANGE_COALESCE_MS`), and {@link StrandFirstSyncConfig.backstopMs} after its last probe
+ * settled when nothing has. Probes run on `scheduleRuns`: one at a time, and data landing during
+ * one produces exactly one more.
+ *
+ * The wake source is the node's storage-wide change feed rather than a table watch
+ * (`StrandDatabase.watchTables`): the Optimystic plugin arms a table's replicated-change bridge
+ * only after the table initializes successfully, and the tables the gate waits on are the ones
+ * whose collection could not be fetched yet, so a table watch would not hear the push that
+ * delivers them. Each strand has its own libp2p node and store, so the feed hears this strand
+ * only.
  *
  * NOTE: a probe's reads dial the founder, through the relay when that is the only route, even
  * while the founder is unreachable: one run of `joiner-first-commit-over-slow-relay` logged 17
  * `hop connect denied` at the relay in about 10 s, each a few frames on the joiner's relay
- * connection. If that connection ever shows saturated while no strand member is connected, hold
- * the probe while the strand member redial (`strand-peer-redial.ts`) reports none connected.
+ * connection, when the gate re-probed every 500 ms and re-read every table. It now probes on
+ * arrivals and a 2 s backstop and skips what it holds, so expect fewer. If that connection ever
+ * shows saturated while no strand member is connected, hold the probe while the strand member
+ * redial (`strand-peer-redial.ts`) reports none connected.
  */
 export class StrandFirstSyncGate {
   private readonly scheduler: TimeoutScheduler;
-  private readonly pollIntervalMs: number;
-  private timer: unknown;
+  private readonly backstopMs: number;
+  private readonly progress: FirstSyncProgress = { header: false, tables: new Set() };
+  private probes: TableChangeWatch | undefined;
+  private unsubscribeStorage: (() => void) | undefined;
+  /** Data landed since the last probe started, so one is already due and will read it. */
+  private landedSinceProbe = false;
   private stopped = false;
   private opened = false;
-  private probing = false;
 
   constructor(private readonly deps: StrandFirstSyncGateDeps, config?: StrandFirstSyncConfig) {
     this.scheduler = deps.scheduler ?? defaultTimeoutScheduler;
-    this.pollIntervalMs = config?.pollIntervalMs ?? DEFAULT_STRAND_FIRST_SYNC_POLL_MS;
+    this.backstopMs = config?.backstopMs ?? DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS;
   }
 
   /** The database this gate is holding back. */
@@ -321,24 +440,32 @@ export class StrandFirstSyncGate {
     return this.deps.database;
   }
 
-  /** True once the Header was seen (or the gate was force-opened); the loop is then done. */
+  /** True once the first sync completed (or the gate was force-opened); probing is then done. */
   get isOpen(): boolean {
     return this.opened;
   }
 
-  /** Arm the probe loop. The first probe runs after one interval — the caller already probed once. */
+  /**
+   * Arm the probe schedule. It does not probe at once — the caller already probed once — but
+   * when data first lands, or one backstop later. Data that landed between the caller's probe
+   * and this call raised no event the gate heard, so that first backstop is what catches it.
+   */
   start(): void {
-    if (this.stopped || this.opened || this.timer !== undefined) return;
-    this.schedule();
-    log('[%s] first-sync gate armed: no Strand.Header held yet; probing every %dms',
-      this.deps.label, this.pollIntervalMs);
+    if (this.stopped || this.opened || this.probes !== undefined) return;
+    this.probes = scheduleRuns(() => this.probe(), {
+      label: `first-sync:${this.deps.label}`,
+      backstopMs: this.backstopMs,
+      scheduler: this.scheduler,
+    });
+    this.unsubscribeStorage = this.subscribeStorage();
+    log('[%s] first-sync gate armed: probing when data lands, and %dms after the last probe otherwise',
+      this.deps.label, this.backstopMs);
   }
 
   /**
-   * Open without the probe loop: the caller is publishing the database itself — a launch
-   * whose first probe passed (or a founder's), which never armed the loop, or a founder
-   * bootstrap just run against the gated database. Stops the loop; `onHeaderHeld` is NOT
-   * invoked.
+   * Open without probing: the caller is publishing the database itself — a launch whose first
+   * probe passed (or a founder's), which never armed the schedule, or a founder bootstrap just
+   * run against the gated database. Stops probing; `onHeaderHeld` is NOT invoked.
    */
   open(): void {
     if (this.opened) return;
@@ -347,54 +474,67 @@ export class StrandFirstSyncGate {
     log('[%s] database published by the caller; first-sync gate not needed or force-opened', this.deps.label);
   }
 
-  /** Disarm the loop; a probe already in flight completes and is then ignored. */
+  /** Disarm: unsubscribe and drop the schedule; a probe already in flight completes and is then ignored. */
   stop(): void {
     this.stopped = true;
-    if (this.timer !== undefined) {
-      this.scheduler.clearTimeout(this.timer);
-      this.timer = undefined;
-    }
-  }
-
-  private schedule(): void {
-    this.timer = this.scheduler.setTimeout(() => {
-      this.timer = undefined;
-      void this.probe();
-    }, this.pollIntervalMs);
-  }
-
-  private async probe(): Promise<void> {
-    if (this.stopped || this.opened || this.probing) return;
-    this.probing = true;
-    const held = await this.probeHeld();
-    // Re-check after the await: a release or a force-open may have landed mid-read.
-    if (this.stopped || this.opened) return;
-    if (!held) {
-      this.schedule();
-      return;
-    }
-    this.opened = true;
-    this.stop();
-    log('[%s] first-sync gate opened: Strand.Header and every App table read from a peer', this.deps.label);
-    this.deps.onHeaderHeld();
+    this.unsubscribeStorage?.();
+    this.unsubscribeStorage = undefined;
+    this.probes?.dispose();
+    this.probes = undefined;
   }
 
   /**
-   * One probe's answer, with a throw from OUTSIDE {@link strandFirstSyncComplete}'s own read
-   * guards — the `App` schema lookup, or `getDatabase()` itself — reported as "not yet" like
-   * any failing read. The loop is scheduled from `void this.probe()`, so an escaping rejection
-   * would be unhandled AND leave nothing scheduled: the strand would stay gated for the whole
-   * `timeoutMs` and never recover, which is the one failure this gate must not have.
+   * One probe's answer, reading only what this gate has not yet seen settled. A throw from
+   * OUTSIDE the probe's own read guards — the `App` schema lookup, or `getDatabase()` itself — is
+   * reported as "not yet" like any failing read, so the caller's first probe cannot fail the
+   * launch over it and the gate's log says what happened.
    */
-  private async probeHeld(): Promise<boolean> {
+  async probeOnce(): Promise<boolean> {
     try {
-      return await strandFirstSyncComplete(this.deps.database.getDatabase(), this.deps.label);
+      return await strandFirstSyncComplete(this.deps.database.getDatabase(), this.deps.label, this.progress);
     } catch (error) {
       log('[%s] first-sync probe threw (treated as not yet synced): %s', this.deps.label,
         error instanceof Error ? error.message : String(error));
       return false;
-    } finally {
-      this.probing = false;
     }
+  }
+
+  /**
+   * NOTE: a probe's own reads can land blocks (a fetched block, a read-repair), which fires this
+   * feed and schedules one follow-up probe. Each follow-up means a block newly arrived, so they
+   * stop when nothing new lands; if gated launches ever show probe storms in the logs, ignore
+   * events while a probe is in flight.
+   */
+  private subscribeStorage(): (() => void) | undefined {
+    const subscribe = this.deps.subscribeStorageChanges;
+    if (!subscribe) {
+      log('[%s] no storage change feed on this node; probing every %dms only', this.deps.label, this.backstopMs);
+      return undefined;
+    }
+    return subscribe(() => this.onDataLanded());
+  }
+
+  /**
+   * Called synchronously by the store after each block lands, so it only arms a timer. A push
+   * lands its blocks one by one; only the first since the last probe started arms one, since
+   * that probe has not started yet and will read the rest.
+   */
+  private onDataLanded(): void {
+    if (this.landedSinceProbe) return;
+    this.landedSinceProbe = true;
+    this.probes?.trigger(TABLE_CHANGE_COALESCE_MS);
+  }
+
+  private async probe(): Promise<void> {
+    if (this.stopped || this.opened) return;
+    log('[%s] first-sync probe (%s)', this.deps.label, this.landedSinceProbe ? 'data landed' : 'backstop');
+    this.landedSinceProbe = false;
+    const held = await this.probeOnce();
+    // Re-check after the await: a release or a force-open may have landed mid-read.
+    if (this.stopped || this.opened || !held) return;
+    this.opened = true;
+    this.stop();
+    log('[%s] first-sync gate opened: Strand.Header and every App table read from a peer', this.deps.label);
+    this.deps.onHeaderHeld();
   }
 }
