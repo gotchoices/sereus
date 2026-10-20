@@ -10,7 +10,15 @@
  * row. `MemberPeer.MemberExists` runs on insert, so an orphaned binding can only
  * mean "this member existed and was removed" — it is exactly the durable,
  * replicated record of a removed party's machines. Everything NOT in the set is
- * admitted. Deliberate consequences:
+ * admitted. That holds on the network only because every writer commits a
+ * party's `Member` row before its `MemberPeer` row, as separate commits (the
+ * membership reconciler does, and `registerMemberPeer` requires an existing
+ * member): Optimystic can save a multi-collection transaction's tables
+ * separately, and remaining members can apply them in either order. The one
+ * exception is the founder's bootstrap, which writes its own `Member` and
+ * `MemberPeer` in one transaction; that is acceptable because it commits before
+ * any other party has joined, so no other party's enforcer is reading yet.
+ * Deliberate consequences:
  *
  * - **Open strands are untouched.** `Member`/`MemberPeer` carry `OnlyClosed`
  *   checks, so an open strand has no rows and the set is empty — and

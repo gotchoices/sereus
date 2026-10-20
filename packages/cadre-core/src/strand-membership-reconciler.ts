@@ -576,16 +576,21 @@ export class StrandMembershipReconciler {
   private async attempt(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
     try {
       if (!(await this.ensureMembership(db, keyPair))) return;
-      // NOTE: the redemption (`Member` + `ConsumedInvite`) and the binding below are two
-      // SEPARATE commits — measured at 27 and 18 `/cluster` streams on 2026-09-17.
-      // One write batch could carry both (`MemberPeer.MemberExists`
-      // reads the LIVE `Member` table, and `MemberPeer.Authorized`'s add branch only verifies a
-      // self-signature over the new row), worth perhaps a third of that plus one commit
-      // round-trip. Left as two deliberately: the saving is unmeasured, and merging them merges
-      // their failure modes — today a redemption that lands but reports torn simply heals on the
-      // next pass, which sees the member row and proceeds to the binding. If a joiner's write
-      // cost ever shows up in a measurement, try the single transaction and measure against the
-      // 27 + 18 baseline.
+      // NOTE: accepted tradeoff — the redemption (`Member` + `ConsumedInvite`) and the binding
+      // below stay two SEPARATE commits on purpose. One transaction would save no `/cluster`
+      // requests: Optimystic pends and commits each collection on its own, about 4 requests per
+      // collection (`blocked/optimystic-multi-collection-commit-costs-four-requests-per-collection`),
+      // and both commits already span several collections (each table plus its UNIQUE trees),
+      // so merging saves only one commit's serial latency. It would also let a torn commit
+      // (Optimystic can report a multi-collection commit partly saved) or the cohort applying
+      // the collections out of order show this machine's `MemberPeer` without its `Member`,
+      // which the revocation enforcer reads as a removed member and hangs up on — fail closed,
+      // undone only by a manager clearing the binding (module doc of
+      // `strand-revocation-enforcer.ts`). And it would add a half-committed shape (`MemberPeer`
+      // saved, the invitation still live) that {@link reportHalfCommittedJoin}'s dropping of the
+      // invitation gets wrong. Revisit when Optimystic offers an all-or-nothing multi-collection
+      // commit, or when its per-coordinator batching lands and the enforcer can tell a
+      // not-yet-seated binding from a removed member's.
       await this.ensureBinding(db, keyPair);
     } finally {
       this.noteAttemptOutcome();
