@@ -75,3 +75,7 @@ Open design questions to resolve before implementing:
   re-issuable at all* via a tombstone.
 - Likely wants a precise `getClusterSize` / broadcast-result seam from the
   `../optimystic` workspace; scope that dependency during design.
+
+## Overlap: the trigger half (added 2026-10-20)
+
+`implement/reconnect-writes-wait-for-sibling-identify` replaces the drain's `getConnections().length > 0` trigger and `committedAlone()` with "a connected sibling that identified as serving the control network and that `isNetworkMember` accepts", which is the cohort Optimystic assembles. Once it lands, a relay or bootstrap connection no longer fires the edge. What stays open here is keeping a queue entry until the re-send is known to have reached the cohort, for example when the identified sibling is not in a given block's cohort on a party larger than the control breadth.
