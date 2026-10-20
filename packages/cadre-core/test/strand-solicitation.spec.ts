@@ -149,6 +149,17 @@ describe('StrandSolicitationService', () => {
       expect(usedChecks).toBe(1);
     });
 
+    it('drops a mint whose invite row has expired, though the registry entry has not', async () => {
+      // `readToken` counts no uses for an expired row, so the expiry itself must drop it.
+      const service = new StrandSolicitationService({
+        formationUsageRecorder: inertRecorder({
+          readToken: async (token) => ({ token, invite: inviteFacts({ totalUses: 1, expiresAtMs: Date.now() - 1 }), usesRecorded: null })
+        })
+      });
+      await service.createOpenInvitation('sapp-1', 60_000, []);
+      expect(await service.hasOutstandingInvitation()).toBe(false);
+    });
+
     it('keeps a minted-but-unconsumed token outstanding', async () => {
       const service = new StrandSolicitationService({
         formationUsageRecorder: inertRecorder({ readToken: readsAs(inviteFacts({ totalUses: 1 })) })

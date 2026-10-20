@@ -24,7 +24,7 @@ import {
   isValidResponderCreatesResult,
   type FormationResultMessage
 } from './strand-formation-protocol.js';
-import { isTokenReadSpent, type FormationTokenRead } from './formation-token.js';
+import { classifyTokenRead, type FormationTokenRead } from './formation-token.js';
 
 const log = debug('sereus:cadre:solicitation');
 
@@ -491,8 +491,8 @@ export class StrandSolicitationService {
    *     in-memory and dies with the process. Expired entries are dropped. With
    *     no {@link FormationUsageRecorder} configured there is no consumption
    *     oracle, so an unexpired minted token counts as outstanding by
-   *     construction; with one, a token it reports used is deleted (consumption
-   *     is permanent, so the registry never reconsiders it).
+   *     construction; with one, a token whose row it reads as expired or used up
+   *     is deleted (both are permanent, so the registry never reconsiders it).
    *  2. The recorder's optional {@link FormationUsageRecorder.hasOutstandingInvitation},
    *     which survives restarts and sees invitations replicated in from siblings.
    *
@@ -512,7 +512,10 @@ export class StrandSolicitationService {
       // NOTE: a read of its own, not shared with a formation session's: this runs while a
       // stranger's connection is being admitted, before any stream or token exists, under the
       // gate's fail-open deadline, and the session that follows reads on a different call.
-      if (!isTokenReadSpent(await this.formationUsageRecorder.readToken(token))) {
+      // An unknown token stays outstanding (its row may not be published yet); an expired or
+      // used-up row is dropped, the same `token-spent` the formation handler would answer.
+      const check = classifyTokenRead(await this.formationUsageRecorder.readToken(token), now);
+      if (check.valid || check.code === 'token-unknown') {
         return true;
       }
       this.mintedInvitations.delete(token);
