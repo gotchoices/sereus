@@ -69,6 +69,11 @@
  *                                                                idle 60 s: 34 app, 0 sync, 0 gets
  *   invite (redeem)      join 776 ms, 38 app streams, 73 gets    settle 15 s: 85 app, 25 gets
  *                                                                idle 60 s: 26 app, 0 sync, 0 gets
+ *   strand               B addStrand 435 ms, 16 app, 20 gets     settle 15 s: 93 app, 73 gets
+ *                                                                idle 60 s: 0 app, 30 upkeep, 0 gets
+ *
+ * The strand row is sereus `a19c28aa`, where the strand watcher, the pending-join runner and the
+ * revocation enforcer also run on change instead of on a timer.
  *
  * The two-machine idle minute is the headline. On 2026-10-19 nearly every idle control read
  * became a `sync` request to the sibling (Optimystic's background check of a block read more
@@ -77,9 +82,8 @@
  * the reads a pass makes are served from the view. Every remaining idle stream is a
  * `block-transfer` push from Optimystic's under-replication drain, which re-sends the blocks
  * the owner wrote alone before the member joined (`DEBUG=optimystic:db-p2p:*` shows them as
- * `under-replication-drain push:ok`); that cadence is Optimystic's. In the strand case each
- * party's control cohort is itself, so its idle reads stay local (2026-10-19 figures above; not
- * re-measured).
+ * `under-replication-drain push:ok`); that cadence is Optimystic's. The strand idle minute
+ * opens no Optimystic or Sereus stream at all; its 30 streams are ping and FRET upkeep.
  */
 
 import { describe, it } from 'vitest'
