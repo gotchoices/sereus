@@ -133,17 +133,12 @@ export interface ControlNodeOpts {
   /** Becomes `strandReactivity` verbatim — Optimystic change notifications on this node's strand nodes. */
   strandReactivity?: StrandReactivityConfig;
   /**
-   * Suspend the CLOSED-strand revoked-peer gate's own refreshes: no membership
-   * change subscription, and a backstop longer than any test. The node then
+   * Suspend the CLOSED-strand revoked-peer gate's own refreshes (`autoRefresh:
+   * false` — no membership change subscription, no retry after a failure, no
+   * wide-strand follow-up) and push its backstop past any test. The node then
    * refreshes only at start and on `CadreNode.refreshRevocationEnforcement`, so
    * every cut it makes is one the test drove on purpose. Unset, the node runs
    * the production schedule (a refresh on each membership change).
-   *
-   * NOTE: the enforcer still re-reads `REVOCATION_REFRESH_RETRY_MS` (30 s) after a
-   * read or a hang-up that failed, suspended or not. A scenario whose machine's
-   * start read fails can therefore see that machine cut on its own about 30 s
-   * later; if one is seen doing so, check its `sereus:cadre:strand-revocation`
-   * debug log for a failed refresh or hangUp.
    */
   revocationSuspended?: boolean;
   /**
@@ -249,7 +244,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     ...(opts.strandClusterSize !== undefined ? { strandClusterSize: opts.strandClusterSize } : {}),
     ...(opts.strandReactivity !== undefined ? { strandReactivity: opts.strandReactivity } : {}),
     ...(opts.revocationSuspended
-      ? { strandRevocationEnforcement: { backstopMs: SUSPENDED_REVOCATION_BACKSTOP_MS, wakeOnChange: false } } : {}),
+      ? { strandRevocationEnforcement: { backstopMs: SUSPENDED_REVOCATION_BACKSTOP_MS, autoRefresh: false } } : {}),
     ...(opts.membershipReconciliation !== undefined
       ? {
         strandMembershipReconciliation: opts.membershipReconciliation === false

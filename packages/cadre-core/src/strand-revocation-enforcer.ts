@@ -183,13 +183,14 @@ export interface StrandRevocationEnforcementConfig {
   /** Longest wait between two refreshes with no change heard, ms. Default {@link DEFAULT_REVOCATION_BACKSTOP_MS}. */
   backstopMs?: number;
   /**
-   * Default true: refresh when `Strand.Member` or `Strand.MemberPeer` changes.
-   * False takes no table subscription, so refreshes run only at start, on the
-   * backstop, after a failure, on a wide strand's follow-up, and on
-   * `refreshRevocationEnforcement`. For test scenarios that need a machine's
-   * cuts to be the ones the test drove; a production node leaves it on.
+   * Default true: the enforcer schedules its own refreshes — on a change to
+   * `Strand.Member` or `Strand.MemberPeer`, after a failed read or hang-up, and
+   * on a wide strand's follow-up. False schedules none of those, so refreshes
+   * run only at start, on the backstop, and on `refreshRevocationEnforcement`.
+   * For test scenarios that need a machine's cuts to be the ones the test drove;
+   * a production node leaves it on.
    */
-  wakeOnChange?: boolean;
+  autoRefresh?: boolean;
 }
 
 /** One `Strand.MemberPeer` row, as the deny-set derivation consumes it. */
@@ -332,7 +333,7 @@ export class StrandRevocationEnforcer {
   /** The materialized deny set — peer ids with an orphaned binding and no live one. */
   private revokedPeerIds: ReadonlySet<string> = new Set();
   private readonly backstopMs: number;
-  private readonly wakeOnChange: boolean;
+  private readonly autoRefresh: boolean;
   /** Tail of the refresh chain — what serializes refreshes (no two reads in flight). */
   private refreshTail: Promise<void> = Promise.resolve();
   /** Every scheduled refresh runs on it; present between {@link start} and {@link stop}. */
@@ -347,7 +348,7 @@ export class StrandRevocationEnforcer {
     config?: StrandRevocationEnforcementConfig
   ) {
     this.backstopMs = config?.backstopMs ?? DEFAULT_REVOCATION_BACKSTOP_MS;
-    this.wakeOnChange = config?.wakeOnChange ?? true;
+    this.autoRefresh = config?.autoRefresh ?? true;
   }
 
   /** Number of peers currently denied — test/diagnostic surface. */
@@ -429,7 +430,7 @@ export class StrandRevocationEnforcer {
       backstopMs: this.backstopMs,
       scheduler: this.deps.scheduler,
     };
-    if (this.wakeOnChange && this.deps.watchChanges) {
+    if (this.autoRefresh && this.deps.watchChanges) {
       try {
         return this.deps.watchChanges(onChange, options);
       } catch (error) {
@@ -462,10 +463,16 @@ export class StrandRevocationEnforcer {
       // immediate teardown for the caller rather than a scheduled one.
       await this.tearDownRevoked(this.revokedPeerIds);
     } catch (error) {
-      log('[%s] deny-set refresh failed — keeping previous snapshot, retrying in %dms: %o',
-        this.deps.label, REVOCATION_REFRESH_RETRY_MS, error);
-      this.watch?.trigger(REVOCATION_REFRESH_RETRY_MS);
+      log('[%s] deny-set refresh failed — keeping previous snapshot: %o', this.deps.label, error);
+      this.scheduleFollowUp(REVOCATION_REFRESH_RETRY_MS, 'refresh failed');
     }
+  }
+
+  /** Arm one more refresh `delayMs` from now, unless {@link StrandRevocationEnforcementConfig.autoRefresh} is off or the enforcer is not running. */
+  private scheduleFollowUp(delayMs: number, reason: string): void {
+    if (!this.autoRefresh || !this.watch) return;
+    log('[%s] %s — refreshing again in %dms', this.deps.label, reason, delayMs);
+    this.watch.trigger(delayMs);
   }
 
   /** Schedule {@link REVOCATION_WIDE_STRAND_REFRESH_MS} when `rows` bind more distinct peers than the cluster holds. */
@@ -474,7 +481,7 @@ export class StrandRevocationEnforcer {
     if (breadth === undefined) return;
     const boundPeers = new Set(rows.bindings.map((binding) => binding.peerId)).size;
     if (boundPeers > breadth) {
-      this.watch?.trigger(REVOCATION_WIDE_STRAND_REFRESH_MS);
+      this.scheduleFollowUp(REVOCATION_WIDE_STRAND_REFRESH_MS, `${boundPeers} bound peers on a cluster of ${breadth}`);
     }
   }
 
@@ -549,9 +556,8 @@ export class StrandRevocationEnforcer {
       await network.hangUp(peer);
       log('[%s] hung up revoked peer %s', this.deps.label, peer.toString());
     } catch (error) {
-      log('[%s] hangUp of revoked peer %s failed — retrying in %dms: %o',
-        this.deps.label, peer.toString(), REVOCATION_REFRESH_RETRY_MS, error);
-      this.watch?.trigger(REVOCATION_REFRESH_RETRY_MS);
+      log('[%s] hangUp of revoked peer %s failed: %o', this.deps.label, peer.toString(), error);
+      this.scheduleFollowUp(REVOCATION_REFRESH_RETRY_MS, 'hangUp failed');
     }
   }
 

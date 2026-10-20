@@ -12,6 +12,7 @@ import {
   type StrandRevocationEnforcerDeps
 } from '../src/strand-revocation-enforcer.js';
 import type { TableChangeWatch, TableChangeWatchOptions } from '../src/table-change-watch.js';
+import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
 import {
   addMemberByManager,
   revokeMember,
@@ -224,6 +225,43 @@ describe('refresh contract', () => {
 
     enforcer.stop();
     expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('autoRefresh: false takes no subscription and schedules no retry or wide-strand follow-up — only start and the backstop', async () => {
+    const armed: Array<{ fn: () => void; ms: number }> = [];
+    const scheduler: TimeoutScheduler = {
+      setTimeout: (fn, ms) => { const wake = { fn, ms }; armed.push(wake); return wake; },
+      clearTimeout: () => {}
+    };
+    const watchChanges = vi.fn();
+    const reads: Array<StrandRevocationRows | Error> = [
+      new Error('cohort unreachable'),
+      rows(['k'], [['k', 'p1'], ['k', 'p2'], ['gone', 'p3']])
+    ];
+    const enforcer = new StrandRevocationEnforcer({
+      label: 't',
+      readRows: async () => {
+        const next = reads.shift()!;
+        if (next instanceof Error) throw next;
+        return next;
+      },
+      watchChanges,
+      cohortBreadth: 2,
+      scheduler
+    }, { backstopMs: 1234, autoRefresh: false });
+
+    enforcer.start();
+    expect(watchChanges).not.toHaveBeenCalled();
+    expect(armed.map((wake) => wake.ms)).toEqual([1234, 0]);
+
+    // The start run (a failed read), then the backstop's run (a wide strand): each re-arms the backstop only.
+    armed[1]!.fn();
+    await vi.waitFor(() => expect(armed).toHaveLength(3));
+    armed[2]!.fn();
+    await vi.waitFor(() => expect(armed).toHaveLength(4));
+    expect(armed.map((wake) => wake.ms)).toEqual([1234, 0, 1234, 1234]);
+    expect(reads).toHaveLength(0);
+    enforcer.stop();
   });
 
   it('discards a read that lands after stop() — a torn-down enforcer never repopulates', async () => {
