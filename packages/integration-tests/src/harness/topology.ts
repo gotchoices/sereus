@@ -59,14 +59,11 @@ export interface TopologyMachineSpec {
 	/** Per-machine raw-storage capture (block-store-probe scenarios). */
 	storageProvider?: RawStorageProvider;
 	strandWatchMs?: number;
-	/** Per-machine closed-strand revoked-peer refresh cadence (ms) — see
-	 *  `ControlNodeOpts.revocationPollMs` in `node-fixtures.ts`. Set it long to suspend a machine's
-	 *  own refresh so every cut it makes is one the scenario drove, or short to
-	 *  exercise the interval-driven cut. */
-	revocationPollMs?: number;
+	/** Suspend this machine's own closed-strand revoked-peer refreshes, so every cut it makes is
+	 *  one the scenario drove — see `ControlNodeOpts.revocationSuspended` in `node-fixtures.ts`. */
+	revocationSuspended?: boolean;
 	/** Per-machine closed-strand membership reconciler: `false` to disarm it, or an
-	 *  explicit cadence. Unset it mirrors {@link revocationPollMs} — see
-	 *  `ControlNodeOpts.membershipReconciliation` in `node-fixtures.ts`. */
+	 *  explicit cadence — see `ControlNodeOpts.membershipReconciliation` in `node-fixtures.ts`. */
 	membershipReconciliation?: false | { pollIntervalMs: number };
 	enableRelay?: boolean;
 	/** An EMPTY list makes a client-only machine, which `controlMesh: 'full'` cannot
@@ -190,7 +187,7 @@ function machineConfig(
 		...(machine.storageProvider ? { storageProvider: machine.storageProvider } : {}),
 		...((machine.strandWatchMs ?? spec.strandWatchMs) !== undefined
 			? { strandWatchMs: machine.strandWatchMs ?? spec.strandWatchMs } : {}),
-		...(machine.revocationPollMs !== undefined ? { revocationPollMs: machine.revocationPollMs } : {}),
+		...(machine.revocationSuspended !== undefined ? { revocationSuspended: machine.revocationSuspended } : {}),
 		...(machine.membershipReconciliation !== undefined
 			? { membershipReconciliation: machine.membershipReconciliation } : {}),
 		...(machine.enableRelay !== undefined ? { enableRelay: machine.enableRelay } : {}),

@@ -40,9 +40,9 @@
  *      writable, B's membership reconciler has redeemed the staged invitation
  *      (its `Strand.Member` seat) and written its own `Strand.MemberPeer`
  *      binding. This is the only end-to-end gate on that timing at the DEFAULT
- *      cadence — nothing here shortens `revocationPollMs` — so a regression to
- *      "wait for the next poll tick" (30 s) fails here rather than passing
- *      slowly. See `strand-membership-reconciler.ts` for the ladder and
+ *      cadence — nothing here shortens the reconciler's
+ *      `DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS` — so a regression to "wait for
+ *      the next poll tick" (30 s) fails here rather than passing slowly. See `strand-membership-reconciler.ts` for the ladder and
  *      `StrandInstanceManager.publishDatabase` for the kick that starts it.
  *   5. Rows written by A are read by B and vice versa — real strand data over
  *      the circuit in both directions, including B→A where B is a total

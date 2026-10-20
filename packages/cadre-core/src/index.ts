@@ -269,14 +269,15 @@ export {
   StrandRevocationEnforcer,
   createRevocationConnectionGater,
   readStrandRevocationRows,
-  DEFAULT_REVOCATION_POLL_INTERVAL_MS,
+  DEFAULT_REVOCATION_BACKSTOP_MS,
+  REVOCATION_REFRESH_RETRY_MS,
+  REVOCATION_WIDE_STRAND_REFRESH_MS,
   type StrandRevocationEnforcementConfig,
   type StrandRevocationEnforcerDeps,
   type StrandRevocationRows,
   type StrandMemberPeerBinding,
   type StrandRevocationJudge,
-  type StrandRevocationNetwork,
-  type RevocationRefreshScheduler
+  type StrandRevocationNetwork
 } from './strand-revocation-enforcer.js';
 
 // Closed-strand membership reconciliation: the bring-up loop that finishes a
@@ -285,6 +286,7 @@ export {
 // bring-up (see the module doc for the pass ladder and terminal states).
 export {
   StrandMembershipReconciler,
+  DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS,
   IDLE_PASSES_BEFORE_ESCALATION,
   INITIAL_JOIN_RETRY_INTERVAL_MS,
   type StrandMembershipReconcilerDeps,

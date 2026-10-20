@@ -896,9 +896,10 @@ export interface CadreNodeConfig {
    * starts: each strand node materializes the peer ids bound to REMOVED members
    * (orphaned `Strand.MemberPeer` rows) and refuses them at the stream and
    * connection layers, so removing a party cuts the network to its machines
-   * rather than only deleting its row. Open strands never arm it. Omit for the
-   * defaults (`DEFAULT_REVOCATION_POLL_INTERVAL_MS` refresh cadence);
-   * `{ enabled: false }` restores the pre-existing behaviour.
+   * rather than only deleting its row. Open strands never arm it. Each strand
+   * re-reads its membership when `Strand.Member` or `Strand.MemberPeer` changes,
+   * and at the latest every `DEFAULT_REVOCATION_BACKSTOP_MS`. Omit for the
+   * defaults; `{ enabled: false }` restores the pre-existing behaviour.
    */
   strandRevocationEnforcement?: StrandRevocationEnforcementConfig;
 
@@ -911,9 +912,8 @@ export interface CadreNodeConfig {
    * background without blocking bring-up. `pollIntervalMs` is the IDLE cadence
    * (how often a machine nobody has admitted re-checks) and the cap of the
    * unfinished-join retry ladder, NOT the retry cadence itself — an unfinished
-   * join retries from 1 s, doubling. Omit for the defaults (it mirrors
-   * {@link strandRevocationEnforcement}'s `pollIntervalMs`);
-   * `{ enabled: false }` disarms the loop — for test fixtures that hand-drive
+   * join retries from 1 s, doubling. Omit for the defaults
+   * (`DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS`); `{ enabled: false }` disarms the loop — for test fixtures that hand-drive
    * the membership writers and assert exact row sets.
    */
   strandMembershipReconciliation?: StrandMembershipReconciliationConfig;

@@ -53,6 +53,9 @@ export function createSignedSAppConfig(schema: string, version: string): SAppCon
   return { id: authorPublicKey, version, schema, signature, latencyHint: 'interactive' as const };
 }
 
+/** The revoked-peer gate's backstop under {@link ControlNodeOpts.revocationSuspended}: longer than any test. */
+const SUSPENDED_REVOCATION_BACKSTOP_MS = 3_600_000;
+
 export interface ControlNodeOpts {
   partyId: string;
   privateKey?: PrivateKey;
@@ -130,24 +133,27 @@ export interface ControlNodeOpts {
   /** Becomes `strandReactivity` verbatim — Optimystic change notifications on this node's strand nodes. */
   strandReactivity?: StrandReactivityConfig;
   /**
-   * Override the CLOSED-strand revoked-peer deny-set refresh cadence (ms;
-   * `DEFAULT_REVOCATION_POLL_INTERVAL_MS`, 30 s). Two uses, opposite ends:
-   * a SHORT value exercises the interval-driven cut without an explicit
-   * `CadreNode.refreshRevocationEnforcement` call, and a value longer than the
-   * test suspends the node's refresh entirely, so every cut it makes is one the
-   * test drove on purpose (the deterministic route).
+   * Suspend the CLOSED-strand revoked-peer gate's own refreshes: no membership
+   * change subscription, and a backstop longer than any test. The node then
+   * refreshes only at start and on `CadreNode.refreshRevocationEnforcement`, so
+   * every cut it makes is one the test drove on purpose. Unset, the node runs
+   * the production schedule (a refresh on each membership change).
+   *
+   * NOTE: the enforcer still re-reads `REVOCATION_REFRESH_RETRY_MS` (30 s) after a
+   * read or a hang-up that failed, suspended or not. A scenario whose machine's
+   * start read fails can therefore see that machine cut on its own about 30 s
+   * later; if one is seen doing so, check its `sereus:cadre:strand-revocation`
+   * debug log for a failed refresh or hangUp.
    */
-  revocationPollMs?: number;
+  revocationSuspended?: boolean;
   /**
    * The CLOSED-strand membership reconciler (the bring-up loop that redeems a
    * staged invitation and writes each machine's own `MemberPeer` binding).
    *
    * `false` disarms it — for scenarios that hand-drive the membership writers and
    * assert exact row sets, where the automatic loop would race and shift their
-   * counts. `{ pollIntervalMs }` keeps it armed on an explicit cadence, which is
-   * how a scenario gets a FAST reconciler while {@link revocationPollMs} stays
-   * suspended: left unset the reconciler mirrors the revocation cadence, so
-   * suspending one would otherwise suspend both.
+   * counts. `{ pollIntervalMs }` keeps it armed on an explicit cadence; left
+   * unset it runs `DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS`.
    */
   membershipReconciliation?: false | { pollIntervalMs: number };
   /**
@@ -242,8 +248,8 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
     ...(opts.strandClusterSize !== undefined ? { strandClusterSize: opts.strandClusterSize } : {}),
     ...(opts.strandReactivity !== undefined ? { strandReactivity: opts.strandReactivity } : {}),
-    ...(opts.revocationPollMs !== undefined
-      ? { strandRevocationEnforcement: { pollIntervalMs: opts.revocationPollMs } } : {}),
+    ...(opts.revocationSuspended
+      ? { strandRevocationEnforcement: { backstopMs: SUSPENDED_REVOCATION_BACKSTOP_MS, wakeOnChange: false } } : {}),
     ...(opts.membershipReconciliation !== undefined
       ? {
         strandMembershipReconciliation: opts.membershipReconciliation === false

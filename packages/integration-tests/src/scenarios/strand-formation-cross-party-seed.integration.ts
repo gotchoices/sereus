@@ -309,11 +309,10 @@ describe('Cross-party strand seed carried by formation', () => {
 				partyId: `joiner-c-${runTag}`,
 				privateKey: joinerKey,
 				bootstrapNodes: controlAddrs(host),
-				// No revocationPollMs override: this joiner runs the PRODUCTION cadence.
-				// The membership reconciler retries an unfinished join on its own short
-				// ladder (1 s, doubling, capped at the poll interval), so the
-				// "invite row not replicated yet → retry" wait no longer depends on
-				// shortening the revocation enforcer's 30 s refresh.
+				// No membershipReconciliation override: this joiner runs the PRODUCTION
+				// cadence. The reconciler retries an unfinished join on its own short
+				// ladder (1 s, doubling, capped at its 30 s default), so the "invite row
+				// not replicated yet → retry" wait needs no shortened cadence.
 			}));
 			await joiner.start();
 			await makeOwnOwner(joiner);

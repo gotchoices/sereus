@@ -111,15 +111,15 @@ describe('StrandInstanceManager revoked-peer enforcement arming', () => {
   it('hands the enforcer the strand id label and threads the config knob through', async () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('rev-knob', 'c', {
-      revocationEnforcement: { pollIntervalMs: 5_000 }
+      revocationEnforcement: { backstopMs: 5_000 }
     }));
 
     const [deps, config] = mocks.StrandRevocationEnforcer.mock.calls[0] as unknown as [
-      { label: string; readRows: unknown }, { pollIntervalMs?: number } | undefined
+      { label: string; readRows: unknown }, { backstopMs?: number } | undefined
     ];
     expect(deps.label).toBe('rev-knob');
     expect(deps.readRows).toBeInstanceOf(Function);
-    expect(config).toEqual({ pollIntervalMs: 5_000 });
+    expect(config).toEqual({ backstopMs: 5_000 });
   });
 
   it('routes the per-stream gate into the enforcer\'s authorizeStream', async () => {

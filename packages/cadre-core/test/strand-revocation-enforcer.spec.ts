@@ -5,12 +5,13 @@ import {
   StrandRevocationEnforcer,
   createRevocationConnectionGater,
   readStrandRevocationRows,
-  DEFAULT_REVOCATION_POLL_INTERVAL_MS,
+  REVOCATION_REFRESH_RETRY_MS,
+  REVOCATION_WIDE_STRAND_REFRESH_MS,
   type StrandRevocationRows,
   type StrandRevocationNetwork,
-  type StrandRevocationEnforcerDeps,
-  type RevocationRefreshScheduler
+  type StrandRevocationEnforcerDeps
 } from '../src/strand-revocation-enforcer.js';
+import type { TableChangeWatch, TableChangeWatchOptions } from '../src/table-change-watch.js';
 import {
   addMemberByManager,
   revokeMember,
@@ -22,7 +23,8 @@ import { freshKeyPair, openStrand } from './strand-spec-helpers.js';
 /**
  * Component coverage for the closed-strand revoked-peer gate: the deny-set
  * derivation, the refresh contract (serialized; a failed read keeps the
- * previous snapshot; interval honored via the injected scheduler), the
+ * previous snapshot; the schedule driven through an injected change
+ * subscription), the
  * synchronous stream predicate, and the connection-gater composition.
  *
  * The pure sections drive an injected `readRows` — no database, no libp2p. The
@@ -182,50 +184,46 @@ describe('refresh contract', () => {
     expect(maxInFlight).toBe(1);
   });
 
-  it('start() arms the poll at the configured cadence (injected scheduler) and kicks an immediate refresh', async () => {
-    let reads = 0;
-    const scheduled: Array<{ fn: () => void; ms: number }> = [];
-    const cleared: unknown[] = [];
-    const scheduler: RevocationRefreshScheduler = {
-      setInterval: (fn, ms) => {
-        const handle = { fn, ms };
-        scheduled.push(handle);
-        return handle;
+  it('start() refreshes at once on the change subscription, then schedules the failure retry and the wide-strand follow-up', async () => {
+    const triggers: number[] = [];
+    const dispose = vi.fn();
+    let subscribed: { onChange: () => Promise<void>; options: TableChangeWatchOptions } | undefined;
+    const watchChanges = (onChange: () => Promise<void>, options: TableChangeWatchOptions): TableChangeWatch => {
+      subscribed = { onChange, options };
+      return { trigger: (delayMs = 0) => { triggers.push(delayMs); }, dispose };
+    };
+    const reads: Array<StrandRevocationRows | Error> = [
+      new Error('cohort unreachable'),
+      // Three distinct bound peers on a cluster of two: this node may be outside a block's cohort.
+      rows(['k'], [['k', 'p1'], ['k', 'p2'], ['gone', 'p3']]),
+      // Two distinct peers (one bound twice): at the breadth, no follow-up.
+      rows(['k'], [['k', 'p1'], ['k', 'p2'], ['gone', 'p2']])
+    ];
+    const enforcer = new StrandRevocationEnforcer({
+      label: 't',
+      readRows: async () => {
+        const next = reads.shift()!;
+        if (next instanceof Error) throw next;
+        return next;
       },
-      clearInterval: (handle) => cleared.push(handle)
-    };
-    const enforcer = new StrandRevocationEnforcer(
-      { label: 't', readRows: async () => { reads += 1; return rows([], []); }, scheduler },
-      { pollIntervalMs: 1234 }
-    );
+      watchChanges,
+      cohortBreadth: 2
+    }, { backstopMs: 1234 });
 
     enforcer.start();
-    expect(scheduled).toHaveLength(1);
-    expect(scheduled[0]!.ms).toBe(1234);
-    await vi.waitFor(() => expect(reads).toBe(1));
+    expect(subscribed!.options.backstopMs).toBe(1234);
+    expect(triggers).toEqual([0]);
 
-    // An interval tick drives a refresh.
-    scheduled[0]!.fn();
-    await vi.waitFor(() => expect(reads).toBe(2));
+    // The fake watch never fires on its own; each run is driven here, as the watch would.
+    await subscribed!.onChange();
+    expect(triggers).toEqual([0, REVOCATION_REFRESH_RETRY_MS]);
+    await subscribed!.onChange();
+    expect(triggers).toEqual([0, REVOCATION_REFRESH_RETRY_MS, REVOCATION_WIDE_STRAND_REFRESH_MS]);
+    await subscribed!.onChange();
+    expect(triggers).toHaveLength(3);
 
-    // stop() disarms the very handle it armed.
     enforcer.stop();
-    expect(cleared).toEqual([scheduled[0]]);
-  });
-
-  it('defaults the cadence to DEFAULT_REVOCATION_POLL_INTERVAL_MS', () => {
-    const scheduled: number[] = [];
-    const scheduler: RevocationRefreshScheduler = {
-      setInterval: (_fn, ms) => { scheduled.push(ms); return ms; },
-      clearInterval: () => {}
-    };
-    const enforcer = new StrandRevocationEnforcer(
-      { label: 't', readRows: async () => rows([], []), scheduler }
-    );
-
-    enforcer.start();
-    enforcer.stop();
-    expect(scheduled).toEqual([DEFAULT_REVOCATION_POLL_INTERVAL_MS]);
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 
   it('discards a read that lands after stop() — a torn-down enforcer never repopulates', async () => {
@@ -239,43 +237,6 @@ describe('refresh contract', () => {
 
     expect(enforcer.revokedCount).toBe(0);
     expect(enforcer.isRevoked('peer-x')).toBe(false);
-  });
-
-  it('an interval tick is skipped (not queued) while a refresh is already in flight', async () => {
-    let reads = 0;
-    let releaseFirstRead: (() => void) | undefined;
-    const scheduled: Array<() => void> = [];
-    const scheduler: RevocationRefreshScheduler = {
-      setInterval: (fn) => { scheduled.push(fn); return fn; },
-      clearInterval: () => {}
-    };
-    const enforcer = new StrandRevocationEnforcer({
-      label: 't',
-      readRows: () => {
-        reads += 1;
-        // Only the FIRST read blocks (it is what the tick must find in flight);
-        // later reads resolve immediately so the wrap-up refresh below completes.
-        if (reads === 1) {
-          return new Promise<StrandRevocationRows>((resolve) => {
-            releaseFirstRead = () => resolve(rows([], []));
-          });
-        }
-        return Promise.resolve(rows([], []));
-      },
-      scheduler
-    });
-
-    enforcer.start();
-    await vi.waitFor(() => expect(reads).toBe(1));
-
-    // Tick while the start() refresh is still reading: skipped, no pileup.
-    scheduled[0]!();
-    expect(reads).toBe(1);
-
-    releaseFirstRead!();
-    await enforcer.refresh();
-    expect(reads).toBe(2);
-    enforcer.stop();
   });
 });
 

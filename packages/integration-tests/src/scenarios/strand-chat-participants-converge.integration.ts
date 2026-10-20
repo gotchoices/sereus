@@ -237,10 +237,9 @@ async function redeemOnJoiner(
 		privateKey: joinerKey,
 		bootstrapNodes: controlAddrs(side.host),
 		storageProvider: capture.provider,
-		// No revocationPollMs override: the membership reconciler retries an unfinished
-		// join on its own short ladder (1 s, doubling, capped at the poll interval), so a
-		// joiner no longer needs the production cadence shortened to finish inside the
-		// wait budget.
+		// No membershipReconciliation override: the reconciler retries an unfinished join
+		// on its own short ladder (1 s, doubling, capped at its 30 s default), so a joiner
+		// finishes inside the wait budget on the production cadence.
 		...(opts.firstSyncTimeoutMs !== undefined ? { strandFirstSync: { timeoutMs: opts.firstSyncTimeoutMs } } : {}),
 	}));
 	await joiner.start();

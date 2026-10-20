@@ -15,7 +15,7 @@
  * - **Open strands are untouched.** `Member`/`MemberPeer` carry `OnlyClosed`
  *   checks, so an open strand has no rows and the set is empty — and
  *   `StrandInstanceManager` additionally skips arming this enforcer entirely for
- *   `Type !== 'c'`, so an open strand does not even poll.
+ *   `Type !== 'c'`, so an open strand neither subscribes nor reads.
  * - **A joining party mid-admission is admitted** (it has no orphaned binding).
  *   An allowlist ("only peers bound to live members") was considered and
  *   rejected: a joiner's first membership writes must travel through the very
@@ -44,22 +44,19 @@
  * Refusing NEW connections only half-honors "no longer be answered to or
  * communicated with": a long-lived strand connection may never re-dial, so
  * without teardown a removed party keeps whatever session it already holds.
- * There is no push notification to hang teardown off — a REPLICATED revocation
- * arrives with no change event (the strand database has no reactive
- * subscription), and a LOCAL
- * `revokeMember`/`leaveStrand` writes through a bare `Database` handle this
- * runtime never sees — so teardown rides the snapshot refresh itself, with
- * `refresh()` exposed for immediacy
+ * Teardown rides the snapshot refresh itself, which runs when the membership
+ * tables change (see "When the deny set is refreshed"). `refresh()` is public
+ * for a caller that wants to await the cut
  * (`StrandInstanceManager.refreshRevocationEnforcement` →
- * `CadreNode.refreshRevocationEnforcement`).
+ * `CadreNode.refreshRevocationEnforcement`): it resolves only after the sweep.
  *
  * The sweep is driven by MEMBERSHIP in the deny set, never by an
  * entered-the-set diff: every refresh hangs up every currently-connected
  * revoked peer, so a resume, a crashed refresh, or a connection established
  * between two refreshes cannot leave a session standing (a diff would be a
  * strict subset of this, so none is kept). A peer with no open connection is
- * simply not swept, and a failed `hangUp` is logged, never thrown — the next
- * refresh retries it. `hangUp` closes DIRECT and RELAYED connections alike, and
+ * simply not swept, and a failed `hangUp` is logged, never thrown, and retried
+ * by a refresh {@link REVOCATION_REFRESH_RETRY_MS} later. `hangUp` closes DIRECT and RELAYED connections alike, and
  * on a strand node running the relay server it also drops any reservation the
  * revoked peer holds there (a reservation dies with its connection — see the
  * relay-seam doc in `membership-connection-gater.ts`).
@@ -80,6 +77,25 @@
  * what to do — this module never stops or leaves a strand on its own.
  * Best-effort by nature: a removed party learns only if the tombstone
  * replicated to it before the cut.
+ *
+ * ## When the deny set is refreshed
+ *
+ * Every refresh runs on one table change subscription (`table-change-watch.ts`),
+ * single-flight, so no two scheduled refreshes overlap:
+ *
+ * - **On a change** to `Strand.Member` or `Strand.MemberPeer`. App writes
+ *   (`revokeMember`, `leaveStrand`) commit on the same Quereus `Database` the
+ *   subscription is on, so a local removal is acted on within the coalescing
+ *   window; a replicated one when this node's storage takes it in.
+ * - **Once at start**, when the strand's database is published.
+ * - **On a backstop** ({@link DEFAULT_REVOCATION_BACKSTOP_MS} after the last
+ *   refresh settled), for a change that raised no event.
+ * - **After a failed refresh**, {@link REVOCATION_REFRESH_RETRY_MS} later. The
+ *   first successful read also arms the plugin's bridge for replicated changes
+ *   (the NOTE on `watchTables`), so until one succeeds only local commits wake it.
+ * - **After each successful refresh on a wide strand** — more distinct bound peer ids than
+ *   the cluster size — {@link REVOCATION_WIDE_STRAND_REFRESH_MS} later, because
+ *   this node may be outside a membership block's cohort and so hear no change.
  *
  * ## What transfers from the control gater (`membership-connection-gater.ts`)
  *
@@ -120,17 +136,38 @@ import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/inter
 import type { Database } from '@quereus/quereus';
 import { decideWithinDeadline } from './membership-connection-gater.js';
 import { ADMISSION_DECISION_TIMEOUT_MS } from './link-budget.js';
+import { scheduleRuns, type TableChangeWatch, type TableChangeWatchOptions } from './table-change-watch.js';
+import type { TimeoutScheduler } from './timeout-scheduler.js';
 
 const log = debug('sereus:cadre:strand-revocation');
 
 /**
- * Default cadence of the deny-set refresh. Bounded staleness is the accepted
- * failure direction (see the module doc's stale-view paragraph); 30 s keeps a
- * revoked peer's post-replication admit window in the same order as the
- * replication delay itself. Overridable via
- * {@link StrandRevocationEnforcementConfig.pollIntervalMs}.
+ * Default longest wait between two deny-set refreshes when no membership change
+ * is heard. Overridable via {@link StrandRevocationEnforcementConfig.backstopMs}.
+ *
+ * NOTE: the backstop covers two paths the change subscription does not: a
+ * machine that was offline when the removal was committed (it normally takes
+ * the blocks in by join backfill or read repair on reconnect, which raise the
+ * change too), and any change that reaches storage without an event. The case
+ * of a node outside a membership block's cohort is covered by
+ * {@link REVOCATION_WIDE_STRAND_REFRESH_MS}, not by this.
  */
-export const DEFAULT_REVOCATION_POLL_INTERVAL_MS = 30_000;
+export const DEFAULT_REVOCATION_BACKSTOP_MS = 5 * 60_000;
+
+/**
+ * How soon a failed refresh is retried. Also how soon a replicated removal is
+ * heard after a first read that failed, since that read is what arms the
+ * plugin's replicated-change bridge for the two tables.
+ */
+export const REVOCATION_REFRESH_RETRY_MS = 30_000;
+
+/**
+ * How soon a strand with more distinct bound peer ids than its cluster size is
+ * refreshed again after a successful refresh. On such a strand this node may be
+ * outside a membership block's cohort, so it takes in no storage event for a
+ * removal (`docs/architecture.md` → "Table change subscriptions").
+ */
+export const REVOCATION_WIDE_STRAND_REFRESH_MS = 30_000;
 
 /**
  * Embedder tuning for the strand revoked-peer gate, threaded from
@@ -143,8 +180,16 @@ export interface StrandRevocationEnforcementConfig {
    * the pre-existing behaviour (a removed party's peers keep being served).
    */
   enabled?: boolean;
-  /** Deny-set refresh cadence, ms. Default {@link DEFAULT_REVOCATION_POLL_INTERVAL_MS}. */
-  pollIntervalMs?: number;
+  /** Longest wait between two refreshes with no change heard, ms. Default {@link DEFAULT_REVOCATION_BACKSTOP_MS}. */
+  backstopMs?: number;
+  /**
+   * Default true: refresh when `Strand.Member` or `Strand.MemberPeer` changes.
+   * False takes no table subscription, so refreshes run only at start, on the
+   * backstop, after a failure, on a wide strand's follow-up, and on
+   * `refreshRevocationEnforcement`. For test scenarios that need a machine's
+   * cuts to be the ones the test drove; a production node leaves it on.
+   */
+  wakeOnChange?: boolean;
 }
 
 /** One `Strand.MemberPeer` row, as the deny-set derivation consumes it. */
@@ -160,26 +205,6 @@ export interface StrandRevocationRows {
   /** Every `Strand.MemberPeer` row (live-membered and orphaned alike). */
   bindings: readonly StrandMemberPeerBinding[];
 }
-
-/**
- * Timer seam so the refresh cadence is testable without fake timers — the
- * injectable-clock idiom of `UnauthorizedReservationBudget`'s `now` argument,
- * shaped for an interval-driven component. The default schedules a real
- * interval and unrefs it so an armed enforcer never holds a process open.
- */
-export interface RevocationRefreshScheduler {
-  setInterval(fn: () => void, ms: number): unknown;
-  clearInterval(handle: unknown): void;
-}
-
-const defaultScheduler: RevocationRefreshScheduler = {
-  setInterval: (fn, ms) => {
-    const handle = setInterval(fn, ms);
-    (handle as { unref?: () => void }).unref?.();
-    return handle;
-  },
-  clearInterval: (handle) => clearInterval(handle as Parameters<typeof clearInterval>[0])
-};
 
 /**
  * The minimum of a libp2p node the teardown sweep needs: who WE are, what is
@@ -226,8 +251,19 @@ export interface StrandRevocationEnforcerDeps {
    * logged and swallowed — an embedder's handler must not derail the sweep.
    */
   onSelfRevoked?: () => void;
-  /** Timer seam; omit for real (unref'd) intervals. */
-  scheduler?: RevocationRefreshScheduler;
+  /**
+   * Subscribe `onChange` to changes in `Strand.Member` and `Strand.MemberPeer`
+   * (`StrandDatabase.watchTables`). Absent, or throwing: refreshes come from
+   * start, the backstop, retries and wide-strand follow-ups only (unit tests).
+   */
+  watchChanges?(onChange: () => Promise<void>, options: TableChangeWatchOptions): TableChangeWatch;
+  /**
+   * The strand's cluster size. A snapshot with more distinct bound peer ids than
+   * this schedules {@link REVOCATION_WIDE_STRAND_REFRESH_MS}; absent, never.
+   */
+  cohortBreadth?: number;
+  /** Timer seam for the watch; omit for real (unref'd) timeouts. */
+  scheduler?: TimeoutScheduler;
 }
 
 /** Every `Strand.MemberPeer` binding — live-membered and orphaned alike. */
@@ -269,8 +305,8 @@ async function scanMemberKeys(db: Database): Promise<Set<string>> {
  * missing from the NEWER key scan). Every skew window then resolves fail-open,
  * matching the module doc.
  *
- * NOTE: two whole-table scans per refresh (default every 30 s per closed
- * strand). Fine at strand scale (a handful of members and bindings); if
+ * NOTE: two whole-table scans per refresh (on each membership change and each
+ * backstop, per closed strand). Fine at strand scale (a handful of members and bindings); if
  * membership churn ever makes these tables large, the fix is a reliable
  * filtered read — which needs the networked point-lookup gap closed
  * (`debt-composite-pk-point-lookup-unreliable-untracked`) — not a bigger scan.
@@ -284,24 +320,23 @@ export async function readStrandRevocationRows(db: Database): Promise<StrandRevo
 /**
  * The per-strand revoked-peer deny set and the synchronous predicates over it.
  *
- * Lifecycle mirrors `PeerJoinBackfill`: created in
- * `StrandInstanceManager.buildStrandRuntime` (closed strands only), started
- * after the strand database initializes, stopped and dropped in
- * `releaseRuntime` — so quiesce → resume rebuilds it with a fresh snapshot.
- * The snapshot starts EMPTY (admit everything) and repopulates on the first
- * successful read; a revoked peer therefore gets a short admit window per
- * resume at the connection level. Accepted: fail-open posture, and resume is
- * never blocked on a refresh.
+ * Lifecycle: created in `StrandInstanceManager.buildStrandRuntime` (closed
+ * strands only), started when `publishDatabase` hands the strand's database to
+ * the app, stopped and dropped in `releaseRuntime` — so quiesce → resume
+ * rebuilds it with a fresh snapshot. The snapshot starts EMPTY (admit
+ * everything) and repopulates on the first successful read; a revoked peer
+ * therefore gets a short admit window per resume at the connection level.
+ * Accepted: fail-open posture, and resume is never blocked on a refresh.
  */
 export class StrandRevocationEnforcer {
   /** The materialized deny set — peer ids with an orphaned binding and no live one. */
   private revokedPeerIds: ReadonlySet<string> = new Set();
-  private readonly scheduler: RevocationRefreshScheduler;
-  private readonly pollIntervalMs: number;
+  private readonly backstopMs: number;
+  private readonly wakeOnChange: boolean;
   /** Tail of the refresh chain — what serializes refreshes (no two reads in flight). */
   private refreshTail: Promise<void> = Promise.resolve();
-  private refreshing = false;
-  private intervalHandle: unknown;
+  /** Every scheduled refresh runs on it; present between {@link start} and {@link stop}. */
+  private watch: TableChangeWatch | undefined;
   private started = false;
   private stopped = false;
   /** Latch for the one-shot self-revocation signal — see {@link StrandRevocationEnforcerDeps.onSelfRevoked}. */
@@ -311,8 +346,8 @@ export class StrandRevocationEnforcer {
     private readonly deps: StrandRevocationEnforcerDeps,
     config?: StrandRevocationEnforcementConfig
   ) {
-    this.scheduler = deps.scheduler ?? defaultScheduler;
-    this.pollIntervalMs = config?.pollIntervalMs ?? DEFAULT_REVOCATION_POLL_INTERVAL_MS;
+    this.backstopMs = config?.backstopMs ?? DEFAULT_REVOCATION_BACKSTOP_MS;
+    this.wakeOnChange = config?.wakeOnChange ?? true;
   }
 
   /** Number of peers currently denied — test/diagnostic surface. */
@@ -320,30 +355,26 @@ export class StrandRevocationEnforcer {
     return this.revokedPeerIds.size;
   }
 
-  /** Kick an immediate refresh (not awaited — bring-up never blocks on it) and arm the poll. */
+  /**
+   * Subscribe to membership changes and run one refresh at once (not awaited —
+   * bring-up never blocks on it); the module doc's "When the deny set is
+   * refreshed" has the full schedule. Call once the strand's database is
+   * published. A second call, or one after {@link stop}, is a no-op.
+   */
   start(): void {
     if (this.started || this.stopped) return;
     this.started = true;
-    void this.refresh();
-    this.intervalHandle = this.scheduler.setInterval(() => {
-      // Skip a tick while a refresh is in flight rather than queueing behind it —
-      // the interval exists to bound staleness, and a stack of queued reads
-      // bounds nothing extra. Explicit refresh() calls still chain (see refresh).
-      if (!this.refreshing) {
-        void this.refresh();
-      }
-    }, this.pollIntervalMs);
-    log('[%s] revocation enforcer started (poll %dms)', this.deps.label, this.pollIntervalMs);
+    this.watch = this.subscribe();
+    this.watch.trigger(0);
+    log('[%s] revocation enforcer started (backstop %dms)', this.deps.label, this.backstopMs);
   }
 
-  /** Disarm the poll; a read already in flight completes but its result is discarded. */
+  /** Stop scheduling refreshes; a read already in flight completes but its result is discarded. */
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
-    if (this.intervalHandle != null) {
-      this.scheduler.clearInterval(this.intervalHandle);
-      this.intervalHandle = undefined;
-    }
+    this.watch?.dispose();
+    this.watch = undefined;
     log('[%s] revocation enforcer stopped', this.deps.label);
   }
 
@@ -380,39 +411,78 @@ export class StrandRevocationEnforcer {
   }
 
   /**
+   * The watch every scheduled refresh runs on: the deps' change subscription, or
+   * a timer-only one when changes are not watched or the subscription throws.
+   *
+   * NOTE: a refresh can wake itself once. Its read may start a read-repair sync
+   * (a held block read more than Optimystic's `readRepairWindowMs`, 10 s, after
+   * its last check), and that sync's landing raises a change. The follow-up
+   * refresh runs within the coalescing window plus one read — well inside the
+   * read-repair window — so it starts no second sync and the chain stops there.
+   * If idle sync counts on a strand do not fall with this subscription, suspect
+   * this loop first.
+   */
+  private subscribe(): TableChangeWatch {
+    const onChange = (): Promise<void> => this.refresh();
+    const options: TableChangeWatchOptions = {
+      label: `strand-revocation:${this.deps.label}`,
+      backstopMs: this.backstopMs,
+      scheduler: this.deps.scheduler,
+    };
+    if (this.wakeOnChange && this.deps.watchChanges) {
+      try {
+        return this.deps.watchChanges(onChange, options);
+      } catch (error) {
+        log('[%s] membership change subscription failed — refreshing on the backstop and retries only: %o', this.deps.label, error);
+      }
+    }
+    return scheduleRuns(onChange, options);
+  }
+
+  /**
    * One serialized snapshot rebuild; contains every failure (contract: never rejects).
    *
    * NOTE: nothing here carries a deadline — a `readRows` or a `hangUp` that never
-   * settles wedges the refresh chain, which freezes the deny set (the poll skips
-   * while `refreshing`, and every later `refresh()` chains behind the stuck one).
+   * settles wedges the refresh chain, which freezes the deny set (the watch runs
+   * one refresh at a time, and every later `refresh()` chains behind the stuck one).
    * Both are bounded in practice (Quereus reads settle; libp2p's connection close
    * has its own timeout). If a strand is ever seen with a stale deny set and no
    * refresh log line, wrap both awaits in a timeout rather than hunting further.
    */
   private async doRefresh(): Promise<void> {
     if (this.stopped) return;
-    this.refreshing = true;
     try {
       const rows = await this.deps.readRows();
       if (this.stopped) return;
       this.revokedPeerIds = deriveRevokedPeerIds(rows);
       log('[%s] deny set refreshed: %d revoked peer(s)', this.deps.label, this.revokedPeerIds.size);
+      this.followUpWideStrand(rows);
       // Awaited inside the refresh, so an on-demand refresh() resolves only once
       // the cut has been made — that is what makes "revoke, then refresh" an
       // immediate teardown for the caller rather than a scheduled one.
       await this.tearDownRevoked(this.revokedPeerIds);
     } catch (error) {
-      log('[%s] deny-set refresh failed — keeping previous snapshot: %o', this.deps.label, error);
-    } finally {
-      this.refreshing = false;
+      log('[%s] deny-set refresh failed — keeping previous snapshot, retrying in %dms: %o',
+        this.deps.label, REVOCATION_REFRESH_RETRY_MS, error);
+      this.watch?.trigger(REVOCATION_REFRESH_RETRY_MS);
+    }
+  }
+
+  /** Schedule {@link REVOCATION_WIDE_STRAND_REFRESH_MS} when `rows` bind more distinct peers than the cluster holds. */
+  private followUpWideStrand(rows: StrandRevocationRows): void {
+    const breadth = this.deps.cohortBreadth;
+    if (breadth === undefined) return;
+    const boundPeers = new Set(rows.bindings.map((binding) => binding.peerId)).size;
+    if (boundPeers > breadth) {
+      this.watch?.trigger(REVOCATION_WIDE_STRAND_REFRESH_MS);
     }
   }
 
   /**
    * Close what is already OPEN to the peers of `revoked` — the teardown half of
    * enforcement (module doc: "Removal cuts LIVE sessions too"). Never rejects:
-   * every failure is contained, so the refresh loop survives and simply retries
-   * on the next tick.
+   * every failure is contained, so the refresh chain survives, and a failed
+   * `hangUp` schedules a retry.
    *
    * `revoked` is passed IN rather than read off the field, so the sweep judges
    * the exact snapshot its own refresh produced; likewise the connection list is
@@ -479,7 +549,9 @@ export class StrandRevocationEnforcer {
       await network.hangUp(peer);
       log('[%s] hung up revoked peer %s', this.deps.label, peer.toString());
     } catch (error) {
-      log('[%s] hangUp of revoked peer %s failed — next refresh retries: %o', this.deps.label, peer.toString(), error);
+      log('[%s] hangUp of revoked peer %s failed — retrying in %dms: %o',
+        this.deps.label, peer.toString(), REVOCATION_REFRESH_RETRY_MS, error);
+      this.watch?.trigger(REVOCATION_REFRESH_RETRY_MS);
     }
   }
 

@@ -21,8 +21,7 @@
  * - **Retries fast while the join is unfinished, slowly while it is only waiting.** A pass
  *   that leaves the join unfinished re-arms on a ladder starting at
  *   {@link INITIAL_JOIN_RETRY_INTERVAL_MS} and doubling, capped at the configured poll
- *   interval (default {@link DEFAULT_REVOCATION_POLL_INTERVAL_MS}; an embedder's
- *   `revocationEnforcement.pollIntervalMs` is mirrored here by the instance manager). A pass
+ *   interval (default {@link DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS}). A pass
  *   that finds no member row AND no staged invitation is not an unfinished join but a wait
  *   for someone to admit this party — nothing this machine can do faster — so it re-arms on
  *   the flat poll interval and resets the ladder. The loop stops on the done state.
@@ -152,10 +151,16 @@ import {
   registerMemberPeer,
   type StrandWriteOptions,
 } from './strand-membership-writer.js';
-import { DEFAULT_REVOCATION_POLL_INTERVAL_MS } from './strand-revocation-enforcer.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
 
 const log = debug('sereus:cadre:strand-membership-reconciler');
+
+/**
+ * Default poll interval, ms: the loop's idle cadence while nobody has admitted this party, and
+ * the cap of its unfinished-join retry ladder. The loop stops once joined, so this matters only
+ * while a machine is joining.
+ */
+export const DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS = 30_000;
 
 /**
  * Idle passes (no member row, no staged invitation) before ONE `console.warn`
@@ -182,9 +187,8 @@ export const UNFINISHED_PASSES_BEFORE_ESCALATION = 10;
  * unwritable, a database not yet published. Doubles per such pass up to the configured
  * poll interval. Sized for what it retries: invite-row replication resolves in about a
  * second over a direct connection and a few over a relay. The poll interval is NOT sized
- * for that — it is the revocation enforcer's deny-set refresh cadence, mirrored here for
- * the idle case (waiting to be admitted at all), which is why this ladder exists instead
- * of a shorter interval.
+ * for that — it is sized for the idle case (waiting to be admitted at all), which is why
+ * this ladder exists instead of a shorter interval.
  */
 export const INITIAL_JOIN_RETRY_INTERVAL_MS = 1_000;
 
@@ -366,19 +370,18 @@ export interface StrandMembershipReconciliationConfig {
   enabled?: boolean;
   /**
    * Idle cadence, ms — how often the loop re-checks while nobody has admitted this party
-   * yet — and the CAP of the unfinished-join retry ladder. When omitted the instance
-   * manager mirrors the revocation enforcer's configured cadence; default
-   * {@link DEFAULT_REVOCATION_POLL_INTERVAL_MS}.
+   * yet — and the CAP of the unfinished-join retry ladder. Default
+   * {@link DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS}.
    */
   pollIntervalMs?: number;
 }
 
 /**
- * The per-strand membership reconciliation loop. Lifecycle mirrors
- * `StrandRevocationEnforcer`: created in `StrandInstanceManager.buildStrandRuntime`
- * (closed strands with a party key only), started right after the strand database
- * initializes, stopped and dropped in `releaseRuntime` — so quiesce → resume rebuilds
- * it and re-runs the (idempotent) ladder from scratch.
+ * The per-strand membership reconciliation loop. Created in
+ * `StrandInstanceManager.buildStrandRuntime` (closed strands with a party key only),
+ * started right after the strand database initializes, stopped and dropped in
+ * `releaseRuntime` — so quiesce → resume rebuilds it and re-runs the (idempotent) ladder
+ * from scratch.
  */
 export class StrandMembershipReconciler {
   private readonly scheduler: TimeoutScheduler;
@@ -423,7 +426,7 @@ export class StrandMembershipReconciler {
     config?: StrandMembershipReconciliationConfig
   ) {
     this.scheduler = deps.scheduler ?? defaultTimeoutScheduler;
-    this.pollIntervalMs = config?.pollIntervalMs ?? DEFAULT_REVOCATION_POLL_INTERVAL_MS;
+    this.pollIntervalMs = config?.pollIntervalMs ?? DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS;
   }
 
   /**

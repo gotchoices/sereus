@@ -241,9 +241,9 @@ export interface StartStrandConfig {
    * {@link CadreNodeConfig.strandMembershipReconciliation}. Armed only for
    * closed strands launched with a {@link partyMemberPrivateKey};
    * `{ enabled: false }` disarms the loop (test fixtures that hand-drive the
-   * membership writers). When it names no `pollIntervalMs` the reconciler
-   * mirrors {@link revocationEnforcement}'s cadence — as its IDLE cadence and
-   * the cap of its unfinished-join retry ladder, not as a flat retry interval.
+   * membership writers). Its `pollIntervalMs` is the reconciler's IDLE cadence
+   * and the cap of its unfinished-join retry ladder, not a flat retry interval;
+   * default `DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS`.
    */
   membershipReconciliation?: StrandMembershipReconciliationConfig;
 
@@ -467,8 +467,9 @@ export class StrandInstanceManager {
   /**
    * The per-strand revoked-peer enforcer (closed strands only), keyed by strand
    * id. Same lifecycle rationale as {@link backfills}: created in
-   * `buildStrandRuntime`, stopped and dropped in `releaseRuntime`, so quiesce →
-   * resume rebuilds it with a fresh (initially empty, fail-open) snapshot.
+   * `buildStrandRuntime`, started in {@link publishDatabase}, stopped and dropped
+   * in `releaseRuntime`, so quiesce → resume rebuilds it with a fresh (initially
+   * empty, fail-open) snapshot.
    */
   private revocationEnforcers: Map<string, StrandRevocationEnforcer> = new Map();
   /**
@@ -769,26 +770,36 @@ export class StrandInstanceManager {
     // spreading it would hand db-p2p a key it does not know.
     const { relayAddrs: relayDialAddrs = [], ...addrOptions } = strandNodeAddrs(config.network);
 
+    // Bound once, before anything is built — so, like the round-trip check above, a
+    // rejected clusterSize fails the build with nothing to release. The breadth is also
+    // the ceiling on the repair yardstick and the revocation enforcer's wide-strand
+    // test below, and all three must be derived from the same resolution.
+    const strandClusterSize = resolveStrandClusterSize(config.clusterSize);
+
     // The CLOSED-strand revoked-peer gate (see strand-revocation-enforcer.ts).
     // Constructed BEFORE the libp2p node because the node's options embed its
     // predicates; its deny set starts empty (admit everything — fail-open, same
-    // posture as bring-up everywhere here) and is first populated after the
-    // strand database initializes below. Registered in the map immediately so
-    // the failure rollback (releaseRuntime) tears it down like every other
-    // runtime component. Open strands skip it entirely: their Member/MemberPeer
-    // tables are empty by schema (`OnlyClosed`), so there is nothing to derive
-    // a deny set from — arming would be pointless polling.
+    // posture as bring-up everywhere here) and is first populated once
+    // `publishDatabase` starts it. Registered in the map immediately so the
+    // failure rollback (releaseRuntime) tears it down like every other runtime
+    // component, and so every publish path finds it. Open strands skip it
+    // entirely: their Member/MemberPeer tables are empty by schema
+    // (`OnlyClosed`), so there is nothing to derive a deny set from.
+    const liveDatabase = (): StrandDatabase => {
+      if (!instance.database) {
+        throw new Error(`strand ${strandId} has no live database`);
+      }
+      return instance.database;
+    };
     const revocationEnforcer =
       config.strandRow.Type === 'c' && config.revocationEnforcement?.enabled !== false
         ? new StrandRevocationEnforcer({
             label: strandId,
-            readRows: () => {
-              const database = instance.database;
-              if (!database) {
-                throw new Error(`strand ${strandId} has no live database`);
-              }
-              return readStrandRevocationRows(database.getDatabase());
-            },
+            readRows: () => readStrandRevocationRows(liveDatabase().getDatabase()),
+            // The tables `readStrandRevocationRows` reads. Called by `start()`, which
+            // `publishDatabase` runs right after setting `instance.database`.
+            watchChanges: (onChange, options) => liveDatabase().watchTables(['Strand.Member', 'Strand.MemberPeer'], onChange, options),
+            cohortBreadth: strandClusterSize,
             // Read per sweep, never captured: this closure is built BEFORE the
             // libp2p node exists (its options embed the enforcer's predicates),
             // and `releaseRuntime` clears the field again on quiesce. Undefined
@@ -821,11 +832,6 @@ export class StrandInstanceManager {
     }
 
     try {
-      // Bound once: the breadth is also the ceiling on the repair yardstick below, and the
-      // two must be derived from the same resolution. Inside the `try` deliberately — a
-      // rejected clusterSize is a build failure that runs the same cleanup as any other.
-      const strandClusterSize = resolveStrandClusterSize(config.clusterSize);
-
       let t0 = performance.now();
       const node = await createLibp2pNode({
         port: 0, // Random port
@@ -973,19 +979,10 @@ export class StrandInstanceManager {
               }
             : undefined,
           onRejoinBlocked: () => config.onRejoinBlocked?.(strandId)
-        }, {
-          pollIntervalMs: config.membershipReconciliation?.pollIntervalMs
-            ?? config.revocationEnforcement?.pollIntervalMs
-        });
+        }, config.membershipReconciliation);
         this.membershipReconcilers.set(strandId, reconciler);
         reconciler.start();
       }
-
-      // Arm the revoked-peer deny-set poll now that the database it reads
-      // exists. start() kicks an immediate refresh WITHOUT awaiting it —
-      // bring-up and resume are never blocked on a membership read; until the
-      // first read lands the empty snapshot admits everyone (fail-open).
-      revocationEnforcer?.start();
 
       // Peer-join block catch-up: push this strand's own blocks to each newly
       // connected peer, so a machine that joined after blocks were committed
@@ -1395,12 +1392,11 @@ export class StrandInstanceManager {
    * Refresh a strand's revoked-peer deny set NOW — and, with it, run the
    * teardown sweep that hangs up every connected revoked peer.
    *
-   * The gate is otherwise poll-driven (default
-   * `DEFAULT_REVOCATION_POLL_INTERVAL_MS`), because neither a replicated
-   * revocation nor a local `revokeMember`/`leaveStrand` raises anything this
-   * runtime can hook. A caller that just wrote a revocation against the
-   * strand's database should follow it with this call, which makes the cut
-   * immediate instead of waiting out the interval.
+   * The gate already refreshes on its own when `Strand.Member` or
+   * `Strand.MemberPeer` changes, a local `revokeMember`/`leaveStrand` included
+   * (`strand-revocation-enforcer.ts` → "When the deny set is refreshed"). This
+   * call is for a caller that wants to await the cut: it resolves once the sweep
+   * has run.
    *
    * Quiet no-op — matching `quiesceStrand`'s posture — when the strand is not
    * tracked, is quiesced, is open, or has the gate disabled: in every one of
@@ -1870,8 +1866,12 @@ export class StrandInstanceManager {
    * strand `'active'`, and `strand:writable` is defined as the follow-up to a gated
    * launch, never a duplicate of `strand:started`.
    *
-   * It is also the one seam where a WITHHELD database becomes available, so it kicks the
-   * membership reconciler: on a gated launch that loop's own immediate pass ran while
+   * It is also the one seam where a WITHHELD database becomes available, so it starts the
+   * revoked-peer enforcer and kicks the membership reconciler. The enforcer is registered
+   * before the database phase, so every publish path — a launch never gated, the gate's
+   * `onHeaderHeld`, {@link ensureFounderBootstrap}, a deferred join's retry, a hibernation
+   * wake's rebuild — starts it here, and its change subscription needs the published
+   * database. The reconciler's own immediate pass, on a gated launch, ran while
    * `instance.database` was still unset, found no database, and would otherwise not try
    * again until its retry timer fired. A launch that was never gated publishes here BEFORE
    * the reconciler is constructed, so there is nothing registered to kick and the loop's own
@@ -1902,8 +1902,10 @@ export class StrandInstanceManager {
     if (wasGated) {
       this.launchConfigs.get(strandId)?.onWritable?.(strandId);
     }
-    // Not awaited: publishing must stay synchronous, and the pass chains on the loop's own
+    // Neither throws nor awaits: publishing must stay synchronous. `start()` is a no-op on an
+    // enforcer already started or stopped, and the reconciler pass chains on the loop's own
     // tail, so it cannot overlap a pass already in flight.
+    this.revocationEnforcers.get(strandId)?.start();
     void this.membershipReconcilers.get(strandId)?.reconcile();
   }
 

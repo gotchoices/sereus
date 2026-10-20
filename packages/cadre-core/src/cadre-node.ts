@@ -8666,13 +8666,10 @@ export class CadreNode implements SAppIdLookup {
    * connected peer it newly covers — the strand-side counterpart to
    * {@link refreshMembershipGate}.
    *
-   * Unlike that one, NOTHING calls this automatically: strand membership is
-   * written through the strand's own `Database` handle
-   * (`strand-membership-writer.ts`), which raises no notification this runtime
-   * can hook, and a revocation that arrives by REPLICATION raises none either.
-   * The gate therefore polls (default 30 s). An app that has just called
-   * `revokeMember` or `leaveStrand` should follow the write with this call so
-   * the cut is immediate rather than up to one poll interval late.
+   * The gate already refreshes on its own when the strand's `Member` or
+   * `MemberPeer` table changes: at once for a `revokeMember` or `leaveStrand`
+   * written on this machine, and when a replicated removal reaches this node's
+   * storage. Call this to await the cut — it resolves after the sweep.
    *
    * Quiet no-op for a strand that is not running, is quiesced, is open, or has
    * the gate disabled. Never rejects; resolves once the sweep has finished.

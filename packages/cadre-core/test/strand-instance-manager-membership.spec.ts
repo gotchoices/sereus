@@ -200,29 +200,6 @@ describe('membership reconciler arming', () => {
     expect(deps.pendingInvite).toBe(source);
   });
 
-  it('mirrors the revocation enforcer cadence into the reconciler config', async () => {
-    const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('mem-cadence', 'c', {
-      partyMemberPrivateKey: partyKey,
-      revocationEnforcement: { pollIntervalMs: 7_000 },
-    }));
-
-    const [, config] = lastReconcilerArgs();
-    expect(config).toEqual({ pollIntervalMs: 7_000 });
-  });
-
-  it('an explicit membershipReconciliation cadence wins over the mirrored enforcer one', async () => {
-    const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('mem-cadence-own', 'c', {
-      partyMemberPrivateKey: partyKey,
-      revocationEnforcement: { pollIntervalMs: 7_000 },
-      membershipReconciliation: { pollIntervalMs: 3_000 },
-    }));
-
-    const [, config] = lastReconcilerArgs();
-    expect(config).toEqual({ pollIntervalMs: 3_000 });
-  });
-
   it('does NOT arm when the embedder disabled it — fixtures that hand-drive the writers', async () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('mem-off', 'c', {

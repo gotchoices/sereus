@@ -21,27 +21,33 @@
  *      visible to the other remaining machine, and the removed party can neither see it
  *      nor push anything back.
  *   2. **The removed node is told** (2 parties × 1 machine). The removed party's node
- *      learns from its OWN poll — no explicit refresh call anywhere — that it was
- *      removed, and nothing is torn down on its behalf. This is the only test that
- *      exercises the interval-driven route; test 1 drives every cut explicitly.
+ *      runs the production configuration and learns it was removed with no refresh call
+ *      and no shortened timer: the revocation commit it holds as a cohort member wakes
+ *      its enforcer. Nothing is torn down on its behalf. This is the only test that
+ *      exercises the change-driven route; test 1 drives every cut explicitly.
  *   3. **An open strand is untouched** (2 parties × 1 machine, one open strand and one
  *      closed strand across the same two nodes). A removal on the closed strand leaves
  *      the open strand's connection and its stranger's writes alone.
  *
- * ── HOW TIMING IS CONTROLLED (read before changing a poll value) ──────────────
- * The deny set refreshes on an interval (`DEFAULT_REVOCATION_POLL_INTERVAL_MS`, 30 s)
- * and on demand via `CadreNode.refreshRevocationEnforcement(strandId)`. Sleeping out a
- * 30 s interval would make every assertion here slow AND racy, so each machine's cadence
- * is set explicitly through the harness's `revocationPollMs`:
+ * ── HOW TIMING IS CONTROLLED (read before changing a machine's revocation option) ──
+ * The deny set refreshes when `Strand.Member` or `Strand.MemberPeer` changes — a commit
+ * made on the machine, or one its storage takes in from the cohort — on a 5-minute
+ * backstop (`DEFAULT_REVOCATION_BACKSTOP_MS`), and on demand via
+ * `CadreNode.refreshRevocationEnforcement(strandId)`. Test 1's four machines all hold
+ * every block (cluster size 4), so on the production schedule every remaining machine
+ * would cut the moment the revocation commits, and there would be no stale view to
+ * assert. Each machine's schedule is therefore chosen through the harness:
  *
- *   • {@link SUSPENDED_POLL_MS} — longer than any test — means the machine never
- *     refreshes on its own after its one refresh at strand start (which sees an empty
- *     deny set, because no member has been removed yet). Every later cut that machine
- *     makes is therefore one the test drove with an awaited
- *     `refreshRevocationEnforcement`, and "this machine has not cut anything yet" is a
- *     fact rather than a hope. Test 1 and test 3 run entirely this way.
- *   • A SHORT poll (test 2's removed node) exercises the interval route, which is what
- *     an app that never calls `refreshRevocationEnforcement` actually gets.
+ *   • {@link SUSPENDED} (`revocationSuspended: true`) takes no change subscription and
+ *     pushes the backstop past any test, so the machine never refreshes on its own after
+ *     its one refresh at strand start (which sees an empty deny set, because no member
+ *     has been removed yet). Every later cut that machine makes is therefore one the
+ *     test drove with an awaited `refreshRevocationEnforcement`, and "this machine has
+ *     not cut anything yet" is a fact rather than a hope. Tests 1 and 3, and test 2's
+ *     remaining machine, run this way.
+ *   • No override (test 2's removed node) is the production schedule, which is what an
+ *     app that never calls `refreshRevocationEnforcement` gets. {@link GATE} (60 s) is
+ *     far below the 5-minute backstop, so a pass means the change path worked.
  *
  * ── FIXTURE HONESTY (the most important comment in this file) ─────────────────
  * These tests register `Strand.MemberPeer` rows EXPLICITLY, for determinism. A
@@ -57,7 +63,7 @@
  * production wrote end to end — two real parties meeting over the formation handshake,
  * with no membership writer called by the test at all — in
  * `strand-party-removal-via-formation-e2e.integration.ts`. What this file keeps that the
- * other one does not is the deliberate stale-view arm (test 1), the interval-driven
+ * other one does not is the deliberate stale-view arm (test 1), the change-driven
  * self-revocation signal (test 2) and the open-strand isolation case (test 3).
  *
  * ── WHAT IS ASSERTED, AND HOW ────────────────────────────────────────────────
@@ -131,15 +137,11 @@ table Data (
 `;
 
 /**
- * A revocation poll interval longer than any test in this file, which is how a machine
- * is held to exactly the refreshes the test asks for. See the timing note in the header:
- * the enforcer still refreshes once when the strand starts (empty deny set — nothing has
- * been removed yet), and never again on its own.
+ * A machine held to exactly the refreshes the test asks for. See the timing note in the
+ * header: the enforcer still refreshes once when the strand starts (empty deny set —
+ * nothing has been removed yet), and never again on its own.
  */
-const SUSPENDED_POLL_MS = 3_600_000;
-
-/** Test 2's removed node: short enough to make the interval-driven cut observable. */
-const INTERVAL_POLL_MS = 1_000;
+const SUSPENDED = { revocationSuspended: true } as const;
 
 /** The budget every POSITIVE convergence gate waits on. Sibling four-machine scenarios
  *  converge well under a second; this is headroom for slow hardware, not an expectation. */
@@ -408,7 +410,7 @@ describe('Removing a party cuts its machines off the strand', () => {
 		let topology: Topology | undefined;
 		try {
 			// ── Bring-up: 2 parties × 2 machines, one closed strand across all four ──
-			// Every machine's own revocation poll is suspended, so each cut below is
+			// Every machine's own revocation refreshes are suspended, so each cut below is
 			// attributable to the ONE machine the test refreshed (header timing note).
 			const bootStart = Date.now();
 			topology = await bootTopology({
@@ -416,8 +418,8 @@ describe('Removing a party cuts its machines off the strand', () => {
 				genesis: 'genesis-first',
 				controlMesh: 'full',
 				parties: [
-					{ name: 'a', machines: [{ revocationPollMs: SUSPENDED_POLL_MS }, { revocationPollMs: SUSPENDED_POLL_MS }] },
-					{ name: 'b', machines: [{ revocationPollMs: SUSPENDED_POLL_MS }, { revocationPollMs: SUSPENDED_POLL_MS }] },
+					{ name: 'a', machines: [SUSPENDED, SUSPENDED] },
+					{ name: 'b', machines: [SUSPENDED, SUSPENDED] },
 				],
 			});
 			const strandId = `strand-removal-cut-${Date.now()}`;
@@ -479,8 +481,9 @@ describe('Removing a party cuts its machines off the strand', () => {
 			expect(await memberKeys(a0.db)).not.toContain(memberB.publicKeyB64);
 
 			// Awaiting the refresh resolves only once the sweep has run, so this is a
-			// synchronous cut from the caller's point of view — the thing an app has to
-			// call to make removal immediate instead of up to one poll interval later.
+			// synchronous cut from the caller's point of view — the call an app makes to
+			// await the cut. On the production schedule a[0] would also cut on its own as
+			// the revocation commits; it is suspended here so this call is what cut.
 			await a0.node.refreshRevocationEnforcement(strandId);
 
 			// BOTH of the removed party's machines are gone from a[0] — the deny set is
@@ -489,7 +492,7 @@ describe('Removing a party cuts its machines off the strand', () => {
 			expectCut(a0, b1, "a[0] swept the removed party's SECOND machine in the same pass");
 
 			// ── The stale-view arm, asserted deliberately ────────────────────────────
-			// a[1] has not refreshed (its own poll is suspended), so it still serves the
+			// a[1] has not refreshed (its own refreshes are suspended), so it still serves the
 			// removed party. That is the chosen fail-open direction — a machine acts only
 			// on a revocation it has actually processed, because the opposite error
 			// (denying a legitimate member on a view it has not caught up on) partitions
@@ -497,10 +500,12 @@ describe('Removing a party cuts its machines off the strand', () => {
 			// consistent, and this is what that costs.
 			//
 			// NOTE: read this as "has not PROCESSED the removal", not "has not RECEIVED
-			// it" — a[1]'s poll is suspended, so the tombstone may well have replicated
-			// to a[1] already (the gate below waits for exactly that). The window this
-			// arm pins is between arrival and the refresh that acts on it, which is the
-			// one an app can close with `refreshRevocationEnforcement`. Racing
+			// it" — a[1]'s refreshes are suspended, so the tombstone may well have
+			// replicated to a[1] already (the gate below waits for exactly that). The
+			// window this arm pins is between arrival and the refresh that acts on it. On
+			// the production schedule the change the arrival raises closes it within the
+			// coalescing window plus one read; suspended, only an explicit
+			// `refreshRevocationEnforcement` does. Racing
 			// replication itself would need a partitioned fixture and pins nothing extra:
 			// a machine that has not received the removal is a strict sub-case of one
 			// that has not acted on it.
@@ -576,20 +581,20 @@ describe('Removing a party cuts its machines off the strand', () => {
 		}
 	}, CUT_TEST_TIMEOUT_MS);
 
-	it('tells a removed node it was removed, on its own poll, and stops nothing on its behalf', async () => {
+	it('tells a removed node it was removed, from the change it holds, and stops nothing on its behalf', async () => {
 		let topology: Topology | undefined;
 		try {
-			// The removed party's machine polls on a short interval and the test never
+			// The removed party's machine runs the production schedule and the test never
 			// calls `refreshRevocationEnforcement` on it — this is the only place the
-			// INTERVAL-driven route is exercised, and it is what an app that never calls
-			// the on-demand refresh actually gets. The remaining machine stays suspended
-			// so the removed node's own poll is the only thing that can move.
+			// CHANGE-driven route is exercised, and it is what an app that never calls the
+			// on-demand refresh actually gets. The remaining machine stays suspended so the
+			// removed node's own enforcer is the only thing that can move.
 			topology = await bootTopology({
 				tag: 'removal-signal',
 				genesis: 'genesis-first',
 				parties: [
-					{ name: 'a', machines: [{ revocationPollMs: SUSPENDED_POLL_MS }] },
-					{ name: 'b', machines: [{ revocationPollMs: INTERVAL_POLL_MS }] },
+					{ name: 'a', machines: [SUSPENDED] },
+					{ name: 'b', machines: [{}] },
 				],
 			});
 			const strandId = `strand-removal-signal-${Date.now()}`;
@@ -633,19 +638,20 @@ describe('Removing a party cuts its machines off the strand', () => {
 
 			await revokeMember(a0.db, { managerKeyPair: founderKeyPair, memberKey: memberB.publicKeyB64 });
 
-			// No refresh call anywhere: b[0]'s own interval is what finds it. Best-effort
-			// by nature — it can only fire because the tombstone replicated to b[0] while
-			// b[0] was still connected, which is the case an app can rely on least and the
-			// docs say so.
+			// No refresh call anywhere: b[0] holds the revocation commit as a cohort member,
+			// and taking it in wakes its enforcer. GATE is far below the 5-minute backstop,
+			// so only that change can pass this. Best-effort by nature — it can only fire
+			// because the tombstone replicated to b[0] while b[0] was still connected,
+			// which is the case an app can rely on least and the docs say so.
 			await waitUntil(
 				() => revokedOnB.length > 0,
-				{ ...GATE, description: "b[0] learns from its own poll that it was removed (strand:revoked)" },
+				{ ...GATE, description: 'b[0] learns from the revocation it holds that it was removed (strand:revoked)' },
 			);
 			expect(revokedOnB[0]).toBe(strandId);
 
 			// The remaining party is not told it was removed. Asserted here only as a
-			// baseline — a[0]'s poll is suspended, so it has derived nothing yet and this
-			// could not fire either way. The load-bearing check is after a[0]'s refresh
+			// baseline — a[0]'s refreshes are suspended, so it has derived nothing yet and
+			// this could not fire either way. The load-bearing check is after a[0]'s refresh
 			// below, where a[0] HAS a deny set holding b[0] and still does not signal.
 			expect(revokedOnA).toEqual([]);
 
@@ -653,7 +659,7 @@ describe('Removing a party cuts its machines off the strand', () => {
 			// session it had. The other side's gate is what ends the conversation, and
 			// a[0] has not refreshed yet.
 			expectConnected(b0, a0, 'a removed node stops nothing of its own — it is only told');
-			expectConnected(a0, b0, "a[0]'s own poll is suspended, so it has not acted yet");
+			expectConnected(a0, b0, "a[0]'s own refreshes are suspended, so it has not acted yet");
 
 			// And when the remaining party does act, the session goes.
 			await a0.node.refreshRevocationEnforcement(strandId);
@@ -678,8 +684,8 @@ describe('Removing a party cuts its machines off the strand', () => {
 				tag: 'removal-open-strand',
 				genesis: 'genesis-first',
 				parties: [
-					{ name: 'a', machines: [{ revocationPollMs: SUSPENDED_POLL_MS }] },
-					{ name: 'b', machines: [{ revocationPollMs: SUSPENDED_POLL_MS }] },
+					{ name: 'a', machines: [SUSPENDED] },
+					{ name: 'b', machines: [SUSPENDED] },
 				],
 			});
 			const machineA = topology.machine('a', 0);

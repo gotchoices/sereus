@@ -4,6 +4,7 @@ import { CoordinatorPartialCommitError, type WriteDurability } from '@optimystic
 import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import {
   StrandMembershipReconciler,
+  DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS,
   IDLE_PASSES_BEFORE_ESCALATION,
   INITIAL_JOIN_RETRY_INTERVAL_MS,
   UNFINISHED_PASSES_BEFORE_ESCALATION,
@@ -11,7 +12,6 @@ import {
   type PendingMembershipInviteSource,
 } from '../src/strand-membership-reconciler.js';
 import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
-import { DEFAULT_REVOCATION_POLL_INTERVAL_MS } from '../src/strand-revocation-enforcer.js';
 import {
   bootstrapFounderMembership,
   issueInvite,
@@ -1005,7 +1005,7 @@ describe('retry scheduling', () => {
 
     // No member row and no staged invitation: nothing this machine can do faster, so
     // the ladder is not used and the idle cadence is what re-arms.
-    expect(clock.armedMs()).toBe(DEFAULT_REVOCATION_POLL_INTERVAL_MS);
+    expect(clock.armedMs()).toBe(DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS);
     expect(reconciler.done).toBe(false);
   }, 30_000);
 

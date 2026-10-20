@@ -1126,12 +1126,11 @@ export interface RevokeMemberParams {
  * (`Member.MinOneMember`, a local-count floor with the cross-node caveat its
  * schema NOTE states).
  *
- * Callers running inside a cadre runtime should follow this write with
- * `CadreNode.refreshRevocationEnforcement(strandId)`. The removed party's
- * machines are refused at the network layer by the strand's revoked-peer gate
- * (`strand-revocation-enforcer.ts`), which polls for membership changes because
- * this bare `Database` handle raises no event the runtime can hook — so without
- * that call the cut lands up to one poll interval (default 30 s) later.
+ * Inside a cadre runtime the removed party's machines are then refused at the
+ * network layer by the strand's revoked-peer gate (`strand-revocation-enforcer.ts`),
+ * which re-reads membership when this write commits on the runtime's own
+ * `Database`. A caller that wants to await the cut follows the write with
+ * `CadreNode.refreshRevocationEnforcement(strandId)`, which resolves after it.
  *
  * @param db - The closed strand's database.
  * @param params - The revoking manager keypair and the target member key.
@@ -1198,10 +1197,10 @@ export interface LeaveStrandParams {
  * The same floors as {@link revokeMember} apply: a manager must resign first
  * (`NotAManager`) and the last member cannot leave (`MinOneMember`).
  *
- * Like {@link revokeMember}, a caller inside a cadre runtime should follow this
- * with `CadreNode.refreshRevocationEnforcement(strandId)` — here it is what
- * makes the departing node notice its own departure promptly (the gate emits
- * `strand:revoked` when it finds this node's own peer id revoked).
+ * Like {@link revokeMember}, inside a cadre runtime the write wakes the strand's
+ * revoked-peer gate, which emits `strand:revoked` when it finds this node's own
+ * peer id revoked; `CadreNode.refreshRevocationEnforcement(strandId)` awaits that
+ * refresh.
  *
  * @param db - The closed strand's database.
  * @param params - The departing member's own keypair.

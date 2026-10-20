@@ -44,21 +44,20 @@
  *      itself. Read the comment at the blocked-report gate for which of the loop's two
  *      triggers is operative here and why.
  *
- * ── HOW TIMING IS CONTROLLED (read before changing a poll value) ──────────────
- * Two independent per-strand loops poll on the same default cadence, and this file wants
- * them at opposite ends:
+ * ── HOW TIMING IS CONTROLLED (read before changing a machine's options) ─────────
+ * Two independent per-strand loops, and this file wants them at opposite ends:
  *
- *   • The revoked-peer deny set refreshes every `DEFAULT_REVOCATION_POLL_INTERVAL_MS`
- *     (30 s) and on demand via `CadreNode.refreshRevocationEnforcement`. Every machine
- *     here runs it at {@link SUSPENDED_POLL_MS} — longer than any test — so a machine
- *     refreshes exactly once at strand start (empty deny set: nothing has been removed
- *     yet) and never again on its own. Every cut asserted below is therefore one this
- *     test drove with an awaited refresh.
- *   • The membership reconciler retries on the SAME configured cadence unless told
- *     otherwise, and it must actually run — it is what writes the rows under test. So
- *     every machine also sets {@link RECONCILE_POLL_MS} explicitly. Suspending one loop
- *     without the other is what the harness's
- *     `ControlNodeOpts.membershipReconciliation: { pollIntervalMs }` exists for.
+ *   • The revoked-peer deny set refreshes when `Strand.Member` or `Strand.MemberPeer`
+ *     changes, on a 5-minute backstop, and on demand via
+ *     `CadreNode.refreshRevocationEnforcement`. Every machine here runs with
+ *     `revocationSuspended: true` — no change subscription and a backstop longer than
+ *     any test — so a machine refreshes exactly once at strand start (empty deny set:
+ *     nothing has been removed yet) and never again on its own. Every cut asserted below
+ *     is therefore one this test drove with an awaited refresh.
+ *   • The membership reconciler must actually run — it is what writes the rows under
+ *     test — and its production default (30 s) would put its passes outside the gates
+ *     below. So every machine sets {@link RECONCILE_POLL_MS} explicitly through the
+ *     harness's `ControlNodeOpts.membershipReconciliation: { pollIntervalMs }`.
  *
  * Nothing here sleeps and hopes: every row the runtime writes in the background is waited
  * for by visibility, on the machine whose view the next step depends on.
@@ -134,11 +133,6 @@ const SAPP_ID = 'sapp-removal-via-formation';
 
 /** Formation invitation lifetime. Long enough that no test here can outlive one. */
 const INVITATION_TTL_MS = 365 * 24 * 3600_000;
-
-/** A revocation poll longer than any test in this file — see the timing note in the
- *  header. The enforcer still refreshes once at strand start (empty deny set) and never
- *  again on its own, so every cut below is attributable to an awaited refresh call. */
-const SUSPENDED_POLL_MS = 3_600_000;
 
 /** The membership reconciler's explicit cadence. The loop climbs a small ladder across
  *  passes (wait for the host-issued `Strand.Invite` row to replicate → redeem it →
@@ -380,7 +374,7 @@ async function insertWithRetry(machine: StrandMachine, key: string, val: string,
 /** The per-machine knobs every machine in this file runs with — see the header's timing
  *  note for why the two loops are configured at opposite ends. */
 const MACHINE_SPEC = {
-	revocationPollMs: SUSPENDED_POLL_MS,
+	revocationSuspended: true,
 	membershipReconciliation: { pollIntervalMs: RECONCILE_POLL_MS },
 } as const;
 
@@ -764,9 +758,10 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// Not a side note — a consequence an app has to know about. The deny set is
 			// every binding with no live member behind it, minus this node's own peer id,
 			// so once removed, each of a party's machines sees its SIBLING's binding as an
-			// orphan and refuses it. On a production poll cadence that happens by itself
-			// within one interval; here the poll is suspended (header), so the refresh is
-			// driven explicitly and the cut is attributable to it. Run last, because it
+			// orphan and refuses it. On the production schedule that happens by itself
+			// once the removal reaches the machine; here its refreshes are suspended
+			// (header), so the refresh is driven explicitly and the cut is attributable to
+			// it. Run last, because it
 			// takes the removed party's own local mesh apart.
 			expectConnected(join0, join1, "the removed party's machines were still talking to each other");
 			await join0.node.refreshRevocationEnforcement(strandId);
@@ -890,9 +885,10 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// after ten such passes reports a PROBABLE blocked re-join.
 			//
 			// PROBABLE, not CONFIRMED, by construction: the confirmed trigger is the
-			// revoked-peer gate flagging this node as removed, and join[0]'s gate polls at
-			// {@link SUSPENDED_POLL_MS} and is never refreshed by this test, so its own
-			// node never learns it was removed. That is the field shape too — a removed
+			// revoked-peer gate flagging this node as removed, and join[0]'s gate runs
+			// with `revocationSuspended` (no change subscription, a backstop past the
+			// test) and is never refreshed by this test, so its own node never learns it
+			// was removed. That is the field shape too — a removed
 			// party is cut off at about the moment the removal is written, so its gate
 			// rarely gets to see it — which is why the probable trigger exists.
 			await waitUntil(
