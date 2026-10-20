@@ -2457,11 +2457,11 @@ export class CadreNode implements SAppIdLookup {
       arachnode: { enableRingZulu: profile === 'storage' },
       // One join catch-up per node, for the strand node's reason (`strand-instance-manager.ts`,
       // at its `rebalance` option): Optimystic's rebalance growth arm would push a joining
-      // member each control block again, one request per block. The control catch-up pushes
-      // every block to every authorized member; a growth target outside that set (the cohort
-      // predicate, `isNetworkMember` below, also admits everyone while the membership snapshot is
-      // empty, and bootstrap/relay peers) is one the catch-up deliberately withholds the control
-      // store from. With the catch-up disabled the reaction stays on.
+      // member each control block again, one request per block. Every peer the growth arm
+      // pushes to, the control catch-up pushes to as well, except the ones it deliberately
+      // withholds the control store from: the cohort predicate (`isNetworkMember` below) admits
+      // everyone while the membership snapshot is empty, and bootstrap/relay peers outright.
+      // With the catch-up disabled the reaction stays on.
       //
       // NOTE: no ring shifts and no reclaimable shed blocks on this node either, unused today.
       // If storage nodes ever need them, report the catch-up's accepted pushes to the rebalance

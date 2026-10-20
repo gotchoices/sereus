@@ -875,9 +875,9 @@ export class StrandInstanceManager {
         // catch-up pushes every block to every peer it serves, the growth arm's targets
         // included. With the catch-up disabled, the reaction stays on as the only one.
         //
-        // The growth arm also re-pushed a peer that left the cohort and came back every block,
-        // which delivered what it missed while away; the catch-up runs once per peer per
-        // runtime and does not (`fix/join-catch-up-skips-a-returning-peer`).
+        // Cost: a peer that leaves the cohort and comes back is no longer re-pushed what it
+        // missed while away; the catch-up runs once per peer per runtime
+        // (`fix/join-catch-up-skips-a-returning-peer`).
         //
         // NOTE: this also leaves the node at its bootstrap Arachnode ring (no ring shifts) and
         // never marks a shed block reclaimable; neither is used today. If storage nodes ever
