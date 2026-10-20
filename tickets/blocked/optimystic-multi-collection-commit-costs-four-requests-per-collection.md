@@ -20,7 +20,7 @@ Send a transaction's pends for all collections one coordinator covers as one clu
 
 ## Sereus's side meanwhile
 
-`joiner-membership-in-one-commit` and `strand-founding-writes-batched` reduce the number of transactions; each remaining one still pays per collection. Do not drop UNIQUE constraints from the strand schema to save collections: they are the membership invariants.
+`strand-founding-writes-batched` reduced the number of transactions; each remaining one still pays per collection. The joiner keeps its two seat commits (`joiner-seat-stays-two-commits`): merging them saves no requests until this lands, and would let a torn commit show a binding with no member. Do not drop UNIQUE constraints from the strand schema to save collections: they are the membership invariants.
 
 ## If nothing is done
 
