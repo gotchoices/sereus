@@ -116,6 +116,18 @@
  * off where the backfill runs. The drain re-sends in both cases come about 7 s after the backfill
  * delivered the same blocks (`under-replication-drain pass:done ... pushed=42`); the drain has no way
  * to hear of the backfill's pushes (`blocked/optimystic-embedder-cannot-report-block-holders`).
+ *
+ * MEASURED_ON 2026-10-20, one run per column, before and after `cohort-join-catch-up-runs-once-per-node`
+ * (sereus `b3437f7f`, same Optimystic link): a node that arms the backfill is built with Optimystic's
+ * rebalance reaction off. Streams summed over settle plus idle:
+ *
+ *                               before  after
+ *   invite A->B block-transfer     182     92   no `reason=rebalance` push (90 before); 91 are drain re-sends
+ *   cadre  A->M block-transfer      96     96
+ *   cadre  M->A block-transfer       7      5   M's 2 `reason=rebalance` pushes
+ *
+ * The strand case is unchanged (A->B block-transfer 44, B->A sync 35): its machines are transaction
+ * profile, which runs no rebalance reaction.
  */
 
 import { describe, it } from 'vitest'

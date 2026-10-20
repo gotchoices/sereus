@@ -744,6 +744,10 @@ export class StrandInstanceManager {
     // The store the instance OWNS (resolved once in `startStrand`), not a fresh
     // resolution: a rebuild must reach the same backend through the same warm cache.
     const strandStorage = this.strandStorages.get(strandId);
+    // Whether this runtime arms the peer-join block catch-up (below, after the database
+    // phase). Decided once because the node options read it too: they turn Optimystic's
+    // rebalance reaction off exactly where the catch-up runs.
+    const backfillArms = strandStorage !== undefined && config.backfill?.enabled !== false;
 
     // db-p2p namespaces every one of the node's protocol ids by network name
     // (`/optimystic/<networkName>/...`), so anything dialing this node's own
@@ -865,6 +869,22 @@ export class StrandInstanceManager {
         arachnode: {
           enableRingZulu: config.profile === 'storage'
         },
+        // One join catch-up per node. On a storage-profile node Optimystic's rebalance growth
+        // arm pushes a joiner every block whose cohort it entered, one request per block, and
+        // it never hears of the peer-join catch-up's pushes, so each block would go twice. The
+        // catch-up pushes every block to every peer it serves, the growth arm's targets
+        // included. With the catch-up disabled, the reaction stays on as the only one.
+        //
+        // The growth arm also re-pushed a peer that left the cohort and came back every block,
+        // which delivered what it missed while away; the catch-up runs once per peer per
+        // runtime and does not (`fix/join-catch-up-skips-a-returning-peer`).
+        //
+        // NOTE: this also leaves the node at its bootstrap Arachnode ring (no ring shifts) and
+        // never marks a shed block reclaimable; neither is used today. If storage nodes ever
+        // need ring shifts or storage reclamation, report the catch-up's accepted pushes to the
+        // rebalance monitor instead and drop this, which needs an Optimystic API for it
+        // (`blocked/optimystic-embedder-cannot-report-block-holders`).
+        ...(backfillArms && { rebalance: { enabled: false } }),
         ...(config.privateKey && { privateKey: config.privateKey }),
         // Built per runtime, not per launch: the adapter stops saving once the strand's
         // state is forgotten, and a rebuilt runtime is what starts it saving again.
@@ -1001,7 +1021,7 @@ export class StrandInstanceManager {
       // per running strand — linear in strand count, negligible at the handful a
       // device or host runs today. If a node ever hosts strands by the hundred,
       // move to one shared listener that dispatches by strand id.
-      if (strandStorage && config.backfill?.enabled !== false) {
+      if (backfillArms) {
         if (node.keyNetwork) {
           const backfill = new PeerJoinBackfill({
             label: strandId,

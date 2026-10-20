@@ -2185,23 +2185,19 @@ export class CadreNode implements SAppIdLookup {
    * The one non-member the gate admits is a device whose invitation
    * redemption this member is admitting ({@link admitRedeemingDevice}).
    *
-   * No-ops (logged) when the embedder configured no control storage or the
-   * node exposes no key network — the backfill would have nothing to read or
-   * no way to dial.
+   * No-ops (logged) when {@link controlBackfillStorage} answers nothing (disabled,
+   * or no control storage configured) or the node exposes no key network — the
+   * backfill would have nothing to read or no way to dial.
    */
   private startControlBackfill(): void {
-    if (this.config.controlBackfill?.enabled === false || !this.controlNode) {
+    if (!this.controlNode) {
       return;
     }
-    // Through the resolver, not the {@link controlStorage} memo field: the resolver is
-    // idempotent (it returns the same wrapped store `buildControlNodeOptions` already
-    // resolved), so the catch-up cannot be silently disarmed by a future reordering that
-    // moves this call ahead of the one that populated the field.
-    const storage = this.resolveControlStorage();
+    const storage = this.controlBackfillStorage();
     const keyNetwork = (this.controlNode as Libp2pNodeWithRepo).keyNetwork;
     if (!storage || !keyNetwork) {
       log('Control peer-join block catch-up is inert: %s',
-        !storage ? 'no control storage configured' : 'control node exposes no keyNetwork');
+        !storage ? 'disabled, or no control storage configured' : 'control node exposes no keyNetwork');
       return;
     }
     const networkName = this.controlNetworkName();
@@ -2339,6 +2335,20 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * The store the control network's peer-join block catch-up reads, or `undefined` when this
+   * runtime does not arm it: `controlBackfill.enabled: false`, or no control storage. Both of
+   * its readers ask here so they cannot disagree: {@link startControlBackfill} arms on it, and
+   * {@link buildControlNodeOptions} turns Optimystic's rebalance reaction off on it.
+   *
+   * Through the resolver, not the {@link controlStorage} memo field: the resolver is
+   * idempotent, so the catch-up cannot be silently disarmed by a future reordering that moves
+   * a read ahead of the one that populated the field.
+   */
+  private controlBackfillStorage(): IRawStorage | undefined {
+    return this.config.controlBackfill?.enabled === false ? undefined : this.resolveControlStorage();
+  }
+
+  /**
    * Warn the operator when `network.announceAddrs` will silently cost this node the
    * relay reachability it also configured.
    *
@@ -2445,6 +2455,18 @@ export class CadreNode implements SAppIdLookup {
         cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(network)
       }),
       arachnode: { enableRingZulu: profile === 'storage' },
+      // One join catch-up per node, for the strand node's reason (`strand-instance-manager.ts`,
+      // at its `rebalance` option): Optimystic's rebalance growth arm would push a joining
+      // member each control block again, one request per block. The control catch-up pushes
+      // every block to every authorized member; a growth target outside that set (the cohort
+      // predicate, `isNetworkMember` below, also admits everyone while the membership snapshot is
+      // empty, and bootstrap/relay peers) is one the catch-up deliberately withholds the control
+      // store from. With the catch-up disabled the reaction stays on.
+      //
+      // NOTE: no ring shifts and no reclaimable shed blocks on this node either, unused today.
+      // If storage nodes ever need them, report the catch-up's accepted pushes to the rebalance
+      // monitor instead (`blocked/optimystic-embedder-cannot-report-block-holders`).
+      ...(this.controlBackfillStorage() && { rebalance: { enabled: false } }),
       ...(identityKey && { privateKey: identityKey }),
       // With `network.relayAddrs` set, built with libp2p's relay discovery off (given a
       // transport list to wrap — `node-transports.ts`), so the supervisor
