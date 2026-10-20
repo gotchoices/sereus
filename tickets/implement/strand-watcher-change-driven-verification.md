@@ -2,6 +2,13 @@ description: The strand watcher (and, since, the pending-join retry loop and the
 architecture: docs/architecture.md#reactive-strand-management
 files: packages/cadre-core/src/strand-watcher.ts, packages/cadre-core/src/pending-join-runner.ts, packages/cadre-core/src/strand-revocation-enforcer.ts, packages/integration-tests/src/scenarios/strand-removal-cuts-network.integration.ts, packages/integration-tests/src/scenarios/strand-party-removal-via-formation-e2e.integration.ts, packages/integration-tests/src/scenarios/pending-join-survives-restart.integration.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/joined-strand-store.ts, packages/cadre-core/test/control-founding-consult-budget.spec.ts, packages/cadre-core/test/discovered-strands-late-subscriber.spec.ts, packages/cadre-core/test/strand-unpublish.spec.ts, packages/cadre-cli/test, packages/integration-tests/src/scenarios/message-cost-accounting.integration.ts
 ----
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-10-20T08:11:34.500Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\strand-watcher-change-driven-verification.implement.2026-10-20T08-11-34-499Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 **Blocked: dependency outside this repo.** Unblocks when `../optimystic`'s `@optimystic/db-core` dist is rebuilt by its own project, so the stale-build guard in `test-harness/build-freshness.ts` passes. On 2026-10-19 `packages/db-core/src/collection/collection.ts` was committed at 12:57 (optimystic `tess: agent error on a-collection-open-reads-its-log-ends-once — added resume note`, a partial edit from an interrupted optimystic ticket) and the dist was last built at 10:59. Per `tickets/rules/sibling-repos.md` nobody here builds it. When the guard passes, move this ticket to `implement/`.
 
 ## What needs verifying
