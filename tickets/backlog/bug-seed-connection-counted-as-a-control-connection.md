@@ -24,7 +24,7 @@ Run the node-claim scenario with `DEBUG='sereus:cadre:*'` and look for the first
 
 ## Fix direction
 
-Count a connection as a control connection only when the remote is an authorized member of this party's control network (the per-stream gate's authorized set already answers that). `claimed-node-rejoins-without-waiting` edits the same lines; fix it there if it is promoted first.
+Count a connection as a control connection only when the remote is an authorized member of this party's control network (the per-stream gate's authorized set already answers that). `claimant-redials-a-restarting-claimed-node` runs the confirmation below and fixes it there if it is real.
 
 ## Status after `reconnect-writes-wait-for-sibling-identify`
 
