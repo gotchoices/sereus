@@ -123,8 +123,8 @@ import { peerJoinPushBudget } from './link-budget.js';
 //
 // WHAT IS PUSHED: each block once per peer. Per peer, this module remembers for the runtime the
 // revision of each block the peer accepted and the revision it refused ({@link PeerMemo}). A
-// refusal is the receiver's `missing` list: a payload it cannot parse, or a revision whose
-// retained commit proof this node does not hold (a receiver running the default
+// refusal is the receiver's `missing` list: a payload it cannot parse, a block it failed to
+// persist, or a revision whose retained commit proof this node does not hold (a receiver running the default
 // `requirePushCertificate: true` refuses a push carrying no proof, and an unretained proof is
 // the ordinary case — see {@link Chunk.proofs}). A refusal is a per-block verdict: logged once
 // when it happens, and the block is offered to that peer again only once its local revision
@@ -145,6 +145,11 @@ import { peerJoinPushBudget } from './link-budget.js';
 // a cohort member lacks. Revisit if Optimystic exposes who holds what to embedders
 // (`blocked/optimystic-embedder-cannot-report-block-holders`) or a measurement shows pushes this
 // rule misses.
+//
+// NOTE: the reply does not say why a block is missing, so a receiver's transient persist failure
+// is remembered as a refusal too and not retried this runtime; read repair covers that block's
+// reads. If receivers log `persist:fail` in practice, ask Optimystic for a per-block reason in
+// the push reply and remember only the verdicts a retry cannot change.
 //
 // A peer is marked caught up (`done`) once a run finishes with no push that threw, the gate
 // admitted it and the store is listable. A refusal does not hold that back, since it is
@@ -432,9 +437,9 @@ export class PeerJoinBackfill {
   private readonly inFlight = new Map<string, Promise<PeerJoinBackfillResult>>();
   /**
    * Peers whose (re-)schedule arrived while their OWN run was in flight, replayed once
-   * that run finishes. Load-bearing for the gated path: the gate's authorization check is
-   * a control-database read, so the window between it and the run's end is wide enough for
-   * the very membership commit that would have authorized the peer to land inside it —
+   * that run finishes. Load-bearing for the gated path: the gate is judged once, at the start
+   * of a run, and the run's pushes take long enough for the very membership commit that would
+   * have authorized the peer to land after that check —
    * dropping that schedule (rather than deferring it) leaves the denied peer waiting for a
    * reconnect, which is exactly what the re-arm exists to avoid.
    */

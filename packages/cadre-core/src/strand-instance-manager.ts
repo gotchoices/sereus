@@ -1120,8 +1120,9 @@ export class StrandInstanceManager {
     // Judged before initialize, not at the first probe: initialize itself fetches and keeps the
     // schema catalog's blocks (three on a first join of the message-cost strand), so the store is
     // never empty by then. A first join listens from here, so a member's push landing while the
-    // database initializes is heard (initialize's own catalog fetch raises no change event).
-    const firstJoin = config.founder !== true && await this.strandStoreEmpty(strandId);
+    // database initializes is heard (initialize's own catalog fetch raises no change event). A
+    // node with no change feed could not hear that push, so it probes at once as before.
+    const firstJoin = config.founder !== true && storageRepo !== undefined && await this.strandStoreEmpty(strandId);
     if (firstJoin) {
       gate.listen();
     }
