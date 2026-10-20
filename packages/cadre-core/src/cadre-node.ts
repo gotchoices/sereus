@@ -8473,7 +8473,7 @@ export class CadreNode implements SAppIdLookup {
    * builds its snapshot against that anchor, which is also what its previous snapshot was
    * judged against. Caught here rather than failing the refresh, because the membership read
    * tolerates an unreachable `Revocation` block on an isolated node
-   * (`ControlDatabase.readRevokedStampRows`) and `queryRevocations` does not: failing the
+   * (`ControlDatabase.readRevocationRowsOrNone`) and `queryRevocations` does not: failing the
    * whole refresh on that would freeze such a node's gate snapshot.
    * NOTE: on such a node the sync is skipped at every refresh until the block is held; if an
    * isolated node ever has to derive owner additions while cut off, give `queryRevocations`
