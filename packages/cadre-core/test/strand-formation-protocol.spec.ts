@@ -19,7 +19,7 @@ import {
 } from '../src/strand-formation-rejection.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
-import { MockStream, captureHandler } from './formation-stream-helpers.js';
+import { MockConnection, MockStream, captureHandler, streamDialer } from './formation-stream-helpers.js';
 
 // ── Frame helpers (mirror the on-wire 4-byte big-endian length prefix) ─────────
 
@@ -754,13 +754,10 @@ describe('isValidResponderCreatesResult rejection matrix', () => {
 
 // ── dialFormation: the sole provision-result guard on the initiator ────────────
 
-/** A mock node whose `dialProtocol` returns a stream pre-loaded with one response frame. */
+/** A mock node whose formation dial returns a stream pre-loaded with one response frame. */
 function dialNode(response: FormationResultMessage): { node: Libp2p; stream: MockStream } {
   const stream = new MockStream([encodeFrame(response)]);
-  const node = {
-    dialProtocol: async () => stream
-  } as unknown as Libp2p;
-  return { node, stream };
+  return { node: streamDialer(async () => stream), stream };
 }
 
 describe('dialFormation provision-result invariant', () => {
@@ -846,7 +843,7 @@ describe('dialFormation provision-result invariant', () => {
       }
     }
     const stream = new DelayedResponseStream([]);
-    const node = { dialProtocol: async () => stream } as unknown as Libp2p;
+    const node = streamDialer(async () => stream);
 
     const result = await dialFormation(node, {
       contact,
@@ -867,7 +864,7 @@ describe('dialFormation provision-result invariant', () => {
       }
     }
     const stream = new SilentStream([]);
-    const node = { dialProtocol: async () => stream } as unknown as Libp2p;
+    const node = streamDialer(async () => stream);
 
     await expect(dialFormation(node, {
       contact,
@@ -878,6 +875,53 @@ describe('dialFormation provision-result invariant', () => {
       provisionTimeoutMs: 50
     })).rejects.toThrow(/Formation await-response timed out after 50ms/);
     expect(stream.closed).toBe(true);
+  });
+});
+
+// ── dialFormation: the joiner closes the connection its own dial opened ──────────
+
+describe('dialFormation connection lifetime', () => {
+  const responderAddrs = ['/ip4/127.0.0.1/tcp/1'];
+  const refusal = encodeFrame({ approved: false, code: 'busy', reason: 'busy' });
+  const dial = (node: Libp2p): Promise<unknown> =>
+    dialFormation(node, { contact, responderAddrs, validateResponse: async () => true }).catch((error: unknown) => error);
+
+  it('closes the connection its dial opened once the last formation using it is done', async () => {
+    // Two formations to one responder share the connection the first dial opened. The second
+    // sees it as already held, but formation opened it, so the second counts as a user too.
+    let answerFirst!: () => void;
+    const firstAnswered = new Promise<void>((resolve) => { answerFirst = resolve; });
+    class HeldStream extends MockStream {
+      async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+        await firstAnswered;
+        yield refusal;
+      }
+    }
+    const streams: MockStream[] = [new HeldStream([]), new MockStream([refusal])];
+    const shared = new MockConnection(async () => streams.shift()!);
+    let held: MockConnection[] = [];
+    const node = {
+      getConnections: () => held,
+      dial: async () => { held = [shared]; return shared; }
+    } as unknown as Libp2p;
+
+    const first = dial(node);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await dial(node)).toBeInstanceOf(FormationRejectedError);
+    expect(shared.closed).toBe(false);
+
+    answerFirst();
+    expect(await first).toBeInstanceOf(FormationRejectedError);
+    expect(shared.closed).toBe(true);
+  });
+
+  it('leaves open a connection the node held before it dialed', async () => {
+    // A same-party responder is normally reached over the cadre mesh's existing connection.
+    const held = new MockConnection(async () => new MockStream([refusal]));
+    const node = { getConnections: () => [held], dial: async () => held } as unknown as Libp2p;
+
+    expect(await dial(node)).toBeInstanceOf(FormationRejectedError);
+    expect(held.closed).toBe(false);
   });
 });
 
@@ -920,7 +964,7 @@ describe('dialFormation failure classification', () => {
     expect(unparsable).toMatchObject({ message: 'No responder addresses available for formation', retryable: true });
 
     const refusal = new AggregateError([new Error('connect ECONNREFUSED 10.0.0.1:1')], 'All multiaddr dials failed');
-    const node = { dialProtocol: async () => { throw refusal; } } as unknown as Libp2p;
+    const node = { getConnections: () => [], dial: async () => { throw refusal; } } as unknown as Libp2p;
     const refused = await dial(node);
     expect(refused).toBeInstanceOf(FormationUnreachableError);
     expect((refused as Error).message).toContain('ECONNREFUSED 10.0.0.1:1');

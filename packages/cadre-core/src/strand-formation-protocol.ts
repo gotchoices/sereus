@@ -20,7 +20,7 @@
 
 import debug from 'debug';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
-import type { Libp2p } from '@libp2p/interface';
+import type { Connection, Libp2p } from '@libp2p/interface';
 import type { StrandFormationDisclosure, StrandMembershipInvite } from './types.js';
 import { type ControlStream, writeFrame, withDeadline, withTimeout } from './control-stream.js';
 import { canonicalJson } from './canonical-json.js';
@@ -789,16 +789,34 @@ export interface FormationDialResult {
   strandAddrs: string[];
 }
 
+/** The formation stream and the connection it runs on. */
+interface FormationChannel {
+  stream: ControlStream;
+  connection: Connection;
+}
+
+/**
+ * Connections a formation dial opened, each with the number of formation exchanges still using
+ * it; the entry is dropped when the last one finishes and closes the connection
+ * ({@link releaseFormationConnection}). A connection the node already held when its dial started
+ * is never entered, so formation never closes someone else's connection.
+ *
+ * Counted per connection rather than per dial: two formations to one responder machine at once
+ * (two pending joins on invitations from one inviter) share the connection libp2p's dial queue
+ * opened for the first, and the first to finish must leave it to the second.
+ */
+const formationConnectionUsers = new WeakMap<Connection, number>();
+
 /**
  * Open the formation stream under the dial deadline, cancelling the dial when it expires.
  *
- * The deadline's signal goes into `dialProtocol`, so an expired dial is abandoned by libp2p
- * rather than left running. A dial that settles in the same tick the deadline fires loses
- * the race to the timeout rejection and would leave its stream open with nobody to close
- * it, so a stream that arrives after the signal aborted is reset here — the same treatment
- * `exchangeFrame` (`control-stream.ts`) gives a stream dialed past its deadline. A late
- * rejection is the abort itself, or reaches the caller through the awaited copy, so the
- * handler below only stops it being reported as unhandled.
+ * The deadline's signal goes into the dial and the stream negotiation, so an expired dial is
+ * abandoned by libp2p rather than left running. A dial that settles in the same tick the
+ * deadline fires loses the race to the timeout rejection and would leave its stream open with
+ * nobody to close it, so a channel that arrives after the signal aborted is reset here, and its
+ * connection released — the same treatment `exchangeFrame` (`control-stream.ts`) gives a stream
+ * dialed past its deadline. A late rejection is the abort itself, or reaches the caller through
+ * the awaited copy, so the handler below only stops it being reported as unhandled.
  *
  * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget. Its
  * per-address limit (`addressDialTimeout`: ten link round trips plus two admission decisions, as
@@ -814,23 +832,94 @@ export interface FormationDialResult {
  * jobs by peer id — see `peer-dial.ts` → `dialAddr`), which then holds this one on that job's
  * address; the remedy, when that is seen, is the same per-address dial.
  */
-function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: string, dialTimeoutMs: number): Promise<ControlStream> {
+function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: string, dialTimeoutMs: number): Promise<FormationChannel> {
   return withDeadline(dialTimeoutMs, 'Formation dial-connect', async (signal) => {
-    const pending = node.dialProtocol(addrs, protocolId, { signal });
+    const pending = dialFormationChannel(node, addrs, protocolId, signal);
     void pending.then(
-      (stream) => {
-        if (signal.aborted) {
-          (stream as unknown as ControlStream).abort(new Error('Formation dial-connect resolved after its deadline'));
-        }
+      (channel) => {
+        if (signal.aborted) abandonLateChannel(channel);
       },
       () => { /* surfaced through the awaited copy, or the abort itself */ }
     );
     try {
-      return await pending as unknown as ControlStream;
+      return await pending;
     } catch (error) {
       throw describeAllAddressesFailed(error);
     }
   });
+}
+
+/**
+ * Dial the responder machine, then open the formation stream on the connection. The ids of the
+ * node's connections are read before the dial: a connection not among them was opened by this
+ * dial (or by another formation dial it was joined to), and is closed when formation is done
+ * with it. A stream that cannot be opened releases the connection at once.
+ *
+ * NOTE: a dial of the responder that something other than formation started, and this dial was
+ * joined to, also counts as opened by formation and is closed afterwards. Nothing else dials an
+ * inviter's control node before formation does; if something starts to, tell the two apart by
+ * the connection's own opening time rather than by this snapshot.
+ */
+async function dialFormationChannel(node: Libp2p, addrs: Multiaddr[], protocolId: string, signal: AbortSignal): Promise<FormationChannel> {
+  const heldBefore = new Set(node.getConnections().map((connection) => connection.id));
+  const connection = await node.dial(addrs, { signal });
+  useFormationConnection(connection, heldBefore.has(connection.id));
+  try {
+    signal.throwIfAborted();
+    const stream = await connection.newStream(protocolId, { signal });
+    return { stream: stream as unknown as ControlStream, connection };
+  } catch (error) {
+    void releaseFormationConnection(connection);
+    throw error;
+  }
+}
+
+function abandonLateChannel({ stream, connection }: FormationChannel): void {
+  stream.abort(new Error('Formation dial-connect resolved after its deadline'));
+  void releaseFormationConnection(connection);
+}
+
+/**
+ * Count one more formation exchange on `connection` when a formation dial opened it — this one
+ * (`heldBefore` false) or an earlier one still using it.
+ */
+function useFormationConnection(connection: Connection, heldBefore: boolean): void {
+  const users = formationConnectionUsers.get(connection);
+  if (users !== undefined) formationConnectionUsers.set(connection, users + 1);
+  else if (!heldBefore) formationConnectionUsers.set(connection, 1);
+}
+
+/**
+ * End one formation exchange's use of `connection`, closing it when a formation dial opened it
+ * and no other exchange still uses it. Never throws.
+ *
+ * Only the joiner closes: it opened the connection, so it is the side that knows the connection
+ * did not exist before. The joiner's and the inviter's control nodes run on different FRET
+ * networks, so a connection left open after formation carries nothing but failing FRET pings
+ * both ways and holds FRET's stabilization at its fastest interval. FRET can still redial the
+ * other control node on its own while it re-probes a peer it has seen; that is FRET's to stop
+ * (`blocked/fret-maintenance-probes-peers-off-its-ring`).
+ *
+ * The close is graceful, so the responder's side can finish its own stream close; a close that
+ * fails or overruns libp2p's close timeout is logged and the connection aborted, as libp2p's own
+ * `hangUp` does. When the responder is a machine of the joiner's own party the connection
+ * normally pre-exists (the cadre mesh) and is left alone; if this dial opened it, it is closed,
+ * and the mesh re-dials that sibling as after any dropped connection.
+ */
+async function releaseFormationConnection(connection: Connection): Promise<void> {
+  const users = formationConnectionUsers.get(connection);
+  if (users === undefined) return;
+  if (users > 1) {
+    formationConnectionUsers.set(connection, users - 1);
+    return;
+  }
+  formationConnectionUsers.delete(connection);
+  try {
+    await connection.close();
+  } catch (error) {
+    log('closing the formation connection to %s failed; aborting it: %o', connection.remotePeer.toString(), error);
+    connection.abort(error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 const NO_RESPONDER_ADDRS = 'No responder addresses available for formation';
@@ -947,13 +1036,14 @@ async function exchangeContact(
   contact: FormationContactMessage,
   budgets: { protocolId: string; dialTimeoutMs: number; awaitResponseMs: number }
 ): Promise<FormationResultMessage> {
-  const stream = await openFormationStream(node, addrs, budgets.protocolId, budgets.dialTimeoutMs);
+  const { stream, connection } = await openFormationStream(node, addrs, budgets.protocolId, budgets.dialTimeoutMs);
   try {
     const reader = new FrameReader(stream);
     writeFrame(stream, contact);
     return await withTimeout(budgets.awaitResponseMs, 'Formation await-response', () => reader.read<FormationResultMessage>());
   } finally {
     try { await stream.close(); } catch { /* ignore */ }
+    void releaseFormationConnection(connection);
   }
 }
 

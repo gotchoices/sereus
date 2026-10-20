@@ -28,13 +28,12 @@ import type { Libp2p } from '@libp2p/interface';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import { StrandFormationManager } from '../src/strand-formation-manager.js';
 import type { StrandFormationManagerConfig } from '../src/strand-formation-manager.js';
-import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
 import { FormationRejectedError } from '../src/strand-formation-rejection.js';
 import { trailingPeerId } from '../src/peer-dial.js';
 import type { ControlStream } from '../src/control-stream.js';
 import type { OpenInvitation, StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, type JoinerConsent } from './formation-consent-helper.js';
-import { captureHandler, bridgingDialer, BRIDGED_RESPONDER_ADDR } from './formation-stream-helpers.js';
+import { captureHandler, bridgingDialer, bridgedStream, streamDialer, BRIDGED_RESPONDER_ADDR } from './formation-stream-helpers.js';
 import type { StrandProvisioner } from '../src/strand-solicitation.js';
 import type { FormationInviteFacts } from '../src/formation-token.js';
 import { inviteFacts, readsAs } from './formation-token-helpers.js';
@@ -167,13 +166,11 @@ describe('StrandFormationManager: an invitation naming several machines of the p
 
   /** A dialer that bridges each dial to the machine its addresses name, recording the order. */
   function routingDialer(machines: Record<string, (stream: ControlStream) => Promise<void>>, contacted: string[]): Libp2p {
-    return {
-      dialProtocol: async (addrs: Multiaddr[]) => {
-        const peerId = trailingPeerId(addrs[0])!;
-        contacted.push(peerId);
-        return bridgingDialer(machines[peerId]).dialProtocol(addrs, FORMATION_PROTOCOL);
-      }
-    } as unknown as Libp2p;
+    return streamDialer(async (addrs: Multiaddr[]) => {
+      const peerId = trailingPeerId(addrs[0])!;
+      contacted.push(peerId);
+      return bridgedStream(machines[peerId]);
+    });
   }
 
   /** Form against machine A (which reads `invite` for the token) then B (which approves). */

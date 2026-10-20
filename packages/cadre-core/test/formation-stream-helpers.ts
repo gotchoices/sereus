@@ -10,6 +10,7 @@
  * other's frames.
  */
 import type { Libp2p } from '@libp2p/interface';
+import type { Multiaddr } from '@multiformats/multiaddr';
 import type { ControlStream } from '../src/control-stream.js';
 
 /** A `ControlStream` that yields a fixed inbound frame list and records what was written. */
@@ -119,15 +120,42 @@ export function captureHandler(): { node: Libp2p; invoke: (stream: ControlStream
  */
 export const BRIDGED_RESPONDER_ADDR = '/ip4/127.0.0.1/tcp/1/p2p/12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5';
 
-/** A `Libp2p` double whose `dialProtocol` bridges straight into a responder's own handler. */
-export function bridgingDialer(invoke: (stream: ControlStream) => Promise<void>): Libp2p {
+/**
+ * A connection double for the formation dialer: `newStream` resolves to the stream `open` hands
+ * back, and `closed` records whether formation closed the connection.
+ */
+export class MockConnection {
+  private static nextId = 0;
+  readonly id = `mock-connection-${MockConnection.nextId++}`;
+  readonly remotePeer = { toString: (): string => 'mock-responder' };
+  closed = false;
+  constructor(private readonly open: () => Promise<ControlStream>) {}
+  newStream(): Promise<ControlStream> { return this.open(); }
+  async close(): Promise<void> { this.closed = true; }
+  abort(): void { this.closed = true; }
+}
+
+/**
+ * A `Libp2p` double for the formation dialer. Each `dial` opens a fresh {@link MockConnection}
+ * whose stream comes from `open`, so formation treats the connection as its own.
+ */
+export function streamDialer(open: (addrs: Multiaddr[]) => Promise<ControlStream>): Libp2p {
   return {
-    dialProtocol: async () => {
-      const [respEnd, initEnd] = makeStreamPair();
-      // The responder handler owns its own error reporting; anything escaping it would
-      // otherwise surface as an unhandled rejection with no attribution.
-      void invoke(respEnd).catch((err: unknown) => console.error('responder handler threw', err));
-      return initEnd;
-    }
+    getConnections: () => [],
+    dial: async (addrs: Multiaddr[]) => new MockConnection(() => open(addrs))
   } as unknown as Libp2p;
+}
+
+/** The initiator's end of a stream pair whose other end runs a responder's own handler. */
+export function bridgedStream(invoke: (stream: ControlStream) => Promise<void>): ControlStream {
+  const [respEnd, initEnd] = makeStreamPair();
+  // The responder handler owns its own error reporting; anything escaping it would
+  // otherwise surface as an unhandled rejection with no attribution.
+  void invoke(respEnd).catch((err: unknown) => console.error('responder handler threw', err));
+  return initEnd;
+}
+
+/** A `Libp2p` double whose every dial bridges straight into a responder's own handler. */
+export function bridgingDialer(invoke: (stream: ControlStream) => Promise<void>): Libp2p {
+  return streamDialer(async () => bridgedStream(invoke));
 }
