@@ -1,6 +1,7 @@
 /**
  * An in-memory copy of one small control table's rows, kept until the table changes, so the
- * membership, owner and peer-record reads that every flow repeats cost nothing after the first.
+ * membership, owner, peer-record and admission-chain reads that every flow repeats cost nothing
+ * after the first.
  * `ControlDatabase` keeps one per cached table and drops it from its table-change subscription
  * (`docs/architecture.md` → "Membership rows view"); this class holds only the caching rules, so
  * they are testable without a database.

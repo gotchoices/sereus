@@ -8450,6 +8450,10 @@ export class CadreNode implements SAppIdLookup {
     if (usage === undefined || invite === undefined) {
       return false;
     }
+    // NOTE: accepted tradeoff — three ed25519 verifies per invitation-admitted row on every
+    // refresh, CPU only since the rows come from the membership views; a memo of verdicts would
+    // also have to follow the trusted-owner anchor, which syncOwnerAnchor rewrites. Revisit if
+    // the gate's admission deadline ever shows it.
     return verifyInvitationAdmission(this.partyId, row, usage, invite, key => this.trustedOwnerStore?.has(key) ?? false);
   }
 
@@ -8482,11 +8486,11 @@ export class CadreNode implements SAppIdLookup {
    * NOTE: cost per membership refresh is one `OwnerKey` read and one `Revocation` read (the
    * tombstone list, whose `OwnerKey` stamps are handed to `queryOwnerKeyRows` so it does not
    * read the retired set again, and which the hang-up of removed peers shares through
-   * `loadTombstones`), plus the owner-grant chain when some owner row is grant-seated (the
-   * NOTE in the body). The first two are served from the control database's membership views,
-   * so they reach storage only after their table changed; that load, before the Revocation
-   * ledger marker is filed, is a cohort consult, which `control-founding-consult-budget.spec.ts`
-   * pins.
+   * `loadTombstones`), plus the owner-grant chain's two reads when some owner row is
+   * grant-seated. All are served from the control database's membership views, so they reach
+   * storage only after their table changed or the view's maximum age passed; the `Revocation`
+   * load, before the Revocation ledger marker is filed, is a cohort consult, which
+   * `control-founding-consult-budget.spec.ts` pins.
    *
    * @param retry - forwarded to every read; `false` on the refresh path, for the reason on
    *   {@link refreshAuthorizedControlPeers}.
@@ -8507,9 +8511,6 @@ export class CadreNode implements SAppIdLookup {
       const tombstones = await loadTombstones();
       const retired = new Set(tombstones.filter(tombstone => tombstone.tableName === 'OwnerKey').map(tombstone => tombstone.stampId));
       const rows = await controlDatabase.queryOwnerKeyRows(retry, retired);
-      // NOTE: the grant chain is two whole-table reads per membership refresh while any owner
-      // row is grant-seated, over tables that are append-only; the memo suggested on
-      // loadInvitationChain would cover it too.
       const grantChain = rows.some(isConsentSeated) ? await this.loadOwnerGrantChain(controlDatabase, retry) : null;
       const derivation = deriveOwnerAnchor({ partyId: this.partyId, anchor: before, rows, tombstones, grantChain });
       if (derivation.refusedRemovals.length > 0) {
@@ -8575,15 +8576,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * The usage and invitation rows {@link hasAnchoredProof} resolves an invitation-admitted
    * `CadrePeer` row through, keyed for lookup. Both reads honour `retry` for
-   * {@link listAuthorizedMembers}' reason.
-   *
-   * NOTE: once invitations are the only admission route (ticket
-   * `cadre-invitations-redeemable-by-any-member`), every cadre with a member not yet
-   * re-vouched pays these two whole-table reads and three ed25519 verifies per row on every
-   * membership refresh. Both tables are append-only and a verified chain never changes (expiry,
-   * use count and withdrawal are not re-checked), so if the gate's admission deadline ever
-   * shows this, memoise verified (row stamp → usage stamp) pairs per node and skip the reads
-   * when every admitted row is already memoised.
+   * {@link listAuthorizedMembers}' reason. The rows come from the membership views, so they
+   * reach storage only after the table changed or the view's maximum age passed.
    */
   private async loadInvitationChain(controlDatabase: ControlDatabase, retry: boolean): Promise<InvitationChain> {
     const [usages, invites] = await Promise.all([

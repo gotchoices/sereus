@@ -851,10 +851,11 @@ interface RoutedRead {
 }
 
 /**
- * The full-table scans the membership views load ({@link ControlDatabase.readMembershipRows}).
- * Specs rig these reads by their text: `from CadreControl.Revocation`, and the `CadrePeer`
- * scan by its `select PeerId, Multiaddr, StampId` prefix, which no other `CadrePeer` statement
- * shares.
+ * The full-table scans the `Revocation`, `CadrePeer` and `OwnerKey` membership views load
+ * ({@link ControlDatabase.readMembershipRows}); the four chain tables' scans sit beside their
+ * row mappers below. Specs rig these reads by their text: `from CadreControl.Revocation`, and
+ * the `CadrePeer` scan by its `select PeerId, Multiaddr, StampId` prefix, which no other
+ * `CadrePeer` statement shares.
  */
 const REVOCATION_SELECT_SQL = 'select TableName, RowKey, StampId, ReissuedAt, SignerKey, SignerSig from CadreControl.Revocation';
 const CADRE_PEER_SELECT_SQL = 'select PeerId, Multiaddr, StampId, VouchOwner, VouchSig, VouchUsage, PublicKey, UpdatedAt, Profile, Sig from CadreControl.CadrePeer';
@@ -888,8 +889,11 @@ function revocationRowOf(row: Record<string, SqlValue>): RevocationRow {
   };
 }
 
-/** Every `CadreInvite` column, in the order {@link cadreInviteRowOf} reads them; callers append their `where`. */
-const CADRE_INVITE_SELECT_SQL = 'select Key, PeerId, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId from CadreControl.CadreInvite';
+/**
+ * Every `CadreInvite` column, in the order {@link cadreInviteRowOf} reads them: the full scan the
+ * `CadreInvite` membership view loads, and the base the point reads append their `where` to.
+ */
+const CADRE_INVITE_SELECT_SQL ='select Key, PeerId, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId from CadreControl.CadreInvite';
 
 /**
  * A stored `CadreInvite` row as a {@link CadreInviteRow}. `ExpiresAt` is kept as the
@@ -908,6 +912,9 @@ function cadreInviteRowOf(row: Record<string, SqlValue>): CadreInviteRow {
   };
 }
 
+/** The full scan the `CadreInviteUsage` membership view loads, in the order {@link cadreInviteUsageRowOf} reads it. */
+const CADRE_INVITE_USAGE_SELECT_SQL = 'select UsageStampId, InviteKey, PeerId, PeerKey, PeerStampId, InviteSig, PeerSig from CadreControl.CadreInviteUsage';
+
 /** A stored `CadreInviteUsage` row as a {@link CadreInviteUsageRow}. */
 function cadreInviteUsageRowOf(row: Record<string, SqlValue>): CadreInviteUsageRow {
   return {
@@ -921,7 +928,7 @@ function cadreInviteUsageRowOf(row: Record<string, SqlValue>): CadreInviteUsageR
   };
 }
 
-/** Every `OwnerGrant` column, in the order {@link ownerGrantRowOf} reads them; callers append their `where`. */
+/** Every `OwnerGrant` column, in the order {@link ownerGrantRowOf} reads them; as {@link CADRE_INVITE_SELECT_SQL}, the view's scan and the point read's base. */
 const OWNER_GRANT_SELECT_SQL = 'select Key, Label, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId from CadreControl.OwnerGrant';
 
 /** A stored `OwnerGrant` row as an {@link OwnerGrantRow}; `ExpiresAt` kept canonical, as {@link cadreInviteRowOf} keeps it. */
@@ -936,6 +943,9 @@ function ownerGrantRowOf(row: Record<string, SqlValue>): OwnerGrantRow {
     stampId: row.StampId as string,
   };
 }
+
+/** The full scan the `OwnerGrantUsage` membership view loads, in the order {@link ownerGrantUsageRowOf} reads it. */
+const OWNER_GRANT_USAGE_SELECT_SQL = 'select UsageStampId, GrantKey, SeatedKey, SeatedStampId, GrantSig, OwnerSig from CadreControl.OwnerGrantUsage';
 
 /** A stored `OwnerGrantUsage` row as an {@link OwnerGrantUsageRow}. */
 function ownerGrantUsageRowOf(row: Record<string, SqlValue>): OwnerGrantUsageRow {
@@ -1215,11 +1225,19 @@ export class ControlDatabase {
   private readonly revocationView = this.membershipView(REVOCATION_SELECT_SQL, 'revocations');
   private readonly cadrePeerView = this.membershipView(CADRE_PEER_SELECT_SQL, 'cadre-peers');
   private readonly ownerKeyView = this.membershipView(OWNER_KEY_SELECT_SQL, 'owner-keys');
-  /** Each membership view by the qualified table it copies, for {@link watchMembershipTables}. */
+  private readonly cadreInviteView = this.membershipView(CADRE_INVITE_SELECT_SQL, 'cadre-invites');
+  private readonly cadreInviteUsageView = this.membershipView(CADRE_INVITE_USAGE_SELECT_SQL, 'cadre-invite-usages');
+  private readonly ownerGrantView = this.membershipView(OWNER_GRANT_SELECT_SQL, 'owner-grants');
+  private readonly ownerGrantUsageView = this.membershipView(OWNER_GRANT_USAGE_SELECT_SQL, 'owner-grant-usages');
+  /** Each membership view by the qualified table it copies, for {@link watchMembershipTables} and {@link invalidateMembershipViews}. */
   private readonly membershipViews = new Map<string, MembershipView<Record<string, SqlValue>>>([
     ['CadreControl.Revocation', this.revocationView],
     ['CadreControl.CadrePeer', this.cadrePeerView],
     ['CadreControl.OwnerKey', this.ownerKeyView],
+    ['CadreControl.CadreInvite', this.cadreInviteView],
+    ['CadreControl.CadreInviteUsage', this.cadreInviteUsageView],
+    ['CadreControl.OwnerGrant', this.ownerGrantView],
+    ['CadreControl.OwnerGrantUsage', this.ownerGrantUsageView],
   ]);
   /**
    * Locked write bodies currently running (see {@link runWriteBody}); what
@@ -1654,8 +1672,10 @@ export class ControlDatabase {
 
   /**
    * A membership table's raw rows, from its {@link MembershipView}: `Revocation`, `CadrePeer`
-   * and `OwnerKey`, the tables every membership, owner and peer-record read starts from. Callers
-   * build fresh result objects from them and never mutate them.
+   * and `OwnerKey`, the tables every membership, owner and peer-record read starts from, and
+   * `CadreInvite`, `CadreInviteUsage`, `OwnerGrant` and `OwnerGrantUsage`, the chains every
+   * membership refresh verifies invitation-admitted machines and grant-seated owner keys through.
+   * Callers build fresh result objects from them and never mutate them.
    *
    * Reads the table directly instead when a caller under the write lock (`retry: false`) has an
    * explicit transaction open: such a read sees the transaction's own uncommitted rows, which
@@ -1664,8 +1684,9 @@ export class ControlDatabase {
    * this keeps one added later, or a spec's raw-handle transaction, correct.
    *
    * Reads that stay plain SQL on purpose: {@link queryStampId} (sees retired rows), the genesis
-   * `count(1)` in {@link hasOwnerKey}, the ledger marker's presence read, and the schema's CHECK
-   * constraints, which read inside the committing transaction.
+   * `count(1)` in {@link hasOwnerKey}, the ledger marker's presence read, the schema's CHECK
+   * constraints, which read inside the committing transaction, and the redemption pre-checks
+   * ({@link queryCadreInvite}, {@link queryOwnerGrant} and the indexed usage counts).
    */
   private readMembershipRows(view: MembershipView<Record<string, SqlValue>>, retry: boolean): Promise<readonly Record<string, SqlValue>[]> {
     this.ensureInitialized();
@@ -4789,23 +4810,16 @@ export class ControlDatabase {
    * {@link queryCadrePeers}' reason.
    */
   async queryCadreInvites(retry = true): Promise<CadreInviteRow[]> {
-    this.ensureInitialized();
-    const rows = await this.readRows(CADRE_INVITE_SELECT_SQL, undefined, 'cadre-invites', retry);
-    return rows.map(cadreInviteRowOf);
+    return (await this.readMembershipRows(this.cadreInviteView, retry)).map(cadreInviteRowOf);
   }
 
   /**
    * Every `CadreInviteUsage` row this node holds — the redemption records the membership
    * predicate verifies invitation-admitted rows against. Same `retry` contract as
-   * {@link queryCadreInvites}.
+   * {@link queryCadreInvites}; both come from their membership views ({@link readMembershipRows}).
    */
   async queryCadreInviteUsages(retry = true): Promise<CadreInviteUsageRow[]> {
-    this.ensureInitialized();
-    const rows = await this.readRows(
-      'select UsageStampId, InviteKey, PeerId, PeerKey, PeerStampId, InviteSig, PeerSig from CadreControl.CadreInviteUsage',
-      undefined, 'cadre-invite-usages', retry
-    );
-    return rows.map(cadreInviteUsageRowOf);
+    return (await this.readMembershipRows(this.cadreInviteUsageView, retry)).map(cadreInviteUsageRowOf);
   }
 
   /**
@@ -5239,19 +5253,12 @@ export class ControlDatabase {
    * `retry: false` is forwarded from the membership-gate refresh for {@link queryCadrePeers}' reason.
    */
   async queryOwnerGrants(retry = true): Promise<OwnerGrantRow[]> {
-    this.ensureInitialized();
-    const rows = await this.readRows(OWNER_GRANT_SELECT_SQL, undefined, 'owner-grants', retry);
-    return rows.map(ownerGrantRowOf);
+    return (await this.readMembershipRows(this.ownerGrantView, retry)).map(ownerGrantRowOf);
   }
 
-  /** Every `OwnerGrantUsage` row this node holds — the redemption records a grant-seated `OwnerKey` row is verified against. Same `retry` contract as {@link queryOwnerGrants}. */
+  /** Every `OwnerGrantUsage` row this node holds — the redemption records a grant-seated `OwnerKey` row is verified against. Same `retry` contract as {@link queryOwnerGrants}; both come from their membership views ({@link readMembershipRows}). */
   async queryOwnerGrantUsages(retry = true): Promise<OwnerGrantUsageRow[]> {
-    this.ensureInitialized();
-    const rows = await this.readRows(
-      'select UsageStampId, GrantKey, SeatedKey, SeatedStampId, GrantSig, OwnerSig from CadreControl.OwnerGrantUsage',
-      undefined, 'owner-grant-usages', retry
-    );
-    return rows.map(ownerGrantUsageRowOf);
+    return (await this.readMembershipRows(this.ownerGrantUsageView, retry)).map(ownerGrantUsageRowOf);
   }
 
   /**

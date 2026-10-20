@@ -514,11 +514,14 @@ Ticket: `control-and-strand-table-change-subscription`.
 
 #### Membership rows view
 
-`ControlDatabase` keeps the rows of `Revocation`, `CadrePeer` and `OwnerKey` in memory (`membership-view.ts`, read through `ControlDatabase.readMembershipRows`), because every membership, owner-key and peer-record read starts from them and every flow makes several such reads. On a multi-machine party each read of a block this node does not hold is a request to the other machines, and each read of a held block past its 10 s read-repair window starts a background sync with them. Only these three tables are cached: each is bounded by the party's machines and owner keys. Strand lists and app tables are not.
+`ControlDatabase` keeps the rows of seven control tables in memory (`membership-view.ts`, read through `ControlDatabase.readMembershipRows`), because every flow makes several reads of them. On a multi-machine party each read of a block this node does not hold is a request to the other machines, and each read of a held block past its 10 s read-repair window starts a background sync with them. Only these tables are cached: each is bounded by the party's machines, owner keys and the invitations and grants issued to admit them. Strand lists and app tables are not.
 
-**What is kept.** One full-table scan per table, raw rows with no filtering. `queryRevokedStamps`, `queryRevocations`, `queryCadrePeers`, `queryOwnerKeyRows` / `getOwnerKeys` and `queryPeerRecord` derive their answers from those rows and build fresh result objects on every call. Concurrent readers share one load.
+- `Revocation`, `CadrePeer` and `OwnerKey`: every membership, owner-key and peer-record read starts from them.
+- `CadreInvite`, `CadreInviteUsage`, `OwnerGrant` and `OwnerGrantUsage`: every membership refresh verifies invitation-admitted machines and grant-seated owner keys through them. All four are append-only (withdrawal is a `Revocation` tombstone over a row that stays), so a stale copy can only lack rows that arrived since it loaded, which fails an admission closed until the copy is dropped; it never authorizes what a fresh read would refuse.
 
-**When it is dropped.** One [table change subscription](#table-change-subscriptions) on the three tables, taken at the end of `initialize()`, drops a table's rows from its `onInvalidate` hook, so the next read loads again. Quereus fires that hook inside the committing call, so a write that has returned is always visible to the next read (read-your-writes), and the membership listener's refresh after a `CadrePeer` commit loads fresh rows. A load that was in flight when the hook fired answers its own callers and keeps nothing. `close()` and `initialize()` empty the view.
+**What is kept.** One full-table scan per table, raw rows with no filtering. `queryRevokedStamps`, `queryRevocations`, `queryCadrePeers`, `queryOwnerKeyRows` / `getOwnerKeys`, `queryPeerRecord`, `queryCadreInvites`, `queryCadreInviteUsages`, `queryOwnerGrants` and `queryOwnerGrantUsages` derive their answers from those rows and build fresh result objects on every call. Concurrent readers share one load.
+
+**When it is dropped.** One [table change subscription](#table-change-subscriptions) on the seven tables, taken at the end of `initialize()`, drops a table's rows from its `onInvalidate` hook, so the next read loads again. Quereus fires that hook inside the committing call, so a write that has returned is always visible to the next read (read-your-writes), and the membership listener's refresh after a `CadrePeer` commit loads fresh rows. A load that was in flight when the hook fired answers its own callers and keeps nothing. `close()` and `initialize()` empty the view.
 
 **When it is bypassed.** A caller under the write lock with an explicit transaction open reads SQL directly: its read can see the transaction's uncommitted rows, and a rollback fires no change event.
 
@@ -526,7 +529,7 @@ Ticket: `control-and-strand-table-change-subscription`.
 
 **Maximum age.** Kept rows are served for at most `MEMBERSHIP_VIEW_MAX_AGE_MS` (the default reconcile interval, 15 s); the next read after that reloads them. That reload is the only path for a change that reaches this node with no storage event: a machine outside the block's cohort (a cadre larger than `CONTROL_REPLICATION_BREADTH`), and a machine that was offline when a sibling committed and has not re-read the block since. It is also what restarts read-repair for these blocks, since a served read touches no storage.
 
-**What stays plain SQL.** The stamp point reads (`queryStampId`, which sees retired rows), the genesis `hasOwnerKey` count, the ledger marker's presence read, and the schema's CHECK constraints, which read inside the committing transaction.
+**What stays plain SQL.** The stamp point reads (`queryStampId`, which sees retired rows), the genesis `hasOwnerKey` count, the ledger marker's presence read, the schema's CHECK constraints, which read inside the committing transaction, and the redemption path's reads: the invitation and grant point reads and the indexed usage counts, which are pre-checks the redemption's own write re-checks.
 
 Ticket: `control-membership-rows-cached-until-changed`.
 
