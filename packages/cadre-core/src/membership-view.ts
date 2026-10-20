@@ -22,6 +22,28 @@ import { DEFAULT_CONTROL_COHORT_RECONCILE_MS } from './control-cohort.js';
  */
 export const MEMBERSHIP_VIEW_MAX_AGE_MS = DEFAULT_CONTROL_COHORT_RECONCILE_MS;
 
+/**
+ * Optimystic's lazy read-repair window (`clusterPolicy.readRepairWindowMs`, which cadre does
+ * not set, so this is Optimystic's default): a read of a held block checked less than this
+ * long ago is served from the local copy without asking the cohort. A read after it is
+ * served locally too, but starts a cohort consult whose landing raises a table change.
+ *
+ * NOTE: a copy, since db-p2p exports no default for it. If cadre ever sets
+ * `readRepairWindowMs` in its cluster policy, derive this from that value.
+ */
+const OPTIMYSTIC_READ_REPAIR_WINDOW_MS = 10_000;
+
+/**
+ * How long after a control connection to a sibling opens `CadreNode` drops the views a
+ * second time: one read-repair window, plus a second for timer slop. The drop at the open
+ * is not enough by itself. A node's reads before the connection (its start pass, with no
+ * cohort to ask) stamp the window, so the reload the open starts is served from the local
+ * copy without a consult and the view would keep the pre-connection rows until
+ * {@link MEMBERSHIP_VIEW_MAX_AGE_MS}. The reload past the window starts the consults that
+ * bring in what the sibling committed while this node was away.
+ */
+export const MEMBERSHIP_VIEW_RECONNECT_RELOAD_MS = OPTIMYSTIC_READ_REPAIR_WINDOW_MS + 1_000;
+
 /** One load's rows, and whether the view may keep them. */
 export interface MembershipViewLoad<Row> {
 	rows: readonly Row[];

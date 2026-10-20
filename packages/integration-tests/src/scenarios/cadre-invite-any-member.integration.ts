@@ -162,11 +162,12 @@ describe('E2E owner grant and cadre invitation redeemed at a member while the ow
 			// A derives P's owner key from the `OwnerKey` row's stored proof, as M did: A is the
 			// grant's issuer, so the chain resolves against A's own anchored key. P's machine row is
 			// vouched by that key, so A lists P as a member only once the derivation has run. The
-			// `OwnerKey` block reaches A by read repair, not by a push: A read it before reconnecting
-			// (its first reconcile pass), so the storage layer serves the stale local revision until
-			// its read-repair window (10 s) lapses, and no refresh runs on a replicated change by
-			// itself. Drive a refresh per poll, as a replicated change's caller would; the timed
-			// reconcile would do the same within its interval.
+			// `OwnerKey` and `CadrePeer` blocks reach A by read repair, not by a push: A read them
+			// before reconnecting (its first reconcile pass), so storage serves the local revision
+			// without asking M until that read-repair window (10 s) lapses. A drops its membership
+			// views again one window after M connects (`MEMBERSHIP_VIEW_RECONNECT_RELOAD_MS`); that
+			// reload starts the consult, and its landing refreshes the gate. The per-poll refresh
+			// only shortens the wait after the landing.
 			const aAnchor = A.getTrustedOwnerStore()!;
 			await waitUntil(async () => {
 				await A!.refreshMembershipGate('replicated-owner-row');

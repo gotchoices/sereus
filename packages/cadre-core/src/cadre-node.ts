@@ -129,6 +129,7 @@ import {
   type ControlCohortReconcileResult
 } from './control-cohort.js';
 import { scheduleRuns, type TableChangeWatch } from './table-change-watch.js';
+import { MEMBERSHIP_VIEW_RECONNECT_RELOAD_MS } from './membership-view.js';
 import {
   dialPeerAddrs,
   SelfRelayOnlyError,
@@ -1083,6 +1084,8 @@ export class CadreNode implements SAppIdLookup {
    * {@link cleanup} before the control database closes.
    */
   private membershipGateWatch: TableChangeWatch | null = null;
+  /** The second membership-view drop after a sibling connects ({@link armMembershipViewReload}); cleared in {@link stopRecordRefresh}. */
+  private membershipViewReloadTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Consecutive passes whose dial of a selected sibling or a cold-start bootstrap peer
    * failed (`ControlCohortPassOutcome.unconnected`), for the redial ladder
@@ -3663,6 +3666,10 @@ export class CadreNode implements SAppIdLookup {
       this.controlReconcileRuns.dispose();
       this.controlReconcileRuns = null;
     }
+    if (this.membershipViewReloadTimer) {
+      clearTimeout(this.membershipViewReloadTimer);
+      this.membershipViewReloadTimer = null;
+    }
     this.reconcileRedialStreak = 0;
     if (this.controlNode) {
       if (this.selfPeerUpdateHandler) {
@@ -5079,7 +5086,9 @@ export class CadreNode implements SAppIdLookup {
    * delegate grants; on close it re-dials. First, on open, drop the membership rows
    * views: a machine that was offline while a sibling committed learns of the commit
    * only when it next reads the block from storage, and dropping the views makes the
-   * pass's reads do that now rather than after the views' maximum age. Any other
+   * pass's reads do that now rather than after the views' maximum age. Those reads can
+   * fall inside the read-repair window, so the open also arms a second drop past it
+   * ({@link armMembershipViewReload}). Any other
    * connection — a relay, a bootstrap node, another party's machine — starts nothing.
    */
   private onControlSiblingConnectionChange(remotePeer: string, change: 'open' | 'close'): void {
@@ -5089,14 +5098,40 @@ export class CadreNode implements SAppIdLookup {
     if (change === 'open') {
       // NOTE: a machine removed from the cadre that has not learned of it keeps redialing
       // its siblings, each of which admits it provisionally and hangs up at the deadline
-      // (28.5 s at the default link), and every such open drops the views here: one
-      // storage reload, with its cohort consult refused, per cycle until it learns. If a
-      // removed machine's churn ever shows up, skip the drop for a peer whose previous
-      // connection the remote closed inside the provisional deadline.
+      // (28.5 s at the default link), and every such open drops the views here and once
+      // more past the read-repair window: two storage reloads, with their cohort consults
+      // refused, per cycle until it learns. If a removed machine's churn ever shows up,
+      // skip both drops for a peer whose previous connection the remote closed inside the
+      // provisional deadline.
       this.controlDatabase?.invalidateMembershipViews();
+      this.armMembershipViewReload();
     }
     log('Control connection to sibling %s %s; reconcile pass triggered', remotePeer, change);
     this.controlReconcileRuns?.trigger(0);
+  }
+
+  /**
+   * Drop the membership views again {@link MEMBERSHIP_VIEW_RECONNECT_RELOAD_MS} after a
+   * sibling connects, and start a pass whose reads reload them. This node's reads before
+   * the connection stamped Optimystic's read-repair window on the control blocks, so the
+   * reload the open itself starts is served from the local copy with no cohort consult,
+   * and the view would keep rows that predate the sibling's commits until its maximum age.
+   * The reload past the window starts the consults; one that brings a newer revision
+   * raises the table change that drops the view and refreshes the gate. Re-armed by every
+   * open, so it runs one window after the latest.
+   */
+  private armMembershipViewReload(): void {
+    if (this.membershipViewReloadTimer) {
+      clearTimeout(this.membershipViewReloadTimer);
+    }
+    this.membershipViewReloadTimer = setTimeout(() => {
+      this.membershipViewReloadTimer = null;
+      log('Read-repair window passed since a sibling connected; reloading the membership views');
+      this.controlDatabase?.invalidateMembershipViews();
+      this.controlReconcileRuns?.trigger(0);
+    }, MEMBERSHIP_VIEW_RECONNECT_RELOAD_MS);
+    // Node-only: don't keep the event loop alive solely for this timer.
+    (this.membershipViewReloadTimer as { unref?: () => void } | null)?.unref?.();
   }
 
   /**
