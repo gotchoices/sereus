@@ -47,7 +47,7 @@
  * fetches it; a table a later schema version adds reads as absent until its first write
  * creates the collection — see `docs/strands.md` ("Joining") for that residual.
  *
- * Owned by `StrandInstanceManager`: created in `buildStrandRuntime` for every launch, armed
+ * Owned by `StrandInstanceManager`: created in `buildStrandDatabase` for every database build, armed
  * only for a non-founder launch whose first probe fails, stopped and dropped in
  * `releaseRuntime` (so a quiesce → resume rebuild re-probes over the same store), and opened
  * by `publishDatabase` whenever the database is published without its loop — a launch that
@@ -120,15 +120,16 @@ export const DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS = 2_000;
  * number has to be weighed against the other.
  *
  * AT THE SUPPORTED LINK ON `@optimystic/*` 1.15.0 (2026-10-20), 1 500 ms one-way, the same
- * scenario, one fresh-join run on each side of `first-sync-gate-probes-cheaply` (one-row probes
- * that skip what they found settled, woken by data landing in the store):
- *  - Fresh join: writable at 28.8 s in both, and NOT gated. The launch waits 27.3 s in
+ * scenario, one fresh-join run, with the one-row probes woken by data landing in the store
+ * (`first-sync-gate-probes-cheaply`; the full-count probes polled every 500 ms gave the same
+ * figures):
+ *  - Fresh join: writable at 28.8 s, and NOT gated. The launch waits 27.3 s in
  *    `connectToStrand` for its seed peer (it hydrates the founder's catalog, 9 tables), and by
- *    then the store holds the strand: the first probe passed in 26 ms before and 24 ms after.
+ *    then the store holds the strand: the first probe passed in 24 ms.
  *  - The strand case of `message-cost-accounting` (two relay-only parties on loopback) agrees:
- *    B's `addStrand` took 469 ms before and 471 ms after, with 13 `sync` streams to A, 4 block
- *    reads from the Header probe and 8 from the table probes in both. Its two tables are empty,
- *    so a full count and a one-row read fetch the same blocks.
+ *    B's `addStrand` took 471 ms, with 13 `sync` streams to A, 4 block reads from the Header
+ *    probe and 8 from the table probes. Its two tables are empty, so a full count would fetch
+ *    the same blocks as a one-row read.
  *  - Neither arms the gate, so neither times the woken path. That was checked on
  *    `harness-topology`'s cross-party share (a joiner launched with no seed, dialed afterwards)
  *    with the backstop raised to 10 s: the founder's join backfill push opened the gate 2.1 s

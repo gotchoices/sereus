@@ -291,8 +291,8 @@ export {
   type PendingMembershipInviteSource
 } from './strand-membership-reconciler.js';
 
-// The timer seam the self-rescheduling strand bring-up loops share (first-sync gate
-// probe loop, membership retry ladder) — injected by tests as a hand-cranked clock.
+// The timer seam the self-rescheduling loops share (membership retry ladder, the table
+// change schedule the first-sync gate probes on) — injected by tests as a hand-cranked clock.
 export { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
 
 // Hibernation
