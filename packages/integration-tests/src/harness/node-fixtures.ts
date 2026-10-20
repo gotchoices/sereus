@@ -278,9 +278,10 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
 /**
  * Make a freshly-started node its own control owner (genesis): take `ownerKey`, an owner key
  * apart from the node's libp2p identity (a fresh one unless the caller holds one already, as an
- * app whose one key owns several cadres does), enroll it in `OwnerKey` under `label`, and wire
- * it as the node's owner signer, so the node can owner-sign `CadrePeer` inserts (and mint
- * seeds). Returns the key: its `publicKey` is what an enrollee pins into its node-local
+ * app whose one key owns several cadres does), enroll it in `OwnerKey` under `label` through
+ * `ensureOwnerKey`, the production genesis path (it first commits every control table's empty
+ * collection), and wire it as the node's owner signer, so the node can owner-sign `CadrePeer`
+ * inserts (and mint seeds). Returns the key: its `publicKey` is what an enrollee pins into its node-local
  * trusted-owner anchor (`trustOwnerKeys`) so this owner's membership vouchers pass its
  * authorized-member predicate, and a scenario that restarts the node over its store wires
  * `signer` again with `useOwnerSigner` (the row survives on the store; the key does not).
@@ -292,7 +293,9 @@ export async function makeOwnOwner(node: CadreNode, label?: string, ownerKey: Te
   if (ownerKey.publicKey === ed25519PublicKeyB64FromPeerId(node.peerId!.toString())) {
     throw new Error('makeOwnOwner: the owner key is the key behind the peer id of the node; test owner keys must be independent of node identities');
   }
-  await db.insertOwnerKey(ownerKey.publicKey, label);
+  if (!await db.ensureOwnerKey(ownerKey.publicKey, label)) {
+    throw new Error('makeOwnOwner: the party already has an owner key; genesis runs once per party');
+  }
   await node.useOwnerSigner(ownerKey.signer);
   return ownerKey;
 }

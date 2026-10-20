@@ -65,7 +65,9 @@ const node = new CadreNode({
 /** Owner genesis, as `makeOwnOwner` does, over an owner key this party keeps in its key store's owner slot. */
 async function makeOwnOwner() {
 	const signer = await loadOwnerSigner(keyStore) ?? await createOwnerKey(keyStore);
-	await node.getControlDatabase().insertOwnerKey(signer.publicKey);
+	if (!await node.getControlDatabase().ensureOwnerKey(signer.publicKey)) {
+		throw new Error('the party already has an owner key; genesis runs once per party');
+	}
 	await node.useOwnerSigner(signer);
 }
 
