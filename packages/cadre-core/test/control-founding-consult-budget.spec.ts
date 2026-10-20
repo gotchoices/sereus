@@ -37,12 +37,13 @@ import {
  * member. So the count is the portable signal, and nothing else in the suite would notice
  * a change that doubled it.
  *
- * The standing example is `CadreControl.Revocation`. On a party that has never revoked
- * anyone it has never been written, so it is a missing block, and every membership lookup
- * reads it first — the "every call costs the same" shape pinned below. The Revocation ledger
- * marker (`ControlDatabase.openRevocationLedger`) ends that, but only the reconcile pass's
- * connected-only step files it, so a solo node never does and the founding figures below
- * are the marker-less ones. If they move, find out why before re-pinning.
+ * Before genesis every control table is a missing block, which is what the cold phase pays.
+ * Genesis commits an empty collection for every control table
+ * (`ControlDatabase.commitEmptyControlCollections`), so after it no control read on this party
+ * reads a missing block, and the membership reads every flow repeats are answered from the
+ * membership rows view (`membership-view.ts`) until a table changes. So the per-call phases and
+ * the idle reconcile pass measure 0: a consult there means a control read reached a block this
+ * node does not hold. If any figure moves, find out why before re-pinning.
  *
  * **Phases**, on one solo `CadreNode` (`profile: 'transaction'`, one `MemoryRawStorage`
  * per storage id), each measured from a zeroed counter: cold `start()`; genesis
@@ -59,7 +60,8 @@ import {
  * phase, since every start pays them.
  *
  * **Timing.** Missing-block consults do not depend on time; held-block consults do. The
- * whole run measured ~320 ms, far inside one 10 s window, and every count below assumes the
+ * whole run measured under 1 s (the per-call reads began 843–864 ms in, over three runs on
+ * 2026-10-20), far inside one 10 s window, and every count below assumes the
  * run stays inside one window. A run slow enough to cross it re-consults held blocks and
  * reads as a regression, so every failure message says how far into the run its phase began.
  *
@@ -108,7 +110,7 @@ const IDLE_TIMER_MS = 3_600_000;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-10-17';
+const MEASURED_ON = '2026-10-20';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -161,8 +163,28 @@ const MEASURED_ON = '2026-10-17';
  * them; neither has been attributed. The idle reconcile is 5 (`Revocation` ×3, `CadrePeer` ×2)
  * where {@link RECONCILE} recorded 4, and the marker test's idle reconcile before the marker is
  * 5 where its table recorded 6.
+ *
+ * The marker test these paragraphs mention was removed by `control-collections-created-at-cadre-founding`,
+ * since genesis now gives `Revocation` its collection and the marker no longer changes what a read costs.
+ *
+ * Re-measured whole at `009bbee0` on 2026-10-20 (clean tree), three runs identical, with three
+ * changes from this side in the tree, each attributed by measuring with the other two disabled:
+ *  - `control-collections-created-at-cadre-founding`: genesis commits an empty collection for
+ *    every control table, so genesis 3 → 20 consults and 2 → 34 commits (see {@link GENESIS}),
+ *    and no later phase reads a missing block: `foundStrand`'s control side 7 → 4, the per-call
+ *    phases and the idle reconcile to 0.
+ *  - `control-membership-rows-cached-until-changed`: membership reads are answered from the
+ *    membership rows view. Alone it takes `foundStrand`'s control side 7 → 5 (one `Revocation`
+ *    and the `CadrePeer` read served from the view) and the per-call phases and the idle
+ *    reconcile to 0. With the collections present it moves nothing further here: on a solo party
+ *    every block it saves a read of is held and inside its window. It is measured on two machines
+ *    by `message-cost-accounting`.
+ *  - `strand-founding-control-writes-in-one-transaction`: `foundStrand` reads the `Strand` row
+ *    once, not twice, so its control side 8 → 7 with neither of the others.
+ * With the first two disabled every other figure measured what `28e6e044` did, so neither the
+ * optimystic commits since nor `strand-watcher-woken-by-control-changes` moved this spec.
  */
-const BASELINE_UPSTREAM = 'optimystic 28e6e044';
+const BASELINE_UPSTREAM = 'optimystic 009bbee0';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
@@ -187,32 +209,37 @@ const BASELINE_UPSTREAM = 'optimystic 28e6e044';
  */
 const COLD: Budget = { consults: 41, blocks: 33, commits: 1, consultBudget: 45, blockBudget: 36, commitBudget: 2 };
 /**
- * Genesis: `ensureOwnerKey` on the fresh party, then wiring the owner signer (no read). 3
- * consults over 3 blocks, 2 commits:
- * `OwnerKey` ×1 and its unique stamp index ×1, both missing until the insert commits, and
- * the never-written `Revocation` ×1. History: 14 over the same 3 blocks in the motivating
- * trace and on 2026-09-15 (×6, ×6, ×2), exactly halved to 7 (×3, ×3, ×1) at optimystic
- * `03ffadc4`, then 3 at `8a0b48c7` — the insert's commit touches both
- * `OwnerKey` trees and no longer refreshes them twice before flushing.
+ * Genesis: `ensureOwnerKey` on the fresh party, then wiring the owner signer (no read). 20
+ * consults over 19 blocks, 34 commits: each of the 17 control tables' main block ×1,
+ * `OwnerKey`'s once more, and 1 each on two tree blocks. The 34 commits are the 32 empty
+ * collections genesis commits (17 tables, 3 indexes, 12 unique stamp trees) and the owner key
+ * insert's 2. History: 14 over 3 blocks in the motivating trace and on 2026-09-15 (`OwnerKey`
+ * ×6, its stamp index ×6, the never-written `Revocation` ×2), exactly halved to 7 (×3, ×3, ×1)
+ * at optimystic `03ffadc4`, then 3 with 2 commits at `8a0b48c7` — the insert's commit touches
+ * both `OwnerKey` trees and no longer refreshes them twice before flushing — then 20 with 34
+ * commits once genesis committed every control table's collection
+ * (`control-collections-created-at-cadre-founding`).
  */
-const GENESIS: Budget = { consults: 3, blocks: 3, commits: 2, consultBudget: 4, blockBudget: 4, commitBudget: 3 };
+const GENESIS: Budget = { consults: 20, blocks: 19, commits: 34, consultBudget: 23, blockBudget: 21, commitBudget: 35 };
 /**
- * `foundStrand`, control network side: the `Strand` row published. 8 consults over 5
- * blocks, 3 commits: `Strand` ×2 and its `StampId` unique index ×1 (missing until the
- * publish commits), the never-written `Revocation` ×3 (the publish's `NotRevoked`, the
- * live-owner clause on its owner lookup, and the membership read beside `CadrePeer` ×1), and
- * 1 on a tree block the commit created. History: 25 over 6 blocks on 2026-09-15 (×8, ×6, ×4,
- * ×4, ×2, ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId` index ×3,
- * `MemberPrivateKey` index ×2), 7 over 5 at `8a0b48c7`: the publish's commit
+ * `foundStrand`, control network side: the `Strand` row published. 4 consults over 4
+ * blocks, 3 commits: 1 each on four tree blocks, none on a table's main block, since genesis
+ * committed every control table's collection. History: 25 over 6 blocks on 2026-09-15 (×8,
+ * ×6, ×4, ×4, ×2, ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId`
+ * index ×3, `MemberPrivateKey` index ×2), 7 over 5 at `8a0b48c7`: the publish's commit
  * touches all three `Strand` trees and no longer refreshes each twice before flushing, which
  * was the `MemberPrivateKey` index's only consults; 8 over 5 once every owner lookup read
- * `Revocation` (2026-10-07, see {@link BASELINE_UPSTREAM}). Control and strand together now
- * sum to 38 consults and 18 commits, against 29 and 6 before the founder committed every
- * declared table's collection (see {@link FOUNDING_STRAND}), 28 and 6 before that clause, 28 and 12 at
- * `8a0b48c7`, 34 and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47 and 12 in the trace
- * taken before upstream removed the absence memo.
+ * `Revocation` (2026-10-07): `Strand` ×2, its `StampId` index ×1, the never-written
+ * `Revocation` ×3 (the publish's `NotRevoked`, the live-owner clause on its owner lookup, and
+ * the membership read beside `CadrePeer` ×1) and a tree block ×1; then 4 over 4 on 2026-10-20
+ * (three causes, see {@link BASELINE_UPSTREAM}). Control and strand together now sum to 34
+ * consults and 18 commits, against 38 and 18 before genesis committed the control collections,
+ * 29 and 6 before the founder committed every declared table's collection (see
+ * {@link FOUNDING_STRAND}), 28 and 6 before the live-owner clause, 28 and 12 at `8a0b48c7`, 34
+ * and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47 and 12 in the trace taken before
+ * upstream removed the absence memo.
  */
-const FOUNDING_CONTROL: Budget = { consults: 8, blocks: 5, commits: 3, consultBudget: 10, blockBudget: 7, commitBudget: 4 };
+const FOUNDING_CONTROL: Budget = { consults: 4, blocks: 4, commits: 3, consultBudget: 5, blockBudget: 6, commitBudget: 4 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
  * bootstrap. 30 consults over 16 blocks, 15 commits: the strand's schema catalog ×5,
@@ -229,35 +256,35 @@ const FOUNDING_CONTROL: Budget = { consults: 8, blocks: 5, commits: 3, consultBu
  */
 const FOUNDING_STRAND: Budget = { consults: 30, blocks: 16, commits: 15, consultBudget: 35, blockBudget: 19, commitBudget: 16 };
 /**
- * `reconcileControlCohort`, one idle pass on the founded solo party. 5 consults over 2
- * blocks, no commits: the pass's two `CadrePeer` reads (the gate refresh and the sibling
- * enumeration — see the NOTE in `runReconcileControlCohort`), each consulting the
- * never-written `CadrePeer` and `Revocation` once, and a third `Revocation` consult not yet
- * attributed (see {@link BASELINE_UPSTREAM}). Nothing on the strand's repo. History:
- * 8 over the same 2 blocks on 2026-09-15 (twice each), 4 since `03ffadc4`, 5 when re-measured
- * on 2026-10-17.
+ * `reconcileControlCohort`, one idle pass on the founded solo party: nothing, and nothing
+ * allowed. Its membership reads are answered by the view, and the blocks behind them are held
+ * and inside their window. History: 8 over 2 blocks on 2026-09-15 (`CadrePeer` and
+ * `Revocation`, both never written, twice each), 4 since `03ffadc4`, 5 when re-measured on
+ * 2026-10-17 (a third `Revocation` consult, never attributed), 0 on 2026-10-20 (either of two
+ * causes alone, see {@link BASELINE_UPSTREAM}).
  */
-const RECONCILE: Budget = { consults: 5, blocks: 2, commits: 0, consultBudget: 5, blockBudget: 3, commitBudget: 0 };
+const RECONCILE: Budget = { consults: 0, blocks: 0, commits: 0, consultBudget: 0, blockBudget: 0, commitBudget: 0 };
 /** The strand's repo during the idle reconcile pass: nothing, and nothing allowed. */
 const RECONCILE_STRAND: Budget = { consults: 0, blocks: 0, commits: 0, consultBudget: 0, blockBudget: 0, commitBudget: 0 };
 /**
- * `queryRevokedStamps('CadrePeer')` per call: `Revocation` ×1 on EVERY call, because a
- * never-written table is a missing block and a missing block is consulted on every read.
- * The steady per-call cost is what matters, not its size: it was 2 per call on 2026-09-15
- * and 1 at {@link BASELINE_UPSTREAM}, which is the same block consulted once per refresh
- * instead of twice. The motivating trace measured [4, 2, 2, 2, 2, 2] right after genesis
- * rather than after founding. A drop to 0 on later calls would mean the block stopped being
- * missing.
+ * `queryRevokedStamps('CadrePeer')` per call: nothing on any call. The `Revocation` rows come
+ * from the membership rows view, loaded earlier in the run, and the block behind it is held
+ * (genesis committed its collection) and inside its window; either alone measures 0 (see
+ * {@link BASELINE_UPSTREAM}), so this pin cannot tell them apart, and `membership-view.spec.ts`
+ * covers the view. History: `Revocation` ×1 on every call while the table was a missing block,
+ * which is consulted on every read: 2 per call on 2026-09-15, 1 from optimystic `03ffadc4`
+ * (the same block consulted once per refresh instead of twice) until 2026-10-17. The motivating
+ * trace measured [4, 2, 2, 2, 2, 2] right after genesis rather than after founding.
  */
-const REVOKED_STAMPS_PER_CALL = [1, 1, 1, 1, 1, 1];
+const REVOKED_STAMPS_PER_CALL = [0, 0, 0, 0, 0, 0];
 /**
- * `queryCadrePeers()` per call: `CadrePeer` ×1 and `Revocation` ×1 on every call. Both are
- * never written here — self-registration, which would write this node's `CadrePeer` row, is
- * disarmed. Two missing blocks, so twice {@link REVOKED_STAMPS_PER_CALL}, and it halved with
- * it (4 per call on 2026-09-15, 2 at {@link BASELINE_UPSTREAM}). The motivating trace
- * measured 2 per call once a `CadrePeer` row existed, and 0 once `Revocation` was held too.
+ * `queryCadrePeers()` per call: nothing on any call, for {@link REVOKED_STAMPS_PER_CALL}'s
+ * reasons. History: `CadrePeer` ×1 and `Revocation` ×1 on every call while both were missing
+ * blocks (self-registration, which would write this node's `CadrePeer` row, is disarmed): 4 per
+ * call on 2026-09-15, 2 from `03ffadc4` until 2026-10-17. The motivating trace measured 2 per
+ * call once a `CadrePeer` row existed, and 0 once `Revocation` was held too.
  */
-const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
+const CADRE_PEERS_PER_CALL = [0, 0, 0, 0, 0, 0];
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {
@@ -488,7 +515,7 @@ async function measureFounding(counter: ConsultCounter): Promise<FoundingRun> {
 			expect(instance.database!.getTransactor()).toBe('network');
 		});
 
-		// The empty results are what make these the missing-table reads the budgets describe.
+		// Empty: nothing is revoked, and self-registration, which would write this node's row, is disarmed.
 		const revokedStamps = await measurePerCall(counter, runStart, 'queryRevokedStamps(CadrePeer)', async () => {
 			expect(await db!.queryRevokedStamps('CadrePeer')).toEqual(new Set());
 		});
@@ -554,8 +581,8 @@ function expectWithinBudget(phase: string, cost: PhaseCost, budget: Budget, note
 	const vacuity = 'Either the counter no longer sees this path (a renamed or bypassed CoordinatorRepo method, or a repo '
 		+ 'attributed to the wrong label), or the cost genuinely improved — in which case re-measure and TIGHTEN the budget.';
 	// NOTE: a phase measured at 0 gets NO floor here — `> 0` can never pass, so the guard
-	// below skips it. Today that is safe only because the one such phase (RECONCILE_STRAND)
-	// also carries a ceiling of 0, and a 0 ceiling pins it exactly. If a re-baseline ever
+	// below skips it. Today that is safe only because the two such phases (RECONCILE and
+	// RECONCILE_STRAND) also carry a ceiling of 0, and a 0 ceiling pins it exactly. If a re-baseline ever
 	// takes a phase to 0 while leaving a non-zero ceiling, that phase asserts nothing in
 	// either direction: give it a 0 ceiling, or pin it the way `strand-solo-write-budget.spec.ts`
 	// pins its select phase (`expectPinnedAtZero`).
@@ -574,8 +601,7 @@ function expectWithinBudget(phase: string, cost: PhaseCost, budget: Budget, note
  * a missing block costs the same consults on every call, forever, and a total under a
  * ceiling cannot tell six calls of 2 from one call of 12. Six back-to-back reads with no
  * background work running have no noise source, so any difference, in either direction, is
- * a behaviour change to re-measure — a drop to 0 after the first call is what a held
- * `Revocation` looks like.
+ * a behaviour change to re-measure.
  */
 function expectPerCall(read: string, cost: PerCallCost, measured: number[]): void {
 	const actual = cost.calls.map((call) => call.consults);
