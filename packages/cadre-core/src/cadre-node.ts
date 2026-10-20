@@ -935,6 +935,15 @@ export class CadreNode implements SAppIdLookup {
   private readonly pendingMembershipInvites = new Map<string, StrandMembershipInvite>();
 
   /**
+   * The party key {@link adoptFormationMembershipInvite} just seated or read, by strand id,
+   * so the launch that follows a join does not read the `StrandPartyKey` row again. Taken
+   * (deleted) by the {@link resolveStrandPartyKey} that uses it, so any later launch reads
+   * the row; dropped by {@link detachStrand}. The joiner's counterpart of the founder's
+   * `StrandConfig.partyMemberPrivateKey`, without the app carrying the secret.
+   */
+  private readonly formedPartyKeys = new Map<string, string>();
+
+  /**
    * Invite keys of the membership invitations this process has staged, by
    * {@link adoptFormationMembershipInvite} or from a `JoinSuccess` row
    * ({@link stageMembershipInvitesFromPendingJoins}), so one the reconciler has settled is not
@@ -6750,6 +6759,11 @@ export class CadreNode implements SAppIdLookup {
     if (explicitKey !== undefined) {
       return explicitKey;
     }
+    const formed = this.formedPartyKeys.get(strand.Id);
+    if (formed !== undefined) {
+      this.formedPartyKeys.delete(strand.Id);
+      return formed;
+    }
     if (!this.controlDatabase) {
       return undefined;
     }
@@ -7953,6 +7967,7 @@ export class CadreNode implements SAppIdLookup {
     this.sAppConfigs.delete(strandId);
     this.strandLaunchRefusals.delete(strandId);
     this.discoveredStrands.delete(strandId);
+    this.formedPartyKeys.delete(strandId);
     if (!this.strandManager.hasStrand(strandId)) {
       log('detachStrand: strand %s not tracked locally — no-op (no stop, no strand:stopped)', strandId);
       return;
@@ -10725,6 +10740,13 @@ export class CadreNode implements SAppIdLookup {
    * token is spent, and a join no store names would vanish at the next restart.
    */
   private async rememberFormedStrand(result: FormStrandResult): Promise<void> {
+    // NOTE: accepted tradeoff — the party-wide `JoinedStrand` row is not written here, in
+    // formStrand's own approval, but later by an owner machine's connected reconcile pass
+    // (`JoinedStrandSession.syncWithParty`). That publish is gated on a control connection so a
+    // machine cut off from its own party never commits it alone, and during formStrand the
+    // count always includes the connection to the other party's responder, so the gate would
+    // always pass here. Non-owner and signer-less machines need this local path regardless.
+    // Revisit if the gate can tell a connection to this party's own machines from any other.
     try {
       await this.joinedStrands!.remember({
         Id: result.strandId,
@@ -10768,7 +10790,7 @@ export class CadreNode implements SAppIdLookup {
    */
   private async adoptFormationMembershipInvite(strandId: string, invite: StrandMembershipInvite): Promise<void> {
     try {
-      await this.ensureStrandPartyKey(strandId);
+      this.formedPartyKeys.set(strandId, await this.ensureStrandPartyKey(strandId));
     } catch (error) {
       throw new FormationPostApprovalError(
         strandId,

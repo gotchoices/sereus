@@ -76,6 +76,10 @@ export function joinedStrandRow(record: JoinedStrandRecord): StrandRow {
 	return { Id: record.Id, Type: record.Type, MemberPrivateKey: record.MemberPrivateKey, FounderOwnerKey: null, FounderPeerId: null };
 }
 
+function isSameJoin(record: JoinedStrandRecord, row: StrandRow): boolean {
+	return record.Type === row.Type && record.MemberPrivateKey === row.MemberPrivateKey;
+}
+
 /**
  * Ephemeral store for a node without a `keyStore`. Warns once, at the first join it is
  * asked to remember, because a join held only here is not re-offered after a restart —
@@ -358,16 +362,26 @@ export class JoinedStrandSession {
 	/**
 	 * Record `row`, joined by `addStrand`, unless this party's control database already names
 	 * it (its own strand, or a join already published) or an identical record is already here
-	 * (an app re-claiming a remembered join on every start). Keeps the first `joinedAt`. Like
+	 * (an app re-claiming a remembered join on every start, or `addStrand` right after
+	 * `formStrand`). The store is asked first: it answers from memory once loaded, so the
+	 * common re-claim reads no control row. Keeps the first `joinedAt`. Like
 	 * {@link remember}, cancels a queued removal.
 	 */
 	async rememberForeign(row: StrandRow): Promise<void> {
 		this.pendingRemovals.delete(row.Id);
+		const early = await this.storedRecord(row.Id).catch((error: unknown) => {
+			// Asked again below only when the party does not name the strand, where it throws.
+			log('joined strand %s: store lookup failed; asking the control database first: %o', row.Id, error);
+			return null;
+		});
+		if (early && isSameJoin(early, row)) {
+			return;
+		}
 		if (await this.namedByParty(row.Id)) {
 			return;
 		}
-		const existing = (await this.store.list()).find((record) => record.Id === row.Id);
-		if (existing?.Type === row.Type && existing.MemberPrivateKey === row.MemberPrivateKey) {
+		const existing = early === null ? await this.storedRecord(row.Id) : early;
+		if (existing && isSameJoin(existing, row)) {
 			return;
 		}
 		await this.store.record({
@@ -505,6 +519,10 @@ export class JoinedStrandSession {
 			log('joined strand %s: could not read whether the control database names it; recording it locally: %o', strandId, error);
 			return false;
 		}
+	}
+
+	private async storedRecord(strandId: string): Promise<JoinedStrandRecord | undefined> {
+		return (await this.store.list()).find((record) => record.Id === strandId);
 	}
 
 	/** Run `work` after every earlier serialized move settles; see {@link exclusive}. */
