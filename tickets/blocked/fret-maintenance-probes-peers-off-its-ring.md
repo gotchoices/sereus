@@ -25,7 +25,7 @@ repro: verified
 
 ## Sereus's side meanwhile
 
-`formation-connection-closed-after-formation` removes the cross-party control connection, which is one of the two off-ring peers. The relay connection stays.
+`formation-connection-closed-after-formation` closes the cross-party control connection the joiner's formation dial opened, but FRET redials it (measured below), so both off-ring peers remain until item 1 lands. The relay connection stays. Dropping the inviter's control node from the joiner's peer store would stop the redial, but it works around FRET by editing libp2p state that other services read, and was not done.
 
 Measured after that change (2026-10-20, strand case, FRET from `../Fret` at 1.2.1 `439b85e`): the joiner's formation connection closes about 100 ms after the contact (both control nodes log `peer:disconnect`), and about 4.2 s later one control node's FRET reconnects to the other (`peer:connect`, then `negotiate strike` 1, 2, 3 at 12 ms, 1.5 s and 4.5 s). The settle window then shows a new relayed dial (`B.ctl->relay hop`, `relay->A.ctl stop`) and 3 failed `control-<party>/fret/ping` each way, and the idle minute shows 0 failed FRET pings between the control nodes but 2 `/ipfs/ping` each way, so the re-opened connection stays up. This matches FRET's `probeMembership`, which redials a peer that is not connected (`redialWithin`) before pinging it; the redial was not traced to that call. Before the change, in a run earlier the same day: settle 2 failed FRET pings A→B and 3 B→A, idle 2 `/ipfs/ping` each way. So closing the formation connection alone does not remove this off-ring peer; FRET has to stop redialing it.
 
