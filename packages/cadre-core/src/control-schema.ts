@@ -667,7 +667,7 @@ declare schema CadreControl {
     ) with context (Now datetime, ValidationKey text null, ValidationSignature text null);
 
     -- Serves the per-token reads (the cap count above; cadre-core's countFormationUsage,
-    -- isTokenUsed and hasOutstandingFormationInvite) on an append-only table. Its cross-machine
+    -- readToken and hasOutstandingFormationInvite) on an append-only table. Its cross-machine
     -- convergence is guarded by the integration scenario strand-formation-concurrent-redemption.
     index FormationUsageByToken on FormationUsage (Token);
 

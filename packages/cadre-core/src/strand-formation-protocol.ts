@@ -41,6 +41,7 @@ import {
   FormationUnreachableError,
   type FormationRejectionCode
 } from './strand-formation-rejection.js';
+import type { FormationTokenCheck, FormationTokenRead } from './formation-token.js';
 
 const log = debug('sereus:cadre:formation-proto');
 
@@ -147,10 +148,6 @@ export interface FormationRejection {
   reason: string;
 }
 
-/** What the responder's token check yields; an invalid token names which way it failed. */
-export type FormationTokenCheck =
-  | { valid: true }
-  | { valid: false; code: Extract<FormationRejectionCode, 'token-unknown' | 'token-spent'> };
 
 /** Initiator → Responder: carries the real token + disclosure + initiator cadre. */
 export interface FormationContactMessage {
@@ -387,8 +384,15 @@ export interface FormationListenerOptions {
    * `signal` is aborted when the listener's work budget expires: a hook that observes it
    * BEFORE writing abandons the redemption and leaves the invite unspent. Optional so
    * signal-unaware hooks (tests, mocks) stay assignable.
+   *
+   * `read` is the token as {@link validateToken} read it for this session, so the hook acts on
+   * that read instead of reading the invite again; absent when the token check read nothing.
    */
-  provisionStrand(contact: FormationContactMessage, signal?: AbortSignal): Promise<ResponderProvisionOutcome>;
+  provisionStrand(
+    contact: FormationContactMessage,
+    signal?: AbortSignal,
+    read?: FormationTokenRead
+  ): Promise<ResponderProvisionOutcome>;
   /** Responder identity, disclosed only AFTER token + disclosure validation passes. */
   getResponderIdentity(): { partyId: string; cadrePeerAddrs: string[] };
   /**
@@ -511,10 +515,14 @@ export class FormationListener {
    * Deliberately not `withDeadline`: that exposes neither the timed-out flag nor the signal
    * outside its `op`, and both are needed here.
    */
-  private async provision(id: number, contact: FormationContactMessage): Promise<ResponderProvisionOutcome | undefined> {
+  private async provision(
+    id: number,
+    contact: FormationContactMessage,
+    read: FormationTokenRead | undefined
+  ): Promise<ResponderProvisionOutcome | undefined> {
     const controller = new AbortController();
     let timedOut = false;
-    const pending = this.options.provisionStrand(contact, controller.signal);
+    const pending = this.options.provisionStrand(contact, controller.signal, read);
     try {
       return await withTimeout(
         this.provisionWorkMs,
@@ -674,7 +682,7 @@ export class FormationListener {
         return;
       }
 
-      const outcome = await this.provision(id, contact);
+      const outcome = await this.provision(id, contact, tokenResult.read);
       if (!outcome) {
         // Reported as its own retryable reason rather than falling through to the generic
         // catch below, which would report the misleading 'Internal formation error'.

@@ -13,6 +13,7 @@ import {
 import type { ControlDatabase } from '../src/control-database.js';
 import { isRetriableControlWriteFailure } from '../src/control-write-retry.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
+import { isTokenReadSpent } from '../src/formation-token.js';
 import { signFormationApproval } from '../src/formation-approval.js';
 import type { FormationApprovalRequest, FormationApproval } from '../src/formation-approval.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
@@ -35,8 +36,9 @@ import type { JoinerConsent } from './formation-consent-helper.js';
  *  - the schema's own count-based cap clause in `FormationUsage.Authorized`, asserted here
  *    with raw inserts that bypass the TypeScript guard, so the cap does not rest on it.
  *
- * Ahead of both, `ControlFormationUsageRecorder.authorizeUsage` pre-checks the count outside
- * the lock, so a spent seat is refused before the manager issues a membership pass.
+ * Ahead of both, `ControlFormationUsageRecorder` counts outside the lock — when the session
+ * reads its token (`readToken`), and again in `authorizeUsage` after an outside approval — so
+ * a spent seat is refused before the manager issues a membership pass.
  *
  * Concurrency here means "started in the same tick without awaiting the first", the idiom
  * `control-write-lock.spec.ts` documents. On ONE node the local write queue serializes the
@@ -310,9 +312,9 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
       const token = 'invite-recorder-unbound-' + rand();
       await db.insertFormationInvite(token, 'sapp-recorder-unbound', ownerPublicKey, signMessage, { totalUses: 1 });
       const recorder = new ControlFormationUsageRecorder(db, { approver: refuseApproval });
-      const provision = (): Promise<{ strandId: string }> => recorder.provisionAndRecord({
+      const provision = async (): Promise<{ strandId: string }> => recorder.provisionAndRecord({
         token, sAppId: 'sapp-recorder-unbound', disclosure: '', ...mintConsent(token),
-      });
+      }, await recorder.readToken(token));
 
       const strandsBefore = await strandCount();
       const results = await Promise.allSettled([provision(), provision()]);
@@ -357,18 +359,31 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
       expect(await usageStampsFor(token)).toEqual([winner.usageStampId]);
     });
 
-    it('refuses a spent seat at authorization, before the manager could issue anything', async () => {
+    it('refuses a seat taken while this redemption waited on its approval, before the manager could issue anything', async () => {
       // `authorizeUsage` runs ahead of the membership-pass issuance, so a seat taken while this
       // redemption waited on its approval must be refused there, not only at the later write.
-      const { token, strandId } = await boundInvite('authorize-spent', { totalUses: 1 });
+      // The session's own early count (`readToken`) saw the seat free; the rival takes it from
+      // inside the approval call.
+      const { token, strandId, strandStampId } = await boundInvite('authorize-spent', { totalUses: 1, validating: true });
+      const approve = async (request: FormationApprovalRequest): Promise<FormationApproval> =>
+        signFormationApproval(request, validationPublicKey, validationPrivateKey);
+      const rival = new ControlFormationUsageRecorder(db, { approver: { requestApproval: approve } });
       const recorder = new ControlFormationUsageRecorder(db, {
-        approver: { requestApproval: async () => { throw new Error('no ValidationUrl: never asked'); } },
+        approver: {
+          requestApproval: async (request: FormationApprovalRequest): Promise<FormationApproval> => {
+            await rival.recordUsage({ token, strandId, disclosure: '', ...toConsent(redemption(token, strandId)) });
+            return await approve(request);
+          },
+        },
       });
-      await recorder.recordUsage({ token, strandId, disclosure: '', ...toConsent(redemption(token, strandId)) });
+      const read = await recorder.readToken(token);
+      expect(isTokenReadSpent(read)).toBe(false);
 
-      const error = await captureError(
-        recorder.authorizeUsage({ token, strandId, disclosure: '', ...toConsent(redemption(token, strandId)) }),
-      );
+      const error = await captureError(recorder.authorizeUsage(
+        { token, strandId, disclosure: '', ...toConsent(redemption(token, strandId)) },
+        read,
+        { strandId, strandType: 'o', strandStampId, memberPrivateKey: null },
+      ));
       expect(error).toBeInstanceOf(InvitationExhaustedError);
       expect((error as InvitationExhaustedError).usesRecorded).toBe(1);
     });

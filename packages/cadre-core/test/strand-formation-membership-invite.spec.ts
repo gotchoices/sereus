@@ -30,7 +30,8 @@ import { describe, it, expect } from 'vitest';
 import {
   StrandFormationManager,
   MEMBERSHIP_INVITE_UNAVAILABLE_REASON,
-  HOST_STRAND_MUST_BE_RECREATED_REASON
+  HOST_STRAND_MUST_BE_RECREATED_REASON,
+  type MembershipInviteIssuer
 } from '../src/strand-formation-manager.js';
 import { PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
 import { FormationApprovalError } from '../src/formation-approval.js';
@@ -42,6 +43,7 @@ import type { FormationUsageRecorder, ResolvedHostStrand } from '../src/strand-s
 import type { OpenInvitation, StrandFormationDisclosure, StrandMembershipInvite } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, type JoinerConsent } from './formation-consent-helper.js';
 import { captureHandler, bridgingDialer, MockStream, BRIDGED_RESPONDER_ADDR } from './formation-stream-helpers.js';
+import { readsAs } from './formation-token-helpers.js';
 
 const HOST_PARTY = 'invite-host-party';
 const HOST_CADRE = ['/ip4/10.0.0.1/tcp/2/p2p/invite-host'];
@@ -62,8 +64,7 @@ function fakeRecorder(resolution: ResolvedHostStrand): FormationUsageRecorder & 
   const usageRecorded: string[] = [];
   return {
     usageRecorded,
-    async isTokenValid() { return { valid: true }; },
-    async isTokenUsed() { return false; },
+    readToken: readsAs(),
     async resolveStrand() { return resolution; },
     async recordUsage(params) { usageRecorded.push(params.token); }
   };
@@ -100,7 +101,7 @@ interface BothRolesSetup {
 async function formBothRoles(
   purpose: string,
   resolution: ResolvedHostStrand,
-  hook?: (calls: string[]) => (strandId: string) => Promise<StrandMembershipInvite | null>
+  hook?: (calls: string[]) => MembershipInviteIssuer
 ): Promise<{ setup: BothRolesSetup; result: Awaited<ReturnType<StrandFormationManager['formStrand']>> }> {
   const recorder = fakeRecorder(resolution);
   const hookCalls: string[] = [];
@@ -157,12 +158,18 @@ async function respondOnce(
   return decodeFirstFrame<FormationResultMessage>(stream.sent);
 }
 
-const BOUND: ResolvedHostStrand = { kind: 'bound', strandId: HOST_STRAND_ID, memberPrivateKey: HOST_MEMBER_KEY };
+const BOUND: ResolvedHostStrand = {
+  kind: 'bound',
+  strandId: HOST_STRAND_ID,
+  strandType: 'c',
+  strandStampId: 'stamp-invite-host',
+  memberPrivateKey: HOST_MEMBER_KEY
+};
 
 describe('formation membership invitation (bound closed path)', () => {
   it('carries the issued invitation on the approval, alongside the member key', async () => {
     const { setup, result } = await formBothRoles('carry', BOUND,
-      (calls) => async (strandId) => { calls.push(strandId); return GOOD_INVITE; });
+      (calls) => async ({ strandId }) => { calls.push(strandId); return GOOD_INVITE; });
 
     expect(result.strandId).toBe(HOST_STRAND_ID);
     expect(result.memberPrivateKey).toBe(HOST_MEMBER_KEY);
@@ -179,7 +186,7 @@ describe('formation membership invitation (bound closed path)', () => {
       formationUsageRecorder: recorder,
       partyId: HOST_PARTY,
       cadrePeerAddrs: HOST_CADRE,
-      issueMembershipInvite: async (strandId) => {
+      issueMembershipInvite: async ({ strandId }) => {
         hookCalls.push(strandId);
         throw new Error('strand runtime is not live on this responder');
       }
@@ -208,7 +215,7 @@ describe('formation membership invitation (bound closed path)', () => {
       formationUsageRecorder: recorder,
       partyId: HOST_PARTY,
       cadrePeerAddrs: HOST_CADRE,
-      issueMembershipInvite: async (strandId) => { hookCalls.push(strandId); return GOOD_INVITE; }
+      issueMembershipInvite: async ({ strandId }) => { hookCalls.push(strandId); return GOOD_INVITE; }
     });
 
     const reply = await respondOnce(manager, 'invite-approval-refused');
@@ -226,7 +233,7 @@ describe('formation membership invitation (bound closed path)', () => {
       formationUsageRecorder: recorder,
       partyId: HOST_PARTY,
       cadrePeerAddrs: HOST_CADRE,
-      issueMembershipInvite: async (strandId) => { throw new PreSplitStrandIdentityError(strandId); }
+      issueMembershipInvite: async ({ strandId }) => { throw new PreSplitStrandIdentityError(strandId); }
     });
 
     const reply = await respondOnce(manager, 'invite-pre-split-host');
@@ -240,7 +247,7 @@ describe('formation membership invitation (bound closed path)', () => {
 
   it('hook returns null (open host strand) → approved with no invitation', async () => {
     const { setup, result } = await formBothRoles('open-host', BOUND,
-      (calls) => async (strandId) => { calls.push(strandId); return null; });
+      (calls) => async ({ strandId }) => { calls.push(strandId); return null; });
 
     expect(result.strandId).toBe(HOST_STRAND_ID);
     expect(result.membershipInvite).toBeUndefined();
@@ -281,7 +288,7 @@ describe('formation membership invitation (paths that never issue one)', () => {
       formationUsageRecorder: recorder,
       partyId: HOST_PARTY,
       cadrePeerAddrs: HOST_CADRE,
-      issueMembershipInvite: async (strandId) => { hookCalls.push(strandId); return GOOD_INVITE; }
+      issueMembershipInvite: async ({ strandId }) => { hookCalls.push(strandId); return GOOD_INVITE; }
     });
     const { node, invoke } = captureHandler();
     await manager.registerResponder(node);
@@ -297,12 +304,12 @@ describe('formation membership invitation (paths that never issue one)', () => {
   it('invalid token: rejected before the hook is ever consulted', async () => {
     const hookCalls: string[] = [];
     const recorder = fakeRecorder(BOUND);
-    recorder.isTokenValid = async () => ({ valid: false });
+    recorder.readToken = readsAs(null);
     const manager = new StrandFormationManager({
       formationUsageRecorder: recorder,
       partyId: HOST_PARTY,
       cadrePeerAddrs: HOST_CADRE,
-      issueMembershipInvite: async (strandId) => { hookCalls.push(strandId); return GOOD_INVITE; }
+      issueMembershipInvite: async ({ strandId }) => { hookCalls.push(strandId); return GOOD_INVITE; }
     });
 
     const reply = await respondOnce(manager, 'invite-bad-token');

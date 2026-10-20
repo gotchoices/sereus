@@ -24,6 +24,7 @@ import {
   isValidResponderCreatesResult,
   type FormationResultMessage
 } from './strand-formation-protocol.js';
+import { isTokenReadSpent, type FormationTokenRead } from './formation-token.js';
 
 const log = debug('sereus:cadre:solicitation');
 
@@ -41,6 +42,25 @@ export interface DisclosureValidator {
 }
 
 /**
+ * A bound invite's host strand as {@link FormationUsageRecorder.resolveStrand} read it, once
+ * per session: the membership invitation is issued from it and the consent row recorded
+ * against it without reading the `Strand` row again.
+ */
+export interface BoundHostStrand {
+  strandId: string;
+  /** `'c'` closed: the joiner gets a membership invitation; `'o'` open: nothing to invite into. */
+  strandType: 'o' | 'c';
+  /**
+   * The row's one-off `StampId`, which the consent row names (`FormationUsage.StrandStampId`).
+   * Fixed for the life of the row; a row removed and re-seated in between gets a new one, and
+   * the `StrandExists` CHECK then refuses the consent row.
+   */
+  strandStampId: string;
+  /** The closed-strand read-gating secret; null for an open strand. */
+  memberPrivateKey: string | null;
+}
+
+/**
  * Discriminated result of resolving the host strand an invite binds to (responder side):
  *
  * - `unbound`: the invite carries no `StrandId` → the responder-provisions path (provision
@@ -52,16 +72,13 @@ export interface DisclosureValidator {
  *   non-existent strand, which would fail the deferred `FormationUsage.StrandExists` CHECK at
  *   commit and drop the result frame.
  *
- * Replaces the older `{ strandId, memberPrivateKey } | null` shape, which conflated `bound`
- * and `missing` (both produced a non-null result whenever the invite had a `StrandId`).
- *
  * The invite's `ValidationUrl` (the outside approval hook) is deliberately NOT surfaced here:
- * the recorder that performs the write reads it itself, so the choice of which hook to trust
- * never travels through a caller.
+ * the recorder that performs the write takes it from the session's {@link FormationTokenRead},
+ * so the choice of which hook to trust never travels through a caller.
  */
 export type ResolvedHostStrand =
   | { kind: 'unbound' }
-  | { kind: 'bound'; strandId: string; memberPrivateKey: string | null }
+  | ({ kind: 'bound' } & BoundHostStrand)
   | { kind: 'missing'; strandId: string };
 
 /** One redemption of an invite against an already-existing host strand (the record-only consent write). */
@@ -87,48 +104,52 @@ export interface AuthorizedFormationUsage {
 }
 
 /**
- * Interface for recording formation usage
+ * The responder's view of the formation-invite tables. A session reads its token once
+ * ({@link readToken}) and hands that read to every later step, so no step reads the invite again.
  */
 export interface FormationUsageRecorder {
   /**
-   * Record that a formation invite was used. Where {@link authorizeUsage} is implemented, this
-   * is the same as authorizing and then calling `record()` straight away.
+   * Record that a formation invite was used, reading the invite for itself. Where
+   * {@link authorizeUsage} is implemented, this is the same as reading the token, authorizing,
+   * and calling `record()` straight away.
    */
   recordUsage(params: FormationUsageParams): Promise<void>;
 
   /**
    * Everything {@link recordUsage} does short of the write: obtain the outside approval (when
-   * the invite demands one) and pre-check the seat budget, returning a handle whose `record()`
-   * writes the consent row with exactly the fields that were approved. Lets the manager ask
-   * before it writes anything into the host strand, and write consent only after.
+   * `read` says the invite demands one) and, after an obtained approval, re-check the seat
+   * budget, returning a handle whose `record()` writes the consent row with exactly the fields
+   * that were approved. Lets the manager ask before it writes anything into the host strand,
+   * and write consent only after. `host` is the resolved host strand the consent row names.
    * Optional: a recorder without it is treated as having nothing to ask up front.
    */
-  authorizeUsage?(params: FormationUsageParams): Promise<AuthorizedFormationUsage>;
+  authorizeUsage?(
+    params: FormationUsageParams,
+    read: FormationTokenRead,
+    host: BoundHostStrand
+  ): Promise<AuthorizedFormationUsage>;
 
   /**
-   * Check if a token has already been used (for single-use invites)
+   * Read one token as a formation session acts on it: the invite row (null when there is none
+   * here — it may not have replicated yet) and, for a metered unexpired invite, its recorded
+   * use count. One read per session; `classifyTokenRead` turns it into the token check.
    */
-  isTokenUsed(token: string): Promise<boolean>;
+  readToken(token: string): Promise<FormationTokenRead>;
 
   /**
-   * Check if a token is valid and not expired. An invalid answer says why: `'unknown'` (no
-   * invitation row here — it may not have replicated yet) or `'expired'`. An answer without
-   * a reason is treated as `'unknown'`, the retryable one.
+   * Resolve the host strand the read invite binds to, classifying it as unbound / bound /
+   * missing (see {@link ResolvedHostStrand}). Reads the `Strand` row, never the invite.
+   * Optional: a recorder that does not bind strands omits it, and
+   * {@link StrandFormationManager} treats every invite as `unbound` and falls back to its
+   * provisioner. Keeping resolution behind this interface keeps the manager DB-agnostic and
+   * unit-testable with an in-memory fake.
    */
-  isTokenValid(token: string): Promise<{ valid: boolean; reason?: 'unknown' | 'expired'; invitation?: OpenInvitation }>;
-
-  /**
-   * Resolve the host strand an invite binds to, classifying it as unbound / bound /
-   * missing (see {@link ResolvedHostStrand}). Optional: a recorder that does not bind
-   * strands omits it, and {@link StrandFormationManager} treats every invite as `unbound`
-   * and falls back to its provisioner. Keeping resolution behind this interface keeps the
-   * manager DB-agnostic and unit-testable with an in-memory fake.
-   */
-  resolveStrand?(token: string): Promise<ResolvedHostStrand>;
+  resolveStrand?(read: FormationTokenRead): Promise<ResolvedHostStrand>;
 
   /**
    * Provision a NEW strand for an UNBOUND invite and record consent against it
    * ATOMICALLY (single `FormationUsage` row → single-use enforced on the next redemption).
+   * Takes the invite's approval hook and seat budget from `read`.
    * Optional: a recorder that only supports provision-then-record omits it, and the
    * manager falls back to its {@link StrandProvisioner}. Mirrors the create-strand-by-consent
    * path the schema's `Strand.AuthorizedInsert` `FormationUsage` branch authorizes. Returns the
@@ -147,14 +168,14 @@ export interface FormationUsageRecorder {
     disclosure: string;
     /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
     signal?: AbortSignal;
-  }): Promise<{ strandId: string; memberPrivateKey: string | null }>;
+  }, read: FormationTokenRead): Promise<{ strandId: string; memberPrivateKey: string | null }>;
 
   /**
    * Is ANY invitation this recorder knows about unexpired and not fully
    * consumed? Optional: a recorder that cannot enumerate invitations omits it,
    * and only locally-minted invitations hold the connection gate's formation
-   * exemption open. Distinct from the per-token {@link isTokenValid} /
-   * {@link isTokenUsed} pair — the connection gate has no token to ask about.
+   * exemption open. Distinct from the per-token {@link readToken} — the
+   * connection gate has no token to ask about.
    */
   hasOutstandingInvitation?(): Promise<boolean>;
 }
@@ -488,7 +509,10 @@ export class StrandSolicitationService {
       if (!this.formationUsageRecorder) {
         return true;
       }
-      if (!(await this.formationUsageRecorder.isTokenUsed(token))) {
+      // NOTE: a read of its own, not shared with a formation session's: this runs while a
+      // stranger's connection is being admitted, before any stream or token exists, under the
+      // gate's fail-open deadline, and the session that follows reads on a different call.
+      if (!isTokenReadSpent(await this.formationUsageRecorder.readToken(token))) {
         return true;
       }
       this.mintedInvitations.delete(token);

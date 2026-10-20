@@ -13,6 +13,7 @@ import {
   type StrandProvisioner
 } from '../src/strand-solicitation.js';
 import type { StrandFormationDisclosure, OpenInvitation } from '../src/types.js';
+import { inviteFacts, readsAs } from './formation-token-helpers.js';
 
 // Helper to create libp2p nodes with proper keys for Noise
 async function createLibp2pNodeWithKeys(port: number = 0): Promise<Libp2p> {
@@ -97,8 +98,7 @@ describe('StrandSolicitationService', () => {
     function inertRecorder(overrides: Partial<FormationUsageRecorder> = {}): FormationUsageRecorder {
       return {
         recordUsage: async () => {},
-        isTokenUsed: async () => false,
-        isTokenValid: async () => ({ valid: true }),
+        readToken: readsAs(),
         ...overrides
       };
     }
@@ -134,7 +134,10 @@ describe('StrandSolicitationService', () => {
       let usedChecks = 0;
       const service = new StrandSolicitationService({
         formationUsageRecorder: inertRecorder({
-          isTokenUsed: async () => { usedChecks++; return true; }
+          readToken: async (token) => {
+            usedChecks++;
+            return { token, invite: inviteFacts({ totalUses: 1 }), usesRecorded: 1 };
+          }
         })
       });
       await service.createOpenInvitation('sapp-1', 60_000, []);
@@ -148,7 +151,7 @@ describe('StrandSolicitationService', () => {
 
     it('keeps a minted-but-unconsumed token outstanding', async () => {
       const service = new StrandSolicitationService({
-        formationUsageRecorder: inertRecorder({ isTokenUsed: async () => false })
+        formationUsageRecorder: inertRecorder({ readToken: readsAs(inviteFacts({ totalUses: 1 })) })
       });
       await service.createOpenInvitation('sapp-1', 60_000, []);
       expect(await service.hasOutstandingInvitation()).toBe(true);
@@ -189,8 +192,7 @@ describe('StrandSolicitationService', () => {
         recordUsage: async (params) => {
           recorded = params;
         },
-        isTokenUsed: async () => false,
-        isTokenValid: async () => ({ valid: true })
+        readToken: readsAs()
       };
 
       const service = new StrandSolicitationService({
@@ -247,11 +249,7 @@ describe('StrandFormationManager Integration', () => {
     // Create mock usage recorder that accepts all tokens
     const mockRecorder: FormationUsageRecorder = {
       recordUsage: async () => {},
-      isTokenUsed: async () => false,
-      isTokenValid: async (token) => ({
-        valid: token.startsWith('invite-'),
-        invitation: undefined
-      })
+      readToken: async (token) => ({ token, invite: token.startsWith('invite-') ? inviteFacts() : null, usesRecorded: null })
     };
 
     // Responder (nodeA) - the party who created the invitation
@@ -301,8 +299,7 @@ describe('StrandFormationManager Integration', () => {
 
     const mockRecorder: FormationUsageRecorder = {
       recordUsage: async () => {},
-      isTokenUsed: async () => false,
-      isTokenValid: async () => ({ valid: true })
+      readToken: readsAs()
     };
 
     const responderService = new StrandSolicitationService({
@@ -343,8 +340,7 @@ describe('StrandFormationManager Integration', () => {
   it('should reject invalid tokens', async () => {
     const mockRecorder: FormationUsageRecorder = {
       recordUsage: async () => {},
-      isTokenUsed: async () => false,
-      isTokenValid: async (token) => ({ valid: token === 'valid-token' })
+      readToken: async (token) => ({ token, invite: token === 'valid-token' ? inviteFacts() : null, usesRecorded: null })
     };
 
     const responderService = new StrandSolicitationService({

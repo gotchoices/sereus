@@ -12,6 +12,7 @@ import { FormationAbortedError, MissingHostStrandError, generateStampId } from '
 import { signFormationApproval } from '../src/formation-approval.js';
 import type { ControlDatabase, FormationUsageResult } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
+import { classifyTokenRead, isTokenReadSpent } from '../src/formation-token.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
 import { expectConstraintFailure, expectUniqueViolation } from './control-constraint-helpers.js';
 import { mintJoiner, mintConsent, signJoinerConsent } from './formation-consent-helper.js';
@@ -1290,27 +1291,29 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
   // by supplying a real consent alongside whatever they actually pin.
 
   describe('ControlFormationUsageRecorder (DB-backed)', () => {
-    it('isTokenValid: true for a known unexpired token, false (saying which) for unknown or expired', async () => {
+    it('readToken + classifyTokenRead: valid for a known unexpired token, token-unknown or (expired) token-spent otherwise', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
 
       const token = 'invite-rv-' + rand();
       await db.insertFormationInvite(token, 'sapp-rv', ownerPublicKey, signMessage, {
         expiresAtMs: Date.now() + 60_000,
       });
-      const ok = await recorder.isTokenValid(token);
-      expect(ok.valid).toBe(true);
-      expect(ok.invitation?.sAppId).toBe('sapp-rv');
+      const read = await recorder.readToken(token);
+      expect(classifyTokenRead(read, Date.now())).toEqual({ valid: true, read });
+      expect(read.invite?.sAppId).toBe('sapp-rv');
 
-      expect(await recorder.isTokenValid('nope-' + rand())).toEqual({ valid: false, reason: 'unknown' });
+      expect(classifyTokenRead(await recorder.readToken('nope-' + rand()), Date.now()))
+        .toEqual({ valid: false, code: 'token-unknown' });
 
       const expired = 'invite-rv-exp-' + rand();
       await db.insertFormationInvite(expired, 'sapp-rv', ownerPublicKey, signMessage, {
         expiresAtMs: Date.parse('2000-01-01T00:00:00Z'),
       });
-      expect(await recorder.isTokenValid(expired)).toEqual({ valid: false, reason: 'expired' });
+      expect(classifyTokenRead(await recorder.readToken(expired), Date.now()))
+        .toEqual({ valid: false, code: 'token-spent' });
     });
 
-    it('isTokenUsed: respects TotalUses, and recordUsage records consent against a pre-existing strand', async () => {
+    it('readToken counts a metered invite\'s uses (spent at TotalUses), and recordUsage records consent against a pre-existing strand', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
 
       // provision-then-record: the host strand is minted owner-signed UP FRONT, so
@@ -1320,24 +1323,28 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const singleStrand = 'strand-su-' + rand();
       await db.insertStrand(singleStrand, 'o', ownerPublicKey, signMessage);
       await db.insertFormationInvite(single, 'sapp-su', ownerPublicKey, signMessage, { totalUses: 1 });
-      expect(await recorder.isTokenUsed(single)).toBe(false);
+      expect(isTokenReadSpent(await recorder.readToken(single))).toBe(false);
       await recorder.recordUsage({ token: single, ...mintConsent(single), strandId: singleStrand, disclosure: '' });
-      expect(await recorder.isTokenUsed(single)).toBe(true);
+      const spent = await recorder.readToken(single);
+      expect(spent.usesRecorded).toBe(1);
+      expect(classifyTokenRead(spent, Date.now())).toEqual({ valid: false, code: 'token-spent' });
 
-      // Unlimited invite (null TotalUses): never "used up".
+      // Unlimited invite (null TotalUses): never "used up", and nothing is counted.
       const unlimited = 'invite-unl-' + rand();
       const unlimitedStrand = 'strand-unl-' + rand();
       await db.insertStrand(unlimitedStrand, 'o', ownerPublicKey, signMessage);
       await db.insertFormationInvite(unlimited, 'sapp-unl', ownerPublicKey, signMessage);
       await recorder.recordUsage({ token: unlimited, ...mintConsent(unlimited), strandId: unlimitedStrand, disclosure: '' });
-      expect(await recorder.isTokenUsed(unlimited)).toBe(false);
+      const unlimitedRead = await recorder.readToken(unlimited);
+      expect(unlimitedRead.usesRecorded).toBeNull();
+      expect(classifyTokenRead(unlimitedRead, Date.now()).valid).toBe(true);
     });
 
     it('resolveStrand: classifies bound (present) / unbound / missing host strands', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
 
       // Bound + present closed strand: the invite names the pre-existing host strand →
-      // kind 'bound', carrying that strand id + its MemberPrivateKey.
+      // kind 'bound', carrying that strand id, its type and stamp, and its MemberPrivateKey.
       const hostStrand = 'strand-bound-' + rand();
       const hostMemberKey = 'memkey-' + rand();
       await db.insertStrand(hostStrand, 'c', ownerPublicKey, signMessage, hostMemberKey);
@@ -1345,19 +1352,21 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await db.insertFormationInvite(bound, 'sapp-bound', ownerPublicKey, signMessage, {
         strandId: hostStrand,
       });
-      expect(await recorder.resolveStrand(bound)).toEqual({
+      expect(await recorder.resolveStrand(await recorder.readToken(bound))).toEqual({
         kind: 'bound',
         strandId: hostStrand,
+        strandType: 'c',
+        strandStampId: await db.queryStrandStampId(hostStrand),
         memberPrivateKey: hostMemberKey,
       });
 
       // Unbound invite (unbound/open path): no StrandId → kind 'unbound'.
       const unbound = 'invite-unbound-' + rand();
       await db.insertFormationInvite(unbound, 'sapp-unbound', ownerPublicKey, signMessage);
-      expect(await recorder.resolveStrand(unbound)).toEqual({ kind: 'unbound' });
+      expect(await recorder.resolveStrand(await recorder.readToken(unbound))).toEqual({ kind: 'unbound' });
 
       // Unknown token: no binding to act on → unbound.
-      expect(await recorder.resolveStrand('nope-' + rand())).toEqual({ kind: 'unbound' });
+      expect(await recorder.resolveStrand(await recorder.readToken('nope-' + rand()))).toEqual({ kind: 'unbound' });
 
       // Bound but the named Strand row was NEVER inserted (unconverged host) → kind 'missing'.
       const missingStrand = 'strand-missing-' + rand();
@@ -1365,7 +1374,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await db.insertFormationInvite(boundMissing, 'sapp-bm', ownerPublicKey, signMessage, {
         strandId: missingStrand,
       });
-      expect(await recorder.resolveStrand(boundMissing)).toEqual({
+      expect(await recorder.resolveStrand(await recorder.readToken(boundMissing))).toEqual({
         kind: 'missing',
         strandId: missingStrand,
       });
@@ -1389,7 +1398,10 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         expiresAtMs: Date.now() + 60_000,
       });
 
-      const out = await recorder.provisionAndRecord({ token, ...mintConsent(token), sAppId: 'sapp-par', disclosure: '' });
+      const out = await recorder.provisionAndRecord(
+        { token, ...mintConsent(token), sAppId: 'sapp-par', disclosure: '' },
+        await recorder.readToken(token),
+      );
       expect(out.strandId.length).toBeGreaterThan('strand-'.length);
       // An unbound responder-provisioned strand is open → no membership key.
       expect(out.memberPrivateKey).toBeNull();
@@ -1399,7 +1411,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(strand?.Id).toBe(out.strandId);
       expect(strand?.Type).toBe('o');
       expect(await db.countFormationUsage(token)).toBe(1);
-      expect(await recorder.isTokenUsed(token)).toBe(true);
+      expect(isTokenReadSpent(await recorder.readToken(token))).toBe(true);
     });
   });
 });
@@ -1461,7 +1473,7 @@ describe('ControlDatabase.hasOutstandingFormationInvite (DB-wide redeemable scan
     });
 
     expect(await db.hasOutstandingFormationInvite(T0)).toBe(true);
-    // Same `expiresAtMs <= now` boundary the recorder's isTokenValid applies: at
+    // Same `expiresAtMs <= now` boundary `isInviteExpired` applies to a formation token: at
     // the exact expiry instant the invite no longer holds the gate open, so a
     // token the formation handler rejects can never keep the gate disarmed.
     expect(await db.hasOutstandingFormationInvite(T0 + MINUTE)).toBe(false);

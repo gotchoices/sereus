@@ -18,6 +18,7 @@ import { mintPlaceholderStrandId } from './strand-id.js';
 import { canonicalJson } from './canonical-json.js';
 import type {
   AuthorizedFormationUsage,
+  BoundHostStrand,
   DisclosureValidator,
   FormationUsageParams,
   FormationUsageRecorder,
@@ -25,6 +26,7 @@ import type {
   StrandProvisioner,
   FormationResponseValidator
 } from './strand-solicitation.js';
+import { classifyTokenRead, type FormationTokenCheck, type FormationTokenRead } from './formation-token.js';
 import {
   FormationListener,
   INVALID_TOKEN_REASON,
@@ -35,7 +37,6 @@ import {
   type FormationProvisionResult,
   type FormationRejection,
   type FormationResultMessage,
-  type FormationTokenCheck,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
 import { formationDeadlines } from './strand-formation-deadlines.js';
@@ -102,11 +103,12 @@ const APPROVAL_REJECTIONS: Record<FormationApprovalFailure, FormationRejection> 
 
 /**
  * Responder-side seam that issues a bound joiner's membership invitation — see
- * {@link StrandFormationManagerOptions.issueMembershipInvite} for the contract. `signal`
- * is the responder's provisioning budget: the issuer stops waiting (and throws) once it
- * aborts.
+ * {@link StrandFormationManagerOptions.issueMembershipInvite} for the contract. `host` is the
+ * host strand as the session resolved it, so the issuer reads no `Strand` row of its own.
+ * `signal` is the responder's provisioning budget: the issuer stops waiting (and throws) once
+ * it aborts.
  */
-export type MembershipInviteIssuer = (strandId: string, signal?: AbortSignal) => Promise<StrandMembershipInvite | null>;
+export type MembershipInviteIssuer = (host: BoundHostStrand, signal?: AbortSignal) => Promise<StrandMembershipInvite | null>;
 
 /**
  * Configuration for StrandFormationManager
@@ -183,7 +185,8 @@ export interface StrandFormationManagerOptions {
    * `StrandPartyKey` lookup.
    *
    * Contract: return the issued invitation for a CLOSED host strand; return `null`
-   * for an open one (no members, nothing to invite into); THROW when a closed strand's
+   * for an open one (no members, nothing to invite into), told apart by the resolved
+   * host's `strandType`; THROW when a closed strand's
    * invitation cannot be issued (runtime not live, no party key, strand DB write
    * rejected) — the manager then rejects the whole redemption with
    * {@link MEMBERSHIP_INVITE_UNAVAILABLE_REASON} BEFORE recording consent, so the
@@ -245,8 +248,8 @@ export class StrandFormationManager {
     this.listener = new FormationListener({
       validateToken: (token) => this.validateToken(token),
       validateDisclosure: (token, disclosure) => this.validateDisclosure(token, disclosure),
-      provisionStrand: (contact, signal) =>
-        this.provisionAsResponder(contact, signal),
+      provisionStrand: (contact, signal, read) =>
+        this.provisionAsResponder(contact, signal, read),
       getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.currentCadrePeerAddrs() }),
       // Forwarded only when wired, so `FormationListenerOptions.resolveStrandAddrs`
       // stays genuinely absent (and the listener short-circuits) for an unwired manager.
@@ -400,28 +403,21 @@ export class StrandFormationManager {
   // ── Responder-side hooks ─────────────────────────────────────────────────────
 
   /**
-   * An expired or used-up invitation is `'token-spent'` (final); one with no row here is
-   * `'token-unknown'` (retryable — the row may not have replicated to this machine yet), and
-   * so is one from a recorder that does not say why.
+   * The session's one read of its token ({@link FormationUsageRecorder.readToken}), classified
+   * by {@link classifyTokenRead}: an expired or used-up invitation is `'token-spent'` (final);
+   * one with no row here is `'token-unknown'` (retryable — the row may not have replicated to
+   * this machine yet). A valid check carries the read on to {@link provisionAsResponder}.
    */
   private async validateToken(token: string): Promise<FormationTokenCheck> {
     if (!this.formationUsageRecorder) {
       // No recorder configured — accept all tokens.
       return { valid: true };
     }
-
-    const tokenCheck = await this.formationUsageRecorder.isTokenValid(token);
-    if (!tokenCheck.valid) {
-      log('Token invalid (%s): %s', tokenCheck.reason ?? 'unknown', token);
-      return { valid: false, code: tokenCheck.reason === 'expired' ? 'token-spent' : 'token-unknown' };
+    const check = classifyTokenRead(await this.formationUsageRecorder.readToken(token), Date.now());
+    if (!check.valid) {
+      log('Token refused (%s): %s', check.code, token);
     }
-
-    if (await this.formationUsageRecorder.isTokenUsed(token)) {
-      log('Token already used: %s', token);
-      return { valid: false, code: 'token-spent' };
-    }
-
-    return { valid: true };
+    return check;
   }
 
   private async validateDisclosure(token: string, disclosure: StrandFormationDisclosure): Promise<boolean> {
@@ -438,9 +434,12 @@ export class StrandFormationManager {
    * {@link ResponderProvisionOutcome} with `approved: false` — `runSession` turns that
    * into a clean, non-disclosing reply instead of a dropped result frame.
    *
+   * Every step acts on `read`, the token as {@link validateToken} read it for this session,
+   * and on the host strand as resolved from it; none reads the invite or the `Strand` row again.
+   *
    * - **bound** (host strand present): provision-then-record, in three steps —
    *   (1) authorize ({@link authorizeBoundUsage}: the outside approval when the invite
-   *   demands one, and a seat pre-check), so a refused join writes nothing into the host
+   *   demands one, and a seat re-check after it), so a refused join writes nothing into the host
    *   strand; (2) issue the joiner's single-use strand membership invitation via the wired
    *   `issueMembershipInvite` seam ({@link issueBoundMembershipInvite}; a closed strand whose
    *   invitation cannot be issued rejects retryably HERE, before any consent row spends the
@@ -467,7 +466,8 @@ export class StrandFormationManager {
    */
   private async provisionAsResponder(
     contact: FormationContactMessage,
-    signal?: AbortSignal
+    signal: AbortSignal | undefined,
+    read: FormationTokenRead | undefined
   ): Promise<ResponderProvisionOutcome> {
     const token = contact.token;
     // CANONICALLY serialized — both sides derive the identical string: this is the exact
@@ -482,13 +482,14 @@ export class StrandFormationManager {
 
     const recorder = this.formationUsageRecorder;
     const resolved: ResolvedHostStrand = recorder?.resolveStrand
-      ? await recorder.resolveStrand(token)
+      ? await recorder.resolveStrand(this.requireRead(token, read))
       : { kind: 'unbound' };
 
     try {
       switch (resolved.kind) {
         case 'bound': {
-          // recorder is guaranteed non-null here: only resolveStrand can yield 'bound'.
+          // recorder and read are guaranteed here: only resolveStrand can yield 'bound', and it
+          // ran with the read.
           const authorized = await this.authorizeBoundUsage(recorder!, {
             token,
             peerKey: contact.peerKey,
@@ -497,16 +498,17 @@ export class StrandFormationManager {
             strandId: resolved.strandId,
             disclosure: disclosureText,
             signal
-          });
+          }, read!, resolved);
           // Issued only once authorized (a refused join writes nothing into the strand) and
           // BEFORE consent is recorded (an issue failure leaves the token unspent, retryable).
           // The remaining window — invite issued, then record() fails or aborts (a write that
-          // exhausted its retries, an abort, or the same-node seat race noted at
-          // `ControlFormationUsageRecorder.assertSeatFree`) — orphans a
-          // live `Strand.Invite` no joiner ever received; bounded deliberately by its expiry
-          // ({@link MEMBERSHIP_INVITE_TTL_MS}) rather than compensated, since nothing
+          // exhausted its retries, an abort, the same-node seat race noted at
+          // `ControlFormationUsageRecorder.assertSeatFree`, or the host strand's row removed
+          // since `resolveStrand` read it, which the `StrandExists` CHECK refuses at commit) —
+          // orphans a live `Strand.Invite` no joiner ever received; bounded deliberately by its
+          // expiry ({@link MEMBERSHIP_INVITE_TTL_MS}) rather than compensated, since nothing
           // here can atomically un-issue a strand-DB row.
-          const issued = await this.issueBoundMembershipInvite(token, resolved.strandId, signal);
+          const issued = await this.issueBoundMembershipInvite(token, resolved, signal);
           if (!issued.ok) {
             return issued.rejection;
           }
@@ -525,7 +527,7 @@ export class StrandFormationManager {
           return { approved: false, code: 'host-strand-unavailable', reason: 'Host strand not yet available on this responder' };
         }
         case 'unbound':
-          return await this.provisionUnbound(contact, disclosureText, signal);
+          return await this.provisionUnbound(contact, disclosureText, signal, read);
       }
     } catch (err) {
       if (err instanceof FormationAbortedError) {
@@ -560,16 +562,30 @@ export class StrandFormationManager {
   }
 
   /**
+   * The session's token read. {@link validateToken} takes one whenever a recorder is wired and
+   * the listener hands it over, so a missing one is a wiring fault: refused rather than letting
+   * the redemption fall through to a path that records no usage.
+   */
+  private requireRead(token: string, read: FormationTokenRead | undefined): FormationTokenRead {
+    if (!read) {
+      throw new Error(`Formation for token ${token} reached provisioning without the session's token read`);
+    }
+    return read;
+  }
+
+  /**
    * Authorize a BOUND redemption without writing it, through the recorder's optional
    * {@link FormationUsageRecorder.authorizeUsage}. A recorder without it has nothing to ask up
    * front, so its handle defers everything to `recordUsage`.
    */
   private async authorizeBoundUsage(
     recorder: FormationUsageRecorder,
-    params: FormationUsageParams
+    params: FormationUsageParams,
+    read: FormationTokenRead,
+    host: BoundHostStrand
   ): Promise<AuthorizedFormationUsage> {
     if (recorder.authorizeUsage) {
-      return await recorder.authorizeUsage(params);
+      return await recorder.authorizeUsage(params, read, host);
     }
     return { record: () => recorder.recordUsage(params) };
   }
@@ -596,14 +612,15 @@ export class StrandFormationManager {
    */
   private async issueBoundMembershipInvite(
     token: string,
-    strandId: string,
+    host: BoundHostStrand,
     signal?: AbortSignal
   ): Promise<{ ok: true; invite?: StrandMembershipInvite } | { ok: false; rejection: FormationRejection }> {
     if (!this.issueMembershipInvite) {
       return { ok: true };
     }
+    const strandId = host.strandId;
     try {
-      const invite = await this.issueMembershipInvite(strandId, signal);
+      const invite = await this.issueMembershipInvite(host, signal);
       return { ok: true, invite: invite ?? undefined };
     } catch (err) {
       if (err instanceof PreSplitStrandIdentityError) {
@@ -630,7 +647,7 @@ export class StrandFormationManager {
    * 2. else `strandProvisioner` present → the mock/transport-test contract: provision a bare
    *    strand, NO inline usage write (those callers record usage explicitly via
    *    `recordFormationComplete`, or assert transport invariants only). Threads the invite's
-   *    REAL `sAppId`.
+   *    REAL `sAppId` from the session's read (empty when there is none).
    * 3. else → a structural placeholder (no recorder + no provisioner ⇒ no single-use semantics
    *    exist to enforce).
    *
@@ -646,12 +663,13 @@ export class StrandFormationManager {
   private async provisionUnbound(
     contact: FormationContactMessage,
     disclosureText: string,
-    signal?: AbortSignal
+    signal: AbortSignal | undefined,
+    read: FormationTokenRead | undefined
   ): Promise<ResponderProvisionOutcome> {
     const token = contact.token;
     const recorder = this.formationUsageRecorder;
+    const sAppId = read?.invite?.sAppId ?? '';
     if (recorder?.provisionAndRecord) {
-      const sAppId = await this.resolveInviteSAppId(token);
       const provisioned = await recorder.provisionAndRecord({
         token,
         peerKey: contact.peerKey,
@@ -660,7 +678,7 @@ export class StrandFormationManager {
         sAppId,
         disclosure: disclosureText,
         signal
-      });
+      }, this.requireRead(token, read));
       return this.approve({
         strand: { strandId: provisioned.strandId, createdBy: 'responder' },
         memberPrivateKey: provisioned.memberPrivateKey ?? undefined,
@@ -669,7 +687,6 @@ export class StrandFormationManager {
     }
 
     if (this.strandProvisioner) {
-      const sAppId = await this.resolveInviteSAppId(token);
       const result = await this.strandProvisioner.provisionStrand(sAppId, contact.partyId, this.partyId);
       return this.approve({
         strand: { strandId: result.strandId, createdBy: 'responder' },
@@ -688,17 +705,6 @@ export class StrandFormationManager {
   /** Wrap a provision result as an approving {@link ResponderProvisionOutcome}. */
   private approve(result: FormationProvisionResult): ResponderProvisionOutcome {
     return { approved: true, result };
-  }
-
-  /**
-   * The invite's authoritative `sAppId` for the responder-provisions fallback, read back
-   * from the recorder's `isTokenValid` invitation (the real `FormationInvite.sAppId`).
-   * Empty string when no recorder is wired or the invitation omits it.
-   */
-  private async resolveInviteSAppId(token: string): Promise<string> {
-    if (!this.formationUsageRecorder) return '';
-    const check = await this.formationUsageRecorder.isTokenValid(token);
-    return check.invitation?.sAppId ?? '';
   }
 
   // ── Initiator-side result validation ─────────────────────────────────────────

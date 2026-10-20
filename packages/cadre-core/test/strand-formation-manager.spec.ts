@@ -35,7 +35,9 @@ import type { ControlStream } from '../src/control-stream.js';
 import type { OpenInvitation, StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, type JoinerConsent } from './formation-consent-helper.js';
 import { captureHandler, bridgingDialer, BRIDGED_RESPONDER_ADDR } from './formation-stream-helpers.js';
-import type { FormationUsageRecorder, StrandProvisioner } from '../src/strand-solicitation.js';
+import type { StrandProvisioner } from '../src/strand-solicitation.js';
+import type { FormationInviteFacts } from '../src/formation-token.js';
+import { inviteFacts, readsAs } from './formation-token-helpers.js';
 
 const RESPONDER_CADRE = ['/ip4/10.0.0.1/tcp/2/p2p/both-roles'];
 
@@ -145,17 +147,16 @@ describe('StrandFormationManager: an invitation naming several machines of the p
   const MACHINE_A = '12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5';
   const MACHINE_B = '12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU';
 
-  /** A responder machine whose token check gives `tokenCheck`, captured so it can be dialled by peer id. */
+  /** A responder machine that reads `invite` for the token, captured so it can be dialled by peer id. */
   async function responderMachine(
-    tokenCheck: Awaited<ReturnType<FormationUsageRecorder['isTokenValid']>>
+    invite: FormationInviteFacts | null
   ): Promise<(stream: ControlStream) => Promise<void>> {
     const manager = new StrandFormationManager({
       partyId: 'inviting-party',
       cadrePeerAddrs: RESPONDER_CADRE,
       strandProvisioner: quickProvisioner('strand-from-a-sibling'),
       formationUsageRecorder: {
-        isTokenValid: async () => tokenCheck,
-        isTokenUsed: async () => false,
+        readToken: readsAs(invite),
         recordUsage: async () => {}
       }
     });
@@ -175,14 +176,14 @@ describe('StrandFormationManager: an invitation naming several machines of the p
     } as unknown as Libp2p;
   }
 
-  /** Form against machine A (whose token check gives `tokenCheck`) then B (which approves). */
+  /** Form against machine A (which reads `invite` for the token) then B (which approves). */
   async function formAcrossMachines(
     tag: string,
-    tokenCheck: Awaited<ReturnType<FormationUsageRecorder['isTokenValid']>>
+    invite: FormationInviteFacts | null
   ): Promise<{ contacted: string[]; outcome: unknown }> {
     const machines = {
-      [MACHINE_A]: await responderMachine(tokenCheck),
-      [MACHINE_B]: await responderMachine({ valid: true })
+      [MACHINE_A]: await responderMachine(invite),
+      [MACHINE_B]: await responderMachine(inviteFacts())
     };
     const joiner = new StrandFormationManager({ partyId: 'joining-party' });
     const { invitation, disclosure, consent } = await formationArgs(`invite-${tag}`, tag);
@@ -195,13 +196,13 @@ describe('StrandFormationManager: an invitation naming several machines of the p
 
   it('asks the next machine after a retryable refusal', async () => {
     // token-unknown: the invitation row has not replicated to machine A yet.
-    const { contacted, outcome } = await formAcrossMachines('retryable', { valid: false });
+    const { contacted, outcome } = await formAcrossMachines('retryable', null);
     expect(contacted).toEqual([MACHINE_A, MACHINE_B]);
     expect(outcome).toBe('strand-from-a-sibling');
   });
 
   it('stops at a final refusal, which every machine of the party would repeat', async () => {
-    const { contacted, outcome } = await formAcrossMachines('final', { valid: false, reason: 'expired' });
+    const { contacted, outcome } = await formAcrossMachines('final', inviteFacts({ expiresAtMs: Date.now() - 1000 }));
     expect(contacted).toEqual([MACHINE_A]);
     expect(outcome).toBeInstanceOf(FormationRejectedError);
     expect(outcome).toMatchObject({ code: 'token-spent', retryable: false });

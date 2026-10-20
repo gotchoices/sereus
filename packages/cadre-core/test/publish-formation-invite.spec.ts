@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import type { CadreNode } from '../src/cadre-node.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
+import { classifyTokenRead } from '../src/formation-token.js';
 import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
@@ -45,9 +46,9 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
 
     // The host's responder validates redemption from exactly this row.
     const recorder = new ControlFormationUsageRecorder(db);
-    const check = await recorder.isTokenValid(token);
-    expect(check.valid).toBe(true);
-    expect(check.invitation?.sAppId).toBe('sapp-publish');
+    const read = await recorder.readToken(token);
+    expect(classifyTokenRead(read, Date.now()).valid).toBe(true);
+    expect(read.invite?.sAppId).toBe('sapp-publish');
   }, 60_000);
 
   it('registers the published token with the solicitation service (opens the connection gate)', async () => {
@@ -59,8 +60,7 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
     ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: true }));
     await node.initializeStrandSolicitation({
       formationUsageRecorder: {
-        isTokenValid: async () => ({ valid: false }),
-        isTokenUsed: async () => false,
+        readToken: async (token) => ({ token, invite: null, usesRecorded: null }),
         recordUsage: async () => {},
       },
     });

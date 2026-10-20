@@ -11,23 +11,21 @@ import {
 } from './formation-approval.js';
 import type {
   AuthorizedFormationUsage,
+  BoundHostStrand,
   FormationUsageParams,
   FormationUsageRecorder,
   ResolvedHostStrand
 } from './strand-solicitation.js';
-import type { OpenInvitation } from './types.js';
+import { isInviteExpired, type FormationInviteFacts, type FormationTokenRead } from './formation-token.js';
 
 const log = debug('sereus:cadre:formation-recorder');
-
-/** Far-future sentinel for an invitation that never expires (max valid JS Date). */
-const NEVER_EXPIRES = new Date(8640000000000000);
 
 /**
  * {@link FormationUsageRecorder} backed by the real `CadreControl` tables.
  *
- * It reads `FormationInvite` / `FormationUsage` to answer token-validity and
- * usage questions, and writes the consent row that records a redemption. Two
- * provisioning shapes are supported, keyed on whether the invite binds a host strand:
+ * It reads a session's token once ({@link readToken}: the `FormationInvite` row and its
+ * `FormationUsage` count), and writes the consent row that records a redemption from that
+ * read. Two provisioning shapes are supported, keyed on whether the invite binds a host strand:
  *
  * - **Bound (provision-then-record):** the host strand already exists (owner-signed
  *   up front and named by the invite's `StrandId`), so {@link resolveStrand} reports it
@@ -70,39 +68,21 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     this.approver = options?.approver ?? createHttpFormationApprover();
   }
 
-  /** A token is valid when a matching, unexpired `FormationInvite` exists. */
-  async isTokenValid(token: string): Promise<{ valid: boolean; reason?: 'unknown' | 'expired'; invitation?: OpenInvitation }> {
-    const invite = await this.controlDatabase.queryFormationInvite(token);
-    if (!invite) {
-      return { valid: false, reason: 'unknown' };
-    }
-    if (invite.expiresAtMs !== null && invite.expiresAtMs <= Date.now()) {
-      log('Token expired: %s', token);
-      return { valid: false, reason: 'expired' };
-    }
-    return {
-      valid: true,
-      invitation: {
-        token: invite.token,
-        sAppId: invite.sAppId,
-        expiration: invite.expiresAtMs !== null ? new Date(invite.expiresAtMs) : NEVER_EXPIRES,
-        bootstrap: [],
-      },
-    };
-  }
-
   /**
-   * A token is "used" when its recorded usage count has reached the invite's
-   * `TotalUses`. A null `TotalUses` (unlimited) is never used up; an unknown
-   * token is reported not-used (validity is handled by {@link isTokenValid}).
+   * One `FormationInvite` read, then one `FormationUsage` count only when the invite is
+   * metered (`TotalUses` set) and unexpired: an unknown, expired or unlimited token has no
+   * seat to count. This early count refuses a spent token before anything costly (the outside
+   * approval call, the strand-database write that issues the membership invite); the count
+   * inside the write lock decides.
    */
-  async isTokenUsed(token: string): Promise<boolean> {
+  async readToken(token: string): Promise<FormationTokenRead> {
     const invite = await this.controlDatabase.queryFormationInvite(token);
-    if (!invite || invite.totalUses === null) {
-      return false;
-    }
-    const uses = await this.controlDatabase.countFormationUsage(token);
-    return uses >= invite.totalUses;
+    const metered = invite !== null && invite.totalUses !== null && !isInviteExpired(invite, Date.now());
+    return {
+      token,
+      invite,
+      usesRecorded: metered ? await this.controlDatabase.countFormationUsage(token) : null,
+    };
   }
 
   /**
@@ -195,50 +175,70 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * spent on AND provably the joiner that agreed. Use
    * {@link ControlDatabase.redeemInvitation} for the consent-creates-strand path instead.
    *
-   * Authorizes ({@link authorizeUsage}) and writes in one step, for callers with nothing to do
-   * in between.
+   * Reads the invite for itself (it is handed no session read) and the strand's stamp inside
+   * `recordFormationUsage`; otherwise authorizes as {@link authorizeUsage} does and writes in
+   * one step, for callers with nothing to do in between.
    */
   async recordUsage(params: FormationUsageParams): Promise<void> {
-    await (await this.authorizeUsage(params)).record();
+    if (params.signal?.aborted) {
+      throw new FormationAbortedError(params.token, 'usage recording');
+    }
+    const invite = await this.controlDatabase.queryFormationInvite(params.token);
+    await (await this.authorize(params, invite, undefined)).record();
   }
 
   /**
    * Everything {@link recordUsage} does before its write, so the manager can issue the
    * joiner's membership pass into the host strand only once the redemption is cleared, and
-   * spend the token only after that.
-   *
-   * Reads the invite first (one extra read per redemption) to learn its `ValidationUrl` and
-   * seat budget, obtains the approval through {@link obtainApproval} when one is demanded,
-   * re-checks the abort (the approval call may have been long), and pre-checks the seat
-   * budget ({@link assertSeatFree}). The returned `record()` closes over the captured fields
-   * and approval, so the nonce the approver signed is the nonce inserted without the caller
-   * ever passing it back.
+   * spend the token only after that. Takes the invite's `ValidationUrl` and seat budget from
+   * the session's `read`, and the host strand's stamp from `host`, so it reads neither again.
    */
-  async authorizeUsage(params: FormationUsageParams): Promise<AuthorizedFormationUsage> {
+  async authorizeUsage(
+    params: FormationUsageParams,
+    read: FormationTokenRead,
+    host: BoundHostStrand
+  ): Promise<AuthorizedFormationUsage> {
+    return await this.authorize(params, read.invite, host.strandStampId);
+  }
+
+  /**
+   * Obtain the approval through {@link obtainApproval} when `invite` demands one, re-check the
+   * abort (the approval call may have been long), and after an obtained approval re-check the
+   * seat budget ({@link assertSeatFree}). The returned `record()` closes over the captured
+   * fields and approval, so the nonce the approver signed is the nonce inserted without the
+   * caller ever passing it back. `strandStampId` undefined makes `recordFormationUsage` read it.
+   */
+  private async authorize(
+    params: FormationUsageParams,
+    invite: FormationInviteFacts | null,
+    strandStampId: string | undefined
+  ): Promise<AuthorizedFormationUsage> {
     const { token, peerKey, peerSignature, usageStampId, strandId, disclosure, signal } = params;
     if (signal?.aborted) {
       throw new FormationAbortedError(token, 'usage recording');
     }
-    const invite = await this.controlDatabase.queryFormationInvite(token);
     // NOTE: a missing invite row reads as "no approval required" here and in
-    // `provisionAndRecord`, so an invite that vanished between `resolveStrand` and this read
-    // would be written unapproved. Safe only because the database's `FormationUsage.Authorized`
-    // CHECK demands a matching `FormationInvite` and rolls the write back regardless; if that
-    // CHECK ever loosens, reject on `invite === null` instead of defaulting to null.
+    // `provisionAndRecord`, so an invite that was absent from the session's read (or vanished
+    // before `recordUsage`'s) would be written unapproved. Safe only because the database's
+    // `FormationUsage.Authorized` CHECK demands a matching `FormationInvite` and rolls the write
+    // back regardless; if that CHECK ever loosens, reject on `invite === null` instead of
+    // defaulting to null.
+    const validationUrl = invite?.validationUrl ?? null;
     const approval = await this.obtainApproval({
-      token, usageStampId, strandId, peerKey, disclosure,
-      validationUrl: invite?.validationUrl ?? null,
+      token, usageStampId, strandId, peerKey, disclosure, validationUrl,
     }, signal);
     if (signal?.aborted) {
       throw new FormationAbortedError(token, 'usage recording');
     }
     const totalUses = invite?.totalUses ?? null;
-    await this.assertSeatFree(token, totalUses);
+    if (validationUrl !== null) {
+      await this.assertSeatFree(token, totalUses);
+    }
     return {
       record: async () => {
         await this.controlDatabase.recordFormationUsage({
           token, strandId, peerKey, peerSignature, usageStampId, disclosure, signal,
-          totalUses, ...approval,
+          totalUses, strandStampId, ...approval,
         });
         log('Recorded formation usage: token=%s strand=%s', token, strandId);
       }
@@ -246,17 +246,19 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   }
 
   /**
-   * Refuse a redemption whose invite has no seat left, BEFORE anything is written — the
-   * authoritative check is the one `recordFormationUsage` repeats inside its write lock.
-   * Catches a same-node rival that took the last seat while this redemption waited on the
-   * approval hook, which `runSession`'s up-front `isTokenUsed` check could not see.
+   * Refuse a redemption whose invite lost its last seat while this redemption waited on its
+   * outside approval, BEFORE anything is written — the authoritative check is the one
+   * `recordFormationUsage` repeats inside its write lock. Runs only after an obtained approval:
+   * that call is the one long wait between the session's early count (`readToken`) and the
+   * membership pass, in which a same-node rival could take the seat unseen.
    *
-   * NOTE: two redemptions that both pass this check within the time one of them takes to
-   * issue its membership pass still both issue one, and the loser's pass is orphaned
-   * (expiry-bounded, never handed out). Holding the control write lock across issuance would
-   * close it, but `lockedWithRetry` re-runs locked bodies on transient failures (a re-run
-   * would double-issue) and every control write would stall behind a strand-database write.
-   * If orphaned passes from same-node races ever matter, reserve the seat before issuance.
+   * NOTE: two redemptions that both pass the last count before issuance (this one after an
+   * approval, `readToken`'s without one) within the time one of them takes to issue its
+   * membership pass still both issue one, and the loser's pass is orphaned (expiry-bounded,
+   * never handed out). Holding the control write lock across issuance would close it, but
+   * `lockedWithRetry` re-runs locked bodies on transient failures (a re-run would double-issue)
+   * and every control write would stall behind a strand-database write. If orphaned passes from
+   * same-node races ever matter, reserve the seat before issuance.
    */
   private async assertSeatFree(token: string, totalUses: number | null): Promise<void> {
     if (totalUses === null) {
@@ -269,29 +271,32 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   }
 
   /**
-   * Classify the host strand this invite binds to (see {@link ResolvedHostStrand}):
+   * Classify the host strand the read invite binds to (see {@link ResolvedHostStrand}), with
+   * one `Strand` read and no invite read:
    *
    * - no invite / no `StrandId` → `unbound` (responder-provisions path).
-   * - `StrandId` set AND the strand row is present → `bound`, carrying its
-   *   `MemberPrivateKey` (the closed-strand read-gating secret) for delivery to a
-   *   validated invitee.
+   * - `StrandId` set AND the strand row is present → `bound`, carrying its type, its
+   *   `StampId` (which the consent row names) and its `MemberPrivateKey` (the closed-strand
+   *   read-gating secret) for delivery to a validated invitee.
    * - `StrandId` set but the strand row is absent → `missing` (the host strand has not
    *   converged on this responder yet); the manager rejects cleanly instead of recording
    *   usage against a non-existent strand, which would fail the deferred `StrandExists`
    *   CHECK at commit and drop the result frame.
    */
-  async resolveStrand(token: string): Promise<ResolvedHostStrand> {
-    const invite = await this.controlDatabase.queryFormationInvite(token);
-    if (!invite || !invite.strandId) {
+  async resolveStrand(read: FormationTokenRead): Promise<ResolvedHostStrand> {
+    const strandId = read.invite?.strandId;
+    if (!strandId) {
       return { kind: 'unbound' };
     }
-    const strand = await this.controlDatabase.queryStrand(invite.strandId);
+    const strand = await this.controlDatabase.queryStrandWithStamp(strandId);
     if (!strand) {
-      return { kind: 'missing', strandId: invite.strandId };
+      return { kind: 'missing', strandId };
     }
     return {
       kind: 'bound',
-      strandId: invite.strandId,
+      strandId,
+      strandType: strand.Type,
+      strandStampId: strand.StampId,
       memberPrivateKey: strand.MemberPrivateKey ?? null,
     };
   }
@@ -311,7 +316,8 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    *
    * The strand is open (`'o'`) — an unbound responder-provisioned strand has no membership
    * key — so the returned `memberPrivateKey` is null. `sAppId` is accepted for parity/future
-   * use; `redeemInvitation` does not currently thread it into the `Strand` row.
+   * use; `redeemInvitation` does not currently thread it into the `Strand` row. The invite's
+   * `ValidationUrl` and seat budget come from the session's `read`.
    *
    * A concurrent redemption of the same single-use invite still THROWS for the loser — the
    * manager maps that to a clean protocol rejection (it never lets the dropped insert close
@@ -332,13 +338,13 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     sAppId: string;
     disclosure: string;
     signal?: AbortSignal;
-  }): Promise<{ strandId: string; memberPrivateKey: string | null }> {
+  }, read: FormationTokenRead): Promise<{ strandId: string; memberPrivateKey: string | null }> {
     const { token, peerKey, peerSignature, usageStampId, disclosure, signal } = params;
     if (signal?.aborted) {
       throw new FormationAbortedError(token, 'redemption');
     }
     const strandId = mintStrandId();
-    const invite = await this.controlDatabase.queryFormationInvite(token);
+    const invite = read.invite;
     const approval = await this.obtainApproval({
       token, usageStampId, strandId, peerKey, disclosure,
       validationUrl: invite?.validationUrl ?? null,

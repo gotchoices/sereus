@@ -208,7 +208,7 @@ Client side, in `@serfab/cadre-core`: `createHttpFormationApprover()` (the trans
 
 `ControlFormationUsageRecorder` contacts the hook automatically on both redemption paths
 (`authorizeUsage` then its `record()` against an existing host strand, and `provisionAndRecord`
-for an unbound invite): it reads the invite's `ValidationUrl`, calls the approver with the nonce
+for an unbound invite): it takes the invite's `ValidationUrl` from the session's token read (`readToken`), calls the approver with the nonce
 and peer key the joiner supplied, and writes the sign-off with the usage row — alongside the joiner's own consent
 signature, which the schema re-verifies on that same insert.
 

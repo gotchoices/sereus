@@ -99,7 +99,7 @@ describe('ControlFormationUsageRecorder abort plumbing', () => {
       sAppId: 'sapp-1',
       disclosure: '{}',
       signal: abortedSignal()
-    }).then(
+    }, { token: 'invite-abc', invite: null, usesRecorded: null }).then(
       () => { throw new Error('expected provisionAndRecord to reject'); },
       (caught: unknown) => caught
     );

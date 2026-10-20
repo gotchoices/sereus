@@ -78,15 +78,15 @@ export interface FormationDeadlines {
  *   trip, budgeted as a request over an open stream (2) for the same headroom as every other
  *   one-exchange read in `link-budget.ts`.
  * - **validation** and the reads inside **provisionWork** are budgeted at two consulting
- *   reads each, not one per read the code issues. What actually runs: validation is three
- *   control reads (`isTokenValid` reads the invite; `isTokenUsed` reads it again and counts
- *   its usages) plus whatever the disclosure validator does; the bound provisioning path
- *   (`StrandFormationManager.provisionAsResponder`) reads the invite and the strand row to
- *   resolve the host strand, the invite again, the approver's `ValidationKey` and the seat
- *   count around the outside approval hook (an HTTP call, so its own
- *   `DEFAULT_APPROVAL_TIMEOUT_MS` is link-independent and added flat), the strand row and its
- *   `StrandPartyKey` to issue the joiner's membership invite, and the host strand's stamp
- *   before the `FormationUsage` write; then one strand-database commit issues the invite.
+ *   reads each, not one per read the code issues. What actually runs: validation is two
+ *   control reads (`readToken` reads the invite and, for a metered unexpired one, counts its
+ *   usages) plus whatever the disclosure validator does; the bound provisioning path
+ *   (`StrandFormationManager.provisionAsResponder`) acts on that read, reads the strand row
+ *   with its stamp to resolve the host strand, the approver's `ValidationKey` and the seat
+ *   count around the outside approval hook when the invite names one (an HTTP call, so its
+ *   own `DEFAULT_APPROVAL_TIMEOUT_MS` is link-independent and added flat), and the host
+ *   strand's `StrandPartyKey` to issue the joiner's membership invite; then one
+ *   strand-database commit issues the invite.
  *   Every one of those is a read of this party's own control database, which in steady state
  *   touches held blocks and consults nobody (`cadre-consistency.md` → "Deadlines Over
  *   Optimystic's Reads and Commits"), so `R` is charged as headroom for the ones that do

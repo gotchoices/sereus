@@ -22,6 +22,7 @@ import { StrandFormationManager } from '../src/strand-formation-manager.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
 import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
 import { MockStream, captureHandler } from './formation-stream-helpers.js';
+import { readsAs } from './formation-token-helpers.js';
 import type {
   FormationContactMessage,
   FormationResultMessage,
@@ -681,8 +682,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     // This asserts only the manager's mapping, which that spec explicitly leaves untested.
     const token = 'invite-exhausted-' + rand();
     const fakeRecorder: FormationUsageRecorder = {
-      isTokenValid: async () => ({ valid: true }),
-      isTokenUsed: async () => false,
+      readToken: readsAs(),
       recordUsage: async () => { throw new InvitationExhaustedError(token, 4, 3); },
       provisionAndRecord: async () => { throw new InvitationExhaustedError(token, 4, 3); },
     };

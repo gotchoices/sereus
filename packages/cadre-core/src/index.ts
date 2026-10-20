@@ -326,6 +326,7 @@ export {
   type FormationUsageRecorder,
   type FormationUsageParams,
   type AuthorizedFormationUsage,
+  type BoundHostStrand,
   type ResolvedHostStrand,
   type StrandProvisioner,
   type FormationResponseValidator,
@@ -697,9 +698,16 @@ export {
   type FormationDialOptions,
   type FormationDialResult,
   type FormationRejection,
-  type FormationTokenCheck,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
+// A responder session's one read of its formation token, and the check made from it
+export {
+  classifyTokenRead,
+  isTokenReadSpent,
+  type FormationInviteFacts,
+  type FormationTokenRead,
+  type FormationTokenCheck
+} from './formation-token.js';
 // How a formation dial fails: a typed refusal (with a fixed code) or no answer at all
 export {
   FormationRejectedError,

@@ -27,6 +27,7 @@ import type { ControlRetryAbandonment } from './control-retry.js';
 import { TableWatchRegistry } from './table-change-watch.js';
 import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
 import { MembershipView } from './membership-view.js';
+import type { FormationInviteFacts } from './formation-token.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -63,12 +64,11 @@ export function generateStampId(peerId: string): string {
  * present locally.
  *
  * Consent is bound to the strand's one-off `StampId` (see the consent branch of
- * `Strand.AuthorizedInsert`), so the writer must read the live row before inserting.
- * The ordinary "host strand has not converged on this responder yet" case is caught
- * earlier and reported as `missing` by `ControlFormationUsageRecorder.resolveStrand`;
- * reaching here means the row vanished between that check and the write, which is a
- * genuine race and is surfaced rather than left to fail the deferred `StrandExists`
- * CHECK at commit (which would drop the write with a far less legible error).
+ * `Strand.AuthorizedInsert`), so a writer not handed the stamp reads the live row before
+ * inserting, and throws this when the row is absent rather than leaving it to fail the
+ * deferred `StrandExists` CHECK at commit (a far less legible error). The formation
+ * responder hands the stamp over from `ControlFormationUsageRecorder.resolveStrand`, which
+ * reports an absent row as `missing`; a row removed after that read fails the CHECK instead.
  */
 export class MissingHostStrandError extends Error {
   constructor(readonly strandId: string, readonly token: string) {
@@ -111,16 +111,16 @@ export class FormationAbortedError extends Error {
  * the write, inside {@link ControlDatabase.redeemInvitation} /
  * {@link ControlDatabase.recordFormationUsage}, off the same check for a cadre invitation
  * ({@link ControlDatabase.redeemCadreInvite}) and an owner grant
- * ({@link ControlDatabase.redeemOwnerGrant}), and off the unlocked pre-check
- * `ControlFormationUsageRecorder.authorizeUsage` runs before the manager issues a membership
- * pass — and off nothing else. It exists because
+ * ({@link ControlDatabase.redeemOwnerGrant}), and off the unlocked re-check
+ * `ControlFormationUsageRecorder.authorizeUsage` runs after an outside approval, before the
+ * manager issues a membership pass — and off nothing else. It exists because
  * without it the refusal surfaces as a generic `CHECK constraint failed: Authorized` from the
  * schema's own count-based cap clause, which the manager reports as a retryable
  * `Formation conflict, retry` — telling the joiner to retry something that can never succeed.
  * Two redemptions of one token racing on the SAME node serialize behind the local write
- * queue, so the loser reads the winner's committed row and is refused here by name —
- * `StrandFormationManager.validateToken`'s `isTokenUsed` check cannot catch that, since it
- * ran before either redemption wrote anything.
+ * queue, so the loser reads the winner's committed row and is refused here by name — the
+ * use count `StrandFormationManager.validateToken` reads cannot catch that, since it was
+ * read before either redemption wrote anything.
  */
 export class InvitationExhaustedError extends Error {
   constructor(
@@ -992,16 +992,8 @@ function strandRow(row: Record<string, SqlValue>): StrandRow {
 const STRAND_COLUMNS = 'Id, MemberPrivateKey, Type, FounderOwnerKey, FounderPeerId';
 
 /** A `FormationInvite` row as {@link ControlDatabase.queryFormationInvite} reads it. */
-export interface FormationInviteRow {
+export interface FormationInviteRow extends FormationInviteFacts {
   token: string;
-  sAppId: string;
-  /** Parsed epoch ms of the stored `datetime`; null when the invitation never expires. */
-  expiresAtMs: number | null;
-  /** Null is unlimited. */
-  totalUses: number | null;
-  validationUrl: string | null;
-  /** A bound invitation's host strand; null on the responder-provisions path. */
-  strandId: string | null;
 }
 
 const FORMATION_INVITE_SELECT_SQL = 'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite';
@@ -1733,6 +1725,18 @@ export class ControlDatabase {
     this.ensureInitialized();
     const rows = await this.readRows(`select ${STRAND_COLUMNS} from CadreControl.Strand where Id = ?`, [strandId], 'strand');
     return rows.length === 0 ? null : strandRow(rows[0]!);
+  }
+
+  /**
+   * {@link queryStrand} plus the row's `StampId`, in one read: the formation responder
+   * resolves a bound invite's host strand with it and later records consent against that
+   * stamp ({@link recordFormationUsage}'s `strandStampId`) without reading the row again.
+   */
+  async queryStrandWithStamp(strandId: string): Promise<(StrandRow & { StampId: string }) | null> {
+    this.ensureInitialized();
+    const rows = await this.readRows(
+      `select ${STRAND_COLUMNS}, StampId from CadreControl.Strand where Id = ?`, [strandId], 'strand-with-stamp');
+    return rows.length === 0 ? null : { ...strandRow(rows[0]!), StampId: rows[0]!.StampId as string };
   }
 
   /**
@@ -4383,14 +4387,13 @@ export class ControlDatabase {
    * Use {@link redeemInvitation} instead when the strand must be created by
    * consent atomically with the usage.
    *
-   * The strand's live `StampId` is read first and written onto the usage row:
+   * The strand's live `StampId` is written onto the usage row:
    * `FormationUsage.StrandExists` matches the (id, stamp) PAIR, and
    * `Strand.AuthorizedInsert`'s consent branch reads the same pair back, so a consent
-   * record authorizes exactly the strand ROW it was recorded against. A missing strand
-   * THROWS here rather than being left to the deferred `StrandExists` CHECK — the
-   * ordinary "host strand has not converged yet" case is already reported as `missing`
-   * by {@link ControlFormationUsageRecorder.resolveStrand}, so an absent row at this
-   * point is a genuine race and deserves a named error, not a silent rollback.
+   * record authorizes exactly the strand ROW it was recorded against. A caller that already
+   * read the stamp passes it (`strandStampId`); otherwise it is read here first, and a
+   * missing strand THROWS {@link MissingHostStrandError} rather than being left to the
+   * deferred `StrandExists` CHECK.
    *
    * The row is keyed by the joiner's own nonce (`UsageStampId` is the primary key), so this
    * path — the one production actually races on (a bound invite published by `cadre-web` /
@@ -4425,6 +4428,13 @@ export class ControlDatabase {
      * {@link queryFormationInvite} read; `null` means "no invite row" / unlimited.
      */
     totalUses?: number | null;
+    /**
+     * The host strand's `StampId`, when the caller already read the row
+     * ({@link queryStrandWithStamp}); `undefined` reads it here. A stamp is fixed for the life
+     * of its row, so one read earlier is the stamp `StrandExists` compares, unless the row was
+     * removed (and re-seated) in between, which that CHECK refuses at commit.
+     */
+    strandStampId?: string;
   }): Promise<FormationUsageResult> {
     this.ensureInitialized();
     const {
@@ -4435,7 +4445,7 @@ export class ControlDatabase {
 
     // The host strand is pre-existing and owner-signed; its stamp names the strand ROW the
     // consent record authorizes.
-    const strandStampId = await this.queryStrandStampId(strandId);
+    const strandStampId = params.strandStampId ?? await this.queryStrandStampId(strandId);
     if (strandStampId === null) {
       throw new MissingHostStrandError(strandId, token);
     }
@@ -4579,7 +4589,7 @@ export class ControlDatabase {
    * permissive PRE-check that runs ahead of it, and a transiently short read costs each of
    * them only a worse outcome for the ATTEMPT, never a seat the invitation did not pay for:
    * {@link assertSeatRemains} loses its named exhaustion error and falls back to the CHECK's
-   * generic refusal; `ControlFormationUsageRecorder.isTokenUsed` reports not-used and lets
+   * generic refusal; `ControlFormationUsageRecorder.readToken` reports a seat free and lets
    * the redemption proceed to the CHECK, which decides; {@link hasOutstandingFormationInvite}
    * holds the stranger-admission door open slightly longer.
    *
@@ -4613,12 +4623,12 @@ export class ControlDatabase {
   /**
    * Is any `FormationInvite` row still redeemable — unexpired AND with usage
    * below its `TotalUses`? A null `ExpiresAt` never expires and a null
-   * `TotalUses` is unlimited, matching {@link ControlFormationUsageRecorder}'s
-   * per-token semantics (`isTokenValid` / `isTokenUsed`).
+   * `TotalUses` is unlimited, matching the per-token semantics of `classifyTokenRead`
+   * (`formation-token.ts`).
    *
    * Answers the control-network connection gate's coarse "does this node expect
    * a stranger?" question, which has no token to ask about. The expiry
-   * comparison is `expiresAtMs <= now` — identical to `isTokenValid`'s — so an
+   * comparison is `expiresAtMs <= now` — identical to `isInviteExpired`'s — so an
    * invite the formation handler would reject can never hold the gate open.
    *
    * The scan is deliberately not pushed into SQL: nothing else here compares a

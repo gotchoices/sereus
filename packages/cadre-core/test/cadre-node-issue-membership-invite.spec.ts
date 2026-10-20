@@ -9,7 +9,6 @@
  * approved at all, each of which the manager maps to a user-visible protocol outcome:
  *
  *  - open host strand → `null` (approve with no invitation),
- *  - `Strand` row gone (concurrent unpublish) → throw → retryable rejection,
  *  - no `StrandPartyKey` identity → throw → retryable rejection,
  *  - closed strand whose runtime is not live → throw → retryable rejection,
  *  - closed strand whose runtime is hibernating → woken, then the invitation is issued,
@@ -17,11 +16,13 @@
  *    `PreSplitStrandIdentityError` → non-retryable rejection, until the strand is stopped.
  *
  * The method is private (only the formation manager calls it), so the tests reach it the
- * way the sibling node specs reach private members: a narrowing cast.
+ * way the sibling node specs reach private members: a narrowing cast. It is handed the host
+ * strand as the formation session resolved it, so each case reads the published row first.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { CadreNode } from '../src/cadre-node.js';
 import type { StrandMembershipInvite } from '../src/types.js';
+import type { BoundHostStrand } from '../src/strand-solicitation.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import { PreSplitStrandIdentityError } from '../src/strand-membership-writer.js';
@@ -32,11 +33,19 @@ import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 
 const rand = (): string => Math.random().toString(36).slice(2);
 
-/** The private responder-side issuer, as the formation manager's wired hook calls it. */
-function issue(node: CadreNode, strandId: string): Promise<StrandMembershipInvite | null> {
-  return (node as unknown as {
-    issueStrandMembershipInvite(id: string): Promise<StrandMembershipInvite | null>;
-  }).issueStrandMembershipInvite(strandId);
+/** The private responder-side issuer, called with the published row as `resolveStrand` reports it. */
+async function issue(node: CadreNode, strandId: string): Promise<StrandMembershipInvite | null> {
+  const row = await node.getControlDatabase()!.queryStrandWithStamp(strandId);
+  expect(row).not.toBeNull();
+  const host: BoundHostStrand = {
+    strandId,
+    strandType: row!.Type,
+    strandStampId: row!.StampId,
+    memberPrivateKey: row!.MemberPrivateKey,
+  };
+  return await (node as unknown as {
+    issueStrandMembershipInvite(host: BoundHostStrand): Promise<StrandMembershipInvite | null>;
+  }).issueStrandMembershipInvite(host);
 }
 
 describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
@@ -63,11 +72,6 @@ describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
     await node.publishStrand(strandId, 'o');
 
     expect(await issue(node, strandId)).toBeNull();
-  }, 30_000);
-
-  it('Strand row gone (concurrent unpublish) → throws', async () => {
-    await expect(issue(node, 'strand-never-published-' + rand()))
-      .rejects.toThrow(/Strand row is gone/);
   }, 30_000);
 
   it('closed strand whose party identity is missing → throws naming StrandPartyKey', async () => {

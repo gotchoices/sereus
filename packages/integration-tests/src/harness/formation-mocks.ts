@@ -26,7 +26,8 @@ export function createMockProvisioner(prefix: string): StrandProvisioner {
  * In-memory usage recorder that tracks tokens. The returned object exposes its two
  * backing collections directly — callers seed `knownTokens` to make a token valid and
  * read `usedTokens` to assert on redemption — so the intersection return type is part
- * of the contract, not an implementation detail.
+ * of the contract, not an implementation detail. Every known token reads as a single-use,
+ * never-expiring, unbound invite with no approval hook.
  */
 export function createMockUsageRecorder(): FormationUsageRecorder & {
 	knownTokens: Set<string>;
@@ -41,9 +42,12 @@ export function createMockUsageRecorder(): FormationUsageRecorder & {
 		recordUsage: async ({ token, peerKey, strandId }) => {
 			usedTokens.set(token, { peerKey, strandId });
 		},
-		isTokenUsed: async (token) => usedTokens.has(token),
-		isTokenValid: async (token) => ({
-			valid: knownTokens.has(token),
-		}),
+		readToken: async (token) => knownTokens.has(token)
+			? {
+				token,
+				invite: { sAppId: '', expiresAtMs: null, totalUses: 1, strandId: null, validationUrl: null },
+				usesRecorded: usedTokens.has(token) ? 1 : 0,
+			}
+			: { token, invite: null, usesRecorded: null },
 	};
 }

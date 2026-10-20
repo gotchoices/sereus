@@ -32,6 +32,7 @@ import { StrandSolicitationService, type FormationUsageRecorder } from '../src/s
 import type { FormStrandResult, OpenInvitation, StrandMembershipInvite } from '../src/types.js';
 import { strandMemberKeyPair } from '../src/strand-member-key.js';
 import { startSelfOwnerNode } from './self-owner-node-helpers.js';
+import { inviteFacts } from './formation-token-helpers.js';
 
 const rand = (): string => Math.random().toString(36).slice(2);
 
@@ -156,11 +157,10 @@ describe('CadreNode.initializeStrandSolicitation on a started node', () => {
       // unknown: an approval proves the custom recorder answered.
       const checkedTokens: string[] = [];
       const recorder: FormationUsageRecorder = {
-        isTokenValid: async (token) => {
+        readToken: async (token) => {
           checkedTokens.push(token);
-          return { valid: true };
+          return { token, invite: inviteFacts(), usesRecorded: null };
         },
-        isTokenUsed: async () => false,
         recordUsage: async () => {}
       };
       const strandId = 'strand-replaced-' + rand();

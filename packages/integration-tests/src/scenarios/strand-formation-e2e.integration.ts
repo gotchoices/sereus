@@ -23,6 +23,7 @@ import {
 	CadreNode,
 	StrandSolicitationService,
 	ControlFormationUsageRecorder,
+	isTokenReadSpent,
 	verifyFormationConsent,
 	ed25519PublicKeyB64FromPeerId,
 	ed25519PublicKeyFromPrivate,
@@ -295,7 +296,7 @@ describe('E2E Strand Formation', () => {
 			);
 
 			// Assert: token is now marked as used
-			expect(await mockRecorder.isTokenUsed(invitation.token)).toBe(true);
+			expect(isTokenReadSpent(await mockRecorder.readToken(invitation.token))).toBe(true);
 
 			// Second attempt with same token should be rejected
 			await expect(
@@ -1311,8 +1312,9 @@ describe('E2E Strand Formation', () => {
 				// reordering of the recorder's pre-checks moves that check earlier, these cases fail on
 				// a changed reason string instead of quietly having failed for the wrong reason all along.
 				await enrollApprover(alice, hook.validationKey);
-				// A second recorder purely to READ: `isTokenUsed` is the predicate the responder itself
-				// consults on the next redemption, so asserting it is asserting the seat, not a proxy.
+				// A second recorder purely to READ: `readToken` is the read the responder itself takes on
+				// the next redemption, and `isTokenReadSpent` its seat test, so asserting it is asserting
+				// the seat, not a proxy.
 				const recorder = new ControlFormationUsageRecorder(alice.controlDatabase);
 				const bobService = joinerService(bob);
 
@@ -1337,7 +1339,7 @@ describe('E2E Strand Formation', () => {
 				// Arm A cannot prove the seat by re-redeeming the way (ii) does: the dead `ValidationUrl`
 				// is inside the owner-signed `FormationInvite` row and cannot be repointed at a live hook
 				// afterwards. So it asserts the predicate directly, and arm B carries the re-redemption.
-				expect(await recorder.isTokenUsed(deadToken)).toBe(false);
+				expect(isTokenReadSpent(await recorder.readToken(deadToken))).toBe(false);
 
 				// ── Arm B: the hook answered, badly ────────────────────────────────────────────
 				// HTTP 503 is the same `unavailable` category by a different route (a non-2xx status,
@@ -1396,7 +1398,7 @@ describe('E2E Strand Formation', () => {
 				// The URL parsed fine and was rejected on its scheme, before any request went out.
 				expect(hook.requestCount).toBe(0);
 				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
-				expect(await recorder.isTokenUsed(token)).toBe(false);
+				expect(isTokenReadSpent(await recorder.readToken(token))).toBe(false);
 
 				await aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {
@@ -1675,10 +1677,9 @@ describe('E2E Strand Formation', () => {
 					await inner.recordUsage(params);
 					observedAbort = await waitForAbort(params.signal, ABORT_WAIT_CAP_MS);
 				},
-				isTokenUsed: (token) => inner.isTokenUsed(token),
-				isTokenValid: (token) => inner.isTokenValid(token),
-				resolveStrand: (token) => inner.resolveStrand(token),
-				provisionAndRecord: (params) => inner.provisionAndRecord(params),
+				readToken: (token) => inner.readToken(token),
+				resolveStrand: (read) => inner.resolveStrand(read),
+				provisionAndRecord: (params, read) => inner.provisionAndRecord(params, read),
 				hasOutstandingInvitation: () => inner.hasOutstandingInvitation(),
 			};
 

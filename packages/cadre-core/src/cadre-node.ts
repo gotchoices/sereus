@@ -171,6 +171,7 @@ import { claimSecretTrustPolicy, type SeedTrustPolicy } from './seed-trust-polic
 import { ClaimRefusedError, claimProof, parseClaimSecret } from './claim-proof.js';
 import {
   StrandSolicitationService,
+  type BoundHostStrand,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
 import { ControlFormationUsageRecorder } from './control-formation-recorder.js';
@@ -6738,8 +6739,8 @@ export class CadreNode implements SAppIdLookup {
    * Counterpart to {@link createOpenInvitation}, which only mints the
    * out-of-band {@link OpenInvitation} envelope: persisting the matching
    * `FormationInvite` row is what makes the token *redeemable* — the host's
-   * {@link ControlFormationUsageRecorder} answers `isTokenValid`/`isTokenUsed`
-   * from this row. A host minting a closed-strand invite does both (mint +
+   * {@link ControlFormationUsageRecorder} reads it (`readToken`) to check a
+   * redemption. A host minting a closed-strand invite does both (mint +
    * publish), exactly as the integration harness's `createInvitation` does.
    *
    * Signs through the same owner signer as {@link publishStrand}, whose key must be an
@@ -10299,8 +10300,7 @@ export class CadreNode implements SAppIdLookup {
       // Overridden on the same grounds: only this node holds the running strand
       // instance's database and this party's `StrandPartyKey` identity, and a wrong
       // issuer here would admit joiners under someone else's authority.
-      issueMembershipInvite: (strandId: string, signal?: AbortSignal) =>
-        this.issueStrandMembershipInvite(strandId, signal)
+      issueMembershipInvite: (host, signal) => this.issueStrandMembershipInvite(host, signal)
     });
 
     const previous = this.strandSolicitationService;
@@ -10778,6 +10778,10 @@ export class CadreNode implements SAppIdLookup {
    * implements): mint a single-use `Strand.Invite` against the LIVE host strand so a
    * validated joiner can seat its own `Strand.Member` row.
    *
+   * `host` is the strand as the formation session resolved it from its `Strand` row, read
+   * once there; this method reads no `Strand` row of its own. A row removed in between is
+   * refused when the consent row is written (the `StrandExists` CHECK).
+   *
    * - Open host strand → `null` (no members, nothing to invite into).
    * - Closed host strand whose founder launch was refused as pre-split
    *   ({@link strandLaunchRefusals}) → rethrow the recorded `PreSplitStrandIdentityError`;
@@ -10826,19 +10830,14 @@ export class CadreNode implements SAppIdLookup {
    * not a retry.
    */
   private async issueStrandMembershipInvite(
-    strandId: string,
+    host: BoundHostStrand,
     signal?: AbortSignal
   ): Promise<StrandMembershipInvite | null> {
+    const { strandId } = host;
     if (!this.controlDatabase) {
       throw new Error(`Cannot issue a membership invitation for strand ${strandId}: control database unavailable`);
     }
-    const row = await this.controlDatabase.queryStrand(strandId);
-    if (!row) {
-      // The bound resolution saw this row moments ago; a vanished row is a concurrent
-      // unpublish — reject rather than invite into a strand this party just removed.
-      throw new Error(`Cannot issue a membership invitation for strand ${strandId}: its Strand row is gone`);
-    }
-    if (row.Type !== 'c') {
+    if (host.strandType !== 'c') {
       return null;
     }
     const refusal = this.strandLaunchRefusals.get(strandId);
@@ -10860,8 +10859,8 @@ export class CadreNode implements SAppIdLookup {
         'not live on this responder (not launched, or still starting)'
       );
     }
-    if (row.MemberPrivateKey) {
-      await assertNotPreSplitStrand(db, strandId, strandMemberKeyPair(row.MemberPrivateKey).publicKeyB64);
+    if (host.memberPrivateKey) {
+      await assertNotPreSplitStrand(db, strandId, strandMemberKeyPair(host.memberPrivateKey).publicKeyB64);
     }
     if (signal?.aborted) {
       throw new Error(
