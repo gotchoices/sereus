@@ -70,21 +70,23 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 	it('B automatically dials C once C\'s record replicates through A', async () => {
 		const handles: ControlTrioHandles = {};
 		try {
-			// Short cadence so the recurring reconcile fires several times inside the
-			// window; nothing else in this test drives a pass.
+			// A 2 s backstop, which also caps the redial ladder, so B runs passes of
+			// its own throughout the window: the pass C's replicated record starts,
+			// the redial each denied dial arms, and the backstop. Nothing in this test
+			// calls a pass.
 			const { B, C, cPeerId, dialsToC } = await bootControlTrio({ reconcileMsB: 2_000, handles });
-			// B's gate denies C outside the passes `dialsToC` runs, and the trigger
-			// under test is B's own timer. Route B's own reconcile triggers (the
-			// timer, and `self:peer:update`) through `dialsToC.reconcile`, which
+			// B's gate denies C outside the passes `dialsToC` runs, and the triggers
+			// under test are B's own. Route them all (a membership change, a redial,
+			// the backstop, `self:peer:update`) through `dialsToC.reconcile`, which
 			// opens the gate for exactly each pass and records it.
 			B.reconcileControlCohort = () => dialsToC.reconcile();
 
-			// THE ASSERTION. A pass on B's timer opens B→C (B is the only side that
-			// can dial), and it is that pass's own dial: the pass holding the live
-			// connection is one that reported dialling C.
+			// THE ASSERTION. A pass B starts on its own opens B→C (B is the only side
+			// that can dial), and it is that pass's own dial: the pass holding the
+			// live connection is one that reported dialling C.
 			await waitUntil(
 				() => dialsToC.openingPass() !== undefined,
-				{ timeoutMs: 60_000, intervalMs: 250, description: "a reconcile pass on B's timer dials C, and B still holds that outbound connection" }
+				{ timeoutMs: 60_000, intervalMs: 250, description: "a reconcile pass B starts on its own dials C, and B still holds that outbound connection" }
 			);
 			expect(dialsToC.openingPass()?.dialed).toContain(cPeerId);
 
@@ -121,9 +123,11 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 	it('is load-bearing: without a reconcile pass B never reaches C, and one pass forms the link', async () => {
 		const handles: ControlTrioHandles = {};
 		try {
-			// `reconcileMs` is read once when the refresh timers are wired, so it
-			// cannot be changed mid-test — hence a second boot. 10 minutes means the
-			// recurring timer provably never fires inside this test.
+			// `reconcileMs` is read once when the reconcile schedule is built, so it
+			// cannot be changed mid-test — hence a second boot. 10 minutes means no
+			// backstop pass inside this test; the passes B starts on its own (C's
+			// record replicating in, the redials its denied dials arm) run with every
+			// dial to C denied, so none of them can form the link.
 			const { B, cPeerId, dialsToC } = await bootControlTrio({ reconcileMsB: 600_000, handles });
 
 			// ── Negative window. For ~5s: B can RESOLVE C (the record is there) but
@@ -135,8 +139,8 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 			//    header, B'S DIAL GATE).
 			//
 			// NOTE: a failure here means a dial got past B's gate — including one
-			// from a reconcile pass the test did not run (a `self:peer:update`-
-			// triggered pass, say), which the gate denies as well. Log dial stacks
+			// from a pass B started on its own (C's record replicating in, a redial,
+			// `self:peer:update`), which the gate denies as well. Log dial stacks
 			// in `gateB`'s hooks to find the opener.
 			let checkpoints = 0;
 			let resolvedCheckpoints = 0;

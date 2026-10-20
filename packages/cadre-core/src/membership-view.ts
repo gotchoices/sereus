@@ -12,11 +12,13 @@ import { DEFAULT_CONTROL_COHORT_RECONCILE_MS } from './control-cohort.js';
  * How long installed rows are served before the next read reloads them, change or no change.
  * The reload is the only path for a change that reaches this node with no storage event.
  *
- * NOTE: two cases depend on this bound: a machine outside the block's cohort (a cadre larger
- * than its replication breadth), and a machine that was offline when a sibling committed and
- * has not re-read the block since. Both were bounded by the reconcile pass's re-read before the
- * view existed, so this follows the default reconcile interval; lengthening that interval
- * lengthens this too, which the reconcile pass's own change decides.
+ * NOTE: one case depends on this bound: a machine outside the block's cohort (a cadre larger
+ * than its replication breadth), whose storage takes no event for a change there. A machine
+ * that was offline when a sibling committed is covered without it: `CadreNode` drops every view
+ * when a control connection to a sibling opens (`ControlDatabase.invalidateMembershipViews`),
+ * so the pass that connection starts reads storage. The bound follows the reconcile pass's
+ * backstop, which bounds the same case for the membership gate; a party that large and in need
+ * of a tighter bound lowers `network.controlCohort.reconcileMs`, which does not lower this.
  */
 export const MEMBERSHIP_VIEW_MAX_AGE_MS = DEFAULT_CONTROL_COHORT_RECONCILE_MS;
 

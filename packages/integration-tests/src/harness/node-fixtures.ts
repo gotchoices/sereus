@@ -302,8 +302,10 @@ export async function makeOwnOwner(node: CadreNode, label?: string, ownerKey: Te
 }
 
 /**
- * The control-cohort reconcile cadence of {@link buildPhoneOwner}'s node: the pass that dials
- * its retained dial targets, so it is what drives a reconnect after the node it dials restarts.
+ * The control-cohort reconcile backstop of {@link buildPhoneOwner}'s node, which also caps its
+ * redial ladder: the pass that dials its retained dial targets, so it bounds how soon the phone
+ * reconnects after the node it dials restarts (the restart's `connection:close` starts a pass
+ * at once; a dial that fails is retried this much later).
  */
 const PHONE_RECONCILE_MS = 2_000;
 

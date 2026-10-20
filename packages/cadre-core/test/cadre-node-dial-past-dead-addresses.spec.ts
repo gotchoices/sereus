@@ -14,7 +14,7 @@ import { startSilentServer, type SilentServer } from './silent-server.js';
 
 /**
  * A phone-shaped owner reaches a node whose address list starts with addresses that
- * never answer: on the reconcile pass after adding it as a drone, and when claiming it.
+ * never answer: on the reconcile pass that adding it as a drone starts, and when claiming it.
  *
  * The shape of a phone borrowing or claiming a node from a cadre-host: the phone cannot
  * listen, so it must dial, and the addresses it was handed are the only ones it has. The
@@ -46,7 +46,7 @@ const PER_PEER_MS = 5_000;
 const SLACK_MS = 2_000;
 
 describe('CadreNode — adding a drone whose first addresses never answer', () => {
-	it('connects on one reconcile pass, past two silent addresses, with no other dial', async () => {
+	it('connects on the reconcile pass the add starts, past two silent addresses, with no other dial', async () => {
 		const drone = await createLibp2p({
 			addresses: { listen: ['/ip4/127.0.0.1/tcp/0/ws'] },
 			transports: [webSockets()],
@@ -62,21 +62,24 @@ describe('CadreNode — adding a drone whose first addresses never answer', () =
 			const dronePeerId = drone.peerId.toString();
 			const droneWs = drone.getMultiaddrs().map((addr) => addr.toString()).find((addr) => addr.includes('/ws'));
 			expect(droneWs).toBeDefined();
+			const addStarted = Date.now();
 			await owner.node.addDrone({
 				dronePeerId,
 				droneMultiaddrs: [...silent.map((server) => server.wsAddr), droneWs!],
 			});
+			const addMs = Date.now() - addStarted;
+			// Nothing is dialed inside addDrone; the drone's row change starts the pass that
+			// dials, about 50 ms later, and a pass joined mid-flight (the one start() kicks)
+			// would have listed siblings before the add. Waiting for the connection, rather
+			// than running a pass here, measures the pass the add itself earns.
 			expect(connectionsTo(owner.node, dronePeerId)).toEqual([]);
-
 			const started = Date.now();
-			await owner.node.reconcileControlCohort();
+			await waitForOutboundConnection(owner.node, dronePeerId, 2 * PER_ADDRESS_MS + SLACK_MS);
 			const elapsed = Date.now() - started;
-			console.log(`dial-past-dead: reconcile pass past two silent addresses took ${elapsed} ms`);
+			console.log(`dial-past-dead: addDrone took ${addMs} ms; its reconcile pass connected past two silent addresses ${elapsed} ms after it returned`);
 
-			const connections = connectionsTo(owner.node, dronePeerId);
-			expect(connections.some((c) => c.status === 'open' && c.direction === 'outbound')).toBe(true);
 			// Both silent addresses were really tried first, each for its own limit —
-			// and the whole pass came in far under the per-peer limit a single dial
+			// and the connection came in far under the per-peer limit a single dial
 			// over the list would have spent on the first of them.
 			expect(silent.map((server) => server.accepted() > 0)).toEqual([true, true]);
 			expect(elapsed).toBeGreaterThanOrEqual(2 * PER_ADDRESS_MS - 50);
@@ -174,7 +177,9 @@ async function buildPhoneOwner(): Promise<PhoneOwner> {
 			controlCohort: {
 				perAddressDialTimeoutMs: PER_ADDRESS_MS,
 				dialTimeoutMs: PER_PEER_MS,
-				// Only the passes a test runs; no timed pass may dial in between.
+				// No backstop pass inside a test: the passes that dial here are the ones a
+				// membership change starts (addDrone, claimNode) and the ones a test runs.
+				// A dial those passes leave unconnected is retried 15 s later, past every case.
 				reconcileMs: 3_600_000,
 			},
 		},
@@ -201,4 +206,15 @@ async function startAsOwnOwner(owner: PhoneOwner): Promise<void> {
 
 function connectionsTo(node: CadreNode, peerId: string): ReturnType<Libp2p['getConnections']> {
 	return (node.getControlNode()?.getConnections() ?? []).filter((c) => c.remotePeer.toString() === peerId);
+}
+
+/** Resolve once `node` holds an open outbound control connection to `peerId`; reject after `timeoutMs`. */
+async function waitForOutboundConnection(node: CadreNode, peerId: string, timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!connectionsTo(node, peerId).some((c) => c.status === 'open' && c.direction === 'outbound')) {
+		if (Date.now() > deadline) {
+			throw new Error(`no outbound control connection to ${peerId} within ${timeoutMs} ms`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
 }

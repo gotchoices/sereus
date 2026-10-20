@@ -30,8 +30,10 @@
  *
  * 1. ORDERING IS MEASURED. At the first check the join is recorded on the phone only, the
  *    party-wide row does not exist, and the always-on machine runs no instance — all read,
- *    not narrated. The phone's reconcile timer is parked for the same reason: publication
- *    happens when this test calls `reconcileControlCohort`, not when a timer fires.
+ *    not narrated. The phone's reconcile backstop is parked for the same reason: publication
+ *    happens when this test calls `reconcileControlCohort`, not when a backstop pass runs.
+ *    Recording the join starts no pass, and neither does the formation connection to the
+ *    host, another party's machine.
  *
  * 2. NO TEST-SIDE STRAND DIAL. The phone reaches the host's strand node from the addresses
  *    the formation result carried; the always-on machine reaches the phone's from the
@@ -86,7 +88,7 @@ const YEAR_MS = 365 * 24 * 3600_000;
 /** Watcher poll cadence on every node. */
 const STRAND_WATCH_MS = 1_000;
 
-/** Longer than the test, so the phone's recurring reconcile never publishes on its own. */
+/** Longer than the test, so no backstop pass on the phone publishes on its own. */
 const PHONE_RECONCILE_PARKED_MS = 600_000;
 
 /** One shared budget for every converge wait (enrollment, mesh, launch, coverage, removal). */
@@ -240,9 +242,13 @@ describe('Always-on machine hosts a strand joined from another party', () => {
 			// Registering the formation handler at start changed the node's own protocols,
 			// which can start a reconcile pass that publishes the join before step 1 reads.
 			// Settled here instead.
-			// NOTE: any other `self:peer:update` on the phone's control node between here and
-			// step 1's reads (an address change) would publish early and fail step 1; none
-			// occurs on loopback. If step 1 flakes on "join recorded on the phone", look there.
+			// NOTE: a pass the phone starts on its own between here and step 1's reads would
+			// publish early and fail step 1: a `self:peer:update` on its control node (an
+			// address change), a membership change in its party, or a control connection to
+			// one of its own party's machines opening or closing (the always-on machine
+			// reconnecting). None occurs on loopback; the formation connection to the host
+			// (another party's machine) and the local join record start none. If step 1
+			// flakes on "join recorded on the phone", look there.
 			await freshReconcilePass(phone.node);
 
 			// ── Step 1: the phone joins; the join is recorded on the phone only ──

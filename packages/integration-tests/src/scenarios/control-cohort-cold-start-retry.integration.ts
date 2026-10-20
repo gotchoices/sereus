@@ -112,8 +112,9 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			const aPeerId = aPeer.toString();
 
 			// B: a client-only reader (listens on nothing, so only B can start a
-			// connection) with a short reconcile cadence, so the cold-start branch
-			// fires several times inside the convergence window.
+			// connection) with a short reconcile backstop, which also caps the redial
+			// ladder a failed cold-start dial climbs, so the cold-start branch runs
+			// several times inside the convergence window.
 			B = new CadreNode(controlNodeConfig({
 				partyId, privateKey: bKey, profile: 'transaction', listenAddrs: [], reconcileMs: 2_000
 			}));

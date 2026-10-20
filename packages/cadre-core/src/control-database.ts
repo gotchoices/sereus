@@ -1387,8 +1387,15 @@ export class ControlDatabase {
     });
   }
 
-  /** Empty every membership view, so the next read of each loads afresh and no load in flight installs. */
-  private invalidateMembershipViews(): void {
+  /**
+   * Empty every membership view, so the next read of each loads afresh and no load in
+   * flight installs. Besides {@link initialize} and {@link close}, `CadreNode` calls it when
+   * a control connection to a sibling opens: a machine that was offline while that sibling
+   * committed learns of the commit only when it next reads the block from storage, and
+   * dropping the views makes the pass that connection starts read now rather than after
+   * `MEMBERSHIP_VIEW_MAX_AGE_MS`.
+   */
+  invalidateMembershipViews(): void {
     for (const view of this.membershipViews.values()) {
       view.invalidate();
     }
@@ -3630,7 +3637,7 @@ export class ControlDatabase {
    * the ledger marker) a single scan per pass, served from the `Revocation` membership view
    * ({@link readMembershipRows}) unless the table changed since the last read.
    * But `Revocation` is append-only and unbounded, so this is O(all tombstones ever) point
-   * lookups on every reconcile tick. Fine while revocations stay rare for a cadre-sized
+   * lookups on every connected reconcile pass. Fine while revocations stay rare for a cadre-sized
    * party; if the table ever grows, persist a node-local high-water mark of what has
    * already been reaped instead of re-scanning everything (the same bound the sweep in
    * `CadreNode.drainPendingRevocations` wants).
@@ -3868,8 +3875,10 @@ export class ControlDatabase {
    * never keep receiving notifications for a database it no longer owns.
    *
    * Only this database's own writes notify here, awaited inside the write so the gate is
-   * current before the write returns; a membership change replicated in from another
-   * machine reaches the gate through the control-cohort reconcile pass, which refreshes it.
+   * current before the write returns. A membership change replicated in from another
+   * machine reaches the gate through the subscription `CadreNode.start` takes on the
+   * membership tables ({@link watchTables}), a coalesced run up to 50 ms after the change
+   * lands in storage; one storage never hears of waits for the reconcile pass's backstop.
    */
   setMembershipChangeListener(listener: MembershipChangeListener | null): void {
     this.membershipListener = listener;

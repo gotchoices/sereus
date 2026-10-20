@@ -448,8 +448,9 @@ export class JoinedStrandSession {
 	}
 
 	// NOTE: a sibling that joined the same strand and has not yet published publishes it after
-	// a leave, bringing the strand back party-wide. Needs two devices joining one strand within
-	// a reconcile interval of the leave; if it is ever seen, check the strand's `Revocation`
+	// a leave, bringing the strand back party-wide. Needs a second device to have joined the
+	// strand and not yet run a connected reconcile pass when the leave lands (a join starts no
+	// pass, so up to the 2-minute backstop); if it is ever seen, check the strand's `Revocation`
 	// tombstone before publishing.
 	private async publish(record: JoinedStrandRecord): Promise<void> {
 		try {

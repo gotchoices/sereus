@@ -57,7 +57,9 @@ import {
  * **Background work is taken out of the phases, not budgeted around.** See
  * {@link settleStart}: the self-registration timer and the pending-join retry loop are
  * disarmed, and the two reads `start()` leaves running are awaited and charged to the cold
- * phase, since every start pays them.
+ * phase, since every start pays them. The one background reader left is the membership gate
+ * watch, which refreshes the gate 50 ms after a membership table changes; the two phases that
+ * write such a table wait for it ({@link settleGateWatch}) and are charged its reads.
  *
  * **Timing.** Missing-block consults do not depend on time; held-block consults do. The
  * whole run measured under 1 s (the per-call reads began 843–864 ms in, over three runs on
@@ -95,8 +97,14 @@ const PER_CALL_READS = 6;
 /** Only for {@link settleStart}'s fallback: consult activity must stop for this long. */
 const QUIET_MS = 300;
 
-/** The strand watcher's backstop and the reconcile interval, pushed past any run. */
+/** The strand watcher's backstop and the reconcile pass's backstop, pushed past any run. */
 const IDLE_TIMER_MS = 3_600_000;
+
+/**
+ * Twice the gate watch's coalescing window (`TABLE_CHANGE_COALESCE_MS`, 50 ms): long enough
+ * for the refresh a membership write earns to have started.
+ */
+const GATE_WATCH_SETTLE_MS = 100;
 
 /**
  * The measured figures, and the budgets sitting modestly above them.
@@ -187,8 +195,27 @@ const MEASURED_ON = '2026-10-20';
  * Re-measured whole at `b7d70516` on 2026-10-20, three runs identical: only `foundStrand`'s
  * strand side moved, from this side (`strand-founding-writes-batched`, see {@link FOUNDING_STRAND});
  * every other figure equals the `009bbee0` measurement.
+ *
+ * Re-measured whole at `de8cbb54` on 2026-10-20, later the same day, three runs identical
+ * (`control-reconcile-woken-by-changes-reads-once`): genesis 20 → 24 consults over 19 → 23
+ * blocks and `foundStrand`'s control side 4 → 1 over 4 → 1; nothing else moved. Three causes,
+ * split by measuring once more with the gate watch not taken:
+ *  - the gate watch `CadreNode.start` now takes on the membership tables refreshes the gate
+ *    50 ms after genesis's `OwnerKey` insert, and that refresh loads the three membership views
+ *    (the refresh the membership listener runs inside the write reads through the committed-read
+ *    path and keeps nothing), so the first consult of two tree blocks that `foundStrand`'s
+ *    membership reads used to pay is paid at genesis: +2 / −2;
+ *  - the spec now waits for that refresh inside the genesis phase ({@link settleGateWatch}), and
+ *    the strand watcher's run after genesis's empty `Strand` / `JoinedStrand` commits lands
+ *    inside that wait instead of inside `foundStrand`: +1 / −1;
+ *  - one tree block more is consulted once at genesis with the gate watch not taken too (22 over
+ *    21 then, against the 20 over 19 recorded), so it is not that ticket's. Unattributed; the
+ *    one cadre-core change between the two measurements is
+ *    `control-invitation-and-grant-chains-cached-until-changed`.
+ * The optimystic tree carried an uncommitted edit to `coordinator-repo.ts` whose `dist` was
+ * built before it; the stale-build guard refused every run after these three.
  */
-const BASELINE_UPSTREAM = 'optimystic b7d70516';
+const BASELINE_UPSTREAM = 'optimystic de8cbb54';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
@@ -213,22 +240,27 @@ const BASELINE_UPSTREAM = 'optimystic b7d70516';
  */
 const COLD: Budget = { consults: 41, blocks: 33, commits: 1, consultBudget: 45, blockBudget: 36, commitBudget: 2 };
 /**
- * Genesis: `ensureOwnerKey` on the fresh party, then wiring the owner signer (no read). 20
- * consults over 19 blocks, 34 commits: each of the 17 control tables' main block ×1,
- * `OwnerKey`'s once more, and 1 each on two tree blocks. The 34 commits are the 32 empty
- * collections genesis commits (17 tables, 3 indexes, 12 unique stamp trees) and the owner key
- * insert's 2. History: 14 over 3 blocks in the motivating trace and on 2026-09-15 (`OwnerKey`
- * ×6, its stamp index ×6, the never-written `Revocation` ×2), exactly halved to 7 (×3, ×3, ×1)
- * at optimystic `03ffadc4`, then 3 with 2 commits at `8a0b48c7` — the insert's commit touches
- * both `OwnerKey` trees and no longer refreshes them twice before flushing — then 20 with 34
- * commits once genesis committed every control table's collection
- * (`control-collections-created-at-cadre-founding`).
+ * Genesis: `ensureOwnerKey` on the fresh party, wiring the owner signer (no read), then the
+ * membership gate refresh the insert earns ({@link settleGateWatch}). 24 consults over 23
+ * blocks, 34 commits: each of the 17 control tables' main block ×1, `OwnerKey`'s once more,
+ * and 1 each on six tree blocks — the insert's two, two the gate refresh's view loads read
+ * first, one the strand watcher's run reads, and one unattributed (see
+ * {@link BASELINE_UPSTREAM}). The 34 commits are the 32 empty collections genesis commits (17
+ * tables, 3 indexes, 12 unique stamp trees) and the owner key insert's 2. History: 14 over 3
+ * blocks in the motivating trace and on 2026-09-15 (`OwnerKey` ×6, its stamp index ×6, the
+ * never-written `Revocation` ×2), exactly halved to 7 (×3, ×3, ×1) at optimystic `03ffadc4`,
+ * then 3 with 2 commits at `8a0b48c7` — the insert's commit touches both `OwnerKey` trees and
+ * no longer refreshes them twice before flushing — then 20 with 34 commits once genesis
+ * committed every control table's collection (`control-collections-created-at-cadre-founding`),
+ * then 24 once the gate watch's refresh and the strand watcher's run were settled inside this
+ * phase (`control-reconcile-woken-by-changes-reads-once`).
  */
-const GENESIS: Budget = { consults: 20, blocks: 19, commits: 34, consultBudget: 23, blockBudget: 21, commitBudget: 35 };
+const GENESIS: Budget = { consults: 24, blocks: 23, commits: 34, consultBudget: 27, blockBudget: 25, commitBudget: 35 };
 /**
- * `foundStrand`, control network side: the `Strand` row published. 4 consults over 4
- * blocks, 3 commits: 1 each on four tree blocks, none on a table's main block, since genesis
- * committed every control table's collection. History: 25 over 6 blocks on 2026-09-15 (×8,
+ * `foundStrand`, control network side: the `Strand` row published. 1 consult over 1 block,
+ * 3 commits: one tree block of the publish's own commit, none on a table's main block, since
+ * genesis committed every control table's collection, and none for its membership reads, whose
+ * views the gate watch's refresh loaded at genesis. History: 25 over 6 blocks on 2026-09-15 (×8,
  * ×6, ×4, ×4, ×2, ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId`
  * index ×3, `MemberPrivateKey` index ×2), 7 over 5 at `8a0b48c7`: the publish's commit
  * touches all three `Strand` trees and no longer refreshes each twice before flushing, which
@@ -236,15 +268,17 @@ const GENESIS: Budget = { consults: 20, blocks: 19, commits: 34, consultBudget: 
  * `Revocation` (2026-10-07): `Strand` ×2, its `StampId` index ×1, the never-written
  * `Revocation` ×3 (the publish's `NotRevoked`, the live-owner clause on its owner lookup, and
  * the membership read beside `CadrePeer` ×1) and a tree block ×1; then 4 over 4 on 2026-10-20
- * (three causes, see {@link BASELINE_UPSTREAM}). Control and strand together now sum to 33
- * consults and 17 commits, against 34 and 18 before the founder's strand rows landed in one
+ * (three causes, see {@link BASELINE_UPSTREAM}), then 1 over 1 later that day once the gate
+ * watch's refresh at genesis loaded the views (`control-reconcile-woken-by-changes-reads-once`).
+ * Control and strand together now sum to 30 consults and 17 commits, against 33 and 17 before
+ * that, 34 and 18 before the founder's strand rows landed in one
  * transaction (`strand-founding-writes-batched`), 38 and 18 before genesis committed the control collections,
  * 29 and 6 before the founder committed every declared table's collection (see
  * {@link FOUNDING_STRAND}), 28 and 6 before the live-owner clause, 28 and 12 at `8a0b48c7`, 34
  * and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47 and 12 in the trace taken before
  * upstream removed the absence memo.
  */
-const FOUNDING_CONTROL: Budget = { consults: 4, blocks: 4, commits: 3, consultBudget: 5, blockBudget: 6, commitBudget: 4 };
+const FOUNDING_CONTROL: Budget = { consults: 1, blocks: 1, commits: 3, consultBudget: 2, blockBudget: 2, commitBudget: 4 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
  * bootstrap. 29 consults over 15 blocks, 14 commits: the strand's schema catalog ×5,
@@ -377,8 +411,9 @@ async function waitForQuiet(counter: ConsultCounter): Promise<void> {
 
 /**
  * Take the background work `start()` leaves behind out of the later phases:
- *  - the 1 s self-registration timer (a `registerSelf` read, then a reconcile pass, then the
- *    reconcile interval and the 7.5-minute heartbeat) is disarmed, so none of it ever runs;
+ *  - the 1 s self-registration timer (a `registerSelf` read, then the reconcile schedule
+ *    with its eager pass and backstop, and the 7.5-minute heartbeat) is disarmed, so none of
+ *    it ever runs: every reconcile pass in this run is one the spec calls;
  *  - the pending-join retry loop is stopped: wiring the owner signer at genesis kicks a pass,
  *    which reads the never-written join tables at whatever phase it lands in;
  *  - the membership-gate seed `start()` launches without awaiting is awaited;
@@ -415,6 +450,19 @@ async function settleStart(node: CadreNode, counter: ConsultCounter): Promise<Fi
 	}
 	await within('strandWatcher.forcePoll() (first poll)', OP_TIMEOUT_MS, () => watcher!.forcePoll());
 	return 'run-by-spec';
+}
+
+/**
+ * Wait for the membership gate refresh a phase's membership-table write earns: the gate
+ * watch (`CadreNode.start`, on `MEMBERSHIP_GATE_TABLES`) runs it 50 ms after the commit, and
+ * it would otherwise land inside whatever phase is measured next. The reconcile schedule it
+ * would also trigger is never built here (the self-registration timer is disarmed), so the
+ * refresh is all it starts. Called inside the phase, so the refresh's reads are charged to
+ * the write that caused them; served from the membership rows view, they cost no consult.
+ */
+async function settleGateWatch(node: CadreNode): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, GATE_WATCH_SETTLE_MS));
+	await (node as unknown as CadreNodeInternals).membershipGateDrain;
 }
 
 /** Fails when a `CoordinatorRepo` this spec does not know about has consulted or committed. */
@@ -473,7 +521,7 @@ async function measurePerCall(
 
 /**
  * A solo `CadreNode` on in-memory storage, with the strand watcher's poll and the reconcile
- * interval pushed past any run. Not started.
+ * backstop pushed past any run. Not started.
  */
 function soloNode(): CadreNode {
 	return new CadreNode({
@@ -482,7 +530,7 @@ function soloNode(): CadreNode {
 			profile: 'transaction',
 			keyStore: new InMemoryKeyStore(),
 			storage: memoryStorageProvider(),
-			// Belt and braces: disarming self-registration already leaves the interval unarmed.
+			// Belt and braces: disarming self-registration already leaves the schedule unbuilt.
 			controlCohort: { reconcileMs: IDLE_TIMER_MS }
 		}),
 		strandWatchInterval: IDLE_TIMER_MS
@@ -510,6 +558,8 @@ async function measureFounding(counter: ConsultCounter): Promise<FoundingRun> {
 		const genesis = await measurePhase(counter, runStart, 'genesis', undefined, async () => {
 			expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(owner.publicKey))).toBe(true);
 			await within('useOwnerSigner() (genesis)', OP_TIMEOUT_MS, () => node.useOwnerSigner(owner));
+			// The `OwnerKey` insert is a membership-table change.
+			await settleGateWatch(node);
 		});
 
 		const strandId = `${SCOPE}-${Math.random().toString(36).slice(2)}`;
@@ -521,6 +571,9 @@ async function measureFounding(counter: ConsultCounter): Promise<FoundingRun> {
 			expect(founded).toBe(true);
 			// Strands run on the network transactor; a local one would consult nobody and read as a saving.
 			expect(instance.database!.getTransactor()).toBe('network');
+			// Founding writes no membership table, so this settles nothing; it keeps the per-call
+			// phases free of a refresh should founding ever write one.
+			await settleGateWatch(node);
 		});
 
 		// Empty: nothing is revoked, and self-registration, which would write this node's row, is disarmed.

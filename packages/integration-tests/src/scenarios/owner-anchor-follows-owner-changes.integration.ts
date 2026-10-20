@@ -41,10 +41,15 @@ import {
 const STARTUP_MS = 60_000;
 /** One row or tombstone crossing an already-open connection. */
 const OP_MS = 30_000;
-/** M's control-cohort reconcile interval, the timer that runs M's membership refresh (default 15 s). */
+/**
+ * M's control-cohort reconcile backstop (default 2 minutes). M's membership gate refreshes
+ * within 50 ms of a replicated row or tombstone reaching its storage; this bounds the case
+ * where no storage event does.
+ */
 const M_RECONCILE_MS = 2_000;
 /**
- * A row M already holds reaching M's anchor: one {@link M_RECONCILE_MS} interval plus that pass.
+ * A row M already holds reaching M's anchor: the gate refresh its arrival starts, or at most
+ * one {@link M_RECONCILE_MS} backstop plus that pass.
  * Measured at most 2.1 s per step over 16 runs, 8 of them in parallel.
  */
 const REFRESH_MS = 10_000;

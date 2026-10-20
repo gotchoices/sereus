@@ -9,9 +9,12 @@
  * closes exactly that gap with an ORDERING argument:
  *
  *  1. Boot the same A/B/C topology (B listens on nothing — nobody can ever
- *     dial B), with B's recurring reconcile timer at 10 minutes so it provably
- *     never fires in-test. B's harness dial gate denies every dial to C from
- *     B's start (see WHY THE NEGATIVE WINDOW CANNOT ACCIDENTALLY FORM B↔C).
+ *     dial B), with B's reconcile backstop at 10 minutes so no backstop pass
+ *     runs in-test. B still starts passes of its own — when C's record
+ *     replicates in, when the sever closes its connection to A, and on the
+ *     redial ladder those passes' denied dials arm — but B's harness dial gate
+ *     denies every dial to C from B's start (see WHY THE NEGATIVE WINDOW CANNOT
+ *     ACCIDENTALLY FORM B↔C), so only a pass run through `dialsToC` can reach C.
  *  2. Sever B from A: B's dial gate denies every future dial to A, then B
  *     hangs up. B now holds ZERO connections and stays that way unless B
  *     itself dials out.
@@ -170,8 +173,11 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 		let writePin: PinnedCoordinatorHandle | undefined;
 		let carryPin: PinnedCoordinatorHandle | undefined;
 		try {
-			// ── 1. Boot. reconcileMs 10 min: B's recurring reconcile timer provably
-			//       never fires inside this test; only explicit passes dial.
+			// ── 1. Boot. reconcileMs 10 min: no backstop pass inside this test. The
+			//       passes B starts on its own run with every dial to C (and, after
+			//       the sever, to A) denied, so only a pass run through `dialsToC`
+			//       can open a link; a pass the explicit call joins is recorded as
+			//       that call's, and passes are single-flight.
 			const { A, B, C, aPeerId, bPeerId, cPeerId, gateB, dialsToC } = await bootControlTrio({
 				reconcileMsB: 600_000, handles
 			});
@@ -247,10 +253,10 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			//
 			// NOTE: a connection count failing here means a dial got past B's gate,
 			// which denies both A and C for the whole window — including any dial a
-			// reconcile pass the test did not run would make (a
-			// `self:peer:update`-triggered pass, say). Log dial stacks in `gateB`'s
-			// hooks to find the opener; that is how FRET's departure announce was
-			// found (harness/control-trio.ts header).
+			// pass B started on its own would make (the sever's `connection:close`
+			// starts one, as do a membership change, a redial and `self:peer:update`).
+			// Log dial stacks in `gateB`'s hooks to find the opener; that is how
+			// FRET's departure announce was found (harness/control-trio.ts header).
 			let resolvedInWindow = 0;
 			let selfCoordBlockedInWindow = 0;
 			for (let checkpoint = 0; checkpoint < 16; checkpoint++) {

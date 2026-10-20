@@ -534,11 +534,12 @@ export {
 } from './push-fanout.js';
 
 // Control-cohort dial selection (backbone-preferential, bounded out-degree) +
-// the cadence/degree defaults the proactive reconcile routine reads.
+// the backstop, redial and degree defaults the proactive reconcile routine reads.
 export {
   selectControlCohortDials,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
+  CONTROL_COHORT_REDIAL_MS,
   type ControlCohortSelection,
   type ControlCohortReconcileResult
 } from './control-cohort.js';

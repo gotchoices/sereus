@@ -40,9 +40,13 @@ const STARTUP_MS = 60_000;
 const OP_MS = 30_000;
 /** How long FRET may take to evict a stopped, address-less peer from a member's cohort (its leave notice: about 1 s; see `cadre-invite-any-member`). */
 const COHORT_EVICTION_MS = 60_000;
-/** M's control-cohort reconcile interval, the timer that runs M's membership refresh (default 15 s). */
+/**
+ * M's control-cohort reconcile backstop (default 2 minutes). M's membership gate refreshes
+ * within 50 ms of a replicated row or tombstone reaching its storage; this bounds the case
+ * where no storage event does.
+ */
 const M_RECONCILE_MS = 2_000;
-/** A row or tombstone M already holds reaching M's anchor: one {@link M_RECONCILE_MS} interval plus that pass. */
+/** A row or tombstone M already holds reaching M's anchor: the gate refresh its arrival starts, or at most one {@link M_RECONCILE_MS} backstop plus that pass. */
 const REFRESH_MS = 10_000;
 
 describe('E2E backup owner grant redeemed while the issuing owner is offline', () => {

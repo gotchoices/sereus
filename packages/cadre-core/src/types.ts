@@ -579,8 +579,12 @@ export interface NetworkConfig {
      */
     targetDegree?: number;
     /**
-     * Recurring reconcile cadence in ms. Defaults to
-     * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS}.
+     * The reconcile pass's backstop in ms: a pass runs this long after the last one
+     * settled when nothing has started one sooner (a membership table change, a sibling
+     * connecting or disconnecting, an address change, a redial or strand-address wake).
+     * It also caps the redial ladder. Defaults to
+     * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS} (2 minutes), which the membership rows
+     * view's maximum age follows; this field does not change that age.
      */
     reconcileMs?: number;
     /**

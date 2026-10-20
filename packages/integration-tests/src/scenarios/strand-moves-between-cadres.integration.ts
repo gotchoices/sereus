@@ -81,8 +81,11 @@ const STRAND_WATCH_MS = 1_000;
  * `JoinedStrand` table. Parked, the join stays machine-local, the shape of a one-node party that
  * has not yet held a control connection; the published shape goes through the same export loop.
  *
- * NOTE: a `self:peer:update` on N's control node (an address change) also starts a pass; none
- * occurs on loopback after start. If step 1 fails on "B never publishes T", look there.
+ * NOTE: a pass N starts on its own would publish too: a `self:peer:update` on its control node
+ * (an address change), a membership change in B, or a control connection to one of B's own
+ * machines opening or closing. None occurs on loopback after start; the formation connection
+ * to P's node (another party's machine) and the local join record start none. If step 1 fails
+ * on "B never publishes T", look there.
  */
 const RECONCILE_PARKED_MS = 3_600_000;
 /** Bring-up, enrollment, cohort eviction, launches and replica coverage over loopback. */

@@ -172,9 +172,9 @@ export class PersistentEnrolledMachineStore implements EnrolledMachineStore {
 	 * Record the count: visible via {@link count} synchronously, then persisted.
 	 *
 	 * Writes are SKIPPED when the slot already holds this number, because the sole
-	 * caller runs on every committed membership write *and* every timed reconcile
-	 * pass — a party whose membership is stable would otherwise rewrite the same
-	 * integer forever. The skip is keyed off {@link persisted} rather than
+	 * caller runs on every membership refresh — each committed membership write, each
+	 * replicated membership change, and each reconcile pass down to its backstop — so a
+	 * party whose membership is stable would otherwise rewrite the same integer forever. The skip is keyed off {@link persisted} rather than
 	 * {@link current}, so a write that FAILED is retried by the next refresh instead
 	 * of being suppressed as "unchanged".
 	 */

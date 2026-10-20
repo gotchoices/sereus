@@ -8,8 +8,9 @@
  * stand-in). This scenario removes that scaffolding: a reader node B is given a
  * way to reach owner A only through the PRODUCTION cold-start path
  * (`applySeed`, which populates B's peerStore and dials the owner), and the
- * in-node `reconcileControlCohort` routine (eager pass + a short recurring
- * cadence configured below) keeps the control cohort connected. B then observes
+ * in-node `reconcileControlCohort` routine (eager pass, the passes a change
+ * starts, and a short backstop configured below) keeps the control cohort
+ * connected. B then observes
  * an owner-written `CadrePeer` row with ZERO manual control dials.
  *
  * Honesty note (for reviewers): A vouches B (`authorizePeer`) before minting the
@@ -24,8 +25,9 @@
  * siblings already in the converged `CadrePeer` table (see the ticket's "address
  * source priority"). What this test proves is that the node's OWN wiring carries
  * a production cold-start to convergence without test scaffolding, and that the
- * recurring reconcile maintains/re-establishes the cohort (it re-dials A every
- * `reconcileMs`). A scenario in which the reconcile dial is the SOLE load-bearing
+ * reconcile passes maintain/re-establish the cohort (a dropped connection to A
+ * starts a pass, and a failed dial is retried at most `reconcileMs` later). A
+ * scenario in which the reconcile dial is the SOLE load-bearing
  * connector requires a ≥3-node topology (B learning a sibling C via A, then
  * dialing C) — called out as a follow-up in the review handoff.
  */
@@ -51,8 +53,9 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 			const aPeerId = A.peerId!.toString();
 
-			// B: a plain reader (NOT its own owner) with a short reconcile cadence
-			// so the proactive routine fires several times within the convergence window.
+			// B: a plain reader (NOT its own owner) with a short reconcile backstop, which
+			// also caps its redial ladder, so the proactive routine runs several times
+			// within the convergence window.
 			const bKey = await generateKeyPair('Ed25519');
 			B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', reconcileMs: 2_000 }));
 			await B.start();

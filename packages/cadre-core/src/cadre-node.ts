@@ -739,19 +739,24 @@ export class CadreNode implements SAppIdLookup {
    * wait that ends in mutual denial (the upstream gate is fail-closed on
    * timeout, unlike the fail-open connection gater). Optimystic's predicate is
    * synchronous by contract. So the set is refreshed OUT OF BAND instead — after
-   * start, on every {@link reconcileControlCohort} pass (15s cadence), and
-   * immediately after every LOCAL membership mutation so a just-vouched peer
-   * is admitted without waiting for the timer. That last refresh is AUTOMATIC:
-   * the control database notifies {@link refreshMembershipGate} after every
+   * start, at the head of every {@link reconcileControlCohort} pass, whenever a
+   * membership table changes (the gate watch {@link start} takes on
+   * `MEMBERSHIP_GATE_TABLES`, which hears a local commit and a change replicated
+   * into this node's storage alike, within a 50 ms window), and immediately
+   * after every LOCAL membership mutation so a just-vouched peer is admitted
+   * before the writer's call returns. That last refresh is AUTOMATIC: the
+   * control database notifies {@link refreshMembershipGate} after every
    * committed `CadrePeer` write (see `ControlDatabase.mutateCadrePeer`), so no
-   * writer has to remember. A change that arrives by REPLICATION is picked up
-   * on the next timed refresh — bounded staleness, acceptable because this gate
-   * is defense in depth: rows an unadmitted peer manages to write are still
-   * disbelieved at read time by the voucher-anchored predicate. For cohort
-   * choice the same window means a member whose row arrived by replication is
-   * left out of this node's control-block cohorts until that refresh.
-   * Optimystic reads the predicate live on every lookup, so replacing this set
-   * is the whole re-evaluation; there is no per-peer reclassify call to make.
+   * writer has to remember. A change this node's storage never hears of — a
+   * machine outside the block's cohort on a party larger than the replication
+   * breadth — is picked up at the pass's 2-minute backstop: bounded staleness,
+   * acceptable because this gate is defense in depth: rows an unadmitted peer
+   * manages to write are still disbelieved at read time by the voucher-anchored
+   * predicate. For cohort choice the same window means a member whose row
+   * arrived by replication is left out of this node's control-block cohorts
+   * until that refresh. Optimystic reads the predicate live on every lookup, so
+   * replacing this set is the whole re-evaluation; there is no per-peer
+   * reclassify call to make.
    */
   private authorizedControlPeers: Set<string> = new Set();
 
@@ -815,9 +820,9 @@ export class CadreNode implements SAppIdLookup {
    * When this node last ANNOUNCED a delegate, keyed `<targetPeerId>\n<strandId>`
    * (the peer announced TO, not the delegate). Throttles
    * {@link refreshDelegateGrants} to once per `DELEGATE_GRANT_TTL_MS / 2` per
-   * (relay, strand) so the 15 s reconcile tick never becomes per-tick RPC
-   * chatter; the launch/resume announce passes record here too. Keys whose
-   * strand is no longer running are pruned on each reconcile pass.
+   * (relay, strand) so a run of change-driven reconcile passes never becomes
+   * per-pass RPC chatter; the launch/resume announce passes record here too.
+   * Keys whose strand is no longer running are pruned on each reconcile pass.
    */
   private readonly delegateAnnounceAt = new Map<string, number>();
 
@@ -846,12 +851,13 @@ export class CadreNode implements SAppIdLookup {
    * strand, keyed `peerStrandKey(siblingControlPeerId, strandId)` → epoch ms; a
    * missing key is due. Bounds {@link refreshStrandPeerAddrs}'s fan-out per
    * (sibling, strand) rather than per strand, so a sibling that connects after a
-   * pass is asked on the next 15 s tick instead of waiting out a stamp another
-   * sibling's answer set. An answer (even an empty one) makes the sibling due again
-   * in {@link STRAND_PEER_ADDR_REFRESH_MS}; no answer, in
-   * {@link STRAND_PEER_ADDR_RETRY_MS}. Keys whose strand stopped running or whose
-   * sibling is no longer connected are pruned every pass, so a resumed strand and a
-   * reconnected sibling are both asked at once.
+   * pass is asked on the pass its connection starts instead of waiting out a stamp
+   * another sibling's answer set. An answer (even an empty one) makes the sibling
+   * due again in {@link STRAND_PEER_ADDR_REFRESH_MS}; no answer, in
+   * {@link STRAND_PEER_ADDR_RETRY_MS}, and each pass arms its own wake for the
+   * earliest due time it leaves behind (`nextReconcileWakeMs`). Keys whose strand
+   * stopped running or whose sibling is no longer connected are pruned every pass,
+   * so a resumed strand and a reconnected sibling are both asked at once.
    */
   private readonly strandAddrAskDueAt = new Map<string, number>();
 
@@ -1069,17 +1075,35 @@ export class CadreNode implements SAppIdLookup {
   /** Listener that re-publishes the self record when reachable addresses change. */
   private selfPeerUpdateHandler: (() => void) | null = null;
   /**
-   * Recurring proactive control-cohort dial cadence (see
-   * {@link reconcileControlCohort}). Wired alongside {@link recordRefreshTimer}
-   * in {@link startRecordRefresh} and torn down symmetrically in
-   * {@link stopRecordRefresh}; `.unref()`'d so it never keeps the loop alive.
+   * The reconcile pass's schedule (see {@link reconcileControlCohort}): single-flight
+   * runs on `table-change-watch.ts`'s rule, with no table subscription of its own — the
+   * gate watch ({@link membershipGateWatch}), the control connection listeners,
+   * `self:peer:update`, and the pass's own wake ({@link armReconcileWake}) `trigger` it,
+   * and its backstop (`network.controlCohort.reconcileMs`, default
+   * `DEFAULT_CONTROL_COHORT_RECONCILE_MS`) runs it when nothing has. Built alongside
+   * {@link recordRefreshTimer} in {@link startRecordRefresh}, about 1 s after start, and
+   * disposed in {@link stopRecordRefresh}; its timers never keep the loop alive.
    */
-  private controlCohortReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private controlReconcileRuns: TableChangeWatch | null = null;
   /**
-   * Single-flight guard for {@link reconcileControlCohort}. The eager start pass,
-   * the recurring interval, and the `self:peer:update` trigger can fire close
-   * together; collapsing concurrent passes into one in-flight run prevents two
-   * passes from double-dialing the same siblings (mirrors {@link registerSelfInFlight}).
+   * The subscription on `MEMBERSHIP_GATE_TABLES` that re-materializes the membership gate
+   * and triggers {@link controlReconcileRuns} on every change ({@link onMembershipGateTablesChanged}).
+   * Taken in {@link start} right after the membership listener is wired, disposed in
+   * {@link cleanup} before the control database closes.
+   */
+  private membershipGateWatch: TableChangeWatch | null = null;
+  /**
+   * Consecutive passes that left a selected sibling or a cold-start bootstrap peer
+   * unconnected, for the redial ladder ({@link armReconcileWake}); 0 after a pass that
+   * left none. Per session: reset in {@link stopRecordRefresh}.
+   */
+  private reconcileRedialStreak = 0;
+  /**
+   * Single-flight guard for {@link reconcileControlCohort}. An explicit call, the
+   * `self:peer:update` trigger and a scheduled run can fire close together; collapsing
+   * concurrent passes into one in-flight run prevents two passes from double-dialing the
+   * same siblings (mirrors {@link registerSelfInFlight}). A scheduled run waits for this
+   * pass and then starts its own rather than joining it.
    */
   private reconcileControlCohortInFlight: Promise<ControlCohortReconcileResult> | null = null;
   /**
@@ -1166,10 +1190,10 @@ export class CadreNode implements SAppIdLookup {
    * subsequent `connection:open`. Re-armed to false once connections return to 0.
    */
   private hasControlConnection = false;
-  /** `connection:open` listener driving the growth-triggered drain (teardown in {@link stopRecordRefresh}). */
-  private controlConnectionOpenHandler: (() => void) | null = null;
-  /** `connection:close` listener re-arming the growth edge (teardown in {@link stopRecordRefresh}). */
-  private controlConnectionCloseHandler: (() => void) | null = null;
+  /** `connection:open` listener: the growth-triggered drain, and a reconcile trigger for a sibling (teardown in {@link stopRecordRefresh}). */
+  private controlConnectionOpenHandler: ((event: CustomEvent<Connection>) => void) | null = null;
+  /** `connection:close` listener: re-arms the growth edge, and a reconcile trigger for a sibling (teardown in {@link stopRecordRefresh}). */
+  private controlConnectionCloseHandler: ((event: CustomEvent<Connection>) => void) | null = null;
 
   constructor(config: CadreNodeConfig) {
     this.config = config;
@@ -1448,6 +1472,21 @@ export class CadreNode implements SAppIdLookup {
       // rest of start() and the refresh early-returns while it is — a write in that
       // window is covered by start's own pass below.
       this.controlDatabase.setMembershipChangeListener((reason) => this.refreshMembershipGate(reason));
+      // The gate watch: a change to any membership table, replicated in or committed here,
+      // re-materializes the gate and starts a reconcile pass. Separate from the pass so a
+      // replicated revocation does not wait behind a pass spending its dial budget on an
+      // unreachable sibling. The watch handler only arms a timer, so nothing runs under the
+      // write lock the membership listener is called with; `onChange` runs from that timer.
+      //
+      // NOTE: a table this `Database` has not yet touched hears local commits only
+      // (`table-change-watch.ts`). The start refresh reads `CadrePeer`, `OwnerKey` and
+      // `Revocation`; the four invitation and grant tables are first read when some row is
+      // admitted through one, and a load the committed-read path served is not kept and
+      // arms no bridge, so a chain row that replicates in before then waits for the next
+      // change on a touched table or the backstop. Nothing depends on a chain row until a
+      // `CadrePeer` or `OwnerKey` row refers to it, and that row is itself such a change.
+      this.membershipGateWatch = this.controlDatabase.watchTables(
+        MEMBERSHIP_GATE_TABLES, () => this.onMembershipGateTablesChanged(), { label: 'membership-gate' });
       // Committed-delete seam → write-while-alone revocation queue. Same wiring
       // window argument as the membership listener above.
       this.controlDatabase.setGuardedDeleteListener((revocation) => this.noteGuardedDelete(revocation));
@@ -2537,8 +2576,8 @@ export class CadreNode implements SAppIdLookup {
    * (it redeems here by seating the row from its bundle, after which check 7
    * admits) or from a sibling whose membership row is still replicating (check 5
    * admits once it lands; if it has not landed by the deadline, the connection
-   * is closed and either side's next reconcile dial re-forms it, since outbound
-   * dials are never gated). The protocol guard refuses all of them every
+   * is closed and the reconcile pass the close starts on either side re-forms it,
+   * since outbound dials are never gated). The protocol guard refuses all of them every
    * members-only protocol meanwhile. A circuit-relay reservation admitted by
    * {@link admitControlRelayReservation} disarms the deadline (see
    * `membership-connection-gater.ts` → "The relay-reservation seam").
@@ -2810,7 +2849,8 @@ export class CadreNode implements SAppIdLookup {
    * this listener with its write lock HELD (`notifyMembershipChanged`), so a retrying
    * read here would sleep its backoff holding the lock and stall every other local
    * writer. Nothing is lost — this refresh already keeps the previous snapshot on
-   * failure and is re-driven by the next membership write and by the timed reconcile.
+   * failure and is re-driven by the next membership change (local or replicated, through
+   * the gate watch) and by the reconcile pass's backstop.
    *
    * The trusted-owner anchor sync ({@link syncOwnerAnchor}) runs FIRST, so the snapshot
    * built here judges `CadrePeer` rows against the anchor as the `OwnerKey` table now
@@ -2888,11 +2928,13 @@ export class CadreNode implements SAppIdLookup {
       // up, and each re-armed pass costs one `CadrePeer` query at the gate. A
       // connection that is admitted but never authorized — a configured
       // bootstrap or relay peer, the steady state for a NAT'd node — is
-      // therefore re-judged on every membership write and every timed reconcile
-      // tick, forever. Negligible at a cadre's handful of connections; if a node
-      // ever holds many such connections, or refreshes get frequent, skip
-      // re-arming peers whose last pass was denied under the SAME membership
-      // snapshot instead of re-arming unconditionally.
+      // therefore re-judged on every refresh, forever: every local membership
+      // write, every replicated membership change (the gate watch), and every
+      // reconcile pass, down to the 2-minute backstop on an idle party. Negligible
+      // at a cadre's handful of connections; if a node ever holds many such
+      // connections, or refreshes get frequent, skip re-arming peers whose last
+      // pass was denied under the SAME membership snapshot instead of re-arming
+      // unconditionally.
       void this.controlBackfill?.scheduleConnectedPeers();
       await this.hangUpRevokedControlPeers(rows, loadTombstones);
       await this.noteOwnRemoval(rows, loadTombstones);
@@ -3218,12 +3260,10 @@ export class CadreNode implements SAppIdLookup {
           // (publishFirstSelfRecord).
           log('Self-registration failed: %o', error);
         }
-        // Wire the ongoing refresh + control-cohort reconcile cadence, then run
-        // an eager reconcile pass once the node has settled (the recurring
-        // interval was just armed inside startRecordRefresh).
+        // Wire the ongoing refresh and the control-cohort reconcile schedule, then
+        // run an eager reconcile pass now that the node has settled.
         this.startRecordRefresh();
-        void this.reconcileControlCohort().catch((error) =>
-          log('Control-cohort reconcile (start) failed: %o', error));
+        this.controlReconcileRuns?.trigger(0);
       })();
     }, 1000); // Small delay to ensure node is fully started
     // Node-only: don't keep the event loop alive solely for this timer.
@@ -3555,17 +3595,22 @@ export class CadreNode implements SAppIdLookup {
         this.escalateIfSelfRecordStale(reason, error);
       });
     };
-    const reconcile = (reason: string) => {
-      void this.reconcileControlCohort().catch((error) =>
-        log('Control-cohort reconcile (%s) failed: %o', reason, error));
-    };
+    const backstopMs = this.controlReconcileBackstopMs();
+    // The pass's schedule. A run never joins a pass already in flight: that pass may have
+    // read its rows before the change that woke this run, so joining it would drop the
+    // change until the backstop. It waits for the pass, then starts its own.
+    this.controlReconcileRuns = scheduleRuns(async () => {
+      await this.reconcileControlCohortInFlight?.catch(() => undefined);
+      await this.reconcileControlCohort().catch((error) =>
+        log('Control-cohort reconcile (scheduled) failed: %o', error));
+    }, { label: 'control-reconcile', backstopMs });
 
     // Address churn re-publishes the self record AND re-checks the control cohort:
     // a relay-reservation rotation / NAT change can drop a sibling connection, so
     // the next pass should re-observe and re-dial it.
     this.selfPeerUpdateHandler = () => {
       republish('self:peer:update');
-      reconcile('self:peer:update');
+      this.controlReconcileRuns?.trigger(0);
     };
     this.controlNode.addEventListener('self:peer:update', this.selfPeerUpdateHandler);
 
@@ -3587,15 +3632,32 @@ export class CadreNode implements SAppIdLookup {
     this.recordRefreshTimer = setInterval(() => republish('heartbeat'), DEFAULT_PEER_RECORD_HEARTBEAT_MS);
     (this.recordRefreshTimer as { unref?: () => void } | null)?.unref?.();
 
-    const reconcileMs = this.config.network?.controlCohort?.reconcileMs ?? DEFAULT_CONTROL_COHORT_RECONCILE_MS;
-    this.controlCohortReconcileTimer = setInterval(() => reconcile('interval'), reconcileMs);
-    (this.controlCohortReconcileTimer as { unref?: () => void } | null)?.unref?.();
-
-    log('Record refresh wired (heartbeat=%dms, cohortReconcile=%dms)',
-      DEFAULT_PEER_RECORD_HEARTBEAT_MS, reconcileMs);
+    log('Record refresh wired (heartbeat=%dms, cohortReconcileBackstop=%dms)',
+      DEFAULT_PEER_RECORD_HEARTBEAT_MS, backstopMs);
   }
 
-  /** Tear down the self-record refresh timers + listener (see {@link cleanup}). */
+  /** The reconcile schedule's backstop: `network.controlCohort.reconcileMs`, default `DEFAULT_CONTROL_COHORT_RECONCILE_MS`. */
+  private controlReconcileBackstopMs(): number {
+    return this.config.network?.controlCohort?.reconcileMs ?? DEFAULT_CONTROL_COHORT_RECONCILE_MS;
+  }
+
+  /**
+   * The gate watch's run ({@link membershipGateWatch}): re-materialize the gate, so a
+   * replicated revocation hangs up the removed machine now (`hangUpRevokedControlPeers`
+   * ends every refresh), then start a reconcile pass for whatever else the change means
+   * (a new sibling to dial, a tombstoned row to reap). A local membership write refreshes
+   * the gate twice — once from the awaited membership listener, so the writer sees its
+   * change before returning, and once here, 50 ms later. The listener's refresh runs under
+   * the write lock, so its reads take the committed-read path and the view keeps nothing
+   * from them; this refresh is the read that refills the view after the write, which some
+   * later caller would otherwise pay. Accepted: one reload per change, not two.
+   */
+  private async onMembershipGateTablesChanged(): Promise<void> {
+    await this.refreshMembershipGate('table-change');
+    this.controlReconcileRuns?.trigger(0);
+  }
+
+  /** Tear down the self-record refresh timers, the reconcile schedule and the listeners (see {@link cleanup}). */
   private stopRecordRefresh(): void {
     if (this.selfRegistrationTimer) {
       clearTimeout(this.selfRegistrationTimer);
@@ -3605,10 +3667,11 @@ export class CadreNode implements SAppIdLookup {
       clearInterval(this.recordRefreshTimer);
       this.recordRefreshTimer = null;
     }
-    if (this.controlCohortReconcileTimer) {
-      clearInterval(this.controlCohortReconcileTimer);
-      this.controlCohortReconcileTimer = null;
+    if (this.controlReconcileRuns) {
+      this.controlReconcileRuns.dispose();
+      this.controlReconcileRuns = null;
     }
+    this.reconcileRedialStreak = 0;
     if (this.controlNode) {
       if (this.selfPeerUpdateHandler) {
         this.controlNode.removeEventListener('self:peer:update', this.selfPeerUpdateHandler);
@@ -3832,26 +3895,37 @@ export class CadreNode implements SAppIdLookup {
    * Run one proactive control-cohort dial pass to keep this node connected to its
    * cadre siblings (so the `CadreControl` collections form a replicating cohort).
    * Public so the cohort-growth-driven re-replication path
-   * (`control-write-ensure-replicated`) and tests can trigger a pass on demand;
-   * normally driven by the eager start pass, the recurring interval, and
-   * `self:peer:update` (all wired in {@link startRecordRefresh}).
+   * (`control-write-ensure-replicated`), `addDrone`'s callers, `claimNode`,
+   * `redeemCadreInvitation` and tests can run a pass on demand. On its own a pass
+   * runs when something it acts on changes, and otherwise at a backstop
+   * ({@link controlReconcileRuns}): once after start; on `self:peer:update`; when a
+   * membership table changes, local commit or replicated ({@link membershipGateWatch});
+   * when a control connection to an authorized sibling opens or closes
+   * ({@link onControlSiblingConnectionChange}); on the redial and strand-address wakes
+   * a pass arms for itself ({@link armReconcileWake}); and at the backstop,
+   * `network.controlCohort.reconcileMs` (default `DEFAULT_CONTROL_COHORT_RECONCILE_MS`,
+   * 2 minutes) after the last pass settled. A connection to a relay, a bootstrap node or
+   * another party's machine starts no pass: the pass acts on none of them, beyond
+   * counting them as "connected" for its write steps, which therefore run at the next
+   * membership change or backstop on a one-machine party whose only connection is a
+   * relay.
    *
    * Concurrent triggers collapse into a single in-flight pass
    * (see {@link reconcileControlCohortInFlight}) so two passes never double-dial;
-   * a call that joins an in-flight pass resolves to THAT pass's result.
+   * a call that joins an in-flight pass resolves to THAT pass's result (a scheduled
+   * run waits for it instead, so the change that woke the run is seen).
    * Best-effort throughout: a failure to resolve/dial any one sibling is logged
    * and the pass continues; the whole pass is a no-op when the node is alone.
    *
    * Resolves to the peers the pass dialled ({@link ControlCohortReconcileResult}),
    * so a caller can tell a link this pass opened from one something else opened —
-   * the pass skips a peer that is already connected. The timer and event triggers
-   * discard it.
+   * the pass skips a peer that is already connected. The scheduled runs discard it.
    */
   async reconcileControlCohort(): Promise<ControlCohortReconcileResult> {
     if (this.reconcileControlCohortInFlight) {
       return this.reconcileControlCohortInFlight;
     }
-    const op = this.runReconcileControlCohort();
+    const op = this.runReconcileControlCohortAndArmWake();
     this.reconcileControlCohortInFlight = op;
     try {
       return await op;
@@ -3860,19 +3934,55 @@ export class CadreNode implements SAppIdLookup {
     }
   }
 
+  /** One pass, then the wake it earns ({@link armReconcileWake}); the public result is the pass's `dialed`. */
+  private async runReconcileControlCohortAndArmWake(): Promise<ControlCohortReconcileResult> {
+    const startedAt = Date.now();
+    const outcome = await this.runReconcileControlCohort();
+    this.armReconcileWake(outcome, startedAt);
+    return { dialed: outcome.dialed };
+  }
+
+  /**
+   * After every pass, explicit or scheduled: advance or reset the redial streak and
+   * `trigger` the schedule for the earliest of the pass's own reasons to run again
+   * (`nextReconcileWakeMs`): a redial for a sibling or bootstrap peer it left
+   * unconnected, or a strand-address ask falling due before the backstop. Nothing else
+   * the pass does needs a wake sooner than the backstop: delegate grants re-announce
+   * every 15 minutes inside a 30-minute TTL, the FRET and formation address re-merges
+   * guard a one-hour expiry, and the self record has its own heartbeat. A pass that
+   * runs before the schedule exists (an explicit call during the first second after
+   * start) still counts for the streak.
+   */
+  private armReconcileWake(outcome: ControlCohortPassOutcome, startedAt: number): void {
+    this.reconcileRedialStreak = outcome.unconnected ? this.reconcileRedialStreak + 1 : 0;
+    const runs = this.controlReconcileRuns;
+    if (!runs) {
+      return;
+    }
+    const wakeMs = nextReconcileWakeMs({
+      redialStreak: this.reconcileRedialStreak,
+      passStartedAt: startedAt,
+      strandAddrDueAt: this.strandAddrAskDueAt.values(),
+      now: Date.now(),
+      backstopMs: this.controlReconcileBackstopMs(),
+    });
+    if (wakeMs !== undefined) {
+      log('reconcileControlCohort: next pass in %dms (redial streak %d)', wakeMs, this.reconcileRedialStreak);
+      runs.trigger(wakeMs);
+    }
+  }
+
   /** Body of {@link reconcileControlCohort}; serialised by its single-flight guard. */
-  private async runReconcileControlCohort(): Promise<ControlCohortReconcileResult> {
+  private async runReconcileControlCohort(): Promise<ControlCohortPassOutcome> {
     // Shutdown / not-yet-started guard (mirrors publishSelfRecord). A pass that
     // fires after stop() began must early-return rather than touch a torn-down node.
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return { dialed: [] };
+      return { dialed: [], unconnected: false };
     }
-    // Ride this pass's cadence to refresh the per-stream gate's materialized
-    // authorized set — membership changes that ARRIVED BY REPLICATION (rather
-    // than a local write) are picked up here, bounding the snapshot's staleness
-    // to the time between pass starts: the reconcile interval, or the previous
-    // pass's length when that is longer (passes are single-flight, and one
-    // unreachable sibling's dial alone can take `controlDialBudget().totalMs`).
+    // Refresh the per-stream gate's materialized authorized set at the head of every
+    // pass, so the sibling enumeration below judges rows the same way the gate does.
+    // Changes reach the gate on their own through the gate watch; this refresh is the
+    // backstop's, for a change this node's storage never heard of.
     // NOTE: this refresh and the sibling enumeration below each run their own
     // CadrePeer query (two reads per pass), plus a third from
     // `refreshStrandPeerAddrs` on every pass where a strand is running AND this
@@ -3880,18 +3990,21 @@ export class CadreNode implements SAppIdLookup {
     // strand; it runs even when no sibling is due, because pruning departed
     // siblings needs the current target set). Each also reads Revocation first.
     // All of them are served from the control database's membership views
-    // (`ControlDatabase.readMembershipRows`), so only the first read after either
-    // table changes, or after `MEMBERSHIP_VIEW_MAX_AGE_MS`, reaches storage; before
-    // the Revocation ledger marker exists (filed below, once connected) that load
-    // consults the cohort about the missing block (pinned in
-    // control-founding-consult-budget.spec.ts).
+    // (`ControlDatabase.readMembershipRows`): an in-memory scan while the view is
+    // current, storage only for the first read after the table changed or after
+    // `MEMBERSHIP_VIEW_MAX_AGE_MS`, and an idle pass makes no cohort consult
+    // (pinned in control-founding-consult-budget.spec.ts). Threading one row set
+    // through the refresh, the reap, the enumeration and the strand-address targets
+    // would save no storage read and was declined
+    // (`control-reconcile-woken-by-changes-reads-once`); rows going stale during a
+    // pass is harmless, since a change during the pass starts another one.
     await this.refreshMembershipGate('reconcile');
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return { dialed: [] };
+      return { dialed: [], unconnected: false };
     }
     await this.publishFirstSelfRecord();
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return { dialed: [] };
+      return { dialed: [], unconnected: false };
     }
     // Refresh relay delegate grants BEFORE the sibling enumeration below: a
     // solo cadre with a party relay has no siblings to dial but must still keep
@@ -3899,7 +4012,7 @@ export class CadreNode implements SAppIdLookup {
     // the reservation and faces the connection gate again).
     await this.refreshDelegateGrants();
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return { dialed: [] };
+      return { dialed: [], unconnected: false };
     }
     // Then re-warm each running strand's own address book from its FRET address
     // records and from whichever siblings are due an ask. Same reasoning as
@@ -3907,7 +4020,7 @@ export class CadreNode implements SAppIdLookup {
     // network, and every layer under cadre-core dials strand peers by bare peer id.
     await this.refreshStrandPeerAddrs();
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return { dialed: [] };
+      return { dialed: [], unconnected: false };
     }
     const selfPeerId = this.controlNode.peerId.toString();
 
@@ -3949,7 +4062,7 @@ export class CadreNode implements SAppIdLookup {
         log('reconcileControlCohort: reap pass failed (continuing): %o', error);
       }
       if (!this._running || !this.controlNode || !this.controlDatabase) {
-        return { dialed: [] };
+        return { dialed: [], unconnected: false };
       }
 
       // File the Revocation ledger marker once, so that table stops being a never-written
@@ -3970,20 +4083,22 @@ export class CadreNode implements SAppIdLookup {
       // can hold the party's collections).
       await this.openRevocationLedgerIfDue();
       if (!this._running || !this.controlNode || !this.controlDatabase) {
-        return { dialed: [] };
+        return { dialed: [], unconnected: false };
       }
 
       // Publish this machine's unpublished cross-party joins party-wide and remove the rows a
       // self-revocation queued (JoinedStrandSession.syncWithParty). Connected-only for the
       // reap's reason above; owner-only by the session's own signer check. Nothing is urgent:
-      // a join reaches the party within one pass of this machine being connected.
+      // a join recorded locally starts no pass, so it reaches the party on the next pass
+      // while this machine is connected — a membership change, a sibling connecting, or the
+      // backstop, 2 minutes at most.
       try {
         await this.joinedStrands?.syncWithParty();
       } catch (error) {
         log('reconcileControlCohort: joined-strand sync failed (retrying next pass): %o', error);
       }
       if (!this._running || !this.controlNode || !this.controlDatabase) {
-        return { dialed: [] };
+        return { dialed: [], unconnected: false };
       }
     }
 
@@ -3998,11 +4113,11 @@ export class CadreNode implements SAppIdLookup {
       // because filling this table needs a connection and getting a connection
       // needs this table. Fall back to the seed's bootstrap addresses; a solo
       // cadre has none and this is a no-op. Must not throw or busy-loop.
-      return { dialed: await this.dialColdStartBootstrap() };
+      return this.dialColdStartBootstrap();
     }
     // Re-guard after the await: a stop() may have raced the membership read.
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return { dialed: [] };
+      return { dialed: [], unconnected: false };
     }
 
     // 2. Classify backbone (always-on) members and select a bounded dial set.
@@ -4019,29 +4134,33 @@ export class CadreNode implements SAppIdLookup {
     //    keeping what resolved for the dial loop below.
     const resolved = await this.warmSiblingAddrBook(siblings);
     if (!this._running || !this.controlNode || !this.controlDatabase) {
-      return { dialed: [] };
+      return { dialed: [], unconnected: false };
     }
 
     // 4. Skip already-connected peers (no re-dial / churn for live connections).
     const connected = new Set(this.controlNode.getConnections().map((c) => c.remotePeer.toString()));
 
     // 5. Dial each selected, not-yet-connected sibling, best-effort, from the
-    //    addresses step 3 already resolved for it.
+    //    addresses step 3 already resolved for it. One left unconnected earns the
+    //    pass a redial wake (armReconcileWake).
     const dialed: string[] = [];
+    let unconnected = false;
     for (const sibling of dials) {
       if (!this._running || !this.controlNode) {
-        return { dialed };
+        return { dialed, unconnected: false };
       }
       if (connected.has(sibling.peerId)) {
         continue;
       }
       if (await this.dialControlSibling(sibling, resolved.get(sibling.peerId) ?? [])) {
         dialed.push(sibling.peerId);
+      } else {
+        unconnected = true;
       }
     }
-    log('reconcileControlCohort: pass complete (siblings=%d, selected=%d, dialed=%d)',
-      siblings.length, dials.length, dialed.length);
-    return { dialed };
+    log('reconcileControlCohort: pass complete (siblings=%d, selected=%d, dialed=%d, unconnected=%s)',
+      siblings.length, dials.length, dialed.length, unconnected);
+    return { dialed, unconnected };
   }
 
   /**
@@ -4092,8 +4211,9 @@ export class CadreNode implements SAppIdLookup {
    * current ({@link refreshDialHint}).
    *
    * NOTE: this resolves EVERY sibling serially before the dial loop below runs,
-   * so it costs one record query per sibling per reconcile pass (~15s) and each
-   * one delays the pass's first dial. A cadre is a handful of devices, so today
+   * so it costs one record query per sibling per reconcile pass (served from the
+   * membership rows view while it is current) and each one delays the pass's first
+   * dial. A cadre is a handful of devices, so today
    * that is a few extra local reads; if cadres ever grow large, batch the records
    * into one query, merge only on change, or move the warm pass after the dials.
    */
@@ -4236,7 +4356,8 @@ export class CadreNode implements SAppIdLookup {
    * the {@link controlDialBudget} expiring) is logged and swallowed so one
    * unreachable sibling never aborts the pass — exactly like
    * {@link SeedBootstrapService.applySeed}'s owner-dial loop. A failed dial is
-   * simply retried on the next pass. A sibling whose every address relays
+   * retried on the pass's redial ladder ({@link armReconcileWake}: 15 s, 30 s, 60 s,
+   * then every backstop) and on any pass a change starts sooner. A sibling whose every address relays
    * through this node ({@link SelfRelayOnlyError}) is not dialed at all and gets
    * a one-line log instead: only the sibling can reconnect.
    */
@@ -4321,7 +4442,7 @@ export class CadreNode implements SAppIdLookup {
    * These addresses are never merged into the libp2p address book: they are
    * unverified, and the address book takes only verified ones (see
    * `mergePeerAddrs`). Layers that dial by bare peer id use the connection this
-   * dial opens, and after it drops the next reconcile pass dials again.
+   * dial opens, and after it drops the reconcile pass the close starts dials again.
    *
    * NOTE: an entry is consulted here only for a current sibling, so a peer revoked
    * by another owner is not dialed from it, even though the entry stays (only this
@@ -4444,33 +4565,35 @@ export class CadreNode implements SAppIdLookup {
    * help: it dials only siblings enumerated from that very table. Retrying here
    * is the only way back in.
    *
-   * Unbounded, at the reconcile cadence, with no backoff: the branch is already
-   * gated by "the control database has no siblings", so it stops the moment the
-   * node is actually in the party, and a node that is stranded MUST keep trying —
-   * a give-up rule would turn a transient outage into a permanent one. The steady
-   * cost is one dial per bootstrap peer per pass (a seed prefers its minter and the
-   * party's always-on machines, a few at most), each failing fast against an
-   * unreachable address.
-   * NOTE: if seeds ever carry many preferred peers, or the reconcile cadence tightens
-   * well below its 15 s default, add per-peer backoff here.
+   * Unbounded: the branch is already gated by "the control database has no
+   * siblings", so it stops the moment the node is actually in the party, and a node
+   * that is stranded MUST keep trying — a give-up rule would turn a transient outage
+   * into a permanent one. A failed dial earns the pass a redial wake on the ladder
+   * {@link armReconcileWake} runs (15 s, 30 s, 60 s, then every backstop, 2 minutes
+   * by default), so the steady cost is one dial per bootstrap peer per backstop (a
+   * seed prefers its minter and the party's always-on machines, a few at most), each
+   * failing fast against an unreachable address.
+   * NOTE: the ladder is per pass, not per peer; if seeds ever carry many preferred
+   * peers, add per-peer backoff here.
    *
    * Best-effort per peer, exactly like {@link dialControlSibling}: one dead
    * address never aborts the pass.
    */
-  private async dialColdStartBootstrap(): Promise<string[]> {
+  private async dialColdStartBootstrap(): Promise<ControlCohortPassOutcome> {
     const controlNode = this.controlNode;
     // Snapshot up front: the store hands back a copy, so a seed applied mid-pass
     // cannot mutate what we are iterating.
     const targets = this.bootstrapPeerStore?.all();
     if (!controlNode || !targets || targets.size === 0) {
-      return [];
+      return { dialed: [], unconnected: false };
     }
     // Same skip rule as step 3 of the steady-state pass: no churn on live links.
     const connected = new Set(controlNode.getConnections().map((c) => c.remotePeer.toString()));
     const dialed: string[] = [];
+    let unconnected = false;
     for (const [peerId, entry] of targets) {
       if (!this._running || !this.controlNode) {
-        return dialed;
+        return { dialed, unconnected: false };
       }
       // NOTE: a connection this node still holds in `status: 'open'` after the remote
       // has already aborted it counts as connected here, so the cold-start retry stays
@@ -4484,11 +4607,13 @@ export class CadreNode implements SAppIdLookup {
       }
       if (await this.dialBootstrapPeer(peerId, entry.addrs)) {
         dialed.push(peerId);
+      } else {
+        unconnected = true;
       }
     }
-    log('reconcileControlCohort: cold-start pass complete (bootstrap=%d, connected=%d, dialed=%d)',
-      targets.size, connected.size, dialed.length);
-    return dialed;
+    log('reconcileControlCohort: cold-start pass complete (bootstrap=%d, connected=%d, dialed=%d, unconnected=%s)',
+      targets.size, connected.size, dialed.length, unconnected);
+    return { dialed, unconnected };
   }
 
   /**
@@ -4955,17 +5080,44 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Wire the control-connection growth listeners that drive write-while-alone
-   * re-replication. Wired in {@link start} (not the delayed refresh path) so no
-   * early `connection:open` is missed; torn down in {@link stopRecordRefresh}.
-   * Idempotent.
+   * A control connection to an AUTHORIZED sibling opened or closed: start a reconcile
+   * pass. On open the pass asks the new sibling for strand addresses and re-arms the
+   * delegate grants; on close it re-dials. First, on open, drop the membership rows
+   * views: a machine that was offline while a sibling committed learns of the commit
+   * only when it next reads the block from storage, and dropping the views makes the
+   * pass's reads do that now rather than after the views' maximum age. Any other
+   * connection — a relay, a bootstrap node, another party's machine — starts nothing.
+   */
+  private onControlSiblingConnectionChange(remotePeer: string, change: 'open' | 'close'): void {
+    if (!this.authorizedControlPeers.has(remotePeer)) {
+      return;
+    }
+    if (change === 'open') {
+      this.controlDatabase?.invalidateMembershipViews();
+    }
+    log('Control connection to sibling %s %s; reconcile pass triggered', remotePeer, change);
+    this.controlReconcileRuns?.trigger(0);
+  }
+
+  /**
+   * Wire the control-connection listeners: the growth edge that drives
+   * write-while-alone re-replication, and the sibling-connection reconcile trigger
+   * ({@link onControlSiblingConnectionChange}). Wired in {@link start} (not the delayed
+   * refresh path) so no early `connection:open` is missed; torn down in
+   * {@link stopRecordRefresh}. Idempotent.
    */
   private wireControlConnectionListeners(): void {
     if (!this.controlNode || this.controlConnectionOpenHandler) {
       return;
     }
-    this.controlConnectionOpenHandler = () => this.handleControlConnectionChange();
-    this.controlConnectionCloseHandler = () => this.handleControlConnectionClose();
+    this.controlConnectionOpenHandler = (event) => {
+      this.handleControlConnectionChange();
+      this.onControlSiblingConnectionChange(event.detail.remotePeer.toString(), 'open');
+    };
+    this.controlConnectionCloseHandler = (event) => {
+      this.handleControlConnectionClose();
+      this.onControlSiblingConnectionChange(event.detail.remotePeer.toString(), 'close');
+    };
     this.controlNode.addEventListener('connection:open', this.controlConnectionOpenHandler);
     this.controlNode.addEventListener('connection:close', this.controlConnectionCloseHandler);
   }
@@ -5444,6 +5596,10 @@ export class CadreNode implements SAppIdLookup {
     // Detach the membership hub first: nothing this teardown does should drive a
     // gate refresh, and a notification arriving after this point is a no-op.
     if (this.controlDatabase) {
+      // The database's registry would dispose the gate watch too; disposing it here, before
+      // the listener goes, keeps a closing commit from scheduling a gate refresh.
+      this.membershipGateWatch?.dispose();
+      this.membershipGateWatch = null;
       this.controlDatabase.setMembershipChangeListener(null);
       this.controlDatabase.setGuardedDeleteListener(null);
       this.controlDatabase.setControlWriteAbandonedListener(null);
@@ -7138,7 +7294,7 @@ export class CadreNode implements SAppIdLookup {
    *
    * Timestamps are recorded OPTIMISTICALLY, whatever `collectStrandAddrs` reports
    * per peer: recording only on success would re-announce to an unreachable relay
-   * on every reconcile tick, one dial timeout each. A failed INITIAL announce costs
+   * on every reconcile pass, one dial timeout each. A failed INITIAL announce costs
    * the strand supervisor its first attempt only (the relay denies the
    * reservation; every re-drive re-announces first through
    * {@link announceDelegateToRelay}); a failed REFRESH retries within
@@ -7282,9 +7438,11 @@ export class CadreNode implements SAppIdLookup {
    *
    * Due times are per (sibling, strand) and set from each sibling's own outcome, so
    * a sibling that connects late — a phone joining after the party's always-on
-   * machines — is asked on the next tick, and one that could not answer or refused
-   * (its view of the membership may not include us yet) is retried within
-   * {@link STRAND_PEER_ADDR_RETRY_MS} rather than {@link STRAND_PEER_ADDR_REFRESH_MS}.
+   * machines — is asked on the pass its connection starts, and one that could not
+   * answer or refused (its view of the membership may not include us yet) is retried
+   * within {@link STRAND_PEER_ADDR_RETRY_MS} rather than
+   * {@link STRAND_PEER_ADDR_REFRESH_MS}; the pass that stamped the retry arms a wake
+   * for it ({@link armReconcileWake}).
    *
    * Distinct from {@link refreshDelegateGrants}, deliberately: that pass covers
    * RELAYS on a `DELEGATE_GRANT_TTL_MS / 2` throttle to keep circuit-relay
@@ -7334,15 +7492,17 @@ export class CadreNode implements SAppIdLookup {
    *
    * `connectedSiblingTargets`' membership read is unbounded, and with zero
    * connections its answer is empty whatever the table holds, so decide it from the
-   * connection list instead of paying for the read once a tick.
+   * connection list instead of paying for the read once a pass.
    *
-   * NOTE: otherwise the read runs on EVERY tick with a running strand, not only when
+   * NOTE: otherwise the read runs on EVERY pass with a running strand, not only when
    * some (sibling, strand) is due: pruning a departed sibling needs the current
    * target set, and whether anyone is due cannot be told without it (a connected
-   * non-member never gets a due time to compare). One more `CadrePeer` read per 15 s
-   * tick, on top of the two `runReconcileControlCohort` already makes; if those reads
-   * get costly, share one row-set across the pass (see the NOTE there) rather than
-   * skipping ticks here.
+   * non-member never gets a due time to compare). One more `CadrePeer` read per
+   * pass, on top of the two `runReconcileControlCohort` already makes, all served
+   * from the membership rows view: an in-memory scan while the view is current,
+   * storage only after the table changed or the view's maximum age passed. Sharing
+   * one row set across the pass would save no storage read and was declined (see
+   * the NOTE there).
    *
    * NOTE: one strand-addr RPC per (running strand × due sibling) — each a tiny
    * request/response on an already-open control connection. If a node ever runs
@@ -7433,8 +7593,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * NOTE: every pass serialises the whole FRET table (`exportTable()`), verifies one
    * signature per record and makes one `peerStore.merge` per peer, per running strand
-   * per 15 s tick. Fine at strand table sizes, and an unchanged address set writes
-   * nothing in libp2p's persistent peer store. If many strands or large tables make it
+   * per pass — every change-driven pass and the 2-minute backstop. Fine at strand table
+   * sizes, and an unchanged address set writes nothing in libp2p's persistent peer store. If many strands or large tables make it
    * show up, read only the entries whose address stamp is near the one-hour mark.
    *
    * @returns the ids of the peers the table holds a usable record for.
@@ -8774,7 +8934,7 @@ export class CadreNode implements SAppIdLookup {
    * write-driven refresh never fires for it — yet applying it can ANCHOR a new
    * owner key, which flips rows already present from unauthorized to authorized.
    * Hence the explicit refresh here; without it a peer the freshly anchored owner
-   * vouched for stays denied until the next timed cohort reconcile.
+   * vouched for stays denied until the next membership change or the backstop pass.
    */
   private seedEventCallbacks(): SeedEventCallbacks {
     return {
@@ -8809,13 +8969,14 @@ export class CadreNode implements SAppIdLookup {
    * NO `CadrePeer` writer needs to call this: the control database notifies it
    * after every committed member-row write (`ControlDatabase.mutateCadrePeer`,
    * wired in {@link start}), which is exactly what makes the refresh automatic
-   * rather than a caller obligation. It stays public for the changes that write
-   * NO row locally and so raise no notification:
-   *
-   * - a membership row that arrived by REPLICATION (otherwise picked up on the
-   *   next timed cohort reconcile — bounded staleness by design), and
-   * - a newly anchored trusted owner key ({@link applySeed}), which flips rows
-   *   ALREADY present from unauthorized to authorized without touching them.
+   * rather than a caller obligation. A membership row that arrived by REPLICATION
+   * refreshes it too, through the gate watch {@link start} takes on the membership
+   * tables (within its 50 ms window; a change this node's storage never hears of
+   * waits for the reconcile pass's backstop). It stays public for the one change
+   * that writes no row and raises no table event: a newly anchored trusted owner
+   * key ({@link applySeed}), which flips rows ALREADY present from unauthorized to
+   * authorized without touching them. A caller may also await it to observe a
+   * refresh that began after its own change.
    *
    * Coalescing: marks the snapshot stale and resolves once a refresh that began
    * after this call has completed, so a caller that awaits it always observes
@@ -8895,8 +9056,8 @@ export class CadreNode implements SAppIdLookup {
    * CONCURRENT external write's refresh for the life of the scope: that writer's
    * promise resolves before its peer is admitted, and admission lands at scope
    * exit instead. Acceptable — scope exit is milliseconds away (bounded by the
-   * drain), versus the ~15 s reconcile interval that was the alternative before
-   * any of this existed — but it is the reason these scopes stay short and rare.
+   * drain), versus the reconcile pass that was the alternative before any of this
+   * existed — but it is the reason these scopes stay short and rare.
    */
   private async deferMembershipGateRefresh<T>(reason: string, body: () => Promise<T>): Promise<T> {
     this.membershipGateDeferDepth++;
@@ -9412,12 +9573,13 @@ export class CadreNode implements SAppIdLookup {
    * that connection from the addresses it was handed, on this launch or a later
    * one.
    *
-   * Nothing is dialed here: the drone has not received the seed yet. After
-   * delivering it, call {@link reconcileControlCohort} to dial straight away;
-   * otherwise the next timed reconcile pass does. A pass already in flight is
-   * joined rather than restarted, and one that listed siblings before this add
-   * does not dial the drone, so a caller waiting for the connection should allow
-   * for one more timed pass.
+   * Nothing is dialed here: the drone has not received the seed yet. Its `CadrePeer`
+   * insert is a membership change, so a reconcile pass dials the retained addresses
+   * within about 50 ms of this call returning, whether or not the caller runs one, and
+   * a failed dial is retried on the redial ladder (15 s, 30 s, 60 s, then every
+   * backstop). A caller that wants to await the connection calls
+   * {@link reconcileControlCohort} itself, twice in a row: a call made while a pass is
+   * in flight joins it, and that pass may have listed siblings before this add.
    */
   async addDrone(options: AddDroneOptions): Promise<DroneInitResult> {
     if (!this.seedBootstrapService) {
@@ -9463,10 +9625,10 @@ export class CadreNode implements SAppIdLookup {
    * by the node (its anchored branch), the row insert is a no-op on an existing row
    * (`ControlDatabase.insertCadrePeer`), and the dial target is replaced, not duplicated.
    *
-   * The first dial is kicked (not awaited) so it happens now rather than on the next
-   * timed reconcile pass; a caller that wants to wait for the connection awaits
-   * {@link reconcileControlCohort} itself, with `addDrone`'s caveat that a pass already
-   * in flight is joined rather than restarted. The claimed node dials this one back too,
+   * The first dial is kicked (not awaited) so it happens now; the vouch's `CadrePeer`
+   * insert starts a pass of its own about 50 ms later as well. A caller that wants to
+   * wait for the connection awaits {@link reconcileControlCohort} itself, with
+   * `addDrone`'s caveat that a pass already in flight is joined rather than restarted. The claimed node dials this one back too,
    * as the seed's minter, when this node has a listen or relay address; a phone
    * with neither is reached by its own reconcile pass alone.
    *

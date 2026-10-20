@@ -4,7 +4,7 @@
  * — Optimystic's cluster client, repo client, FRET ping/announce, all funnelling
  * into `libp2p.dialProtocol(peerId, …)` — has an address to use for a sibling
  * whose connection has dropped, instead of failing with `NoValidAddressesError`
- * until the next reconcile pass happens to re-dial it.
+ * until the reconcile pass the drop starts re-dials it.
  *
  * Shared by the control-cohort reconcile pass and the strand one (both in
  * `CadreNode`): each resolves a peer's addresses its own way and then needs
