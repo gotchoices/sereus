@@ -1839,11 +1839,13 @@ export class ControlDatabase {
    * machine, possibly alone, where committing one would be exactly the fork genesis avoids.
    *
    * NOTE: one `sync()` per collection, in sequence: 32 collections for today's schema (17 tables,
-   * 3 indexes, 12 `unique` columns). Not yet measured on this path; at strand founding's measured
-   * ~23 ms per collection on `FileRawStorage` (`createDeclaredCollections`' NOTE) that is ~0.7 s,
-   * against the edge node's 60 s `DEFAULT_OWNER_GENESIS_TIMEOUT_MS`. If genesis latency starts to
-   * matter (phone flash under launch contention runs 50–90 ms per storage operation, see the NOTE
-   * in `initialize`), ask Optimystic for an API that commits them as one batch, the one strand
+   * 3 indexes, 12 `unique` columns). Measured 2026-10-20 on a lone `CadreNode` over the network
+   * transactor (started, then `ensureOwnerKey` alone, 3 runs each): 64–105 ms in memory and
+   * 750–820 ms on `FileRawStorage`, about 25 ms per collection on disk, roughly 1/75 of the edge
+   * node's 60 s `DEFAULT_OWNER_GENESIS_TIMEOUT_MS`. Under the whole cadre-core suite's load (151
+   * geneses) it took a median of 159 ms and at most 4.6 s. If genesis latency starts to matter
+   * (phone flash under launch contention runs 50–90 ms per storage operation, see the NOTE in
+   * `initialize`), ask Optimystic for an API that commits them as one batch, the one strand
    * founding would use too; do not build a private batching path.
    */
   private async commitEmptyControlCollections(): Promise<void> {
