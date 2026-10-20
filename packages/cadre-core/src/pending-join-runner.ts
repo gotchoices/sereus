@@ -280,6 +280,11 @@ export class PendingJoinRunner {
    * Start passes: one at once, then one whenever a table a pass reads changes, and at the latest
    * {@link PENDING_JOIN_BACKSTOP_MS} after the last. Throws when the change subscription cannot
    * be made.
+   *
+   * NOTE: a pass from before a {@link stop} that is still in flight runs alongside the new
+   * watch's passes, since each watch keeps only its own runs to one at a time. `CadreNode` builds
+   * a fresh runner per start, so nothing restarts one; if something comes to, make that pass
+   * check which start it belongs to.
    */
   start(): void {
     if (this.running) return;
