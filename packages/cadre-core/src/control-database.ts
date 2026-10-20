@@ -1693,11 +1693,10 @@ export class ControlDatabase {
    * rows that never existed. No reader of these tables runs inside {@link inTransaction} today;
    * this keeps one added later, or a spec's raw-handle transaction, correct.
    *
-   * Reads that stay plain SQL on purpose: {@link queryStampId} (sees retired rows), the genesis
-   * `count(1)` in {@link hasOwnerKey}, the ledger marker's presence read, the schema's CHECK
-   * constraints, which read inside the committing transaction, the redemption's one read of the
-   * held credential row ({@link queryCadreInvite}, {@link queryOwnerGrant}), and the indexed
-   * usage counts.
+   * Reads that stay plain SQL on purpose: {@link queryStampId} (sees retired rows), the ledger
+   * marker's presence read, the schema's CHECK constraints, which read inside the committing
+   * transaction, the redemption's one read of the held credential row ({@link queryCadreInvite},
+   * {@link queryOwnerGrant}), and the indexed usage counts.
    */
   private readMembershipRows(view: MembershipView<Record<string, SqlValue>>, retry: boolean): Promise<readonly Record<string, SqlValue>[]> {
     this.ensureInitialized();
@@ -1829,13 +1828,13 @@ export class ControlDatabase {
    *
    * Deliberately RAW (no retired-stamp filter, unlike {@link getOwnerKeys}): the genesis
    * insert is refused by the schema whenever any physical row exists, so this must see one.
+   * Served from the `OwnerKey` membership view ({@link readMembershipRows}), which holds every
+   * physical row, so a genesis caller's pre-check and {@link ensureOwnerKey}'s re-check share
+   * one storage read.
    */
   async hasOwnerKey(): Promise<boolean> {
     this.ensureInitialized();
-    for (const row of await this.readRows('select count(1) as Count from CadreControl.OwnerKey', undefined, 'owner-key-exists')) {
-      return (row.Count as number) > 0;
-    }
-    return false;
+    return (await this.readMembershipRows(this.ownerKeyView, true)).length > 0;
   }
 
   /**
@@ -5139,6 +5138,13 @@ export class ControlDatabase {
     peerKey: string;
     /** The device's dialable addresses, if known; stored comma-joined as `authorizePeer` does. */
     multiaddrs?: string[];
+    /**
+     * The rest of the device's own signed address record over `multiaddrs`, already verified by
+     * the caller (`admittedRecord` in `cadre-invite-protocol.ts`): stored as the row's
+     * `UpdatedAt`, `Sig` and `Profile`, so the row resolves to the device's addresses from its
+     * admission. Omitted, the row is written unsigned, `UpdatedAt` at this machine's clock.
+     */
+    record?: Pick<PeerAddressRecord, 'updatedAt' | 'profile' | 'sig'>;
     /** Single-use nonce minted by the device; both signatures cover it. */
     usageStampId: string;
     /** The holder's signature with the invitation private key over the `'redeem'` digest. */
@@ -5148,7 +5154,7 @@ export class ControlDatabase {
     nowMs?: number;
   }): Promise<CadreInviteRedemptionResult> {
     this.ensureInitialized();
-    const { inviteKey, peerId, peerKey, usageStampId, inviteSig, peerSig } = params;
+    const { inviteKey, peerId, peerKey, record, usageStampId, inviteSig, peerSig } = params;
     const nowMs = params.nowMs ?? Date.now();
     const multiaddr = params.multiaddrs?.length ? params.multiaddrs.join(',') : '';
     log('Redeeming cadre invitation %s for %s', inviteKey, peerId);
@@ -5174,10 +5180,11 @@ export class ControlDatabase {
       const nowCanonical = await canonicalDatetime(this.db!, nowMs);
       await this.inTransaction('cadre-invite-redeem', async () => {
         await this.db!.exec(`
-          insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig, VouchUsage)
+          insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, Profile, StampId, VouchOwner, VouchSig, VouchUsage)
             with context OwnerKey = null, Signature = null
-            values (?, ?, ?, ?, null, ?, ?, null, ?)
-        `, [peerId, peerKey, multiaddr, nowMs, peerStampId, invite.issuerKey, usageStampId]);
+            values (?, ?, ?, ?, ?, ?, ?, ?, null, ?)
+        `, [peerId, peerKey, multiaddr, record?.updatedAt ?? nowMs, record?.sig ?? null, record?.profile ?? null,
+          peerStampId, invite.issuerKey, usageStampId]);
         await this.db!.exec(`
           insert into CadreControl.CadreInviteUsage (UsageStampId, InviteKey, PeerId, PeerKey, PeerStampId, InviteSig, PeerSig)
             with context Now = ?

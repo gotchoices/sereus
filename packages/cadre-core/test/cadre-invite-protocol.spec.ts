@@ -17,6 +17,7 @@ import {
   type CadreInviteStore
 } from '../src/cadre-invite-protocol.js';
 import { CADRE_INVITATION_PREFIX, OWNER_KEY_EXPORT_STEM, encodeCadreJoinRequest } from '../src/cadre-join-request.js';
+import { signPeerRecord, verifyPeerRecordSignature } from '../src/peer-record.js';
 import { writeFrame, type ControlStream } from '../src/control-stream.js';
 import type { CadreInviteRow } from '../src/types.js';
 import { freshKeyPair, freshStamp, signAs, type KeyPair } from './control-constraint-helpers.js';
@@ -170,9 +171,10 @@ describe('cadre invitation redemption protocol', () => {
     return { v: 1, partyId, invitePrivateKey: invite.privateKey, invite: row, ownerKeys: [founder.publicKey], members };
   }
 
-  /** The request `device` sends for `invitation`, signed with both keys. */
-  function requestFor(invitation: CadreInvitation, device: TestContactJoiner, multiaddrs: string[] = []) {
-    return signRedeemRequest(invitation, { peerKey: device.peerKey, peerPrivateKey: device.privateKey }, generateStampId(device.partyId), multiaddrs);
+  /** The request `device` sends for `invitation`, signed with both keys, carrying its address record signed for `recordParty`. */
+  function requestFor(invitation: CadreInvitation, device: TestContactJoiner, addrs: string[] = [], recordParty = invitation.partyId) {
+    const record = signPeerRecord(recordParty, { peerId: device.partyId, publicKey: device.peerKey, addrs, updatedAt: Date.now(), profile: 'storage' }, device.privateKey);
+    return signRedeemRequest(invitation, { peerKey: device.peerKey, peerPrivateKey: device.privateKey }, generateStampId(device.partyId), record);
   }
 
   /** The member's real handler as `device` reaches it: the connection's remote peer is the device. */
@@ -194,21 +196,25 @@ describe('cadre invitation redemption protocol', () => {
     const invitation = await mint();
     const addrs = ['/ip4/10.0.0.5/tcp/4001'];
     const { node } = dialerOver({ [memberAddr]: memberAs(device) });
+    const request = requestFor(invitation, device, addrs);
 
-    const result = await redeem(node, invitation, requestFor(invitation, device, addrs));
+    const result = await redeem(node, invitation, request);
 
     expect(result.memberPeerId).toBe(memberPeerId);
     expect(result.memberAddr).toBe(memberAddr);
     expect(result.reply.partyId).toBe(partyId);
     expect(result.reply.invite).toEqual(invitation.invite);
 
-    // On the member: an invitation-admitted peer row carrying the device's addresses, no owner
-    // row (a machine invitation grants none), one usage row, and the device authorized through
-    // the chain.
+    // On the member: an invitation-admitted peer row carrying the device's own signed record, no
+    // owner row (a machine invitation grants none), one usage row, and the device authorized
+    // through the chain.
     const peer = (await db.queryCadrePeers()).find((row) => row.peerId === device.partyId);
     expect(peer?.multiaddr).toBe(addrs.join(','));
     expect(peer?.vouchSig).toBeNull();
     expect(typeof peer?.vouchUsage).toBe('string');
+    const stored = await db.queryPeerRecord(device.partyId);
+    expect(stored?.sig).toBe(request.record.sig);
+    expect(stored && verifyPeerRecordSignature(partyId, stored)).toBe(true);
     expect(await db.getOwnerKeys()).not.toContain(device.peerKey);
     expect(await db.countCadreInviteUsage(invitation.invite.key)).toBe(1);
     expect((await member.listAuthorizedMembers()).map((row) => row.peerId)).toContain(device.partyId);
@@ -216,6 +222,20 @@ describe('cadre invitation redemption protocol', () => {
     const admissions = pushes.filter((push) => push.peerId === device.partyId);
     expect(admissions.map((push) => push.admittedAtPush)).toEqual([false]);
     expect(await admissions[0]?.admittedAtRelease).toBe(true);
+  });
+
+  it('admits a device whose record does not verify with its addresses and no signature or profile', async () => {
+    const device = await mintContactJoiner();
+    const invitation = await mint();
+    const addrs = ['/ip4/10.0.0.6/tcp/4001'];
+    const { node } = dialerOver({ [memberAddr]: memberAs(device) });
+
+    await redeem(node, invitation, requestFor(invitation, device, addrs, 'another-party'));
+
+    const stored = await db.queryPeerRecord(device.partyId);
+    expect(stored?.addrs).toEqual(addrs);
+    expect(stored?.sig).toBe('');
+    expect(stored?.profile).toBeNull();
   });
 
   it('moves past a member that does not know the issuer (issuer-unknown is retryable) to one that does', async () => {

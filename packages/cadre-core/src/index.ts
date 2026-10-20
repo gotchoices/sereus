@@ -747,6 +747,7 @@ export {
   type RedeemAtMembersOptions,
   type RedeemInPassesOptions,
   type RedeemSigner,
+  type RedeemSelfRecord,
   type CadreInviteRedemption
 } from './cadre-invite-protocol.js';
 // Owner grant redemption transport: the bundle an owner hands out, the wire messages, the

@@ -33,6 +33,7 @@ import {
   type ControlDatabase
 } from './control-database.js';
 import { verifyCadreInviteRow, verifyCadreInviteRedemption } from './peer-authorization.js';
+import { verifyPeerRecordSignature } from './peer-record.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX, OWNER_GRANT_PREFIX, OWNER_KEY_EXPORT_STEM } from './cadre-join-request.js';
 import {
@@ -54,7 +55,7 @@ import {
   type RedemptionAddressOutcome,
   type RedemptionRejection
 } from './member-redemption.js';
-import type { CadreInviteRow, CadreJoinProgress, SeedPeer } from './types.js';
+import type { CadreInviteRow, CadreJoinProgress, PeerAddressRecord, SeedPeer } from './types.js';
 
 const log = debug('sereus:cadre:invite-proto');
 
@@ -168,17 +169,28 @@ function isWellFormedCadreInvitation(value: unknown): value is CadreInvitation {
 
 // ── Wire messages ────────────────────────────────────────────────────────────
 
+/**
+ * The device's own address record as a request carries it: a {@link PeerAddressRecord} without
+ * the peer id, which the connection gives, and the key, which is the request's `peerKey`.
+ */
+export type RedeemSelfRecord = Pick<PeerAddressRecord, 'addrs' | 'updatedAt' | 'profile' | 'sig'>;
+
 /** Device → member: one frame, the whole redemption. */
 export interface CadreInviteRedeemRequest {
-  v: 1;
+  v: 2;
   /** The cadre the device believes it is joining; a machine serving another party refuses by name. */
   partyId: string;
   /** The owner-signed row from the bundle. */
   invite: CadreInviteRow;
   /** The device's ed25519 public key, base64url; must be the key behind the connecting peer id. */
   peerKey: string;
-  /** The device's dialable addresses; empty for a phone. Stored on its `CadrePeer` row. */
-  multiaddrs: string[];
+  /**
+   * The device's own address record for its `CadrePeer` row, self-signed for the invitation's
+   * party as `CadreNode.registerSelf` signs it (`signPeerRecord`); `addrs` is empty for a phone.
+   * The member stores `addrs` and, when the signature verifies over them, the rest of the
+   * record too ({@link admittedRecord}), so the device's first publish is its admission.
+   */
+  record: RedeemSelfRecord;
   /** Single-use nonce the device minted (`generateStampId`); both signatures cover it. */
   usageStampId: string;
   /** By `invitePrivateKey` over the `'redeem'` digest. */
@@ -336,17 +348,59 @@ export function isWellFormedCadreInviteRow(value: unknown): value is CadreInvite
     && isBoundedString(row.issuerSig);
 }
 
+/**
+ * The record's other fields are left to {@link admittedRecord}: a bad value there costs the
+ * device its signature on the row, not its admission.
+ */
 function isWellFormedRedeemRequest(value: unknown): value is CadreInviteRedeemRequest {
   if (typeof value !== 'object' || value === null) return false;
-  const { v, partyId, invite, peerKey, multiaddrs, usageStampId, inviteSig, peerSig } = value as Record<string, unknown>;
-  return v === 1
+  const { v, partyId, invite, peerKey, record, usageStampId, inviteSig, peerSig } = value as Record<string, unknown>;
+  return v === 2
     && isBoundedString(partyId)
     && isWellFormedCadreInviteRow(invite)
     && isEd25519KeyB64(peerKey)
-    && Array.isArray(multiaddrs)
+    && typeof record === 'object' && record !== null && Array.isArray((record as Record<string, unknown>).addrs)
     && isBoundedString(usageStampId)
     && isBoundedString(inviteSig)
     && isBoundedString(peerSig);
+}
+
+/** What the member writes on the device's `CadrePeer` row from the request's record. */
+interface AdmittedRecord {
+  /** The record's addresses, sanitized ({@link sanitizeAddrs}): stored whether or not the rest is. */
+  addrs: string[];
+  /** The record's freshness, profile and signature, or null when they cannot be stored as the device's own. */
+  signed: Pick<PeerAddressRecord, 'updatedAt' | 'profile' | 'sig'> | null;
+  /** Why `signed` is null; absent when it is not. */
+  unsignedBecause?: string;
+}
+
+/**
+ * Judge the device's record (`request.record`) for its admission row. The signature covers the
+ * exact address list, so it is kept only when sanitizing dropped nothing, the profile is one the
+ * schema's `KnownProfile` check admits, the stamp and signature are in their stored forms, and
+ * the signature verifies for `partyId` under the device's key. Anything less admits the device
+ * with its addresses and no signature, as an owner-written row is, and the device's next
+ * publish fills it in. No clock check: a stamp in the future or the past is one the device's own
+ * self-publish could write too.
+ */
+function admittedRecord(partyId: string, remotePeerId: string, request: Pick<CadreInviteRedeemRequest, 'peerKey' | 'record'>): AdmittedRecord {
+  const { addrs: offered, updatedAt, profile, sig } = request.record as Partial<Record<keyof RedeemSelfRecord, unknown>>;
+  const addrs = sanitizeAddrs(offered);
+  const unsigned = (because: string): AdmittedRecord => ({ addrs, signed: null, unsignedBecause: because });
+  if (!Array.isArray(offered) || addrs.length !== offered.length || addrs.some((addr, i) => addr !== offered[i])) {
+    return unsigned('sanitizing changed the signed address list');
+  }
+  if (profile !== null && profile !== 'transaction' && profile !== 'storage') {
+    return unsigned('unknown profile');
+  }
+  if (typeof updatedAt !== 'number' || !Number.isSafeInteger(updatedAt) || updatedAt <= 0 || !isBoundedString(sig)) {
+    return unsigned('malformed stamp or signature');
+  }
+  if (!verifyPeerRecordSignature(partyId, { peerId: remotePeerId, publicKey: request.peerKey, addrs, updatedAt, profile, sig })) {
+    return unsigned('signature does not verify');
+  }
+  return { addrs, signed: { updatedAt, profile, sig } };
 }
 
 /**
@@ -411,22 +465,26 @@ export interface RedeemSigner {
  * (invitation key, `usageStampId`, device key) for the invitation's party. The same bytes
  * the schema verifies at the member (`cadreInviteRedeemMessage` / `cadreInviteConsentMessage`),
  * whose own `party_id()` must therefore be the party the bundle names.
+ *
+ * @param record - the device's address record, already signed for the invitation's party over
+ *   sanitized addresses ({@link sanitizeAddrs}); copied in unchanged, since the signature
+ *   covers the exact list.
  */
 export function signRedeemRequest(
   invitation: CadreInvitation,
   signer: RedeemSigner,
   usageStampId: string,
-  multiaddrs: string[]
+  record: RedeemSelfRecord
 ): CadreInviteRedeemRequest {
   const fields = { inviteKey: invitation.invite.key, usageStampId, peerKey: signer.peerKey };
   const signB64 = (message: Uint8Array, privateKey: string): string =>
     sign(message, privateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
   return {
-    v: 1,
+    v: 2,
     partyId: invitation.partyId,
     invite: invitation.invite,
     peerKey: signer.peerKey,
-    multiaddrs: sanitizeAddrs(multiaddrs),
+    record: { addrs: [...record.addrs], updatedAt: record.updatedAt, profile: record.profile, sig: record.sig },
     usageStampId,
     inviteSig: signB64(cadreInviteRedeemMessage(invitation.partyId, fields), invitation.invitePrivateKey),
     peerSig: signB64(cadreInviteConsentMessage(invitation.partyId, fields), signer.peerPrivateKey)
@@ -546,13 +604,18 @@ export class CadreInviteHandler extends MemberRedemptionHandler<CadreInviteRedee
     // connection gate read it when the device connected), and the redemption's commit drops it.
     // The list lacks the device's own row, which the device drops from it anyway.
     const peers = await this.peersBestEffort();
+    const record = admittedRecord(this.partyId, remotePeerId, request);
+    if (record.signed === null) {
+      log('admitting %s without its own record signature: %s', remotePeerId, record.unsignedBecause);
+    }
     try {
       const result = await this.store.redeemCadreInvite({
         inviteKey: request.invite.key,
         ...(held ? { held } : {}),
         peerId: remotePeerId,
         peerKey: request.peerKey,
-        multiaddrs: sanitizeAddrs(request.multiaddrs),
+        multiaddrs: record.addrs,
+        ...(record.signed ? { record: record.signed } : {}),
         usageStampId: request.usageStampId,
         inviteSig: request.inviteSig,
         peerSig: request.peerSig
