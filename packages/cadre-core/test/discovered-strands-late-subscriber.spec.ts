@@ -93,7 +93,7 @@ interface CadreNodeInternals {
 	handleStrandRemoved(strandId: string): Promise<void>;
 }
 
-/** Poll interval the bare harness runs at — and therefore its first retry backoff. */
+/** Watcher backstop the bare harness runs at — and therefore its first retry backoff. */
 const BARE_POLL_INTERVAL_MS = 5_000;
 
 /** The bare harness: a real watcher and a real (never-started) node, wired to each other. */

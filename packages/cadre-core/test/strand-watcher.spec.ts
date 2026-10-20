@@ -33,7 +33,7 @@ describe('StrandWatcher', () => {
       expect(watcher.getKnownStrands().size).toBe(0);
     });
 
-    it('should accept custom filter and poll interval', () => {
+    it('should accept custom filter and backstop', () => {
       const queryable = createMockQueryable(() => []);
       const callbacks: StrandWatcherCallbacks = {
         onStrandAdded: async () => {},
@@ -526,6 +526,30 @@ describe('StrandWatcher', () => {
         await vi.advanceTimersByTimeAsync(60_000);
         expect(reads, 'start, retry, then only the backstop run').toBe(3);
         expect(addCount).toBe(2);
+
+        await watcher.stop();
+      });
+
+      it('does not wake again for an expired backoff on a strand its filter skips', async () => {
+        // A failed claim hands the strand back (`forgetStrand`) even when the filter rejects
+        // it, so its backoff entry outlives the expiry; re-arming on it would re-run at once,
+        // every run.
+        vi.useFakeTimers();
+        let reads = 0;
+        const queryable: StrandQueryable = {
+          queryStrands: async () => { reads++; return [createStrand('rejected-strand')]; }
+        };
+        const callbacks: StrandWatcherCallbacks = { onStrandAdded: async () => {}, onStrandRemoved: async () => {} };
+        const watcher = new StrandWatcher(queryable, callbacks, { mode: 'strandId', strandId: 'other' }, 60_000);
+        await watcher.start();
+        await vi.advanceTimersByTimeAsync(100);
+
+        watcher.forgetStrand('rejected-strand');
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(reads, 'start, then the run the backoff expiry wakes').toBe(2);
+
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(reads).toBe(2);
 
         await watcher.stop();
       });

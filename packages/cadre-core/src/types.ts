@@ -1787,10 +1787,10 @@ export interface CadreNodeEvents {
    * row is the product of the formation's consent, so claiming it needs no second one.
    *
    * **Fired once per strand per session, and it can fire before your listener is
-   * attached.** The strand watcher's first poll runs inside `CadreNode.start()`
+   * attached.** The strand watcher's first run is inside `CadreNode.start()`
    * (100 ms after the watcher starts), so every strand already stored for this
    * party is normally offered while the embedding app is still inside its own
-   * `start()` await. The watcher then records the strand as seen and no later poll
+   * `start()` await. The watcher then records the strand as seen and no later run
    * re-offers it, so a listener attached a moment late misses those strands for the
    * life of the process.
    *

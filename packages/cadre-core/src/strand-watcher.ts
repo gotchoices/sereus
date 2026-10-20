@@ -202,8 +202,10 @@ export class StrandWatcher {
   }
 
   /**
-   * One run: read, reconcile, then arm the follow-up runs this run needs. The watch clears
-   * every pending wake when a run starts, so each run re-arms the retries still owed.
+   * One run: read, reconcile, then arm the follow-up runs this run needs. A run the watch
+   * starts clears every pending wake, so each run re-arms the retries still owed. A
+   * {@link forcePoll} run clears none, so what it arms may sit beside an equivalent wake;
+   * whichever fires first runs and clears the other.
    */
   private async runOnce(): Promise<void> {
     const startedAt = this.now();

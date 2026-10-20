@@ -1318,7 +1318,7 @@ export class CadreNode implements SAppIdLookup {
       // loaded before the first reconcile pass could consult them.
       this.initializeBootstrapPeerStore();
 
-      // The remembered cross-party joins, which the strand watcher built below polls
+      // The remembered cross-party joins, which the strand watcher built below reads
       // beside the control rows. Before network bring-up, so a mis-scoped injected store
       // fails closed like the two above.
       this.initializeJoinedStrandStore();
