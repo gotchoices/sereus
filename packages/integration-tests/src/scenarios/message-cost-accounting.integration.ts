@@ -75,6 +75,13 @@
  * The strand row is sereus `a19c28aa`, where the strand watcher, the pending-join runner and the
  * revocation enforcer also run on change instead of on a timer.
  *
+ * 38 of the strand settle window's 73 gets (33 from `consumeInvite`, 5 from
+ * `registerMemberPeer`) and B's 20 `/cluster` streams to A are B's single invitation redemption
+ * and its `MemberPeer` binding commit. They land in the settle window because "A sees B insert"
+ * waits for B's `App.Seat` row, not its `Strand.Member` row, and the membership reconciler
+ * redeems in the background. `DEBUG='sereus:cadre:strand-membership*'` shows one
+ * `Consumed invite` and no retry.
+ *
  * The two-machine idle minute is the headline. On 2026-10-19 nearly every idle control read
  * became a `sync` request to the sibling (Optimystic's background check of a block read more
  * than 10 s after its last check, and a consult for every read of a never-written table). Now
