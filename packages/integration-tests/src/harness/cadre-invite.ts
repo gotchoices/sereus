@@ -42,7 +42,7 @@ export interface PinningMemberOptions {
 	 * production storage profile does. Default false: the member runs no strand at all.
 	 */
 	hostUnclaimedStrands?: boolean;
-	/** The member's strand watcher poll cadence; meaningful only with {@link hostUnclaimedStrands}. */
+	/** The member's strand watcher backstop; meaningful only with {@link hostUnclaimedStrands}. */
 	strandWatchMs?: number;
 }
 

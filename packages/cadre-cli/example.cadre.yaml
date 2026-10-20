@@ -122,6 +122,7 @@ hibernation:
   enabled: true
   defaultLatencyHint: interactive  # realtime, interactive, background, archive
 
-# Strand watcher polling interval (ms)
-strandWatchInterval: 5000
+# Strand watcher backstop (ms): the watcher re-reads its tables on every change to them,
+# and at least this often when no change is heard
+strandWatchInterval: 300000
 

@@ -203,7 +203,7 @@ describe('StrandWatcher', () => {
   });
 
   describe('failed launch retry', () => {
-    // pollInterval is the backoff base: first retry is due `pollInterval` ms after
+    // The backoff base is min(interval, 5 s): first retry is due `INTERVAL` ms after
     // the failure, then 2x, 4x, ... A small interval keeps the injected clock readable.
     const INTERVAL = 1000;
 
@@ -211,8 +211,8 @@ describe('StrandWatcher', () => {
     interface Clock { now: number }
 
     /**
-     * Watcher wired to `clock` instead of `Date.now`. The real initial/interval
-     * timers, should they fire mid-test, read the same clock — so a stray poll
+     * Watcher wired to `clock` instead of `Date.now`. The real initial, retry and
+     * backstop timers, should they fire mid-test, read the same clock — so a stray run
      * behaves identically to a `pollAt` at the current time (a no-op while the
      * strand is backing off) rather than a nondeterministic extra attempt.
      */
@@ -477,7 +477,7 @@ describe('StrandWatcher', () => {
         onStrandRemoved: async () => {}
       };
 
-      // 60 s interval: uncapped, the 10th failure would schedule 60s * 2^9 = ~8.5 hours.
+      // 60 s interval, so a 5 s base: uncapped, the 10th failure would schedule 5s * 2^9 = ~43 minutes.
       const clock: Clock = { now: 0 };
       const watcher = createWatcher(queryable, callbacks, clock, 60_000);
       await watcher.start();
@@ -488,6 +488,47 @@ describe('StrandWatcher', () => {
       expect(addCount).toBe(12);
 
       await watcher.stop();
+    });
+
+    describe('on its own schedule', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('retries a failed launch on its own, without a change or the backstop', async () => {
+        // Installed before the watcher is built: its clock defaults to `Date.now` and its
+        // timer-only watch reads the global timers, so both follow the fake clock.
+        vi.useFakeTimers();
+        let reads = 0;
+        const queryable: StrandQueryable = {
+          queryStrands: async () => { reads++; return [createStrand('flaky-strand')]; }
+        };
+        let addCount = 0;
+        const callbacks: StrandWatcherCallbacks = {
+          onStrandAdded: async () => {
+            addCount++;
+            if (addCount === 1) throw new Error('launch failed');
+          },
+          onStrandRemoved: async () => {}
+        };
+
+        // 60 s backstop, so the retry base is 5 s.
+        const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, 60_000);
+        await watcher.start();
+
+        await vi.advanceTimersByTimeAsync(100);
+        expect(addCount).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(addCount).toBe(2);
+        expect(watcher.getKnownStrands().has('flaky-strand')).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(reads, 'start, retry, then only the backstop run').toBe(3);
+        expect(addCount).toBe(2);
+
+        await watcher.stop();
+      });
     });
   });
 });

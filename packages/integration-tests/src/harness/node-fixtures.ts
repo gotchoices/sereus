@@ -118,7 +118,7 @@ export interface ControlNodeOpts {
   storageProvider?: RawStorageProvider;
   /** Override the proactive control-cohort reconcile cadence (ms). */
   reconcileMs?: number;
-  /** Override the strand watcher poll cadence (ms; `CadreNode` default 5000). */
+  /** Override the strand watcher backstop (ms; `CadreNode` default 300000). */
   strandWatchMs?: number;
   /**
    * Becomes `strandClusterSize` verbatim — the replication breadth every strand this node
@@ -444,7 +444,7 @@ export interface StartedPairNodes {
  * teardown can hand in its own array and stop a half-built pair; pass nothing when the
  * caller owns shutdown itself.
  *
- * `opts.strandWatchMs` overrides the strand watcher poll cadence on BOTH nodes.
+ * `opts.strandWatchMs` overrides the strand watcher backstop on BOTH nodes.
  */
 export async function startPairNodes(
   partyId: string,
@@ -480,9 +480,10 @@ export async function startPairNodes(
  * `partyId` is built as `${partyIdPrefix}-${tag}-<timestamp>`; pass `partyIdPrefix` to
  * keep an existing scenario's party-id namespacing (default `'ctrl'`).
  *
- * `opts.strandWatchMs` overrides the strand watcher poll cadence on BOTH nodes —
- * scenarios asserting watcher-driven convergence need a cadence shorter than the
- * 5 s `CadreNode` default so their quiet-window assertions stay affordable.
+ * `opts.strandWatchMs` overrides the strand watcher backstop on BOTH nodes — a
+ * scenario asserting watcher-driven convergence passes one far shorter than the 5-minute
+ * `CadreNode` default, so a change the watcher does not hear still converges inside its
+ * quiet window.
  *
  * Caller owns shutdown of a boot that RETURNS; a boot that THROWS hands back no node
  * handles, so it stops whatever it already started itself — same contract as

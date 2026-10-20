@@ -116,7 +116,7 @@ hibernation:
   enabled: ${CADRE_HIBERNATION_ENABLED:-true}
   defaultLatencyHint: ${CADRE_LATENCY_HINT:-interactive}
 
-strandWatchInterval: ${CADRE_STRAND_WATCH_INTERVAL:-5000}
+strandWatchInterval: ${CADRE_STRAND_WATCH_INTERVAL:-300000}
 EOF
 
   # Add strand filter if specified.

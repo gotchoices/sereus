@@ -939,7 +939,11 @@ export interface CadreNodeConfig {
   /** Hibernation configuration */
   hibernation?: HibernationConfig;
 
-  /** Polling interval for strand watcher in ms (default: 5000) */
+  /**
+   * The strand watcher's backstop in ms (default 300000): the longest it goes without
+   * re-reading `Strand` and `JoinedStrand` when no change to them is heard. It otherwise runs
+   * on a change. Also caps the first step of its retry ladders, which is 5 s otherwise.
+   */
   strandWatchInterval?: number;
 
   /**

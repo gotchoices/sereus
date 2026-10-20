@@ -75,7 +75,15 @@ export function watchTables(
   onChange: () => Promise<void>,
   options: TableChangeWatchOptions,
 ): TableChangeWatch {
-  return new TableChangeWatcher(db, tables, onChange, options);
+  return new TableChangeWatcher({ db, tables }, onChange, options);
+}
+
+/**
+ * {@link watchTables}' schedule — single-flight runs, `trigger`, the backstop — with no table
+ * subscription, for a consumer with no database to watch (tests, fakes).
+ */
+export function scheduleRuns(onChange: () => Promise<void>, options: TableChangeWatchOptions): TableChangeWatch {
+  return new TableChangeWatcher(undefined, onChange, options);
 }
 
 /**
@@ -116,8 +124,14 @@ interface Wake {
   handle: unknown;
 }
 
+/** The tables a {@link TableChangeWatcher} subscribes to; absent for {@link scheduleRuns}. */
+interface WatchedTables {
+  db: Database;
+  tables: readonly string[];
+}
+
 class TableChangeWatcher implements TableChangeWatch {
-  private readonly subscription: Subscription;
+  private readonly subscription: Subscription | undefined;
   /** The consumer's name for each watched table, by Quereus's lowercased `schema.table` key. */
   private readonly names = new Map<string, string>();
   private readonly scheduler: TimeoutScheduler;
@@ -136,18 +150,13 @@ class TableChangeWatcher implements TableChangeWatch {
   private warnedThenable = false;
 
   constructor(
-    db: Database,
-    tables: readonly string[],
+    watched: WatchedTables | undefined,
     private readonly onChange: () => Promise<void>,
     private readonly options: TableChangeWatchOptions,
   ) {
     this.scheduler = options.scheduler ?? defaultTimeoutScheduler;
     this.coalesceMs = options.coalesceMs ?? TABLE_CHANGE_COALESCE_MS;
-    const watches = tables.map(fullTableWatch);
-    watches.forEach((watch, i) => this.names.set(tableKey(watch), tables[i]));
-    const scope: ChangeScope = { watches, nonDeterministicSources: [], unboundParameters: [] };
-    // Returns undefined, so Quereus never awaits consumer work inside a commit.
-    this.subscription = db.watch(scope, event => this.handleChange(event));
+    this.subscription = watched && this.subscribe(watched);
     this.armBackstop();
   }
 
@@ -162,8 +171,16 @@ class TableChangeWatcher implements TableChangeWatch {
       return;
     }
     this.disposed = true;
-    this.subscription.unsubscribe();
+    this.subscription?.unsubscribe();
     this.clearWakes();
+  }
+
+  private subscribe({ db, tables }: WatchedTables): Subscription {
+    const watches = tables.map(fullTableWatch);
+    watches.forEach((watch, i) => this.names.set(tableKey(watch), tables[i]));
+    const scope: ChangeScope = { watches, nonDeterministicSources: [], unboundParameters: [] };
+    // Returns undefined, so Quereus never awaits consumer work inside a commit.
+    return db.watch(scope, event => this.handleChange(event));
   }
 
   /** Runs inside the committing call, possibly under the control write lock: flags and a timer only. */

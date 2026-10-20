@@ -516,7 +516,7 @@ function projectStrands(rows: StrandRow[], instances: Map<string, StrandInstance
  *
  * Side-effect free: unlike `cadre strand list`, which forces a watcher poll because a
  * one-shot node has only just connected, the owner node behind this channel is
- * long-lived with a watcher already polling.
+ * long-lived with a watcher already running.
  */
 async function listStrands(node: CadreNode): Promise<AdminStrandList> {
   const rows = await requireControlDatabase(node).queryStrands();

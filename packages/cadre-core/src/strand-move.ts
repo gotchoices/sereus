@@ -284,8 +284,8 @@ function settledStrands(report: StrandMoveReport): SettledStrands {
 }
 
 /**
- * Seat one strand, in the order the adopting node's strand watcher demands. The watcher polls
- * `Strand` and `JoinedStrand` every five seconds and launches, or offers, a new row at once; a
+ * Seat one strand, in the order the adopting node's strand watcher demands. The watcher runs
+ * on every change to `Strand` and `JoinedStrand` and launches, or offers, a new row at once; a
  * closed strand's founder launch resolves the party key and, finding none, mints a fresh one,
  * which would found the strand a second time under a stranger's identity. So the party key is
  * seated before the row, and the strand's peers (its saved routing table and carried addresses)

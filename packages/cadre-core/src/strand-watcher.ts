@@ -1,4 +1,6 @@
 import debug from 'debug';
+import { scheduleRuns } from './table-change-watch.js';
+import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
 import type { StrandFilter, StrandRow } from './types.js';
 
 const log = debug('sereus:cadre:strand-watcher');
@@ -7,7 +9,7 @@ const log = debug('sereus:cadre:strand-watcher');
  * Outcome of evaluating a strand against the current filter.
  * - `pass`: admit (final)
  * - `reject`: exclude
- * - `defer`: admit provisionally; sAppId not yet known, re-evaluate next poll
+ * - `defer`: admit provisionally; sAppId not yet known, re-evaluate when it is learned
  */
 type FilterDecision = 'pass' | 'reject' | 'defer';
 
@@ -15,9 +17,33 @@ type FilterDecision = 'pass' | 'reject' | 'defer';
  * Ceiling on the retry delay for a strand whose launch keeps failing. Attempts
  * are never abandoned — the failure this backoff exists for (a transient network
  * or storage fault) can last a long time — but a permanently-unlaunchable strand
- * must not re-attempt on every poll and storm the host app with `strand:error`.
+ * must not re-attempt on every run and storm the host app with `strand:error`.
  */
 const MAX_RETRY_BACKOFF_MS = 5 * 60 * 1000;
+
+/**
+ * Default backstop: the longest the watcher goes without re-reading when no change to
+ * `Strand` or `JoinedStrand` is heard (`docs/architecture.md` → "Table change subscriptions"
+ * says what the change subscription misses).
+ *
+ * NOTE: on a cadre larger than `CONTROL_REPLICATION_BREADTH` (16), a machine outside the
+ * `Strand` block's cohort hears no change event, so this backstop is its only path and a
+ * strand founded elsewhere reaches it up to 5 minutes later. If that matters, shorten the
+ * backstop for such machines rather than for everyone.
+ */
+export const DEFAULT_STRAND_WATCH_BACKSTOP_MS = 5 * 60 * 1000;
+
+/**
+ * First step of the launch-retry and read-retry ladders, unless the backstop is shorter: a
+ * test or scenario that passes a short interval keeps the short base it always had.
+ */
+const LAUNCH_RETRY_BASE_MS = 5000;
+
+/** Ceiling on the read-retry ladder (see `StrandWatcher.scheduleReadRetry`), unless the backstop is shorter. */
+const READ_RETRY_CAP_MS = 60_000;
+
+/** Delay before the first run, so `start()` never reads synchronously. */
+const INITIAL_RUN_DELAY_MS = 100;
 
 /** Per-strand consecutive-failure state driving the launch retry backoff. */
 interface StrandFailureState {
@@ -45,10 +71,14 @@ export interface StrandWatcherCallbacks {
 }
 
 /**
- * Interface for querying strands from control network
+ * What the watcher reads, and how it hears that what it reads changed.
  */
 export interface StrandQueryable {
   queryStrands(): Promise<StrandRow[]>;
+  /** Subscribe to changes of the tables {@link queryStrands} reads. Absent: runs come from `trigger` and the backstop only. */
+  watchChanges?(onChange: () => Promise<void>, options: TableChangeWatchOptions): TableChangeWatch;
+  /** True when the last {@link queryStrands} answered part of its result from a stand-in after a failed read. */
+  lastReadPartial?(): boolean;
 }
 
 /**
@@ -63,11 +93,16 @@ export interface SAppIdLookup {
  * Watches the control network's Strand table for changes and triggers
  * strand instance start/stop via callbacks.
  *
- * Uses polling until Optimystic supports reactive subscriptions.
+ * Every read is one run on a {@link TableChangeWatch}: once at start, on a change to the
+ * tables the queryable reads, on the watcher's own retries, and on the backstop.
  */
 export class StrandWatcher {
   private readonly filter: StrandFilter;
-  private readonly pollInterval: number;
+  /** Longest gap between runs when no change is heard. */
+  private readonly backstopMs: number;
+  /** First step of the launch-retry and read-retry ladders. */
+  private readonly retryBaseMs: number;
+  private readonly readRetryCapMs: number;
   private readonly callbacks: StrandWatcherCallbacks;
   private readonly queryable: StrandQueryable;
   private readonly sAppIdLookup?: SAppIdLookup;
@@ -81,7 +116,7 @@ export class StrandWatcher {
   private readonly now: () => number;
 
   private knownStrands: Map<string, StrandRow> = new Map();
-  /** Ids admitted under a `defer` decision; re-evaluated each poll until they resolve. */
+  /** Ids admitted under a `defer` decision; re-evaluated each run until they resolve. */
   private provisional: Set<string> = new Set();
   /** Ids whose last launch attempt threw, with the backoff gating their retry. */
   private failureStates: Map<string, StrandFailureState> = new Map();
@@ -92,31 +127,39 @@ export class StrandWatcher {
    * strand, the permanence has to be recorded explicitly.
    */
   private suppressed: Set<string> = new Set();
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private initialPollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Consecutive runs whose read failed or was partial; drives {@link scheduleReadRetry}. */
+  private readFailures = 0;
+  /** Built by {@link start}, disposed by {@link stop}; a restart builds a new one. */
+  private watch: TableChangeWatch | null = null;
   private running = false;
 
+  /**
+   * @param backstopMs - `CadreNodeConfig.strandWatchInterval`: the longest the watcher goes
+   *   without re-reading when no change is heard. Also caps the retry ladders' first step.
+   */
   constructor(
     queryable: StrandQueryable,
     callbacks: StrandWatcherCallbacks,
     filter: StrandFilter = { mode: 'all' },
-    pollInterval: number = 5000,
+    backstopMs: number = DEFAULT_STRAND_WATCH_BACKSTOP_MS,
     sAppIdLookup?: SAppIdLookup,
     now: () => number = Date.now
   ) {
     this.queryable = queryable;
     this.callbacks = callbacks;
     this.filter = filter;
-    this.pollInterval = pollInterval;
+    this.backstopMs = backstopMs;
+    this.retryBaseMs = Math.min(backstopMs, LAUNCH_RETRY_BASE_MS);
+    this.readRetryCapMs = Math.min(backstopMs, READ_RETRY_CAP_MS);
     this.sAppIdLookup = sAppIdLookup;
     this.now = now;
-    log('StrandWatcher created with filter: %o, interval: %dms', filter, pollInterval);
+    log('StrandWatcher created with filter: %o, backstop: %dms', filter, backstopMs);
   }
 
   /**
    * Evaluate a strand against the current filter, distinguishing a not-yet-known
    * sAppId (`defer`) from a known non-match (`reject`). A `defer` admission is
-   * provisional and re-checked on subsequent polls.
+   * provisional and re-checked on subsequent runs (see {@link sAppIdLearned}).
    */
   private evaluateFilter(strand: StrandRow): FilterDecision {
     switch (this.filter.mode) {
@@ -133,7 +176,7 @@ export class StrandWatcher {
         }
         const sAppId = this.sAppIdLookup.getSAppId(strand.Id);
         if (sAppId === undefined) {
-          // sAppId not yet known - admit provisionally and re-evaluate next poll.
+          // sAppId not yet known - admit provisionally and re-evaluate once it is learned.
           log('sAppId unknown for strand %s - deferring filter decision', strand.Id);
           return 'defer';
         }
@@ -149,20 +192,71 @@ export class StrandWatcher {
 
   /**
    * Record a failed launch attempt and schedule when the strand may be retried:
-   * `pollInterval * 2^(failures-1)`, capped at {@link MAX_RETRY_BACKOFF_MS}.
+   * `retryBaseMs * 2^(failures-1)`, capped at {@link MAX_RETRY_BACKOFF_MS}.
    */
   private recordFailure(strandId: string): void {
     const failures = (this.failureStates.get(strandId)?.failures ?? 0) + 1;
-    const delay = Math.min(this.pollInterval * 2 ** (failures - 1), MAX_RETRY_BACKOFF_MS);
+    const delay = Math.min(this.retryBaseMs * 2 ** (failures - 1), MAX_RETRY_BACKOFF_MS);
     this.failureStates.set(strandId, { failures, nextAttemptAt: this.now() + delay });
     log('Strand %s launch failed (%d consecutive) - next attempt in %dms', strandId, failures, delay);
   }
 
   /**
-   * Poll for strand changes.
+   * One run: read, reconcile, then arm the follow-up runs this run needs. The watch clears
+   * every pending wake when a run starts, so each run re-arms the retries still owed.
    */
-  private async poll(): Promise<void> {
-    if (!this.running) return;
+  private async runOnce(): Promise<void> {
+    const startedAt = this.now();
+    const readComplete = await this.poll();
+    if (this.running) {
+      this.scheduleLaunchRetry(startedAt);
+      this.scheduleReadRetry(readComplete);
+    }
+  }
+
+  /**
+   * Wake for the earliest launch retry falling due after `since`. A backoff that expired at
+   * or before `since` belongs to a strand the run starting then either attempted or skipped
+   * for a reason other than backoff (suppressed, filtered out); waking for it would spin.
+   * Without this a failed launch would wait for an unrelated change or the backstop.
+   */
+  private scheduleLaunchRetry(since: number): void {
+    let earliest = Infinity;
+    for (const { nextAttemptAt } of this.failureStates.values()) {
+      if (nextAttemptAt > since) {
+        earliest = Math.min(earliest, nextAttemptAt);
+      }
+    }
+    if (earliest !== Infinity) {
+      this.watch?.trigger(Math.max(0, earliest - this.now()));
+    }
+  }
+
+  /**
+   * After a failed or partial read, run again on a ladder from `retryBaseMs`, doubling per
+   * consecutive failed run up to `readRetryCapMs`; a complete read resets it. Not left to
+   * the backstop because the plugin arms a table's replicated-change bridge on the table's
+   * first successful initialization: a machine whose first read failed (cut off from its
+   * party, or its sibling unreachable for a never-written `JoinedStrand`) would otherwise
+   * hear nothing until then.
+   */
+  private scheduleReadRetry(readComplete: boolean): void {
+    if (readComplete) {
+      this.readFailures = 0;
+      return;
+    }
+    this.readFailures++;
+    const delay = Math.min(this.retryBaseMs * 2 ** (this.readFailures - 1), this.readRetryCapMs);
+    log('Strand read incomplete (%d consecutive) - re-reading in %dms', this.readFailures, delay);
+    this.watch?.trigger(delay);
+  }
+
+  /**
+   * Read and reconcile. Resolves true when the read answered in full: false when it threw,
+   * or when the queryable answered part of it from a stand-in.
+   */
+  private async poll(): Promise<boolean> {
+    if (!this.running) return true;
 
     try {
       const currentStrands = await this.queryable.queryStrands();
@@ -173,17 +267,17 @@ export class StrandWatcher {
         if (this.suppressed.has(strand.Id)) continue; // deliberately stopped locally
         if (this.knownStrands.has(strand.Id)) continue;
         const failure = this.failureStates.get(strand.Id);
-        // Clock read per candidate, not once per poll: an earlier strand's launch
+        // Clock read per candidate, not once per run: an earlier strand's launch
         // may have taken a long time, and this one's gate must reflect that.
         if (failure && this.now() < failure.nextAttemptAt) continue; // backing off after a failed launch
         const decision = this.evaluateFilter(strand);
         if (decision === 'reject') continue;
         log('Strand added: %s', strand.Id);
-        // Set BEFORE the await: this doubles as the in-flight guard that stops the
-        // interval timer from starting a second concurrent launch for the same strand.
+        // Set BEFORE the await: this doubles as the in-flight guard that stops a
+        // concurrent run (`forcePoll` beside a scheduled one) from launching the strand twice.
         this.knownStrands.set(strand.Id, strand);
         if (decision === 'defer') {
-          // Provisional admission: sAppId unknown, re-check on later polls.
+          // Provisional admission: sAppId unknown, re-check on later runs.
           this.provisional.add(strand.Id);
         }
         try {
@@ -215,7 +309,7 @@ export class StrandWatcher {
             log('Error handling strand remove for %s: %o', strandId, error);
           }
         }
-        // decision === 'defer': still unknown, leave provisional for next poll.
+        // decision === 'defer': still unknown, leave provisional until sAppIdLearned wakes a run.
       }
 
       // Find removed strands. A strand whose launch failed is no longer in
@@ -242,8 +336,8 @@ export class StrandWatcher {
           this.failureStates.delete(strandId);
         }
       }
-      // NOTE: the clear needs a poll that actually SEES the row absent, so a sibling that
-      // unpublishes and re-publishes a locally-stopped id inside one poll interval leaves
+      // NOTE: the clear needs a run that actually SEES the row absent, so a sibling that
+      // unpublishes and re-publishes a locally-stopped id between two runs leaves
       // it suppressed for the session. Contrived today — re-seating a removed id is
       // owner-gated and manual — and there is no row version to distinguish the new row
       // from the old. If re-publishing a removed id ever becomes routine, give the row a
@@ -253,14 +347,17 @@ export class StrandWatcher {
           this.suppressed.delete(strandId);
         }
       }
+      return !(this.queryable.lastReadPartial?.() ?? false);
     } catch (error) {
       // NOTE: a machine cut off from its party before it ever received the `Strand` block
-      // fails this read `cohort-unreachable` on every poll and logs here (observed in
-      // `control-cohort-edge-carries-data`). Harmless: nothing was ever launched from a block
-      // this machine never held, and this catch keeps the known set. Do not answer it as
-      // empty the way `ControlDatabase.queryRevokedStamps` does for `Revocation` — an empty
-      // answer here runs the removed-strand loop above. Revisit if the log volume matters.
+      // fails this read `cohort-unreachable` on every step of the read-retry ladder and logs
+      // here (observed in `control-cohort-edge-carries-data`). Harmless: nothing was ever
+      // launched from a block this machine never held, and this catch keeps the known set. Do
+      // not answer it as empty the way `ControlDatabase.queryRevokedStamps` does for
+      // `Revocation` — an empty answer here runs the removed-strand loop above. Revisit if
+      // the log volume matters.
       log('Error polling strands: %o', error);
+      return false;
     }
   }
 
@@ -274,21 +371,22 @@ export class StrandWatcher {
     }
 
     log('Starting StrandWatcher');
+    // Subscribed before the first read, so a commit landing between them is either seen by
+    // that read or wakes a follow-up run.
+    this.watch = this.subscribe();
     this.running = true;
-
-    // Set up periodic polling
-    this.pollTimer = setInterval(() => {
-      void this.poll();
-    }, this.pollInterval);
-
-    // Defer the first poll so start() doesn't block the caller.
-    // Strands added via addStrand() typically arrive after start() completes.
-    this.initialPollTimer = setTimeout(() => {
-      this.initialPollTimer = null;
-      void this.poll();
-    }, 100);
+    // Deferred so start() doesn't block the caller; strands added via addStrand()
+    // typically arrive after start() completes.
+    this.watch.trigger(INITIAL_RUN_DELAY_MS);
 
     log('StrandWatcher started');
+  }
+
+  /** The watch every run goes through: the queryable's change subscription, or a timer-only one. */
+  private subscribe(): TableChangeWatch {
+    const onChange = (): Promise<void> => this.runOnce();
+    const options: TableChangeWatchOptions = { label: 'strand-watcher', backstopMs: this.backstopMs };
+    return this.queryable.watchChanges?.(onChange, options) ?? scheduleRuns(onChange, options);
   }
 
   /**
@@ -301,27 +399,22 @@ export class StrandWatcher {
 
     log('Stopping StrandWatcher');
     this.running = false;
-
-    if (this.initialPollTimer) {
-      clearTimeout(this.initialPollTimer);
-      this.initialPollTimer = null;
-    }
-
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
+    // A run already in flight finishes; `running` keeps it from arming anything further.
+    this.watch?.dispose();
+    this.watch = null;
 
     this.knownStrands.clear();
     this.provisional.clear();
     this.failureStates.clear();
     this.suppressed.clear();
+    this.readFailures = 0;
     log('StrandWatcher stopped');
   }
 
   /**
-   * Forget a strand whose launch failed outside this watcher, so a later poll
-   * re-offers it — gated by the same backoff a watcher-driven failure gets.
+   * Forget a strand whose launch failed outside this watcher, so a later run
+   * re-offers it — gated by the same backoff a watcher-driven failure gets, and woken
+   * when that backoff expires.
    *
    * A failed launch normally leaves nothing running (StrandInstanceManager drops the
    * record), which is what makes re-offering it correct. One case does leave something
@@ -335,6 +428,27 @@ export class StrandWatcher {
     this.knownStrands.delete(strandId);
     this.provisional.delete(strandId);
     this.recordFailure(strandId);
+    if (this.running) {
+      this.scheduleLaunchRetry(this.now());
+    }
+  }
+
+  /**
+   * Re-read soon: something the queryable merges in beside the watched tables changed
+   * (`CadreNode`'s machine-local joined-strand records). A no-op once stopped.
+   */
+  refresh(): void {
+    this.watch?.trigger();
+  }
+
+  /**
+   * The host just learned `strandId`'s sAppId: if the strand was admitted provisionally
+   * under an `sAppId` filter, run so the admission resolves now rather than on the backstop.
+   */
+  sAppIdLearned(strandId: string): void {
+    if (this.provisional.has(strandId)) {
+      this.watch?.trigger();
+    }
   }
 
   /**
@@ -379,10 +493,13 @@ export class StrandWatcher {
   }
 
   /**
-   * Force an immediate poll (useful for testing)
+   * Run once now, outside the watch's schedule (tests, and callers that just wrote a row
+   * and want this node to converge before returning). May overlap a scheduled run:
+   * `knownStrands` is updated before each callback's await, so neither launches nor
+   * removes a strand twice.
    */
   async forcePoll(): Promise<void> {
-    await this.poll();
+    await this.runOnce();
   }
 }
 

@@ -96,7 +96,7 @@ const PER_CALL_READS = 6;
 /** Only for {@link settleStart}'s fallback: consult activity must stop for this long. */
 const QUIET_MS = 300;
 
-/** The strand watcher's poll interval and the reconcile interval, pushed past any run. */
+/** The strand watcher's backstop and the reconcile interval, pushed past any run. */
 const IDLE_TIMER_MS = 3_600_000;
 
 /**

@@ -326,7 +326,7 @@ cadre strand list --json          # payload on stdout, progress on stderr — pi
 ```
 
 Remove a strand. This deletes **this party's** `Strand` row, so every cadre node in the party
-stops running the strand on its next watcher poll. Other *parties* in that strand are
+stops running the strand as soon as its strand watcher hears the change. Other *parties* in that strand are
 unaffected — removal withdraws our participation, it does not destroy the network. The write
 is owner-signed, so the node's owner key file must hold one of the party's owner keys ([Make this server an owner](#make-this-server-an-owner)).
 
@@ -405,7 +405,7 @@ says so rather than starting without it.
 | `CADRE_RELAY_ADDRS` | `network.relayAddrs` | Comma-separated circuit-relay dial multiaddrs (each ending in the relay's peer id) to reserve a slot on, so peers can reach this node from behind NAT. The node listens on a bare `/p2p-circuit` alongside `listenAddrs` and reserves at the end of startup, once its control database is up. A malformed entry fails startup, and so does a relay that grants no reservation on the first attempt (~10 s) — naming a relay means the node does not come up without one |
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation (`true`/`false`/`1`/`0`) |
 | `CADRE_LATENCY_HINT` | `hibernation.defaultLatencyHint` | Default latency hint: `realtime`, `interactive`, `background` or `archive` |
-| `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher polling interval in milliseconds |
+| `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher backstop in milliseconds (default 300000): the watcher re-reads on every change to its tables, and at least this often otherwise. Also caps its retry ladders' first step, 5 s otherwise |
 | `CADRE_OWNER_KEY_FILE` | `owner.keyFile` | The owner key file `cadre start --owner`, `cadre start --owner-grant` and the owner-signed commands use ([Make this server an owner](#make-this-server-an-owner)); same format as the identity file, never the same file. Defaults to `owner.key` in the node-state directory. `--owner-key-file <path>` sets this |
 | `CADRE_CLAIM_SECRET_FILE` | `claim.secretFile` | File holding the claim secret, the file form of `CADRE_CLAIM_SECRET` ([Waiting to be claimed](#waiting-to-be-claimed)); `cadre init` writes it. Setting both is refused |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets, the claim record `claim.json`, the removal marker `removed.<partyId>.json`). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |

@@ -133,7 +133,7 @@ export interface CliConfig {
     defaultLatencyHint?: LatencyHint;
   };
 
-  /** Polling interval for strand watcher in ms */
+  /** Strand watcher backstop in ms (default 300000): the longest it goes without re-reading when no change is heard. */
   strandWatchInterval?: number;
 
   /** Node-local state directory (bootstrap-peer store, trusted-owner anchor). */

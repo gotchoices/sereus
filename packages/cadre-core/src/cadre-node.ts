@@ -116,7 +116,7 @@ import {
   verifyDeviceTokenSignature,
   isPushPlatform
 } from './device-token.js';
-import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
+import { StrandWatcher, DEFAULT_STRAND_WATCH_BACKSTOP_MS, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager, liveStrandStatus } from './strand-instance-manager.js';
 import { PeerJoinBackfill } from './peer-join-backfill.js';
 import { deriveCohortMembers } from './strand-cohort.js';
@@ -663,8 +663,8 @@ export class CadreNode implements SAppIdLookup {
    *
    * Cleared by {@link cleanup} only, deliberately NOT by {@link detachStrand}: the watcher's
    * filter rejection stops a replica through that very method, and forgetting the id there
-   * would have the next poll find it unknown again, re-admit the strand provisionally and
-   * relaunch the replica — once every other poll, forever. A strand id's sApp never changes,
+   * would have the next watcher run find it unknown again, re-admit the strand provisionally
+   * and relaunch the replica — on every other run, forever. A strand id's sApp never changes,
    * and the map is bounded by the strands this party has published, like
    * {@link discoveredStrands}.
    */
@@ -992,7 +992,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * This session's joined strands: {@link joinedStrandStore} and the party-wide
-   * `JoinedStrand` table, unioned with the control rows each watcher poll, published and
+   * `JoinedStrand` table, unioned with the control rows each watcher run, published and
    * removed by the reconcile pass. Per SESSION, unlike the store — rebuilt at every
    * {@link start}, which is what ends a revoked join's "keep offering until this session
    * ends" (see `JoinedStrandSession.forgetAfterThisSession`).
@@ -1423,7 +1423,7 @@ export class CadreNode implements SAppIdLookup {
           onStrandRemoved: async (strandId) => this.handleStrandRemoved(strandId)
         },
         this.config.strandFilter ?? { mode: 'all' },
-        this.config.strandWatchInterval ?? 5000,
+        this.config.strandWatchInterval ?? DEFAULT_STRAND_WATCH_BACKSTOP_MS,
         this // CadreNode implements SAppIdLookup
       );
 
@@ -1898,7 +1898,8 @@ export class CadreNode implements SAppIdLookup {
       );
     }
     this.joinedStrandStore = store;
-    this.joinedStrands = new JoinedStrandSession(store, this.createPartyJoinedStrandLedger());
+    this.joinedStrands = new JoinedStrandSession(store, this.createPartyJoinedStrandLedger(),
+      () => this.strandWatcher?.refresh());
   }
 
   /**
@@ -3035,9 +3036,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * What the strand watcher polls: this party's control rows plus a row per cross-party
+   * What the strand watcher reads: this party's control rows plus a row per cross-party
    * join (see {@link joinedStrands}), so a joined strand is offered and relaunched on
-   * the same path as the party's own.
+   * the same path as the party's own. It runs on a change to either table; the
+   * machine-local joins wake it through {@link JoinedStrandSession}'s change callback.
    */
   private createStrandQueryable(): StrandQueryable {
     return {
@@ -3049,7 +3051,14 @@ export class CadreNode implements SAppIdLookup {
         log('Querying strands from control database');
         const control = await this.controlDatabase.queryStrands();
         return this.joinedStrands ? await this.joinedStrands.withControlRows(control) : control;
-      }
+      },
+      watchChanges: (onChange, options) => {
+        if (!this.controlDatabase) {
+          throw new Error('CadreNode must initialize its control database before watching its strand tables');
+        }
+        return this.controlDatabase.watchTables(['CadreControl.Strand', 'CadreControl.JoinedStrand'], onChange, options);
+      },
+      lastReadPartial: () => this.joinedStrands?.lastReadPartial() ?? false
     };
   }
 
@@ -3065,10 +3074,6 @@ export class CadreNode implements SAppIdLookup {
       return this.controlDatabase;
     };
     return {
-      // NOTE: one more control read per watcher poll (5 s), and for a party that never
-      // joined anything it reads a never-written block, which consults the cohort. If poll
-      // cost shows up in a device profile, cache the list and re-read it on the reconcile
-      // cadence.
       list: () => database().queryJoinedStrands(),
       names: async (strandId) => (await database().queryStrand(strandId)) !== null
         || (await database().queryJoinedStrand(strandId)) !== null,
@@ -5249,6 +5254,7 @@ export class CadreNode implements SAppIdLookup {
       if (sAppId !== undefined) {
         this.replicaSAppIds.set(strandId, sAppId);
         log('Storage replica %s serves sApp %s', strandId, sAppId);
+        this.strandWatcher?.sAppIdLearned(strandId);
       }
     } catch (error) {
       log('Could not read the sApp id of storage replica %s (left unknown): %o', strandId, error);
@@ -5753,8 +5759,9 @@ export class CadreNode implements SAppIdLookup {
    * registered, deliberately: both an explicit retry and the {@link StrandWatcher}'s
    * automatic relaunch need it. A failed launch here hands the strand back to that
    * relaunch — `StrandWatcher.forgetStrand` drops the id from the watcher's
-   * `knownStrands` and records the backoff, so a later poll re-attempts it on the same
-   * `pollInterval * 2^(failures-1)` ladder a watcher-driven failure gets. Because the
+   * `knownStrands`, records the backoff and wakes the watcher when it expires, so the
+   * strand is re-attempted on the same ladder a watcher-driven failure gets
+   * (`min(strandWatchInterval, 5 s) * 2^(failures-1)`, capped at 5 minutes). Because the
    * config stays registered, the retry takes `handleStrandAdded`'s auto-launch branch:
    * what the app sees is `strand:error` per failed retry and `strand:started` when one
    * succeeds, never a second `strand:discovered`. {@link detachStrand} (reached via
@@ -5797,6 +5804,7 @@ export class CadreNode implements SAppIdLookup {
     // A claim also overrides any earlier `stopStrand` of this id: the watcher must track
     // the strand again, or a party-wide removal would never stop it here.
     this.strandWatcher?.unsuppressStrand(strandRow.Id);
+    this.strandWatcher?.sAppIdLearned(strandRow.Id);
     log('Registered sAppConfig for strand %s (sApp: %s, founder: %s)',
       strandRow.Id, sAppConfig.id, founder ?? 'derived');
 
@@ -5822,7 +5830,7 @@ export class CadreNode implements SAppIdLookup {
       // Hand the strand back to the watcher's retry ladder. Harmless on the founder path
       // (`foundStrand` → `publishStrand` + this call), where the watcher may never have
       // offered the strand: the `knownStrands` delete is a no-op and the recorded backoff
-      // only delays the watcher's own first attempt by one poll interval, which is what
+      // only delays the watcher's own first attempt by one ladder step, which is what
       // should happen right after an attempt that just failed.
       //
       // NOTE: the retry relaunches from the CONTROL row (or, for a strand joined from
@@ -6178,9 +6186,10 @@ export class CadreNode implements SAppIdLookup {
    * inverse of {@link publishStrand}.
    *
    * Party-wide, unlike {@link stopStrand}, which only stops the strand on THIS node: every
-   * cadre node watching the table sees the row vanish on its next poll (default 5 s) and
-   * stops its own instance. This node converges immediately — the method forces a watcher
-   * poll and stops any still-running local instance before resolving. Removing the row
+   * cadre node watching the table hears the row's removal and stops its own instance (a
+   * machine outside the `Strand` block's cohort, on a cadre larger than 16, only at its
+   * watcher's backstop read, default 5 minutes). This node converges immediately — the
+   * method forces a watcher run and stops any still-running local instance before resolving. Removing the row
    * removes OUR party's participation only: other parties in the strand keep their own
    * rows and the strand network carries on, so no cross-party sign-off is involved — this
    * is an owner-signed control-plane write like every other, not "destroy the network".
@@ -6267,16 +6276,16 @@ export class CadreNode implements SAppIdLookup {
     // deadline rather than dropping it (a binding cleared late is still worth more than
     // one never cleared).
     await this.strandManager.clearOwnMemberPeerBinding(trimmed);
-    // Converge locally now rather than waiting up to a poll interval. The watcher fires
-    // onStrandRemoved for a strand it tracked; the explicit teardown below covers a node
-    // whose strandFilter never admitted this strand (the watcher never knew it, so it will
-    // never fire). StrandInstanceManager.stopStrand no-ops on an unknown id, so the two
+    // Converge locally before resolving rather than when the write wakes the watcher. The
+    // watcher fires onStrandRemoved for a strand it tracked; the explicit teardown below
+    // covers a node whose strandFilter never admitted this strand (the watcher never knew
+    // it, so it will never fire). StrandInstanceManager.stopStrand no-ops on an unknown id, so the two
     // paths cannot double-stop into an error.
     //
     // detachStrand, NOT stopStrand: this is a party-wide removal, not a local abandonment
     // of a strand that still exists, so it must not SUPPRESS the id in the watcher. The
     // row is already gone — there is nothing to suppress — and an id re-published before
-    // the next poll's suppression cleanup would then never be offered again this session.
+    // the next run's suppression cleanup would then never be offered again this session.
     // (Same reasoning as handleStrandRemoved, which also avoids stopStrand's `_running`
     // guard; here the guard is already satisfied by requireOwnerSigner above.)
     await this.strandWatcher?.forcePoll();
@@ -6547,7 +6556,7 @@ export class CadreNode implements SAppIdLookup {
    * fan-out, so a rediscovery costs nothing beyond the map lookup plus the (pure)
    * founder derivation. NOT a silent no-op any more when the launch resolves as a
    * FOUNDER: the tracked instance may have been launched first as a joiner (an app
-   * attach, or this node's own watcher poll winning the `resolveCohortSeed` window
+   * attach, or this node's own watcher run winning the `resolveCohortSeed` window
    * below), which used to drop the founder request and leave the strand headerless —
    * now the tracked instance is founded in place
    * ({@link StrandInstanceManager.foundExistingStrand}), waking it first if quiesced
@@ -6559,9 +6568,9 @@ export class CadreNode implements SAppIdLookup {
    *
    * An absent `sAppConfig` launches a storage replica ({@link CadreNodeConfig.hostUnclaimedStrands}),
    * which is ALWAYS a joiner whatever the row says: the founder bootstrap writes the sApp
-   * into `Strand.Header`, and a replica has none. So a self-founded row whose watcher poll
+   * into `Strand.Header`, and a replica has none. So a self-founded row whose watcher run
    * wins the race against its app's `addStrand` after a restart comes up as a replica — and
-   * so does a `foundStrand` whose publish a watcher poll saw before its attach. A claim
+   * so does a `foundStrand` whose publish a watcher run saw before its attach. A claim
    * that finds a tracked replica upgrades it in place, over the same node and store
    * ({@link StrandInstanceManager.attachSApp}), BEFORE any founding: the founder bootstrap
    * needs the sApp the attach supplies.

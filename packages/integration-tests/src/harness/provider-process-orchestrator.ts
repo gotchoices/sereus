@@ -420,7 +420,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		if (!existsSync(configPath)) {
 			const config: CliConfigFile = {
 				controlNetwork: { bootstrapNodes: [] },
-				strandWatchInterval: 5000,
+				strandWatchInterval: 300000,
 				hibernation: { enabled: true, defaultLatencyHint: 'interactive' },
 			};
 			writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');

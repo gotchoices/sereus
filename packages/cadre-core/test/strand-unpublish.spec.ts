@@ -39,7 +39,7 @@ describe('CadreNode strand unpublish', () => {
   /** Owner keypair the current `node` self-signs with, so a test can drive a control writer directly. */
   let ownerKey: Ed25519KeyPair | undefined;
 
-  /** Poll interval for the watcher-driven tests: short enough to assert in well under a second. */
+  /** Watcher backstop for the watcher-driven tests: short enough to assert in well under a second even without a change event. */
   const WATCH_INTERVAL_MS = 200;
   /**
    * "…and it stays that way" window, five polls wide. Derived from the interval on purpose:

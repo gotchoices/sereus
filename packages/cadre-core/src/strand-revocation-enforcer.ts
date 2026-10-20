@@ -46,7 +46,7 @@
  * without teardown a removed party keeps whatever session it already holds.
  * There is no push notification to hang teardown off — a REPLICATED revocation
  * arrives with no change event (the strand database has no reactive
- * subscription; `StrandWatcher` polls for the same reason), and a LOCAL
+ * subscription), and a LOCAL
  * `revokeMember`/`leaveStrand` writes through a bare `Database` handle this
  * runtime never sees — so teardown rides the snapshot refresh itself, with
  * `refresh()` exposed for immediacy
