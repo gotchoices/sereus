@@ -397,9 +397,10 @@ export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
  *   party founded before genesis created every control collection. Otherwise
  *   every block the decision reads is held
  *   (`control-founding-consult-budget.spec.ts` pins that). So the gate always
- *   fails open only on a node whose membership reads still consult: one consult costs about two link round trips, and asking a
- *   silent peer costs the per-peer read deadline ({@link cohortReadDeadlineMs}, 7 s
- *   at the default declaration).
+ *   fails open only on a node whose membership reads still consult: one consult
+ *   costs about two link round trips, and asking a silent peer costs the
+ *   per-peer read deadline ({@link cohortReadDeadlineMs}, 7 s at the default
+ *   declaration).
  * - **The decision is spent on the dialing machine's clock.** libp2p's listener
  *   runs this gate before it answers the multiplexer negotiation the dialer is
  *   waiting on (`libp2p/dist/src/upgrader.js`), and the listener's own
