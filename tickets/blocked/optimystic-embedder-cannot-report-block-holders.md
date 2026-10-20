@@ -4,7 +4,7 @@ files: packages/cadre-core/src/peer-join-backfill.ts (`recordReply`, where the r
 ----
 # Upstream: an embedder cannot tell Optimystic that a peer already holds a block
 
-**Blocked on a dependency outside this repo.** Unblocks when Optimystic releases a typed way for an embedder to report that a peer holds a block at a revision (proposal below), and Sereus adopts that release. No upstream issue or ticket exists yet; filing one is the first step.
+**Blocked on a dependency outside this repo.** Unblocks when Optimystic releases a typed way for an embedder to report that a peer holds a block at a revision (proposal below), and Sereus adopts that release. Upstream ticket: `../optimystic/tickets/plan/an-embedder-reports-a-block-a-peer-already-holds` (filed 2026-10-20); no GitHub issue yet.
 
 ## What happens
 
