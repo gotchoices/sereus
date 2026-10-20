@@ -1136,18 +1136,13 @@ export class CadreNode implements SAppIdLookup {
    */
   private lastSelfRecordPublishAt: number | null = null;
   /**
-   * The newest record this process wrote to its own `CadrePeer` row, by either write path of
-   * {@link publishSelfRecord}: what {@link publishSelfRecordUnlessCurrent} compares the row
-   * against. Per session, cleared with {@link lastSelfRecordPublishAt}: a row carried over from
-   * an earlier process is never taken as current.
+   * The newest record this process signed for its own `CadrePeer` row: written by either path
+   * of {@link publishSelfRecord}, or handed to a member to write by {@link redeemCadreInvitation}.
+   * What {@link publishSelfRecordUnlessCurrent} compares the row against. Per session, cleared
+   * with {@link lastSelfRecordPublishAt}: a row carried over from an earlier process is never
+   * taken as current.
    */
   private lastSignedSelfRecord: PeerAddressRecord | null = null;
-  /**
-   * Whether {@link lastSignedSelfRecord} refreshed a row this process found in place (the update
-   * path of {@link publishSelfRecord}) rather than inserting it. The boot timer writes again
-   * after a refresh; the NOTE in {@link scheduleSelfRegistration} says why.
-   */
-  private lastSelfRecordRefreshedARow = false;
   /** Say-once latch for {@link escalateIfSelfRecordStale}; re-armed by the next publish. */
   private selfRecordStaleWarned = false;
 
@@ -3283,17 +3278,16 @@ export class CadreNode implements SAppIdLookup {
    * after start (non-blocking). {@link registerSelf} is idempotent and safely
    * no-ops when it cannot yet sign/insert (e.g. owner key not installed),
    * so the timer is harmless even when registration only becomes possible later.
-   * A record this process inserted (a founding owner's explicit publish) that is
-   * still current is not written again ({@link publishSelfRecordUnlessCurrent}).
+   * A record this process already put in place that is still current (a founding owner's
+   * explicit publish, a redeemed invitation's admission, a restart's first-growth re-touch) is
+   * not written again ({@link publishSelfRecordUnlessCurrent}). Whether the node is connected
+   * yet does not matter: a device that redeems within a second of starting is.
    */
   private scheduleSelfRegistration(): void {
     this.selfRegistrationTimer = setTimeout(() => {
       void (async () => {
         try {
-          // NOTE: after a refresh of a row an earlier process left (a restarted machine's
-          // first-growth drain re-touch), the timer still writes, as it did before the skip;
-          // implement/invited-machine-skips-its-first-publish skips it there too.
-          await (this.lastSelfRecordRefreshedARow ? this.registerSelf() : this.publishSelfRecordUnlessCurrent());
+          await this.publishSelfRecordUnlessCurrent();
         } catch (error) {
           // Background task — a failed publish must not crash the node. A restarted machine
           // whose own CadrePeer row replicates in while this update runs fails here with
@@ -3389,7 +3383,7 @@ export class CadreNode implements SAppIdLookup {
       const record = this.signSelfRecord(peerId, signingKey, addrs, null);
       if (await ownerService.insertSelfPeerRecord(record)) {
         if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-        this.rememberSignedSelfRecord(record, false);
+        this.lastSignedSelfRecord = record;
         this.noteSelfRecordPublished();
         log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
         return 'inserted';
@@ -3428,7 +3422,7 @@ export class CadreNode implements SAppIdLookup {
     const record = this.signSelfRecord(peerId, signingKey, addrs, current);
     await this.controlDatabase.updateSelfPeerRecord(record);
     if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-    this.rememberSignedSelfRecord(record, true);
+    this.lastSignedSelfRecord = record;
     this.noteSelfRecordPublished();
     log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
     return 'refreshed';
@@ -3445,18 +3439,13 @@ export class CadreNode implements SAppIdLookup {
     this.selfRecordStaleWarned = false;
   }
 
-  /** Set {@link lastSignedSelfRecord} and {@link lastSelfRecordRefreshedARow} together. */
-  private rememberSignedSelfRecord(record: PeerAddressRecord, refreshedARow: boolean): void {
-    this.lastSignedSelfRecord = record;
-    this.lastSelfRecordRefreshedARow = refreshedARow;
-  }
-
   /**
    * {@link registerSelf}, unless the own row already holds the record this process last signed
    * ({@link lastSignedSelfRecord}) and that record is current ({@link isCurrentSelfRecord});
    * then nothing is written and the record counts as published at its own stamp. For a publish
-   * that puts a record in place (the boot timer), never the heartbeat, which exists to re-stamp
-   * freshness. `'current'` is this method's own answer; {@link registerSelf} always writes.
+   * that puts a record in place (the boot timer, the reconcile pass's first publish, the
+   * first-growth drain), never the heartbeat, which exists to re-stamp freshness. `'current'`
+   * is this method's own answer; {@link registerSelf} always writes.
    */
   private async publishSelfRecordUnlessCurrent(): Promise<SelfRegistrationOutcome | 'current'> {
     if (this.registerSelfInFlight) {
@@ -3647,15 +3636,15 @@ export class CadreNode implements SAppIdLookup {
    * this node alone. The boot-time publish and the first-growth drain already try at the
    * node's lone and first-sibling moments; this retries on the passes after.
    *
-   * NOTE: a machine admitted by invitation still publishes here though its admission wrote its
-   * signed record; `implement/invited-machine-skips-its-first-publish` skips it.
+   * A machine admitted by invitation finds its row already holding the record its redemption
+   * carried, and writes nothing ({@link publishSelfRecordUnlessCurrent}).
    */
   private async publishFirstSelfRecord(): Promise<void> {
     if (this.lastSelfRecordPublishAt !== null || this.isAwaitingClaim() || this.removal !== null
       || !this.hasReachableControlSibling()) {
       return;
     }
-    const outcome = await this.registerSelf().catch((error: unknown) => {
+    const outcome = await this.publishSelfRecordUnlessCurrent().catch((error: unknown) => {
       log('reconcileControlCohort: first self-record publish failed (continuing): %o', error);
       return 'skipped' as const;
     });
@@ -3810,7 +3799,6 @@ export class CadreNode implements SAppIdLookup {
     // suppress the stale-record warning or fire it on a node that just came up.
     this.lastSelfRecordPublishAt = null;
     this.lastSignedSelfRecord = null;
-    this.lastSelfRecordRefreshedARow = false;
     this.selfRecordStaleWarned = false;
   }
 
@@ -4856,13 +4844,15 @@ export class CadreNode implements SAppIdLookup {
     //    periodic-refresh property.
     await this.drainPendingRevocations();
 
-    // 2. Self rows. On the first growth always re-touch (covers a self row carried
-    //    over from a prior process that committed local-only before this start);
-    //    afterwards only when a self-write-while-alone was recorded this session.
+    // 2. Self rows. A self write made while alone is always re-touched: the re-touch
+    //    is what carries it to the cohort. Otherwise the first growth re-touches a row
+    //    a prior process may have committed local-only, unless the row already holds a
+    //    current record this process signed (a redeemed invitation's admission).
     //    registerSelf is idempotent + single-flight, so this never races a
     //    duplicate publish with the heartbeat republish.
     if (firstGrowth || this.pendingSelfPeerWrite) {
-      await this.registerSelf().catch((error) => log('drain: registerSelf failed: %o', error));
+      const publish = this.pendingSelfPeerWrite ? this.registerSelf() : this.publishSelfRecordUnlessCurrent();
+      await publish.catch((error) => log('drain: registerSelf failed: %o', error));
       this.pendingSelfPeerWrite = false;
     }
     if (firstGrowth || this.pendingSelfDeviceWrite) {
@@ -10087,6 +10077,10 @@ export class CadreNode implements SAppIdLookup {
       generateStampId(selfPeerId),
       record
     );
+    // Before dialing, not on acceptance: the member's commit can reach this node before its
+    // reply does, and a reconcile pass that reads the row first must find it current. A record
+    // no member wrote matches no row, so a failed redemption leaves nothing to undo.
+    this.lastSignedSelfRecord = record;
     const { reply, memberPeerId, memberAddr } = await redeemInPasses(controlNode, {
       invitation,
       request,
