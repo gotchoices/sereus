@@ -26,6 +26,7 @@ import { chainMessages } from './control-retry.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import { TableWatchRegistry } from './table-change-watch.js';
 import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
+import { MembershipView } from './membership-view.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -813,6 +814,50 @@ export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 const REAPABLE_TABLE_SET: ReadonlySet<RevocableTable> = new Set<RevocableTable>(REAPABLE_TABLES);
 const isReapableTable = (table: RevocableTable): table is ReapableTable => REAPABLE_TABLE_SET.has(table);
 
+/** One control read's rows, and whether it took the committed-read path ({@link ControlDatabase.readRowsOnce}). */
+interface RoutedRead {
+  rows: Record<string, SqlValue>[];
+  committed: boolean;
+}
+
+/**
+ * The full-table scans the membership views load ({@link ControlDatabase.readMembershipRows}).
+ * Specs rig these reads by their text: `from CadreControl.Revocation`, and the `CadrePeer`
+ * scan by its `select PeerId, Multiaddr, StampId` prefix, which no other `CadrePeer` statement
+ * shares.
+ */
+const REVOCATION_SELECT_SQL = 'select TableName, RowKey, StampId, ReissuedAt, SignerKey, SignerSig from CadreControl.Revocation';
+const CADRE_PEER_SELECT_SQL = 'select PeerId, Multiaddr, StampId, VouchOwner, VouchSig, VouchUsage, PublicKey, UpdatedAt, Profile, Sig from CadreControl.CadrePeer';
+const OWNER_KEY_SELECT_SQL = 'select Key, Label, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.OwnerKey';
+
+/** A stored `CadrePeer` row as a {@link CadrePeerRow}. */
+function cadrePeerRowOf(row: Record<string, SqlValue>): CadrePeerRow {
+  return {
+    peerId: row.PeerId as string,
+    publicKey: (row.PublicKey as string | null) ?? null,
+    multiaddr: (row.Multiaddr as string | null) ?? null,
+    updatedAt: (row.UpdatedAt as number | null) ?? 0,
+    profile: (row.Profile as NodeProfile | null) ?? null,
+    sig: (row.Sig as string | null) ?? null,
+    stampId: (row.StampId as string | null) ?? null,
+    vouchOwner: (row.VouchOwner as string | null) ?? null,
+    vouchSig: (row.VouchSig as string | null) ?? null,
+    vouchUsage: (row.VouchUsage as string | null) ?? null,
+  };
+}
+
+/** A stored `Revocation` row as a {@link RevocationRow}; the caller has already skipped the ledger marker. */
+function revocationRowOf(row: Record<string, SqlValue>): RevocationRow {
+  return {
+    tableName: row.TableName as RevocableTable,
+    rowKey: row.RowKey as string,
+    stampId: row.StampId as string,
+    reissuedAt: (row.ReissuedAt as number | null) ?? 0,
+    signerKey: row.SignerKey as string,
+    signerSig: row.SignerSig as string,
+  };
+}
+
 /** Every `CadreInvite` column, in the order {@link cadreInviteRowOf} reads them; callers append their `where`. */
 const CADRE_INVITE_SELECT_SQL = 'select Key, PeerId, ExpiresAt, TotalUses, IssuerKey, IssuerSig, StampId from CadreControl.CadreInvite';
 
@@ -1136,6 +1181,16 @@ export class ControlDatabase {
   private writeQueue: Promise<unknown> = Promise.resolve();
   /** Subscriptions handed out by {@link watchTables}. */
   private readonly tableWatches = new TableWatchRegistry();
+  /** The cached membership tables; see {@link readMembershipRows}. */
+  private readonly revocationView = this.membershipView(REVOCATION_SELECT_SQL, 'revocations');
+  private readonly cadrePeerView = this.membershipView(CADRE_PEER_SELECT_SQL, 'cadre-peers');
+  private readonly ownerKeyView = this.membershipView(OWNER_KEY_SELECT_SQL, 'owner-keys');
+  /** Each membership view by the qualified table it copies, for {@link watchMembershipTables}. */
+  private readonly membershipViews = new Map<string, MembershipView<Record<string, SqlValue>>>([
+    ['CadreControl.Revocation', this.revocationView],
+    ['CadreControl.CadrePeer', this.cadrePeerView],
+    ['CadreControl.OwnerKey', this.ownerKeyView],
+  ]);
   /**
    * Locked write bodies currently running (see {@link runWriteBody}); what
    * {@link readRowsOnce} consults to route an unlocked read around a write that has
@@ -1175,6 +1230,7 @@ export class ControlDatabase {
     }
 
     log('Initializing ControlDatabase for party: %s', this.config.partyId);
+    this.invalidateMembershipViews();
 
     // Create database instance
     this.db = new Database();
@@ -1265,8 +1321,29 @@ export class ControlDatabase {
     await this.loadSchema();
     timing('[controlDb] loadSchema: %dms', Math.round(performance.now() - t0));
 
+    this.watchMembershipTables();
     this.initialized = true;
     log('ControlDatabase initialized successfully');
+  }
+
+  /**
+   * Drop a membership view whenever its table changes: a commit made here, or a change this
+   * node's storage takes in from elsewhere. `onInvalidate` is the whole consumer, so the run
+   * does nothing; no backstop, since {@link MEMBERSHIP_VIEW_MAX_AGE_MS} bounds what the
+   * subscription cannot hear. {@link close} disposes it with the rest.
+   */
+  private watchMembershipTables(): void {
+    this.tableWatches.watch(this.db!, [...this.membershipViews.keys()], () => Promise.resolve(), {
+      label: 'membership-view',
+      onInvalidate: (table) => this.membershipViews.get(table)?.invalidate(),
+    });
+  }
+
+  /** Empty every membership view, so the next read of each loads afresh and no load in flight installs. */
+  private invalidateMembershipViews(): void {
+    for (const view of this.membershipViews.values()) {
+      view.invalidate();
+    }
   }
 
   private async loadSchema(): Promise<void> {
@@ -1419,9 +1496,10 @@ export class ControlDatabase {
    * behind back-to-back local writes, narrow the count to the span from a body's first
    * statement to its transaction opening.
    */
-  private async readRowsOnce(sql: string, params: SqlParameters | undefined, underWriteLock: boolean): Promise<Record<string, SqlValue>[]> {
+  private async readRowsOnce(sql: string, params: SqlParameters | undefined, underWriteLock: boolean): Promise<RoutedRead> {
+    const committed = this.writeInFlight(underWriteLock);
     let iterator: AsyncIterableIterator<Record<string, SqlValue>>;
-    if (this.writeInFlight(underWriteLock)) {
+    if (committed) {
       log('read-eval: a write is in flight (%s), asking for a committed read: %s',
         this.db!.getAutocommit() ? 'locked body running, no transaction open yet' : 'transaction open', sql);
       iterator = this.db!.eval(sql, params, { readConcurrency: 'committed' });
@@ -1432,7 +1510,7 @@ export class ControlDatabase {
     for await (const row of iterator) {
       rows.push(row);
     }
-    return rows;
+    return { rows, committed };
   }
 
   /**
@@ -1492,12 +1570,26 @@ export class ControlDatabase {
    * held, and its membership read is opted out at {@link queryCadrePeers}. If another
    * under-lock callback seam is ever added, audit its read graph the same way.
    */
-  private readRows(
+  private async readRows(
     sql: string,
     params: SqlParameters | undefined,
     label: string,
     retry = true
   ): Promise<Record<string, SqlValue>[]> {
+    return (await this.readRowsRouted(sql, params, label, retry)).rows;
+  }
+
+  /**
+   * {@link readRows}, also saying whether the attempt that answered took the committed-read
+   * path — which a {@link MembershipView} load needs, since it may not keep such rows (see
+   * {@link membershipView}).
+   */
+  private readRowsRouted(
+    sql: string,
+    params: SqlParameters | undefined,
+    label: string,
+    retry: boolean
+  ): Promise<RoutedRead> {
     // `retry: false` marks the reads that may run inside a locked write body, which is
     // also what readRowsOnce's committed-read routing must know (see writeInFlight).
     // NOTE: the membership-gate refresh passes it on EVERY trigger, including the
@@ -1514,6 +1606,43 @@ export class ControlDatabase {
       () => this.readRowsOnce(sql, params, false),
       { ...this.controlReadRetryPacing, label }
     );
+  }
+
+  /**
+   * A view over one membership table, loaded by its full scan `sql` through {@link readRows}'s
+   * funnel. Rows a committed read served are never kept: that read may initialize an untouched
+   * table provisionally, and the Optimystic plugin arms a table's replicated-change bridge only
+   * on its full initialization (`OptimysticTable.initializeForCommittedRead`), so no later change
+   * event would ever drop them.
+   */
+  private membershipView(sql: string, label: string): MembershipView<Record<string, SqlValue>> {
+    return new MembershipView(async (retry) => {
+      const { rows, committed } = await this.readRowsRouted(sql, undefined, label, retry);
+      return { rows, installable: !committed };
+    });
+  }
+
+  /**
+   * A membership table's raw rows, from its {@link MembershipView}: `Revocation`, `CadrePeer`
+   * and `OwnerKey`, the tables every membership, owner and peer-record read starts from. Callers
+   * build fresh result objects from them and never mutate them.
+   *
+   * Reads the table directly instead when a caller under the write lock (`retry: false`) has an
+   * explicit transaction open: such a read sees the transaction's own uncommitted rows, which
+   * the view does not hold, and a rollback fires no change event, so keeping them would cache
+   * rows that never existed. No reader of these tables runs inside {@link inTransaction} today;
+   * this keeps one added later, or a spec's raw-handle transaction, correct.
+   *
+   * Reads that stay plain SQL on purpose: {@link queryStampId} (sees retired rows), the genesis
+   * `count(1)` in {@link hasOwnerKey}, the ledger marker's presence read, and the schema's CHECK
+   * constraints, which read inside the committing transaction.
+   */
+  private readMembershipRows(view: MembershipView<Record<string, SqlValue>>, retry: boolean): Promise<readonly Record<string, SqlValue>[]> {
+    this.ensureInitialized();
+    if (!retry && !this.db!.getAutocommit()) {
+      return view.readThrough(retry);
+    }
+    return view.read(retry);
   }
 
   /**
@@ -1734,16 +1863,14 @@ export class ControlDatabase {
    *
    * @param retired - the retired `OwnerKey` stamps, when the caller has already read the
    *   tombstones (`CadreNode.syncOwnerAnchor` reads {@link queryRevocations} for their
-   *   signers); omitted, they are read here. Before the ledger marker is filed every
-   *   `Revocation` read is a cohort consult, so the sync passing its own set keeps the
-   *   membership refresh at one such read for the anchor.
+   *   signers); omitted, they are read here. Both come from the same `Revocation` view
+   *   ({@link readMembershipRows}), so passing the set saves only the filtering.
    */
   async queryOwnerKeyRows(retry = true, retired?: ReadonlySet<string>): Promise<OwnerKeyRow[]> {
     this.ensureInitialized();
     const revoked = retired ?? await this.queryRevokedStamps('OwnerKey', retry);
     const rows: OwnerKeyRow[] = [];
-    const sql = 'select Key, Label, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.OwnerKey';
-    for (const row of await this.readRows(sql, undefined, 'owner-keys', retry)) {
+    for (const row of await this.readMembershipRows(this.ownerKeyView, retry)) {
       const stampId = (row.StampId as string | null) ?? null;
       if (stampId === null) {
         log('queryOwnerKeyRows: dropping OwnerKey row %s with no StampId', row.Key);
@@ -1776,12 +1903,8 @@ export class ControlDatabase {
    * {@link queryRevokedStamps} rather than inlining the SQL, so tests can interpose on
    * that seam to model the replicated live-row-plus-tombstone merge state.
    *
-   * NOTE: runs a second query (the retired-stamp set) per call, on the membership-gate
-   * refresh path. Its cost is storage consults, not rows (see {@link queryRevokedStamps}):
-   * while `Revocation` has never been written every call consults the cohort about it, and
-   * the ledger marker ({@link openRevocationLedger}) is what makes it a held block. Folding
-   * the exclusion into one statement would not help (it reads the same block), and caching
-   * the set would hide a tombstone arriving by replication.
+   * Both tables come from their membership views ({@link readMembershipRows}), so a call after
+   * the first costs no storage read until one of the two tables changes.
    *
    * NOTE: this filter is HAND-MIRRORED by the gate suites' fake control databases
    * (`test/membership-gate-helpers.ts` and `test/cadre-node-authorized-surface.spec.ts`),
@@ -1804,27 +1927,12 @@ export class ControlDatabase {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer', retry);
     const rows: CadrePeerRow[] = [];
-    // The proof columns lead and the record columns follow, so this scan keeps a prefix no
-    // other `CadrePeer` statement shares (`queryPeerRecord` starts `PeerId, PublicKey`): the
-    // read-retry spec rigs the membership scan by that prefix.
-    const sql = 'select PeerId, Multiaddr, StampId, VouchOwner, VouchSig, VouchUsage, PublicKey, UpdatedAt, Profile, Sig from CadreControl.CadrePeer';
-    for (const row of await this.readRows(sql, undefined, 'cadre-peers', retry)) {
-      const stampId = (row.StampId as string | null) ?? null;
-      if (stampId !== null && revoked.has(stampId)) {
+    for (const row of await this.readMembershipRows(this.cadrePeerView, retry)) {
+      const peer = cadrePeerRowOf(row);
+      if (peer.stampId !== null && revoked.has(peer.stampId)) {
         continue;
       }
-      rows.push({
-        peerId: row.PeerId as string,
-        publicKey: (row.PublicKey as string | null) ?? null,
-        multiaddr: (row.Multiaddr as string | null) ?? null,
-        updatedAt: (row.UpdatedAt as number | null) ?? 0,
-        profile: (row.Profile as NodeProfile | null) ?? null,
-        sig: (row.Sig as string | null) ?? null,
-        stampId,
-        vouchOwner: (row.VouchOwner as string | null) ?? null,
-        vouchSig: (row.VouchSig as string | null) ?? null,
-        vouchUsage: (row.VouchUsage as string | null) ?? null,
-      });
+      rows.push(peer);
     }
     return rows;
   }
@@ -1969,18 +2077,17 @@ export class ControlDatabase {
    * ({@link queryCadrePeers}, {@link queryPeerRecord},
    * {@link CadreNode.resolveDeviceToken}) drop any row whose stamp appears here.
    *
-   * NOTE: the per-call cost that matters is the storage layer's, not the row count. While
-   * `Revocation` has never been written, this node does not hold its block, and Optimystic
-   * consults a block's cohort on every read of a block it does not hold: 1 consult per
-   * call (measured), each a round trip to every other member on a multi-machine party. The
-   * ledger marker ({@link openRevocationLedger}) ends that — a held block is re-consulted
-   * at most once per read-repair window (10 s). Do not cache the set instead: a cache
-   * cannot see a tombstone arriving by replication, so it would delay a revocation. The
-   * row count only grows (append-only) but stays small while removals are rare; revisit if
+   * Served from the `Revocation` membership view ({@link readMembershipRows}), dropped by
+   * every change to the table, local or replicated into this node's storage, so a tombstone
+   * arriving by replication is seen on the next call. The cost that matters is the storage
+   * layer's, paid by a cold view's load: while `Revocation` has never been written, this node
+   * does not hold its block, and Optimystic consults a block's cohort on every read of a block
+   * it does not hold, each a round trip to every other member on a multi-machine party. The row
+   * count only grows (append-only) but stays small while removals are rare; revisit if
    * removals become routine and the scan itself shows up in a profile.
    *
    * An isolated node that has never received the `Revocation` block reads it as holding no
-   * revocations instead of throwing — see {@link readRevokedStampRows}.
+   * revocations instead of throwing — see {@link readRevocationRowsOrNone}.
    *
    * `retry: false` is forwarded by {@link queryCadrePeers} for the one caller that reads
    * under the write lock — see that method's note.
@@ -1988,18 +2095,21 @@ export class ControlDatabase {
   async queryRevokedStamps(tableName: RevocableTable, retry = true): Promise<Set<string>> {
     this.ensureInitialized();
     const stamps = new Set<string>();
-    for (const row of await this.readRevokedStampRows(tableName, retry)) {
-      stamps.add(row.StampId as string);
+    for (const row of await this.readRevocationRowsOrNone(retry)) {
+      if (row.TableName === tableName) {
+        stamps.add(row.StampId as string);
+      }
     }
     return stamps;
   }
 
   /**
-   * The `Revocation` scan behind {@link queryRevokedStamps}, answering NO ROWS when the read
-   * fails `cohort-unreachable` ({@link isCohortUnreachableRead}): this node does not hold
+   * The `Revocation` rows behind {@link queryRevokedStamps}, answering NO ROWS when the view's
+   * load fails `cohort-unreachable` ({@link isCohortUnreachableRead}): this node does not hold
    * the block and could ask no other cohort member about it. Every other failure rethrows.
    * The retry in {@link readRows} runs first, so a node whose connectivity returns within
-   * the read budget still gets the real answer.
+   * the read budget still gets the real answer. The empty answer is never installed in the
+   * view (a failed load keeps nothing), so the next call asks again.
    *
    * Without this, a machine cut off from every other machine in its party before it ever
    * received the block — the block does not exist anywhere until the owner files the
@@ -2022,19 +2132,19 @@ export class ControlDatabase {
    *
    * NOTE: an isolated node pays the whole read retry (up to
    * `CONTROL_READ_RETRY_BUDGET_MS`, plus the slow attempt that exhausted it) before this
-   * answers, and {@link queryPeerRecord} then issues its row scan on top. If an isolated
-   * node's lookups are seen exceeding the admission gate's 2 s deadline
-   * (`ADMISSION_DECISION_TIMEOUT_MS`), skip the retry for this read when the first attempt
-   * fails `cohort-unreachable`.
+   * answers, on every call since the answer is not kept, and {@link queryPeerRecord} may then
+   * load the `CadrePeer` view on top. If an isolated node's lookups are seen exceeding the
+   * admission gate's 2 s deadline (`ADMISSION_DECISION_TIMEOUT_MS`), skip the retry for this
+   * read when the first attempt fails `cohort-unreachable`.
    */
-  private async readRevokedStampRows(tableName: RevocableTable, retry: boolean): Promise<Record<string, SqlValue>[]> {
+  private async readRevocationRowsOrNone(retry: boolean): Promise<readonly Record<string, SqlValue>[]> {
     try {
-      return await this.readRows('select StampId from CadreControl.Revocation where TableName = ?', [tableName], 'revoked-stamps', retry);
+      return await this.readMembershipRows(this.revocationView, retry);
     } catch (error) {
       if (!isCohortUnreachableRead(error)) {
         throw error;
       }
-      log('revoked-stamps(%s): no cohort member reachable and the Revocation block is not held here; reading as no revocations known: %s', tableName, error);
+      log('revoked-stamps: no cohort member reachable and the Revocation block is not held here; reading as no revocations known: %s', error);
       return [];
     }
   }
@@ -2058,25 +2168,17 @@ export class ControlDatabase {
   async queryRevocations(retry = true): Promise<RevocationRow[]> {
     this.ensureInitialized();
     const rows: RevocationRow[] = [];
-    const sql = 'select TableName, RowKey, StampId, ReissuedAt, SignerKey, SignerSig from CadreControl.Revocation';
-    for (const row of await this.readRows(sql, undefined, 'revocations', retry)) {
-      if (row.TableName === REVOCATION_LEDGER_MARKER.tableName) {
-        continue;
+    for (const row of await this.readMembershipRows(this.revocationView, retry)) {
+      if (row.TableName !== REVOCATION_LEDGER_MARKER.tableName) {
+        rows.push(revocationRowOf(row));
       }
-      rows.push({
-        tableName: row.TableName as RevocableTable,
-        rowKey: row.RowKey as string,
-        stampId: row.StampId as string,
-        reissuedAt: (row.ReissuedAt as number | null) ?? 0,
-        signerKey: row.SignerKey as string,
-        signerSig: row.SignerSig as string,
-      });
     }
     return rows;
   }
 
   /**
-   * Read a single peer's address record (the full `CadrePeer` row) by PeerId.
+   * Read a single peer's address record (the full `CadrePeer` row) by PeerId, found in the
+   * `CadrePeer` membership view ({@link readMembershipRows}).
    *
    * Returns null when no row exists, or when the row's `StampId` is retired in
    * `CadreControl.Revocation` — a revoked peer reads as absent, so the resolver
@@ -2096,26 +2198,23 @@ export class ControlDatabase {
   async queryPeerRecord(peerId: string): Promise<PeerAddressRecord | null> {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer');
-    for (const row of await this.readRows(
-      'select PeerId, PublicKey, Multiaddr, UpdatedAt, Profile, Sig, StampId from CadreControl.CadrePeer where PeerId = ?',
-      [peerId],
-      'peer-record'
-    )) {
-      const stampId = (row.StampId as string | null) ?? null;
-      if (stampId !== null && revoked.has(stampId)) {
-        return null;
-      }
-      const multiaddr = (row.Multiaddr as string | null) ?? '';
-      return {
-        peerId: row.PeerId as string,
-        publicKey: (row.PublicKey as string | null) ?? '',
-        addrs: multiaddr.length > 0 ? multiaddr.split(',') : [],
-        updatedAt: (row.UpdatedAt as number | null) ?? 0,
-        profile: (row.Profile as NodeProfile | null) ?? null,
-        sig: (row.Sig as string | null) ?? '',
-      };
+    const row = (await this.readMembershipRows(this.cadrePeerView, true)).find((candidate) => candidate.PeerId === peerId);
+    if (row === undefined) {
+      return null;
     }
-    return null;
+    const stampId = (row.StampId as string | null) ?? null;
+    if (stampId !== null && revoked.has(stampId)) {
+      return null;
+    }
+    const multiaddr = (row.Multiaddr as string | null) ?? '';
+    return {
+      peerId: row.PeerId as string,
+      publicKey: (row.PublicKey as string | null) ?? '',
+      addrs: multiaddr.length > 0 ? multiaddr.split(',') : [],
+      updatedAt: (row.UpdatedAt as number | null) ?? 0,
+      profile: (row.Profile as NodeProfile | null) ?? null,
+      sig: (row.Sig as string | null) ?? '',
+    };
   }
 
   /**
@@ -3410,9 +3509,8 @@ export class ControlDatabase {
    * NOTE: cost is O(tombstones), not O(live rows) — one {@link queryRevocations} scan plus
    * one {@link queryStampId} point lookup per tombstone, and the empty early return makes
    * the common case (a party that has never revoked anyone; {@link queryRevocations} skips
-   * the ledger marker) a single scan per pass. That scan consults the cohort on every pass
-   * only while `Revocation` has never been written; the ledger marker
-   * ({@link openRevocationLedger}), filed by the same connected pass, makes it a held block.
+   * the ledger marker) a single scan per pass, served from the `Revocation` membership view
+   * ({@link readMembershipRows}) unless the table changed since the last read.
    * But `Revocation` is append-only and unbounded, so this is O(all tombstones ever) point
    * lookups on every reconcile tick. Fine while revocations stay rare for a cadre-sized
    * party; if the table ever grows, persist a node-local high-water mark of what has
@@ -5202,6 +5300,8 @@ export class ControlDatabase {
     this.txnBridge = null;
     // Again: a subscription taken during the awaits above would keep its timers past close.
     this.tableWatches.disposeAll();
+    // Here, not first: a read started during the awaits above must not install either.
+    this.invalidateMembershipViews();
     if (this.db) {
       void this.db.close();
       this.db = null;

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
 import { BlockPossiblyStaleError, BlockUnavailableError } from '@optimystic/db-core';
 import type { BlockUnavailableReason } from '@optimystic/db-core';
@@ -364,6 +364,11 @@ function pacingSlots(db: ControlDatabase): {
 	};
 }
 
+/** Empty `db`'s membership views, so the next membership read runs its SQL. Test-only window onto a private method. */
+function coldMembershipViews(db: ControlDatabase): void {
+	(db as unknown as { invalidateMembershipViews(): void }).invalidateMembershipViews();
+}
+
 /** A read-phase transactor failure, as `control-write-lock.spec.ts` builds it. */
 function transientClusterFailure(): Error {
 	return new Error('Some peers did not complete: 12D3KooWpeer[block:blk-1](no-response) cause=The stream has been reset; root: The stream has been reset');
@@ -414,6 +419,11 @@ describe('ControlDatabase — read retry', () => {
 	afterAll(async () => {
 		await node.stop();
 	}, 30_000);
+
+	// Every case rigs the SQL a membership read runs, which a warm membership view never issues.
+	beforeEach(() => {
+		coldMembershipViews(db);
+	});
 
 	/**
 	 * Swap the inner `eval` for one that intercepts statements containing `sqlMarker`,
@@ -525,10 +535,13 @@ describe('ControlDatabase — read retry', () => {
 			failingIteration(typedScanWrapped('cohort-unreachable')));
 		try {
 			slots.controlReadRetryPacing = { sleep: () => Promise.resolve(), now: () => 0 };
+			// The insert's membership refresh loaded the views again before the rig was in place.
+			coldMembershipViews(db);
 
 			expect((await db.queryCadrePeers()).map((row) => row.peerId)).toContain(peerId);
 			expect((await db.queryCadrePeers(false)).map((row) => row.peerId)).toContain(peerId);
 			expect((await db.queryPeerRecord(peerId))?.peerId).toBe(peerId);
+			expect(rig.calls(), 'no lookup reached the rigged Revocation read').toBeGreaterThan(0);
 		} finally {
 			rig.restore();
 			slots.controlReadRetryPacing = savedReadPacing;

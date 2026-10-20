@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
@@ -81,6 +81,12 @@ describe('ControlDatabase — read routing', () => {
 	afterAll(async () => {
 		await node.stop();
 	}, 30_000);
+
+	// The `OwnerKey` cases read through a membership view, which issues its SQL (and so takes a
+	// route at all) only when it is cold.
+	beforeEach(() => {
+		(db as unknown as { invalidateMembershipViews(): void }).invalidateMembershipViews();
+	});
 
 	/**
 	 * Record the options every inner `eval` whose SQL contains `sqlMarker` was called with,

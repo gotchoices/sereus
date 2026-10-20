@@ -3835,12 +3835,12 @@ export class CadreNode implements SAppIdLookup {
     // node holds a control connection (one read for the whole pass, not one per
     // strand; it runs even when no sibling is due, because pruning departed
     // siblings needs the current target set). Each also reads Revocation first.
-    // Before the Revocation ledger marker exists (filed below, once connected)
-    // that block is missing, so every one of those reads consults the cohort
-    // about it; once the marker exists every
-    // block they touch is held and none of them does (both states pinned in
-    // control-founding-consult-budget.spec.ts). If those reads ever get costly,
-    // share one row-set across all three.
+    // All of them are served from the control database's membership views
+    // (`ControlDatabase.readMembershipRows`), so only the first read after either
+    // table changes, or after `MEMBERSHIP_VIEW_MAX_AGE_MS`, reaches storage; before
+    // the Revocation ledger marker exists (filed below, once connected) that load
+    // consults the cohort about the missing block (pinned in
+    // control-founding-consult-budget.spec.ts).
     await this.refreshMembershipGate('reconcile');
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return { dialed: [] };
@@ -8332,8 +8332,10 @@ export class CadreNode implements SAppIdLookup {
    * tombstone list, whose `OwnerKey` stamps are handed to `queryOwnerKeyRows` so it does not
    * read the retired set again, and which the hang-up of removed peers shares through
    * `loadTombstones`), plus the owner-grant chain when some owner row is grant-seated (the
-   * NOTE in the body). Before the Revocation ledger marker is filed that one read is a cohort
-   * consult per refresh, which `control-founding-consult-budget.spec.ts` pins.
+   * NOTE in the body). The first two are served from the control database's membership views,
+   * so they reach storage only after their table changed; that load, before the Revocation
+   * ledger marker is filed, is a cohort consult, which `control-founding-consult-budget.spec.ts`
+   * pins.
    *
    * @param retry - forwarded to every read; `false` on the refresh path, for the reason on
    *   {@link refreshAuthorizedControlPeers}.
