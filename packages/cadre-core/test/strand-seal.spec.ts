@@ -207,7 +207,7 @@ describe('sealStrand', () => {
     const { db, strandId, founder, createEmptyCollections } = await openStrand('c');
     await sealStrand(db, { managerKeyPair: founder });
 
-    // insertFounderManagerIfAbsent mirrors the schema's own Revocation gate rather
+    // founderManagerMissing mirrors the schema's own Revocation gate rather
     // than driving an insert the founding branch is guaranteed to reject, so a
     // founder that simply restarts its node does not get a loud failure.
     await expect(bootstrapFounderMembership(db, {

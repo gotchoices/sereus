@@ -957,8 +957,10 @@ export class StrandInstanceManager {
       // then retries on a short doubling ladder capped at the configured
       // pollIntervalMs (which is also the flat cadence while nobody has admitted this
       // party yet), and the loop stops once the member row and this machine's own
-      // binding are both in place. Armed AFTER the database phase above, so a gated or
-      // deferred launch always has a reconciler registered by the time it can publish.
+      // binding are both in place. On a founder the founding transaction already wrote both
+      // (`bindFounderPeer`), so the first pass finds them and stops. Armed AFTER the database
+      // phase above, so a gated or deferred launch always has a reconciler registered by the
+      // time it can publish.
       if (config.strandRow.Type === 'c' && config.partyMemberPrivateKey
         && config.membershipReconciliation?.enabled !== false) {
         const reconciler = new StrandMembershipReconciler({
@@ -1102,6 +1104,9 @@ export class StrandInstanceManager {
       memberPrivateKey: config.strandRow.MemberPrivateKey ?? undefined,
       partyMemberPrivateKey: config.partyMemberPrivateKey,
       founder: config.founder,
+      // The founding transaction carries this machine's MemberPeer binding unless the
+      // reconciler that would otherwise write it is disarmed (see buildStrandRuntime).
+      bindFounderPeer: config.membershipReconciliation?.enabled !== false,
       onCommitDurability: config.onCommitDurability,
       onCommitHeld: config.onCommitHeld
     });

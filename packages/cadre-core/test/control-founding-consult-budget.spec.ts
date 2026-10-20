@@ -183,8 +183,12 @@ const MEASURED_ON = '2026-10-20';
  *    once, not twice, so its control side 8 → 7 with neither of the others.
  * With the first two disabled every other figure measured what `28e6e044` did, so neither the
  * optimystic commits since nor `strand-watcher-woken-by-control-changes` moved this spec.
+ *
+ * Re-measured whole at `b7d70516` on 2026-10-20, three runs identical: only `foundStrand`'s
+ * strand side moved, from this side (`strand-founding-writes-batched`, see {@link FOUNDING_STRAND});
+ * every other figure equals the `009bbee0` measurement.
  */
-const BASELINE_UPSTREAM = 'optimystic 009bbee0';
+const BASELINE_UPSTREAM = 'optimystic b7d70516';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
@@ -232,8 +236,9 @@ const GENESIS: Budget = { consults: 20, blocks: 19, commits: 34, consultBudget: 
  * `Revocation` (2026-10-07): `Strand` ×2, its `StampId` index ×1, the never-written
  * `Revocation` ×3 (the publish's `NotRevoked`, the live-owner clause on its owner lookup, and
  * the membership read beside `CadrePeer` ×1) and a tree block ×1; then 4 over 4 on 2026-10-20
- * (three causes, see {@link BASELINE_UPSTREAM}). Control and strand together now sum to 34
- * consults and 18 commits, against 38 and 18 before genesis committed the control collections,
+ * (three causes, see {@link BASELINE_UPSTREAM}). Control and strand together now sum to 33
+ * consults and 17 commits, against 34 and 18 before the founder's strand rows landed in one
+ * transaction (`strand-founding-writes-batched`), 38 and 18 before genesis committed the control collections,
  * 29 and 6 before the founder committed every declared table's collection (see
  * {@link FOUNDING_STRAND}), 28 and 6 before the live-owner clause, 28 and 12 at `8a0b48c7`, 34
  * and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47 and 12 in the trace taken before
@@ -242,19 +247,22 @@ const GENESIS: Budget = { consults: 20, blocks: 19, commits: 34, consultBudget: 
 const FOUNDING_CONTROL: Budget = { consults: 4, blocks: 4, commits: 3, consultBudget: 5, blockBudget: 6, commitBudget: 4 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
- * bootstrap. 30 consults over 16 blocks, 15 commits: the strand's schema catalog ×5,
+ * bootstrap. 29 consults over 15 blocks, 14 commits: the strand's schema catalog ×5,
  * `Header` ×3, each other strand table and `App.Note` ×2 (once as its schema is applied, all
  * missing, and once as the founder commits its empty collection), each of the three unique
- * stamp indexes ×1, and 1 each on three tree blocks the bootstrap created. The 15 commits are
- * the 12 empty collections (8 strand tables, the 3 stamp indexes, `App.Note`) and the 3 the
- * bootstrap made before them. All of it is local: nothing else holds the strand at founding.
+ * stamp indexes ×1, and 1 each on two tree blocks the bootstrap created. The 14 commits are
+ * the 11 empty collections (the 7 strand tables other than `Header`, the 3 stamp indexes,
+ * `App.Note`), the 2 schema applies' catalog commits, and the open strand's founding
+ * transaction, whose `Header` insert creates that table's collection. All of it is local: nothing else holds the strand at founding.
  * History: 25 over 15 blocks on 2026-09-15 (catalog ×7, `Header` ×5), 21 over 15 with 3
  * commits at optimystic `03ffadc4` (only the two repeatedly-read blocks moved; the 11
  * apply-once blocks did not), then 30 over 16 with 15 commits once the founder committed every
  * declared table's collection before its Header (`strand-founder-commits-every-table-collection`):
- * +1 consult on each of the 8 tables, +1 on a tree block, +12 commits.
+ * +1 consult on each of the 8 tables, +1 on a tree block, +12 commits; then 29 over 15 with 14
+ * commits once the founding transaction's own tables were left out of the empty commits
+ * (`strand-founding-writes-batched`): `Header`'s empty commit and one tree block's consult went.
  */
-const FOUNDING_STRAND: Budget = { consults: 30, blocks: 16, commits: 15, consultBudget: 35, blockBudget: 19, commitBudget: 16 };
+const FOUNDING_STRAND: Budget = { consults: 29, blocks: 15, commits: 14, consultBudget: 34, blockBudget: 18, commitBudget: 15 };
 /**
  * `reconcileControlCohort`, one idle pass on the founded solo party: nothing, and nothing
  * allowed. Its membership reads are answered by the view, and the blocks behind them are held

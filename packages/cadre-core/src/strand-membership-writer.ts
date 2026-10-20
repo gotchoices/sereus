@@ -306,11 +306,20 @@ export interface FounderBootstrapParams {
    */
   sharedMemberPublicKey?: string;
   /**
-   * Commit an empty collection for every table the strand declares, resolving to how many
-   * it committed: the composition's `createEmptyCollections`. Run once, on the founding run
-   * that finds no `Header` — see {@link createDeclaredCollections}.
+   * This machine's strand transport peer id. When supplied for a closed strand, the run that
+   * seats the founding `Member` also writes this machine's `Strand.MemberPeer` binding in the
+   * same transaction, instead of leaving it to the membership reconciler's first pass (a
+   * commit of its own). Omitted, no binding is written here: a database with no transport,
+   * or a node whose reconciler is disarmed. Ignored for an open strand.
    */
-  createEmptyCollections: () => Promise<number>;
+  founderPeerId?: string;
+  /**
+   * Commit an empty collection for every table the strand declares except the qualified
+   * tables named, resolving to how many it committed: the composition's
+   * `createEmptyCollections`. Run once, on the founding run that finds no `Header` — see
+   * {@link createDeclaredCollections}.
+   */
+  createEmptyCollections: (except?: readonly string[]) => Promise<number>;
 }
 
 /**
@@ -372,51 +381,46 @@ async function strandHasManagerRevocation(db: Database): Promise<boolean> {
   return false;
 }
 
-/**
- * Found the strand if its `Strand.Header` is absent: commit every declared table's
- * collection ({@link createDeclaredCollections}), then insert the Header. A Header
- * already present means the strand was founded before, so both are skipped.
- */
-async function foundIfHeaderAbsent(db: Database, params: FounderBootstrapParams): Promise<void> {
-  if (await strandTableCount(db, 'Header') > 0) {
-    log('Header already present for strand %s; skipping', params.strandId);
-    return;
-  }
-  await createDeclaredCollections(params);
-  await insertHeader(db, params);
+/** One founding row still missing: its qualified table and the statement that inserts it. */
+interface FoundingRow {
+  table: 'Strand.Header' | 'Strand.Member' | 'Strand.Manager' | 'Strand.MemberPeer';
+  statements: StrandStatements;
 }
 
 /**
- * Commit an empty collection for every table the strand declares, so a read of a table
- * nobody has written is answered from local storage instead of asking the block's cohort
- * to prove the collection absent, and still answers with the other members offline.
- * Peer-join backfill hands these collections to every joiner.
+ * Commit an empty collection for every table the strand declares except `writtenTables`, so a
+ * read of a table nobody has written is answered from local storage instead of asking the
+ * block's cohort to prove the collection absent, and still answers with the other members
+ * offline. Peer-join backfill hands these collections to every joiner. The founding
+ * transaction's own tables are left out because its inserts create their collections anyway.
  *
- * Only while the Header is absent, and before it is written: a machine cannot write to a
- * strand before it holds the Header (`strand-first-sync-gate.ts`), so no other machine can
- * yet have created any of these collections and this cannot fork one. On a founder restart
- * the Header is present and this does not run; running it there could commit an empty
- * second history beside a table a joiner wrote while the founder was away. A crash between
- * this and the Header repeats it on the next run, which commits only the collections still
+ * Only while the Header is absent, and before the founding transaction writes it: a machine
+ * cannot write to a strand before it holds the Header (`strand-first-sync-gate.ts`), so no other
+ * machine can yet have created any of these collections and this cannot fork one. On a founder
+ * restart the Header is present and this does not run; running it there could commit an empty
+ * second history beside a table a joiner wrote while the founder was away. A crash between this
+ * and the founding commit repeats it on the next run, which commits only the collections still
  * missing.
  *
  * NOTE: one `sync()` per collection, in sequence. Measured 2026-10-17 on a lone node over the
  * network transactor (`connectToStrand`, then the step alone, 3 runs each): a nine-table app
  * schema (20 collections with the strand's own) took 32–82 ms in memory and 465–486 ms on
  * `FileRawStorage`; the reference chat schema (13 collections) 19–30 ms and 298–350 ms. About
- * 23 ms per collection on disk, once per strand, before `foundStrand` returns. If founding
- * latency starts to matter (slower phone storage, much larger schemas), commit them as one
- * batch through a coordinator, the way the transaction bridge's `commitBatchLegacy` does.
+ * 23 ms per collection on disk, once per strand, before `foundStrand` returns. Leaving out the
+ * founding transaction's tables brings the chat schema to 6 collections on a closed strand whose
+ * founder binds its peer, and 12 on an open one. If founding latency starts to matter (slower
+ * phone storage, much larger schemas), commit them as one batch through a coordinator, the way
+ * the transaction bridge's `commitBatchLegacy` does.
  */
-async function createDeclaredCollections(params: FounderBootstrapParams): Promise<void> {
+async function createDeclaredCollections(params: FounderBootstrapParams, writtenTables: readonly string[]): Promise<void> {
   const t0 = performance.now();
-  const committed = await params.createEmptyCollections();
+  const committed = await params.createEmptyCollections(writtenTables);
   log('Committed %d empty collections for strand %s in %dms',
     committed, params.strandId, Math.round(performance.now() - t0));
 }
 
 /**
- * Insert the singleton `Strand.Header`.
+ * The singleton `Strand.Header` insert.
  *
  * Every `Header` column is NOT NULL (Quereus defaults unqualified columns to NOT
  * NULL; the table declares no `null` columns), so all eight are supplied non-null.
@@ -424,95 +428,140 @@ async function createDeclaredCollections(params: FounderBootstrapParams): Promis
  * rather than inserting null. `Header` carries only `InsertOnly` + a singleton PK,
  * so the insert needs no `with context`.
  */
-async function insertHeader(db: Database, params: FounderBootstrapParams): Promise<void> {
-  await db.exec(
-    `insert into Strand.Header
-       (Id, Type, sAppId, sAppVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
-       values (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      params.strandId,
-      params.type,
-      params.sApp.id,
-      params.sApp.version,
-      params.sApp.schema,
-      params.sApp.signature ?? '',
-      STRAND_ENGINE,
-      STRAND_ENGINE_VERSION,
-    ],
-  );
-  log('Inserted Header for strand %s (type %s)', params.strandId, params.type);
+function headerRow(params: FounderBootstrapParams): FoundingRow {
+  return {
+    table: 'Strand.Header',
+    statements: {
+      sql: `insert into Strand.Header
+         (Id, Type, sAppId, sAppVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
+         values (:headerId, :headerType, :headerSAppId, :headerSAppVersion, :headerSAppSchema,
+           :headerSAppSignature, :headerEngine, :headerEngineVersion);`,
+      params: {
+        headerId: params.strandId,
+        headerType: params.type,
+        headerSAppId: params.sApp.id,
+        headerSAppVersion: params.sApp.version,
+        headerSAppSchema: params.sApp.schema,
+        headerSAppSignature: params.sApp.signature ?? '',
+        headerEngine: STRAND_ENGINE,
+        headerEngineVersion: STRAND_ENGINE_VERSION,
+      },
+    },
+  };
 }
 
 /**
- * Insert the founding `Strand.Member` if no member exists yet.
+ * The founding `Strand.Member` insert.
  *
  * The empty PRE-transaction member set (`count(1) from committed.Member = 0`)
  * satisfies the bootstrap branch of `Member.Authorized`, so no signature is
  * needed — the context fields are explicit nulls. The branch also caps the
  * POST-image at one member, so it waives authorization for exactly this single
  * seat, never for a batch. The row still mints a fresh StampId — the column is
- * NOT NULL on every path; bootstrap only waives the SIGNATURE. Guarding on the
- * count makes this idempotent: a re-run (the founder re-`addStrand`/
- * `resumeStrand`) finds the member present and skips.
+ * NOT NULL on every path; bootstrap only waives the SIGNATURE.
  */
-async function insertFounderMemberIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
-  if (await strandTableCount(db, 'Member') > 0) {
-    log('Member already present for strand %s; skipping founder Member', strandId);
-    return;
-  }
-  await db.exec(
-    `insert into Strand.Member (Key, StampId)
-       with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-       values (?, ?)`,
-    [memberKey, generateStrandStampId()],
-  );
-  log('Inserted founding Member for strand %s', strandId);
+function founderMemberRow(memberKey: string): FoundingRow {
+  return {
+    table: 'Strand.Member',
+    statements: {
+      sql: `insert into Strand.Member (Key, StampId)
+         with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
+         values (:founderMemberKey, :founderMemberStampId);`,
+      params: { founderMemberKey: memberKey, founderMemberStampId: generateStrandStampId() },
+    },
+  };
 }
 
 /**
- * Insert the founding `Strand.Manager` if no manager exists yet.
+ * The founding `Strand.Manager` insert, at `Generation = 0` — the root of the manager
+ * lineage; the bootstrap branch of `Manager.Authorized` requires exactly that value, and
+ * every later manager is seated at a strictly greater generation (see {@link addManager}).
+ * No signature is needed (a fresh StampId is still minted — the column is NOT NULL).
  *
- * The empty-table state satisfies the bootstrap branch of `Manager.Authorized`, so
- * no signature is needed (a fresh StampId is still minted — the column is NOT
- * NULL). The founder is seated at `Generation = 0` — the root of
- * the manager lineage; the bootstrap branch requires exactly that value, and every
- * later manager is seated at a strictly greater generation (see {@link addManager}).
- * Idempotent via the same count guard.
- *
- * ORDERING IS LOAD-BEARING, not merely convenient. The bootstrap branch is gated to
- * the founding state and now reads `exists (select 1 from Member M where M.Key =
- * new.MemberKey)` alongside `count(Manager) <= 1` and `count(Member) <= 1`, so the
- * founding `Member` row MUST already exist when this commits — a Manager-first
- * seeding path is rejected. It must also run AFTER the Header insert:
- * `Manager.OnlyClosed` is a deferred (subquery) check evaluated at commit. The
- * sequential auto-commit Header→Member→Manager order in
- * {@link bootstrapFounderMembership} satisfies both.
- *
- * SEALED strands are skipped, not re-founded: a strand whose sole manager has
- * {@link sealStrand}ed also has zero `Manager` rows, but its founding branch is
- * closed for good (the schema's bootstrap branch requires no `Manager`-table
- * `Revocation` row to exist). Attempting the founding insert here would be
- * schema-rejected and turn every founder restart of a sealed strand into a
- * loud failure — so this mirrors the schema's own gate and returns quietly.
- * A crash BETWEEN the founding Member and Manager inserts leaves no Revocation
- * rows at all, so that restart still completes the founding.
+ * The bootstrap branch, `Manager.MemberExists` and `Manager.OnlyClosed` all have subqueries,
+ * so they defer to commit and read the live `Member` and `Header` tables: a founding
+ * `Manager` whose `Member` and `Header` are neither committed already nor in its own
+ * transaction is rejected.
  */
-async function insertFounderManagerIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
+function founderManagerRow(memberKey: string): FoundingRow {
+  return {
+    table: 'Strand.Manager',
+    statements: {
+      sql: `insert into Strand.Manager (MemberKey, Generation, StampId)
+         with context ManagerKey = null, Signature = null
+         values (:founderManagerKey, 0, :founderManagerStampId);`,
+      params: { founderManagerKey: memberKey, founderManagerStampId: generateStrandStampId() },
+    },
+  };
+}
+
+/**
+ * Whether the founding `Strand.Manager` still has to be seated: no manager exists and the
+ * strand is not SEALED. A strand whose sole manager has {@link sealStrand}ed also has zero
+ * `Manager` rows, but its founding branch is closed for good (the schema's bootstrap branch
+ * requires no `Manager`-table `Revocation` row to exist). Seating it there would be
+ * schema-rejected and turn every founder restart of a sealed strand into a loud failure — so
+ * this mirrors the schema's own gate. A founding that never committed its Manager leaves no
+ * Revocation rows at all, so that restart still completes the founding.
+ */
+async function founderManagerMissing(db: Database, strandId: string): Promise<boolean> {
   if (await strandTableCount(db, 'Manager') > 0) {
     log('Manager already present for strand %s; skipping founder Manager', strandId);
-    return;
+    return false;
   }
   if (await strandHasManagerRevocation(db)) {
     log('Strand %s has retired a manager seat (sealed); skipping founder Manager', strandId);
-    return;
+    return false;
   }
-  await db.exec(
-    `insert into Strand.Manager (MemberKey, Generation, StampId)
-       with context ManagerKey = null, Signature = null
-       values (?, 0, ?)`,
-    [memberKey, generateStrandStampId()],
-  );
-  log('Inserted founding Manager for strand %s', strandId);
+  return true;
+}
+
+/**
+ * This machine's `Strand.MemberPeer` binding, unless there is no peer id to bind or the
+ * binding is already present (a re-run after a torn founding commit).
+ */
+async function founderBindingIfAbsent(
+  db: Database,
+  founderKeyPair: Ed25519KeyPair,
+  peerId: string | undefined,
+): Promise<FoundingRow[]> {
+  if (peerId === undefined) {
+    return [];
+  }
+  if (await memberPeerStampId(db, founderKeyPair.publicKeyB64, peerId) !== undefined) {
+    log('MemberPeer (%s, %s) already present; skipping founder binding', founderKeyPair.publicKeyB64, peerId);
+    return [];
+  }
+  return [{ table: 'Strand.MemberPeer', statements: memberPeerInsertStatement(founderKeyPair, peerId) }];
+}
+
+/**
+ * The closed strand's founding rows that are still missing, in Member → Manager → MemberPeer
+ * order. Each is behind an insert-if-absent guard, so a re-run after a crash or a torn commit
+ * writes only what is missing.
+ *
+ * The binding joins only a run that seats the founding `Member`. With a member row already
+ * present the founder may since have left the strand or been removed, and
+ * `MemberPeer.MemberExists` would then refuse the whole founding transaction; the membership
+ * reconciler, which binds only once it sees this party's member row, writes it instead.
+ */
+async function missingClosedFoundingRows(
+  db: Database,
+  founderKeyPair: Ed25519KeyPair,
+  params: FounderBootstrapParams,
+): Promise<FoundingRow[]> {
+  const memberKey = founderKeyPair.publicKeyB64;
+  const seatsMember = await strandTableCount(db, 'Member') === 0;
+  if (!seatsMember) {
+    log('Member already present for strand %s; skipping founder Member', params.strandId);
+  }
+  const seatsManager = await founderManagerMissing(db, params.strandId);
+  const binding = seatsMember ? await founderBindingIfAbsent(db, founderKeyPair, params.founderPeerId) : [];
+  return [
+    ...(seatsMember ? [founderMemberRow(memberKey)] : []),
+    ...(seatsManager ? [founderManagerRow(memberKey)] : []),
+    ...binding,
+  ];
 }
 
 /**
@@ -540,21 +589,23 @@ export async function assertNotPreSplitStrand(db: Database, strandId: string, sh
  *
  * Runs once at bring-up on the strand's FOUNDER (the party that provisioned and
  * published the strand). A joiner never calls this — it receives these rows via
- * Optimystic sync. Every write is insert-if-absent (guarded by a row count) so a
- * restart / founder re-`addStrand` is a no-op and never double-inserts.
+ * Optimystic sync. It reads which founding rows are missing, then writes all of them in
+ * ONE strand transaction. Every row is insert-if-absent, so a restart / founder
+ * re-`addStrand` writes nothing, and a re-run after a failed or torn founding commit
+ * writes only what is missing.
  *
  * On the run that finds no `Header`, it first commits an empty collection for every
- * table the `Strand` and `App` schemas declare, so no read of a declared table ever
- * needs another member to prove it empty ({@link createDeclaredCollections}).
+ * table the `Strand` and `App` schemas declare except the ones the founding transaction
+ * writes, so no read of a declared table ever needs another member to prove it empty
+ * ({@link createDeclaredCollections}).
  *
  * Behavior by strand type:
- * - **Open (`'o'`)**: insert `Header` only. `Member`/`Manager`/`Invite` are
- *   `OnlyClosed` and would trip that constraint — they are skipped entirely.
- * - **Closed (`'c'`)**: insert `Header(Type='c')`, then the founding `Member`
- *   (`Key = founderKeyPair.publicKeyB64`), then the founding `Manager`
- *   (`MemberKey = founderKeyPair.publicKeyB64`). Insert order matters: the
- *   Header must commit before the deferred `OnlyClosed` checks on Member/Manager
- *   evaluate at commit.
+ * - **Open (`'o'`)**: `Header` only. `Member`/`Manager`/`Invite` are `OnlyClosed` and
+ *   would trip that constraint — they are skipped entirely.
+ * - **Closed (`'c'`)**: `Header(Type='c')`, the founding `Member` and `Manager` (both
+ *   `founderKeyPair.publicKeyB64`) and, when `founderPeerId` is supplied, this machine's
+ *   `MemberPeer` binding. Every check that reads another founding row has a subquery, so
+ *   it defers to commit and sees the whole transaction.
  *
  * A closed strand with no `founderKeyPair` throws: a closed strand with no founding
  * Manager could never admit anyone, so failing loudly here (which propagates out
@@ -563,12 +614,14 @@ export async function assertNotPreSplitStrand(db: Database, strandId: string, sh
  * A closed strand whose membership holds `sharedMemberPublicKey` throws
  * {@link PreSplitStrandIdentityError} before writing anything: the insert-if-absent
  * guards would otherwise skip over its pre-split founding rows and leave the shared
- * key seated.
+ * key seated. Checked only when the `Header` is already present: a strand founded before
+ * the key split committed its Header first, alone, so a strand with no Header has none
+ * of those rows.
  *
  * @param db - The strand's Quereus database (schema already applied).
  * @param params - Strand id/type, the sApp config for the Header, the composition's
- *   empty-collection step, and (closed only) the derived founder keypair and the
- *   shared-derived public key to refuse.
+ *   empty-collection step, and (closed only) the derived founder keypair, the
+ *   shared-derived public key to refuse and this machine's peer id to bind.
  * @throws If `type === 'c'` and no `founderKeyPair` is supplied.
  * @throws {PreSplitStrandIdentityError} If `type === 'c'` and a `Strand.Member` or
  *   `Strand.Manager` row is `sharedMemberPublicKey`.
@@ -586,23 +639,32 @@ export async function bootstrapFounderMembership(db: Database, params: FounderBo
       'StrandPartyKey. A closed strand needs a founding Member + Manager or it can never admit members.',
     );
   }
-  if (type === 'c' && sharedMemberPublicKey !== undefined) {
+  const headerPresent = await strandTableCount(db, 'Header') > 0;
+  if (headerPresent && type === 'c' && sharedMemberPublicKey !== undefined) {
     await assertNotPreSplitStrand(db, strandId, sharedMemberPublicKey);
   }
 
-  // Every table's collection and the Header are written for every strand; Member/Manager
-  // are closed-only.
-  await foundIfHeaderAbsent(db, params);
-
-  if (type === 'o') {
-    // Open strand: Member/Manager/Invite are OnlyClosed — nothing else to write.
+  const rows = [
+    ...(headerPresent ? [] : [headerRow(params)]),
+    ...(type === 'c' ? await missingClosedFoundingRows(db, founderKeyPair!, params) : []),
+  ];
+  if (!headerPresent) {
+    await createDeclaredCollections(params, rows.map((row) => row.table));
+  }
+  if (rows.length === 0) {
+    log('Strand %s is already founded; nothing to write', strandId);
     return;
   }
-
-  const memberKey = founderKeyPair!.publicKeyB64;
-  await insertFounderMemberIfAbsent(db, memberKey, strandId);
-  await insertFounderManagerIfAbsent(db, memberKey, strandId);
-  log('Founder bootstrap complete for closed strand %s', strandId);
+  // NOTE: a torn founding commit (some of the batch's collections saved, others not) can leave
+  // the Header committed beside a founding table with no collection, which committing every
+  // table's empty collection first used to rule out. A sibling machine of this party could then
+  // create that collection itself (its reconciler binding its own peer into MemberPeer). The
+  // re-run's guards, and this machine's reconciler, read each table before writing it, and a
+  // networked read asks the cohort, so the healing write appends to the sibling's collection
+  // unless the sibling is unreachable at that moment. If torn founding commits are ever observed, commit the founding tables a sibling
+  // writes (MemberPeer) as empty collections before this batch again.
+  await execStrandTransaction(db, combineStatements(...rows.map((row) => row.statements)));
+  log('Founder bootstrap for strand %s wrote %s', strandId, rows.map((row) => row.table).join(', '));
 }
 
 // ── Invite issuance + consumption (the per-strand join handshake) ─────────────
@@ -1304,8 +1366,18 @@ export async function registerMemberPeer(
     return;
   }
 
+  await execStrandTransaction(db, memberPeerInsertStatement(memberKeyPair, peerId), options);
+  log('Registered MemberPeer (%s, %s)', memberKey, peerId);
+}
+
+/**
+ * The self-signed `Strand.MemberPeer` insert binding `peerId` to the member, under a fresh
+ * stamp bound into the add-tagged digest (see {@link registerMemberPeer}).
+ */
+function memberPeerInsertStatement(memberKeyPair: Ed25519KeyPair, peerId: string): StrandStatements {
+  const memberKey = memberKeyPair.publicKeyB64;
   const stampId = generateStrandStampId();
-  await execStrandTransaction(db, {
+  return {
     sql: `insert into Strand.MemberPeer (MemberKey, PeerId, StampId)
        with context Signature = :peerSignature, ManagerKey = null, ManagerSignature = null
        values (:peerMemberKey, :peerId, :peerStampId);`,
@@ -1315,8 +1387,7 @@ export async function registerMemberPeer(
       peerId,
       peerStampId: stampId,
     },
-  }, options);
-  log('Registered MemberPeer (%s, %s)', memberKey, peerId);
+  };
 }
 
 /**

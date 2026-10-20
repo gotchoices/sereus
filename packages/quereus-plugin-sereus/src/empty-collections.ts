@@ -16,12 +16,17 @@ export interface CollectionRegistrySource {
 
 /**
  * Commit an empty collection for every Optimystic table declared in `schemaNames` that has none
- * yet, and resolve to how many collections were committed.
+ * yet, except the tables named in `except`, and resolve to how many collections were committed.
  *
  * Opening a table whose collection was never committed stages a fresh empty one in this node's
  * tracker and writes nothing (`Collection.createOrOpen`'s invented branch), and a SQL commit
  * flushes only the trees it wrote to. So the step opens every table, which registers each of its
  * trees with the bridge, then syncs every registered collection still in that invented state.
+ *
+ * `except` holds qualified table names (`'Strand.Header'`) whose collections the caller is about
+ * to create by writing rows: an insert writes every tree of its table, so each of those trees is
+ * left out whether or not it was opened here. A name that matches no declared Optimystic table
+ * throws, so a renamed table cannot quietly fall back to committing everything.
  *
  * Commits outside any SQL transaction whatever is staged in those collections, so it is only
  * sound while nothing else writes through `db`.
@@ -29,13 +34,16 @@ export interface CollectionRegistrySource {
 export async function createEmptyCollections(
 	db: Database,
 	bridge: CollectionRegistrySource,
-	schemaNames: readonly string[]
+	schemaNames: readonly string[],
+	except: readonly string[] = []
 ): Promise<number> {
-	const tables = optimysticTables(db, schemaNames);
+	const declared = optimysticTables(db, schemaNames);
+	const excluded = excludedTables(declared, except, schemaNames);
+	const tables = declared.filter(table => !excluded.includes(table));
 	await openTables(db, tables);
 	const registry = bridge.getCollectionRegistry();
 	assertMainCollectionsRegistered(registry, tables, schemaNames);
-	return await syncInventedCollections(registry);
+	return await syncInventedCollections(registry, excluded.map(mainCollectionId));
 }
 
 /**
@@ -55,6 +63,17 @@ function optimysticTables(db: Database, schemaNames: readonly string[]): TableSc
 		throw new Error(`Schemas ${schemaNames.join(', ')} declare no optimystic table; cannot give their tables an empty collection`);
 	}
 	return tables;
+}
+
+/** The declared tables `except` names, compared case-insensitively as SQL identifiers are. */
+function excludedTables(declared: readonly TableSchema[], except: readonly string[], schemaNames: readonly string[]): TableSchema[] {
+	return except.map(name => {
+		const table = declared.find(candidate => `${candidate.schemaName}.${candidate.name}`.toLowerCase() === name.toLowerCase());
+		if (!table) {
+			throw new Error(`Cannot leave ${name} out of the empty collections: schemas ${schemaNames.join(', ')} declare no optimystic table by that name`);
+		}
+		return table;
+	});
 }
 
 /** A read initializes the table's vtab, which is what opens and registers its collections. */
@@ -90,9 +109,15 @@ function mainCollectionId(table: TableSchema): CollectionId {
 	return (uri.startsWith('tree://') ? uri.slice('tree://'.length) : uri) as CollectionId;
 }
 
-async function syncInventedCollections(registry: ReadonlyMap<CollectionId, Collection<unknown>>): Promise<number> {
+async function syncInventedCollections(
+	registry: ReadonlyMap<CollectionId, Collection<unknown>>,
+	excludedMainIds: readonly CollectionId[]
+): Promise<number> {
 	let committed = 0;
 	for (const [id, collection] of registry) {
+		if (belongsToExcludedTable(id, excludedMainIds)) {
+			continue;
+		}
 		// `committedRevision() === undefined` is the invented STATE, which its doc says is safe to branch on.
 		if (collection.committedRevision() === undefined && collection.hasUnsyncedChanges()) {
 			await collection.sync();
@@ -101,4 +126,14 @@ async function syncInventedCollections(registry: ReadonlyMap<CollectionId, Colle
 		}
 	}
 	return committed;
+}
+
+/**
+ * Whether `id` is one of an excluded table's trees: its main collection, or an index or
+ * unique-enforcement tree, which the Optimystic plugin keeps at `<main uri>/index/<name>`.
+ * Matched by id rather than by "opened here", because the caller's own reads of an excluded
+ * table registered it before this step ran.
+ */
+function belongsToExcludedTable(id: CollectionId, excludedMainIds: readonly CollectionId[]): boolean {
+	return excludedMainIds.some(mainId => id === mainId || id.startsWith(`${mainId}/index/`));
 }

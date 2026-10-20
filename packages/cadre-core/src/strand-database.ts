@@ -56,6 +56,14 @@ export interface StrandDatabaseConfig extends StrandCommitListeners {
    * leave this false and write nothing (rows arrive via sync). Defaults to false.
    */
   founder?: boolean;
+  /**
+   * Whether a closed strand's founder bootstrap also writes this machine's `Strand.MemberPeer`
+   * binding (for `libp2pNode`'s peer id) in the founding transaction. That binding is the
+   * membership reconciler's job; the founding run that seats the founding `Member` writes it
+   * too, which saves the reconciler's commit. False whenever the reconciler is disarmed, so a
+   * fixture that hand-drives the membership writers sees only the rows it wrote. Defaults to false.
+   */
+  bindFounderPeer?: boolean;
 }
 
 /**
@@ -173,11 +181,13 @@ export class StrandDatabase {
    * therefore use to forge the founder's identity. A closed strand with no
    * `partyMemberPrivateKey` throws, because it could never seat a founding manager.
    * The shared key's public half IS passed, but only so the bootstrap can refuse a strand
-   * founded under it before the split (`PreSplitStrandIdentityError`). Open strands derive
-   * no keypair (Header only). Idempotent — see {@link bootstrapFounderMembership}.
+   * founded under it before the split (`PreSplitStrandIdentityError`). The strand node's
+   * peer id is passed under {@link StrandDatabaseConfig.bindFounderPeer}: the same node, so
+   * the same id, the membership reconciler binds. Open strands derive no keypair (Header
+   * only). Idempotent — see {@link bootstrapFounderMembership}.
    */
   private async bootstrapFounder(): Promise<void> {
-    const { strandId, strandType, memberPrivateKey, partyMemberPrivateKey } = this.config;
+    const { strandId, strandType, memberPrivateKey, partyMemberPrivateKey, libp2pNode, bindFounderPeer } = this.config;
     const closed = strandType === 'c';
     await bootstrapFounderMembership(this.db!, {
       strandId,
@@ -187,6 +197,7 @@ export class StrandDatabase {
       sharedMemberPublicKey: closed && memberPrivateKey
         ? strandMemberKeyPair(memberPrivateKey).publicKeyB64
         : undefined,
+      founderPeerId: closed && bindFounderPeer === true ? libp2pNode.peerId.toString() : undefined,
       createEmptyCollections: this.createEmptyCollections!,
     });
   }

@@ -123,17 +123,23 @@ describe('bootstrapFounderMembership', () => {
     }
   });
 
-  it('closed strand: writes exactly one Header(c), Member, and Manager sharing the founder key', async () => {
+  it('closed strand: writes exactly one Header(c), Member, Manager, and MemberPeer sharing the founder key', async () => {
     open = await openStrandDb();
     const { db, strandId, createEmptyCollections } = open;
     const founderKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
     const sApp = makeSAppConfig();
 
-    await bootstrapFounderMembership(db, { strandId, type: 'c', sApp, founderKeyPair, createEmptyCollections });
+    await bootstrapFounderMembership(db, {
+      strandId, type: 'c', sApp, founderKeyPair, founderPeerId: 'founder-peer', createEmptyCollections,
+    });
 
     expect(await tableCount(db, 'Header')).toBe(1);
     expect(await tableCount(db, 'Member')).toBe(1);
     expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+    // The founding left out of its empty commits exactly the tables it wrote: every declared
+    // tree now has a committed collection.
+    expect(await createEmptyCollections()).toBe(0);
 
     const header = await db.get('select * from Strand.Header');
     expect(header?.Id).toBe(strandId);
@@ -161,6 +167,7 @@ describe('bootstrapFounderMembership', () => {
     expect(await tableCount(db, 'Header')).toBe(1);
     expect(await tableCount(db, 'Member')).toBe(0);
     expect(await tableCount(db, 'Manager')).toBe(0);
+    expect(await createEmptyCollections()).toBe(0);
 
     const header = await db.get('select Type from Strand.Header');
     expect(header?.Type).toBe('o');

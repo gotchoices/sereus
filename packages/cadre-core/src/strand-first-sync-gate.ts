@@ -41,7 +41,8 @@
  * never invent a collection (Optimystic's `Collection.open` resolves undefined on an
  * authoritatively absent header, and throws on an unreachable one), so probing is safe to
  * repeat and a throw is just "not yet". Every table declared at founding has a collection
- * from the start (the founder bootstrap commits them all before the Header), so a probe read
+ * from the start (the founder bootstrap commits the rest empty before its founding transaction
+ * writes the Header and the membership rows), so a probe read
  * fetches it; a table a later schema version adds reads as absent until its first write
  * creates the collection — see `docs/strands.md` ("Joining") for that residual.
  *

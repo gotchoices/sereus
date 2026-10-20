@@ -394,7 +394,7 @@ export async function composeStrand(
 		transactor: resolvedTransactor,
 		onCommitDurability: listener => pluginResult.onCommitDurability(listener),
 		onCommitFullyHeld: listener => pluginResult.onCommitFullyHeld(listener),
-		createEmptyCollections: () => createEmptyCollections(db, pluginResult.txnBridge, FOUNDED_SCHEMAS),
+		createEmptyCollections: except => createEmptyCollections(db, pluginResult.txnBridge, FOUNDED_SCHEMAS, except),
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
 			await releaseOptimysticPlugin(pluginResult, createdNode);
