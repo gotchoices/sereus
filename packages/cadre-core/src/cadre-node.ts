@@ -3381,10 +3381,9 @@ export class CadreNode implements SAppIdLookup {
       // First-time row: requires an owner signature (the node is its own
       // owner). insertSelfPeerRecord throws if no owner key is present.
       const record = this.signSelfRecord(peerId, signingKey, addrs, null);
+      const aloneBefore = this.committedAlone();
       if (await ownerService.insertSelfPeerRecord(record)) {
-        if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-        this.lastSignedSelfRecord = record;
-        this.noteSelfRecordPublished();
+        this.noteSelfPeerWritten(record, aloneBefore);
         log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
         return 'inserted';
       }
@@ -3420,19 +3419,33 @@ export class CadreNode implements SAppIdLookup {
       return 'skipped';
     }
     const record = this.signSelfRecord(peerId, signingKey, addrs, current);
+    const aloneBefore = this.committedAlone();
     await this.controlDatabase.updateSelfPeerRecord(record);
-    if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-    this.lastSignedSelfRecord = record;
-    this.noteSelfRecordPublished();
+    this.noteSelfPeerWritten(record, aloneBefore);
     log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
     return 'refreshed';
   }
 
   /**
+   * Bookkeeping for a committed write of this node's own `CadrePeer` row by {@link publishSelfRecord}.
+   * Queued for the drain's re-touch ({@link pendingSelfPeerWrite}) when no sibling was reachable
+   * when the write started or when it ended: a sibling that identifies while the write is out may
+   * do so after the write's cohort was chosen, and the first-growth drain skips a row holding
+   * {@link lastSignedSelfRecord} unless this flag is set. Both fields are set here together so no
+   * write can leave the record without the flag.
+   */
+  private noteSelfPeerWritten(record: PeerAddressRecord, aloneBefore: boolean): void {
+    if (aloneBefore || this.committedAlone()) this.pendingSelfPeerWrite = true;
+    this.lastSignedSelfRecord = record;
+    this.noteSelfRecordPublished();
+  }
+
+  /**
    * Record that this node's own address record is in place as of `at`, and re-arm the
-   * stale-record warning. Called from BOTH publishing paths of {@link publishSelfRecord}, and
-   * by {@link publishSelfRecordUnlessCurrent} with the stamp of a record already in place —
-   * a `skipped` publish wrote nothing and found nothing, so it must not refresh the stamp.
+   * stale-record warning. Called for BOTH publishing paths of {@link publishSelfRecord}
+   * ({@link noteSelfPeerWritten}), and by {@link publishSelfRecordUnlessCurrent} with the stamp
+   * of a record already in place — a `skipped` publish wrote nothing and found nothing, so it
+   * must not refresh the stamp.
    */
   private noteSelfRecordPublished(at = Date.now()): void {
     this.lastSelfRecordPublishAt = at;

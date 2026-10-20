@@ -79,3 +79,7 @@ Open design questions to resolve before implementing:
 ## Overlap: the trigger half (added 2026-10-20)
 
 `implement/reconnect-writes-wait-for-sibling-identify` replaces the drain's `getConnections().length > 0` trigger and `committedAlone()` with "a connected sibling that identified as serving the control network and that `isNetworkMember` accepts", which is the cohort Optimystic assembles. Once it lands, a relay or bootstrap connection no longer fires the edge. What stays open here is keeping a queue entry until the re-send is known to have reached the cohort, for example when the identified sibling is not in a given block's cohort on a party larger than the control breadth.
+
+## Arm: the drain clears a self-row flag set by a write it joined (added 2026-10-20)
+
+Drain step 2 in `runDrainControlReplication` (`cadre-node.ts`) awaits `registerSelf()` / `publishSelfRecordUnlessCurrent()` and then sets `pendingSelfPeerWrite = false`. When a self `CadrePeer` write (boot timer, heartbeat, address change) is already in flight, the drain joins it instead of writing, and if that write began with no reachable sibling it sets the flag (`noteSelfPeerWritten`), which the drain then clears. Its cohort may have been chosen before the sibling identified, so the row can stay local-only until the next heartbeat. The same clear-on-return semantics as the rest of this ticket; `repro: static`, found in review of `invited-machine-skips-its-first-publish`.
