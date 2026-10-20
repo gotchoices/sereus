@@ -7,7 +7,7 @@
  * sibling connected), so Optimystic commits it **local-only** (the block's cluster
  * is ≤1, so nothing is broadcast). It then connects and asserts the row still
  * converges to the reader, proving `control-write-ensure-replicated`: the writer
- * re-issues its local-only writes on the 0→≥1 control-connection growth edge.
+ * re-issues its local-only writes when a sibling becomes reachable (the growth edge).
  *
  * Without the fix these tests HANG (the reader never observes the row) — they are
  * the regression guard for the write-while-alone durability gap.

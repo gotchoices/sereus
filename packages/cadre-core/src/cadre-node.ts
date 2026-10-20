@@ -5161,7 +5161,8 @@ export class CadreNode implements SAppIdLookup {
    * A control connection closed: `remotePeer` stops counting once it has none left, and the
    * growth edge re-arms if no reachable sibling remains. The sibling-close reaction runs on every
    * close. libp2p's connection manager drops the closed connection from `getConnections` before
-   * this listener runs (it subscribed first).
+   * this listener runs: libp2p dispatches each event on its internal bus, where the connection
+   * manager listens, before re-dispatching it to the node's own listeners.
    */
   private onControlConnectionClosed(remotePeer: PeerId): void {
     const id = remotePeer.toString();
