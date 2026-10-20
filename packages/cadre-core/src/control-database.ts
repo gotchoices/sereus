@@ -7,8 +7,10 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
+import { createEmptyCollections } from '@serfab/quereus-plugin-sereus';
+import type { CollectionRegistrySource } from '@serfab/quereus-plugin-sereus';
 import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, RevocationLedgerOpenResult, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalResult } from './types.js';
-import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, controlSchemaFileDeclaration } from './control-schema.js';
+import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, CONTROL_SCHEMA_NAME, controlSchemaFileDeclaration } from './control-schema.js';
 import { refuseIncompatibleControlStore } from './control-schema-version.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, CONTROL_TABLES } from './control-authorization.js';
@@ -486,6 +488,8 @@ interface OptimysticPluginResult {
    * compose-strand.ts).
    */
   hydrate: (db: Database) => Promise<{ tables: number; indexes: number }>;
+  /** The registry of every collection a control table opened; see {@link ControlDatabase.ensureOwnerKey}. */
+  txnBridge: CollectionRegistrySource;
   [key: string]: unknown;
 }
 
@@ -1122,6 +1126,7 @@ export interface ControlDatabaseConfig {
 export class ControlDatabase {
   private db: Database | null = null;
   private collectionFactory: CollectionFactory | null = null;
+  private txnBridge: CollectionRegistrySource | null = null;
   private readonly config: ControlDatabaseConfig;
   private initialized = false;
   private membershipListener: MembershipChangeListener | null = null;
@@ -1203,6 +1208,7 @@ export class ControlDatabase {
     registerPartyIdFunction(this.db, this.config.partyId);
 
     this.collectionFactory = pluginResult.collectionFactory;
+    this.txnBridge = pluginResult.txnBridge;
 
     // Inject the libp2p node into the collection factory
     t0 = performance.now();
@@ -1634,6 +1640,16 @@ export class ControlDatabase {
    * the party has none yet. Returns true if it inserted, false if an owner
    * key already existed (so a repeat `--owner` start is a no-op).
    *
+   * Before the insert, gives every control table its empty collection
+   * ({@link commitEmptyControlCollections}). A collection committed while a machine is alone
+   * forks if another machine creates the same collection independently; before genesis the
+   * party has no owner, so no other machine can have been admitted and none can hold any of
+   * its collections. The order makes the step repeatable: a crash between it and the insert
+   * leaves no `OwnerKey` row, so the next start runs genesis again and commits only the
+   * collections still missing, while a founder restart finds the row and commits nothing, so
+   * it can never write an empty second history beside a table another machine has since
+   * written. A failure propagates with nothing inserted.
+   *
    * @param label - the user's name for the key ({@link insertOwnerKey}).
    */
   async ensureOwnerKey(key: string, label?: string): Promise<boolean> {
@@ -1643,8 +1659,38 @@ export class ControlDatabase {
       log('Owner key already present; skipping genesis insert');
       return false;
     }
+    // Two locked steps one after the other: the lock is not re-entrant, and the insert takes it itself.
+    await this.commitEmptyControlCollections();
     await this.insertOwnerKey(trimmed, label);
     return true;
+  }
+
+  /**
+   * Commit an empty collection for every `CadreControl` table, index tree and unique-enforcement
+   * tree that has none, so a read of a table nobody has written is answered from this machine's
+   * storage instead of asking the block's cohort to prove the collection absent — a round trip
+   * per read on a party of several machines, and an error or a wait while they are offline.
+   * Joining machines get these collections the ordinary way, by reading them from the cohort.
+   *
+   * Under the write lock: the helper commits whatever is staged in those collections outside any
+   * SQL transaction, which is sound only while nothing else writes.
+   *
+   * Parties founded before this step, and tables a later control schema version adds, have no
+   * such collections, and nothing creates them later: the start-time schema apply runs on every
+   * machine, possibly alone, where committing one would be exactly the fork genesis avoids.
+   *
+   * NOTE: one `sync()` per collection, in sequence: 32 collections for today's schema (17 tables,
+   * 3 indexes, 12 `unique` columns). Not yet measured on this path; at strand founding's measured
+   * ~23 ms per collection on `FileRawStorage` (`createDeclaredCollections`' NOTE) that is ~0.7 s,
+   * against the edge node's 60 s `DEFAULT_OWNER_GENESIS_TIMEOUT_MS`. If genesis latency starts to
+   * matter (phone flash under launch contention runs 50–90 ms per storage operation, see the NOTE
+   * in `initialize`), ask Optimystic for an API that commits them as one batch, the one strand
+   * founding would use too; do not build a private batching path.
+   */
+  private async commitEmptyControlCollections(): Promise<void> {
+    const t0 = performance.now();
+    const committed = await this.withWriteLock(() => createEmptyCollections(this.db!, this.txnBridge!, [CONTROL_SCHEMA_NAME]));
+    log('Committed %d empty control collections in %dms', committed, Math.round(performance.now() - t0));
   }
 
   /**
@@ -5153,6 +5199,7 @@ export class ControlDatabase {
       await this.collectionFactory.shutdown();
       this.collectionFactory = null;
     }
+    this.txnBridge = null;
     // Again: a subscription taken during the awaits above would keep its timers past close.
     this.tableWatches.disposeAll();
     if (this.db) {

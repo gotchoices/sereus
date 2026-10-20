@@ -14,6 +14,9 @@ import { createEmptyCollections, type CollectionRegistrySource } from './empty-c
 const log = debug('sereus:plugin:strand');
 const timing = debug('sereus:plugin:strand:timing');
 
+/** The schemas whose tables a strand founder gives a collection: strand membership, then the sApp's. */
+const FOUNDED_SCHEMAS = ['Strand', 'App'] as const;
+
 /**
  * Minimal interface for the CollectionFactory returned by the optimystic plugin.
  * We only need the methods this composition actually uses.
@@ -391,7 +394,7 @@ export async function composeStrand(
 		transactor: resolvedTransactor,
 		onCommitDurability: listener => pluginResult.onCommitDurability(listener),
 		onCommitFullyHeld: listener => pluginResult.onCommitFullyHeld(listener),
-		createEmptyCollections: () => createEmptyCollections(db, pluginResult.txnBridge),
+		createEmptyCollections: () => createEmptyCollections(db, pluginResult.txnBridge, FOUNDED_SCHEMAS),
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
 			await releaseOptimysticPlugin(pluginResult, createdNode);

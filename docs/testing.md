@@ -21,9 +21,7 @@ and the full history in its doc comment:
 - `packages/cadre-core/test/control-founding-consult-budget.spec.ts` — the cost above the storage
   cache, which the two above cannot see: how often Optimystic's coordinator consults a block's
   cohort, and how many commits it issues, across a solo party's cold start, genesis,
-  `foundStrand`, the per-request membership reads, and an idle reconcile pass; a second test
-  pins the same reads before and after filing the `Revocation` ledger marker
-  (`ControlDatabase.openRevocationLedger`), which is what that marker exists to save.
+  `foundStrand`, the per-request membership reads, and an idle reconcile pass.
 
 All three are two-sided (a ceiling as regression guard, a floor at half the measurement as
 anti-vacuity guard). Two phases are pinned EXACTLY instead of bracketed, because their shape

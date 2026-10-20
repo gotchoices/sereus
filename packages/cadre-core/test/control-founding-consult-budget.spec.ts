@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { generateKeyPair } from '@libp2p/crypto/keys';
-import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import { createOwnerKey } from '../src/owner-key-store.js';
@@ -44,8 +42,7 @@ import {
  * reads it first — the "every call costs the same" shape pinned below. The Revocation ledger
  * marker (`ControlDatabase.openRevocationLedger`) ends that, but only the reconcile pass's
  * connected-only step files it, so a solo node never does and the founding figures below
- * are the marker-less ones. If they move, find out why before re-pinning. The second test
- * files the marker directly and pins what it buys.
+ * are the marker-less ones. If they move, find out why before re-pinning.
  *
  * **Phases**, on one solo `CadreNode` (`profile: 'transaction'`, one `MemoryRawStorage`
  * per storage id), each measured from a zeroed counter: cold `start()`; genesis
@@ -250,7 +247,7 @@ const RECONCILE_STRAND: Budget = { consults: 0, blocks: 0, commits: 0, consultBu
  * and 1 at {@link BASELINE_UPSTREAM}, which is the same block consulted once per refresh
  * instead of twice. The motivating trace measured [4, 2, 2, 2, 2, 2] right after genesis
  * rather than after founding. A drop to 0 on later calls would mean the block stopped being
- * missing, which is the second test's subject.
+ * missing.
  */
 const REVOKED_STAMPS_PER_CALL = [1, 1, 1, 1, 1, 1];
 /**
@@ -261,66 +258,6 @@ const REVOKED_STAMPS_PER_CALL = [1, 1, 1, 1, 1, 1];
  * measured 2 per call once a `CadrePeer` row existed, and 0 once `Revocation` was held too.
  */
 const CADRE_PEERS_PER_CALL = [2, 2, 2, 2, 2, 2];
-
-/**
- * **The second test: what the Revocation ledger marker buys.** Same node shape and counter. One
- * `CadrePeer` row is seated first, so `CadrePeer` is a held block and `Revocation` is the only
- * missing block on these paths. The hot paths are measured, the marker is filed directly (a solo
- * node never takes the reconcile pass's connected-only step), and the same paths are measured
- * again. The "before" side is pinned as well, so the "after" zeros cannot pass on a counter that
- * has stopped seeing the path. Measured on {@link MEASURED_ON}:
- *
- * | path | before the marker | after |
- * |---|---|---|
- * | `queryRevokedStamps('CadrePeer')` per call | `Revocation` ×1, every call | 1 on the first call, then 0 |
- * | `queryCadrePeers()` per call | `Revocation` ×1, every call | 0 |
- * | `authorizePeer` of a new member | 5: `Revocation` ×4, 1 on a tree block | 0 |
- * | idle `reconcileControlCohort` | 5: `Revocation` ×5 (6 on 2026-10-07; see {@link BASELINE_UPSTREAM}) | 0 |
- *
- * The one consult after is on the tree block the marker's own commit created, paid by whichever
- * read runs first. Filing the marker cost 3 consults (`Revocation` ×3; 2 before every owner
- * lookup read the table) and 1 commit (2 before `e6e84aa1`). The reconcile pass is asserted by
- * its busiest block (more than once before, at most once after) rather than pinned, so an
- * unrelated read added to the pass does not read as a marker regression.
- *
- * `authorizePeer`'s four `Revocation` consults before the marker: two are the insert's own
- * checks (`NotRevoked`, and the live-owner clause on its owner lookup, which disqualifies a
- * signer whose stamp is retired), one is the membership refresh the commit triggers, and one is
- * the trusted-owner anchor sync's tombstone read at the head of that refresh
- * (`CadreNode.syncOwnerAnchor`); the sync reads the `OwnerKey` stamps it retires from that same
- * list rather than through `queryRevokedStamps`, so it adds exactly one consult, and none once
- * the block is held. The idle reconcile's sixth is the same read on its refresh.
- *
- * Only the "before" column moved at optimystic `03ffadc4`: every repeated consult of the
- * missing `Revocation` block halved (per call 2 → 1, `authorizePeer` 5 → 3, reconcile 8 → 4,
- * filing 4 → 2). The "after" column was already zero and is unchanged, so what this test proves
- * — that the marker removes the repeats entirely — is measured against a smaller "before" than
- * on 2026-09-15 but the same contrast. No consult here moved at `8a0b48c7`: the
- * `authorizePeer` commit touches only the held `CadrePeer` trees, whose refreshes inside the
- * read-repair window never consulted, so dropping them saved nothing.
- */
-const MARKER_BEFORE_PER_CALL = [1, 1, 1, 1, 1, 1];
-const MARKER_BEFORE_AUTHORIZE = 5;
-/** The first read after the marker pays one consult on the block its commit created. */
-const MARKER_AFTER_REVOKED_STAMPS = [1, 0, 0, 0, 0, 0];
-const MARKER_AFTER_CADRE_PEERS = [0, 0, 0, 0, 0, 0];
-const MARKER_AFTER_AUTHORIZE = 0;
-
-/** The four hot paths, measured on one side of the marker. */
-interface MarkerSide {
-	revokedStamps: PerCallCost;
-	cadrePeers: PerCallCost;
-	/** One `authorizePeer` of a new member: a guarded control-plane insert. */
-	authorize: PhaseCost;
-	/** One idle `reconcileControlCohort` pass, with address-less siblings it cannot dial. */
-	reconcile: PhaseCost;
-}
-
-interface MarkerRun {
-	before: MarkerSide;
-	filing: PhaseCost;
-	after: MarkerSide;
-}
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {
@@ -678,126 +615,5 @@ describe('control database founding, cohort consult and commit budget', () => {
 		expectPerCall('queryCadrePeers()', run.cadrePeers, CADRE_PEERS_PER_CALL);
 		expectWithinBudget('idle reconcileControlCohort on the control network', run.reconcileControl, RECONCILE);
 		expectWithinBudget('idle reconcileControlCohort on the strand', run.reconcileStrand, RECONCILE_STRAND);
-	}, 180_000);
-});
-
-/** A real Ed25519 peer id: `authorizePeer` derives the row's public key from it. */
-async function freshPeerId(): Promise<string> {
-	return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
-}
-
-/**
- * Measure the four hot paths once: both membership reads per call, one `authorizePeer` of
- * `newMember`, and one idle reconcile pass. `members` is the `CadrePeer` set the reads must return
- * before `newMember` joins it.
- */
-async function measureHotPaths(
-	counter: ConsultCounter,
-	runStart: number,
-	node: CadreNode,
-	side: 'before' | 'after',
-	members: readonly string[],
-	newMember: string
-): Promise<MarkerSide> {
-	const db = node.getControlDatabase()!;
-	// The marker is not a CadrePeer stamp, so the retired set is empty on both sides.
-	const revokedStamps = await measurePerCall(counter, runStart, `${side} queryRevokedStamps(CadrePeer)`, async () => {
-		expect(await db.queryRevokedStamps('CadrePeer')).toEqual(new Set());
-	});
-	const cadrePeers = await measurePerCall(counter, runStart, `${side} queryCadrePeers()`, async () => {
-		expect((await db.queryCadrePeers()).map((row) => row.peerId).sort()).toEqual([...members].sort());
-	});
-	const authorize = await measurePhase(counter, runStart, `${side} authorizePeer()`, undefined, () =>
-		within(`${side} authorizePeer()`, OP_TIMEOUT_MS, () => node.authorizePeer(newMember)));
-	const reconcile = await measurePhase(counter, runStart, `${side} reconcileControlCohort()`, undefined, () =>
-		within(`${side} reconcileControlCohort()`, OP_TIMEOUT_MS, () => node.reconcileControlCohort()));
-	return { revokedStamps, cadrePeers, authorize: authorize.control, reconcile: reconcile.control };
-}
-
-/**
- * Stand up a solo `CadreNode`, found its party and seat one `CadrePeer` row, then measure the hot
- * paths before and after filing the Revocation ledger marker directly. The node is torn down
- * before returning.
- */
-async function measureMarker(counter: ConsultCounter): Promise<MarkerRun> {
-	const node = soloNode();
-	const runStart = performance.now();
-	try {
-		await measurePhase(counter, runStart, 'start()', 'control', async () => {
-			await within('start() (cold)', LIFECYCLE_TIMEOUT_MS, () => node.start());
-			await settleStart(node, counter);
-		});
-		const db = node.getControlDatabase();
-		expect(db).not.toBeNull();
-		const owner = await createOwnerKey(new InMemoryKeyStore());
-		expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(owner.publicKey))).toBe(true);
-		await node.useOwnerSigner(owner);
-		const first = await freshPeerId();
-		await within('authorizePeer() (first member)', OP_TIMEOUT_MS, () => node.authorizePeer(first));
-
-		const second = await freshPeerId();
-		const before = await measureHotPaths(counter, runStart, node, 'before', [first], second);
-
-		const filing = await measurePhase(counter, runStart, 'openRevocationLedger()', undefined, async () => {
-			expect(await within('openRevocationLedger()', OP_TIMEOUT_MS,
-				() => node.getSeedBootstrapService()!.openRevocationLedger())).toBe('opened');
-		});
-
-		const third = await freshPeerId();
-		const after = await measureHotPaths(counter, runStart, node, 'after', [first, second], third);
-		return { before, filing: filing.control, after };
-	} finally {
-		await within('stop()', LIFECYCLE_TIMEOUT_MS, () => node.stop());
-	}
-}
-
-function printMarkerSide(side: string, cost: MarkerSide): void {
-	printPerCall(`${side}: queryRevokedStamps('CadrePeer')`, cost.revokedStamps);
-	printPerCall(`${side}: queryCadrePeers()`, cost.cadrePeers);
-	printPhase(`${side}: authorizePeer (control)`, cost.authorize);
-	printPhase(`${side}: reconcileControlCohort (control)`, cost.reconcile);
-}
-
-/** Consults on a phase's busiest block; 0 when the phase consulted nothing. */
-function busiestBlock(cost: PhaseCost): number {
-	return Math.max(0, ...cost.snapshot.perBlock.values());
-}
-
-/** One write's consults, pinned exactly, with the per-block breakdown in the message. */
-function expectConsults(label: string, cost: PhaseCost, measured: number): void {
-	expect(cost.snapshot.consults, `${label}: ${cost.snapshot.consults} cohort consults, measured ${measured} on ${MEASURED_ON} at ${BASELINE_UPSTREAM}. `
-		+ `It began ${Math.round(cost.atMs)}ms into the run (held blocks are re-consulted after ${READ_REPAIR_WINDOW_MS}ms). `
-		+ `Consults per block: ${formatPerBlock(cost.snapshot)}`).toBe(measured);
-}
-
-describe('Revocation ledger marker, cohort consult budget', () => {
-	it('once the marker is filed, the membership reads, a control insert and a reconcile pass stop re-consulting', async () => {
-		const counter = installConsultCounter();
-		let run: MarkerRun;
-		try {
-			run = await measureMarker(counter);
-		} finally {
-			counter.restore();
-		}
-
-		printMarkerSide('before the marker', run.before);
-		printPhase('openRevocationLedger (control)', run.filing);
-		printMarkerSide('after the marker', run.after);
-
-		// Before: the missing Revocation block is consulted on every read.
-		expectPerCall(`before the marker, queryRevokedStamps('CadrePeer')`, run.before.revokedStamps, MARKER_BEFORE_PER_CALL);
-		expectPerCall('before the marker, queryCadrePeers()', run.before.cadrePeers, MARKER_BEFORE_PER_CALL);
-		expectConsults('before the marker, authorizePeer', run.before.authorize, MARKER_BEFORE_AUTHORIZE);
-		expect(busiestBlock(run.before.reconcile), 'before the marker, a reconcile pass should consult the missing Revocation block '
-			+ `on every read of it. Consults per block: ${formatPerBlock(run.before.reconcile.snapshot)}`).toBeGreaterThan(1);
-		expect(run.filing.snapshot.commits, 'openRevocationLedger issued no commit — the marker did not land').toBeGreaterThan(0);
-
-		// After: every block on these paths is held and inside its read-repair window.
-		expectPerCall(`after the marker, queryRevokedStamps('CadrePeer')`, run.after.revokedStamps, MARKER_AFTER_REVOKED_STAMPS);
-		expectPerCall('after the marker, queryCadrePeers()', run.after.cadrePeers, MARKER_AFTER_CADRE_PEERS);
-		expectConsults('after the marker, authorizePeer', run.after.authorize, MARKER_AFTER_AUTHORIZE);
-		expect(busiestBlock(run.after.reconcile), 'after the marker, a reconcile pass consulted a control block more than once. '
-			+ `It began ${Math.round(run.after.reconcile.atMs)}ms into the run. Consults per block: ${formatPerBlock(run.after.reconcile.snapshot)}`)
-			.toBeLessThanOrEqual(1);
 	}, 180_000);
 });

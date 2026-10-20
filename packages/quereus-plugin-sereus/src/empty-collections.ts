@@ -3,10 +3,7 @@ import type { Database, TableSchema } from '@quereus/quereus';
 import type { Collection, CollectionId } from '@optimystic/db-core';
 import { defaultCollectionUri } from '@optimystic/quereus-plugin-optimystic';
 
-const log = debug('sereus:plugin:strand');
-
-/** The schemas whose tables a founder gives a collection: strand membership, then the sApp's. */
-const FOUNDED_SCHEMAS = ['Strand', 'App'] as const;
+const log = debug('sereus:plugin:empty-collections');
 
 /**
  * The part of the Optimystic plugin's transaction bridge this module reads: the live registry of
@@ -18,8 +15,8 @@ export interface CollectionRegistrySource {
 }
 
 /**
- * Commit an empty collection for every table declared in the `Strand` and `App` schemas that
- * has none yet, and resolve to how many collections were committed.
+ * Commit an empty collection for every Optimystic table declared in `schemaNames` that has none
+ * yet, and resolve to how many collections were committed.
  *
  * Opening a table whose collection was never committed stages a fresh empty one in this node's
  * tracker and writes nothing (`Collection.createOrOpen`'s invented branch), and a SQL commit
@@ -29,21 +26,35 @@ export interface CollectionRegistrySource {
  * Commits outside any SQL transaction whatever is staged in those collections, so it is only
  * sound while nothing else writes through `db`.
  */
-export async function createEmptyCollections(db: Database, bridge: CollectionRegistrySource): Promise<number> {
-	const tables = foundedTables(db);
+export async function createEmptyCollections(
+	db: Database,
+	bridge: CollectionRegistrySource,
+	schemaNames: readonly string[]
+): Promise<number> {
+	const tables = optimysticTables(db, schemaNames);
 	await openTables(db, tables);
 	const registry = bridge.getCollectionRegistry();
-	assertMainCollectionsRegistered(registry, tables);
+	assertMainCollectionsRegistered(registry, tables, schemaNames);
 	return await syncInventedCollections(registry);
 }
 
-function foundedTables(db: Database): TableSchema[] {
-	return FOUNDED_SCHEMAS.flatMap(name => {
+/**
+ * Every Optimystic table the named schemas declare. A table reaches Optimystic either through its
+ * own `using` clause (an sApp's) or through the database's default vtab (the control tables), and
+ * both record `vtabModuleName`. None found means the filter no longer matches how those tables
+ * are backed, and carrying on would give no table a collection while appearing to work.
+ */
+function optimysticTables(db: Database, schemaNames: readonly string[]): TableSchema[] {
+	const tables = schemaNames.flatMap(name => {
 		const schema = db.schemaManager.getSchema(name);
 		return schema
 			? Array.from(schema.getAllTables()).filter(table => !table.isView && table.vtabModuleName === 'optimystic')
 			: [];
 	});
+	if (tables.length === 0) {
+		throw new Error(`Schemas ${schemaNames.join(', ')} declare no optimystic table; cannot give their tables an empty collection`);
+	}
+	return tables;
 }
 
 /** A read initializes the table's vtab, which is what opens and registers its collections. */
@@ -60,11 +71,15 @@ async function openTables(db: Database, tables: readonly TableSchema[]): Promise
  * registration path has changed under this module; founding on would leave that table with no
  * collection while appearing to have given every table one.
  */
-function assertMainCollectionsRegistered(registry: ReadonlyMap<CollectionId, unknown>, tables: readonly TableSchema[]): void {
+function assertMainCollectionsRegistered(
+	registry: ReadonlyMap<CollectionId, unknown>,
+	tables: readonly TableSchema[],
+	schemaNames: readonly string[]
+): void {
 	const unregistered = tables.filter(table => !registry.has(mainCollectionId(table)));
 	if (unregistered.length > 0) {
 		const names = unregistered.map(table => `${table.schemaName}.${table.name} (${mainCollectionId(table)})`).join(', ');
-		throw new Error(`Opening the strand's tables registered no collection for ${names}; cannot give those tables an empty collection`);
+		throw new Error(`Opening the tables of ${schemaNames.join(', ')} registered no collection for ${names}; cannot give those tables an empty collection`);
 	}
 }
 
