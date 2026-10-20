@@ -6,10 +6,11 @@
  * is described in `docs/strands.md` → "Joining while the inviter is offline".
  *
  * `CadreNode` owns every side effect and hands this module plain functions
- * ({@link PendingJoinRunnerDeps}): read the joins, run one attempt (its own `formStrand`), write
- * an outcome, say whether this machine is an owner, and the clock. This module owns the policy:
- * when to attempt, how to read an attempt's failure, and how to settle an outcome write that
- * another machine's write beat.
+ * ({@link PendingJoinRunnerDeps}): read the joins, hear a change to the tables they are read
+ * from, run one attempt (its own `formStrand`), write an outcome, say whether this machine is an
+ * owner, and the clock. This module owns the policy: when to read the joins, when to attempt,
+ * how to read an attempt's failure, and how to settle an outcome write that another machine's
+ * write beat.
  *
  * Only owner machines run it, because every pending-join write is owner-signed. Letting a
  * machine without an owner key finish a join is `blocked/decide-non-owner-machine-completes-a-pending-join`;
@@ -30,12 +31,28 @@ import { PendingJoinChangedError, type JoinRequestFields, type PendingJoinFields
 import { FormationPostApprovalError, FormationRejectedError, FormationUnreachableError } from './strand-formation-rejection.js';
 import { formationDeadlines } from './strand-formation-deadlines.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
+import { scheduleRuns, type TableChangeWatch, type TableChangeWatchOptions } from './table-change-watch.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
 
 const log = debug('sereus:cadre:pending-join');
 
-/** How often an owner machine re-reads the party's pending joins (it also reads once right after start). */
-export const PENDING_JOIN_POLL_MS = 30_000;
+/**
+ * The longest an owner machine goes without re-reading the party's pending joins when no change
+ * to their tables is heard. It covers a change that arrives without a storage event, and the
+ * time-driven removal of a finished join, which lands up to this much late.
+ *
+ * NOTE: on a cadre larger than `CONTROL_REPLICATION_BREADTH` (16), a machine outside a join
+ * table's cohort hears no change event, so a dismissal or another machine's outcome reaches it
+ * up to this much late. The worst effect is one more attempt on a dismissed join, whose outcome
+ * write then finds the request gone, or a `token-spent` answer whose re-read adopts the other
+ * machine's outcome. A 30 s pass while any join is pending was declined: a join can stay pending
+ * for {@link MAX_PENDING_JOIN_MS}, and those reads are what this backstop removes. Revisit if a
+ * cadre above 16 machines is seen attempting dismissed joins.
+ */
+export const PENDING_JOIN_BACKSTOP_MS = 10 * 60_000;
+
+/** How soon a pass runs again after one failed, or after an outcome write gave up to another machine's writes. */
+const PENDING_JOIN_PASS_RETRY_MS = 30_000;
 
 /** Ceiling on the wait between two attempts of one join on one machine, before jitter. */
 export const PENDING_JOIN_MAX_BACKOFF_MS = 10 * 60_000;
@@ -52,7 +69,7 @@ const MAX_BACKGROUND_ATTEMPTS = 2;
 /** Each retry delay is moved by up to this fraction either way, so machines that failed together do not retry together. */
 const RETRY_JITTER = 0.2;
 
-/** Re-read-and-rewrite rounds after another machine's write won, before the next pass decides instead. */
+/** Re-read-and-rewrite rounds after another machine's write won, before a pass {@link PENDING_JOIN_PASS_RETRY_MS} later decides instead. */
 const MAX_OUTCOME_WRITE_ROUNDS = 3;
 
 type AttemptError = NonNullable<PendingJoinStatus['lastError']>;
@@ -68,6 +85,10 @@ export interface PendingJoinRunnerDeps {
   /** Whether this machine may write pending joins now. Asked every pass. */
   isOwner(): Promise<boolean>;
   readRows(): Promise<PendingJoin[]>;
+  /** Subscribe `onChange` to the tables a pass reads. Absent: passes come from `start`, `kick`, retries and the backstop only (tests). */
+  watchChanges?(onChange: () => Promise<void>, options: TableChangeWatchOptions): TableChangeWatch;
+  /** Run a pass at least this long after the last one settled; default {@link PENDING_JOIN_BACKSTOP_MS}. */
+  backstopMs?: number;
   readRow(id: string): Promise<PendingJoin | null>;
   /** One formation attempt for the request's invitation and disclosure (`CadreNode.formStrand`). */
   attempt(join: PendingJoin): Promise<FormStrandResult>;
@@ -242,9 +263,8 @@ export class PendingJoinRunner {
   /** How long a `token-spent` answer waits before its confirming attempt: long enough for a sibling's `joined` write to replicate. */
   private readonly spentConfirmDelayMs: number;
   private running = false;
-  private pollTimer: unknown;
-  private passInFlight: Promise<void> | null = null;
-  private passAgain = false;
+  /** Every pass runs on it, one at a time; present between {@link start} and {@link stop}. */
+  private watch: TableChangeWatch | null = null;
   private backgroundAttempts = 0;
 
   constructor(private readonly deps: PendingJoinRunnerDeps) {
@@ -256,11 +276,16 @@ export class PendingJoinRunner {
     this.spentConfirmDelayMs = 2 * deadlines.sessionMs;
   }
 
-  /** Start passes: one at once, then every {@link PENDING_JOIN_POLL_MS}. */
+  /**
+   * Start passes: one at once, then one whenever a table a pass reads changes, and at the latest
+   * {@link PENDING_JOIN_BACKSTOP_MS} after the last. Throws when the change subscription cannot
+   * be made.
+   */
   start(): void {
     if (this.running) return;
+    this.watch = this.subscribe();
     this.running = true;
-    this.schedulePass(0);
+    this.watch.trigger(0);
   }
 
   /**
@@ -274,18 +299,21 @@ export class PendingJoinRunner {
    */
   stop(): void {
     this.running = false;
-    this.clearPollTimer();
+    // A pass already in flight finishes; `running` keeps it from scheduling anything further.
+    this.watch?.dispose();
+    this.watch = null;
     for (const entry of this.tracked.values()) this.cancelTimer(entry);
     this.tracked.clear();
     this.dueQueue.length = 0;
     this.writtenAlone.clear();
   }
 
-  /** Run a pass now, for a change that may make one useful (this machine just became an owner). */
+  /**
+   * Run a pass now, for a change the watched tables do not show (this machine's owner signer was
+   * just wired). A pass in flight is followed by one more.
+   */
   kick(): void {
-    if (!this.running) return;
-    this.clearPollTimer();
-    void this.pass();
+    this.watch?.trigger(0);
   }
 
   /**
@@ -359,41 +387,29 @@ export class PendingJoinRunner {
     }
   }
 
-  private schedulePass(delayMs: number): void {
-    if (!this.running) return;
-    this.clearPollTimer();
-    this.pollTimer = this.scheduler.setTimeout(() => {
-      this.pollTimer = undefined;
-      void this.pass();
-    }, delayMs);
+  /** The watch every pass runs on: the deps' change subscription, or a timer-only one. */
+  private subscribe(): TableChangeWatch {
+    const onChange = (): Promise<void> => this.pass();
+    const options: TableChangeWatchOptions = {
+      label: 'pending-join',
+      backstopMs: this.deps.backstopMs ?? PENDING_JOIN_BACKSTOP_MS,
+      scheduler: this.scheduler,
+    };
+    return this.deps.watchChanges?.(onChange, options) ?? scheduleRuns(onChange, options);
   }
 
-  private clearPollTimer(): void {
-    if (this.pollTimer !== undefined) {
-      this.scheduler.clearTimeout(this.pollTimer);
-      this.pollTimer = undefined;
+  /** One pass; a failed one runs again {@link PENDING_JOIN_PASS_RETRY_MS} later. */
+  private async pass(): Promise<void> {
+    try {
+      await this.runPass();
+    } catch (error) {
+      log('pending-join pass failed; retried in 30 s: %s', errorText(error));
+      this.retryPass();
     }
   }
 
-  /** One pass at a time; a kick during a pass runs one more after it. */
-  private pass(): Promise<void> {
-    if (this.passInFlight) {
-      this.passAgain = true;
-      return this.passInFlight;
-    }
-    const run = this.runPass()
-      .catch((error: unknown) => log('pending-join pass failed; the next one retries: %s', errorText(error)))
-      .finally(() => {
-        this.passInFlight = null;
-        if (this.passAgain && this.running) {
-          this.passAgain = false;
-          void this.pass();
-          return;
-        }
-        this.schedulePass(PENDING_JOIN_POLL_MS);
-      });
-    this.passInFlight = run;
-    return run;
+  private retryPass(): void {
+    this.watch?.trigger(PENDING_JOIN_PASS_RETRY_MS);
   }
 
   private async runPass(): Promise<void> {
@@ -415,7 +431,8 @@ export class PendingJoinRunner {
       try {
         await this.consider(join);
       } catch (error) {
-        log('pending join %s: this pass could not handle it; the next one retries: %s', join.Id, errorText(error));
+        log('pending join %s: this pass could not handle it; retried in 30 s: %s', join.Id, errorText(error));
+        this.retryPass();
       }
     }
   }
@@ -663,7 +680,8 @@ export class PendingJoinRunner {
       }
       expected = live!;
     }
-    log('pending join %s: another machine kept changing the join; the next pass decides', entry.row.Id);
+    log('pending join %s: another machine kept changing the join; a pass in 30 s decides', entry.row.Id);
+    this.retryPass();
   }
 
   private settle(join: PendingJoin): void {

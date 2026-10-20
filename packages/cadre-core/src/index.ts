@@ -788,7 +788,7 @@ export {
   CADRE_INVITATION_ADDRS_PER_SIBLING
 } from './invitation-bootstrap.js';
 // The pending-join retry loop behind CadreNode.requestJoin (PendingJoinStatus is in types.ts)
-export { PENDING_JOIN_POLL_MS, PENDING_JOIN_MAX_BACKOFF_MS, MAX_PENDING_JOIN_MS } from './pending-join-runner.js';
+export { PENDING_JOIN_BACKSTOP_MS, PENDING_JOIN_MAX_BACKOFF_MS, MAX_PENDING_JOIN_MS } from './pending-join-runner.js';
 
 // Strand Formation manager (drives the native transport)
 export {

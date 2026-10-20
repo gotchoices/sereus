@@ -8061,7 +8061,8 @@ export class CadreNode implements SAppIdLookup {
     }), this.controlNode, this.controlDatabase);
     log('Owner signer wired (owner key %s)', signer.publicKey);
     // Embedders wire the owner key after start(), so the runner's first pass usually found
-    // this machine not yet an owner; without this it would wait a full poll interval.
+    // this machine not yet an owner; wiring a signer writes no table it watches, so without
+    // this it would wait for its backstop.
     this.pendingJoinRunner?.kick();
   }
 
@@ -10270,10 +10271,17 @@ export class CadreNode implements SAppIdLookup {
       selfId: this.controlNode!.peerId.toString(),
       linkRoundTripMs: this.config.network?.linkRoundTripMs,
       isOwner: () => this.isOwner(),
-      // NOTE: one owner-key read and one pending-join read (three tables) per pass (30 s); for a
-      // party that never asked for a join the second reads never-written blocks, which consults
-      // the cohort. If it shows up in a device profile, poll more slowly while the tables read empty.
       readRows: () => database().queryPendingJoins(),
+      // What `isOwner` and `queryPendingJoins` read: the owner keys, the joins and their
+      // outcomes, and the tombstones both filter by. A dismissal writes its tombstone with the
+      // request's delete, but the two can replicate separately.
+      watchChanges: (onChange, options) => database().watchTables([
+        'CadreControl.JoinRequest',
+        'CadreControl.JoinSuccess',
+        'CadreControl.JoinFailure',
+        'CadreControl.OwnerKey',
+        'CadreControl.Revocation',
+      ], onChange, options),
       readRow: (id) => database().queryPendingJoin(id),
       attempt: (join) => this.formStrand(this.pendingJoinInvitation(join), parseStoredDisclosure(join)),
       record: (expected, outcome) => ownerWrite(`Record the outcome of the pending join ${expected.Id}`,

@@ -503,7 +503,11 @@ Tickets: `control-revocation-reissuable-tombstone`, `control-revocation-drain-on
 
 **What it does not replace.** `ControlDatabase.setMembershipChangeListener` stays an awaited in-write hook, so the membership gate is current before a local `authorizePeer` / `removePeer` call returns; a coalesced subscriber would refresh it up to a window later.
 
-**Consumers.** The [membership rows view](#membership-rows-view) uses only `onInvalidate`, and covers the gaps above with a maximum age on its rows instead of a backstop.
+**Consumers.**
+
+- The [membership rows view](#membership-rows-view) uses only `onInvalidate`, and covers the gaps above with a maximum age on its rows instead of a backstop.
+- `StrandWatcher` runs on `Strand` and `JoinedStrand`, with a 5-minute backstop ([Reactive Strand Management](#reactive-strand-management)).
+- The pending-join retry loop (`pending-join-runner.ts`) runs on `JoinRequest`, `JoinSuccess`, `JoinFailure`, `OwnerKey` and `Revocation`, with a 10-minute backstop, because a join's attempts run on their own timers and a pass only picks up rows other machines changed ([strands.md → Who retries](strands.md#joining-while-the-inviter-is-offline)).
 
 Ticket: `control-and-strand-table-change-subscription`.
 
