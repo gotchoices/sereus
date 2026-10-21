@@ -39,7 +39,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
-import { CadreNode, CONTROL_SCHEMA_BASELINE_VERSION, buildAuthorizationMessage } from '@serfab/cadre-core';
+import { CadreNode, CONTROL_SCHEMA_BASELINE_VERSION, CONTROL_SCHEMA_VERSION_TAG, buildAuthorizationMessage } from '@serfab/cadre-core';
 import type { ControlDatabase } from '@serfab/cadre-core';
 import { controlSchemaReleases, writeSchemaFile } from '../../../../test-harness/control-schema-releases.js';
 import {
@@ -56,9 +56,6 @@ import {
 	type RawStorageCapture,
 	type TestOwnerKey,
 } from '../harness/index.js';
-
-/** The `OwnerKey` table tag that records the control schema version (`CONTROL_SCHEMA_VERSION_TAG` in cadre-core). */
-const VERSION_TAG = 'sereus.controlSchemaVersion';
 
 const NOTE = 'written on the next release';
 
@@ -81,7 +78,7 @@ const controlDb = (node: CadreNode): ControlDatabase => {
 
 /** The control schema version the node's live `OwnerKey` table carries. */
 const storeVersionOf = (node: CadreNode): unknown =>
-	controlDb(node).getDatabase().schemaManager.getTable('CadreControl', 'OwnerKey')?.tags?.[VERSION_TAG];
+	controlDb(node).getDatabase().schemaManager.getTable('CadreControl', 'OwnerKey')?.tags?.[CONTROL_SCHEMA_VERSION_TAG];
 
 /** An owner-vouched `CadrePeer` row for a machine that never starts, as `authorizePeer` seats one. */
 const peerRow = (peerId: string) => ({ peerId, publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null });

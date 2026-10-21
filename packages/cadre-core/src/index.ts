@@ -18,9 +18,10 @@ export { OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-ke
 // Control database
 export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, OwnerGrantIssuerUnknownError, IssuedRowNotHereYetError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, ownerGrantAddMessage, ownerGrantRedeemMessage, ownerGrantConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type FoundingRows, type FoundingInvite, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type ControlSign, type OwnerGrantRedemptionFields } from './control-database.js';
 
-// What `start()` throws when the control store was written with a control schema this build
-// cannot apply to it (recreate procedure: docs/architecture.md)
-export { CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_BASELINE_VERSION } from './control-schema.js';
+// The control schema version a store is migrated to on start, and what `start()` throws, with a
+// reason, when the store must not be migrated (docs/architecture.md → "Control schema versions and
+// migrations")
+export { CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_BASELINE_VERSION, CONTROL_SCHEMA_VERSION_TAG } from './control-schema.js';
 export { ControlStoreIncompatibleError, type ControlStoreIncompatibility } from './control-schema-version.js';
 
 // Bounded retry for transient control-write failures (classifier + loop behind

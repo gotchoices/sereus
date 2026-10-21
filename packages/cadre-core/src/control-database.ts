@@ -1457,10 +1457,12 @@ export class ControlDatabase {
     // batch whose commit fails is discarded whole and the tables it wrote re-persist on their next
     // touch. A change the record already holds — another machine migrated first — is adopted with
     // nothing written, and an undo of an adopted change touches this machine's catalog only. The
-    // one arm Quereus marks irreversible is `drop column`: a failed apply does not re-add the
-    // column to this machine's catalog, so the re-run's diff no longer lists the drop and the
-    // record is brought to it by that re-persist instead. No row is lost either way: rows keep a
-    // dropped column's field until they are rewritten, and nothing reads it.
+    // one arm Quereus marks irreversible is `drop column`: once it has run, a later failure
+    // unwinds nothing (the apply reports the schema as partially migrated), the plugin's
+    // `endSchemaBatch` commits the steps that landed — or, when that commit fails, marks their
+    // tables to re-persist on next touch — and the retry's diff runs only the steps still
+    // missing. No row is lost either way: rows keep a dropped column's field until they are
+    // rewritten, and nothing reads it.
     //
     // Only the "cohort did not answer, nothing committed" class is retried; the classifier
     // vetoes indeterminate commits and does not match `Missing block`, which is a durable

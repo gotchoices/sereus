@@ -35,8 +35,9 @@ const VERSION_TABLE = 'OwnerKey';
 
 /**
  * Why a warm control store is refused, in the order the check decides them:
- *  - `newer-release`: the store records a version above this build's, so a newer release of
- *    another machine has migrated it; this machine is the one to update.
+ *  - `newer-release`: the store records a version above this build's, so a newer release has
+ *    migrated it (this machine before a downgrade, or another machine sharing its catalog
+ *    lineage); this machine is the one to update.
  *  - `before-migrations`: the store records a version below {@link CONTROL_SCHEMA_BASELINE_VERSION}
  *    (written by 1.16.0 or earlier); it cannot be migrated and must be recreated.
  *  - `not-migratable`: a pending statement would rewrite or discard rows. Reachable only from a
@@ -78,8 +79,8 @@ export class ControlStoreIncompatibleError extends Error {
 
 /**
  * The message for each {@link ControlStoreIncompatibility}. Only the two recreate cases advise
- * recreating: a store a newer release migrated holds rows that machine wrote since, and
- * recreating it would throw them away.
+ * recreating: a store a newer release migrated holds rows written since, and recreating it
+ * would throw them away.
  */
 function refusalMessage(
 	reason: ControlStoreIncompatibility,
@@ -94,9 +95,8 @@ function refusalMessage(
 		`(storage scope ${storageScope}) as docs/architecture.md describes.`;
 	switch (reason) {
 		case 'newer-release':
-			return `${store} was migrated by a newer release (${versions}), so another machine of the party is ` +
-				'already on that release. Update this app or node to it, or to a later release; the store and ' +
-				'its rows are intact.';
+			return `${store} was migrated by a newer release (${versions}). Update this app or node to that ` +
+				'release or a later one; the store and its rows are intact.';
 		case 'before-migrations':
 			return `${store} was written before control schema migrations (${versions}; migrations start at ` +
 				`version ${CONTROL_SCHEMA_BASELINE_VERSION}, and docs/architecture.md says why earlier stores are not ` +

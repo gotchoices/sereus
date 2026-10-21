@@ -10,6 +10,7 @@ import {
 	controlSchemaFileDeclaration
 } from '../src/control-schema.js';
 import { declaredSchemaVersion, pendingControlSchemaChanges, type PendingControlSchemaChange } from '../src/control-schema-version.js';
+import { replaceOnce, withItems, withLegacyTable } from '../../../test-harness/control-schema-releases.js';
 
 /**
  * Every control schema version from CONTROL_SCHEMA_BASELINE_VERSION on is kept as a fixture,
@@ -71,19 +72,6 @@ const schemaHash = (declaration: string): Promise<unknown> =>
 /** What applying `next` to a store created under `store` would run, classified against that store's catalog. */
 const changesBetween = (store: string, next: string): Promise<PendingControlSchemaChange[]> =>
 	withDatabase([store, controlSchemaFileDeclaration(next)], pendingControlSchemaChanges);
-
-/** `text` with the one occurrence of `from` replaced; throws rather than build a variant that changed nothing. */
-function replaceOnce(text: string, from: string, to: string): string {
-	const parts = text.split(from);
-	if (parts.length !== 2) {
-		throw new Error(`variant anchor ${JSON.stringify(from)} occurs ${parts.length - 1} times in the control schema`);
-	}
-	return parts.join(to);
-}
-
-/** `schema` with `items` declared after its last item. */
-const withItems = (schema: string, items: string): string =>
-	replaceOnce(schema, '\n}\n\napply schema CadreControl;', `\n${items}}\n\napply schema CadreControl;`);
 
 /** A change's statement, as `alter table addColumn`, `drop index`, `createTable`. */
 function shapeOf(change: PendingControlSchemaChange): string {
@@ -230,7 +218,7 @@ describe('control schema versions', () => {
 			},
 			{
 				name: 'unmigratable',
-				store: withItems(baseline, '    table Legacy (Id text primary key);\n'),
+				store: withLegacyTable(baseline),
 				next: replaceOnce(baseline, '        RequestedAt integer,', '        RequestedAt text,\n        Attempts integer not null,'),
 				expected: [
 					'drop table → unmigratable',

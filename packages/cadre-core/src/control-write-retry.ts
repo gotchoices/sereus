@@ -411,9 +411,9 @@ const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[
  * does not complete — an undo statement threw, the post-unwind catalog did not match the pre-apply
  * fingerprint, that catalog could not be re-collected to check, or a step the differ marks
  * irreversible because it discards data (dropping a table or a column, narrowing a column's type —
- * none of which reaches a `CadreControl` apply: a cold store's diff is all creates, and
- * `refuseIncompatibleControlStore` in `control-schema-version.ts` refuses a warm store whose diff
- * holds anything but creates and tag changes before the apply runs) poisoned the journal before it
+ * of which only dropping a column reaches a `CadreControl` apply, as the catalog-only migration
+ * step `refuseIncompatibleControlStore` in `control-schema-version.ts` lets through; it discards
+ * nothing there, since rows keep the field) poisoned the journal before it
  * ran, leaving nothing unwound — Quereus keeps the failing step's own message, APPENDS the reason the
  * schema could not be restored, and carries the original as `cause`. So a transient cause
  * underneath still matches here, and neither veto ({@link reportsPossiblyStoredWrite},

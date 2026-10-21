@@ -7,6 +7,8 @@
  *   - `packages/integration-tests/src/scenarios/control-schema-migration-mixed-releases.integration.ts`
  *     (two machines of one party, each on its own release).
  *
+ * `packages/cadre-core/test/control-schema-versions.spec.ts` uses its variant helpers only.
+ *
  * Both "releases" run the same cadre-core code, so a variant changes nothing a TypeScript writer or
  * reader names: the added column sits on `ValidationKey`, whose only writer lists its columns, the
  * dropped column on `CadrePeer`, which no writer or reader names either, and the CHECK that changes
@@ -27,7 +29,7 @@ const VERSION_TAG = 'sereus.controlSchemaVersion';
 const versionClause = (version: number): string => `with tags ("${VERSION_TAG}" = ${version}) `;
 
 /** The whole control schema file of `version`, line endings as LF. */
-export async function readControlSchemaFixture(version: number): Promise<string> {
+async function readControlSchemaFixture(version: number): Promise<string> {
 	return (await readFile(new URL(`v${version}.qsql`, FIXTURE_DIR), 'utf-8')).replace(/\r\n/g, '\n');
 }
 
