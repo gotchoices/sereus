@@ -1359,7 +1359,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			retryLog.restore();
 			await releaseDegradation();
 		}
-		// No member signed the commit, so nothing of it landed, locally included.
+		// The commit never reached the unanimity bar, so no member applied it, A included.
 		expect(await within('isMember (post-failed-commit)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(false);
 
 		// The failed write's pending records still stand on every member: its cancel missed the bar
