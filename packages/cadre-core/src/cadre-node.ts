@@ -5276,6 +5276,12 @@ export class CadreNode implements SAppIdLookup {
       this.controlDatabase?.invalidateMembershipViews();
       this.armMembershipViewReload();
     }
+    // NOTE: a close starts a pass at once, and a sibling in its bring-up quiet period lets the
+    // dial resolve and then drops the connection (`createMembershipConnectionGater`'s deny
+    // timing), so a restarting sibling costs one dial-connect-close pass after another for its
+    // whole bring-up (5-6 passes in ~200 ms against a claimed node restarting locally). If a
+    // slow device's bring-up ever makes that churn show up, delay the pass a close starts when
+    // the previous connection to that sibling lived only a few milliseconds.
     log('Control connection to sibling %s %s; reconcile pass triggered', remotePeer, change);
     this.controlReconcileRuns?.trigger(0);
   }
