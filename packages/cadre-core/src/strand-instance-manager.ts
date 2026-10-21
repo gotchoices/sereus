@@ -201,8 +201,8 @@ export interface StartStrandConfig {
   /**
    * Tuning for the strand peer-join block catch-up ({@link PeerJoinBackfill}),
    * forwarded from {@link CadreNodeConfig.strandBackfill}. When the strand's
-   * libp2p node connects to a peer this runtime has not yet caught up, every
-   * block in the strand's own raw store is pushed to it. Runs only on strands
+   * libp2p node connects (or reconnects) to a peer, every block in the strand's
+   * own raw store that the peer is not known to hold is pushed to it. Runs only on strands
    * with per-strand storage; `{ enabled: false }` restores the pre-existing
    * no-backfill behaviour.
    */
@@ -875,9 +875,8 @@ export class StrandInstanceManager {
         // catch-up pushes every block to every peer it serves, the growth arm's targets
         // included. With the catch-up disabled, the reaction stays on as the only one.
         //
-        // Cost: a peer that leaves the cohort and comes back is no longer re-pushed what it
-        // missed while away; the catch-up runs once per peer per runtime
-        // (`fix/join-catch-up-skips-a-returning-peer`).
+        // A peer that leaves the cohort and comes back is still re-pushed what it missed while
+        // away: the catch-up re-runs on each reconnect (`peer-join-backfill.ts`).
         //
         // NOTE: this also leaves the node at its bootstrap Arachnode ring (no ring shifts) and
         // never marks a shed block reclaimable; neither is used today. If storage nodes ever

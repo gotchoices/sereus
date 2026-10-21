@@ -2162,8 +2162,8 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Arm the CONTROL network's peer-join block catch-up: push every block in the
-   * control database's own raw store to each newly connected AUTHORIZED member
-   * this runtime has not yet caught up. This is what physically replicates
+   * control database's own raw store to each AUTHORIZED member on each
+   * (re)connection, skipping what it is known to hold. This is what physically replicates
    * control blocks committed while the writer was alone — the named
    * collection-header blocks written once at genesis above all, whose revision
    * never moves again, so no later commit ever carries them to a member that

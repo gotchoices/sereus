@@ -859,8 +859,8 @@ export interface CadreNodeConfig {
 
   /**
    * Tuning for the strand peer-join block catch-up (see `peer-join-backfill.ts`):
-   * when a strand's libp2p node connects to a peer this runtime has not yet
-   * caught up, every block in the strand's own raw store that the peer is not
+   * when a strand's libp2p node connects (or reconnects) to a peer, every
+   * block in the strand's own raw store that the peer is not
    * known to hold is pushed to it, each block once per peer, so a machine that
    * joined the strand after blocks were committed still ends up physically
    * holding them. Applies to every strand this node starts.
@@ -892,8 +892,8 @@ export interface CadreNodeConfig {
   /**
    * Tuning for the CONTROL network's peer-join block catch-up (same module,
    * `peer-join-backfill.ts`, wired in `CadreNode.start`): when the control
-   * libp2p node connects to an AUTHORIZED party member this runtime has not yet
-   * caught up, every block in the control database's own raw store that the
+   * libp2p node connects (or reconnects) to an AUTHORIZED party member, every
+   * block in the control database's own raw store that the
    * member is not known to hold is pushed to it. This is what makes a control
    * block committed while the writer was alone (collection headers written at
    * genesis above all) physically reach members that joined later — without it,

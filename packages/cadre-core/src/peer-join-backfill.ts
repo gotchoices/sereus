@@ -177,9 +177,9 @@ import { peerJoinPushBudget } from './link-budget.js';
 //
 // NOTE: a peer that disconnects INSIDE a backoff wait still costs the one attempt that wait
 // was already armed for — the connectivity check is made when the re-arm is decided, not when
-// the timer fires, and this module subscribes to `peer:identify` only. One dial, not a
-// recurring one; if a node ever holds many transient peers, subscribe to `connection:close`
-// and clear the pending timer there.
+// the timer fires, and the `peer:disconnect` handler leaves backoff state alone (see
+// `forgetCaughtUp`). One dial, not a recurring one; if a node ever holds many transient peers,
+// clear the pending timer in that handler.
 
 const log = debug('sereus:cadre:peer-join-backfill');
 const blockEncoder = new TextEncoder();
@@ -333,8 +333,8 @@ function emptyResult(): PeerJoinBackfillResult {
 }
 
 /**
- * What one peer's replies said it holds from this node, per block. Lives for the runtime, like
- * {@link PeerJoinBackfill.done}; nothing is persisted.
+ * What one peer's replies said it holds from this node, per block. Lives for the runtime and,
+ * unlike {@link PeerJoinBackfill.done}, survives the peer's disconnect; nothing is persisted.
  *
  * NOTE: a peer that empties its store and comes back under the same peer id (a strand transport id
  * is derived from the machine identity and the strand id, so a machine that deleted its strand

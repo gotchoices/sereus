@@ -570,6 +570,31 @@ describe('PeerJoinBackfill', () => {
     backfill.stop();
   });
 
+  it('re-runs on reconnect for a peer that disconnected while its clean run was in flight', async () => {
+    // The push is answered just before the connection closes, so the run settles clean after
+    // the disconnect; marking the peer caught up then would drop its reconnect.
+    const blocks: Record<string, FakeBlock> = { b1: committed('b1', 1) };
+    let disconnectMidPush = (): void => {};
+    const { backfill, pushes, fake } = makeBackfill(blocks, { debounceMs: 1 }, {
+      respond: () => { disconnectMidPush(); return { missing: [] }; }
+    });
+    disconnectMidPush = () => {
+      disconnectMidPush = () => {};
+      fake.dispatchDisconnect(peer('p1'));
+    };
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 1);
+
+    blocks.b2 = committed('b2', 1);
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 2, 500);
+    expect(pushes[1]!.ids).toEqual(['b2']);
+
+    backfill.stop();
+  });
+
   it('re-arms a failed catch-up on a backoff, and drops connection churn inside that wait', async () => {
     // The 2026-09-26 relayed reproduction: one peer re-opened a connection about every 14.5 s
     // for a 200-second run, each event starting a catch-up whose dial could not finish. Churn
