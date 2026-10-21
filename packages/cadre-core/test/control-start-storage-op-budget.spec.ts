@@ -77,7 +77,7 @@ const within = scopedWithin('storage-op-budget');
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-10-06';
+const MEASURED_ON = '2026-10-21';
 /**
  * The `../optimystic` commit these figures were last measured against. The WARM figure fell
  * at optimystic 03ffadc4 on 2026-09-17 (44 ops over 22 blocks to 13 over 3) when that repo
@@ -85,14 +85,15 @@ const MEASURED_ON = '2026-10-06';
  * it had already fetched in the same refresh: the hydrate now reads the catalog's blocks and
  * leaves each table's block for the first read of that table. The COLD figure did not move
  * at all. Re-measured at 5a5661b0 on 2026-10-06 (clean tree) for the two cadre-invitation
- * tables: WARM unchanged, COLD grew by their blocks alone (see {@link COLD}).
+ * tables: WARM unchanged, COLD grew by their blocks alone (see {@link COLD}). Re-measured at
+ * 0e70f551 (Optimystic 1.17.0) on 2026-10-21: WARM unchanged, COLD grew by `getMetadata` blocks
+ * alone.
  */
-const BASELINE_UPSTREAM = 'optimystic 5a5661b0';
+const BASELINE_UPSTREAM = 'optimystic 0e70f551';
 /**
- * Cold: first-ever start against empty storage — 15 control tables and 2 indexes
- * created (the cadre-invitation tables joined the schema with the
- * cadre-invite-schema-and-chain ticket). 56 operations over 31 blocks: 21 genuine writes
- * over 3 blocks, one `getMetadata` per block, and a handful of cold list fills. The 131 writes of
+ * Cold: first-ever start against empty storage — 17 control tables and 3 indexes
+ * created. 60 operations over 35 blocks: 21 genuine writes over 3 blocks, one
+ * `getMetadata` per block, and a handful of cold list fills. The 131 writes of
  * earlier measurements went with upstream's `APPLY SCHEMA` batching
  * (`schema-batch-catalog-coalescing` and `schema-batch-index-tree-flush-deferral`
  * in `../optimystic`): the catalog is committed once per apply, and an index on an
@@ -107,11 +108,14 @@ const BASELINE_UPSTREAM = 'optimystic 5a5661b0';
  * moved; not re-measured without the new table at that commit), 56 over 31 with the
  * 15-table schema at optimystic 5a5661b0 (2026-10-06; six more `getMetadata` blocks for
  * `CadreInvite`, `CadreInviteUsage`, their two indexes and the two `JoinRequest` outcome
- * tables added in between, which were not measured on their own; nothing else moved). The
- * same batched start measured 88 uncached on 2026-09-14 (57 of them `getMetadata`), so a
+ * tables added in between, which were not measured on their own; nothing else moved), 60 over
+ * 35 with the 17-table schema at optimystic 0e70f551 (2026-10-21; four more `getMetadata`
+ * blocks, from 2026-10-20 01:04 at the latest, so before Optimystic 1.17.0's code; the
+ * schema changes since 2026-10-06, `owner-grant-tables`' `OwnerGrant` and `OwnerGrantUsage`
+ * among them, were not measured one at a time; nothing else moved). The same batched start measured 88 uncached on 2026-09-14 (57 of them `getMetadata`), so a
  * run near 90 that is mostly `getMetadata` means the cache has left the path.
  */
-const COLD: Budget = { ops: 56, blocks: 31, opBudget: 66, blockBudget: 35 };
+const COLD: Budget = { ops: 60, blocks: 35, opBudget: 70, blockBudget: 39 };
 /**
  * Warm: a second start against the store the cold one left behind — the catalog
  * hydrates instead of the schema being applied. 13 operations over 3 blocks: a
@@ -137,8 +141,8 @@ const COLD: Budget = { ops: 56, blocks: 31, opBudget: 66, blockBudget: 35 };
  * after the upstream catalog re-read (2026-08-14), 52 cache-wired (2026-08-17),
  * 46 with the 9-table schema (2026-09-10), 44 with schema batching (2026-09-14), 13 at
  * optimystic 03ffadc4 (2026-09-17), still 13 with the 10-table schema at optimystic
- * 7f5e8a90 (2026-09-28), still 13 with the 11-table schema at {@link BASELINE_UPSTREAM}
- * (2026-10-01). 13 is still a cold cache: the 3-op signature the
+ * 7f5e8a90 (2026-09-28), still 13 with the 11-table schema at optimystic 461a01bc
+ * (2026-10-01), still 13 with the 17-table schema at {@link BASELINE_UPSTREAM} (2026-10-21). 13 is still a cold cache: the 3-op signature the
  * tripwire names is a SHARED storage instance, which reads the catalog once and nothing else.
  */
 const WARM: Budget = { ops: 13, blocks: 3, opBudget: 17, blockBudget: 5 };

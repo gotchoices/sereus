@@ -15,14 +15,12 @@
  * version lives, when it changes and what a new version may change: docs/architecture.md →
  * "Control schema changes and incompatible stores".
  *
- * NOTE: the stored tag is the version the store's `OwnerKey` table was CREATED under. The
- * optimystic plugin does not persist `alter table … set tags` (Quereus applies a tag change to
- * its catalog without calling the module, and the plugin follows it in memory only), so the
- * `set tags` an additive upgrade runs raises the version for that process alone. The check stays
- * safe regardless, because it lets through only DDL that adds, so an older build's diff against
- * an upgraded store lists the drop and is refused on that ground. Migrating a store in place
- * (control-store-migrates-on-start) needs the version a store was upgraded to, so it needs that
- * persisted upstream (optimystic-catalog-only-alter-table).
+ * NOTE: the stored tag is the version of the last start that ran `set tags` on the store's
+ * `OwnerKey` table. The optimystic plugin persists `alter table … set tags` since Optimystic 1.16.0
+ * (optimystic-catalog-only-alter-table); a store additively upgraded by an earlier build still
+ * reads the version it was created under. The check is safe either way, because it lets through
+ * only DDL that adds, so an older build's diff against an upgraded store lists the drop and is
+ * refused on that ground. control-store-migrates-on-start replaces this note.
  */
 
 import { Parser, type Database, type SchemaManager, type SqlValue, type TableSchema } from '@quereus/quereus';
@@ -99,8 +97,8 @@ export async function refuseIncompatibleControlStore(db: Database, partyId: stri
 	const storeVersion = schemaVersionOf(db.schemaManager.getTable(CONTROL_SCHEMA_NAME, VERSION_TABLE)?.tags);
 	const buildVersion = declaredSchemaVersion(db);
 	const pending = await pendingControlSchemaChanges(db);
-	// `catalog-only` changes stay refused until the optimystic module applies them
-	// (optimystic-catalog-only-alter-table); control-store-migrates-on-start widens this then.
+	// `catalog-only` changes stay refused, although the optimystic module applies them since
+	// Optimystic 1.16.0; control-store-migrates-on-start widens this.
 	if (storeVersion > buildVersion || pending.some((change) => change.kind !== 'additive')) {
 		throw new ControlStoreIncompatibleError(partyId, storeVersion, buildVersion, pending.map((change) => change.ddl));
 	}
@@ -143,7 +141,7 @@ function schemaVersionOf(tags: Readonly<Record<string, SqlValue>> | undefined): 
  *  - `additive`: a new table, a new index, or a table tag change, which the optimystic module
  *    applies today without touching a row;
  *  - `catalog-only`: a change the optimystic module applies to the table's catalog record without
- *    rewriting a row, once optimystic-catalog-only-alter-table ships;
+ *    rewriting a row (since Optimystic 1.16.0);
  *  - `unmigratable`: everything else, which rewrites or discards rows.
  */
 export type ControlSchemaChangeKind = 'additive' | 'catalog-only' | 'unmigratable';

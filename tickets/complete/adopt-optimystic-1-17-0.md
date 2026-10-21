@@ -1,6 +1,6 @@
 description: Sereus now declares Optimystic 1.17.0 (with its peer-discovery library FRET 1.2.1) and Quereus 4.20.3 as the oldest versions it accepts; this records what that upgrade changed, the measurements showing which fixes took effect, and which waiting tickets it closed.
 architecture: docs/testing.md#declared-dependency-range-vs-linked-workspace-keep-them-equal
-files: packages/*/package.json and yarn.lock (`@optimystic/*` ^1.17.0, `@quereus/quereus` ^4.20.3), .release-notes.pending.md, packages/integration-tests/src/scenarios/message-cost-accounting.integration.ts (new 2026-10-20 block at the end of the doc comment), docs/cadre-consistency.md ("Deadlines Below Cadre" rows, the ~52 failed-cancel paragraph), docs/architecture.md (~72, ~2374), packages/cadre-core/src/types.ts (`DEFAULT_CONNECTION_MONITOR` comment), packages/cadre-core/src/strand-formation-protocol.ts (~895-901), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (header, `FIRST_SYNC_MS` NOTE, third arm's comment), packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts, packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts (header), ops/docker/libp2p-infra/src/main.ts (~102), tickets/complete/ (six tickets moved there), tickets/blocked/ (three rewritten, one new), tickets/implement/degraded-cohort-covers-a-member-silent-after-the-pend.md, tickets/.pre-existing-error.md, tickets/.pre-existing-known.md
+files: packages/cadre-core/src/control-schema-version.ts (review: stale comments), packages/cadre-core/test/control-start-storage-op-budget.spec.ts (review: cold re-pin), packages/*/package.json and yarn.lock (`@optimystic/*` ^1.17.0, `@quereus/quereus` ^4.20.3), .release-notes.pending.md, packages/integration-tests/src/scenarios/message-cost-accounting.integration.ts (new 2026-10-20 block at the end of the doc comment), docs/cadre-consistency.md ("Deadlines Below Cadre" rows, the ~52 failed-cancel paragraph), docs/architecture.md (~72, ~2374), packages/cadre-core/src/types.ts (`DEFAULT_CONNECTION_MONITOR` comment), packages/cadre-core/src/strand-formation-protocol.ts (~895-901), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (header, `FIRST_SYNC_MS` NOTE, third arm's comment), packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts, packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts (header), ops/docker/libp2p-infra/src/main.ts (~102), tickets/complete/ (six tickets moved there), tickets/blocked/ (three rewritten, one new), tickets/implement/degraded-cohort-covers-a-member-silent-after-the-pend.md, tickets/.pre-existing-error.md, tickets/.pre-existing-known.md
 ----
 # Adopt Optimystic 1.17.0
 
@@ -61,15 +61,39 @@ The cadre and invite rows equal `cohort-join-catch-up-runs-once-per-node`'s runs
 
 - `strand-solo-write-budget` and `control-founding-consult-budget` measured exactly their 2026-10-20 pins. Neither moved.
 - `control-start-storage-op-budget` warm restart: 13/3, its pin.
-- **Its cold start measures 60 ops over 35 blocks against a 56/31 pin (2026-10-06), at the block ceiling of 35.** The extra four blocks match the four collections `owner-grant-tables` added on 2026-10-16, and logs show 60/35 from 2026-10-20 01:04 on, before this release's code. So it did not move with 1.17.0 and was not re-pinned here. The next control table added will trip the ceiling. Reviewer: re-pin it with a history line naming `owner-grant-tables`, or decide otherwise.
+- Its cold start measured 60 ops over 35 blocks against a 56/31 pin (2026-10-06), at the block ceiling of 35. The review re-pinned it (see Review findings).
 
 ## Known gaps and observations for the reviewer
 
 - **The phone-link workload ran slower in its one run.** `STRAND_WORKLOAD_PHONE=1` on 2026-10-20: B's seat failed its first attempt after 340.5 s, and rounds 1–3 took 322, 174 and 154 s, each with a failed write; on 2026-10-17 the figures were 94.4 s and 91, 95, 3 s. The run was stopped in round 4 by the command limit (it ran 20 minutes). One run against one, on a link whose runs vary widely, so it is not attributed. It is recorded with its table on `blocked/decide-link-deadlines-from-measured-response-time`. A series is needed before anyone reads it as a regression from 1.16.0's longer ping handler. That ticket's own 2026-10-13 experiment saw the same direction: connections that stay up stay saturated.
 - **4 `StreamResetError` connection aborts on the frame-cap arm were not traced.** Every node in that run, the harness relay included, answers pings for 60 s.
-- **`packages/cadre-core/src/control-schema-version.ts` still says tag changes are not persisted** (the NOTE at ~18-26, and the "once … ships" wording at ~103 and ~146). That has been false since 1.16.0. `control-store-migrates-on-start`'s Design owns replacing that NOTE, so it was left for that ticket.
+- `packages/cadre-core/src/control-schema-version.ts` said tag changes are not persisted; the review corrected it (see Review findings).
 - **#43's effect is asserted from upstream, not measured here.** Say so if the reviewer wants a targeted Sereus measurement (a stale multi-block read on a strand).
 
 ## Tests
 
 None added. This ticket changes no behaviour, only declared ranges, docs, comments and tickets.
+
+## Review findings
+
+Read the `ticket(implement): adopt-optimystic-1-17-0` diff first, then the handoff.
+
+**Checked**
+- Floors: `yarn check:dep-ranges` passes (10 linked packages). Optimystic `db-p2p` 1.17.0 declares `p2p-fret` ^1.2.1, as the release notes say; tag `v1.17.0` is `a22eb133`, the hash the deadline table cites.
+- Every upstream fact the deadline table and the comments now state, read in `../optimystic` and `../Fret` (read only): `resolvePingHandlerTimeoutMs` (twice `pingTimeout.maxTimeout`, 10 000 floor, 10 s with no `pingTimeout`, which `DEFAULT_CONNECTION_MONITOR`'s comment says); `SilentConsultHolds` (base `retryBackoffBaseMs`, cap `reconcilePassTimeoutMs`, as the read-repair row says); `retryWaitWithinBudget` exists where cited; FRET `deadGraceMs` (0 under 10 minutes of tenure, T/12, cap 300 000; Optimystic passes no `maxDeadGraceMs`); FRET's negotiate-failure threshold is 3, as `strand-formation-protocol.ts` now says, and FRET still re-probes foreign peers with backoff, so that comment's last sentence stays true.
+- Stale references: no doc or source still names a moved ticket under `blocked/` (only `tickets/.garden-report.md`, which is a dated log, and an untracked NativeScript build bundle).
+- Board moves: the six `complete/` tickets, the three rewritten `blocked/` tickets, `blocked/optimystic-dcutr-between-relay-only-peers` (category and unblock condition on its first line), `implement/degraded-cohort-covers-a-member-silent-after-the-pend` and the `.pre-existing-known.md` entry. The pre-existing `blind-relay-phone-to-phone-e2e` failure was already triaged and fixed in `tess: triage pre-existing test failure`.
+- Gate after the review edits: `yarn lint`, `yarn typecheck` pass; cadre-core rebuilt; cadre-core 187 files, 2522 passed, 1 skipped; `control-start-storage-op-budget`, `control-store-incompatible`, `control-schema-versions` pass. Integration scenarios were not re-run: the review edits are a test constant, comments, one non-fault counter and docs.
+
+**Found and fixed**
+- `control-start-storage-op-budget.spec.ts`: the cold pin (56/31, 2026-10-06) was stale and its run sat on the block ceiling (35). Re-measured 60 ops over 35 blocks, the extra 4 all `getMetadata`, nothing else moved; warm still 13/3. Re-pinned to 60/35 with ceilings 70/39 (same headroom), `MEASURED_ON` 2026-10-21, `BASELINE_UPSTREAM` `0e70f551`, and a history line. The history does not attribute the 4 blocks to `owner-grant-tables` alone: 11 commits changed `schemas/control.qsql` after 2026-10-06 and none was measured on its own (`git log --since=2026-10-07 -- schemas/control.qsql`). Also corrected the warm history's 2026-10-01 entry, which pointed at the baseline commit instead of `461a01bc`.
+- `control-schema-version.ts`: the module `NOTE` said the plugin does not persist `set tags`, and two comments said `catalog-only` changes wait on the upstream ticket. All three were false since 1.16.0 and are corrected; the NOTE still says `control-store-migrates-on-start` replaces it. That ticket's Design paragraph and TODO were updated to match.
+- `.release-notes.pending.md`: the known limitation said FRET waits 5 minutes; it waits one twelfth of the peer's observed uptime, at most 5 minutes.
+- `strand-workload-on-a-phone-link.integration.ts`: its comment now names `cluster-fetch:consult-held` but nothing counted it, so the 110 holds in the handoff were counted by hand. Added a non-fault `consult held` row to `DEADLINE_EVENTS`, so the next phone run reports them.
+
+**Not changed, with reason**
+- The phone-arm slowdown (one run against one) stays recorded on `blocked/decide-link-deadlines-from-measured-response-time` without attribution. Nothing more can be concluded from one run, and that ticket already asks for a series.
+- #43 is not measured here. `message-cost-accounting` counts streams, so it cannot show the change, and upstream's specs pin it. A targeted Sereus measurement would only re-test upstream's code, so none was added.
+- The 4 untraced `StreamResetError` aborts on the frame-cap arm are already recorded on `complete/optimystic-ping-handler-timeout-below-the-monitor-deadline`, and that arm stays `it.fails` under `blocked/decide-link-deadlines-from-measured-response-time`. No new ticket.
+- Tests: none added or cut. The implementer added none, and the only behaviour this review touched is a budget constant already enforced by its own spec.
+- No tickets filed and no tripwires added: every finding was minor and fixed in this pass.

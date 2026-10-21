@@ -21,7 +21,7 @@ GitHub #46. The maintainer chose versioned migrations (2026-10-15), because phon
 
 Record that as a tripwire bullet in the docs section. If a future version needs rows rewritten, the plan is a new table plus a re-seat pass that owner machines run after start through the ordinary signed writers, the way `revouchOwnerKey` re-adds a row. That plan is not built here.
 
-**The version moves with the store.** With tag changes saved upstream, the `alter table OwnerKey set tags (…)` the apply emits now persists. After a successful start the store records this build's version. Replace the `NOTE:` at the top of `control-schema-version.ts`, which says the tag is the version a store was created under, with the new fact. A store created under the baseline and additively upgraded before the upstream fix still reads the baseline. That is harmless, because the diff is computed from the catalog, not from the number.
+**The version moves with the store.** With tag changes saved upstream, the `alter table OwnerKey set tags (…)` the apply emits now persists. After a successful start the store records this build's version. The `NOTE:` at the top of `control-schema-version.ts` already states this (`adopt-optimystic-1-17-0`'s review); replace it with what the migrating start guarantees. A store created under the baseline and additively upgraded before the upstream fix still reads the baseline. That is harmless, because the diff is computed from the catalog, not from the number.
 
 **The check's three refusals.** Add `readonly reason: 'newer-release' | 'before-migrations' | 'not-migratable'` to `ControlStoreIncompatibleError` and write a message for each:
 
@@ -100,7 +100,7 @@ No test for the concurrent-migration race: the idempotency is upstream's contrac
 
 - Raise the `@optimystic/*` floors to the release with the upstream changes; run `check-dep-ranges`.
 - Widen `refuseIncompatibleControlStore` to accept `catalog-only`; add the baseline refusal; add `reason` and the three messages to `ControlStoreIncompatibleError`.
-- Replace the created-under `NOTE:` in `control-schema-version.ts`; update `loadSchema`'s and `applyControlSchema`'s comments.
+- Replace the version `NOTE:` at the top of `control-schema-version.ts`, and the comment in `refuseIncompatibleControlStore` that says `catalog-only` changes stay refused; update `loadSchema`'s and `applyControlSchema`'s comments.
 - Rename and re-aim `control-store-incompatible.spec.ts` → `control-store-migration.spec.ts` (four cases above).
 - Add the mixed-releases integration scenario.
 - Rewrite the `docs/architecture.md` section; fix links to its anchor; add the release-notes line.

@@ -227,6 +227,8 @@ const DEADLINE_EVENTS: readonly EventPattern[] = [
 	// (`cluster-fetch:consult-held`, one declared round trip, doubling while the peer stays silent).
 	{ label: 'read-repair consult', pattern: /cluster-tx:read-repair-triggered/g, fault: false },
 	{ label: 'read-repair deferred', pattern: /cluster-tx:read-repair-deferred/g, fault: false },
+	// Not a fault on its own: each one follows a `cohort silent`, which is.
+	{ label: 'consult held', pattern: /cluster-fetch:consult-held/g, fault: false },
 	// libp2p's connection monitor dropping a connection.
 	{ label: 'ping failure', pattern: /aborting connection due to ping failure/g, fault: true },
 	{ label: 'no coordinator', pattern: /No coordinator available/g, fault: true },
