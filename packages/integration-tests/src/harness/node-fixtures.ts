@@ -60,6 +60,13 @@ export interface ControlNodeOpts {
   partyId: string;
   privateKey?: PrivateKey;
   bootstrapNodes?: string[];
+  /**
+   * Becomes `controlNetwork.schemaPath` verbatim: a control schema file the node declares and
+   * applies instead of the embedded one. For a scenario that puts machines of one party on
+   * different "releases" of the control schema (`test-harness/control-schema-releases.ts`).
+   * Left unset the node runs this build's schema.
+   */
+  schemaPath?: string;
   profile?: 'storage' | 'transaction';
   /**
    * Run the circuit-relay server? Left unset this is NOT off — `CadreNode`
@@ -230,7 +237,11 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     throw new Error('controlNodeConfig: storageProvider and storageOpDelayMs are mutually exclusive — both name the node\'s storage');
   }
   return {
-    controlNetwork: { partyId: opts.partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
+    controlNetwork: {
+      partyId: opts.partyId,
+      bootstrapNodes: opts.bootstrapNodes ?? [],
+      ...(opts.schemaPath !== undefined ? { schemaPath: opts.schemaPath } : {}),
+    },
     profile: opts.profile ?? 'transaction',
     strandFilter: { mode: opts.strandFilter ?? 'all' },
     hostUnclaimedStrands: opts.hostUnclaimedStrands ?? false,

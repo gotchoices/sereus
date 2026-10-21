@@ -1401,10 +1401,12 @@ export class ControlDatabase {
 
     // Declaring runs no DDL; it only records the declaration the check and the apply both read.
     await this.db!.exec(declaration);
-    // A warm store this build cannot apply to without losing data is refused HERE, before the
-    // apply runs anything: the optimystic module refuses most changes to an existing table
-    // part-way through an apply, and a dropped table takes its rows. Migrating a store in place
-    // (control-store-migrates-on-start) widens this check to let catalog-only changes through.
+    // The apply below is also the MIGRATION of a warm store written under an older control
+    // schema version: its diff runs each version's changes in order, every one applied to a
+    // table's catalog record without a row rewritten, and ends by recording this build's version
+    // on the store. A store the apply must not touch is refused HERE, before it runs anything: one
+    // a newer release migrated (this machine is the one to update), one from before migrations,
+    // or one whose diff would rewrite or discard rows (`control-schema-version.ts`).
     await refuseIncompatibleControlStore(this.db!, this.config.partyId);
     await this.applyControlSchema();
     log('Schema loaded and executed');
@@ -1447,6 +1449,18 @@ export class ControlDatabase {
     // and the re-run would diff against a catalog that disagrees with the blocks. So this
     // argument is a statement about the pair, not about Quereus alone — pinned by
     // `test/control-schema-apply-unwind.spec.ts`.
+    //
+    // The same argument covers the statements a MIGRATION runs (`control-schema-version.ts`'s
+    // `catalog-only` kinds, from Optimystic 1.16.0): the plugin's `alterTable` arms (add column,
+    // drop column, add and drop CHECK) and the tag change write the table's catalog record under
+    // the batch's per-statement checkpoint, so a step that throws withdraws its own write, and a
+    // batch whose commit fails is discarded whole and the tables it wrote re-persist on their next
+    // touch. A change the record already holds — another machine migrated first — is adopted with
+    // nothing written, and an undo of an adopted change touches this machine's catalog only. The
+    // one arm Quereus marks irreversible is `drop column`: a failed apply does not re-add the
+    // column to this machine's catalog, so the re-run's diff no longer lists the drop and the
+    // record is brought to it by that re-persist instead. No row is lost either way: rows keep a
+    // dropped column's field until they are rewritten, and nothing reads it.
     //
     // Only the "cohort did not answer, nothing committed" class is retried; the classifier
     // vetoes indeterminate commits and does not match `Missing block`, which is a durable

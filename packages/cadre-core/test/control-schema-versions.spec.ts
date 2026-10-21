@@ -20,7 +20,7 @@ import { declaredSchemaVersion, pendingControlSchemaChanges, type PendingControl
  * catalog alone, so it lists the same statements it does over the optimystic module.
  */
 
-const DOCS_SECTION = 'docs/architecture.md → "Control schema changes and incompatible stores"';
+const DOCS_SECTION = 'docs/architecture.md → "Control schema versions and migrations"';
 const FIXTURE_DIR = new URL('./fixtures/control-schema/', import.meta.url);
 const FIXTURE_NAME = /^v(\d+)\.qsql$/;
 

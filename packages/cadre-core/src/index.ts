@@ -21,7 +21,7 @@ export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError,
 // What `start()` throws when the control store was written with a control schema this build
 // cannot apply to it (recreate procedure: docs/architecture.md)
 export { CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_BASELINE_VERSION } from './control-schema.js';
-export { ControlStoreIncompatibleError } from './control-schema-version.js';
+export { ControlStoreIncompatibleError, type ControlStoreIncompatibility } from './control-schema-version.js';
 
 // Bounded retry for transient control-write failures (classifier + loop behind
 // ControlDatabase.lockedWithRetry; exported so the integration package can drive the

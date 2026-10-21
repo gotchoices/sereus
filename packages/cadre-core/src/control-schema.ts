@@ -3,20 +3,20 @@ import { Parser } from '@quereus/quereus';
 /**
  * The version of the declared control schema, carried in the schema text as the
  * {@link CONTROL_SCHEMA_VERSION_TAG} tag on the `OwnerKey` table. A warm start compares
- * it with the version the store records before applying anything
- * (`control-schema-version.ts`, which also says why that is the version the store was
- * created under).
+ * it with the version the store records before applying anything, and the apply then
+ * migrates the store to this version and records it (`control-schema-version.ts`).
  *
  * When it changes, what a new version may change, and the fixture each version keeps:
- * docs/architecture.md → "Control schema changes and incompatible stores", enforced by
+ * docs/architecture.md → "Control schema versions and migrations", enforced by
  * `control-schema-versions.spec.ts`.
  */
 export const CONTROL_SCHEMA_VERSION = 3;
 
 /**
  * The first control schema version whose fixture is kept, and the oldest a store can be
- * migrated from. Stores that record no version (written by 1.16.0 and earlier) are not
- * migrated; docs/architecture.md says why.
+ * migrated from. A store that records a version below it (written by 1.16.0 and earlier,
+ * which recorded none) is refused with reason `before-migrations`; docs/architecture.md
+ * says why it is not migrated.
  */
 export const CONTROL_SCHEMA_BASELINE_VERSION = 3;
 
