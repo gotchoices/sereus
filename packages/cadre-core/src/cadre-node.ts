@@ -4622,9 +4622,8 @@ export class CadreNode implements SAppIdLookup {
    * failing a seed or an add that has already been accepted.
    *
    * Two peers are never retained. One with no address: there is nothing to dial.
-   * And self: `createSeed` projects EVERY `CadrePeer` row, so an owner that applies
-   * a seed minted after it joined finds itself in the owner list, and `addDrone`
-   * could be handed this node's own id. Retaining self would make the cold-start
+   * And self: `addDrone` could be handed this node's own id (seed intake arrives
+   * already filtered by `seedDialTargets`). Retaining self would make the cold-start
    * pass dial this node forever (the steady-state pass filters self out of its
    * sibling list for the same reason).
    */
