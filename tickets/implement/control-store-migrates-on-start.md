@@ -10,7 +10,7 @@ difficulty: hard
 GitHub #46. The maintainer chose versioned migrations (2026-10-15), because phones receive an app update one at a time. The prereqs supply both halves of what this needs:
 
 - `control-schema-versions-stay-migratable` keeps a fixture per version and guarantees that consecutive versions differ only by `additive` or `catalog-only` statements.
-- `blocked/optimystic-catalog-only-alter-table` makes Optimystic apply the `catalog-only` statements and save tag changes.
+- `complete/optimystic-catalog-only-alter-table` makes Optimystic apply the `catalog-only` statements and save tag changes. It shipped in Optimystic 1.16.0, and `adopt-optimystic-1-17-0` raised the floors to `@optimystic/*` ^1.17.0 and `@quereus/quereus` ^4.20.3, so the "Optimystic version" step below is done. That ticket's resolution lists three facts of the shipped form to design around: a failed apply cannot undo a `drop column`, a host must never apply a declaration older than the stored one, and a machine that hydrated before another's upgrade can still write its older table description back.
 
 ## Design
 

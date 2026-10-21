@@ -5,6 +5,14 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts
 
 # Optimystic: the table alterations Sereus's control-store migrations need
 
+**Resolved by Optimystic 1.16.0** (`bug-optimystic-table-tag-changes-lost-on-restart`, `catalog-only-drop-check-constraint`, `catalog-only-add-and-drop-column`), adopted by `adopt-optimystic-1-17-0`, which raised the `@optimystic/*` floors to ^1.17.0 and the `@quereus/quereus` floors to ^4.20.3 as the "Quereus floor" paragraph below asked. All four proposals shipped, point 4 included: a machine that finds a change already saved adopts it and writes nothing. Three facts of the shipped form that `control-store-migrates-on-start` (now runnable) designs around:
+
+- A failed `apply schema` undoes its `add column`s but cannot undo a `drop column`; Quereus reports the schema as partially migrated.
+- A host must not `apply schema` a declaration older than the stored one: the plugin cannot tell it from a deliberate change, and would remove the newer `check`s and columns. The `newer-release` refusal is what prevents this in Sereus.
+- A machine that hydrated before another machine's upgrade and touches the table first can still write its older description back (`../optimystic/tickets/backlog/bug-optimystic-stale-hydrated-table-rewrites-the-shared-catalog-record`).
+
+Nothing in Sereus issues these statements yet, so nothing was measured here.
+
 **Blocked on a dependency outside this repo.** Unblocks when an Optimystic release ships the changes proposed below in a version Sereus can adopt. Read at Optimystic `a47731fb` (`@optimystic/quereus-plugin-optimystic` 1.15.0); recheck the cited sites after a bump.
 
 GitHub gotchoices/sereus#46. The maintainer decided (2026-10-15) that a change to the control schema is applied to each machine's existing control store when that machine starts on the new release, instead of the party being recreated, because phones receive an app update one at a time. `implement/control-store-migrates-on-start` is the Sereus side and waits on this ticket.

@@ -39,16 +39,17 @@
  * logs how long each step took and every node's peer id, so a run's `DEBUG=optimystic:db-p2p:*`
  * log can be read against them.
  *
- * Why the strand nodes keep losing each other on that link: an outbound frame waits 10 to 20 s in
- * its socket's queue, so a liveness ping's echo routinely takes longer than the 10 s that
- * `@libp2p/ping`'s handler allows on every cadre node. The handler resets the ping stream, and the
- * pinging node's monitor aborts the connection whatever its own 30 s deadline
- * (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). Between the two strand
- * nodes that drops their circuit; from the relay, whose monitor pings each strand node, it drops
- * that node's relay connection and every circuit on it. So the strand nodes lose each other about
- * 40 s after each reconnect, and the member redial (`strand-peer-redial.ts`) reconnects them after
- * its 21.5 s backoff. The harness relay carries the deployed relay's monitor, limits and ping
- * handler (`harness/dedicated-relay.ts`), so it does not cut circuits on a deadline of its own.
+ * Why the strand nodes keep losing each other on that link: an outbound frame waits 10 to 22 s in
+ * its socket's queue, so a liveness ping can outlast the pinging node's 30 s deadline, and its
+ * monitor aborts the connection. Every node here answers pings for 60 s (Optimystic derives the
+ * handler timeout from the monitor deadline), so the pinging side's own deadline is what fires:
+ * 8 of the 14 aborts in one run on 2026-10-20 were that deadline, 4 were stream resets and 2 an
+ * early end of stream, none traced further. A deadline that stretches to the measured response
+ * time is `blocked/decide-link-deadlines-from-measured-response-time`. Between the two strand
+ * nodes an abort drops their circuit; from the relay, whose monitor pings each strand node, it
+ * drops that node's relay connection and every circuit on it, and the member redial
+ * (`strand-peer-redial.ts`) reconnects them after its 21.5 s backoff. The harness relay carries
+ * the deployed relay's monitor, limits and ping handler (`harness/dedicated-relay.ts`).
  *
  * The fourth arm is the restart the phones also tried, of a joiner that wrote alone. The lone
  * commit is made on purpose: once the joiner is writable, the founder takes its strand offline
@@ -141,8 +142,8 @@ const YEAR_MS = 365 * 24 * 3600_000;
  * Generous on purpose: the arm reports how long each step took; a gate only bounds a hang.
  *
  * NOTE: the slow-link arms' first sync takes about 45 s. If one times out here, look at the drop
- * cycle (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`) and the saturated
- * link before raising this. A first sync past 600 s would keep the third arm's `it.fails` green
+ * cycle (the connection monitor's aborts, see the header) and the saturated link before raising
+ * this. A first sync past 600 s would keep the third arm's `it.fails` green
  * for the wrong reason.
  */
 const FIRST_SYNC_MS = 600_000;
@@ -583,12 +584,11 @@ describe("a joiner's first transaction over a relayed link", () => {
 	// KNOWN FAILURE, kept as `it.fails` so the suite stays green while it reproduces: on this link
 	// the joiner is connected to the founder when its strand becomes writable, so its first commit
 	// goes to both members, and it fails with "Failed to get super-majority: 1/2 approvals" when the
-	// ping drop cycle resets the founder's leg
-	// (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). When this `it.fails`
-	// turns red, the arm passes: that drop cycle no longer cuts a commit on this link, so make it a
-	// plain `it`.
-	// NOTE: failed in 2 of 2 runs (2026-10-17), but only because a drop landed while the commit was
-	// in flight; if it turns red once and not on a rerun, the commit missed a drop by timing.
+	// ping drop cycle (see the header) resets the founder's leg. When this `it.fails` turns red, the
+	// arm passes: that drop cycle no longer cuts a commit on this link, so make it a plain `it`.
+	// NOTE: failed in 2 of 2 runs (2026-10-17), and in the 2026-10-20 run with every node's ping
+	// handler at 60 s, but only because a drop landed while the commit was in flight; if it turns red
+	// once and not on a rerun, the commit missed a drop by timing.
 	it.fails('commits, and its rows outlive the joiner, on a 20 ms frame cap with a 70%-busy event loop', async () => {
 		await runJoinerFirstCommit({ latency: { delayMs: 20, mode: 'serial' }, eventLoopBusy: 0.7 });
 	}, 1_800_000);

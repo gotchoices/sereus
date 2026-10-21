@@ -47,7 +47,7 @@ The redial that opens a connection already follows the link: FRET 1.1.0 runs it 
 
 ## What this does not fix
 
-On the phone link of #48 the delay is not the declared round trip: each outbound frame waits behind every frame already queued, and frames were measured waiting 10-22 s (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`). A ping derived from a 3 500 ms declaration (7 s) still misses there. Sizing deadlines from the measured response time above the declared floor is proposed in `blocked/decide-link-deadlines-from-measured-response-time`; this ticket fixes the case where the link is inside its declaration, which is a defect on its own.
+On the phone link of #48 the delay is not the declared round trip: each outbound frame waits behind every frame already queued, and frames were measured waiting 10-22 s (`complete/optimystic-ping-handler-timeout-below-the-monitor-deadline`). A ping derived from a 3 500 ms declaration (7 s) still misses there. Sizing deadlines from the measured response time above the declared floor is proposed in `blocked/decide-link-deadlines-from-measured-response-time`; this ticket fixes the case where the link is inside its declaration, which is a defect on its own.
 
 ## How to confirm
 
@@ -71,3 +71,7 @@ The phone arm of `strand-workload-on-a-phone-link.integration.ts` (20 ms serial 
 - **Strikes keep the loop at its fastest.** Each strike calls `noteChange`, which resets the stabilization interval to its 1 500 ms base, so while pings keep failing the ring maintenance never backs off: B's ring struck A's strand node about every 5 s, A's struck B's about every 6 s. With deadlines that follow the link, fewer pings fail and the loop can back off. No separate change is proposed.
 
 Above the declared link the queue, not the declaration, sets how long a ping takes: the worst observed send wait was 17.3 s during the rounds. See "What this does not fix" above.
+
+## Rechecked at p2p-fret 1.2.1 (2026-10-20, `adopt-optimystic-1-17-0`)
+
+Unchanged: `MAINTENANCE_RPC_TIMEOUT_MS` is 2 000, `MAINTENANCE_SNAPSHOT_TIMEOUT_MS` 1 000, `STABILIZE_TICK_BUDGET_MS` 5 000, `STABILIZE_PHASE_ONE_BUDGET_MS` 3 000 (`fret-service.ts` ~501-559) and `RPC_TIMEOUT_MS` 5 000 (`rpc/protocols.ts` 27), and `FretConfig` has no `linkRoundTripMs`. FRET 1.2.0 added a dead-verdict grace for long-lived peers (`maxDeadGraceMs`, up to 5 minutes); it delays only the `dead` verdict for a peer seen up 10 minutes or more, and does nothing for a strand member that joined recently.

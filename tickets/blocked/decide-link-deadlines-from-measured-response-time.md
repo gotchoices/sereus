@@ -18,7 +18,7 @@ From the phone arm of `strand-workload-on-a-phone-link.integration.ts` (every ou
 - **Every request with a fixed deadline missed it.** All 53 read-repair consults the strand nodes sent during the rounds found the other member silent at 7 s, and all 224 in the 180 s after. FRET's 2 s maintenance ping failed 67 times against the strand nodes. The pinged side's 10 s ping handler reset 9 connection-monitor pings, and each reset aborted a connection.
 - **Outcome.** The writes of rounds 1-3 failed. FRET marked both strand nodes `dead`, the remaining five rounds each committed alone, and the two sides ended holding different rows that did not converge in 180 s.
 
-The decision rule this was filed under (`strand-workload-count-driven-fixes`): when one clean round already occupies the socket for at least half the 7 s read deadline (here 9.5 s against 3.5 s), the work alone builds a queue that crowds a deadline counted in declared round trips, and cutting retries cannot be enough. Cutting them still helps: retries were 48% of the requests beyond the clean workload with FRET's and libp2p's pings excluded, 28% with them (`blocked/optimystic-retries-do-not-back-off`).
+The decision rule this was filed under (`strand-workload-count-driven-fixes`): when one clean round already occupies the socket for at least half the 7 s read deadline (here 9.5 s against 3.5 s), the work alone builds a queue that crowds a deadline counted in declared round trips, and cutting retries cannot be enough. Cutting them still helps: retries were 48% of the requests beyond the clean workload with FRET's and libp2p's pings excluded, 28% with them (`complete/optimystic-retries-do-not-back-off`, shipped in Optimystic 1.16.0).
 
 ## Proposed text (the recommended default)
 
@@ -36,13 +36,13 @@ Why: the declaration is fixed, and a send queue is not. Where a link's cost is p
 
 - **Declare a larger link on phone deployments** (`linkRoundTripMs`). The declaration is fixed and the queue is not, so a larger one only raises the traffic at which the queue overruns it, and it stretches every deadline for every peer all the time, including dials to peers that are really gone. A phone run with a larger declaration was not made.
 - **A fixed queueing allowance added to every deadline.** The same failure, a constant against a queue that grows with traffic, and its cost is paid on every link.
-- **Only reduce traffic.** Retry backoff (`blocked/optimystic-retries-do-not-back-off`) and joining a turn's WebSocket sends into one frame (`backlog/feat-websocket-sends-coalesced-per-turn`, which cut a Galaxy S7's sends by 62%) both shorten the queue, and both are worth having. But the clean workload is already past the deadline: at 62% fewer frames a round would occupy the socket about 3.6 s, at the bar, and an app with more tables or more rows is past it again.
+- **Only reduce traffic.** Retry backoff (`complete/optimystic-retries-do-not-back-off`, in Optimystic 1.16.0) and joining a turn's WebSocket sends into one frame (`backlog/feat-websocket-sends-coalesced-per-turn`, which cut a Galaxy S7's sends by 62%) both shorten the queue, and both are worth having. But the clean workload is already past the deadline: at 62% fewer frames a round would occupy the socket about 3.6 s, at the bar, and an app with more tables or more rows is past it again.
 
 ## Related tickets
 
 - `blocked/fret-maintenance-deadlines-below-the-declared-link` derives FRET's maintenance deadlines from the declared link. That is the floor this proposal stretches above, and it is a defect on its own on a link inside its declaration.
-- `blocked/optimystic-retries-do-not-back-off`: RFC 6298 also doubles its timer after each timeout; the two proposals are the same idea applied to the deadline and to the re-send.
-- `blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`: the pinged side's fixed 10 s handler timer is a separate defect with its own fix.
+- `complete/optimystic-retries-do-not-back-off` (Optimystic 1.16.0): RFC 6298 also doubles its timer after each timeout; that ticket applied the same idea to the re-send, and this one applies it to the deadline.
+- `complete/optimystic-ping-handler-timeout-below-the-monitor-deadline` (Optimystic 1.16.0): the pinged side's handler now waits 60 s, so on the phone-shaped link the pinging side's own 30 s deadline is the one that fires (8 of 14 connection aborts in one run of the slow-relay frame-cap arm on 2026-10-20).
 
 ## If nothing is done
 
@@ -55,3 +55,19 @@ The principle is one paragraph. Its mechanisms would be upstream options whose a
 ## How to confirm
 
 The phone arm: `STRAND_WORKLOAD_PHONE=1 DEBUG='optimystic:*,libp2p:connection-monitor*' yarn workspace @serfab/integration-tests exec vitest run strand-workload-on-a-phone-link`. With measured-response deadlines upstream, `cohort silent` and `FRET contact strike` should fall towards zero while both members are up, no round should commit alone, and the arm should converge.
+
+## Measured with retry backoff and the 60 s ping handler (2026-10-20, `adopt-optimystic-1-17-0`)
+
+One run of the phone arm on Optimystic 1.17.0 and p2p-fret 1.2.1, with `DEBUG` on `coordinator-repo`, `batch-coordinator`, `network-transactor` and the connection monitor (log `tickets/.logs/adopt-optimystic-1-17-0.phone.log` until pruned). It was slower than the 2026-10-17 run in every phase it reached, and was stopped by the command limit during round 4:
+
+| | 2026-10-17 (Optimystic 1.15.0) | 2026-10-20 (Optimystic 1.17.0) |
+|---|---|---|
+| B writable after joining | 45.4 s | 41.4 s |
+| B's seat | first attempt, 94.4 s | first attempt failed after 340.5 s (`Some peers did not complete … Failed to get super-majority`); second attempt 29.9 s |
+| seated after joining | 163.9 s | 440.2 s |
+| round 1 | 90.6 s | 322.2 s, its `Ledger` write failed |
+| round 2 | 94.8 s | 173.8 s, its `Invoice` write failed |
+| round 3 | 3.1 s | 154.0 s, its `Ledger` write failed |
+| `aborting connection due to ping failure` | 9, over the rounds | 55, over the whole arm until it was stopped in round 4 |
+
+The backoff was in effect (coordinator retries waited 3.5 s, or as long as the failed request was outstanding; silent consults held the next one for 3.5 s, 7 s, 14 s). This is one run against one, on a link whose earlier runs varied widely (the 2026-10-17 measurement's own first run failed in setup), so it is not attributed. The 2026-10-13 experiment on `complete/optimystic-ping-handler-timeout-below-the-monitor-deadline` saw the same direction with the handler raised alone: connections that stay up stay saturated. Measure a series before reading it as a regression.

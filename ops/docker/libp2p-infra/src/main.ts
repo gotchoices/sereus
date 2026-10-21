@@ -99,8 +99,8 @@ const services: Record<string, any> = {
   // the pinging node's monitor treats that reset as a failed ping and aborts the connection,
   // whatever deadline it was given. So this timer, not the client's 30 s deadline, would decide
   // when a slow client's connection to this relay dies, and every circuit over it with it
-  // (measured on cadre nodes, whose handler has the same default:
-  // `tickets/blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline.md`). The timer
+  // (measured on cadre nodes, whose handler had the same default until Optimystic 1.16.0 derived
+  // it the same way: `tickets/complete/optimystic-ping-handler-timeout-below-the-monitor-deadline.md`). The timer
   // only frees a stream whose dialer went silent, and that dialer's own deadline already resets
   // it, so twice the deadline costs nothing.
   ping: ping({ timeout: 60_000 }),

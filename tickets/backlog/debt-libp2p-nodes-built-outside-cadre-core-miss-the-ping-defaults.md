@@ -48,4 +48,4 @@ cadre-core now also sets libp2p's `connectionManager.dialTimeout` and `inboundUp
 
 ## Third arm: the harness relay (settled elsewhere)
 
-`packages/integration-tests/src/harness/dedicated-relay.ts` now carries the deployed relay's connection monitor, connection-manager limits and ping service (`slow-relay-joiner-strand-connection-keeps-dropping`), so this ticket no longer covers it. The slow-link connection drops that remain come from the ping handler's own timeout on every cadre node: `blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`.
+`packages/integration-tests/src/harness/dedicated-relay.ts` now carries the deployed relay's connection monitor, connection-manager limits and ping service (`slow-relay-joiner-strand-connection-keeps-dropping`), so this ticket no longer covers it. Since Optimystic 1.16.0 every cadre node's ping handler waits twice its monitor deadline (`complete/optimystic-ping-handler-timeout-below-the-monitor-deadline`), and the slow-link drops that remain are the pinging side's own 30 s deadline on a saturated link.

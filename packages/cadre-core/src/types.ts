@@ -662,10 +662,10 @@ export interface NetworkConfig {
  * pinging node's monitor sees the reset and aborts the connection exactly as it would on its
  * own timeout. So this deadline is only real up to the handler timeout of the node being
  * pinged, which has to stay above it. The deployed relay sets its handler to 60 s for that
- * reason (`ops/docker/libp2p-infra/src/main.ts`). Every cadre node's handler is Optimystic's
- * bare `ping()`, `@libp2p/ping`'s 10 s, and nothing here can move it
- * (`tickets/blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline.md`): between
- * two cadre nodes, a ping whose echo takes longer than 10 s still drops the connection.
+ * reason (`ops/docker/libp2p-infra/src/main.ts`). Every cadre node's handler is Optimystic's,
+ * which derives it from this object: twice `pingTimeout.maxTimeout`, so 60 s
+ * (`NodeOptions.pingHandlerTimeoutMs`, unset here, since Optimystic 1.16.0). An app that
+ * replaces this object without a `pingTimeout` gets `@libp2p/ping`'s 10 s handler back.
  *
  * WHAT THE LINK NEEDS OF IT. One ping opens a fresh stream and echoes over it: a protocol
  * negotiation plus the echo, two link round trips by `link-budget.ts`'s counts (a `newStream`

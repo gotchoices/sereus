@@ -69,7 +69,7 @@ A warm start applies the control schema to the tables already in the control sto
 **What a new version may change.** `control-schema-versions.spec.ts` runs `diff schema` from each fixture to the next and fails on any statement that `classifyControlSchemaChange` (`control-schema-version.ts`) finds unmigratable:
 
 - `additive`: `create table`, `create index` and `alter table … set tags`. The optimystic module applies these today.
-- `catalog-only`: `drop index`; adding or dropping a CHECK constraint (a changed CHECK body is both); adding a column declared `null` with no default, generated expression or other column constraint; dropping a column that no index, unique constraint or primary key covers. None rewrites a row, and the optimystic module applies them once `optimystic-catalog-only-alter-table` ships.
+- `catalog-only`: `drop index`; adding or dropping a CHECK constraint (a changed CHECK body is both); adding a column declared `null` with no default, generated expression or other column constraint; dropping a column that no index, unique constraint or primary key covers. None rewrites a row. The optimystic module applies them since Optimystic 1.16.0 (`optimystic-catalog-only-alter-table`), and the start-time check refuses them until `control-store-migrates-on-start` lets them through.
 - `unmigratable`: everything else, including `drop table`, any rename, `alter column`, `alter primary key`, a `not null` or `unique` column, and a constraint other than a CHECK.
 
 A rule on a new column goes in a named table-level CHECK, as `CadrePeer.KnownProfile` does, so the column itself stays a plain nullable add.
@@ -2370,9 +2370,9 @@ interface CadreNodeConfig {
     // (`blocked/report-libp2p-websockets-buffered-amount`), so the far end finds out only
     // when it next opens a stream, usually its next ping, sent every 35s (25-50s measured
     // on a saturated link).
-    // The deadline holds only up to the pinged node's ping-handler timeout,
-    // 10s on every cadre node until
-    // `blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline` lands.
+    // The pinged node's ping handler waits twice this deadline (Optimystic derives
+    // it from `pingTimeout.maxTimeout`), so the pinging side's deadline is the one
+    // that fires.
     connectionMonitor?: Libp2pConnectionMonitorInit;
     // How long ONE cohort peer gets to answer ONE read-path request, for the control node
     // and every strand node — the same one-setting-covers-both-networks shape as

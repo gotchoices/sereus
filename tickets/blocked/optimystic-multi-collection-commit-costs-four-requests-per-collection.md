@@ -5,7 +5,9 @@ repro: static
 ----
 # A transaction over several collections costs about 4 requests per collection
 
-**Blocked on a dependency outside this repo.** Unblocks when Optimystic batches a multi-collection transaction's pends and commits per coordinator. Upstream issue: gotchoices/Optimystic#42 (per-index cost; our multi-table case added as a comment 2026-10-19), and #29 (write cost); upstream ticket `../optimystic/tickets/plan/a-commit-carries-its-collections-in-one-request-per-member` (filed 2026-10-19). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
+**Blocked on a dependency outside this repo.** Unblocks when an Optimystic release makes a transaction's writer send its collections' pends and commits as one request per coordinator. Upstream issue: gotchoices/Optimystic#42 (per-index cost; our multi-table case added as a comment 2026-10-19), and #29 (write cost).
+
+**Upstream status (Optimystic 1.17.0, adopted by `adopt-optimystic-1-17-0`).** The receiving half shipped: group members and coordinators can run one consensus record that covers several collections of one transaction (`IRepo.pendMany` / `IRepo.commitMany`; upstream `a-consensus-record-carries-several-collections-of-one-action`, `a-coordinator-runs-an-actions-collections-as-one-record`). No writer sends one yet, so the cost is unchanged: `message-cost-accounting` measured 4 `/cluster` streams for B's first insert and 20 in the settle window on 2026-10-20, the same as on 2026-10-19. The sending half is `../optimystic/tickets/blocked/a-transaction-pends-and-commits-its-collections-together`, blocked upstream on a decision about groups whose members run different builds. One visible change already: `RepoService` refuses a repo message carrying several operations unless it is a well-formed batch. Sereus sends no repo messages of its own, and no scenario failed on it in the 1.17.0 gate.
 
 ## What happens (traced; upstream pins the numbers)
 

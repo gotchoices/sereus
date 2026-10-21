@@ -6,6 +6,8 @@ repro: verified
 
 # A ping handler's 10 s timeout drops connections the 30 s monitor deadline was meant to keep
 
+**Resolved by Optimystic 1.16.0** (`ping-handler-timeout-below-the-monitor-deadline`), adopted by `adopt-optimystic-1-17-0`. `NodeOptions.pingHandlerTimeoutMs`, left unset, is twice the node's `connectionMonitor.pingTimeout.maxTimeout`, so every cadre node answers pings for 60 s with no Sereus setting; `DEFAULT_CONNECTION_MONITOR`'s comment, the deadline table in `docs/cadre-consistency.md` and the slow-relay scenario's header now say so. Measured on `joiner-first-commit-over-slow-relay`'s frame-cap arm (one run on 2026-10-20, `DEBUG=libp2p:connection-monitor*`): 14 `aborting connection due to ping failure` in 219 s, 8 of them `AbortError` (the pinging node's own 30 s deadline), 4 `StreamResetError` and 2 `UnexpectedEOFError`; before the fix every one was a reset or an early end of stream. As the 2026-10-13 section below predicted, the arm still fails and stays `it.fails`: pings over the saturated circuit now outlast the 30 s deadline, which is `blocked/decide-link-deadlines-from-measured-response-time`. The 4 resets were not traced; every node in the run, the harness relay included, answers pings for 60 s.
+
 **Blocked on a dependency outside this repo.** `@optimystic/db-p2p` constructs libp2p's ping service as a bare `ping()` (`libp2p-node-base.ts` ~959) and exposes no way to set its handler timeout. Unblocks when Optimystic accepts the option proposed below, or when a human accepts the in-repo workaround listed under alternatives.
 
 ## What happens

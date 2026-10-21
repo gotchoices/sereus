@@ -5,6 +5,8 @@ repro: verified
 ----
 # Optimystic fetches each missing block twice, one block at a time
 
+**Resolved by Optimystic 1.17.0** (`a-cold-read-reuses-the-consults-archives`, `a-collection-open-reads-its-log-ends-once`; gotchoices/Optimystic#39), adopted by `adopt-optimystic-1-17-0`. Both proposals shipped: the acquisition stores the copy the consult brought back, and a collection open reads its header and log tail once each, with a table's index and `unique` trees opened together. Measured with `message-cost-accounting` (strand case, loopback): B addStrand's `sync` requests to A went from 25 to 13 between the runs of 2026-10-19 23:28 and 2026-10-20 00:46, the window in which both changes landed upstream and no Sereus change touched the attach. Sereus's `join-backfill-pushes-once-and-is-waited-for` then took it to 2. The phone join times in #39 (7-25 s) were not re-measured.
+
 **Blocked on a dependency outside this repo.** Unblocks when Optimystic ships items 1–2 below in a version Sereus can adopt. Upstream issue: gotchoices/Optimystic#39 (open); upstream ticket `../optimystic/tickets/plan/a-cold-read-fetches-each-block-once` (filed 2026-10-19). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
 
 ## What happens

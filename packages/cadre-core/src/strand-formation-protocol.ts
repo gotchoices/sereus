@@ -895,10 +895,10 @@ function useFormationConnection(connection: Connection, heldBefore: boolean): vo
  *
  * Only the joiner closes: it opened the connection, so it is the side that knows the connection
  * did not exist before. The joiner's and the inviter's control nodes run on different FRET
- * networks, so a connection left open after formation carries nothing but failing FRET pings
- * both ways and holds FRET's stabilization at its fastest interval. FRET can still redial the
- * other control node on its own while it re-probes a peer it has seen; that is FRET's to stop
- * (`blocked/fret-maintenance-probes-peers-off-its-ring`).
+ * networks, so a connection left open after formation carries nothing but FRET pings that fail,
+ * until FRET has been refused three times and leaves that peer alone (p2p-fret 1.2.1). FRET can
+ * still redial the other control node on its own while it re-probes a peer it has seen
+ * (`complete/fret-maintenance-probes-peers-off-its-ring`).
  *
  * The close is graceful, so the responder's side can finish its own stream close; a close that
  * fails or overruns libp2p's close timeout is logged and the connection aborted, as libp2p's own

@@ -6,6 +6,14 @@ repro: verified
 
 # Optimystic's retries do not back off, so on a slow link each one lengthens the queue that made its predecessor late
 
+**Resolved by Optimystic 1.16.0** (`coordinator-and-read-retries-back-off`, `silent-read-repair-consults-back-off`; gotchoices/sereus#48), adopted by `adopt-optimystic-1-17-0`, which updated the coordinator retry, read retry and read-repair window rows of `docs/cadre-consistency.md` → "Deadlines Below Cadre". Confirmed on the phone arm of `strand-workload-on-a-phone-link` (one run on 2026-10-20 with `DEBUG` on `coordinator-repo`, `batch-coordinator`, `network-transactor` and the connection monitor, stopped by the command limit in round 4):
+
+- 15 coordinator retries, each logged with its wait: 3 500 ms (one declared round trip) for 9, and 6.1-14.9 s, as long as the failed request had been outstanding, for the 6 that went back through the same peer.
+- 111 silent consults and 110 `cluster-fetch:consult-held` holds: 3 500 ms for 82, 7 000 ms for 25 and 14 000 ms for 3, doubling as a block's run of silent consults grew.
+- 1 read retry round.
+
+Not shown: that the backoff shortens the queue. That run was slower than 2026-10-17's in every phase it reached (B's seat failed its first attempt after 340.5 s; rounds 1-3 took 322, 174 and 154 s and each had a failed write, against 91, 95 and 3 s). It is one run against one and was not attributed; the table is on `blocked/decide-link-deadlines-from-measured-response-time`.
+
 **Blocked on a dependency outside this repo.** Unblocks when Optimystic ships the backoff proposed below in a version Sereus can adopt. Read at Optimystic `28e6e044` (1.15.0); recheck the cited sites after a bump.
 
 GitHub gotchoices/sereus#48.

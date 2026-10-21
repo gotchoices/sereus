@@ -157,7 +157,7 @@
  * rate the frame-counted loopback runs opened the same protocols for three rounds (35; the phone
  * run's own loopback arm opened 17): what grew was requests that never opened in time, redials and
  * pings. Proposals filed from this: `blocked/decide-link-deadlines-from-measured-response-time`
- * and `blocked/optimystic-retries-do-not-back-off`.
+ * and `optimystic-retries-do-not-back-off` (shipped in Optimystic 1.16.0).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -223,11 +223,11 @@ const DEADLINE_EVENTS: readonly EventPattern[] = [
 	{ label: 'commit retried', pattern: /batch-coordinator retry peer=/g, fault: true },
 	// A read of a held block last checked more than `readRepairWindowMs` ago (Optimystic's 10 s,
 	// which cadre does not set) starts a background cohort consult: phone rounds outlast it. A
-	// consult that finds the peer silent leaves the block unchecked, so the next read consults again.
+	// consult that finds the peer silent leaves the block unchecked and holds its next consult
+	// (`cluster-fetch:consult-held`, one declared round trip, doubling while the peer stays silent).
 	{ label: 'read-repair consult', pattern: /cluster-tx:read-repair-triggered/g, fault: false },
 	{ label: 'read-repair deferred', pattern: /cluster-tx:read-repair-deferred/g, fault: false },
-	// libp2p's connection monitor dropping a connection
-	// (`blocked/optimystic-ping-handler-timeout-below-the-monitor-deadline`).
+	// libp2p's connection monitor dropping a connection.
 	{ label: 'ping failure', pattern: /aborting connection due to ping failure/g, fault: true },
 	{ label: 'no coordinator', pattern: /No coordinator available/g, fault: true },
 	// A commit with a cohort of only itself: how the sides can end holding different rows while both run.

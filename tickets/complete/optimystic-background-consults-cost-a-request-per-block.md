@@ -5,6 +5,8 @@ repro: verified
 ----
 # Optimystic's background consults cost one full-block request per block
 
+**Resolved by Optimystic 1.17.0**: all three proposals shipped (`a-cohort-consult-asks-each-peer-about-all-its-blocks-at-once`, `a-cohort-consult-sends-bytes-only-when-the-peer-is-ahead`, `a-member-that-applied-a-commit-counts-its-copy-checked`; gotchoices/Optimystic#43), adopted by `adopt-optimystic-1-17-0`. Upstream pins the costs in its own specs (`db-p2p/test/consult-round.spec.ts`, `coordinator-repo-read-repair.spec.ts`). `message-cost-accounting` cannot show the change: the cadre idle minute's `sync` count (103 and 134 on 2026-10-19) is 0 because Sereus's change-driven pollers removed the idle reads (`control-reconcile-woken-by-changes-reads-once`), the steady writes' 2-3 `sync` streams are single-block reads, which per-peer batching does not change, and the instrument counts streams, not the bytes the revision-only reply saves. An app read on a two-party strand now costs one consult request per peer, carrying block bytes only when the peer is ahead.
+
 **Blocked on a dependency outside this repo.** Unblocks when Optimystic ships any of items 1–3 below in a version Sereus can adopt. Upstream issue: gotchoices/Optimystic#43 (filed 2026-10-19); upstream ticket `../optimystic/tickets/plan/feat-a-cohort-consult-batches-blocks-per-peer` (promoted from its backlog 2026-10-19 with items 2–3 added). Read at Optimystic 1.15.0 plus main (`f22a8cb7`).
 
 ## What happens

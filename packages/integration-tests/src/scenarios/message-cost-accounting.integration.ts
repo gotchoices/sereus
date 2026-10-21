@@ -128,6 +128,46 @@
  *
  * The strand case is unchanged (A->B block-transfer 44, B->A sync 35): its machines are transaction
  * profile, which runs no rebalance reaction.
+ *
+ * MEASURED_ON 2026-10-20, one run of all three cases, on the published Optimystic 1.17.0 and FRET
+ * 1.2.1 (`adopt-optimystic-1-17-0`; sereus `ea3eed00`, `@optimystic/*` linked at `0e70f551`, FRET at
+ * `439b85e`). The 2026-10-19 baseline already ran Optimystic 1.16.0's code (`f22a8cb7`), so what
+ * 1.17.0 adds against it is #39, #42 and #43, and FRET's Fret#3:
+ *
+ *   strand               ms   app  upkeep  gets
+ *   B addStrand         456     6       7    20   2 sync B->A, 2 block-transfer A->B
+ *   B first insert      525    20       5    13   16 sync + 4 cluster
+ *   settle 15 s      15 004    82      35    52   42 block-transfer A->B; 17 sync + 20 cluster B->A
+ *   idle 60 s        60 007     0      30     0   24 /ipfs/ping, 6 FRET ping, none failed
+ *   one steady write   ~150   6-7       0   1-2   4 cluster + 2-3 sync
+ *
+ *   cadre (admitMember)  join 696 ms, 27 app streams, 56 gets   settle 15 s: 83 app, 26 gets
+ *                                                               idle 60 s: 32 app (all block-transfer), 0 sync, 0 gets
+ *   invite (redeem)      join 965 ms, 51 app streams, 71 gets   settle 15 s: 74 app, 0 gets
+ *                                                               idle 60 s: 28 app (all block-transfer), 0 sync, 0 gets
+ *
+ * What moved since 2026-10-19, by upstream change:
+ * - #39 (one fetch per missing block; a collection open reads its log ends once): B addStrand's `sync`
+ *   to A went 25 -> 13 between the 2026-10-19 23:28 and 2026-10-20 00:46 runs, the window in which both
+ *   changes landed upstream and no Sereus change touched the strand attach; `join-backfill-pushes-once-
+ *   and-is-waited-for` took it on to 2 (block above). B->A `sync` from addStrand through settle is 35,
+ *   as in that block.
+ * - #42 (groundwork only): the join window's `cluster` streams are unchanged, 4 for B's first insert and
+ *   20 in settle, as on 2026-10-19.
+ * - Fret#3 (foreign peers not re-probed): the strand idle minute's FRET pings went 32 -> 6, none failing
+ *   (the 23:28 run had 20 between the strand nodes and 12 failed, 2 from each node to the relay and 2 each
+ *   way between the control nodes), and upkeep 56 -> 30. The settle window still has 16 failed FRET pings,
+ *   the run of three refused probes FRET needs before it leaves a foreign peer alone, and 9 `dcutr`
+ *   streams per join, as before.
+ * - #43 (one consult request per peer, block bytes only when the peer is ahead, a received commit counts
+ *   as a check): not visible here. The cadre cases' idle `sync` went 103 and 134 -> 0 because the idle
+ *   minute no longer reads anything (`control-reconcile-woken-by-changes-reads-once`, the 2026-10-20 block
+ *   above). The steady writes' `sync` streams are single-block reads, which per-peer batching does not
+ *   change, and this instrument counts streams, not the bytes the revision-only reply saves.
+ *
+ * The cadre and invite rows equal `cohort-join-catch-up-runs-once-per-node`'s runs: the admit phase's
+ * growth from 8 app streams (2026-10-20 block above) to 27 is Sereus's, from the joins changed later
+ * that day, not this release.
  */
 
 import { describe, it } from 'vitest'

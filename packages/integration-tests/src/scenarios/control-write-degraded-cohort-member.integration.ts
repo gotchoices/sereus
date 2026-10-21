@@ -88,10 +88,9 @@
  * and every write here fails in its pend.
  *
  * A member that answers a write's pend and goes silent before its commit is NOT
- * covered here: the commit and its cancel both miss the unanimity bar, the pend
- * record stays in the writer's own storage, and every later write to that block
- * is refused as `held` after the member recovers. That is an Optimystic defect,
- * tracked in `tickets/blocked/optimystic-failed-cancel-strands-the-writers-pend-record`.
+ * covered here yet: the commit and its cancel both miss the unanimity bar, and
+ * the writer keeps the cancel owed and re-sends it until it lands (Optimystic
+ * 1.14.0). The case is `implement/degraded-cohort-covers-a-member-silent-after-the-pend`.
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';

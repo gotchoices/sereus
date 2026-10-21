@@ -5,6 +5,13 @@ repro: verified
 ----
 # FRET keeps probing peers that are not on its ring
 
+**Resolved by p2p-fret 1.2.1** (`foreign-peers-not-reprobed-by-the-idle-loop`, gotchoices/Fret#3: item 1 below), which Optimystic 1.17.0 requires; adopted by `adopt-optimystic-1-17-0`. Measured with `message-cost-accounting`, strand case, idle 60 s: FRET pings went from 32 (12 of them failing) in the 2026-10-19 23:28 run to 6 (none failing) in the 2026-10-20 runs at 00:46 and 22:46, and upkeep streams from 56 to 30. The settle window still has 16 failed FRET pings: the run of refused probes FRET needs against each foreign peer before it leaves it alone.
+
+Items 2 and 3, which this ticket said to file if the cost remained:
+
+- **Item 2 (FRET's idle cap passed through Optimystic): not filed.** The idle loop now backs off: 3 FRET pings each way between the strand nodes in the idle minute after settle, against 10 before. At FRET's 60 s cap that becomes one a minute each way, less than libp2p's own ping every 35 s.
+- **Item 3 (`dcutr`): filed as `blocked/optimystic-dcutr-between-relay-only-peers`.** It still opens 9 streams per join (1 in B addStrand, 2 in B's first insert, 6 in settle).
+
 **Blocked on a dependency outside this repo.** Unblocks when FRET stops re-probing peers it has labelled foreign, or stops letting those re-probes restart its idle back-off: gotchoices/Fret#3 (filed 2026-10-19), upstream ticket `../Fret/tickets/plan/foreign-peers-not-reprobed-by-the-idle-loop`, covers item 1. Items 2 and 3 (Optimystic: FRET idle-cap passthrough, `dcutr` off) are not filed, because `dcutr` costs only at join time and the idle cap matters only once Fret#3 lets the back-off reach it; file them if `message-cost-accounting` still shows the cost after Fret#3 lands. Read at FRET 1.1.0 (`48cb6b5`), Optimystic main (`f22a8cb7`). The FRET checkout was being edited during the read; line numbers may drift.
 
 ## What happens
