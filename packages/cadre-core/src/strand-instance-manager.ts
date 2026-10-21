@@ -1170,12 +1170,11 @@ export class StrandInstanceManager {
     // received from a peer (now, or on an earlier run over the same store) — and has read
     // each other Strand table and each App table once, so their collections are fetched
     // too. Publishing the database is what makes the strand writable to the app; until
-    // then the instance stays
-    // `'syncing'` and the gate re-probes when data lands. This first probe goes through the
-    // gate, so what it finds held is not read again. Everything armed after the database
-    // phase reads `instance.database` lazily, so the reconciler and enforcer wait with it —
-    // and `publishDatabase` kicks the reconciler when the wait ends, so a joiner's membership
-    // rows land with the strand rather than one retry later.
+    // then the instance stays `'syncing'` and the gate re-probes when data lands. This first
+    // probe goes through the gate, so what it finds held is not read again. Everything armed
+    // after the database phase reads `instance.database` lazily, so the reconciler and
+    // enforcer wait with it — and `publishDatabase` kicks the reconciler when the wait ends,
+    // so a joiner's membership rows land with the strand rather than one retry later.
     //
     // A first join (the store held nothing when this build began) on which nothing has landed yet
     // skips this probe: a member's peer-join catch-up is pushing it the same blocks, and the probe
