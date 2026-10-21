@@ -568,10 +568,10 @@ export class SeedBootstrapService {
   /**
    * Return the configured owner signer, or throw if none is set. The single precondition
    * gate for every owner-signed write. {@link removePeer} / {@link reauthorizePeer} read the
-   * row's `StampId` from the DB BEFORE they sign, so they call this up front — otherwise a
-   * signerless service would either surface the wrong "Control database not initialized"
-   * error or, worse, silently no-op when the target row is absent (the early
-   * `stampId === null` return) instead of rejecting.
+   * row from the DB BEFORE they sign, so they call this up front — otherwise a signerless
+   * service would either surface the wrong "Control database not initialized" error or,
+   * worse, silently no-op when the target row is absent (their early absent return) instead
+   * of rejecting.
    */
   private requireOwnerSigner(): OwnerSigner {
     if (!this.config.ownerSigner) {

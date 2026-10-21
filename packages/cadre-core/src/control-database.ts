@@ -2409,6 +2409,14 @@ export class ControlDatabase {
     this.ensureInitialized();
     const written = await this.lockedWithRetry(async () => {
       // retry: false — inside the locked write body (see queryStampId's NOTE).
+      // NOTE: this read of the Revocation and CadrePeer views is charged to the retry budget,
+      // so a cold view load that waits out a per-peer read deadline leaves the attempt no room
+      // for its one retry (the 14.7 s abandonment the policy's doc cites). The caller's read
+      // outside the funnel warms the views, so this is a cache hit except when a table change
+      // between the two reads dropped them — the racing case itself. If that residual ever
+      // matters, measure which phase of the losing attempt pays the deadline first; the
+      // retired-stamp check cannot simply move outside, since `publishSelfRecord`'s insert
+      // path reads a revoked node's row as absent and relies on this body to skip it.
       const current = await this.queryPeerRecord(peerId, false);
       if (current === null) {
         return null;
@@ -3668,9 +3676,10 @@ export class ControlDatabase {
    * statement, and without the clause the reap would delete the owner's brand-new row.
    * With it the statement matches nothing and the reap is a silent no-op (the schema
    * branch would also refuse that delete, but as a constraint error thrown into a
-   * background sweep — matched-nothing is the better failure mode). Like
-   * {@link reauthorizeCadrePeer}, a race lost AFTER the guard still returns `true`;
-   * harmless — nothing was deleted, and the next sweep re-reads.
+   * background sweep — matched-nothing is the better failure mode). A race lost AFTER the
+   * guard still returns `true` here (unlike {@link reauthorizeCadrePeer}, which reads inside
+   * its lock and reports what it found); harmless — nothing was deleted, and the next sweep
+   * re-reads.
    *
    * Writes NOTHING to `Revocation`: `RevocationRecorded` is satisfied by the same
    * committed tombstone that authorizes the reap, so a reap files no second tombstone.

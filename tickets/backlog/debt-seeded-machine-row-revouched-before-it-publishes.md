@@ -16,7 +16,7 @@ When the connection in step 3 is to B, step 3's commit reaches only A and B, and
 
 ## What would change
 
-Skip the step-3 re-sign for a queued row whose machine is the peer whose connection started the drain, and leave the row queued until that machine's own publish lands (its `Sig` becomes set and the existing skip at ~5038 drops it). The re-sign still runs on a later growth edge if the machine never publishes.
+Skip the step-3 re-sign for a queued row whose machine is the peer whose connection started the drain, and leave the row queued until that machine's own publish lands (its `Sig` becomes set, the re-touch's `'rebroadcast'` mode then reports the row self-published, and the drain clears the entry on that report). The re-sign still runs on a later growth edge if the machine never publishes.
 
 ## Questions the planner must settle
 
