@@ -95,7 +95,7 @@ import {
   type JoinedStrandStore,
   type PartyJoinedStrandLedger
 } from './joined-strand-store.js';
-import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
+import { addrKey, mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSigner } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
@@ -125,6 +125,8 @@ import type { CohortPeerRow } from './strand-cohort.js';
 import {
   selectControlCohortDials,
   nextReconcileWakeMs,
+  CLAIM_RESTART_REDIAL_STEP_MS,
+  CONTROL_COHORT_REDIAL_MS,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
   type ControlCohortReconcileResult
@@ -1108,6 +1110,8 @@ export class CadreNode implements SAppIdLookup {
    * reset in {@link stopRecordRefresh}.
    */
   private reconcileRedialStreak = 0;
+  /** Peers a {@link redialClaimedNode} loop is running for, so a repeated claim starts no second one. */
+  private readonly claimRedialPeers = new Set<string>();
   /**
    * Single-flight guard for {@link reconcileControlCohort}. An explicit call, the
    * `self:peer:update` trigger and a scheduled run can fire close together; collapsing
@@ -4723,32 +4727,36 @@ export class CadreNode implements SAppIdLookup {
     return this.normalizeDialAddrs(this.parseMultiaddrs(addrs), peerId);
   }
 
-  /** Dial one cold-start bootstrap peer, best-effort. Returns whether it connected. */
-  private async dialBootstrapPeer(peerId: string, addrs: string[]): Promise<boolean> {
+  /**
+   * Dial one peer from its retained dial target's addresses, best-effort: a cold-start bootstrap
+   * peer, or a just-claimed node ({@link redialClaimedNode}), which `context` names in the logs.
+   * Returns whether it connected.
+   */
+  private async dialBootstrapPeer(peerId: string, addrs: string[], context = 'reconcileControlCohort(cold-start)'): Promise<boolean> {
     const controlNode = this.controlNode;
     if (!controlNode) {
       return false;
     }
     const parsed = this.bootstrapDialAddrs(peerId, addrs);
     if (parsed.length === 0) {
-      log('reconcileControlCohort(cold-start): no dialable address for bootstrap peer %s; skipping', peerId);
+      log('%s: no dialable address for bootstrap peer %s; skipping', context, peerId);
       return false;
     }
     try {
-      log('reconcileControlCohort(cold-start): dialing bootstrap peer %s (%d addr(s))', peerId, parsed.length);
+      log('%s: dialing bootstrap peer %s (%d addr(s))', context, peerId, parsed.length);
       await dialPeerAddrs(
         controlNode,
         peerId,
         parsed,
         this.controlDialBudget(),
-        `reconcileControlCohort cold-start dial of bootstrap peer ${peerId}`
+        `${context} dial of bootstrap peer ${peerId}`
       );
       return true;
     } catch (error) {
       if (error instanceof SelfRelayOnlyError) {
-        log('reconcileControlCohort(cold-start): bootstrap peer %s is reachable only by relaying through this node; waiting for it to reconnect', peerId);
+        log('%s: bootstrap peer %s is reachable only by relaying through this node; waiting for it to reconnect', context, peerId);
       } else {
-        log('reconcileControlCohort(cold-start): dial of bootstrap peer %s failed (continuing): %o', peerId, error);
+        log('%s: dial of bootstrap peer %s failed (continuing): %o', context, peerId, error);
       }
       return false;
     }
@@ -9852,12 +9860,19 @@ export class CadreNode implements SAppIdLookup {
    * by the node (its anchored branch), the row insert is a no-op on an existing row
    * (`ControlDatabase.insertCadrePeer`), and the dial target is replaced, not duplicated.
    *
-   * The first dial is kicked (not awaited) so it happens now; the vouch's `CadrePeer`
-   * insert starts a pass of its own about 50 ms later as well. A caller that wants to
-   * wait for the connection awaits {@link reconcileControlCohort} itself, with
-   * `addDrone`'s caveat that a pass already in flight is joined rather than restarted. The claimed node dials this one back too,
-   * as the seed's minter, when this node has a listen or relay address; a phone
-   * with neither is reached by its own reconcile pass alone.
+   * Once it has acknowledged, the node restarts into this party (cadre-cli's
+   * `restartIntoClaimedParty`), closing the connection the claim used. The dial target puts
+   * the address that connection was dialed on first, so every later dial tries the address
+   * that just worked before the others (a QR code lists public addresses before LAN ones, and
+   * a home router often drops a connection to its own public address from inside). A
+   * reconcile pass is kicked (not awaited) now, and the vouch's `CadrePeer` insert starts
+   * another about 50 ms later; for the first {@link CONTROL_COHORT_REDIAL_MS} after the
+   * acknowledgement this node also retries the node every second while it restarts
+   * ({@link redialClaimedNode}). A caller that wants to wait for the connection awaits
+   * {@link reconcileControlCohort} itself, with `addDrone`'s caveat that a pass already in
+   * flight is joined rather than restarted. The claimed node dials this one back too, as the
+   * seed's minter, when this node has a listen or relay address; a phone with neither is
+   * reached by its own dials alone.
    *
    * @throws {ClaimRefusedError} when the node was reached and refused the claim.
    * @throws {PeerUnreachableError} when the node was never reached.
@@ -9872,6 +9887,7 @@ export class CadreNode implements SAppIdLookup {
     if (!signer) {
       throw new Error('Owner key required to create seeds');
     }
+    let dialAddrs = target.multiaddrs;
     await signer.approve({ partyId: this.partyId, action: `Claim the node ${target.peerId} for the cadre` }, async (sign) => {
       const seed = await service.createSeed(sign);
       const proof = claimProof(secret, target.peerId, seed.signerKey, seedDigest(seed));
@@ -9880,14 +9896,91 @@ export class CadreNode implements SAppIdLookup {
       if (!ack.accepted) {
         throw new ClaimRefusedError(target.peerId, ack.reason ?? 'no reason given', ack.code);
       }
+      // Read before anything else is awaited: the node's restart closes the connection.
+      dialAddrs = this.connectedAddrFirst(target.peerId, target.multiaddrs);
       log('claimNode: %s accepted the claim; vouching it into the cadre', target.peerId);
       // The wrapper queues the write for re-replication: a phone claiming its first
       // always-on node has no control connection yet, so the insert commits local-only.
+      // NOTE: accepted tradeoff — the node's own signed record is not carried in the
+      // acknowledgement and written with this vouch: it would be signed before the node
+      // restarts, so its addresses may not be the restarted node's (a new relay reservation),
+      // and the write-while-alone drain re-sends only rows whose `Sig` is null
+      // (drainPendingPeerWrites, reconstructAuthoredMembership), so a vouch carrying it would
+      // never reach this cadre's other members. The node publishes its record once it has
+      // restarted. Revisit if the drain ever re-sends signed rows.
       await this.vouchPeer(target.peerId, target.multiaddrs, sign);
     });
-    this.retainDialTarget(target.peerId, target.multiaddrs, 'claimNode');
+    this.retainDialTarget(target.peerId, dialAddrs, 'claimNode');
     void this.reconcileControlCohort().catch((error) =>
       log('claimNode: reconcile kick after claiming %s failed: %o', target.peerId, error));
+    void this.redialClaimedNode(target.peerId).catch((error) =>
+      log('claimNode: redialing %s while it restarts failed: %o', target.peerId, error));
+  }
+
+  /**
+   * `addrs` with the address this node's open connection to `peerId` was dialed on moved to
+   * the front, when it is one of them; `addrs` unchanged otherwise. Compared without a
+   * trailing `/p2p/<peerId>`, which a QR code's address may or may not carry ({@link addrKey}).
+   */
+  private connectedAddrFirst(peerId: string, addrs: string[]): string[] {
+    const controlNode = this.controlNode;
+    if (!controlNode) {
+      return addrs;
+    }
+    const remote = peerIdFromString(peerId);
+    const connected = new Set(controlNode.getConnections(remote).map((c) => addrKey(c.remoteAddr.toString(), remote)));
+    const index = addrs.findIndex((addr) => connected.has(addrKey(addr, remote)));
+    return index <= 0 ? addrs : [addrs[index], ...addrs.slice(0, index), ...addrs.slice(index + 1)];
+  }
+
+  /**
+   * Retry a node this node has just claimed ({@link claimNode}) once every
+   * {@link CLAIM_RESTART_REDIAL_STEP_MS} for {@link CONTROL_COHORT_REDIAL_MS} after it accepted.
+   * The node restarts into this party right after it acknowledges, and while it does, a
+   * reconcile pass's dial either fails or opens a connection the restarting node closes at
+   * once. The first failure puts the pass's next redial 15 s out ({@link armReconcileWake}),
+   * and an owner that cannot be dialed has no other way back to the node.
+   *
+   * Each step dials once from the retained dial target, unless a connection to the node is
+   * open: the one the claim used until the restart closes it, or one to the restarted node
+   * that has not identified yet. A dial that connects does not end the loop, because the
+   * restarting node may still close it. The loop ends once the node has identified as serving
+   * this party's control database ({@link identifiedControlPeers}, which the placeholder node
+   * it ran before the claim never joins), at the window's end, when this node stops, or when
+   * the target is forgotten ({@link removePeer}). Steps run one after another, so a dial
+   * finishes on its own budget first. The redial streak is left alone: the ladder carries on
+   * after the window. One loop per peer: a repeated claim while one runs starts none.
+   */
+  private async redialClaimedNode(peerId: string): Promise<void> {
+    if (this.claimRedialPeers.has(peerId)) {
+      return;
+    }
+    this.claimRedialPeers.add(peerId);
+    try {
+      const endsAt = Date.now() + CONTROL_COHORT_REDIAL_MS;
+      while (Date.now() < endsAt && await this.redialClaimedNodeStep(peerId)) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, CLAIM_RESTART_REDIAL_STEP_MS);
+          // Node-only: a stop mid-window must not keep the event loop alive for the step.
+          (timer as { unref?: () => void }).unref?.();
+        });
+      }
+    } finally {
+      this.claimRedialPeers.delete(peerId);
+    }
+  }
+
+  /** One step of {@link redialClaimedNode}; false ends the loop. */
+  private async redialClaimedNodeStep(peerId: string): Promise<boolean> {
+    const controlNode = this.controlNode;
+    const target = this.bootstrapPeerStore?.all().get(peerId);
+    if (!this._running || !controlNode || !target || this.identifiedControlPeers.has(peerId)) {
+      return false;
+    }
+    if (controlNode.getConnections(peerIdFromString(peerId)).length === 0) {
+      await this.dialBootstrapPeer(peerId, target.addrs, 'claimNode(redial)');
+    }
+    return true;
   }
 
   /**

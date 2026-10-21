@@ -58,6 +58,14 @@ export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 120_000;
 export const CONTROL_COHORT_REDIAL_MS = 15_000;
 
 /**
+ * How often an owner retries a node it has just claimed while that node restarts into the
+ * owner's party (ms; `CadreNode.claimNode`). A poll step, not a deadline: the retries run for
+ * {@link CONTROL_COHORT_REDIAL_MS} after the node accepts the claim, the delay of the reconcile
+ * pass's first redial, which would otherwise be the owner's next dial of the node.
+ */
+export const CLAIM_RESTART_REDIAL_STEP_MS = 1_000;
+
+/**
  * Default cap on the number of **non-backbone** members a single reconcile pass
  * proactively dials. Backbone (always-on) members are always dialed and do NOT
  * count against this cap.

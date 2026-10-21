@@ -190,9 +190,10 @@ function lastAddressedPeerId(parsed: Multiaddr): string | null {
  * that id is the address's FIRST `/p2p/` component (`dedupe-addresses.js`), so a
  * plain address round-trips without its suffix while a relayed one — whose first
  * `/p2p/` names the relay — keeps it. Comparing and de-duplicating on this
- * suffix-stripped form matches either shape.
+ * suffix-stripped form matches either shape. `CadreNode.claimNode` compares a QR
+ * code's addresses with a connection's remote address on it for the same reason.
  */
-function addrKey(addr: string, peerId: PeerId): string {
+export function addrKey(addr: string, peerId: PeerId): string {
   const suffix = `/p2p/${peerId.toString()}`;
   return addr.endsWith(suffix) ? addr.slice(0, -suffix.length) : addr;
 }
