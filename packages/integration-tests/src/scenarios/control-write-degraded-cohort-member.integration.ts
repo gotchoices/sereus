@@ -33,7 +33,11 @@
  *    round plus three cancel rounds). Measured 2026-10-01: a remove 84.4 s, and
  *    an authorize 168.9 s because it queued behind a background control write
  *    that spent its own 84 s first. Naming
- *    `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`.
+ *    `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`;
+ *  - answers the pend, then never answers → the same named failure ~189 s after
+ *    the member goes silent (three commit attempts of two rounds each, then
+ *    three cancel rounds; measured 189.3–189.5 s on 2026-10-21), and the next
+ *    write after the member returns commits in ~0.5–1.5 s.
  *
  * Control writes run one at a time under the node's write lock, so while a
  * member stalls each failing write holds every other control write on the node
@@ -85,12 +89,13 @@
  * never-answer hold), so everything else about the node stays honest. The swap
  * also aborts the cluster streams opened to the node before it (see
  * `abortPreSwapStreams`), so the member degrades from the moment of the swap
- * and every write here fails in its pend.
+ * and the write under test fails in its pend.
  *
- * A member that answers a write's pend and goes silent before its commit is NOT
- * covered here yet: the commit and its cancel both miss the unanimity bar, and
- * the writer keeps the cancel owed and re-sends it until it lands (Optimystic
- * 1.14.0). The case is `implement/degraded-cohort-covers-a-member-silent-after-the-pend`.
+ * One case instead lets the member answer the write's pend and silences it on
+ * the commit (`silenceAfterPend`). The commit and its cancel then both miss the
+ * unanimity bar, the writer keeps the cancel owed and re-sends it until it lands
+ * (Optimystic 1.14.0), and the case asserts that the next write commits once the
+ * member returns.
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
@@ -101,6 +106,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Stream, Connection } from '@libp2p/interface';
 import type { Libp2p } from 'libp2p';
 import { resolveLinkDeadlines } from '@optimystic/db-p2p';
+import type { ClusterRequest, ClusterService } from '@optimystic/db-p2p';
 import {
 	CadreNode, DECLARED_LINK_ROUND_TRIP_MS, isRetriableControlWriteFailure, optimysticDialLimits, signPeerRecord, ed25519KeyPairFromLibp2p
 } from '@serfab/cadre-core';
@@ -130,6 +136,8 @@ const log = debug('sereus:integration:degraded-cohort');
 //                                      write queued behind a failing background one
 //   recovery after a failed write .... ~0.7–1.8 s
 //   transient-reset absorb ........... ~0.9–1.6 s (commits on attempt 3)
+//   member silent after the pend ..... ~189 s from the silence to the failure,
+//                                      then ~0.5–1.5 s for the next write (2026-10-21)
 //
 // The absorb row was ~0.7 s on attempt 2 when this table was first measured
 // (2026-08-12). Re-measured 2026-09-17 over three isolated rounds
@@ -179,6 +187,14 @@ const log = debug('sereus:integration:degraded-cohort');
 //    closed wedge below. It is a finding outside a degraded window, or when the
 //    named rival is still named after the delayed case's writes report
 //    `error: none`.
+//  - C's background `[self-record-update]` given up during the silent-after-pend
+//    case with `pending conflict: block(s) held by unresolved rival action(s)
+//    tx:<id>`, the rival being A's write under test — not a failure. That write's
+//    pending records stand on every member from its pend until its owed cancel
+//    lands, so C's own publish to the same table is refused meanwhile. Seen twice
+//    in the one whole-file run of 2026-10-21, labelled "inside a deliberately
+//    degraded window". It is a finding outside a degraded window, or when the
+//    case's write after C returns fails with it.
 //
 // CLOSED 2026-09-17 (closing): a control write abandoned to a DEAD pending record,
 // `SyncRetryExhaustedError: … pending conflict: block(s) held by unresolved rival
@@ -294,6 +310,35 @@ const FAILURE_CEILING_MS = STALLED_SETTLE_MS + STALLED_ROUND_MS;
  * than as a hang. 210 s at the default declared link.
  */
 const STALLED_WRITE_TIMEOUT_MS = FAILURE_CEILING_MS + STALLED_ROUND_MS;
+/**
+ * Attempts Optimystic's transaction coordinator makes at one collection's commit when an attempt
+ * throws (a literal in `TransactionCoordinator.commitCollection`, db-core; restated for the reason
+ * on {@link CANCEL_BUDGET_MS}). The coordinator commits every control write that spans several
+ * collections, as `authorizePeer` does (the `CadrePeer` table and its unique index).
+ */
+const TRANSACTION_COMMIT_ATTEMPTS = 3;
+/**
+ * A control write whose COMMIT meets the never-answering member, the member having answered its
+ * pend, measured from the moment the member goes silent: each commit attempt is two rounds (the
+ * one-round commit, then the tail commit), and then the cancel runs {@link STALLED_CANCEL_ROUNDS}
+ * rounds. 189 s at the default declared link; measured 189.4 s on 2026-10-21.
+ */
+const SILENT_AFTER_PEND_FAILURE_MS = (2 * TRANSACTION_COMMIT_ATTEMPTS + STALLED_CANCEL_ROUNDS) * STALLED_ROUND_MS;
+/**
+ * Assertion bounds for that write, from the moment the member goes silent, so the write lock and
+ * the pend before it are outside them. Floor: a commit that met the silent member cannot fail
+ * before one round of its response deadlines has run out. Ceiling: one round of headroom, as on
+ * {@link FAILURE_CEILING_MS}.
+ */
+const SILENT_AFTER_PEND_FLOOR_MS = STALLED_ROUND_MS;
+const SILENT_AFTER_PEND_CEILING_MS = SILENT_AFTER_PEND_FAILURE_MS + STALLED_ROUND_MS;
+/**
+ * The hang deadline for that write, from the call. One round above the ceiling, which also covers
+ * the wait for the write lock: the member answers until this write's commit, so a control write
+ * ahead of it cannot stall against the member, but it can be slow (one measured run waited 10.5 s
+ * behind a background self-record write whose cancel took one response deadline).
+ */
+const SILENT_AFTER_PEND_WRITE_TIMEOUT_MS = SILENT_AFTER_PEND_CEILING_MS + STALLED_ROUND_MS;
 /**
  * Ceiling for the 2 s-delayed COMMIT case. NOTE: sized at ~1.8× a ~55 s measurement; the case
  * takes ~8 s now and the bound is left loose for the reason on {@link DELAYED_WRITE_TIMEOUT_MS}.
@@ -644,6 +689,77 @@ async function degradeClusterHandler(node: CadreNode, partyId: string, delayMs: 
  */
 function observeClusterHandler(node: CadreNode, partyId: string): Promise<DegradedHandle> {
 	return degradeClusterHandler(node, partyId, 0, []);
+}
+
+interface SilentAfterPendHandle extends DegradedHandle {
+	/** The action whose commit found the member silent, and when; undefined while it still answers. */
+	silencedAt(): { actionId: string; at: number } | undefined;
+}
+
+/** The action ids `request` names in operations of `kind`. */
+function actionIdsOf(request: ClusterRequest, kind: 'pend' | 'commit'): string[] {
+	return request.record.message.operations.flatMap((operation) => {
+		if (kind === 'pend') return 'pend' in operation ? [operation.pend.actionId] : [];
+		return 'commit' in operation ? [operation.commit.actionId] : [];
+	});
+}
+
+/**
+ * Make `node` a member that answers a write's pend and then goes silent: its cluster service
+ * answers every request until the first one carrying a COMMIT for an action whose pend contained
+ * `marker` (a row value only the write under test carries), then holds that request and every later
+ * one unanswered until `restore()`. Holding the cancels too is what makes them miss the bar, which
+ * is the point.
+ *
+ * Replaces the service's `processOperation` rather than the protocol handler
+ * {@link degradeClusterHandler} swaps, because the decision needs the decoded request and that is
+ * where it is first visible. It also needs no {@link abortPreSwapStreams}: the method is looked up
+ * per request, so a stream prepared before the swap is held like any other. A held request is
+ * never applied; `restore()` makes it throw, which the service answers by aborting its stream.
+ */
+function silenceAfterPend(node: CadreNode, marker: string): SilentAfterPendHandle {
+	const controlNode = node.getControlNode();
+	if (!controlNode) throw new Error('silenceAfterPend: node has no started control node');
+	const service = (controlNode as unknown as { services: { cluster: ClusterService } }).services.cluster;
+	const original = service.processOperation.bind(service);
+	const teardown = new AbortController();
+	const pendsNamingMarker = new Set<string>();
+	let silenced: { actionId: string; at: number } | undefined;
+	let intercepted = 0;
+
+	service.processOperation = async (request, remotePeer) => {
+		intercepted++;
+		if (silenced === undefined) {
+			const actionId = actionIdsOf(request, 'commit').find((id) => pendsNamingMarker.has(id));
+			if (actionId !== undefined) {
+				silenced = { actionId, at: Date.now() };
+				log('silence: member goes silent on the commit of %s', actionId);
+			}
+		}
+		if (silenced !== undefined) {
+			await untilAbort(teardown.signal);
+			throw new Error('held by the silent cluster member until restore');
+		}
+		if (JSON.stringify(request.record.message).includes(marker)) {
+			for (const actionId of actionIdsOf(request, 'pend')) pendsNamingMarker.add(actionId);
+		}
+		return await original(request, remotePeer);
+	};
+
+	let restored = false;
+	return {
+		restore: (): Promise<void> => {
+			if (!restored) {
+				restored = true;
+				service.processOperation = original;
+				teardown.abort();
+			}
+			return Promise.resolve();
+		},
+		interceptedStreams: () => intercepted,
+		silencedAt: () => silenced,
+		degradesCohort: true
+	};
 }
 
 interface ResetHandle extends DegradedHandle {
@@ -1214,6 +1330,49 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// …and must have rolled back: the victim is still a member.
 		expect(await within('isMember (post-failed-remove)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
 	}, STALLED_WRITE_TIMEOUT_MS + 120_000);
+
+	it('fails in its commit when a member goes silent after answering the pend, and the next write commits once it returns', async () => {
+		const target = await randomPeerId();
+		const baseline = forced!.callCount();
+		const silent = silenceAfterPend(C, target);
+		activeDegradation = silent;
+		// Record-only, like the healthy case (see printRetryDecisions).
+		const retryLog = captureControlRetryLogs();
+		try {
+			const t0 = Date.now();
+			const outcome = await timedSettle(`authorizePeer(${target.slice(-8)}) silent-after-pend`, SILENT_AFTER_PEND_WRITE_TIMEOUT_MS,
+				() => A.authorizePeer(target));
+			const settledAt = Date.now();
+			const silenced = silent.silencedAt();
+			const silentFor = silenced === undefined ? 'C never went silent' : `C silent from ${silenced.at - t0}ms, failed ${settledAt - silenced.at}ms later`;
+			console.log(`[measured] authorize with a member silent after the pend: ${outcome.elapsedMs}ms (${silentFor}), error: ${outcome.error === null ? 'none (COMMITTED)' : errorChainText(outcome.error)}`);
+			printRetryDecisions('silent-after-pend', retryLog);
+
+			// Without this the write failed in its pend, which is the stalled case's path, not this one.
+			expect(silenced, 'C never saw a commit for the write it answered the pend of').toBeDefined();
+			expect(outcome.error, 'write whose commit met a silent cohort member unexpectedly committed').not.toBeNull();
+			expect(errorChainText(outcome.error)).toMatch(/Failed to get super-majority: \d+\/3 approvals \(needed 3, 0 rejections\)/);
+			expect(settledAt - silenced!.at).toBeGreaterThanOrEqual(SILENT_AFTER_PEND_FLOOR_MS);
+			expect(settledAt - silenced!.at).toBeLessThanOrEqual(SILENT_AFTER_PEND_CEILING_MS);
+			expectThreePeerCohortConsulted(baseline);
+		} finally {
+			retryLog.restore();
+			await releaseDegradation();
+		}
+		// No member signed the commit, so nothing of it landed, locally included.
+		expect(await within('isMember (post-failed-commit)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(false);
+
+		// The failed write's pending records still stand on every member: its cancel missed the bar
+		// too. A's transactor keeps that cancel owed and re-sends it before its next pend of those
+		// blocks (Optimystic 1.14.0). Without the re-send, every member still holding the record
+		// votes `held` and this write fails with `pending conflict: block(s) held by unresolved
+		// rival action(s) <the failed write's action>`.
+		const retried = await timedSettle(`authorizePeer(${target.slice(-8)}) after the member returns`, WRITE_TIMEOUT_MS,
+			() => A.authorizePeer(target));
+		console.log(`[measured] the same authorize after the silent member returns: ${retried.elapsedMs}ms, error: ${retried.error === null ? 'none' : errorChainText(retried.error)}`);
+		expect(retried.error).toBeNull();
+		expect(await within('isMember (post-return authorize)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
+	}, SILENT_AFTER_PEND_WRITE_TIMEOUT_MS + 120_000);
 
 	it('absorbs an injected transient stream reset: the write commits on a retry attempt', async () => {
 		// The case the retry was BUILT for, and the first observation of its
