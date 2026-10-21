@@ -4,7 +4,7 @@ files: ../optimystic/packages/db-p2p/src/libp2p-node-base.ts (`dcutr: dcutr()` ~
 ----
 # Optimystic: let an embedder leave out hole punching on a node that cannot be dialled
 
-**Blocked on a dependency outside this repo.** Unblocks when Optimystic lets the node's builder leave out libp2p's `dcutr` service (or leaves it out itself on a node with no listen addresses), in a release Sereus can adopt. Split from `complete/fret-maintenance-probes-peers-off-its-ring` (its item 3), which said to file it if `message-cost-accounting` still showed the cost once FRET stopped probing foreign peers. It does.
+**Blocked on a dependency outside this repo.** Unblocks when Optimystic lets the node's builder leave out libp2p's `dcutr` service (or leaves it out itself on a node with no listen addresses), in a release Sereus can adopt. Split from `complete/fret-maintenance-probes-peers-off-its-ring` (its item 3), which said to file it if `message-cost-accounting` still showed the cost once FRET stopped probing foreign peers. It does. Upstream ticket: `../optimystic/tickets/backlog/feat-a-node-without-listen-addresses-leaves-out-hole-punching` (filed 2026-10-21, backlog because of its tradeoff); no GitHub issue.
 
 ## What happens
 
