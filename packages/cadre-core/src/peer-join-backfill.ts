@@ -153,9 +153,11 @@ import { peerJoinPushBudget } from './link-budget.js';
 //
 // A peer is marked caught up (`done`) once a run finishes with no push that threw, the gate
 // admitted it and the store is listable. A refusal does not hold that back, since it is
-// remembered per block. `peer:identify` churn for a caught-up peer is dropped before any work.
-// {@link PeerJoinBackfill.forceCatchUpPeer} runs past `done`, but still skips what the memo
-// and the proofs say the peer holds.
+// remembered per block. It stays caught up until its last connection closes
+// (`peer:disconnect`): `peer:identify` churn for a connected, caught-up peer is dropped before
+// any work, and a reconnect re-runs past the debounce, pushing only what the memo and the
+// proofs do not cover. {@link PeerJoinBackfill.forceCatchUpPeer} runs past `done` too, with the
+// same skips.
 //
 // NOTE: the protocol check happens once — either when a connection's `peer:identify` fires,
 // or, for a peer already connected when this instance starts, when `scheduleConnectedPeers()`
@@ -343,8 +345,9 @@ function emptyResult(): PeerJoinBackfillResult {
  * peer's memo on a full disconnect.
  *
  * NOTE: size is at most (blocks in the store, capped by `maxBlocks`) × (peers ever identified this
- * runtime) small entries. If a strand's peer count grows into the hundreds (open strands), drop a
- * peer's memo on `peer:disconnect`.
+ * runtime) small entries. If a strand's peer count grows into the hundreds (open strands), bound it
+ * some other way than dropping a peer's memo on `peer:disconnect`: the memo is what keeps a
+ * reconnect's re-run cheap, and without it every reconnect re-pushes the whole store.
  */
 interface PeerMemo {
   /** blockId → highest revision this peer accepted from this node. */
@@ -419,10 +422,15 @@ export class PeerJoinBackfill {
   private started = false;
   private stopped = false;
   /**
-   * Peers caught up this runtime (never rescheduled until the runtime is rebuilt; only
-   * {@link forceCatchUpPeer} runs for one again).
+   * Peers caught up since their current connection opened. Cleared for a peer when its last
+   * connection closes, so a reconnect re-runs; {@link forceCatchUpPeer} runs past it.
    */
   private readonly done = new Set<string>();
+  /**
+   * Peers that disconnected while their run was in flight, so that run does not mark them
+   * {@link done} after the disconnect cleared it. Cleared when the run ends.
+   */
+  private readonly disconnectedInFlight = new Set<string>();
   /** Per-peer, per-block verdicts from push replies; see {@link PeerMemo}. */
   private readonly memos = new Map<string, PeerMemo>();
   /**
@@ -457,6 +465,7 @@ export class PeerJoinBackfill {
   /** Peers already reported on `console.warn`; reset when a run finally lands cleanly. */
   private readonly warned = new Set<string>();
   private readonly onPeerIdentify: (evt: CustomEvent<IdentifyResult>) => void;
+  private readonly onPeerDisconnect: (evt: CustomEvent<PeerId>) => void;
   private loggedNoListBlockIds = false;
 
   constructor(private readonly deps: PeerJoinBackfillDeps, config?: PeerJoinBackfillConfig) {
@@ -469,18 +478,23 @@ export class PeerJoinBackfill {
         this.schedulePeer(peerId);
       }
     };
+    this.onPeerDisconnect = (evt) => {
+      this.forgetCaughtUp(evt.detail.toString());
+    };
   }
 
   /**
    * Subscribe to `peer:identify` AND schedule a catch-up for already-connected peers whose
    * stored protocols already name this network's block-transfer protocol — a peer that does
-   * not speak it (a bare circuit relay, a bootstrap node) is never scheduled at all. See
-   * {@link speaksBlockTransfer} and the module comment.
+   * not speak it (a bare circuit relay, a bootstrap node) is never scheduled at all. Also
+   * subscribes to `peer:disconnect`, so a peer caught up before it went away is run again on
+   * its return. See {@link speaksBlockTransfer} and the module comment.
    */
   start(): void {
     if (this.started || this.stopped || !this.config.enabled) return;
     this.started = true;
     this.deps.libp2p.addEventListener('peer:identify', this.onPeerIdentify);
+    this.deps.libp2p.addEventListener('peer:disconnect', this.onPeerDisconnect);
     // A runtime rebuilt over live connections (resumeStrand) never sees their peer:identify —
     // it already fired before this instance existed, but its result is persisted in the peer
     // store — so walk what is already connected once.
@@ -495,6 +509,7 @@ export class PeerJoinBackfill {
     this.stopped = true;
     if (this.started) {
       this.deps.libp2p.removeEventListener('peer:identify', this.onPeerIdentify);
+      this.deps.libp2p.removeEventListener('peer:disconnect', this.onPeerDisconnect);
     }
     for (const timer of this.timers.values()) {
       clearTimeout(timer);
@@ -503,6 +518,28 @@ export class PeerJoinBackfill {
     this.rearmAfterFlight.clear();
     this.retryAfter.clear();
     log('[%s] stopped', this.deps.label);
+  }
+
+  /**
+   * A peer's last connection closed: it is no longer caught up, so its next `peer:identify`
+   * re-runs. Only `done` is cleared. The memo stays (it keeps the re-run to what moved),
+   * `contacted` stays (a link flapping inside one settle window costs one run), and the
+   * backoff state stays (clearing it re-dials an unreachable peer on every reconnect; see the
+   * module comment's retry paragraph).
+   *
+   * NOTE: accepted tradeoff — when the returning peer wrote while away with a cohort that named
+   * this node, its re-run and its under-replication drain both push those blocks here, a
+   * duplicate push per reconnect. Weighed against leaving a returning peer's missed writes to
+   * read repair; the receiver's `saveReplicatedBlock` is idempotent, so it costs bytes only.
+   * Revisit when Optimystic lets an embedder report what a peer holds
+   * (`blocked/optimystic-embedder-cannot-report-block-holders`), or if a measurement shows
+   * reconnect re-runs dominating push traffic.
+   */
+  private forgetCaughtUp(key: string): void {
+    this.done.delete(key);
+    if (this.inFlight.has(key)) {
+      this.disconnectedInFlight.add(key);
+    }
   }
 
   /**
@@ -624,6 +661,7 @@ export class PeerJoinBackfill {
       return await run;
     } finally {
       this.inFlight.delete(key);
+      this.disconnectedInFlight.delete(key);
       // Replay a schedule that arrived mid-run. `schedulePeer` re-checks `done`, so a run
       // that finished clean re-arms nothing; a denied or failed one gets its retry.
       if (this.rearmAfterFlight.delete(key)) {
@@ -644,7 +682,11 @@ export class PeerJoinBackfill {
       // realistically exceed maxBlocks, leave a capped run out of `done` so each identify run
       // sends the next `maxBlocks`.
       if (clean && !this.stopped) {
-        this.done.add(key);
+        // A disconnect mid-run cleared `done` already; re-adding it would drop the reconnect.
+        // Not judged by `isConnected`: hand-driven runs target peers with no connection.
+        if (!this.disconnectedInFlight.has(key)) {
+          this.done.add(key);
+        }
         this.failures.delete(key);
         this.retryAfter.delete(key);
         this.warned.delete(key);
