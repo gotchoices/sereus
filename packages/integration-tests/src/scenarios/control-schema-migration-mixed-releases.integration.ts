@@ -23,8 +23,8 @@
  * start committed the catalog collection a second time beside A's (docs/architecture.md → "Every
  * machine migrates its own catalog"). B's restarts hydrate B's lineage, so step 4 starts rather
  * than meeting the `newer-release` refusal `control-store-migration.spec.ts` pins for a lineage a
- * newer release migrated. Whether a joiner should adopt the party's lineage instead is
- * blocked/decide-control-catalog-lineage-per-machine; once it does, step 4 becomes that refusal.
+ * newer release migrated. One lineage per machine is the design
+ * (decide-control-catalog-lineage-per-machine).
  *
  * The row with a value in the new column is a `ValidationKey`, written by hand: both releases run
  * this build's `ControlDatabase`, whose writers list the columns they know, so no writer can set a

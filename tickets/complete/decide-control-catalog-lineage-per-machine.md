@@ -35,3 +35,7 @@ Option 1 is what runs. Nothing breaks: the scenario pins it, and the docs say so
 ## Proposed text
 
 For option 1, `docs/architecture.md` → "Every machine migrates its own catalog" stands as written and the question sentence naming this ticket is replaced by: "This is by design: a catalog is the description of the tables a machine runs, and every machine reaches the same description by running the same version's statements." The `newer-release` reason stays, as the guard the upstream module needs against applying an older declaration over a newer lineage.
+
+## Decision (2026-10-21)
+
+Option 1, chosen by the maintainer. `docs/architecture.md` → "Every machine migrates its own catalog" now states one lineage per machine as the design and keeps `newer-release` as the downgrade guard; the comment in `control-schema-migration-mixed-releases.integration.ts` says the same. No code changed.
