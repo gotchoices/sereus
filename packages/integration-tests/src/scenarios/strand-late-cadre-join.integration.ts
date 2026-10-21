@@ -12,7 +12,7 @@
  * the newcomer's enrollment, so its rows straddle a seam between two different delivery
  * mechanisms. Rows written before the newcomer's strand node connects arrive by the
  * peer-join block catch-up (`cadre-core/src/peer-join-backfill.ts`), a whole-store push
- * that enumerates the store ONCE and then marks the peer done for that runtime. Rows
+ * that enumerates the store ONCE and then marks the peer done until it disconnects. Rows
  * written after it connects arrive by ordinary cohort replication instead. A row committed
  * after the catch-up's enumeration passed its id, but before the peer was marked done, is
  * never pushed — replication has to cover it. If the two halves do not meet cleanly, that

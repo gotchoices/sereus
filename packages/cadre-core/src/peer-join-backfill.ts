@@ -342,7 +342,7 @@ function emptyResult(): PeerJoinBackfillResult {
  * for the rest of this runtime; its reads are served by fetch. Nothing in Sereus identifies a
  * store apart from its peer id. If a machine can rejoin a strand with an emptied store while other
  * members' runtimes stay up, and must hold blocks physically before its first read, clear the
- * peer's memo on a full disconnect.
+ * peer's memo on a full disconnect; that re-pushes the whole store on every reconnect (next NOTE).
  *
  * NOTE: size is at most (blocks in the store, capped by `maxBlocks`) × (peers ever identified this
  * runtime) small entries. If a strand's peer count grows into the hundreds (open strands), bound it
