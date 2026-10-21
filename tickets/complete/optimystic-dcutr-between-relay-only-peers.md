@@ -29,3 +29,7 @@ Each strand join pays about 9 extra relayed exchanges per relay-only pair. Nothi
 ## Reversibility
 
 An option whose absence is today's behaviour. Fully reversible.
+
+## Resolution (2026-10-21)
+
+Optimystic took the alternative: a node whose advertised addresses include none another machine can dial directly is built without `dcutr` on its own (`NodeOptions.holePunching` forces it either way). No Sereus change; it arrives with the Optimystic release after 1.17.0.

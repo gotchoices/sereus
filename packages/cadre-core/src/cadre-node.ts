@@ -2215,6 +2215,7 @@ export class CadreNode implements SAppIdLookup {
       // under — derived from the same networkName binding the node options
       // used, never re-spelled here.
       protocolPrefix: `/optimystic/${networkName}`,
+      reportBlockHeld: (this.controlNode as Libp2pNodeWithRepo).reportBlockHeld,
       // The membership snapshot, not {@link isControlNetworkMember}: that predicate admits
       // everyone while the snapshot is empty and admits bootstrap/relay peers outright, and
       // neither may receive the control store.
@@ -2469,8 +2470,9 @@ export class CadreNode implements SAppIdLookup {
       // With the catch-up disabled the reaction stays on.
       //
       // NOTE: no ring shifts and no reclaimable shed blocks on this node either, unused today.
-      // If storage nodes ever need them, report the catch-up's accepted pushes to the rebalance
-      // monitor instead (`blocked/optimystic-embedder-cannot-report-block-holders`).
+      // If storage nodes ever need them, turn the reaction back on: the catch-up already reports
+      // its accepted pushes to the rebalance monitor (`reportBlockHeld`); measure whether the
+      // growth arm still re-sends.
       ...(this.controlBackfillStorage() && { rebalance: { enabled: false } }),
       ...(identityKey && { privateKey: identityKey }),
       // With `network.relayAddrs` set, built with libp2p's relay discovery off (given a

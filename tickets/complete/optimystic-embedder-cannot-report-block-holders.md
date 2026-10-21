@@ -48,3 +48,7 @@ Sereus would call it from `PeerJoinBackfill`'s reply handling for each block the
 ## If nothing is done
 
 Each join costs one extra full-block request per block its peer wrote alone before the join (42 and 91 in the runs above), starting about 7 s after the catch-up finished. Correctness is unaffected; the cost is traffic and, over a relay, time on a shared connection. Reversible: the proposal adds an API and one call site.
+
+## Resolution (2026-10-21)
+
+Optimystic added `node.reportBlockHeld(blockId, rev, peerId)` as proposed (next release after 1.17.0). `PeerJoinBackfill` takes it as an optional `reportBlockHeld` dependency and reports each block a push reply accepted, at the revision pushed, logging and continuing on a rejection; both node builders pass the node's attachment (`Libp2pNodeWithRepo.reportBlockHeld`). On Optimystic 1.17.0 the attachment is absent and nothing is reported. Unit tests in `peer-join-backfill.spec.ts`; `message-cost-accounting` measured on the linked Optimystic (`94cd25ea`): strand settle 82 → 31 app streams, the 42 drain re-sends gone; cadre and invite idle minutes 32 and 28 → 0 app streams. The rebalance reaction stays off where the catch-up runs. The `@optimystic/*` floor is raised when the release is adopted.

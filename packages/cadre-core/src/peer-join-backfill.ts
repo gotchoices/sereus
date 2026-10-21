@@ -3,6 +3,7 @@ import type { IdentifyResult, Libp2p, PeerId } from '@libp2p/interface';
 import type { ActionId, ActionRev, IPeerNetwork } from '@optimystic/db-core';
 import { BlockTransferClient, buildBlockTransferProtocol, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 import { peerJoinPushBudget } from './link-budget.js';
+import type { Libp2pNodeWithRepo } from './types.js';
 
 // Peer-join whole-store block catch-up, shared by the STRAND networks and the CONTROL
 // network. On a new peer's `peer:identify` result — libp2p's identify protocol runs once per
@@ -142,9 +143,8 @@ import { peerJoinPushBudget } from './link-budget.js';
 //
 // NOTE: accepted tradeoff — a signer that crashed between signing and applying, or later lost its
 // store, is not re-sent that revision by this path; read repair covers its reads, as for any block
-// a cohort member lacks. Revisit if Optimystic exposes who holds what to embedders
-// (`blocked/optimystic-embedder-cannot-report-block-holders`) or a measurement shows pushes this
-// rule misses.
+// a cohort member lacks. Revisit if Optimystic tells embedders who holds what (it takes reports,
+// `reportBlockHeld`, but gives none) or a measurement shows pushes this rule misses.
 //
 // NOTE: the reply does not say why a block is missing, so a receiver's transient persist failure
 // is remembered as a refusal too and not retried this runtime; read repair covers that block's
@@ -291,6 +291,12 @@ export interface PeerJoinBackfillDeps {
    * see the module comment for why the strand no-gate argument does not carry over.
    */
   authorizePeer?: (peerId: string) => Promise<boolean>;
+  /**
+   * The node's `reportBlockHeld` ({@link Libp2pNodeWithRepo.reportBlockHeld}), told of each block a
+   * peer accepted so Optimystic's under-replication drain does not push the peer the same block
+   * again, one request per block. Absent = nothing reported, and the drain re-sends.
+   */
+  reportBlockHeld?: Libp2pNodeWithRepo['reportBlockHeld'];
   /**
    * Test seam: build the per-peer push client. Defaults to a real
    * `BlockTransferClient` over {@link peerNetwork} + {@link protocolPrefix}.
@@ -527,13 +533,10 @@ export class PeerJoinBackfill {
    * backoff state stays (clearing it re-dials an unreachable peer on every reconnect; see the
    * module comment's retry paragraph).
    *
-   * NOTE: accepted tradeoff — when the returning peer wrote while away with a cohort that named
-   * this node, its re-run and its under-replication drain both push those blocks here, a
-   * duplicate push per reconnect. Weighed against leaving a returning peer's missed writes to
-   * read repair; the receiver's `saveReplicatedBlock` is idempotent, so it costs bytes only.
-   * Revisit when Optimystic lets an embedder report what a peer holds
-   * (`blocked/optimystic-embedder-cannot-report-block-holders`), or if a measurement shows
-   * reconnect re-runs dominating push traffic.
+   * When the returning peer wrote while away with a cohort that named this node, its own
+   * re-run pushes those blocks here and reports them through `reportBlockHeld`, so its
+   * under-replication drain does not push them again. Revisit if a measurement shows reconnect
+   * re-runs dominating push traffic.
    */
   private forgetCaughtUp(key: string): void {
     this.done.delete(key);
@@ -771,6 +774,23 @@ export class PeerJoinBackfill {
   }
 
   /**
+   * Tell the node which blocks of one push reply the peer accepted, at the revision pushed.
+   * Best-effort: a failed report is logged and costs only the drain's duplicate push.
+   */
+  private async reportAccepted(key: string, revs: Readonly<Record<string, { rev: number }>>, ids: readonly string[], missing: ReadonlySet<string>): Promise<void> {
+    const report = this.deps.reportBlockHeld;
+    if (!report) return;
+    for (const id of ids) {
+      if (missing.has(id)) continue;
+      try {
+        await report(id, revs[id]!.rev, key);
+      } catch (error) {
+        log('[%s] reportBlockHeld for peer=%s block=%s failed: %s', this.deps.label, key, id, (error as Error).message);
+      }
+    }
+  }
+
+  /**
    * The actual copy. `clean` = the gate admitted the peer, the store is listable and no push
    * threw (a block the receiver refused is remembered per block instead, see {@link PeerMemo}).
    * `pushFailed` = at least one push THREW, which is the only non-clean outcome a retry can
@@ -834,6 +854,7 @@ export class PeerJoinBackfill {
         anyChunkDelivered = true;
         const missing = new Set(response.missing);
         recordReply(memo, meta, ids, missing);
+        await this.reportAccepted(key, meta, ids, missing);
         for (const id of ids) {
           if (missing.has(id)) {
             result.rejected.push(id);

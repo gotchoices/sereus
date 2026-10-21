@@ -48,6 +48,13 @@ export interface Libp2pNodeWithRepo extends Libp2p {
    * on it, and logs once and probes on its backstop alone when it is absent.
    */
   storageRepo?: { onAnyCollectionChange(listener: CollectionChangeListener): () => void };
+  /**
+   * Tells the node a peer holds a block at a revision or later (Optimystic's
+   * `OptimysticNodeAttachments.reportBlockHeld`), so its under-replication drain and rebalance
+   * monitor do not push that peer the same block again. Optional for the same reason as
+   * `keyNetwork`; the join catch-up (`peer-join-backfill.ts`) reports each block a peer accepted.
+   */
+  reportBlockHeld?: (blockId: string, rev: number, peerId: string) => Promise<void>;
 }
 
 /**

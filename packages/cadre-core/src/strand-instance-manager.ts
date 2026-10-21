@@ -880,9 +880,9 @@ export class StrandInstanceManager {
         //
         // NOTE: this also leaves the node at its bootstrap Arachnode ring (no ring shifts) and
         // never marks a shed block reclaimable; neither is used today. If storage nodes ever
-        // need ring shifts or storage reclamation, report the catch-up's accepted pushes to the
-        // rebalance monitor instead and drop this, which needs an Optimystic API for it
-        // (`blocked/optimystic-embedder-cannot-report-block-holders`).
+        // need ring shifts or storage reclamation, drop this: the catch-up already reports its
+        // accepted pushes to the rebalance monitor (`reportBlockHeld`); measure whether the
+        // growth arm still re-sends.
         ...(backfillArms && { rebalance: { enabled: false } }),
         ...(config.privateKey && { privateKey: config.privateKey }),
         // Built per runtime, not per launch: the adapter stops saving once the strand's
@@ -1029,7 +1029,8 @@ export class StrandInstanceManager {
             storage: strandStorage,
             // The same prefix the receiver registered its block-transfer handler
             // under — derived from networkName above, never re-spelled here.
-            protocolPrefix
+            protocolPrefix,
+            reportBlockHeld: node.reportBlockHeld
           }, {
             // Dial and response deadlines counted in link round trips, not fixed milliseconds:
             // a relayed dial costs a fixed number of exchanges, so a fixed budget has a link

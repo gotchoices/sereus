@@ -462,6 +462,29 @@ describe('PeerJoinBackfill', () => {
     });
   });
 
+  it('reports each accepted block to reportBlockHeld at the revision pushed, and no refused one', async () => {
+    // Without the report, Optimystic's under-replication drain pushes the peer every block this
+    // catch-up just delivered again, one request per block.
+    const reports: Array<[string, number, string]> = [];
+    const { backfill } = makeBackfill({ b1: committed('b1', 3), b2: committed('b2', 1) }, undefined, {
+      respond: (push) => ({ missing: push.ids.filter((id) => id === 'b2') }),
+      reportBlockHeld: async (blockId, rev, peerId) => { reports.push([blockId, rev, peerId]); }
+    });
+
+    await backfill.catchUpPeer(peer('p1'));
+    expect(reports).toEqual([['b1', 3, peer('p1').toString()]]);
+  });
+
+  it('keeps going when reportBlockHeld rejects: the push result is unchanged', async () => {
+    const { backfill } = makeBackfill({ b1: committed('b1'), b2: committed('b2') }, undefined, {
+      reportBlockHeld: async () => { throw new Error('ledger closed'); }
+    });
+
+    const result = await backfill.catchUpPeer(peer('p1'));
+    expect(result.accepted).toBe(2);
+    expect(result.rejected).toEqual([]);
+  });
+
   it('resolves (never rejects) when a push throws, and does not mark the peer done', async () => {
     let calls = 0;
     const { backfill, pushes } = makeBackfill(

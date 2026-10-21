@@ -115,7 +115,7 @@
  * (settle 73 app streams, idle 28). `cohort-join-catch-up-runs-once-per-node` turns the growth arm
  * off where the backfill runs. The drain re-sends in both cases come about 7 s after the backfill
  * delivered the same blocks (`under-replication-drain pass:done ... pushed=42`); the drain has no way
- * to hear of the backfill's pushes (`blocked/optimystic-embedder-cannot-report-block-holders`).
+ * to hear of the backfill's pushes (fixed by `optimystic-embedder-cannot-report-block-holders`, below).
  *
  * MEASURED_ON 2026-10-20, one run per column, before and after `cohort-join-catch-up-runs-once-per-node`
  * (sereus `b3437f7f`, same Optimystic link): a node that arms the backfill is built with Optimystic's
@@ -168,6 +168,21 @@
  * The cadre and invite rows equal `cohort-join-catch-up-runs-once-per-node`'s runs: the admit phase's
  * growth from 8 app streams (2026-10-20 block above) to 27 is Sereus's, from the joins changed later
  * that day, not this release.
+ *
+ * MEASURED_ON 2026-10-21, one run of all three cases, after `optimystic-embedder-cannot-report-block-holders`
+ * (the join catch-up reports each block the peer accepted through the node's `reportBlockHeld`;
+ * `@optimystic/*` linked at `94cd25ea`, which also leaves `dcutr` out of a node with no directly
+ * dialable address):
+ *
+ *   strand               B addStrand 195 ms, 7 app, 54 gets      settle 15 s: 31 app (was 82), 41 gets
+ *                                                                idle 60 s: 0 app, 30 upkeep, 0 gets
+ *   cadre (admitMember)  join 651 ms, 27 app streams, 54 gets   settle 15 s: 16 app (was 83), 23 gets
+ *                                                                idle 60 s: 0 app (was 32), 0 gets
+ *   invite (redeem)      join 767 ms, 51 app streams, 71 gets   settle 15 s: 7 app (was 74), 0 gets
+ *                                                                idle 60 s: 0 app (was 28), 0 gets
+ *
+ * The strand settle window's 42 A->B drain re-sends are gone (2 block-transfer streams in B addStrand
+ * remain, the backfill's push), and the cadre cases' idle minutes open no Optimystic or Sereus stream.
  */
 
 import { describe, it } from 'vitest'
