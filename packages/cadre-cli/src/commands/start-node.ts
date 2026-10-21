@@ -15,6 +15,7 @@ import {
   type CadreRemoval,
   type EnrolledMachineStore,
   type NodeClaimRecord,
+  type SeedDialTarget,
   type SeedTrustPolicy,
   type StrandNetworkStateStore,
   type TrustedOwnerStore,
@@ -142,26 +143,42 @@ export function claimConfigFor(
  * The files the placeholder party created while the node waited (`trusted-owners.unclaimed.json`
  * and the like) are left where they are; nothing opens them again.
  *
- * NOTE: the claim seed's peers were merged into the placeholder party's stores, so the restarted
- * node holds no dial target for its owner; it waits for the owner to dial in, which the owner's
- * `claimNode` retained the node's addresses for. If a claimed node ever needs to dial first (an
- * owner reachable only through a relay the node must initiate to), re-apply the claim seed
- * after the restart; `seed:applied` does not carry it today.
+ * `dialTargets` are the claim seed's preferred peers (`seed:applied`), which the placeholder node
+ * retained in the placeholder party's store; the restart carries them into the claimed party's,
+ * so the restarted node dials its owner from its first reconcile pass (cadre-core's cold-start
+ * dial, which runs while the control database has no siblings). The start from `claim.json`
+ * passes none: the restart already wrote them to the claimed party's store.
  */
 export async function buildClaimedNode(
   config: ResolvedConfig,
   storage: NodeStorage,
   claim: NodeClaimRecord,
   claimConfig: CadreNodeConfig['claim'],
+  dialTargets: readonly SeedDialTarget[] = [],
 ): Promise<CadreNode> {
   const stores = await openNodeStores(config.nodeStateDir, claim.partyId);
   await stores.trustedOwnerStore.trust(claim.ownerKey, 'claim');
+  retainDialTargets(stores.bootstrapPeerStore, dialTargets);
   const node = new CadreNode(buildNodeConfig(config, claim.partyId, stores, storage, {
     trustedOwners: { store: stores.trustedOwnerStore },
     claim: claimConfig,
   }));
   wireNodeEvents(node);
   return node;
+}
+
+/**
+ * Record each of `targets` in `store`. `record` reflects an entry at once and its promise tracks
+ * durability only, so a failed persist is logged, not fatal: the node about to be built still
+ * dials the target, and only a later start from `claim.json` goes without it — the same choice
+ * cadre-core's `CadreNode.retainDialTarget` makes.
+ */
+function retainDialTargets(store: BootstrapPeerStore, targets: readonly SeedDialTarget[]): void {
+  for (const { peerId, multiaddrs } of targets) {
+    void store.record(peerId, multiaddrs).catch((err: unknown) => {
+      log('Persisting dial target %s for the claimed party failed (retained in memory): %o', peerId, err);
+    });
+  }
 }
 
 /**
@@ -297,27 +314,33 @@ export function warnRemoved(removal: CadreRemoval, nodeStateDir: string): void {
 }
 
 /**
- * Run `onSettled` once the seed that carried the claim has been handled end to end.
- * `claim:accepted` fires inside the node's trust decision, BEFORE the seed is acknowledged to
- * the claimant, its peers merged and its owners dialed; stopping the node there would drop
- * the acknowledgement, and the claimant would read its own claim as failed. That seed's
- * `seed:applied` — or `seed:error`, when its work after the acknowledgement failed — is the
- * first event after all of it. A seed for another party is some other claimant's, refused
- * `already-claimed` while this one was in flight, and is not waited for.
+ * Run `onSettled` once the seed that carried the claim has been acknowledged to the claimant.
+ * `claim:accepted` fires inside the node's trust decision, BEFORE the seed is acknowledged and
+ * its peers merged; stopping the node there would drop the acknowledgement, and the claimant
+ * would read its own claim as failed. That seed's `seed:applied` — or `seed:error`, when its
+ * work after the acknowledgement failed — is the first event after both, and comes before the
+ * node dials the seed's preferred peers, which a restart makes pointless. `onSettled` gets
+ * the seed's dial targets from `seed:applied`, and none from `seed:error`. A seed for another
+ * party is some other claimant's, refused `already-claimed` while this one was in flight, and
+ * is not waited for.
  *
  * NOTE: a second claimant of the SAME party whose refusal lands in that window settles this
  * early, and the restart may stop the node before the claim is acknowledged. The claimant then
  * retries and is accepted idempotently by the restarted node, whose anchor holds it. If that is
  * ever seen, carry the seed's digest on the two events and key the settle on it.
  */
-export function afterClaimSeedSettles(node: CadreNode, claimedPartyId: string, onSettled: () => void): void {
+export function afterClaimSeedSettles(
+  node: CadreNode,
+  claimedPartyId: string,
+  onSettled: (dialTargets: SeedDialTarget[]) => void,
+): void {
   // The node's own party as well: a failure after the trust decision is reported under it.
   const ownParties = new Set([claimedPartyId, node.partyId]);
-  const settle = ({ partyId }: { partyId: string }): void => {
+  const settle = ({ partyId, dialTargets }: { partyId: string; dialTargets?: SeedDialTarget[] }): void => {
     if (!ownParties.has(partyId)) return;
     node.off('seed:applied', settle);
     node.off('seed:error', settle);
-    onSettled();
+    onSettled(dialTargets ?? []);
   };
   node.on('seed:applied', settle);
   node.on('seed:error', settle);

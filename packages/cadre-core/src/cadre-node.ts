@@ -19,6 +19,7 @@ import type {
   SAppConfig,
   CadreNodeEvents,
   ControlNetworkSeed,
+  SeedDialTarget,
   ApplySeedResult,
   SeedAckMessage,
   SeedDeliveryTarget,
@@ -168,7 +169,7 @@ import {
   requestedPendingJoin
 } from './pending-join-runner.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
-import { SeedBootstrapService, mergeSeedPeers, seedDigest, type SeedEventCallbacks, type SeedBootstrapConfig } from './seed-bootstrap.js';
+import { SeedBootstrapService, mergeSeedPeers, seedDialTargets, seedDigest, type SeedEventCallbacks, type SeedBootstrapConfig } from './seed-bootstrap.js';
 import { claimSecretTrustPolicy, type SeedTrustPolicy } from './seed-trust-policy.js';
 import { ClaimRefusedError, claimProof, parseClaimSecret } from './claim-proof.js';
 import {
@@ -4587,8 +4588,7 @@ export class CadreNode implements SAppIdLookup {
    * Called for every seed this node accepts, on BOTH intake paths — the
    * {@link applySeed} wrapper (which may run on a throwaway service, so the
    * service itself is the wrong place to keep this) and the inbound
-   * `/sereus/seed/1.0.0` handler via `onSeedApplied`. Peers with no address are
-   * skipped: there is nothing to dial.
+   * `/sereus/seed/1.0.0` handler via `onSeedApplied`.
    *
    * `preferred` is the seed's own claim about its peers, exactly as
    * `SeedBootstrapService.applySeed` uses it to choose its dial targets. That is
@@ -4596,14 +4596,15 @@ export class CadreNode implements SAppIdLookup {
    * signature-checked against a trust-anchored signer before this runs, and the
    * flag only *selects a dial target*; a dial grants no authority.
    *
-   * Addressless peers and self are skipped by {@link retainDialTarget}.
+   * The peers retained are `seedDialTargets` (addressless peers and self dropped), the same
+   * ones the service dials; they are returned for the `seed:applied` payload.
    */
-  private recordSeedBootstrapPeers(seed: ControlNetworkSeed): void {
-    for (const peer of seed.peers) {
-      if (peer.preferred) {
-        this.retainDialTarget(peer.peerId, peer.multiaddrs, 'recordSeedBootstrapPeers');
-      }
+  private recordSeedBootstrapPeers(seed: ControlNetworkSeed): SeedDialTarget[] {
+    const targets = seedDialTargets(seed, this.controlNode?.peerId.toString());
+    for (const { peerId, multiaddrs } of targets) {
+      this.retainDialTarget(peerId, multiaddrs, 'recordSeedBootstrapPeers');
     }
+    return targets;
   }
 
   /**
@@ -9166,10 +9167,10 @@ export class CadreNode implements SAppIdLookup {
     return {
       onSeedReceived: (partyId, peerId) => this.emit('seed:received', { partyId, peerId }),
       onSeedApplied: (partyId, peersAdded, seed) => {
-        this.emit('seed:applied', { partyId, peersAdded });
         // A wire-delivered seed never passes through the `applySeed` wrapper, so
         // this is where its preferred peers become cold-start bootstrap targets.
-        this.recordSeedBootstrapPeers(seed);
+        const dialTargets = this.recordSeedBootstrapPeers(seed);
+        this.emit('seed:applied', { partyId, peersAdded, dialTargets });
         void this.refreshMembershipGate('seed-applied');
       },
       onSeedError: (partyId, error) => this.emit('seed:error', { partyId, error }),

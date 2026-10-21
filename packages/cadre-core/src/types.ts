@@ -1870,8 +1870,14 @@ export interface CadreNodeEvents {
   'pendingJoin:changed': PendingJoinStatus;
   /** Emitted when a seed is received via the seed protocol */
   'seed:received': { partyId: string; peerId: string };
-  /** Emitted when a seed is successfully applied */
-  'seed:applied': { partyId: string; peersAdded: number };
+  /**
+   * Emitted when a seed delivered over the seed protocol has been verified, merged and
+   * acknowledged to its sender. The dials of its preferred peers follow this event, so it
+   * waits on no connection. `dialTargets` are those peers (`seedDialTargets`): an embedder
+   * that restarts into another party's stores carries them there, since this node retained
+   * them in its own.
+   */
+  'seed:applied': { partyId: string; peersAdded: number; dialTargets: SeedDialTarget[] };
   /** Emitted when seed application fails */
   'seed:error': { partyId: string; error: string };
   /**
@@ -1879,10 +1885,10 @@ export interface CadreNodeEvents {
    * valid claim proof has been recorded (`claim.record`) and has durably anchored its
    * signer as this node's owner. Carries the claim's party beside the owner key: the
    * party this node should serve from now on, which its own config did not know. Fires
-   * BEFORE the seed is acknowledged to the claimant, its peers merged and its owners
-   * dialed, so it precedes that seed's `seed:applied`; an embedder that restarts into
-   * the claimed party on this event should wait for that `seed:applied` (or `seed:error`)
-   * so the acknowledgement is not lost with the node. `CadreNode.isAwaitingClaim` is the
+   * BEFORE the seed is acknowledged to the claimant and its peers merged, so it precedes
+   * that seed's `seed:applied`; an embedder that restarts into the claimed party on this
+   * event should wait for that `seed:applied` (or `seed:error`) so the acknowledgement is
+   * not lost with the node. `CadreNode.isAwaitingClaim` is the
    * matching predicate for a reader that subscribed too late to see the event.
    */
   'claim:accepted': NodeClaimRecord;
@@ -2513,6 +2519,9 @@ export interface SeedPeer {
    */
   preferred: boolean;
 }
+
+/** A peer a seed nominates for dialing, and the addresses to dial it at (`seedDialTargets`). */
+export type SeedDialTarget = Pick<SeedPeer, 'peerId' | 'multiaddrs'>;
 
 /**
  * Control network seed for bootstrapping new nodes.

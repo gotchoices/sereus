@@ -8,6 +8,7 @@ import {
   type CadreRemoval,
   type ControlNetworkSeed,
   type NodeClaimRecord,
+  type SeedDialTarget,
   type SeedTrustPolicy,
   type CadreInvitation,
   type OwnerGrantBundle,
@@ -466,13 +467,14 @@ export const startCommand = new Command('start')
        * The servers stay up and are re-pointed; the listen addresses are rebound. A restart that
        * fails (a store that will not open, a port that will not rebind) exits non-zero rather
        * than leaving a process with no node in it: the embedder's supervisor respawns it, and
-       * that start takes the claimed path from the record.
+       * that start takes the claimed path from the record. `dialTargets` (the claim seed's
+       * preferred peers) go into the claimed party's store, so the new node can dial its owner.
        */
-      const restartIntoClaimedParty = async (accepted: NodeClaimRecord): Promise<void> => {
+      const restartIntoClaimedParty = async (accepted: NodeClaimRecord, dialTargets: SeedDialTarget[]): Promise<void> => {
         console.log(`• Restarting into party ${accepted.partyId}`);
         await node.stop();
         await storage.close();
-        node = await buildClaimedNode(config, storage, accepted, claimConfig);
+        node = await buildClaimedNode(config, storage, accepted, claimConfig, dialTargets);
         stopWhenRemoved(node, config.nodeStateDir, noteRemoval);
         healthServer?.attach(node);
         adminServer?.attach(node);
@@ -482,8 +484,8 @@ export const startCommand = new Command('start')
       if (claimSecret !== undefined && !claimOnRecord) {
         const unclaimedNode = node;
         unclaimedNode.on('claim:accepted', (accepted) => {
-          afterClaimSeedSettles(unclaimedNode, accepted.partyId, () => {
-            restartIntoClaimedParty(accepted).catch((err: unknown) => {
+          afterClaimSeedSettles(unclaimedNode, accepted.partyId, (dialTargets) => {
+            restartIntoClaimedParty(accepted, dialTargets).catch((err: unknown) => {
               console.error('✗ Failed to restart into the claimed party; exiting so the supervisor restarts from the claim record:',
                 err instanceof Error ? err.message : err);
               log('Restart error details: %o', err);

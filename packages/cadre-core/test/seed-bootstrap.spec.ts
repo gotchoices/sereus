@@ -1270,10 +1270,10 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
     expect(ack.accepted).toBe(true);
   });
 
-  it('gets the ack while the receiver is still dialing the seed\'s preferred peers', async () => {
-    // The sender's delivery deadline counts link round trips only, and an unreachable peer
-    // can hold the receiver's dial for its whole per-peer budget. Pre-fix the ack waited for
-    // those dials, so a dial the test holds open made the delivery time out.
+  it('acks and reports the seed applied before it dials the seed\'s preferred peers', async () => {
+    // An unreachable peer can hold the receiver's dial for its whole per-peer budget. The
+    // sender's delivery deadline counts link round trips only, and a claimed node restarts on
+    // `onSeedApplied`, so neither may wait on that dial; a dial the test holds open shows both.
     const seedPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
     const peerAddr = '/ip4/5.6.7.8/tcp/4001';
     const { seed, ownerPublicKey } = makeSignedSeed('ack-first-party', [
@@ -1282,19 +1282,20 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
 
     let releasePeerDial = (): void => {};
     const peerDialHeld = new Promise<void>((resolve) => { releasePeerDial = resolve; });
-    const peerDials: string[] = [];
-    const applied: number[] = [];
+    let peerDialDone = false;
+    const order: string[] = [];
     const receiver = new SeedBootstrapService({
       partyId: 'ack-first-party',
       trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
     });
-    receiver.setEventCallbacks({ onSeedApplied: (_partyId, peersAdded) => { applied.push(peersAdded); } });
+    receiver.setEventCallbacks({ onSeedApplied: (_partyId, peersAdded) => { order.push(`applied ${peersAdded}`); } });
     serviceInternals(receiver).libp2pNode = {
       peerId: { toString: () => 'receiver-peer' },
       peerStore: { merge: async () => {} },
       dial: async (addr: { toString(): string }) => {
-        peerDials.push(addr.toString());
+        order.push(`dial ${addr.toString()}`);
         await peerDialHeld;
+        peerDialDone = true;
         return {};
       },
     };
@@ -1311,13 +1312,13 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
 
     const ack = await sender.deliverSeed(targetAddr, seed);
     expect(ack.accepted).toBe(true);
-    expect(applied).toEqual([]);
+    // The seed's address carries no peer id; the dial binds it to the peer's.
+    await vi.waitFor(() => expect(order).toEqual(['applied 1', `dial ${peerAddr}/p2p/${seedPeerId}`]));
+    expect(peerDialDone).toBe(false);
 
     releasePeerDial();
     await handled;
-    // The seed's address carries no peer id; the dial binds it to the peer's.
-    expect(peerDials).toEqual([`${peerAddr}/p2p/${seedPeerId}`]);
-    expect(applied).toEqual([1]);
+    expect(peerDialDone).toBe(true);
   });
 
   it('dials the seed protocol with the deadline signal, then frames and half-closes', async () => {

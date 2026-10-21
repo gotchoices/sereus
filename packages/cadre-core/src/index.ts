@@ -420,6 +420,7 @@ export {
   SeedBootstrapService,
   SEED_PROTOCOL,
   mergeSeedPeers,
+  seedDialTargets,
   seedDigest,
   type SeedBootstrapConfig,
   type SeedEventCallbacks

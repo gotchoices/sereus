@@ -17,6 +17,7 @@ import { relayedRequestBudgetMs } from './link-budget.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
+  SeedDialTarget,
   SeedMessage,
   SeedAckMessage,
   SeedRefusalCode,
@@ -114,6 +115,20 @@ export function canonicalSeedPayload(
  */
 export function seedDigest(seed: Pick<ControlNetworkSeed, 'partyId' | 'peers'>): string {
   return digest([canonicalSeedPayload(seed)], 'sha256', 'base64url') as string;
+}
+
+/**
+ * The peers `seed` nominates for dialing: its preferred peers (`SeedPeer.preferred`: the machine
+ * that minted it and every always-on machine) that have an address and are not `selfPeerId`.
+ *
+ * Self is dropped because `createSeed` projects every non-revoked CadrePeer row, so a preferred
+ * machine applying a seed minted after it joined finds itself in the list, and a dial of self
+ * always throws. An undefined `selfPeerId` matches nothing.
+ */
+export function seedDialTargets(seed: ControlNetworkSeed, selfPeerId: string | undefined): SeedDialTarget[] {
+  return seed.peers
+    .filter((peer) => peer.preferred && peer.multiaddrs.length > 0 && peer.peerId !== selfPeerId)
+    .map(({ peerId, multiaddrs }) => ({ peerId, multiaddrs }));
 }
 
 /** Add `relayAddr` to the entry for `selfPeerId` in `peers`, when that entry exists and lacks it. */
@@ -306,7 +321,8 @@ export interface SeedEventCallbacks {
   /** Called when a seed is received via the protocol */
   onSeedReceived?: (partyId: string, peerId: string) => void;
   /**
-   * Called when a seed is successfully applied.
+   * Called when a seed delivered over the protocol has been verified, merged and
+   * acknowledged; the dials of its preferred peers follow, so this waits on no connection.
    *
    * `seed` is the applied seed itself: the inbound protocol handler applies it
    * INSIDE the service, so this callback is the only seam through which a
@@ -976,8 +992,11 @@ export class SeedBootstrapService {
    * `CadreNode.dialColdStartBootstrap` retries these same addresses on every control-cohort
    * reconcile pass until the control database has siblings.
    *
-   * The inbound handler runs this AFTER it has acked and closed the stream
-   * ({@link handleSeedStream}), because an unreachable peer can take `dialBudget.totalMs`.
+   * The inbound handler runs this AFTER it has acked, closed the stream and reported the seed
+   * applied ({@link handleSeedStream}), because an unreachable peer can take `dialBudget.totalMs`.
+   * The node may stop while these dials are in flight (cadre-cli restarts a claimed node on
+   * `seed:applied`): the node's stop aborts the dial in flight and every later one is refused
+   * at once (`dialAddr`), and each is counted as failed here.
    */
   private async dialPreferredPeers(seed: ControlNetworkSeed): Promise<PreferredDialCounts> {
     const node = this.libp2pNode;
@@ -985,23 +1004,16 @@ export class SeedBootstrapService {
       log('Seed service shut down before its dials; none attempted');
       return { preferredDialsAttempted: 0, preferredDialsFailed: 0 };
     }
-    // `createSeed` projects every non-revoked CadrePeer row, so a preferred machine applying
-    // a seed minted after it joined finds ITSELF in the list. Dialing self always throws,
-    // which would report a healthy node as "seeded but stranded".
-    // Optional-chained: partial libp2p handles (unit-test doubles) omit `peerId`,
-    // and an undefined self simply matches nothing.
+    // Self is not dialed: dialing self always throws, which would report a healthy node as
+    // "seeded but stranded". Optional-chained: partial libp2p handles (unit-test doubles)
+    // omit `peerId`.
     // Every one of a peer's addresses is a candidate, each on its own time limit
     // (`dialPeerAddrs`), so a peer whose first address never answers neither
     // stalls seed application nor goes undialed at its other addresses. The seed's
     // addresses carry no peer id; the dial binds each to the peer's.
-    const selfPeerId = node.peerId?.toString();
-    let preferredDialsAttempted = 0;
+    const targets = seedDialTargets(seed, node.peerId?.toString());
     let preferredDialsFailed = 0;
-    for (const peer of seed.peers.filter(p => p.preferred)) {
-      if (peer.multiaddrs.length === 0 || peer.peerId === selfPeerId) {
-        continue;
-      }
-      preferredDialsAttempted++;
+    for (const peer of targets) {
       try {
         const addrs = parseDialAddrs(peer.multiaddrs);
 
@@ -1020,8 +1032,8 @@ export class SeedBootstrapService {
       }
     }
 
-    log('Dialed preferred seed peers: %d/%d dial(s) failed', preferredDialsFailed, preferredDialsAttempted);
-    return { preferredDialsAttempted, preferredDialsFailed };
+    log('Dialed preferred seed peers: %d/%d dial(s) failed', preferredDialsFailed, targets.length);
+    return { preferredDialsAttempted: targets.length, preferredDialsFailed };
   }
 
   /**
@@ -1296,14 +1308,16 @@ export class SeedBootstrapService {
 
   /**
    * Read one inbound seed frame, verify and merge it, write the ack and close the
-   * stream, then dial the seed's preferred peers.
+   * stream, report the seed applied, then dial the seed's preferred peers.
    *
-   * The ack and the close come BEFORE those dials: an unreachable peer can hold
-   * a dial for `dialBudget.totalMs` (86 s at the default declared link), which is not
-   * link time and does not belong inside the sender's delivery deadline. The close is
-   * what releases the sender, which reads the ack to end-of-stream. The stream stays
-   * counted in {@link activeStreams} through the dials, so {@link maxConcurrentSeeds}
-   * still bounds concurrent dial phases.
+   * The ack, the close and `onSeedApplied` come BEFORE those dials: an unreachable peer
+   * can hold a dial for `dialBudget.totalMs` (86 s at the default declared link), which is
+   * not link time and does not belong inside the sender's delivery deadline, nor ahead of
+   * a claimed node's restart (which stops this node, so its dials would be wasted). The
+   * close is what releases the sender, which reads the ack to end-of-stream, and it is
+   * awaited before `onSeedApplied`, so the ack is flushed before anything the callback
+   * starts. The stream stays counted in {@link activeStreams} through the dials, so
+   * {@link maxConcurrentSeeds} still bounds concurrent dial phases.
    *
    * Hardened against a buggy/compromised own-cadre node: a concurrency cap (over
    * {@link maxConcurrentSeeds}, reply without applying), a read timeout (a peer
@@ -1340,8 +1354,8 @@ export class SeedBootstrapService {
       );
 
       if (merged.success) {
-        await this.dialPreferredPeers(seed);
         this.eventCallbacks.onSeedApplied?.(seed.partyId, merged.peersAdded, seed);
+        await this.dialPreferredPeers(seed);
       } else {
         this.eventCallbacks.onSeedError?.(seed.partyId, merged.error ?? 'Unknown error');
       }
