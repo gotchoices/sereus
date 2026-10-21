@@ -48,7 +48,8 @@
  *      the circuit in both directions, including B→A where B is a total
  *      stranger to A's party.
  *   6. Every A↔B connection — control and strand — is classified `relayed` by
- *      `summarizeConnectionPaths` (both ends), and a final sweep asserts
+ *      `summarizeConnectionPaths` (both ends; the control link as recorded while
+ *      formation ran, since formation closes it), and a final sweep asserts
  *      neither side holds a direct connection to anything but the relay itself,
  *      so a direct fallback cannot pass for relayed success.
  *   7. The relay's reservation count is measured: 4 (two control + two strand)
@@ -102,6 +103,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Libp2p } from 'libp2p';
+import type { Connection } from '@libp2p/interface';
 import {
 	CadreNode,
 	generateStrandMemberKey,
@@ -160,24 +162,43 @@ async function readDataRows(db: Database): Promise<Map<string, string>> {
 }
 
 /**
- * Assert every connection `node` holds TO `peerId` is a relayed circuit path —
- * and UNLIMITED. The limits check is the live half of the fixture's
+ * Assert every one of `connections` TO `peerId` is a relayed circuit path —
+ * and UNLIMITED, and that there is at least one. The limits check is the live half of the fixture's
  * `applyDefaultLimit: false` parity contract with `ops/docker/libp2p-infra`: a
  * limited relayed connection would refuse db-p2p's database protocols (they do
  * not set `runOnLimitedConnection`), so an ops config regression is caught here
  * by name rather than as a mysterious replication timeout.
  */
-function expectAllPathsRelayed(node: Libp2p, peerId: string, label: string): void {
-	const summary = summarizeConnectionPaths(node.getConnections());
+function expectAllPathsRelayed(connections: readonly Connection[], peerId: string, label: string): void {
+	const summary = summarizeConnectionPaths(connections);
 	const toPeer = summary.paths.filter((p) => p.peerId === peerId);
 	expect(toPeer.length, `${label}: no connection to ${peerId}`).toBeGreaterThan(0);
 	for (const path of toPeer) {
 		expect(path.kind, `${label}: ${path.remoteAddr}`).toBe('relayed');
 		expect(path.transport, `${label}: ${path.remoteAddr}`).toBe('circuit-relay');
 	}
-	for (const conn of node.getConnections().filter((c) => c.remotePeer.toString() === peerId)) {
+	for (const conn of connections.filter((c) => c.remotePeer.toString() === peerId)) {
 		expect(conn.limits, `${label}: relayed connection to ${peerId} is flagged limited`).toBeUndefined();
 	}
+}
+
+/**
+ * Record every connection `node` opens to `peerId` until `stop()`. Formation closes the
+ * connection its own dial opened once the exchange ends (`strand-formation-protocol.ts` →
+ * `releaseFormationConnection`), so the formation link is classified from this record, not
+ * from `getConnections()` after `formStrand` resolves. A recorded connection keeps its
+ * remote address, direction and limits after it closes.
+ */
+function recordConnectionsTo(node: Libp2p, peerId: string): { connections: Connection[]; stop(): void } {
+	const connections: Connection[] = [];
+	const onOpen = (event: CustomEvent<Connection>): void => {
+		if (event.detail.remotePeer.toString() === peerId) connections.push(event.detail);
+	};
+	node.addEventListener('connection:open', onOpen);
+	return {
+		connections,
+		stop() { node.removeEventListener('connection:open', onOpen); },
+	};
 }
 
 /**
@@ -344,6 +365,8 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		// holds no reservation on — and A's membership gate admits the stranger
 		// outright because the invitation is outstanding.
 		const decoded = B.decodeInvitation(encoded);
+		const bFormationLinks = recordConnectionsTo(B.getControlNode()!, aPeerId);
+		const aFormationLinks = recordConnectionsTo(A.getControlNode()!, bPeerId);
 		expect(decoded.token).toBe(invitation.token);
 		expect(decoded.expiration.getTime()).toBe(invitation.expiration.getTime());
 		expect(decoded.bootstrap).toEqual(invitation.bootstrap);
@@ -351,6 +374,9 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		const formResult = await B.formStrand(decoded, {
 			partyId: `blind-b-${runTag}`,
 			purpose: 'blind-relay phone-to-phone e2e',
+		}).finally(() => {
+			bFormationLinks.stop();
+			aFormationLinks.stop();
 		});
 		expect(formResult.strandId).toBe(strandId);
 		// The closed strand's membership secret crossed the circuit intact —
@@ -377,22 +403,16 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		}
 
 		// The control link the formation rode is relay-carried and unlimited,
-		// on BOTH ends — classified, not assumed.
-		// NOTE: this samples the formation connection immediately after
-		// `formStrand` resolves, so it assumes libp2p still holds it open.
-		// True today (stable over 8 consecutive runs); if a future libp2p —
-		// or a cadre-side change — ever closes formation connections eagerly,
-		// this goes FLAKY rather than wrong: re-express it as a gate that
-		// captures the classification while the stream is live.
-		expectAllPathsRelayed(B.getControlNode()!, aPeerId, 'B control');
-		expectAllPathsRelayed(A.getControlNode()!, bPeerId, 'A control');
+		// on BOTH ends — classified, not assumed. Classified from the connections
+		// recorded while formation ran: formation closes its link when it finishes.
+		expectAllPathsRelayed(bFormationLinks.connections, aPeerId, 'B control');
+		expectAllPathsRelayed(aFormationLinks.connections, bPeerId, 'A control');
 		// ...and it rode A's relay, the one the invitation names: in the per-party arm
 		// this is the proof the dial crossed relays. Pinned on B's outbound side only —
 		// the shape of the inbound side's remoteAddr is libp2p's business.
 		const viaRelayA = `/p2p/${relayA.peerId}/p2p-circuit`;
-		const bDialsToA = B.getControlNode()!.getConnections()
-			.filter((c) => c.remotePeer.toString() === aPeerId && c.direction === 'outbound');
-		expect(bDialsToA.length, 'B control holds its formation dial to A').toBeGreaterThan(0);
+		const bDialsToA = bFormationLinks.connections.filter((c) => c.direction === 'outbound');
+		expect(bDialsToA.length, 'B control opened its formation dial to A').toBeGreaterThan(0);
 		for (const conn of bDialsToA) {
 			expect(conn.remoteAddr.toString(), 'B control reached A through relay A').toContain(viaRelayA);
 		}
@@ -466,8 +486,8 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		expect(B.getPendingMembershipInvite(strandId)).toBeUndefined();
 
 		// ── The strand mesh is RELAY-CARRIED and unlimited, both ends ────────
-		expectAllPathsRelayed(bStrandNode, aStrandPeerId, 'B strand');
-		expectAllPathsRelayed(aStrandNode, bStrandPeerId, 'A strand');
+		expectAllPathsRelayed(bStrandNode.getConnections(), aStrandPeerId, 'B strand');
+		expectAllPathsRelayed(aStrandNode.getConnections(), bStrandPeerId, 'A strand');
 
 		// ── Each side's signed address record crossed the circuit ────────────
 		// The only path between the two strand nodes is relayed. Each node's FRET table
