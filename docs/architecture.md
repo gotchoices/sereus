@@ -1712,7 +1712,7 @@ A party may participate in many strands (potentially hundreds), but most are ina
 
 | State | Description | Strand-network resources |
 |-------|-------------|--------------------------|
-| `syncing` | A joining machine that has not yet received the strand's `Strand.Header` from another member, or not yet read every `App` table once | libp2p node and background loops running; the `StrandDatabase` is initialized but **withheld** (`database` unset) so nothing can write before the first sync — see [`strands.md` → Joining](strands.md#joining-no-writes-before-the-first-sync). Goes `active` (event `strand:writable`) when the probe passes |
+| `syncing` | A joining machine that has not yet received the strand's `Strand.Header` from another member, or not yet read every `Strand` and `App` table once | libp2p node and background loops running; the `StrandDatabase` is initialized but **withheld** (`database` unset) so nothing can write before the first sync — see [`strands.md` → Joining](strands.md#joining-no-writes-before-the-first-sync). Goes `active` (event `strand:writable`) when the probe passes |
 | `active` | Actively transacting, recent activity | Full libp2p node + `StrandDatabase` running |
 | `idle` | No recent activity (lightweight status flag) | Still fully running — node + DB retained. Connection trimming while idle is a planned refinement, not yet implemented |
 | `hibernating` | Long-term inactive | **Released** — libp2p node stopped, `StrandDatabase` closed, zero strand-network connections/transports/DB handles. Instance identity + metadata retained for rehydration |
@@ -1721,7 +1721,7 @@ A party may participate in many strands (potentially hundreds), but most are ina
 
 ```mermaid
 stateDiagram-v2
-    syncing --> active : Strand.Header received and every App table read (joiner's first sync)
+    syncing --> active : Strand.Header received and every Strand and App table read (joiner's first sync)
     active --> idle : idle timeout (configurable)
     idle --> active : incoming activity
     idle --> hibernating : extended idle + backoff
@@ -2216,7 +2216,7 @@ NOTE: libp2p's and Optimystic's own dial limits are longer than the listener's, 
 
 **Known limits at the supported round trip:**
 
-- **The strand first-sync wait** (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, 300 s) is measured, not derived: a whole first sync has no round-trip count. Re-measured at the supported round trip on 2026-09-29, on `@optimystic/*` 1.7.0 (a fresh join writable at 52-82 s, a gated re-attach at 76-79 s) and again on 1.8.0 (a fresh join writable at 64 s, a re-attach over a kept store writable at launch), and kept, since the worst sample is under a third of it. The bands are on the constant.
+- **The strand first-sync wait** (`DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`, 360 s) is measured, not derived: a whole first sync has no round-trip count. Its worst sample at the supported round trip is a re-attach over an empty store writable at 106 s (`@optimystic/*` 1.17.0, 2026-10-21, with the first-sync probe reading every `Strand` and `App` table), and the budget is about 3x that. The bands, and the rule that sizes the budget from them, are on the constant.
 - **Cadre's own deadlines over Optimystic reads and commits** each either cut the read off on purpose or must outlast it. Which is which, and which relationships between them are checked: [cadre-consistency.md → Deadlines Over Optimystic's Reads and Commits](cadre-consistency.md#deadlines-over-optimystics-reads-and-commits).
 - **FRET's ring-maintenance deadlines are fixed below the supported round trip** (a 2 s maintenance ping that needs two round trips), because FRET takes no link declaration and Optimystic passes it none: `blocked/fret-maintenance-deadlines-below-the-declared-link`. Every deadline below cadre, and whether it follows the declaration: [cadre-consistency.md → Deadlines Below Cadre](cadre-consistency.md#deadlines-below-cadre).
 

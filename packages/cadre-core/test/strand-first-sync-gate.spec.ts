@@ -25,9 +25,8 @@ import type { StrandRow, SAppConfig } from '../src/types.js';
  * Same doubles as `strand-instance-manager-hibernation.spec.ts` — no real libp2p node or
  * Quereus database, and no storage change feed, so a gated launch here probes on its backstop.
  * The double's `eval` returns a Header row when the test's per-strand count is set, which
- * is how "the Header arrived from a peer" is simulated; its `App` schema declares no
- * tables, so the app-table half of the probe is exercised on the gate class below with a
- * fake schema instead.
+ * is how "the Header arrived from a peer" is simulated; it declares no schemas, so the
+ * table half of the probe is exercised on the gate class below with fake schemas instead.
  */
 const mocks = vi.hoisted(() => {
   const stop = vi.fn(async () => {});
@@ -344,20 +343,26 @@ describe('StrandFirstSyncGate', () => {
   }
 
   /**
-   * `held` / `throws` drive the Header read; `tables` declares the fake `App` schema and
-   * `unreachable` names the app tables whose read throws (a collection the cohort has not
-   * served yet). Every app table reads empty. `reads` records every statement and `options`
-   * every statement's options, so a test can see what was probed and how.
+   * `held` / `throws` drive the Header read; `strandTables` and `tables` declare the fake
+   * `Strand` and `App` schemas, and `unreachable` names the tables (qualified, `'App.Message'`)
+   * whose read throws (a collection the cohort has not served yet). Every table other than the
+   * Header reads empty. `reads` records every statement and `options` every statement's options,
+   * so a test can see what was probed and how.
    */
   interface FakeState {
     held: boolean;
     throws?: boolean;
     /** `schemaManager.getSchema` throws — a probe failure OUTSIDE the read guards. */
     schemaThrows?: boolean;
+    strandTables?: string[];
     tables?: string[];
     unreachable?: string[];
     reads?: string[];
     options?: Array<StatementOptions | undefined>;
+  }
+
+  function fakeSchema(tables: string[] | undefined) {
+    return tables ? { getAllTables: () => tables.map((t) => ({ name: t, isView: false })) } : undefined;
   }
 
   function fakeDatabase(state: FakeState): StrandDatabase {
@@ -365,9 +370,9 @@ describe('StrandFirstSyncGate', () => {
       eval: async function* (sql: string, _params?: unknown, options?: StatementOptions) {
         state.reads?.push(sql);
         state.options?.push(options);
-        const table = /from App\."(\w+)"/.exec(sql)?.[1];
-        if (table !== undefined) {
-          if (state.unreachable?.includes(table)) throw new Error(`cohort-unreachable: ${table}`);
+        const [, schema, table] = /from (Strand|App)\."(\w+)"/.exec(sql) ?? [];
+        if (table !== undefined && table !== 'Header') {
+          if (state.unreachable?.includes(`${schema}.${table}`)) throw new Error(`cohort-unreachable: ${schema}.${table}`);
           return;
         }
         if (state.throws) throw new Error('cohort-unreachable');
@@ -376,9 +381,7 @@ describe('StrandFirstSyncGate', () => {
       schemaManager: {
         getSchema: (name: string) => {
           if (state.schemaThrows) throw new Error('schema not loaded');
-          return name === 'App' && state.tables
-            ? { getAllTables: () => (state.tables ?? []).map((t) => ({ name: t, isView: false })) }
-            : undefined;
+          return fakeSchema(name === 'Strand' ? state.strandTables : name === 'App' ? state.tables : undefined);
         }
       }
     } as unknown as Database;
@@ -386,11 +389,18 @@ describe('StrandFirstSyncGate', () => {
   }
 
   const HEADER_READ = 'select 1 from Strand."Header" limit 1';
+  const strandRead = (table: string): string => `select 1 from Strand."${table}" limit 1`;
   const appRead = (table: string): string => `select 1 from App."${table}" limit 1`;
 
-  it('reads one row per table, the Header first, stops at the first failing table, and never re-reads what settled', async () => {
+  it('reads one row per table, the Header first, then Strand, then App, stops at the first failing table, and never re-reads what settled', async () => {
     const state: FakeState = {
-      held: false, tables: ['Participant', 'Message', 'Seat'], unreachable: ['Message'], reads: [], options: []
+      held: false,
+      // The Header is declared like any Strand table, and must still be read only once, first.
+      strandTables: ['Header', 'Invite', 'Member'],
+      tables: ['Participant', 'Message', 'Seat'],
+      unreachable: ['Strand.Member', 'App.Message'],
+      reads: [],
+      options: []
     };
     const gate = new StrandFirstSyncGate({ label: 'p', database: fakeDatabase(state), onHeaderHeld: vi.fn() });
 
@@ -398,14 +408,20 @@ describe('StrandFirstSyncGate', () => {
     expect(await gate.probeOnce()).toBe(false);
     expect(state.reads).toEqual([HEADER_READ]);
 
-    // Participant returns no row and still counts as settled (the founder's empty collection);
-    // Message throws, so Seat is not read.
+    // Invite returns no row and still counts as settled (the founder's empty collection);
+    // Strand.Member throws, so no App table is read.
     state.held = true;
     state.reads = [];
     expect(await gate.probeOnce()).toBe(false);
-    expect(state.reads).toEqual([HEADER_READ, appRead('Participant'), appRead('Message')]);
+    expect(state.reads).toEqual([HEADER_READ, strandRead('Invite'), strandRead('Member')]);
 
-    // Neither the Header nor Participant is read again.
+    // Participant settles; App.Message throws, so Seat is not read.
+    state.unreachable = ['App.Message'];
+    state.reads = [];
+    expect(await gate.probeOnce()).toBe(false);
+    expect(state.reads).toEqual([strandRead('Member'), appRead('Participant'), appRead('Message')]);
+
+    // Nothing that settled is read again.
     state.unreachable = [];
     state.reads = [];
     expect(await gate.probeOnce()).toBe(true);

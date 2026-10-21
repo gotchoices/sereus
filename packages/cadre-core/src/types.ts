@@ -939,8 +939,9 @@ export interface CadreNodeConfig {
    * (`strand-first-sync-gate.ts`), applied to every strand this node launches as a
    * non-founder: the strand's database is withheld from the app (`StrandInstance.database`
    * unset, status `'syncing'`) until the strand's `Strand.Header` has been received from
-   * another member and every `App` table has been read once, because a machine that writes
-   * to a table it has never fetched creates a private copy of it that never merges.
+   * another member and every `Strand` and `App` table has been read once, because a
+   * machine that writes to a table it has never fetched creates a private copy of it that
+   * never merges.
    * `timeoutMs` bounds how long {@link CadreNode.addStrand} waits before rejecting with
    * `StrandAwaitingFirstSyncError` (retryable — the launch stays up and keeps probing).
    * While gated the machine probes whenever data lands in the strand's store, and

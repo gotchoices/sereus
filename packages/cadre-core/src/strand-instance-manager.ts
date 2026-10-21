@@ -1168,8 +1168,9 @@ export class StrandInstanceManager {
     // The first-sync write gate. A founder just wrote the Header in its bootstrap; any
     // other machine may commit only once it holds the Header — which it can only have
     // received from a peer (now, or on an earlier run over the same store) — and has read
-    // each App table once, so their collections are fetched too. Publishing the database
-    // is what makes the strand writable to the app; until then the instance stays
+    // each other Strand table and each App table once, so their collections are fetched
+    // too. Publishing the database is what makes the strand writable to the app; until
+    // then the instance stays
     // `'syncing'` and the gate re-probes when data lands. This first probe goes through the
     // gate, so what it finds held is not read again. Everything armed after the database
     // phase reads `instance.database` lazily, so the reconciler and enforcer wait with it —

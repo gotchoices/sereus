@@ -11,15 +11,15 @@
  * founder from a joiner; sereus can, because the launch knows whether it is founding.
  *
  * The invariant this module enforces: **a machine that has never held this strand's
- * `Strand.Header` row, and has not read every `App` table once, must not commit to it.**
- * The founder writes the Header in its bootstrap; every other machine can only receive it
- * from a peer, so "no local Header" means "never synced". The gate therefore holds the
+ * `Strand.Header` row, and has not read every `Strand` and `App` table once, must not commit
+ * to it.** The founder writes the Header in its bootstrap; every other machine can only receive
+ * it from a peer, so "no local Header" means "never synced". The gate therefore holds the
  * freshly initialized `StrandDatabase` back from the app — `StrandInstance.database` stays
  * unset and the instance reports `'syncing'` — and probes, whenever data lands in the strand's
- * store and on a backstop timer, until the Header is readable AND a read of each app table
+ * store and on a backstop timer, until the Header is readable AND a read of each other table
  * settles, at which point the database is published and the instance goes `'active'`. A
- * machine whose store already holds the Header and every app table (a founder, and normally a
- * restart or a hibernation resume) passes the probe on the first try and is never gated, so
+ * machine whose store already holds the Header and every other table (a founder, and normally
+ * a restart or a hibernation resume) passes the probe on the first try and is never gated, so
  * offline-first writes on a machine that has synced before keep working.
  *
  * "Has synced before" is decided by what the local store actually holds, not by whether this
@@ -29,23 +29,26 @@
  * it kept, without the `Strand.Header` collection it had read before it left. Gating it is
  * right: writing into a collection this machine does not hold would fork it.
  *
- * Why the app tables too: the Header is ONE collection. It reaches a joiner ahead of the
- * founder's app-table collections (peer-join backfill and pull-on-read deliver those
- * separately), and a write to a table whose collection this machine has not yet fetched
- * invents one exactly as a lone joiner did. Measured on the reference chat schema
- * (2026-09-16, direct connections, Header-only probe): the joiner's participant + message
- * written the instant `addStrand` resolved diverged in 3 of 4 runs. Reading each table once
- * pulls its collection while the founder is reachable, so the write that follows appends.
+ * Why the other tables too: the Header is ONE collection. It reaches a joiner ahead of the
+ * founder's other collections (peer-join backfill and pull-on-read deliver those separately),
+ * and a write to a table whose collection this machine has not yet fetched invents one exactly
+ * as a lone joiner did. Measured on the reference chat schema (2026-09-16, direct connections,
+ * Header-only probe): the joiner's participant + message written the instant `addStrand`
+ * resolved diverged in 3 of 4 runs. The same holds for the `Strand` tables, which reach a joiner
+ * by the same backfill: the membership loop writes `ConsumedInvite`, `Member` and `MemberPeer`
+ * about a second after publication, and a manager writes `Invite`, `CancelledInvite`, `Manager`
+ * and `Revocation`. Reading each table once pulls its collection while the founder is
+ * reachable, so the write that follows appends.
  *
- * Every probe read is `select 1 from <table> limit 1` (`Strand.Header`, then each `App` table not
- * yet seen settled): opening the table fetches its collection header, and one row walks the
- * root to the first leaf. Reads never commit a collection (one ruled authoritatively absent is
- * staged empty in memory only, and an unreachable one throws), so probing is safe to repeat
- * and a throw is just "not yet". Every table declared at founding has a collection
- * from the start (the founder bootstrap commits the rest empty before its founding transaction
- * writes the Header and the membership rows), so a probe read
- * fetches it; a table a later schema version adds reads as absent until its first write
- * creates the collection — see `docs/strands.md` ("Joining") for that residual.
+ * Every probe read is `select 1 from <table> limit 1` (`Strand.Header`, then each other `Strand`
+ * table, then each `App` table, skipping those already seen settled): opening the table fetches
+ * its collection header, and one row walks the root to the first leaf. Reads never commit a
+ * collection (one ruled authoritatively absent is staged empty in memory only, and an
+ * unreachable one throws), so probing is safe to repeat and a throw is just "not yet". Every
+ * table declared at founding has a collection from the start (the founder bootstrap commits the
+ * rest empty before its founding transaction writes the Header and the membership rows), so a
+ * probe read fetches it; a table a later schema version adds reads as absent until its first
+ * write creates the collection — see `docs/strands.md` ("Joining") for that residual.
  *
  * Owned by `StrandInstanceManager`: created in `buildStrandDatabase` for every database build, armed
  * only for a non-founder launch whose first probe fails, stopped and dropped in
@@ -83,7 +86,7 @@ const log = debug('sereus:cadre:strand-first-sync');
  * Why 2 s: arrivals wake the gate, so this timer is the fallback rather than the main path. At
  * the supported 3 s link round trip one consult takes about 6 s (two round trips, per the 1.8.0
  * measurements on {@link DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS}), so a 2 s idle gap after a failed
- * probe adds at most a third of one probe round, and it is under 1% of that 300 s budget. Shorter
+ * probe adds at most a third of one probe round, and it is under 1% of that 360 s budget. Shorter
  * brings back the cost of polling (the gate re-probed every 500 ms before it woke on arrivals);
  * much longer (5 s) delays the case with no storage event by most of a probe round for nothing.
  */
@@ -118,6 +121,21 @@ export const DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS = 2_000;
  * deadline makes a consult against a peer that cannot answer cost longer, and this phase runs
  * several of those — which is why both bands are recorded here, and why a change to either
  * number has to be weighed against the other.
+ *
+ * AT THE SUPPORTED LINK ON `@optimystic/*` 1.17.0 (2026-10-21), 1 500 ms one-way, the same
+ * scenario, one run per arm, with the probe reading every `Strand` table as well as the `App`
+ * one (`debt-first-sync-gate-reads-every-strand-table`); the kept-store arm was not run:
+ *  - Fresh join: writable at 28.7 s and NOT gated, as on 1.15.0.
+ *  - Re-attach over an EMPTY store: writable at 105.8 and 105.9 s over two runs, the row A wrote
+ *    while B was away readable at the same moment. B's first database build fails at 7.0 s (no
+ *    seed peer has answered; `StrandInstanceManager.deferUnreachableJoin` retries it), B's strand
+ *    node connects to A's at 15.1 s, the retried build's `connectToStrand` takes 21.2 s, and the
+ *    launch's first probe then takes 72.6 s and passes with no read failing, so the gate never
+ *    arms.
+ *  - The same arm with the probe held to the Header and the `App` table (one run, otherwise the
+ *    same build): that probe took 12.1 s, writable at 45.4 s, the row at 63.5 s. So the seven
+ *    `Strand` reads cost about 60 s here, about 8.6 s each, against about 6 s for each of the
+ *    baseline's two reads — more than the 42 s estimated from one 6 s consult per read.
  *
  * AT THE SUPPORTED LINK ON `@optimystic/*` 1.15.0 (2026-10-20), 1 500 ms one-way, the same
  * scenario, one fresh-join run, with the one-row probes woken by data landing in the store
@@ -191,19 +209,19 @@ export const DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS = 2_000;
  * injector are unknown to us) opened the gate at about 150 s, after the previous 120 s budget
  * had already rejected; and a real Galaxy S7 joining fresh through relay.sereus.org took 178 s.
  *
- * 300 s clears the worst harness sample (82 s, a fresh join at the supported link on 1.7.0; the
- * worst on 1.8.0 is 64 s) by about 3.6x, the reporter's re-attach by 2x and the device join by
- * about 1.7x. Kept at 300 s on 2026-09-29, and again after the 1.8.0 re-measure the same day,
- * by the rule that re-measure applied and the next one should: keep it while the
- * worst harness sample is at most 100 s, which holds a margin of at least 3x; otherwise raise
- * it to 3x the worst sample, rounded up to the next whole minute. 240 s was rejected earlier:
- * it clears the device join by only 1.35x, and that sample was not a re-attach. History: the
- * original 30 s sat INSIDE the 1000 ms fresh band and refused about half of those joins while
- * their sync was progressing normally; 120 s was sized from fresh joins only and refused the
- * reporter's re-attach.
+ * 360 s clears the worst harness sample (105.9 s, a re-attach over an empty store at the
+ * supported link on 1.17.0) by about 3.4x, the reporter's re-attach by 2.4x and the device join
+ * by about 2x. Set by the rule every re-measure applies: keep it while the worst harness sample
+ * is at most 100 s, which holds a margin of at least 3x; otherwise raise it to 3x the worst
+ * sample, rounded up to the next whole minute. The 1.17.0 sample crossed 100 s, and 3x 105.9 s
+ * is 318 s, so 360 s (2026-10-21); the 1.7.0 and 1.8.0 re-measures (worst 82 s and 64 s) had
+ * kept the 300 s before it. 240 s was rejected earlier: it clears the device join by only 1.35x,
+ * and that sample was not a re-attach. History: the original 30 s sat INSIDE the 1000 ms fresh
+ * band and refused about half of those joins while their sync was progressing normally; 120 s
+ * was sized from fresh joins only and refused the reporter's re-attach.
  *
- * NOTE: accepted tradeoff — what 300 s costs. This wait is what an app's `addStrand` sits in
- * before it is told "not yet", so a strand none of whose members is reachable at all takes five
+ * NOTE: accepted tradeoff — what 360 s costs. This wait is what an app's `addStrand` sits in
+ * before it is told "not yet", so a strand none of whose members is reachable at all takes six
  * minutes to report instead of two. The slow report was weighed against refusing attaches that
  * were working, and the refusal is the worse failure. The cost is bounded — the rejection is
  * retryable, the strand stays launched and keeps probing, and `strand:writable` fires the
@@ -213,7 +231,7 @@ export const DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS = 2_000;
  * sync that is actually in progress — worth more the longer this budget gets.
  */
 // eslint-disable-next-line no-restricted-syntax -- measured, not derived: the bands above, from integration-tests' strand-reattach-first-sync-measure.integration.ts; a whole first sync has no round-trip count
-export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 300_000;
+export const DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS = 360_000;
 
 /** Embedder-facing tuning for the gate, threaded from `CadreNodeConfig.strandFirstSync`. */
 export interface StrandFirstSyncConfig {
@@ -322,17 +340,32 @@ async function tableReadable(db: Database, table: ProbedTable, label: string): P
   }
 }
 
-/** The tables the sApp declared in the `App` schema; views excluded. */
-function appTables(db: Database): ProbedTable[] {
-  const app = db.schemaManager.getSchema('App');
-  return app
-    ? Array.from(app.getAllTables()).filter((table) => !table.isView).map((table) => ({ schema: 'App', name: table.name }))
+/** The tables `schemaName` declares, views excluded; none when the schema is absent. */
+function schemaTables(db: Database, schemaName: string): ProbedTable[] {
+  const schema = db.schemaManager.getSchema(schemaName);
+  return schema
+    ? Array.from(schema.getAllTables()).filter((table) => !table.isView).map((table) => ({ schema: schemaName, name: table.name }))
     : [];
 }
 
 /**
- * The gate's whole probe: the Header is held AND a read of every `App` table has settled. Reads
- * only what `progress` does not record yet, and records what it establishes.
+ * Every table this machine may write, in probe order: the membership tables in `Strand` (a fixed
+ * set every strand has) and then the sApp's in `App`. The Header is left out, compared
+ * case-insensitively as SQL identifiers are, because it is read first and alone, and its read
+ * means something else (held = a row came back).
+ */
+function writableTables(db: Database): ProbedTable[] {
+  const header = STRAND_HEADER.name.toLowerCase();
+  return [
+    ...schemaTables(db, STRAND_HEADER.schema).filter((table) => table.name.toLowerCase() !== header),
+    ...schemaTables(db, 'App')
+  ];
+}
+
+/**
+ * The gate's whole probe: the Header is held AND a read of every other `Strand` table and every
+ * `App` table has settled. Reads only what `progress` does not record yet, and records what it
+ * establishes.
  *
  * The Header is read first and alone: a joiner with no peer would otherwise pay one failing
  * network read per table for nothing. The tables are then read one after another, stopping at
@@ -356,7 +389,7 @@ async function strandFirstSyncComplete(db: Database, label: string, progress: Fi
     }
     progress.header = true;
   }
-  for (const table of appTables(db)) {
+  for (const table of writableTables(db)) {
     const name = qualifiedName(table);
     if (progress.tables.has(name)) {
       continue;
@@ -393,8 +426,8 @@ export interface StrandFirstSyncGateDeps {
 
 /**
  * Holds one launch's `StrandDatabase` until the first sync completes: the `Strand.Header` row is
- * held and a read of every `App` table has settled. What a probe established is remembered for
- * the gate's lifetime, so a later probe — the gate's own, after the caller's
+ * held and a read of every `Strand` and `App` table has settled. What a probe established is
+ * remembered for the gate's lifetime, so a later probe — the gate's own, after the caller's
  * {@link probeOnce} — reads only what is still missing. A gate lives for one database build, so a
  * hibernation wake or a deferred-join retry starts over, and over a store that holds everything
  * every read answers locally.
@@ -511,7 +544,7 @@ export class StrandFirstSyncGate {
 
   /**
    * One probe's answer, reading only what this gate has not yet seen settled. A throw from
-   * OUTSIDE the probe's own read guards — the `App` schema lookup, or `getDatabase()` itself — is
+   * OUTSIDE the probe's own read guards — a schema lookup, or `getDatabase()` itself — is
    * reported as "not yet" like any failing read, so the caller's first probe cannot fail the
    * launch over it and the gate's log says what happened.
    */
@@ -560,7 +593,7 @@ export class StrandFirstSyncGate {
     if (this.stopped || this.opened || !held) return;
     this.opened = true;
     this.stop();
-    log('[%s] first-sync gate opened: Strand.Header and every App table read from a peer', this.deps.label);
+    log('[%s] first-sync gate opened: Strand.Header, every Strand table and every App table read from a peer', this.deps.label);
     this.deps.onHeaderHeld();
   }
 }
