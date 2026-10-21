@@ -806,7 +806,7 @@ describe('SeedBootstrapService Helper Methods', () => {
   describe('reauthorizePeer', () => {
     it('requires an owner signer even with no control database attached', async () => {
       const service = new SeedBootstrapService({ partyId });
-      await expect(service.reauthorizePeer('12D3KooWTestPeer', Date.now()))
+      await expect(service.reauthorizePeer('12D3KooWTestPeer', 'rebroadcast'))
         .rejects.toThrow('Owner signer required');
     });
   });

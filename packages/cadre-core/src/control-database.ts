@@ -18,7 +18,7 @@ import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDo
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { verifyCadreInviteRow, verifyOwnerGrantRow } from './peer-authorization.js';
 import { OWNER_KEY_MAX_LABEL } from './owner-key-export.js';
-import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
+import { retryControlWrite, LOST_UPDATE_RETRY_POLICY, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
 import { isCohortUnreachableRead, retryControlRead } from './control-read-retry.js';
 import type { ControlReadRetryOptions } from './control-read-retry.js';
@@ -593,6 +593,34 @@ export function ownerKeyLabel(label: string | null | undefined): string | null {
  */
 export type ControlSign = (message: Uint8Array) => string | Promise<string>;
 
+/**
+ * Signs this node's own address record over its `CadrePeer` row as it stands —
+ * {@link ControlDatabase.updateSelfPeerRecord}'s callback, run inside the locked write body on
+ * every attempt, so the record written is always stamped past the row that was actually read.
+ */
+export type SelfRecordSigner = (current: PeerAddressRecord) => PeerAddressRecord;
+
+/**
+ * Which owner re-touch {@link ControlDatabase.reauthorizeCadrePeer} makes over a `CadrePeer` row:
+ *
+ * - `'rebroadcast'` — the write-while-alone drain re-emitting a row that committed local-only. It
+ *   bumps `UpdatedAt` so the row goes out as a fresh transaction, and writes only while the row's
+ *   `Sig` is null: once the machine has self-published, the row is its to refresh, and a bump
+ *   without a re-sign would leave its signature unverifiable.
+ * - `'revouch'` — an owner rebinding the row's voucher to its own key before the vouching key is
+ *   removed (`CadreNode.removeOwner`). Written whether or not the machine has self-published, and
+ *   leaves `UpdatedAt` untouched, so a self-signed record stays verifiable.
+ */
+export type CadrePeerRetouchMode = 'rebroadcast' | 'revouch';
+
+/**
+ * What {@link ControlDatabase.reauthorizeCadrePeer} found and did: the row was re-touched; no
+ * readable row exists (absent, or its stamp retired); or — `'rebroadcast'` only — the machine has
+ * self-published since, so the row is no longer the owner's to re-emit. The two no-write outcomes
+ * are decided over the row as read inside the locked body, so a caller can act on them.
+ */
+export type CadrePeerRetouchOutcome = 'retouched' | 'absent' | 'self-published';
+
 /** A formation invitation written with a founding ({@link FoundingRows}), bound to the strand founded. */
 export interface FoundingInvite {
   /** The invitation token, the `FormationInvite` primary key. */
@@ -860,6 +888,42 @@ function cadrePeerRowOf(row: Record<string, SqlValue>): CadrePeerRow {
     vouchSig: (row.VouchSig as string | null) ?? null,
     vouchUsage: (row.VouchUsage as string | null) ?? null,
   };
+}
+
+/** A {@link CadrePeerRow} as the address record its machine signed ({@link PeerAddressRecord}); see {@link ControlDatabase.queryPeerRecord} for the coalescing. */
+function peerAddressRecordOf(row: CadrePeerRow): PeerAddressRecord {
+  const multiaddr = row.multiaddr ?? '';
+  return {
+    peerId: row.peerId,
+    publicKey: row.publicKey ?? '',
+    addrs: multiaddr.length > 0 ? multiaddr.split(',') : [],
+    updatedAt: row.updatedAt,
+    profile: row.profile,
+    sig: row.sig ?? '',
+  };
+}
+
+/** The columns {@link ControlDatabase.reauthorizeCadrePeer} signs over and bumps: a row it may write. */
+interface RetouchTarget {
+  stampId: string;
+  updatedAt: number;
+}
+
+/**
+ * {@link ControlDatabase.reauthorizeCadrePeer}'s decision over the row as read: the row to write,
+ * or the {@link CadrePeerRetouchOutcome} that says why nothing is written — no readable row (a
+ * stampless row counts, since the voucher digest binds the stamp), or a self-published row in
+ * `'rebroadcast'` mode. One function so the pre-check outside the lock and the re-check inside it
+ * cannot disagree.
+ */
+function retouchTarget(row: CadrePeerRow | null, mode: CadrePeerRetouchMode): RetouchTarget | 'absent' | 'self-published' {
+  if (row === null || row.stampId === null) {
+    return 'absent';
+  }
+  if (mode === 'rebroadcast' && row.sig !== null) {
+    return 'self-published';
+  }
+  return { stampId: row.stampId, updatedAt: row.updatedAt };
 }
 
 /** A stored `Revocation` row as a {@link RevocationRow}; the caller has already skipped {@link REVOCATION_LEDGER_MARKER}. */
@@ -2065,10 +2129,11 @@ export class ControlDatabase {
    * guard. A read retrying there would sleep its backoff HOLDING the write lock
    * (`retryControlWrite`'s contract is that backoff sleeps happen with no lock held), and
    * the write funnel already re-runs the body's reads when it re-runs the body. The
-   * unlocked callers — the public stamp readers, {@link reauthorizeCadrePeer} and
-   * {@link reapRevokedRow}, whose stamp reads run BEFORE their locks are taken — keep the
-   * default retried path. Explicit per call rather than an ambient flag: unlocked reads
-   * run concurrently with a locked body, so `this`-state cannot tell the two apart.
+   * unlocked callers — the public stamp readers and {@link reapRevokedRow}, whose stamp
+   * read runs BEFORE its lock is taken — keep the default retried path. Explicit per call
+   * rather than an ambient flag: unlocked reads run concurrently with a locked body, so
+   * `this`-state cannot tell the two apart. The same flag threads through
+   * {@link findCadrePeerRow} for the two writers that read the whole row inside their body.
    */
   private async queryStampId(
     table: RevocableTable,
@@ -2086,8 +2151,8 @@ export class ControlDatabase {
   /**
    * `CadrePeer` stamp nonce — read by {@link SeedBootstrapService.removePeer} as its
    * row-present gate before it delegates to {@link deleteCadrePeer}. The in-class
-   * `CadrePeer` writers ({@link insertCadrePeer}, {@link reauthorizeCadrePeer}) go
-   * straight to {@link queryStampId}.
+   * `CadrePeer` writers go straight to {@link queryStampId} ({@link insertCadrePeer}) or read
+   * the whole row ({@link reauthorizeCadrePeer}, through {@link findCadrePeerRow}).
    */
   queryCadrePeerStampId(peerId: string): Promise<string | null> {
     return this.queryStampId('CadrePeer', peerId);
@@ -2271,31 +2336,36 @@ export class ControlDatabase {
    * The split `addrs` re-join to the exact stored `Multiaddr` (split-on-`,` is
    * the inverse of join-on-`,`), so the resolver re-verifies over the same bytes
    * the publisher signed.
+   *
+   * `retry: false` from the one caller that reads under the write lock,
+   * {@link updateSelfPeerRecord}'s body, for the reason on {@link queryCadrePeers}.
    */
-  async queryPeerRecord(peerId: string): Promise<PeerAddressRecord | null> {
-    this.ensureInitialized();
-    const revoked = await this.queryRevokedStamps('CadrePeer');
-    const row = (await this.readMembershipRows(this.cadrePeerView, true)).find((candidate) => candidate.PeerId === peerId);
-    if (row === undefined) {
-      return null;
-    }
-    const stampId = (row.StampId as string | null) ?? null;
-    if (stampId !== null && revoked.has(stampId)) {
-      return null;
-    }
-    const multiaddr = (row.Multiaddr as string | null) ?? '';
-    return {
-      peerId: row.PeerId as string,
-      publicKey: (row.PublicKey as string | null) ?? '',
-      addrs: multiaddr.length > 0 ? multiaddr.split(',') : [],
-      updatedAt: (row.UpdatedAt as number | null) ?? 0,
-      profile: (row.Profile as NodeProfile | null) ?? null,
-      sig: (row.Sig as string | null) ?? '',
-    };
+  async queryPeerRecord(peerId: string, retry = true): Promise<PeerAddressRecord | null> {
+    const row = await this.findCadrePeerRow(peerId, retry);
+    return row === null ? null : peerAddressRecordOf(row);
   }
 
   /**
-   * Apply a peer's own self-signed address-record update to an existing row.
+   * One readable `CadrePeer` row by PeerId from the membership view, or null when no row exists
+   * or its stamp is retired in `Revocation` — the single-row read behind {@link queryPeerRecord}
+   * and the two writers that decide over the row inside their locked body
+   * ({@link updateSelfPeerRecord}, {@link reauthorizeCadrePeer}). Same retired-stamp rule as
+   * {@link queryCadrePeers}, and the same `retry` contract.
+   */
+  private async findCadrePeerRow(peerId: string, retry: boolean): Promise<CadrePeerRow | null> {
+    this.ensureInitialized();
+    const revoked = await this.queryRevokedStamps('CadrePeer', retry);
+    const row = (await this.readMembershipRows(this.cadrePeerView, retry)).find((candidate) => candidate.PeerId === peerId);
+    if (row === undefined) {
+      return null;
+    }
+    const peer = cadrePeerRowOf(row);
+    return peer.stampId !== null && revoked.has(peer.stampId) ? null : peer;
+  }
+
+  /**
+   * Apply a peer's own self-signed address-record update to its existing row: read the row
+   * under the write lock, have `sign` build the record over it, and write that record.
    *
    * Authorization is carried entirely by the record: the `Sig` column (verified
    * by the `AuthorizedUpdate` self-branch against the stored `PublicKey`) plus
@@ -2303,6 +2373,21 @@ export class ControlDatabase {
    * is the refresh path for any member — owner or drone — once its row
    * exists. `PublicKey` is intentionally not in the SET list (it is immutable on
    * self-update and the constraint enforces `new.PublicKey = old.PublicKey`).
+   *
+   * The read, the decision and the signature all run INSIDE the locked body, which is what
+   * lets it opt into {@link LOST_UPDATE_RETRY_POLICY}: the row has a second writer, the owner's
+   * re-touch ({@link reauthorizeCadrePeer}), and the two fire together while a cadre starts.
+   * When this write loses that race the commit is refused as a lost update and re-run, and the
+   * re-run reads the row the rival left — including its bumped `UpdatedAt`, which a record
+   * signed before the race could no longer exceed — and signs past it. A record signed outside
+   * the body would be re-presented unchanged and refused again, this time by the schema's
+   * monotonic rule, which is correctly never retried. The row's read inside is `retry: false`
+   * (see {@link queryStampId}'s NOTE).
+   *
+   * Returns the record actually written, so the caller's bookkeeping describes the row rather
+   * than the first record it signed; null, and nothing written, when no readable row exists:
+   * the row is absent, or its stamp is retired in `Revocation` (a revoked node reads its own row
+   * as absent every heartbeat, and must not refresh it).
    *
    * Deliberately NOT wrapped in {@link mutateCadrePeer}, the one `CadrePeer` mutator that
    * is not: it only ever touches THIS node's own row (sole caller
@@ -2316,17 +2401,34 @@ export class ControlDatabase {
    * row, and a self insert happens once at startup, so the wasted refresh is a single read
    * — cheaper than a conditional carve-out inside the shared writer. Only the repeating
    * path is worth exempting.
+   *
+   * @param peerId - the row to refresh: this node's own.
+   * @param sign - builds the signed record over the row as read; called once per attempt.
    */
-  async updateSelfPeerRecord(record: PeerAddressRecord): Promise<void> {
+  async updateSelfPeerRecord(peerId: string, sign: SelfRecordSigner): Promise<PeerAddressRecord | null> {
     this.ensureInitialized();
-    const multiaddr = record.addrs.join(',');
-    await this.execWrite(`
-      update CadreControl.CadrePeer
-        with context OwnerKey = null, Signature = ?
-        set Multiaddr = ?, UpdatedAt = ?, Profile = ?, Sig = ?
-        where PeerId = ?
-    `, [record.sig, multiaddr, record.updatedAt, record.profile, record.sig, record.peerId], 'self-record-update');
-    log('Self peer record updated: %s (updatedAt=%d)', record.peerId, record.updatedAt);
+    const written = await this.lockedWithRetry(async () => {
+      // retry: false — inside the locked write body (see queryStampId's NOTE).
+      const current = await this.queryPeerRecord(peerId, false);
+      if (current === null) {
+        return null;
+      }
+      const record = sign(current);
+      // Bare `exec` — inside the non-re-entrant write lock (see insertCadrePeer).
+      await this.db!.exec(`
+        update CadreControl.CadrePeer
+          with context OwnerKey = null, Signature = ?
+          set Multiaddr = ?, UpdatedAt = ?, Profile = ?, Sig = ?
+          where PeerId = ?
+      `, [record.sig, record.addrs.join(','), record.updatedAt, record.profile, record.sig, peerId]);
+      return record;
+    }, LOST_UPDATE_RETRY_POLICY, 'self-record-update');
+    if (written === null) {
+      log('Self peer record not updated: no readable CadrePeer row for %s (absent, or its stamp retired)', peerId);
+    } else {
+      log('Self peer record updated: %s (updatedAt=%d)', peerId, written.updatedAt);
+    }
+    return written;
   }
 
   /**
@@ -2592,6 +2694,13 @@ export class ControlDatabase {
    * body, and a row whose stamp is already retired (held without its delete) is skipped rather
    * than tombstoned twice. Nothing to remove writes nothing and returns all false.
    *
+   * Opted into {@link LOST_UPDATE_RETRY_POLICY} for the reason on {@link deleteCadrePeer}: every
+   * stamp and signature is minted inside the body, and the invitation keys come from the
+   * caller's plan, which a self-publish does not touch (a withdrawal of an invitation withdrawn
+   * since collides on `Revocation`'s primary key — a constraint failure, never retried, as
+   * before). A lost update after a sibling tree of the transaction already synced arrives as a
+   * partial commit and stays declined.
+   *
    * The caller decides which invitations the machine could use, from its plan
    * (`CadreNode.planMachineRemoval`).
    */
@@ -2628,7 +2737,7 @@ export class ControlDatabase {
         removedDeviceToken: removed.has('DeviceToken'),
         withdrawnInvitations: withdrawals.map((withdrawal) => withdrawal.ref.rowKey),
       };
-    });
+    }, LOST_UPDATE_RETRY_POLICY);
   }
 
   /**
@@ -3260,32 +3369,44 @@ export class ControlDatabase {
   }
 
   /**
-   * Owner "re-touch" of an existing `CadrePeer` membership row: bump `UpdatedAt` and
-   * rewrite `VouchOwner`/`VouchSig` under the owner branch of `CadrePeer.AuthorizedUpdate`
-   * (a signature over the SAME `'vouch'`-tagged digest {@link insertCadrePeer} builds), so
-   * the row is re-emitted as a fresh, broadcasting transaction.
+   * Owner "re-touch" of an existing `CadrePeer` membership row: rewrite `VouchOwner`/`VouchSig`
+   * (and, re-broadcasting, bump `UpdatedAt`) under the owner branch of
+   * `CadrePeer.AuthorizedUpdate` — a signature over the SAME `'vouch'`-tagged digest
+   * {@link insertCadrePeer} builds — so the row is re-emitted as a fresh, broadcasting
+   * transaction, or stands on a different owner's voucher.
    *
-   * This is the write-while-alone re-replication primitive: a membership row that committed
-   * local-only (its block's cluster ≤1 at insert) is pushed to the cohort once it grows, by
-   * re-issuing this monotonic bump. It is an UPDATE (not the original INSERT) because the row
-   * already exists locally; a re-INSERT would hit the `PeerId` PK. Only the freshness stamp
-   * and voucher change — `PublicKey` / `Multiaddr` / `Sig` / `Profile` are left intact (the
-   * owner branch requires them kept: they are the machine's own claim) — so it is safe
-   * over a row whose peer has not self-published (`Sig` null); the caller must skip a row
-   * that already carries a self-`Sig` (that row is the owning peer's to refresh, and bumping
-   * `UpdatedAt` without re-signing would invalidate its self-signature).
+   * Re-broadcasting is the write-while-alone re-replication primitive: a membership row that
+   * committed local-only (its block's cluster ≤1 at insert) is pushed to the cohort once it
+   * grows, by re-issuing this monotonic bump. It is an UPDATE (not the original INSERT) because
+   * the row already exists locally; a re-INSERT would hit the `PeerId` PK. Only the freshness
+   * stamp and voucher change — `PublicKey` / `Multiaddr` / `Sig` / `Profile` are left intact
+   * (the owner branch requires them kept: they are the machine's own claim) — so it is safe
+   * over a row whose peer has not self-published (`Sig` null), and this method itself skips a
+   * row that already carries a self-`Sig` (that row is the owning peer's to refresh, and
+   * bumping `UpdatedAt` without re-signing would invalidate its self-signature).
    *
-   * Signs over the row's CURRENT `StampId` (unchanged by the re-touch), read BEFORE the lock
-   * is taken. An absent row returns `false` WITHOUT notifying: nothing was written, so the
-   * membership snapshot cannot have changed.
+   * The two modes ({@link CadrePeerRetouchMode}) differ in what they write: `'rebroadcast'`
+   * bumps `UpdatedAt` to `max(now, current + 1)` from the row read inside the body and writes
+   * only while the row's `Sig` is null; `'revouch'` leaves `UpdatedAt` out of the `set` list and
+   * writes whether or not the machine has self-published (the owner branch has no monotonic
+   * rule, so the column simply keeps its value).
    *
-   * NOTE: that stamp read is outside the lock, same as {@link deleteGuardedRow}'s. A writer
-   * that removes the row in between makes the `update` match nothing, and this still returns
-   * `true` and notifies — harmless today (the sole caller, the write-while-alone drain, only
-   * logs the result, and a spurious notify just re-reads the member set), and a remove-then-
-   * re-add in the same window fails loudly instead, since the signature binds the retired
-   * stamp. If a caller ever acts on `true` as proof the row was written, fold the stamp read
-   * into the locked body.
+   * The row read (stamp, `Sig`, `UpdatedAt`), the mode's decision and the signature over the
+   * row's CURRENT `StampId` (unchanged by the re-touch) all run INSIDE the locked body, which is
+   * what lets both modes opt into {@link LOST_UPDATE_RETRY_POLICY}: the row's other writer is
+   * the machine's own publish ({@link updateSelfPeerRecord}), and the drain's re-broadcast fires
+   * at the moment that publish does. A re-run after losing to it reads the self-signed row and
+   * reports `'self-published'` instead of writing the owner branch over it — which would rewrite
+   * `UpdatedAt` under a `Sig` signed over the old value and make the record unverifiable to
+   * resolvers until the machine's next heartbeat. The decision has to be the body's for that;
+   * a caller's pre-check outside the lock is only a fast path (see below).
+   *
+   * An absent row — none, or its stamp retired, or a stampless row no writer produces — is
+   * `'absent'`. Checked once outside the lock too, as `'self-published'` is: the common case
+   * writes nothing, takes no lock and does NOT notify, so an absent target stays quiet
+   * ({@link SeedBootstrapService.removePeer} keeps the same gate for the same reason). The
+   * in-body re-check covers the race; a no-write outcome reached there notifies spuriously,
+   * which only re-reads the member set.
    *
    * Notifies like the insert/remove paths even though this is "only" a re-touch: it rewrites
    * VouchOwner/VouchSig, which the authorized-membership predicate judges on, so it CAN
@@ -3308,36 +3429,52 @@ export class ControlDatabase {
    * VouchOwner/VouchSig) rather than inherit this rebinding.
    *
    * @param peerId - the membership row to re-touch.
-   * @param updatedAt - the strictly-increasing freshness stamp to write.
+   * @param mode - re-broadcast or re-vouch ({@link CadrePeerRetouchMode}).
    * @param ownerKey - public key of the re-vouching owner, rewritten into `VouchOwner`.
-   * @param signMessage - ed25519-signs the raw message bytes with that owner's private key.
-   * @returns `true` when the row was re-touched, `false` when no row exists (no notify).
+   * @param signMessage - ed25519-signs the raw message bytes with that owner's private key;
+   *   called inside the lock, once per attempt (the NOTE on {@link ControlSign}).
+   * @returns what was found and done ({@link CadrePeerRetouchOutcome}).
    */
   async reauthorizeCadrePeer(
     peerId: string,
-    updatedAt: number,
+    mode: CadrePeerRetouchMode,
     ownerKey: string,
     signMessage: ControlSign
-  ): Promise<boolean> {
+  ): Promise<CadrePeerRetouchOutcome> {
     this.ensureInitialized();
-    const stampId = await this.queryStampId('CadrePeer', peerId);
-    if (stampId === null) {
-      log('reauthorizeCadrePeer: no CadrePeer row for %s (nothing to re-touch)', peerId);
-      return false;
+    const outside = retouchTarget(await this.findCadrePeerRow(peerId, true), mode);
+    if (typeof outside === 'string') {
+      log('reauthorizeCadrePeer(%s): %s for %s (nothing to write)', mode, outside, peerId);
+      return outside;
     }
-    const signature = await signMessage(
-      buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', this.config.partyId, [peerId, stampId])
-    );
-    await this.mutateCadrePeer('peer-reauthorize', async () => {
+    return await this.mutateCadrePeer('peer-reauthorize', async () => {
+      // retry: false — inside the locked write body (see queryStampId's NOTE).
+      const target = retouchTarget(await this.findCadrePeerRow(peerId, false), mode);
+      if (typeof target === 'string') {
+        log('reauthorizeCadrePeer(%s): %s for %s since the pre-check (nothing to write)', mode, target, peerId);
+        return target;
+      }
+      const signature = await signMessage(
+        buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', this.config.partyId, [peerId, target.stampId])
+      );
       // Bare `exec` — inside the non-re-entrant write lock (see insertCadrePeer).
-      await this.db!.exec(`
-        update CadreControl.CadrePeer
-          with context OwnerKey = ?, Signature = ?
-          set UpdatedAt = ?, VouchOwner = ?, VouchSig = ?, VouchUsage = null
-          where PeerId = ?
-      `, [ownerKey, signature, updatedAt, ownerKey, signature, peerId]);
-    });
-    return true;
+      if (mode === 'rebroadcast') {
+        await this.db!.exec(`
+          update CadreControl.CadrePeer
+            with context OwnerKey = ?, Signature = ?
+            set UpdatedAt = ?, VouchOwner = ?, VouchSig = ?, VouchUsage = null
+            where PeerId = ?
+        `, [ownerKey, signature, Math.max(Date.now(), target.updatedAt + 1), ownerKey, signature, peerId]);
+      } else {
+        await this.db!.exec(`
+          update CadreControl.CadrePeer
+            with context OwnerKey = ?, Signature = ?
+            set VouchOwner = ?, VouchSig = ?, VouchUsage = null
+            where PeerId = ?
+        `, [ownerKey, signature, ownerKey, signature, peerId]);
+      }
+      return 'retouched';
+    }, LOST_UPDATE_RETRY_POLICY);
   }
 
   /**
@@ -3359,6 +3496,12 @@ export class ControlDatabase {
    *
    * A no-op (no throw, no tombstone) when the row does not exist — `false` then, `true`
    * when a row was actually removed.
+   *
+   * Opted into {@link LOST_UPDATE_RETRY_POLICY}: the row's machine may publish its own record
+   * at the moment of the removal (its first publish lands about a second after it starts), and
+   * the removal that loses is refused as a lost update. {@link deleteGuardedRow} reads the stamp
+   * and signs inside the body, and a self-publish never changes the stamp the `'remove'` digest
+   * binds, so the re-run reads the published row and removes it.
    */
   deleteCadrePeer(
     peerId: string,
@@ -3366,7 +3509,7 @@ export class ControlDatabase {
     signMessage: ControlSign
   ): Promise<boolean> {
     return this.mutateCadrePeer('peer-remove', () =>
-      this.deleteGuardedRow('CadrePeer', peerId, ownerKey, signMessage));
+      this.deleteGuardedRow('CadrePeer', peerId, ownerKey, signMessage), LOST_UPDATE_RETRY_POLICY);
   }
 
   /**
@@ -3895,8 +4038,11 @@ export class ControlDatabase {
    * exhaustion.
    *
    * @param reason - Label for the log line only (e.g. `'peer-insert'`).
+   * @param policy - The retry policy, default unless the body has earned a wider one: the three
+   *   `CadrePeer` writers whose bodies re-read the row and decide inside pass
+   *   `LOST_UPDATE_RETRY_POLICY` (its `NOTE:` names them and the rule).
    */
-  async mutateCadrePeer<T>(reason: string, body: () => Promise<T>): Promise<T> {
+  async mutateCadrePeer<T>(reason: string, body: () => Promise<T>, policy: ControlWriteRetryOptions = {}): Promise<T> {
     this.ensureInitialized();
     return this.lockedWithRetry(async () => {
       this.assertCommitBoundary(reason, 'on entry to');
@@ -3904,7 +4050,7 @@ export class ControlDatabase {
       this.assertCommitBoundary(reason, 'on return from');
       await this.notifyMembershipChanged(reason);
       return result;
-    }, {}, reason);
+    }, policy, reason);
   }
 
   /**
@@ -3944,6 +4090,11 @@ export class ControlDatabase {
    * re-runnable means a retry re-runs the body's reads too, which is what makes it safe.
    * Signatures and stamp ids minted OUTSIDE the body are deliberately NOT re-minted per
    * attempt: a retry re-presents the exact signed message the first attempt presented.
+   * A body opted into `LOST_UPDATE_RETRY_POLICY` is the exception, and must mint INSIDE:
+   * its re-run is a re-decision over a row another writer changed, not a re-presentation of
+   * the same write, so its read of the row, its decision and its signature all run in the
+   * body ({@link updateSelfPeerRecord}, {@link reauthorizeCadrePeer}, {@link deleteGuardedRow}
+   * under {@link deleteCadrePeer}, {@link removeMachine}).
    */
   async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
     // Chain behind the current tail regardless of how it settled, then park a
@@ -3985,9 +4136,14 @@ export class ControlDatabase {
    * `initialized` is set — so it reaches this method directly rather than through
    * {@link execWrite}, whose {@link ensureInitialized} would reject it. The write queue is
    * necessarily empty at that point, so the lock is uncontended there; it is taken anyway
-   * rather than carving out a lockless path. It is also the ONLY caller that passes a
-   * `policy` — everything else takes the default, whose classifier and attempt count are
-   * unchanged by that call site existing.
+   * rather than carving out a lockless path.
+   *
+   * Two policies reach here besides the default: `SCHEMA_INIT_RETRY_POLICY` from that one
+   * call site, and `LOST_UPDATE_RETRY_POLICY` from the `CadrePeer` writers that re-read the
+   * row inside their body ({@link updateSelfPeerRecord} directly; {@link reauthorizeCadrePeer},
+   * {@link deleteCadrePeer} and {@link removeMachine} through {@link mutateCadrePeer}'s
+   * policy parameter). Everything else takes the default, whose classifier and attempt count
+   * are unchanged by those call sites existing.
    *
    * `label` names the operation in this loop's debug lines and nothing else
    * ({@link ControlWriteRetryOptions.label}). Every call site in this class supplies one:

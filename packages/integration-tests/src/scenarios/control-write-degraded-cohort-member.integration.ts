@@ -110,7 +110,7 @@ import type { ClusterRequest, ClusterService } from '@optimystic/db-p2p';
 import {
 	CadreNode, DECLARED_LINK_ROUND_TRIP_MS, isRetriableControlWriteFailure, optimysticDialLimits, signPeerRecord, ed25519KeyPairFromLibp2p
 } from '@serfab/cadre-core';
-import type { Ed25519KeyPair } from '@serfab/cadre-core';
+import type { Ed25519KeyPair, PeerAddressRecord } from '@serfab/cadre-core';
 import {
 	waitUntil, sleep, forceFullCohort, pinCoordinator, controlNodeConfig, makeOwnOwner, randomPeerId, errorChainText
 } from '../harness/index.js';
@@ -404,11 +404,13 @@ function within<T>(label: string, ms: number, op: () => Promise<T>): Promise<T> 
 }
 
 /** Await `op` and report how long it took alongside its settlement. */
-async function timedSettle(label: string, ms: number, op: () => Promise<unknown>):
-	Promise<{ error: unknown | null; elapsedMs: number }> {
+async function timedSettle<T>(label: string, ms: number, op: () => Promise<T>):
+	Promise<{ value: T | null; error: unknown | null; elapsedMs: number }> {
 	const t0 = Date.now();
-	const error = await within(label, ms, () => op().then(() => null, (e: unknown) => e));
-	return { error, elapsedMs: Date.now() - t0 };
+	const settled = await within(label, ms, () => op().then(
+		(value) => ({ value, error: null }),
+		(error: unknown) => ({ value: null, error })));
+	return { ...settled, elapsedMs: Date.now() - t0 };
 }
 
 /**
@@ -1387,7 +1389,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		//
 		// The driven write is the WRITE HALF of `registerSelf()` — the very call
 		// the wild failure was observed on — invoked directly as
-		// `updateSelfPeerRecord` with a record this case signs itself (it holds
+		// `updateSelfPeerRecord` with a signer this case supplies itself (it holds
 		// B's key). Driving whole `registerSelf` instead is NOT viable here, and
 		// that is a measured finding, not a shortcut: its PRE-write reads sit
 		// outside the write funnel, dial the coordinator on every call (a prior
@@ -1420,14 +1422,15 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const before = await within('queryPeerRecord(B) (pre-reset)', READ_TIMEOUT_MS,
 			() => bDb.queryPeerRecord(bPeerId));
 		expect(before, 'B has no CadrePeer row to refresh — the case cannot drive a self-update').not.toBeNull();
-		// Same shape `CadreNode.signSelfRecord` builds: same addrs, a strictly
-		// later `updatedAt` (the monotonic self-update rule), B's own signature.
-		const record = signPeerRecord(partyId, {
+		// Same shape `CadreNode.signSelfRecord` builds, signed inside the write body over the
+		// row as read there: same addrs, a strictly later `updatedAt` (the monotonic
+		// self-update rule), B's own signature.
+		const signRecord = (current: PeerAddressRecord): PeerAddressRecord => signPeerRecord(partyId, {
 			peerId: bPeerId,
 			publicKey: bSigningKey.publicKeyB64,
-			addrs: before!.addrs,
-			updatedAt: Math.max(Date.now(), before!.updatedAt + 1),
-			profile: before!.profile
+			addrs: current.addrs,
+			updatedAt: Math.max(Date.now(), current.updatedAt + 1),
+			profile: current.profile
 		}, bSigningKey.privateKeyB64);
 
 		const baseline = forced!.callCount();
@@ -1440,17 +1443,19 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const retryLog = captureControlRetryLogs();
 		try {
 			const outcome = await timedSettle('updateSelfPeerRecord(B) transient-reset', WRITE_TIMEOUT_MS,
-				() => bDb.updateSelfPeerRecord(record));
+				() => bDb.updateSelfPeerRecord(bPeerId, signRecord));
 			console.log(`[measured] B self-record update with ${TRANSIENT_RESET_COUNT} injected repo-stream resets on A: ${outcome.elapsedMs}ms, error: ${outcome.error === null ? 'none' : errorChainText(outcome.error)}`);
 			// The record section 1 of the coverage ticket asks for: the REAL
 			// transient failure text (aggregate and all), straight from the funnel.
 			printRetryDecisions('transient-reset', retryLog);
 
 			expect(outcome.error, 'self-record refresh across the reset seam did not commit — the retry failed to absorb the observed transient class').toBeNull();
-			// Read-back: the refresh really landed (the row carries this exact stamp).
+			expect(outcome.value, 'the refresh found no readable row for B — it wrote nothing').not.toBeNull();
+			// Read-back: the refresh really landed (the row carries the stamp of the record the
+			// body signed on its committing attempt).
 			const after = await within('queryPeerRecord(B) (post-reset)', READ_TIMEOUT_MS,
 				() => bDb.queryPeerRecord(bPeerId));
-			expect(after!.updatedAt, 'B\'s CadrePeer row does not carry the refreshed stamp — the update never committed').toBe(record.updatedAt);
+			expect(after!.updatedAt, 'B\'s CadrePeer row does not carry the refreshed stamp — the update never committed').toBe(outcome.value!.updatedAt);
 
 			// Anti-vacuity, three layers. The reset budget was fully consumed
 			// (unconsumed resets mean the write's batches never crossed the seam)…

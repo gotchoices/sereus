@@ -34,7 +34,7 @@ import type {
   RevocationRow,
   MachineRemovalResult
 } from './types.js';
-import type { ControlDatabase } from './control-database.js';
+import type { CadrePeerRetouchMode, CadrePeerRetouchOutcome, ControlDatabase } from './control-database.js';
 import { generateStampId, ownerKeyLabel } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { deviceTokenAddDigest } from './peer-authorization.js';
@@ -712,35 +712,47 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Owner "re-touch" of an existing `CadrePeer` membership row: bump `UpdatedAt` and
-   * re-vouch the row so it is re-emitted as a fresh, broadcasting transaction. This is
-   * the write-while-alone re-replication primitive (`control-write-ensure-replicated`):
-   * a membership row that committed local-only (its block's cluster ≤1 at insert) is
-   * pushed to the cohort once it grows.
+   * Owner "re-touch" of an existing `CadrePeer` membership row, in one of two modes
+   * ({@link CadrePeerRetouchMode}): `'rebroadcast'` bumps `UpdatedAt` and re-vouches the row so
+   * it is re-emitted as a fresh, broadcasting transaction — the write-while-alone re-replication
+   * primitive (`control-write-ensure-replicated`): a membership row that committed local-only
+   * (its block's cluster ≤1 at insert) is pushed to the cohort once it grows — and writes only
+   * while the machine has not self-published; `'revouch'` rebinds the voucher to this node's
+   * owner key, leaving `UpdatedAt` alone, whether or not the machine has self-published
+   * (`CadreNode.removeOwner`).
    *
-   * The stamp read, the voucher signature, the write lock and the membership notify are
+   * The row read, the mode's decision, the stamp bump, the voucher signature, the write lock,
+   * the lost-update retry and the membership notify are
    * {@link ControlDatabase.reauthorizeCadrePeer}'s — including the caveat that it rebinds
    * `VouchOwner` to this node's owner key. What stays here is the owner-signer precondition.
    *
-   * A no-op (no throw, no notify) when the row does not exist.
-   *
    * @param peerId - the membership row to re-touch.
-   * @param updatedAt - the strictly-increasing freshness stamp to write.
+   * @param mode - re-broadcast or re-vouch.
+   * @returns what was found and done ({@link CadrePeerRetouchOutcome}); an absent row, or a
+   *   self-published one in `'rebroadcast'` mode, writes nothing and does not throw.
    * @throws if no owner signer is configured (a non-owner cannot
    *   re-sign another peer's row) or the control database is not initialized.
    */
-  async reauthorizePeer(peerId: string, updatedAt: number, sign?: OwnerSign): Promise<void> {
+  async reauthorizePeer(peerId: string, mode: CadrePeerRetouchMode, sign?: OwnerSign): Promise<CadrePeerRetouchOutcome> {
     // Fail fast on a signerless service before any DB read (see removePeer): a non-owner
     // cannot re-sign the voucher, and must not silently no-op on an absent row.
     const ownerKey = this.requireOwnerSigner().publicKey;
     const controlDatabase = this.requireControlDatabase();
-    const retouched = await this.withOwnerSign(`Re-issue the membership of ${peerId}`, sign, (approved) =>
-      controlDatabase.reauthorizeCadrePeer(peerId, updatedAt, ownerKey, approved));
-    if (!retouched) {
-      log('reauthorizePeer: no CadrePeer row for %s (nothing to re-touch)', peerId);
-      return;
+    const action = mode === 'revouch' ? `Re-vouch the machine ${peerId}` : `Re-issue the membership of ${peerId}`;
+    const outcome = await this.withOwnerSign(action, sign, (approved) =>
+      controlDatabase.reauthorizeCadrePeer(peerId, mode, ownerKey, approved));
+    switch (outcome) {
+      case 'absent':
+        log('reauthorizePeer(%s): no CadrePeer row for %s (nothing to re-touch)', mode, peerId);
+        break;
+      case 'self-published':
+        log('reauthorizePeer(%s): %s has self-published; its row is its own to refresh', mode, peerId);
+        break;
+      case 'retouched':
+        log('Peer %s re-authorized (%s)', peerId, mode);
+        break;
     }
-    log('Peer %s re-authorized (UpdatedAt=%d) for write-while-alone re-replication', peerId, updatedAt);
+    return outcome;
   }
 
   /**

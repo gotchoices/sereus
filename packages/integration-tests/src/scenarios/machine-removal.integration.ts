@@ -115,13 +115,9 @@ describe('E2E an owner removes a machine from the cadre', () => {
 			expect(connectedTo(owner, bPeerId)).toBe(true);
 
 			// ── A removes machine B; B's owner key, and so C, stay ──────────────────
-			// B's first publish of its own address record rewrites its row. A removal that races it
-			// fails as a concurrent modification, which the control-write retry does not re-run
-			// (`tickets/backlog/bug-owner-write-racing-a-machines-own-publish-fails`), so let it land
-			// first. `registerSelf` joins that publish when it is in flight, or makes it.
-			await waitUntil(async () => (await removed.registerSelf()) !== 'skipped', {
-				timeoutMs: OP_MS, intervalMs: 250, description: 'B publishes its own address record',
-			});
+			// B's first publish of its own address record may still be rewriting its row: a removal
+			// that loses to it is refused as a lost update and re-run over the published row
+			// (`ControlDatabase.removeMachine`), so no wait for the publish is needed here.
 			const machinePlan = await owner.planMachineRemoval(bPeerId);
 			expect(machinePlan).toMatchObject({ refusal: null, invitations: [inviteKey] });
 			expect(machinePlan.machine).toMatchObject({ peerId: bPeerId, isSelf: false, trusted: true, vouchedBy: aOwnerKey });

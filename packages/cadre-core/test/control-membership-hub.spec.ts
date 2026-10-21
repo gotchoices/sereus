@@ -126,9 +126,32 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 		await service.authorizePeer({ peerId: peer.peerId });
 		captureFor(peer.peerId);
 
-		await service.reauthorizePeer(peer.peerId, Date.now() + 1_000);
+		await service.reauthorizePeer(peer.peerId, 'rebroadcast');
 
 		expect(captured).toEqual([{ reason: 'peer-reauthorize', rowPresent: true }]);
+	});
+
+	/**
+	 * The re-broadcast mode's decision, made inside the write over the row it reads: an
+	 * unpublished row is re-emitted with `UpdatedAt` bumped past the stored value, and a row
+	 * the machine has published since is reported instead of written — a bump without a
+	 * re-sign would leave the machine's own signature unverifiable.
+	 */
+	it('re-broadcasts only a row the machine has not published, bumping UpdatedAt from the row it reads', async () => {
+		const peer = await freshPeer();
+		await service.authorizePeer({ peerId: peer.peerId });
+		const seated = (await db.queryPeerRecord(peer.peerId))!;
+
+		expect(await service.reauthorizePeer(peer.peerId, 'rebroadcast')).toBe('retouched');
+		expect((await db.queryPeerRecord(peer.peerId))!.updatedAt).toBeGreaterThan(seated.updatedAt);
+
+		const published = await db.updateSelfPeerRecord(peer.peerId, (current) => signPeerRecord(
+			node.partyId,
+			{ peerId: peer.peerId, publicKey: peer.publicKeyB64, addrs: ['/ip4/10.0.0.5/tcp/4001'], updatedAt: current.updatedAt + 1, profile: null },
+			peer.privateKeyB64
+		));
+		expect(await service.reauthorizePeer(peer.peerId, 'rebroadcast')).toBe('self-published');
+		expect(await db.queryPeerRecord(peer.peerId)).toEqual(published);
 	});
 
 	it('does not notify when the removal target is already absent', async () => {
@@ -136,7 +159,7 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 		captureFor(peer.peerId);
 
 		await service.removePeer(peer.peerId);
-		await service.reauthorizePeer(peer.peerId, Date.now());
+		await service.reauthorizePeer(peer.peerId, 'rebroadcast');
 
 		expect(captured).toEqual([]);
 	});
@@ -168,7 +191,7 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 
 		// `updateSelfPeerRecord` is authorized by the row's OWN key, so drive it with the
 		// key behind this peerId — the shape `CadreNode.publishSelfRecord` uses on refresh.
-		await db.updateSelfPeerRecord(signPeerRecord(
+		await db.updateSelfPeerRecord(peer.peerId, () => signPeerRecord(
 			node.partyId,
 			{ peerId: peer.peerId, publicKey: peer.publicKeyB64, addrs: ['/ip4/10.0.0.2/tcp/4001'], updatedAt: Date.now() + 1_000, profile: null },
 			peer.privateKeyB64

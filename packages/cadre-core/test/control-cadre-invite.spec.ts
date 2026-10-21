@@ -140,7 +140,7 @@ describe('cadre invitations: schema and ControlDatabase', () => {
   }
 
   function peerRow(peerId: string): Promise<Record<string, unknown> | undefined> {
-    return rawDb.get('select PublicKey, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.CadrePeer where PeerId = ?', [peerId]);
+    return rawDb.get('select PublicKey, StampId, VouchOwner, VouchSig, VouchUsage, UpdatedAt from CadreControl.CadrePeer where PeerId = ?', [peerId]);
   }
 
   function ownerRow(key: string): Promise<Record<string, unknown> | undefined> {
@@ -257,12 +257,15 @@ describe('cadre invitations: schema and ControlDatabase', () => {
   it('re-vouch: an owner re-touching an invitation-admitted row moves it onto the signature and clears VouchUsage', async () => {
     const device = await mintContactJoiner();
     await admit(device);
+    const admitted = await peerRow(device.partyId);
 
-    expect(await db.reauthorizeCadrePeer(device.partyId, Date.now(), founder.publicKey, signFounder)).toBe(true);
+    expect(await db.reauthorizeCadrePeer(device.partyId, 'revouch', founder.publicKey, signFounder)).toBe('retouched');
     const peer = await peerRow(device.partyId);
     expect(peer?.VouchOwner).toBe(founder.publicKey);
     expect(typeof peer?.VouchSig).toBe('string');
     expect(peer?.VouchUsage).toBeNull();
+    // The admitted record is self-signed over its UpdatedAt; a re-vouch leaves it verifiable.
+    expect(peer?.UpdatedAt).toBe(admitted?.UpdatedAt);
     // Still a member, now judged by the voucher: the invitation is no longer consulted for it.
     expect((await node.listAuthorizedMembers()).map(member => member.peerId)).toContain(device.partyId);
   });
@@ -273,7 +276,7 @@ describe('cadre invitations: schema and ControlDatabase', () => {
     const device = await mintContactJoiner();
     const stampId = await admit(device);
     const addrs = ['/ip4/10.0.0.9/tcp/4001'];
-    await db.updateSelfPeerRecord(signPeerRecord(
+    await db.updateSelfPeerRecord(device.partyId, () => signPeerRecord(
       node.partyId,
       { peerId: device.partyId, publicKey: device.peerKey, addrs, updatedAt: Date.now() + 60_000, profile: null },
       device.privateKey,

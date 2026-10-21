@@ -144,7 +144,7 @@ import {
 import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
-import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type FoundingInvite, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
+import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type CadrePeerRetouchOutcome, type FoundingInvite, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
 import {
   CadreInviteHandler,
   encodeCadreInvitation,
@@ -3321,10 +3321,11 @@ export class CadreNode implements SAppIdLookup {
         try {
           await this.publishSelfRecordUnlessCurrent();
         } catch (error) {
-          // Background task — a failed publish must not crash the node. A restarted machine
-          // whose own CadrePeer row replicates in while this update runs fails here with
-          // ConcurrentModificationError (seen on the owner's restart in every traced run of
-          // cadre-invite-any-member); the next connected reconcile pass retries
+          // Background task — a failed publish must not crash the node. A publish that loses
+          // its row to another writer — the owner's re-touch, or a restarted machine's own row
+          // replicating in while the update runs — is re-run by the write funnel over the row
+          // it finds (`ControlDatabase.updateSelfPeerRecord`); one that lost past the retry
+          // budget fails here, and the next connected reconcile pass is the fallback
           // (publishFirstSelfRecord).
           log('Self-registration failed: %o', error);
         }
@@ -3430,41 +3431,39 @@ export class CadreNode implements SAppIdLookup {
       log('registerSelf: own CadrePeer row appeared mid-publish (concurrent authorize); self-updating to carry the signature');
     }
 
-    // Reached on the fall-through above, where the pre-race read missed the row a
-    // concurrent authorize then seated — so re-read to get that row's `UpdatedAt`, which
-    // the strictly-greater self-update rule is measured against. The re-read can still
-    // come back null (see the branch below).
-    //
-    // NOTE: when `existing` is set it predates this publish, so a removePeer(self) racing
-    // in would leave the UPDATE below matching no rows while still reporting 'refreshed'.
-    // Closing that needs updateSelfPeerRecord to report rows-affected — only worth doing
-    // if removing self ever becomes something that happens concurrently in practice.
-    const current = existing ?? await this.controlDatabase.queryPeerRecord(peerId);
-    if (!current) {
+    // The update body reads the row under the write lock and signs over what it finds, on
+    // every attempt — so neither `existing` (a read that predates this publish) nor a first
+    // attempt that lost the row to another writer decides the `UpdatedAt` the strictly-greater
+    // self-update rule is measured against, and a removal landing mid-publish re-reads as
+    // absent instead of matching no rows under a 'refreshed'. The record it returns is the
+    // one in the row.
+    const aloneBefore = this.committedAlone();
+    const record = await this.controlDatabase.updateSelfPeerRecord(peerId,
+      (current) => this.signSelfRecord(peerId, signingKey, addrs, current));
+    if (record === null) {
       // Two causes, and the second is a steady state rather than a race: the row really
       // vanished mid-publish (next refresh re-inserts), or this node was REVOKED — its row
       // is physically present, so insertCadrePeer's in-lock existence check no-op'd above,
-      // but queryPeerRecord reads it as absent because its stamp is retired. The revoked
-      // case repeats every heartbeat and never re-inserts; that is intended (a revoked node
-      // has nothing to publish), so this stays a skip, not an error.
+      // but the body reads it as absent because its stamp is retired. The revoked case
+      // repeats every heartbeat and never re-inserts; that is intended (a revoked node has
+      // nothing to publish), so this stays a skip, not an error.
       log('registerSelf: own CadrePeer row not readable (vanished mid-publish, or this node is revoked and its stamp retired); skipping');
       return 'skipped';
     }
-    const record = this.signSelfRecord(peerId, signingKey, addrs, current);
-    const aloneBefore = this.committedAlone();
-    await this.controlDatabase.updateSelfPeerRecord(record);
     this.noteSelfPeerWritten(record, aloneBefore);
     log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
     return 'refreshed';
   }
 
   /**
-   * Bookkeeping for a committed write of this node's own `CadrePeer` row by {@link publishSelfRecord}.
-   * Queued for the drain's re-touch ({@link pendingSelfPeerWrite}) when no sibling was reachable
-   * when the write started or when it ended: a sibling that identifies while the write is out may
-   * do so after the write's cohort was chosen, and the first-growth drain skips a row holding
-   * {@link lastSignedSelfRecord} unless this flag is set. Both fields are set here together so no
-   * write can leave the record without the flag.
+   * Bookkeeping for a committed write of this node's own `CadrePeer` row by {@link publishSelfRecord}:
+   * `record` is the one the row holds (for the update path, the one its body signed on the
+   * attempt that committed, not the first it signed). Queued for the drain's re-touch
+   * ({@link pendingSelfPeerWrite}) when no sibling was reachable when the write started or when
+   * it ended: a sibling that identifies while the write is out may do so after the write's cohort
+   * was chosen, and the first-growth drain skips a row holding {@link lastSignedSelfRecord} unless
+   * this flag is set. Both fields are set here together so no write can leave the record without
+   * the flag.
    */
   private noteSelfPeerWritten(record: PeerAddressRecord, aloneBefore: boolean): void {
     if (aloneBefore || this.committedAlone()) this.pendingSelfPeerWrite = true;
@@ -5059,8 +5058,11 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Body of {@link reconstructAuthoredMembership}'s sweep: re-issue each candidate
-   * owner-authored row, returning how many were re-touched. A per-row failure is
-   * logged and skipped; a teardown mid-sweep stops it.
+   * owner-authored row, returning how many were re-touched. A row the sweep already holds as
+   * self-published is skipped without a call; the re-touch itself decides again over the row
+   * it reads under the lock, so a row that vanished or was self-published since the sweep's
+   * read is reported, not written. A per-row failure is logged and skipped; a teardown
+   * mid-sweep stops it.
    */
   private async reissueAuthoredMembershipRows(selfPeerId: string, members: CadrePeerRow[]): Promise<number> {
     let touched = 0;
@@ -5068,17 +5070,15 @@ export class CadreNode implements SAppIdLookup {
       if (!this._running || !this.controlNode || !this.controlDatabase) {
         return touched;
       }
-      if (member.peerId === selfPeerId || this.pendingPeerWrites.has(member.peerId)) {
+      // Self, queued for the drain (step 4 re-touches it once), or peer-owned (self-Sig
+      // present) → not this sweep's to bump.
+      if (member.peerId === selfPeerId || this.pendingPeerWrites.has(member.peerId) || member.sig) {
         continue;
       }
       try {
-        const record = await this.controlDatabase.queryPeerRecord(member.peerId);
-        // Missing (raced a delete) or peer-owned (self-Sig present) → not ours to bump.
-        if (!record || record.sig) {
-          continue;
+        if (await this.reissuePeerAuthorize(member.peerId) === 'retouched') {
+          touched++;
         }
-        await this.reissuePeerAuthorize(member.peerId, record.updatedAt);
-        touched++;
       } catch (error) {
         log('drain: reconstruction re-touch of %s failed (continuing): %o', member.peerId, error);
       }
@@ -5113,9 +5113,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Body of {@link drainPendingPeerWrites}' loop. An entry is cleared only on
-   * success (or when there is nothing left to re-issue); a failure is logged and
-   * the entry stays queued for the next cohort growth.
+   * Body of {@link drainPendingPeerWrites}' loop. An entry is cleared on every outcome the
+   * re-touch reports — re-touched, or nothing left to re-issue because the row was removed
+   * since or the peer self-published; the re-touch decides which over the row it reads under
+   * the lock. A failure is logged and the entry stays queued for the next cohort growth.
    */
   private async reissuePendingPeerWrites(): Promise<void> {
     for (const peerId of [...this.pendingPeerWrites.keys()]) {
@@ -5123,13 +5124,8 @@ export class CadreNode implements SAppIdLookup {
         return;
       }
       try {
-        const record = await this.controlDatabase.queryPeerRecord(peerId);
-        if (!record || record.sig) {
-          // Removed since, or peer self-published — nothing for the owner to re-issue.
-          this.pendingPeerWrites.delete(peerId);
-          continue;
-        }
-        await this.reissuePeerAuthorize(peerId, record.updatedAt);
+        const outcome = await this.reissuePeerAuthorize(peerId);
+        log('drain: re-issue of %s (authorize): %s', peerId, outcome);
         this.pendingPeerWrites.delete(peerId);
       } catch (error) {
         log('drain: re-issue of %s (authorize) failed; leaving queued for next growth: %o', peerId, error);
@@ -5142,14 +5138,15 @@ export class CadreNode implements SAppIdLookup {
    * `UpdatedAt` strictly above the stored value (and the wall clock) and re-sign via
    * the owner branch of `CadrePeer.AuthorizedUpdate`. The row already exists
    * locally (it committed there, just local-only), so this is an UPDATE, not the
-   * original INSERT.
+   * original INSERT. The bump, and whether the row is still the owner's to re-issue, are
+   * decided over the row as read inside the write ({@link SeedBootstrapService.reauthorizePeer}'s
+   * re-broadcast mode).
    */
-  private async reissuePeerAuthorize(peerId: string, currentUpdatedAt: number): Promise<void> {
+  private async reissuePeerAuthorize(peerId: string): Promise<CadrePeerRetouchOutcome> {
     if (!this.seedBootstrapService) {
-      return;
+      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    const updatedAt = Math.max(Date.now(), (currentUpdatedAt ?? 0) + 1);
-    await this.seedBootstrapService.reauthorizePeer(peerId, updatedAt);
+    return await this.seedBootstrapService.reauthorizePeer(peerId, 'rebroadcast');
   }
 
   /**
@@ -9440,7 +9437,7 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode must be started before planning an owner key removal');
     }
     const key = requireEd25519PublicKeyB64(ownerPublicKeyB64, 'owner key');
-    return (await this.planOwnerKeyRemovalWith(this.controlDatabase, key)).plan;
+    return await this.planOwnerKeyRemovalWith(this.controlDatabase, key);
   }
 
   /**
@@ -9474,7 +9471,7 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     const key = requireEd25519PublicKeyB64(ownerPublicKeyB64, 'owner key');
-    const { plan, rows } = await this.planOwnerKeyRemovalWith(this.controlDatabase, key);
+    const plan = await this.planOwnerKeyRemovalWith(this.controlDatabase, key);
     if (plan.refusal !== null) {
       throw new OwnerKeyRemovalRefusedError(key, plan.refusal);
     }
@@ -9489,19 +9486,19 @@ export class CadreNode implements SAppIdLookup {
     }
     const action = `Remove the owner key ${namedOwnerKey(key, plan.ownerKey?.label ?? null)} from the cadre`;
     const removed = await signer.approve({ partyId: this.partyId, action }, async (sign) => {
-      await this.revouchDependents(service, revouch, rows, sign);
+      await this.revouchDependents(service, revouch, sign);
       return await service.removeOwner(key, sign);
     });
     log('removeOwner(%s): removed=%s revouched owners=%d peers=%d', key, removed, revouch.owners.length, revouch.peers.length);
     return { removed, revouched: revouch };
   }
 
-  /** {@link planOwnerKeyRemoval} with the rows it was judged from, which {@link removeOwner} re-vouches dependents by. */
-  private async planOwnerKeyRemovalWith(controlDatabase: ControlDatabase, key: string): Promise<{ plan: OwnerKeyRemovalPlan; rows: CadrePeerRow[] }> {
+  /** {@link planOwnerKeyRemoval} over `controlDatabase`, for a caller that already holds it. */
+  private async planOwnerKeyRemovalWith(controlDatabase: ControlDatabase, key: string): Promise<OwnerKeyRemovalPlan> {
     const [rows, owners, grants] = await Promise.all([
       controlDatabase.queryCadrePeers(), controlDatabase.queryOwnerKeyRows(), controlDatabase.listOwnerGrantStatuses()
     ]);
-    const plan = planOwnerKeyRemoval({
+    return planOwnerKeyRemoval({
       key,
       rows,
       owners,
@@ -9510,7 +9507,6 @@ export class CadreNode implements SAppIdLookup {
       selfOwnerKey: this.ownerSignerEnrolledIn(new Set(owners.map((owner) => owner.key)))?.publicKey ?? null,
       anchor: this.trustedOwnerStore?.all() ?? new Set(),
     });
-    return { plan, rows };
   }
 
   /**
@@ -9520,12 +9516,14 @@ export class CadreNode implements SAppIdLookup {
    * the only rebinding `OwnerKey.NoUpdate` allows); peers through the owner re-touch
    * (`reauthorizePeer`), which rewrites `VouchOwner`/`VouchSig` and clears `VouchUsage`.
    *
-   * The peer re-touch keeps the row's `UpdatedAt` where it is. The owner branch of
-   * `CadrePeer.AuthorizedUpdate` does not require a bump, and bumping a self-published row
-   * would leave its `Sig` unverifiable, so unresolvable and unlisted as self-published, until
-   * the machine's next heartbeat (the NOTE on that constraint); the write-while-alone drain
-   * bumps because it re-issues an otherwise unchanged row, whereas here the voucher itself
-   * changes. A row never self-published carries no stamp to keep and gets the clock.
+   * The peer re-touch is the re-vouch mode of `reauthorizePeer`, which leaves the row's
+   * `UpdatedAt` untouched and writes whether or not the machine has self-published. The owner
+   * branch of `CadrePeer.AuthorizedUpdate` does not require a bump, and bumping a self-published
+   * row would leave its `Sig` unverifiable, so unresolvable and unlisted as self-published, until
+   * the machine's next heartbeat (the NOTE on that constraint); the write-while-alone drain's
+   * re-broadcast mode bumps because it re-issues an otherwise unchanged row, whereas here the
+   * voucher itself changes. A dependent whose row vanished since the plan is reported absent and
+   * skipped.
    *
    * A failure rethrows and stops the call before the removal; re-vouches already made stay
    * (the row is only re-signed by a current owner) and the caller retries. An owner re-vouch
@@ -9539,7 +9537,6 @@ export class CadreNode implements SAppIdLookup {
   private async revouchDependents(
     service: SeedBootstrapService,
     revouch: OwnerKeyDependents,
-    rows: readonly CadrePeerRow[],
     sign: OwnerSign,
   ): Promise<void> {
     for (const key of revouch.owners) {
@@ -9550,9 +9547,7 @@ export class CadreNode implements SAppIdLookup {
       }
     }
     for (const dependent of revouch.peers) {
-      const row = rows.find((candidate) => candidate.peerId === dependent);
-      const updatedAt = row !== undefined && row.updatedAt > 0 ? row.updatedAt : Date.now();
-      await service.reauthorizePeer(dependent, updatedAt, sign);
+      await service.reauthorizePeer(dependent, 'revouch', sign);
     }
   }
 

@@ -1,5 +1,5 @@
 import { CoordinatorPartialCommitError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
-import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
+import { ConcurrentModificationError, PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import { causeChain, chainMessages, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 
@@ -32,12 +32,13 @@ import type { ControlRetryOptions } from './control-retry.js';
  * before any matcher runs. The one half-landed write that IS re-presented is a torn write the
  * library marks final — not saved and unable to land ({@link isFinalTornWrite}).
  *
- * TWO policies ship from here, and the split is deliberate: the default
+ * THREE policies ship from here, and the split is deliberate: the default
  * ({@link isRetriableControlWriteFailure}, {@link CONTROL_WRITE_ATTEMPTS}) sits under every
- * control write, and {@link SCHEMA_INIT_RETRY_POLICY} is opted into by
- * `ControlDatabase.applyControlSchema` alone. The widened one absorbs one extra failure class whose
- * re-run safety holds for schema DDL and NOT for writes in general; anything added to the default
- * list must be safe for all ~19 callers.
+ * control write; {@link SCHEMA_INIT_RETRY_POLICY} is opted into by
+ * `ControlDatabase.applyControlSchema` alone; {@link LOST_UPDATE_RETRY_POLICY} is opted into by
+ * the `CadrePeer` writers whose bodies re-read the row and decide again. Each widened one absorbs
+ * one extra failure class whose re-run safety holds for its opted-in bodies and NOT for writes in
+ * general; anything added to the default list must be safe for all ~19 callers.
  *
  * Lives outside `control-database.ts` so a spec can drive the classifier against real engine
  * errors without importing the whole database class. The loop itself lives in
@@ -344,6 +345,34 @@ function isUnansweredSuperMajorityShortfall(message: string): boolean {
 }
 
 /**
+ * A LOST UPDATE: the optimystic bridge refusing a commit because another writer changed or
+ * removed a row this statement read (`TransactionBridge.mapCommitRefusal` over a
+ * `TreeEntryChangedError`, `quereus-plugin-optimystic/src/optimystic-adapter/txn-bridge.ts`).
+ * Claimed by TYPE for {@link LOST_UPDATE_RETRY_POLICY} only.
+ *
+ * Why it is a proven non-commit: the refusal is raised inside the action's atomic handler, so
+ * none of that action's entries land. A refusal after a sibling tree or collection of the same
+ * transaction already synced is not delivered bare — the per-tree sweep wraps it in
+ * `PartialCommitError`, the coordinator path in `CoordinatorPartialCommitError` — and
+ * {@link reportsPossiblyStoredWrite} vetoes both by type before this predicate runs. A bare chain
+ * carrying this class therefore means nothing of the write is durable.
+ *
+ * Why it is not in the default list: the rejection is of the write's READ SET, not of its
+ * signature, so re-presenting the same statement is only right when the body re-reads the row and
+ * decides again over what it finds. That is a property of each opted-in body (see the policy's
+ * `NOTE:`), not of control writes in general.
+ *
+ * Not matched by text: `ConcurrentModificationError` is exported from both the plugin's root and
+ * `/plugin` entries over one shared chunk, as `PartialCommitError` is, so the one `instanceof`
+ * covers both (the `NOTE:` on {@link reportsPossiblyStoredWrite} applies to it too). A second
+ * loaded copy of the plugin would fail the `instanceof` and the lost update would then simply not
+ * be retried — the safe side.
+ */
+function isLostUpdate(link: Error): boolean {
+	return link instanceof ConcurrentModificationError;
+}
+
+/**
  * Optimystic refusing to let a node elect ITSELF coordinator because its last connection dropped
  * less than the guard's grace period ago (`Libp2pKeyPeerNetwork.shouldAllowSelfCoordination` →
  * `findCoordinator`, `db-p2p/src/libp2p-key-network.ts`).
@@ -469,16 +498,30 @@ export function isRetriableSchemaInitFailure(error: unknown): boolean {
 }
 
 /**
- * Shared body of both classifiers: walk the `cause` chain, let {@link reportsPossiblyStoredWrite}
- * and then {@link reportsIndeterminateCommit} veto it, then claim a final torn write
- * ({@link isFinalTornWrite}), then ask `matchers`. The vetoes run BEFORE any matcher for every
- * policy — a chain reporting a possibly-stored write or a commit-phase batch is never retried,
- * however transient some other level looks, and a final torn write carried by a partial commit is
- * still declined because a sibling collection landed.
+ * {@link isRetriableControlWriteFailure} widened by exactly one class — a lost update
+ * ({@link isLostUpdate}), claimed by type — for the `CadrePeer` writers that re-read the row inside
+ * their locked body. Opt-in per call site, via {@link LOST_UPDATE_RETRY_POLICY}; both vetoes still
+ * run first, so a lost update carried inside a partial commit, a spent sync budget or a non-final
+ * torn write stays declined.
+ */
+export function isRetriableLostUpdateFailure(error: unknown): boolean {
+	return matchesRetriableFailure(error, RETRIABLE_CONTROL_WRITE_MATCHERS, isLostUpdate);
+}
+
+/**
+ * Shared body of the three classifiers: walk the `cause` chain, let
+ * {@link reportsPossiblyStoredWrite} and then {@link reportsIndeterminateCommit} veto it, then claim
+ * a final torn write ({@link isFinalTornWrite}) or any link `claimsLink` names, then ask `matchers`.
+ * The vetoes run BEFORE any claim for every policy — a chain reporting a possibly-stored write or a
+ * commit-phase batch is never retried, however transient some other level looks, and a final torn
+ * write or a lost update carried by a partial commit is still declined because a sibling collection
+ * landed. `claimsLink` is the one typed claim a policy may add; it sits here beside the torn-write
+ * claim so the vetoes stay in one place above both.
  */
 function matchesRetriableFailure(
 	error: unknown,
-	matchers: readonly ((message: string) => boolean)[]
+	matchers: readonly ((message: string) => boolean)[],
+	claimsLink?: (link: Error) => boolean
 ): boolean {
 	if (!(error instanceof Error)) {
 		return false;
@@ -491,7 +534,7 @@ function matchesRetriableFailure(
 	if (reportsIndeterminateCommit(messages)) {
 		return false;
 	}
-	if (links.some(isFinalTornWrite)) {
+	if (links.some(link => isFinalTornWrite(link) || claimsLink?.(link) === true)) {
 		return true;
 	}
 	return messages.some(message => matchers.some(matches => matches(message)));
@@ -510,7 +553,7 @@ function matchesRetriableFailure(
 export type ControlWriteRetryOptions = ControlRetryOptions;
 
 /**
- * The one non-default retry policy: `ControlDatabase.applyControlSchema`'s distributed DDL, which
+ * The schema-init policy: `ControlDatabase.applyControlSchema`'s distributed DDL, which
  * additionally absorbs optimystic's self-coordination grace refusal and gets more attempts over a
  * longer backoff to do it (see {@link SCHEMA_INIT_ATTEMPTS} and
  * {@link SCHEMA_INIT_RETRY_DELAYS_MS}). Still bounded by the shared
@@ -521,12 +564,41 @@ export type ControlWriteRetryOptions = ControlRetryOptions;
  * and verified against the pre-apply catalog (full argument at the `applyControlSchema` call site
  * in `control-database.ts`). A second opt-in must re-derive that argument for its own write body
  * first; if this policy ever grows a third consumer, rename it for what the callers share rather
- * than widening it by default.
+ * than widening it by default. {@link LOST_UPDATE_RETRY_POLICY} is a separate policy for a
+ * separate class, not a second consumer of this one.
  */
 export const SCHEMA_INIT_RETRY_POLICY: Readonly<ControlWriteRetryOptions> = {
 	attempts: SCHEMA_INIT_ATTEMPTS,
 	delaysMs: SCHEMA_INIT_RETRY_DELAYS_MS,
 	isRetriable: isRetriableSchemaInitFailure,
+};
+
+/**
+ * The lost-update policy: the default classifier plus a lost update claimed by type
+ * ({@link isRetriableLostUpdateFailure}), over the default attempts, backoff and budget. A re-run
+ * here is a RE-DECISION, not a re-presentation: the body reads the row again under the lock and
+ * signs over what it finds, so the write that lost to a rival is replaced by one made over the
+ * rival's result. The budget bounds it as it bounds every write — a losing attempt whose read
+ * phase waited out one per-peer read deadline (~7.5 s measured in the degraded-cohort scenario's
+ * trio boot) gets exactly one retry, which is the ceiling to expect; one that waited out two
+ * (14.7 s, measured once in 18 of that scenario's boots, on the member that cannot reach one
+ * sibling) gets none and is abandoned on the budget, and the lost publish is then the reconcile
+ * pass's or the heartbeat's to redo, as every abandoned self-publish is.
+ *
+ * NOTE: the re-run safety this policy assumes is each opted-in body's, not a general property. A
+ * body may opt in only when its read of the row, its decision and its signature ALL run inside
+ * the locked body, so that the re-run presents a write made over the row as it now stands rather
+ * than the first attempt's signed record (which the rival may have stamped past, or which may
+ * overwrite what the rival wrote). Three `CadrePeer` writers opt in, through
+ * `ControlDatabase.mutateCadrePeer`'s policy parameter or `lockedWithRetry` directly:
+ * `updateSelfPeerRecord` (re-reads and re-signs the node's own record), `reauthorizeCadrePeer`
+ * (re-reads the stamp and decides again whether the row is still the owner's to re-touch) and
+ * the two removals `deleteCadrePeer` / `removeMachine` (stamp read and signature already inside
+ * the body, and a self-publish never changes the stamp the `'remove'` digest binds). A new opt-in
+ * must re-derive that argument for its own body first.
+ */
+export const LOST_UPDATE_RETRY_POLICY: Readonly<ControlWriteRetryOptions> = {
+	isRetriable: isRetriableLostUpdateFailure,
 };
 
 /**

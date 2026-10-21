@@ -634,7 +634,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       founder.publicKey,
       message => signAs(founder, message),
     )).toBe(true);
-    await db.updateSelfPeerRecord(signPeerRecord(
+    await db.updateSelfPeerRecord(peerId, () => signPeerRecord(
       node.partyId,
       { peerId, publicKey: machine.publicKey, addrs: [], updatedAt: Date.now() + 60_000, profile: 'storage' },
       machine.privateKey,

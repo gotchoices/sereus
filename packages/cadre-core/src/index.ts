@@ -16,7 +16,7 @@ export { MachineRemovalRefusedError } from './machine-removal.js';
 export { OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-keys.js';
 
 // Control database
-export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, OwnerGrantIssuerUnknownError, IssuedRowNotHereYetError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, ownerGrantAddMessage, ownerGrantRedeemMessage, ownerGrantConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type FoundingRows, type FoundingInvite, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type ControlSign, type OwnerGrantRedemptionFields } from './control-database.js';
+export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, OwnerGrantIssuerUnknownError, IssuedRowNotHereYetError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, ownerGrantAddMessage, ownerGrantRedeemMessage, ownerGrantConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type FoundingRows, type FoundingInvite, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type ControlSign, type SelfRecordSigner, type CadrePeerRetouchMode, type CadrePeerRetouchOutcome, type OwnerGrantRedemptionFields } from './control-database.js';
 
 // The control schema version a store is migrated to on start, and what `start()` throws, with a
 // reason, when the store must not be migrated (docs/architecture.md → "Control schema versions and
@@ -30,9 +30,11 @@ export { ControlStoreIncompatibleError, type ControlStoreIncompatibility } from 
 export {
   CONTROL_WRITE_ATTEMPTS,
   CONTROL_WRITE_RETRY_BUDGET_MS,
+  LOST_UPDATE_RETRY_POLICY,
   SCHEMA_INIT_ATTEMPTS,
   SCHEMA_INIT_RETRY_POLICY,
   isRetriableControlWriteFailure,
+  isRetriableLostUpdateFailure,
   isRetriableSchemaInitFailure,
   retryControlWrite,
   type ControlWriteRetryOptions

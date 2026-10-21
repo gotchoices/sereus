@@ -196,7 +196,7 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     expect(await node.registerSelf()).not.toBe('skipped');
     const selfPeerId = node.peerId!.toString();
     const ownRow = (await db.queryCadrePeers()).find((row) => row.peerId === selfPeerId)!;
-    expect(await db.reauthorizeCadrePeer(selfPeerId, ownRow.updatedAt, removed.publicKey, (message) => signAs(removed, message))).toBe(true);
+    expect(await db.reauthorizeCadrePeer(selfPeerId, 'revouch', removed.publicKey, (message) => signAs(removed, message))).toBe('retouched');
 
     const plan = await node.planOwnerKeyRemoval(removed.publicKey);
     expect(plan).toEqual({

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
+import { ConcurrentModificationError } from '@optimystic/quereus-plugin-optimystic';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
@@ -306,6 +307,51 @@ describe('ControlDatabase — local write lock', () => {
 			expect(notifications).toBe(1);
 		} finally {
 			db.setMembershipChangeListener(savedListener);
+			slot.controlWriteRetryPacing = savedPacing;
+		}
+	});
+
+	/**
+	 * The self-publish re-signs INSIDE the retried body, under the lost-update policy: a lost
+	 * attempt is re-run over the row the rival left, not re-presented. The first attempt's signer
+	 * raises the refusal the engine raises when a rival commits between a statement's read and
+	 * its commit; the rival itself commits in the backoff between the attempts, where the lock is
+	 * released, stamped a minute past what the first attempt read. A record signed over that
+	 * first read could not exceed the rival's stamp, so the re-run commits only because it re-read
+	 * the row — the schema's monotonic rule refuses a stale re-sign, unretried.
+	 */
+	it('re-reads and re-signs the own row when a lost update re-runs the self-publish', async () => {
+		const peer = await freshPeer();
+		await service.authorizePeer({ peerId: peer.peerId });
+		const signOver = (updatedAt: number, addrs: string[]) => signPeerRecord(node.partyId,
+			{ peerId: peer.peerId, publicKey: peer.publicKeyB64, addrs, updatedAt, profile: null },
+			peer.privateKeyB64
+		);
+		const slot = retryPacingSlot(db);
+		const savedPacing = slot.controlWriteRetryPacing;
+		try {
+			let rivalStamp = 0;
+			slot.controlWriteRetryPacing = {
+				sleep: async () => {
+					const rival = await db.updateSelfPeerRecord(peer.peerId,
+						(current) => signOver(current.updatedAt + 60_000, ['/ip4/10.0.0.6/tcp/4001']));
+					rivalStamp = rival!.updatedAt;
+				},
+			};
+			const reads: number[] = [];
+			const written = await db.updateSelfPeerRecord(peer.peerId, (current) => {
+				reads.push(current.updatedAt);
+				if (reads.length === 1) {
+					throw new ConcurrentModificationError('concurrent modification: another writer changed or removed the row in CadrePeer');
+				}
+				return signOver(Math.max(Date.now(), current.updatedAt + 1), ['/ip4/10.0.0.7/tcp/4001']);
+			});
+
+			expect(reads).toHaveLength(2);
+			expect(reads[1]).toBe(rivalStamp);
+			expect(written?.updatedAt).toBeGreaterThan(rivalStamp);
+			expect(await db.queryPeerRecord(peer.peerId)).toEqual(written);
+		} finally {
 			slot.controlWriteRetryPacing = savedPacing;
 		}
 	});

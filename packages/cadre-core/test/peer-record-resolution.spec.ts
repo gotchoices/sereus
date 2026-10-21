@@ -2,11 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
+import { ConcurrentModificationError } from '@optimystic/quereus-plugin-optimystic';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import { signPeerRecord, verifyPeerRecordSignature } from '../src/peer-record.js';
 import type { PeerAddressRecord } from '../src/types.js';
+import type { ControlDatabase } from '../src/control-database.js';
+import type { ControlWriteRetryOptions } from '../src/control-write-retry.js';
 
 /**
  * End-to-end coverage of the peer-record resolution layer against a real Quereus
@@ -86,9 +89,15 @@ function hookSelfReads(
   const db = node.getControlDatabase()!;
   const original = db.queryPeerRecord.bind(db);
   let reads = 0;
-  db.queryPeerRecord = (pid: string): Promise<PeerAddressRecord | null> =>
-    pid === peerId ? hook(++reads, () => original(pid)) : original(pid);
+  // `retry` is forwarded: the self-update's body reads under the write lock with it off.
+  db.queryPeerRecord = (pid: string, retry?: boolean): Promise<PeerAddressRecord | null> =>
+    pid === peerId ? hook(++reads, () => original(pid, retry)) : original(pid, retry);
   return { reads: () => reads, restore: () => { db.queryPeerRecord = original; } };
+}
+
+/** Test-only window onto `ControlDatabase.lockedWithRetry`'s pacing seam (the cast `control-write-lock.spec.ts` uses). */
+function retryPacingSlot(db: ControlDatabase): { controlWriteRetryPacing: ControlWriteRetryOptions } {
+  return db as unknown as { controlWriteRetryPacing: ControlWriteRetryOptions };
 }
 
 describe('peer-record resolution layer (real control DB)', () => {
@@ -237,26 +246,36 @@ describe('peer-record resolution layer (real control DB)', () => {
     const { node, peerId } = booted;
     node.setInviteAddresses([circuitAddr(peerId), '/ip4/1.2.3.4/tcp/4001']);
 
-    // Two writers wedged into one publish: the authorize takes the seat (so the
-    // INSERT no-ops and the publish falls through), then the row is removed before
-    // the fall-through re-read — so there is nothing left to sign against.
+    // Two writers wedged into one publish: the authorize takes the seat (so the INSERT
+    // no-ops and the publish falls through to the self-update), then the row is removed
+    // while that update is committing. The update's body reads the row under the write
+    // lock, so a local removal cannot interleave between its read and its statement; one
+    // from another machine lands as a lost update, which the write funnel re-runs. Staged
+    // on the funnel's seams: the body's read raises the refusal the engine raises for a row
+    // removed since it was read, and the removal lands in the backoff between the attempts,
+    // where the lock is released — so the re-run finds nothing left to sign against.
+    const pacing = retryPacingSlot(node.getControlDatabase()!);
+    const savedPacing = pacing.controlWriteRetryPacing;
+    pacing.controlWriteRetryPacing = { sleep: () => node.removePeer(peerId) };
     const wedge = hookSelfReads(node, peerId, async (index, read) => {
-      if (index === 1) {
-        const result = await read();
-        await node.authorizePeer(peerId, []);
-        return result;
-      }
-      if (index === 2) await node.removePeer(peerId);
-      return read();
+      const result = await read();
+      if (index === 1) await node.authorizePeer(peerId, []);
+      if (index === 2) throw new ConcurrentModificationError('concurrent modification: another writer changed or removed the row in CadrePeer');
+      return result;
     });
+    try {
+      const outcome = await node.registerSelf();
+      wedge.restore();
 
-    const outcome = await node.registerSelf();
-    wedge.restore();
-
-    expect(wedge.reads()).toBe(2);
-    expect(outcome).toBe('skipped');
-    // No phantom row: the publish must not have re-inserted or updated anything.
-    expect(await node.getControlDatabase()!.queryPeerRecord(peerId)).toBeNull();
+      // The pre-race read, the body's read the refusal followed, and the re-run's read.
+      expect(wedge.reads()).toBe(3);
+      expect(outcome).toBe('skipped');
+      // No phantom row: the publish must not have re-inserted or updated anything.
+      expect(await node.getControlDatabase()!.queryPeerRecord(peerId)).toBeNull();
+    } finally {
+      wedge.restore();
+      pacing.controlWriteRetryPacing = savedPacing;
+    }
   }, 60_000);
 
   it('rejects a self-update whose UpdatedAt does not strictly increase (replay guard)', async () => {
@@ -271,7 +290,7 @@ describe('peer-record resolution layer (real control DB)', () => {
       { peerId, publicKey: publicKeyB64, addrs: ['/ip4/4.4.4.4/tcp/4001'], updatedAt: current!.updatedAt, profile: current!.profile },
       privateKeyB64
     );
-    await expect(node.getControlDatabase()!.updateSelfPeerRecord(stale)).rejects.toThrow();
+    await expect(node.getControlDatabase()!.updateSelfPeerRecord(peerId, () => stale)).rejects.toThrow();
 
     // The stored row is unchanged.
     const after = await node.getControlDatabase()!.queryPeerRecord(peerId);
@@ -293,7 +312,7 @@ describe('peer-record resolution layer (real control DB)', () => {
       { peerId, publicKey: publicKeyB64, addrs: ['/ip4/6.6.6.6/tcp/4001'], updatedAt: current!.updatedAt + 1, profile: current!.profile },
       attackerPriv
     );
-    await expect(node.getControlDatabase()!.updateSelfPeerRecord(forged)).rejects.toThrow();
+    await expect(node.getControlDatabase()!.updateSelfPeerRecord(peerId, () => forged)).rejects.toThrow();
   }, 60_000);
 
   it('filters out a stale record (freshness ceiling)', async () => {
@@ -348,7 +367,7 @@ describe('peer-record resolution layer (real control DB)', () => {
       { peerId: dronePeerId, publicKey: dronePub, addrs: [droneSig, direct], updatedAt: current!.updatedAt + 1, profile: 'storage' },
       dronePriv
     );
-    await node.getControlDatabase()!.updateSelfPeerRecord(record);
+    await node.getControlDatabase()!.updateSelfPeerRecord(dronePeerId, () => record);
 
     const resolved = (await node.resolvePeerAddrs(dronePeerId)).map((m) => m.toString());
     expect(resolved[0]).toContain('/p2p-circuit');

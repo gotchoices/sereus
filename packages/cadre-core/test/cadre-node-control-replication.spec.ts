@@ -28,7 +28,7 @@ interface RevRow { tableName: string; rowKey: string; stampId: string; reissuedA
 
 interface FakeSeed {
   authorize: boolean;
-  reauthorizeCalls: Array<{ peerId: string; updatedAt: number }>;
+  reauthorizeCalls: Array<{ peerId: string; mode: string }>;
   removeCalls: string[];
   authorizeCalls: string[];
   reissueRevocationsCalls: Array<{ rows: RevRow[]; reissuedAt: number }>;
@@ -97,7 +97,12 @@ function inject(
   if (opts.hasSeed ?? true) {
     (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
       canAuthorize: () => seed.authorize,
-      reauthorizePeer: async (peerId: string, updatedAt: number) => { seed.reauthorizeCalls.push({ peerId, updatedAt }); },
+      // Decides as the real re-touch does, over the row: absent, self-published, or re-touched.
+      reauthorizePeer: async (peerId: string, mode: string) => {
+        seed.reauthorizeCalls.push({ peerId, mode });
+        const record = opts.records?.[peerId] ?? null;
+        return record === null ? 'absent' : record.sig ? 'self-published' : 'retouched';
+      },
       removePeer: async (peerId: string) => { seed.removeCalls.push(peerId); },
       authorizePeer: async (o: { peerId: string }) => { seed.authorizeCalls.push(o.peerId); },
       addDrone: async (o: { dronePeerId: string }) => {
@@ -204,7 +209,7 @@ describe('CadreNode write-while-alone re-replication', () => {
   });
 
   describe('drain re-issues', () => {
-    it('re-issues a pending authorize as a monotonic owner UPDATE', async () => {
+    it('re-issues a pending authorize as a re-broadcast owner UPDATE', async () => {
       const node = new CadreNode(createConfig());
       const { seed } = inject(node, {
         members: [],
@@ -214,14 +219,18 @@ describe('CadreNode write-while-alone re-replication', () => {
 
       await node.drainPendingControlReplication('test');
 
-      expect(seed.reauthorizeCalls).toHaveLength(1);
-      expect(seed.reauthorizeCalls[0]!.peerId).toBe('peer-X');
-      // Strictly increases past the stored stamp.
-      expect(seed.reauthorizeCalls[0]!.updatedAt).toBeGreaterThan(100);
+      // The bump past the stored stamp is the write's own, made over the row it reads
+      // (`ControlDatabase.reauthorizeCadrePeer`), not a value the drain computes.
+      expect(seed.reauthorizeCalls).toEqual([{ peerId: 'peer-X', mode: 'rebroadcast' }]);
       expect(pending(node).has('peer-X')).toBe(false);
     });
 
-    it('skips (and clears) a pending authorize whose row now carries a self-Sig', async () => {
+    /**
+     * The re-touch decides over the row it reads under the lock and reports a row it did not
+     * write; the drain clears the entry on that report as on a write, since either way there is
+     * nothing left for the owner to re-issue.
+     */
+    it('clears a pending authorize the re-touch reports as self-published since', async () => {
       const node = new CadreNode(createConfig());
       const { seed } = inject(node, {
         records: { 'peer-X': { peerId: 'peer-X', sig: 'self-signature', updatedAt: 5 } }
@@ -230,18 +239,18 @@ describe('CadreNode write-while-alone re-replication', () => {
 
       await node.drainPendingControlReplication('test');
 
-      expect(seed.reauthorizeCalls).toEqual([]);
+      expect(seed.reauthorizeCalls).toEqual([{ peerId: 'peer-X', mode: 'rebroadcast' }]);
       expect(pending(node).has('peer-X')).toBe(false);
     });
 
-    it('skips (and clears) a pending authorize whose row vanished', async () => {
+    it('clears a pending authorize the re-touch reports as absent', async () => {
       const node = new CadreNode(createConfig());
       const { seed } = inject(node, { records: { 'peer-X': null } });
       pending(node).set('peer-X', 'authorize');
 
       await node.drainPendingControlReplication('test');
 
-      expect(seed.reauthorizeCalls).toEqual([]);
+      expect(seed.reauthorizeCalls).toEqual([{ peerId: 'peer-X', mode: 'rebroadcast' }]);
       expect(pending(node).has('peer-X')).toBe(false);
     });
 

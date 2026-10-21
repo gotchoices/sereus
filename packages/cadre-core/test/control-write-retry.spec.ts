@@ -6,14 +6,16 @@ import {
 	TornActionError,
 	type WriteDurability,
 } from '@optimystic/db-core';
-import { PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
+import { ConcurrentModificationError, PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import { QuereusError, StatusCode } from '@quereus/quereus';
 import {
 	CONTROL_WRITE_ATTEMPTS,
 	CONTROL_WRITE_RETRY_BUDGET_MS,
+	LOST_UPDATE_RETRY_POLICY,
 	SCHEMA_INIT_ATTEMPTS,
 	SCHEMA_INIT_RETRY_POLICY,
 	isRetriableControlWriteFailure,
+	isRetriableLostUpdateFailure,
 	isRetriableSchemaInitFailure,
 	retryControlWrite,
 	type ControlWriteRetryOptions
@@ -531,11 +533,88 @@ function everyDelivery(error: Error): Error[] {
 	return [error, viaQuereus(error), viaRefusalRewrap(error)];
 }
 
-/** Both write classifiers — the typed veto and matcher sit in their shared body, so each case holds for both. */
+/** All three write classifiers — the typed veto and matcher sit in their shared body, so each case holds for each. */
 const WRITE_CLASSIFIERS = [
 	['isRetriableControlWriteFailure', isRetriableControlWriteFailure],
 	['isRetriableSchemaInitFailure', isRetriableSchemaInitFailure],
+	['isRetriableLostUpdateFailure', isRetriableLostUpdateFailure],
 ] as const;
+
+/**
+ * The lost-update refusal as the optimystic bridge raises it (`TransactionBridge.mapCommitRefusal`
+ * over the tree's `TreeEntryChangedError`, which rides along as `cause`), with the message the
+ * degraded-cohort scenario's trio boot recorded on 2026-10-21.
+ */
+function lostUpdate(): ConcurrentModificationError {
+	return new ConcurrentModificationError(
+		'concurrent modification: another writer changed or removed the row in CadrePeer at primary key ("12D3KooWB")',
+		new Error('Tree collection default/cadrecontrol/CadrePeer: the entry at key 12D3KooWB was changed by another writer since this change read it')
+	);
+}
+
+/**
+ * The lost-update class is claimed by TYPE, for one policy, after both vetoes: a bare
+ * `ConcurrentModificationError` is re-run; the same error carried by a partial commit (a sibling
+ * tree or collection of the transaction already synced) or beside a commit-phase batch is not; and
+ * neither the default nor the schema-init classifier claims it at all.
+ */
+describe('isRetriableLostUpdateFailure', () => {
+	it('retries a lost update, bare and wrapped the way the funnel sees it', () => {
+		for (const delivered of [lostUpdate(), viaQuereus(lostUpdate())]) {
+			expect(isRetriableLostUpdateFailure(delivered)).toBe(true);
+		}
+	});
+
+	it('never retries a lost update carried by a partial commit — a sibling tree or collection landed', () => {
+		const partials = [
+			new CoordinatorPartialCommitError(savedHoldersUnknown('default/cadrecontrol/Revocation'), [PEER_COLLECTION], lostUpdate()),
+			new PartialCommitError(['default/cadrecontrol/Revocation'], ['default/cadrecontrol/CadrePeer'], lostUpdate()),
+		];
+		for (const partial of partials) {
+			partial.cause = lostUpdate();
+			expect(isRetriableLostUpdateFailure(partial)).toBe(false);
+			expect(isRetriableLostUpdateFailure(viaQuereus(partial))).toBe(false);
+		}
+	});
+
+	it('keeps the commit-phase veto in force', () => {
+		expect(isRetriableLostUpdateFailure(new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, { cause: lostUpdate() }))).toBe(false);
+	});
+
+	it('never retries the lost-update text on a plain Error — the claim is by type', () => {
+		expect(isRetriableLostUpdateFailure(nested(lostUpdate().message))).toBe(false);
+	});
+
+	it('leaves the default and schema-init classifiers declining it', () => {
+		for (const delivered of [lostUpdate(), viaQuereus(lostUpdate())]) {
+			expect(isRetriableControlWriteFailure(delivered)).toBe(false);
+			expect(isRetriableSchemaInitFailure(delivered)).toBe(false);
+		}
+	});
+
+	it('agrees with the default classifier on every other message', () => {
+		const retriable = [
+			TRANSACTOR_AGGREGATE,
+			SUPER_MAJORITY_NONE_ANSWERED,
+			SUPER_MAJORITY_PARTIAL,
+			SUPER_MAJORITY_IN_PEND_AGGREGATE,
+		];
+		const notRetriable = [
+			TRANSACTOR_AGGREGATE_NO_DETAILS,
+			SUPER_MAJORITY_REJECTED,
+			MISSING_BLOCK,
+			SELF_COORDINATION_BLOCKED,
+			'UNIQUE constraint failed: CadrePeer.PeerId',
+			'CHECK constraint failed: AuthorizedUpdate',
+		];
+		for (const message of retriable) {
+			expect(isRetriableLostUpdateFailure(nested(message))).toBe(true);
+		}
+		for (const message of notRetriable) {
+			expect(isRetriableLostUpdateFailure(nested(message))).toBe(false);
+		}
+	});
+});
 
 /**
  * Failures upstream raises as TYPED errors that say whether any of the write is stored, classified
@@ -811,6 +890,28 @@ describe('retryControlWrite', () => {
 		}, immediatePacing())).rejects.toBe(failure);
 
 		expect(runs).toBe(1);
+	});
+
+	/**
+	 * The same pair for the lost-update policy: a bare lost update re-runs the body under it, on
+	 * the default attempt count, and the default policy still surfaces it from the first attempt.
+	 */
+	it('re-runs the body under LOST_UPDATE_RETRY_POLICY after a bare lost update, and the DEFAULT policy does not', async () => {
+		let runs = 0;
+		await expect(retryControlWrite(async () => {
+			runs++;
+			if (runs === 1) throw viaQuereus(lostUpdate());
+			return 'written';
+		}, immediatePacing(LOST_UPDATE_RETRY_POLICY))).resolves.toBe('written');
+		expect(runs).toBe(2);
+
+		let defaultRuns = 0;
+		const failure = viaQuereus(lostUpdate());
+		await expect(retryControlWrite(async () => {
+			defaultRuns++;
+			throw failure;
+		}, immediatePacing())).rejects.toBe(failure);
+		expect(defaultRuns).toBe(1);
 	});
 
 	/**
