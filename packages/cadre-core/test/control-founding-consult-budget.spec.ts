@@ -118,7 +118,7 @@ const GATE_WATCH_SETTLE_MS = 100;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-10-20';
+const MEASURED_ON = '2026-10-25';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -215,8 +215,17 @@ const MEASURED_ON = '2026-10-20';
  *    `control-invitation-and-grant-chains-cached-until-changed`.
  * The optimystic tree carried an uncommitted edit to `coordinator-repo.ts` whose `dist` was
  * built before it; the stale-build guard refused every run after these three.
+ *
+ * Re-measured whole at `00fa26b0` on 2026-10-25, a descendant of the 1.19.0 release (`f1f774ea`),
+ * three runs identical; its working tree carried uncommitted promise-shortfall edits to db-core
+ * and db-p2p that do not touch the commit path. Only commit counts moved, all from upstream:
+ * Optimystic 1.19.0 commits a transaction's collections as one consensus record (GitHub #42,
+ * `CoordinatorRepo.commitMany`), so a write touching a table and its indexes is one commit, not
+ * one per tree. Genesis 34 → 33 (the owner key insert's 2 → 1) and `foundStrand`'s control side
+ * 3 → 1; no consult count moved. `cohort-consult-counter.ts` now counts `commitMany`, which
+ * `commit` delegates to; counting `commit` alone missed every multi-collection commit.
  */
-const BASELINE_UPSTREAM = 'optimystic de8cbb54';
+const BASELINE_UPSTREAM = 'optimystic 00fa26b0';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
@@ -246,22 +255,25 @@ const COLD: Budget = { consults: 41, blocks: 33, commits: 1, consultBudget: 45, 
  * blocks, 34 commits: each of the 17 control tables' main block ×1, `OwnerKey`'s once more,
  * and 1 each on six tree blocks — the insert's two, two the gate refresh's view loads read
  * first, one the strand watcher's run reads, and one unattributed (see
- * {@link BASELINE_UPSTREAM}). The 34 commits are the 32 empty collections genesis commits (17
- * tables, 3 indexes, 12 unique stamp trees) and the owner key insert's 2. History: 14 over 3
+ * {@link BASELINE_UPSTREAM}). The 33 commits are the 32 empty collections genesis commits (17
+ * tables, 3 indexes, 12 unique stamp trees) and the owner key insert's 1, which carries both
+ * `OwnerKey` trees. History: 14 over 3
  * blocks in the motivating trace and on 2026-09-15 (`OwnerKey` ×6, its stamp index ×6, the
  * never-written `Revocation` ×2), exactly halved to 7 (×3, ×3, ×1) at optimystic `03ffadc4`,
  * then 3 with 2 commits at `8a0b48c7` — the insert's commit touches both `OwnerKey` trees and
  * no longer refreshes them twice before flushing — then 20 with 34 commits once genesis
  * committed every control table's collection (`control-collections-created-at-cadre-founding`),
  * then 24 once the gate watch's refresh and the strand watcher's run were settled inside this
- * phase (`control-reconcile-woken-by-changes-reads-once`).
+ * phase (`control-reconcile-woken-by-changes-reads-once`), then 33 commits once the insert's two
+ * trees committed as one record (Optimystic 1.19.0, GitHub #42).
  */
-const GENESIS: Budget = { consults: 24, blocks: 23, commits: 34, consultBudget: 27, blockBudget: 25, commitBudget: 35 };
+const GENESIS: Budget = { consults: 24, blocks: 23, commits: 33, consultBudget: 27, blockBudget: 25, commitBudget: 34 };
 /**
  * `foundStrand`, control network side: the `Strand` row published. 1 consult over 1 block,
- * 3 commits: one tree block of the publish's own commit, none on a table's main block, since
- * genesis committed every control table's collection, and none for its membership reads, whose
- * views the gate watch's refresh loaded at genesis. History: 25 over 6 blocks on 2026-09-15 (×8,
+ * 1 commit, carrying all three `Strand` trees (3 commits, one per tree, before Optimystic
+ * 1.19.0, GitHub #42). The consult is one tree block of the publish's own commit, none on a
+ * table's main block, since genesis committed every control table's collection, and none for
+ * its membership reads, whose views the gate watch's refresh loaded at genesis. History: 25 over 6 blocks on 2026-09-15 (×8,
  * ×6, ×4, ×4, ×2, ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId`
  * index ×3, `MemberPrivateKey` index ×2), 7 over 5 at `8a0b48c7`: the publish's commit
  * touches all three `Strand` trees and no longer refreshes each twice before flushing, which
@@ -271,15 +283,15 @@ const GENESIS: Budget = { consults: 24, blocks: 23, commits: 34, consultBudget: 
  * the membership read beside `CadrePeer` ×1) and a tree block ×1; then 4 over 4 on 2026-10-20
  * (three causes, see {@link BASELINE_UPSTREAM}), then 1 over 1 later that day once the gate
  * watch's refresh at genesis loaded the views (`control-reconcile-woken-by-changes-reads-once`).
- * Control and strand together now sum to 30 consults and 17 commits, against 33 and 17 before
- * that, 34 and 18 before the founder's strand rows landed in one
+ * Control and strand together now sum to 30 consults and 15 commits, against 30 and 17 before
+ * Optimystic 1.19.0, 33 and 17 before that, 34 and 18 before the founder's strand rows landed in one
  * transaction (`strand-founding-writes-batched`), 38 and 18 before genesis committed the control collections,
  * 29 and 6 before the founder committed every declared table's collection (see
  * {@link FOUNDING_STRAND}), 28 and 6 before the live-owner clause, 28 and 12 at `8a0b48c7`, 34
  * and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47 and 12 in the trace taken before
  * upstream removed the absence memo.
  */
-const FOUNDING_CONTROL: Budget = { consults: 1, blocks: 1, commits: 3, consultBudget: 2, blockBudget: 2, commitBudget: 4 };
+const FOUNDING_CONTROL: Budget = { consults: 1, blocks: 1, commits: 1, consultBudget: 2, blockBudget: 2, commitBudget: 2 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
  * bootstrap. 29 consults over 15 blocks, 14 commits: the strand's schema catalog ×5,

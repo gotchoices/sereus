@@ -10,12 +10,12 @@ import { formatConsultSnapshot, formatPerBlock, installConsultCounter } from './
  * install, and label bookkeeping across a reset.
  */
 
-type MethodName = 'fetchBlockFromCluster' | 'commit';
+type MethodName = 'fetchBlockFromCluster' | 'commitMany';
 type Method = (this: object, ...args: unknown[]) => Promise<unknown>;
 
 /** The prototype slots the counter patches; `fetchBlockFromCluster` is TypeScript-private. */
 const proto = CoordinatorRepo.prototype as unknown as Record<MethodName, Method | undefined>;
-const originals = { fetchBlockFromCluster: proto.fetchBlockFromCluster, commit: proto.commit };
+const originals = { fetchBlockFromCluster: proto.fetchBlockFromCluster, commitMany: proto.commitMany };
 
 interface StubCall {
 	method: MethodName;
@@ -26,7 +26,7 @@ interface StubCall {
 /** Replace both methods with stubs that record each call and resolve to `<method> result`. */
 function installStubs(): StubCall[] {
 	const calls: StubCall[] = [];
-	for (const method of ['fetchBlockFromCluster', 'commit'] as const) {
+	for (const method of ['fetchBlockFromCluster', 'commitMany'] as const) {
 		proto[method] = async function (this: object, ...args: unknown[]) {
 			calls.push({ method, repo: this, args });
 			return `${method} result`;
@@ -43,12 +43,12 @@ function invoke(method: MethodName, repo: object, ...args: unknown[]): Promise<u
 }
 
 function currentMethods(): Record<MethodName, Method | undefined> {
-	return { fetchBlockFromCluster: proto.fetchBlockFromCluster, commit: proto.commit };
+	return { fetchBlockFromCluster: proto.fetchBlockFromCluster, commitMany: proto.commitMany };
 }
 
 afterEach(() => {
 	proto.fetchBlockFromCluster = originals.fetchBlockFromCluster;
-	proto.commit = originals.commit;
+	proto.commitMany = originals.commitMany;
 });
 
 describe('cohort consult counter', () => {
@@ -59,19 +59,32 @@ describe('cohort consult counter', () => {
 		expect(await invoke('fetchBlockFromCluster', repo, 'a', 'context', 3)).toBe('fetchBlockFromCluster result');
 		await invoke('fetchBlockFromCluster', repo, 'b');
 		await invoke('fetchBlockFromCluster', repo, 'b');
-		expect(await invoke('commit', repo, { request: 1 })).toBe('commit result');
+		expect(await invoke('commitMany', repo, { request: 1 })).toBe('commitMany result');
 		counter.restore();
 
 		expect(calls.map(({ method, args }) => ({ method, args }))).toEqual([
 			{ method: 'fetchBlockFromCluster', args: ['a', 'context', 3] },
 			{ method: 'fetchBlockFromCluster', args: ['b'] },
 			{ method: 'fetchBlockFromCluster', args: ['b'] },
-			{ method: 'commit', args: [{ request: 1 }] }
+			{ method: 'commitMany', args: [{ request: 1 }] }
 		]);
 		expect(calls.every((call) => call.repo === repo)).toBe(true);
 		const snapshot = counter.snapshot();
 		expect(snapshot).toMatchObject({ consults: 3, distinctBlocks: 2, commits: 1 });
 		expect(formatConsultSnapshot('scope', 'phase', snapshot)).toBe('[scope] phase: consults=3 distinctBlocks=2 commits=1 — b×2, a×1');
+	});
+
+	it('counts a real `commit` once, through the `commitMany` it delegates to', async () => {
+		const calls = installStubs();
+		const counter = installConsultCounter();
+		const repo = Object.create(CoordinatorRepo.prototype) as CoordinatorRepo;
+		await CoordinatorRepo.prototype.commit.call(repo, { request: 1 } as unknown as Parameters<CoordinatorRepo['commit']>[0]);
+		counter.restore();
+
+		expect(calls.map(({ method, args }) => ({ method, args }))).toEqual([
+			{ method: 'commitMany', args: [[{ request: 1 }], undefined] }
+		]);
+		expect(counter.snapshot().commits).toBe(1);
 	});
 
 	it('orders equally busy blocks by id, and names an empty snapshot', async () => {
@@ -93,7 +106,7 @@ describe('cohort consult counter', () => {
 		await invoke('fetchBlockFromCluster', control, 'x');
 		expect(counter.labelUnlabeled('control')).toBe(1);
 		await invoke('fetchBlockFromCluster', strand, 'y');
-		await invoke('commit', strand);
+		await invoke('commitMany', strand);
 		expect(counter.labelUnlabeled('strand')).toBe(1);
 		expect(counter.labelUnlabeled('stray')).toBe(0);
 		await invoke('fetchBlockFromCluster', unlabelled, 'z');
@@ -116,14 +129,14 @@ describe('cohort consult counter', () => {
 		const calls = installStubs();
 		const underneath = currentMethods();
 		const counter = installConsultCounter();
-		expect(proto.commit).not.toBe(underneath.commit);
+		expect(proto.commitMany).not.toBe(underneath.commitMany);
 
 		counter.restore();
 		expect(currentMethods()).toEqual(underneath);
 		counter.restore();
 		expect(currentMethods()).toEqual(underneath);
 
-		await invoke('commit', {});
+		await invoke('commitMany', {});
 		expect(calls).toHaveLength(1);
 		expect(counter.snapshot().commits).toBe(0);
 	});
@@ -142,10 +155,10 @@ describe('cohort consult counter', () => {
 		inner.restore();
 		outer.restore();
 		expect(proto.fetchBlockFromCluster).toBe(underneath.fetchBlockFromCluster);
-		expect(proto.commit).toBe(underneath.commit);
+		expect(proto.commitMany).toBe(underneath.commitMany);
 	});
 
-	it.each(['fetchBlockFromCluster', 'commit'] as const)('refuses to install, and patches nothing, when %s is not a function', (method) => {
+	it.each(['fetchBlockFromCluster', 'commitMany'] as const)('refuses to install, and patches nothing, when %s is not a function', (method) => {
 		installStubs();
 		proto[method] = undefined;
 		const before = currentMethods();

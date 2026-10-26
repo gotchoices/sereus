@@ -13,7 +13,11 @@ import type { BlockId } from '@optimystic/db-core';
  *    read-repair window (at most once per `readRepairWindowMs`, 10 s by default). On a
  *    cohort of one it is a local `findCluster`; on a party of several machines it is a
  *    round trip to every other cohort member. The count is the portable signal.
- *  - a COMMIT is one call of `CoordinatorRepo.commit`.
+ *  - a COMMIT is one call of `CoordinatorRepo.commitMany`: one consensus record, which may
+ *    carry several collections' commits of one transaction (Optimystic 1.19.0, GitHub #42).
+ *    `CoordinatorRepo.commit` is a list of one handed to `commitMany`, so wrapping `commitMany`
+ *    alone counts every commit once; db-core's transaction coordinator calls `commitMany`
+ *    directly, so wrapping `commit` would miss every multi-collection commit.
  *
  * Wraps the prototype, so the patch is process-wide: install it before the node under
  * measurement starts and `restore()` it in a `finally`. Vitest runs each spec file in its
@@ -27,7 +31,7 @@ export interface ConsultSnapshot {
 	consults: number;
 	/** Distinct block ids those consults named. */
 	distinctBlocks: number;
-	/** `commit` calls. */
+	/** `commitMany` calls (every `commit` is one). */
 	commits: number;
 	/** Consults per block id, busiest first. */
 	perBlock: Map<BlockId, number>;
@@ -58,11 +62,11 @@ export interface ConsultCounter {
 
 /** The consult method is TypeScript-private; this is the shape the one cast below asserts. */
 type ConsultMethod = (this: CoordinatorRepo, blockId: BlockId, ...rest: unknown[]) => Promise<unknown>;
-type CommitMethod = CoordinatorRepo['commit'];
+type CommitMethod = CoordinatorRepo['commitMany'];
 
 interface PatchableCoordinatorRepo {
 	fetchBlockFromCluster: ConsultMethod;
-	commit: CommitMethod;
+	commitMany: CommitMethod;
 }
 
 interface InstanceTally {
@@ -75,14 +79,14 @@ interface InstanceTally {
 /**
  * Install the counter over `CoordinatorRepo.prototype`.
  *
- * @throws if `fetchBlockFromCluster` or `commit` is no longer a function on the prototype —
+ * @throws if `fetchBlockFromCluster` or `commitMany` is no longer a function on the prototype —
  *   an upstream rename must fail here rather than install a wrapper nothing calls. (A method
  *   that still exists but is no longer called is caught by the calling spec's floor.)
  */
 export function installConsultCounter(): ConsultCounter {
 	// The single cast: `fetchBlockFromCluster` is private, so it is not on the public type.
 	const proto = CoordinatorRepo.prototype as unknown as PatchableCoordinatorRepo;
-	for (const method of ['fetchBlockFromCluster', 'commit'] as const) {
+	for (const method of ['fetchBlockFromCluster', 'commitMany'] as const) {
 		if (typeof proto[method] !== 'function') {
 			throw new Error(
 				`cohort-consult-counter: CoordinatorRepo.prototype.${method} is not a function — `
@@ -108,13 +112,13 @@ export function installConsultCounter(): ConsultCounter {
 		tally.perBlock.set(blockId, (tally.perBlock.get(blockId) ?? 0) + 1);
 		return innerConsult.call(this, blockId, ...rest);
 	};
-	const innerCommit = proto.commit;
+	const innerCommit = proto.commitMany;
 	const patchedCommit: CommitMethod = function (this: CoordinatorRepo, ...args) {
 		tallyFor(this).commits++;
 		return innerCommit.apply(this, args);
 	};
 	proto.fetchBlockFromCluster = patchedConsult;
-	proto.commit = patchedCommit;
+	proto.commitMany = patchedCommit;
 
 	let restored = false;
 	return {
@@ -151,14 +155,14 @@ export function installConsultCounter(): ConsultCounter {
 		},
 		restore(): void {
 			if (restored) return;
-			if (proto.fetchBlockFromCluster !== patchedConsult || proto.commit !== patchedCommit) {
+			if (proto.fetchBlockFromCluster !== patchedConsult || proto.commitMany !== patchedCommit) {
 				throw new Error(
 					'cohort-consult-counter: cannot restore CoordinatorRepo.prototype — a later patch is still '
 					+ 'installed over this one. Restore in reverse order of application (last applied, first '
 					+ 'restored); the counter is left installed until that happens.');
 			}
 			proto.fetchBlockFromCluster = innerConsult;
-			proto.commit = innerCommit;
+			proto.commitMany = innerCommit;
 			restored = true;
 		}
 	};
