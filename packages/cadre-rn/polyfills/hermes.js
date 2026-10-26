@@ -86,7 +86,110 @@ if (!globalThis.crypto.subtle) {
 //
 // Kept UTF-8-only to avoid pulling in a full text-encoding polyfill; throws a
 // clear RangeError if anything asks for another encoding.
+//
+// Output is built a chunk of code units at a time, never a character at a time:
+// `str += …` per character is slow on Hermes, and Optimystic decodes every block,
+// transform and metadata record it reads from storage (gotchoices/sereus#51).
 if (typeof globalThis.TextDecoder === 'undefined') {
+	const CHUNK = 4096;
+	// One slot past CHUNK: the flush check runs before each byte, and a surrogate pair
+	// begun at CHUNK - 1 ends at CHUNK. Shared by every decoder, which is safe because
+	// decode is synchronous and never re-entered.
+	const units = new Uint16Array(CHUNK + 1);
+
+	/** Appends `codeUnits` (at most CHUNK of them, far inside Hermes's argument limit) as a string. */
+	function pushString(parts, codeUnits) {
+		parts.push(String.fromCharCode.apply(null, codeUnits));
+	}
+
+	/** Appends the run of ASCII from `start` straight from the input, and returns where it ends. */
+	function pushAsciiRun(bytes, start, parts) {
+		let end = start;
+		while (end < bytes.length && bytes[end] < 0x80) end++;
+		for (let s = start; s < end; s += CHUNK) {
+			pushString(parts, bytes.subarray(s, Math.min(end, s + CHUNK)));
+		}
+		return end;
+	}
+
+	/**
+	 * The Encoding Standard's UTF-8 decoder with replacement, from `start` to the end:
+	 * each maximal invalid subpart becomes one U+FFFD, and so does a sequence the input
+	 * ends inside. The bounds on the next continuation byte are what reject overlong
+	 * forms, surrogates and code points above U+10FFFF.
+	 */
+	function pushDecoded(bytes, start, parts) {
+		let pos = 0;
+		let codePoint = 0;
+		let needed = 0;
+		let seen = 0;
+		let lower = 0x80;
+		let upper = 0xBF;
+		let i = start;
+		while (i < bytes.length) {
+			if (pos >= CHUNK) {
+				pushString(parts, units.subarray(0, pos));
+				pos = 0;
+			}
+			const byte = bytes[i];
+			if (needed === 0) {
+				i++;
+				if (byte < 0x80) {
+					units[pos++] = byte;
+				} else if (byte >= 0xC2 && byte <= 0xDF) {
+					needed = 1;
+					codePoint = byte & 0x1F;
+				} else if (byte >= 0xE0 && byte <= 0xEF) {
+					if (byte === 0xE0) lower = 0xA0;
+					else if (byte === 0xED) upper = 0x9F;
+					needed = 2;
+					codePoint = byte & 0x0F;
+				} else if (byte >= 0xF0 && byte <= 0xF4) {
+					if (byte === 0xF0) lower = 0x90;
+					else if (byte === 0xF4) upper = 0x8F;
+					needed = 3;
+					codePoint = byte & 0x07;
+				} else {
+					units[pos++] = 0xFFFD;
+				}
+			} else if (byte < lower || byte > upper) {
+				// The bytes so far are one invalid subpart. This byte is not consumed: it is
+				// read again as the start of whatever follows.
+				units[pos++] = 0xFFFD;
+				needed = 0;
+				seen = 0;
+				lower = 0x80;
+				upper = 0xBF;
+			} else {
+				i++;
+				lower = 0x80;
+				upper = 0xBF;
+				codePoint = (codePoint << 6) | (byte & 0x3F);
+				if (++seen === needed) {
+					if (codePoint > 0xFFFF) {
+						codePoint -= 0x10000;
+						units[pos++] = 0xD800 + (codePoint >> 10);
+						units[pos++] = 0xDC00 + (codePoint & 0x3FF);
+					} else {
+						units[pos++] = codePoint;
+					}
+					needed = 0;
+					seen = 0;
+				}
+			}
+		}
+		if (needed !== 0) units[pos++] = 0xFFFD;
+		if (pos > 0) pushString(parts, units.subarray(0, pos));
+	}
+
+	function decodeUtf8(bytes, ignoreBOM) {
+		const start = !ignoreBOM && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF ? 3 : 0;
+		const parts = [];
+		const asciiEnd = pushAsciiRun(bytes, start, parts);
+		if (asciiEnd < bytes.length) pushDecoded(bytes, asciiEnd, parts);
+		return parts.length === 1 ? parts[0] : parts.join('');
+	}
+
 	class TextDecoderPolyfill {
 		constructor(label = 'utf-8') {
 			const enc = String(label).toLowerCase().replace('_', '-');
@@ -104,32 +207,7 @@ if (typeof globalThis.TextDecoder === 'undefined') {
 				: ArrayBuffer.isView(input)
 					? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
 					: new Uint8Array(input);
-			if (bytes.length === 0) return '';
-			let i = 0;
-			let str = '';
-			if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) i = 3;
-			while (i < bytes.length) {
-				const b = bytes[i++];
-				if (b < 0x80) {
-					str += String.fromCharCode(b);
-				} else if (b < 0xC0) {
-					str += '\uFFFD';
-				} else if (b < 0xE0) {
-					str += String.fromCharCode(((b & 0x1F) << 6) | (bytes[i++] & 0x3F));
-				} else if (b < 0xF0) {
-					str += String.fromCharCode(
-						((b & 0x0F) << 12) | ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F),
-					);
-				} else {
-					let cp = ((b & 0x07) << 18)
-						| ((bytes[i++] & 0x3F) << 12)
-						| ((bytes[i++] & 0x3F) << 6)
-						| (bytes[i++] & 0x3F);
-					cp -= 0x10000;
-					str += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
-				}
-			}
-			return str;
+			return decodeUtf8(bytes, this.ignoreBOM);
 		}
 	}
 	globalThis.TextDecoder = TextDecoderPolyfill;
@@ -138,12 +216,125 @@ if (typeof globalThis.TextDecoder === 'undefined') {
 
 // ── structuredClone ─────────────────────────────────────────────────────────
 // Not yet supported by Hermes.
-// Required by: @optimystic/db-core (transform tracker, cache-source, coordinator)
+// Required by: @optimystic/db-core (transform tracker, cache-source, coordinator), which
+// clones each block it reads or updates.
+//
+// The JSON-shaped values db-core clones are copied directly, following the HTML
+// structured-clone algorithm for the types `cloneValue` lists: shared references and
+// cycles are kept, and objects come back as plain objects carrying their own enumerable
+// string keys. A graph holding any other value goes, whole, to @ungap/structured-clone,
+// whose serialize-then-deserialize covers more types but is several times slower
+// (gotchoices/sereus#51).
 
 if (typeof globalThis.structuredClone !== 'function') {
-	const _structuredClone = require('@ungap/structured-clone').default;
-	globalThis.structuredClone = function structuredClone(value) {
-		return _structuredClone(value);
+	// Loaded before globalThis.structuredClone is assigned: ungap's default export calls
+	// the global structuredClone when one exists at load time, which would be this one.
+	const ungapClone = require('@ungap/structured-clone').default;
+	const TypedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+	/** What the copiers return when the graph holds a value they do not copy. */
+	const UNSUPPORTED = Symbol('structuredClone: unsupported');
+
+	/**
+	 * A copy of `value`, or UNSUPPORTED. `memo` maps each source object already met to its
+	 * copy, which keeps shared references shared and closes cycles.
+	 */
+	function cloneValue(value, memo) {
+		if (typeof value !== 'object' || value === null) {
+			return typeof value === 'function' || typeof value === 'symbol' ? UNSUPPORTED : value;
+		}
+		const prior = memo.get(value);
+		if (prior !== undefined) return prior;
+		// Exact prototypes only, so a subclass instance (a class, a Node Buffer) is not copied here.
+		const proto = Object.getPrototypeOf(value);
+		if (proto === Object.prototype || proto === null) return clonePlainObject(value, memo);
+		if (proto === Array.prototype) return cloneArray(value, memo);
+		if (Object.getPrototypeOf(proto) === TypedArrayPrototype) {
+			return cloneView(value, proto.constructor, value.length, memo);
+		}
+		if (proto === ArrayBuffer.prototype) return remember(memo, value, value.slice(0));
+		if (proto === DataView.prototype) return cloneView(value, DataView, value.byteLength, memo);
+		if (proto === Date.prototype) return remember(memo, value, new Date(value.getTime()));
+		if (proto === RegExp.prototype) return remember(memo, value, new RegExp(value.source, value.flags));
+		if (proto === Map.prototype) return cloneMap(value, memo);
+		if (proto === Set.prototype) return cloneSet(value, memo);
+		return UNSUPPORTED;
+	}
+
+	function remember(memo, source, copy) {
+		memo.set(source, copy);
+		return copy;
+	}
+
+	function clonePlainObject(source, memo) {
+		const copy = remember(memo, source, {});
+		const keys = Object.keys(source);
+		for (let k = 0; k < keys.length; k++) {
+			const key = keys[k];
+			const value = cloneValue(source[key], memo);
+			if (value === UNSUPPORTED) return UNSUPPORTED;
+			if (key === '__proto__') {
+				// Assigning would set the copy's prototype; the algorithm makes an own property,
+				// which is also what JSON.parse makes of this key.
+				Object.defineProperty(copy, key, { value, writable: true, enumerable: true, configurable: true });
+			} else {
+				copy[key] = value;
+			}
+		}
+		return copy;
+	}
+
+	// NOTE: copies indices only. The algorithm also copies an array's other own enumerable
+	// properties (`arr.label = …`); no caller sets any, and ungap dropped them too. If one
+	// ever does, iterate Object.keys here instead.
+	function cloneArray(source, memo) {
+		const length = source.length;
+		const copy = remember(memo, source, new Array(length));
+		for (let k = 0; k < length; k++) {
+			if (!(k in source)) continue; // a hole stays a hole
+			const value = cloneValue(source[k], memo);
+			if (value === UNSUPPORTED) return UNSUPPORTED;
+			copy[k] = value;
+		}
+		return copy;
+	}
+
+	/** A typed array or DataView, over a copy of its buffer made once however many views share it. */
+	function cloneView(source, View, size, memo) {
+		const buffer = cloneValue(source.buffer, memo);
+		if (buffer === UNSUPPORTED) return UNSUPPORTED;
+		return remember(memo, source, new View(buffer, source.byteOffset, size));
+	}
+
+	function cloneMap(source, memo) {
+		const copy = remember(memo, source, new Map());
+		for (const [key, value] of source) {
+			const keyCopy = cloneValue(key, memo);
+			if (keyCopy === UNSUPPORTED) return UNSUPPORTED;
+			const valueCopy = cloneValue(value, memo);
+			if (valueCopy === UNSUPPORTED) return UNSUPPORTED;
+			copy.set(keyCopy, valueCopy);
+		}
+		return copy;
+	}
+
+	function cloneSet(source, memo) {
+		const copy = remember(memo, source, new Set());
+		for (const value of source) {
+			const valueCopy = cloneValue(value, memo);
+			if (valueCopy === UNSUPPORTED) return UNSUPPORTED;
+			copy.add(valueCopy);
+		}
+		return copy;
+	}
+
+	globalThis.structuredClone = function structuredClone(value, options) {
+		// A call with options (a transfer list, which neither path honours) is left exactly
+		// as it was: ungap, with the options dropped.
+		if (options === undefined) {
+			const copy = cloneValue(value, new Map());
+			if (copy !== UNSUPPORTED) return copy;
+		}
+		return ungapClone(value);
 	};
 	markPolyfilled('structuredClone');
 }

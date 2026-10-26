@@ -204,6 +204,8 @@ interface PolyfillRun {
 	env: Record<string, string | undefined>;
 	/** registry keys the polyfill reported through `markPolyfilled`. */
 	marked: string[];
+	/** Each value the structuredClone polyfill handed to `@ungap/structured-clone`. */
+	ungapClones: unknown[];
 }
 
 const kitRequire = createRequire(join(kitDir, 'package.json'));
@@ -213,14 +215,17 @@ const kitRequire = createRequire(join(kitDir, 'package.json'));
  *
  * `require` is this package's own, so the polyfill loads the `@ungap/structured-clone`,
  * `web-streams-polyfill` and `@noble/hashes` this package declares, as a bundle would —
- * with two substitutions:
+ * with two substitutions and one wrapper:
  * `react-native-get-random-values` (a native module, absent in Node) becomes an empty
  * object, and `./registry` records what was marked instead of accumulating into the
- * real module.
+ * real module. `@ungap/structured-clone` is the real one, wrapped to record each value
+ * it is given: under Node it delegates to the native structuredClone, so its output
+ * alone cannot show whether the polyfill's own copy ran.
  */
 function evaluatePolyfill(): PolyfillRun {
 	const source = readFileSync(join(kitDir, 'polyfills', 'hermes.js'), 'utf8');
 	const marked: string[] = [];
+	const ungapClones: unknown[] = [];
 	const abortControllerModule = kitRequire('abort-controller/dist/abort-controller') as {
 		AbortController: AbortControllerCtor;
 		AbortSignal: AbortSignalCtor;
@@ -252,6 +257,15 @@ function evaluatePolyfill(): PolyfillRun {
 			return {
 				markPolyfilled: (name: string) => marked.push(name),
 				wasPolyfilled: (name: string) => marked.includes(name),
+			};
+		}
+		if (id === '@ungap/structured-clone') {
+			const ungap = kitRequire(id) as { default: (value: unknown) => unknown };
+			return {
+				default: (value: unknown) => {
+					ungapClones.push(value);
+					return ungap.default(value);
+				},
 			};
 		}
 		return kitRequire(id);
@@ -288,6 +302,7 @@ function evaluatePolyfill(): PolyfillRun {
 		Promise: HermesPromise as PolyfilledPromiseCtor,
 		env,
 		marked,
+		ungapClones,
 	};
 }
 
@@ -352,6 +367,84 @@ function recordListeners(signal: SignalLike): Set<() => void> {
 		},
 	});
 	return attached;
+}
+
+// ── Decoder inputs ──────────────────────────────────────────────────────────
+
+/**
+ * Bytes where UTF-8 changes meaning: the ASCII edges, the edges of the continuation
+ * range and of each narrowed range after E0, ED, F0 and F4, every lead-byte class edge,
+ * and the bytes that are never valid.
+ */
+const UTF8_BOUNDARY_BYTES = [
+	0x00, 0x41, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBB, 0xBF, 0xC0, 0xC1, 0xC2, 0xDF,
+	0xE0, 0xE1, 0xEC, 0xED, 0xEE, 0xEF, 0xF0, 0xF1, 0xF3, 0xF4, 0xF5, 0xF7, 0xF8, 0xFE, 0xFF,
+];
+
+/** mulberry32: a fixed seed gives the same sequence on every run, so a failure reproduces. */
+function seededRandom(seed: number): () => number {
+	let state = seed >>> 0;
+	return () => {
+		state = (state + 0x6D2B79F5) >>> 0;
+		let t = state;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+/** `count` byte strings up to `maxLength` long, most bytes drawn from UTF8_BOUNDARY_BYTES. */
+function randomUtf8EdgeBytes(seed: number, count: number, maxLength: number): Uint8Array[] {
+	const random = seededRandom(seed);
+	const nextByte = () => random() < 0.6
+		? UTF8_BOUNDARY_BYTES[Math.floor(random() * UTF8_BOUNDARY_BYTES.length)]
+		: Math.floor(random() * 256);
+	return Array.from(
+		{ length: count },
+		() => Uint8Array.from({ length: Math.floor(random() * (maxLength + 1)) }, nextByte),
+	);
+}
+
+function decoderInputs(): Uint8Array[] {
+	const fixed = [
+		// byte-order marks: one is stripped, a second is text, a partial one is invalid
+		[], [0xEF, 0xBB, 0xBF], [0xEF, 0xBB, 0xBF, 0x41], [0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF, 0x41], [0xEF, 0xBB],
+		// overlong forms
+		[0xC0, 0x80], [0xC1, 0xBF], [0xE0, 0x80, 0x80], [0xE0, 0x9F, 0xBF], [0xF0, 0x80, 0x80, 0x80], [0xF0, 0x8F, 0xBF, 0xBF],
+		// surrogate code points, then U+D7FF just below them
+		[0xED, 0xA0, 0x80], [0xED, 0xBF, 0xBF], [0xED, 0x9F, 0xBF],
+		// above U+10FFFF, then U+10FFFF itself
+		[0xF4, 0x90, 0x80, 0x80], [0xF5, 0x80, 0x80, 0x80], [0xF8, 0x88, 0x80, 0x80, 0x80], [0xF4, 0x8F, 0xBF, 0xBF],
+		// each truncation, at the end and before ASCII
+		[0xC3], [0xE2], [0xE2, 0x82], [0xF0], [0xF0, 0x9F], [0xF0, 0x9F, 0x98], [0xF0, 0x9F, 0x98, 0x41],
+		[0xE2, 0x41], [0x61, 0xE2, 0x82],
+		// stray continuations and never-valid bytes
+		[0x80], [0xBF, 0x80], [0xFE], [0xFF], [0xFF, 0xFE],
+	].map((bytes) => Uint8Array.from(bytes));
+	const encoder = new TextEncoder();
+	const text = [
+		'héllo',
+		'a€😀z',
+		// ASCII alone, over two flushes
+		'x'.repeat(9000),
+		// an ASCII run longer than a flush, then the multi-byte decoder
+		'a'.repeat(5000) + 'é',
+		// every surrogate pair at an odd offset, so one straddles the 4096-unit flush
+		'é' + '😀'.repeat(3000),
+	].map((value) => encoder.encode(value));
+	return [
+		...fixed,
+		...text,
+		...randomUtf8EdgeBytes(51, 4000, 24),
+		// long enough to cross flushes with invalid sequences in flight
+		...randomUtf8EdgeBytes(5151, 4, 10_000),
+	];
+}
+
+/** A failing input as hex, cut short so a long one does not swamp the report. */
+function describeBytes(bytes: Uint8Array): string {
+	const head = Buffer.from(bytes.subarray(0, 32)).toString('hex');
+	return bytes.length > 32 ? `${head}… (${bytes.length} bytes)` : head;
 }
 
 // ── Assertions ──────────────────────────────────────────────────────────────
@@ -582,9 +675,90 @@ describe('polyfills/hermes.js under a fake Hermes + React Native runtime', () =>
 		expect((subtle.digest as unknown as Record<symbol, unknown>)[Symbol.for('@serfab/cadre-rn/js-digest')]).toBe(true);
 	});
 
-	it('decodes UTF-8 without a TextDecoder', () => {
+	it('decodes UTF-8 without a TextDecoder, as Node\'s native one does', () => {
 		const TextDecoderPolyfill = run.globals.TextDecoder as new () => { decode(input: Uint8Array): string };
-		expect(new TextDecoderPolyfill().decode(new TextEncoder().encode('héllo'))).toBe('héllo');
+		const polyfill = new TextDecoderPolyfill();
+		const native = new TextDecoder();
+		const mismatches = decoderInputs()
+			.filter((bytes) => polyfill.decode(bytes) !== native.decode(bytes))
+			.map(describeBytes);
+		expect(mismatches).toEqual([]);
+	});
+
+	describe('structuredClone, which Hermes does not have', () => {
+		let polyfillClone: typeof structuredClone;
+
+		beforeAll(() => {
+			polyfillClone = run.globals.structuredClone as typeof structuredClone;
+		});
+
+		/** Clones `value` with the polyfill, returning the copy and whatever it handed to ungap. */
+		function cloneRecordingFallback<T>(value: T): { copy: T; handedToUngap: unknown[] } {
+			const before = run.ungapClones.length;
+			const copy = polyfillClone(value);
+			return { copy, handedToUngap: run.ungapClones.slice(before) };
+		}
+
+		it('copies plain data itself, as native structuredClone does, keeping shared references', () => {
+			const shared = { n: 1 };
+			const key = { k: 'key' };
+			const buffer = Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]).buffer;
+			const sparse: number[] = new Array(3);
+			sparse[0] = 1;
+			sparse[2] = 3;
+			const source = {
+				first: shared,
+				second: shared,
+				self: undefined as unknown,
+				sparse,
+				bytes: new Uint8Array(buffer, 2, 4),
+				view: new DataView(buffer, 1, 6),
+				words: Uint16Array.from([1, 0xFFFF]),
+				map: new Map<object, unknown>([[key, shared]]),
+				set: new Set<unknown>([key, 'x']),
+				when: new Date(0),
+				pattern: /a+b/gi,
+				scalars: [null, undefined, true, 1.5, 'text', 10n],
+				absent: undefined,
+				nullPrototype: Object.assign(Object.create(null) as Record<string, number>, { a: 1 }),
+				// JSON.parse makes an own property of this key; assigning it would set a prototype.
+				protoKey: JSON.parse('{"__proto__": {"polluted": true}}') as object,
+			};
+			source.self = source;
+
+			const { copy, handedToUngap } = cloneRecordingFallback(source);
+			expect(handedToUngap).toEqual([]);
+			expect(copy).toStrictEqual(structuredClone(source));
+			expect(copy).not.toBe(source);
+			expect(copy.self).toBe(copy);
+			expect(copy.second).toBe(copy.first);
+			const [copiedKey] = copy.map.keys();
+			expect(copy.map.get(copiedKey)).toBe(copy.first);
+			expect(copy.set.has(copiedKey)).toBe(true);
+			expect(copy.bytes.buffer).not.toBe(buffer);
+			expect(copy.view.buffer).toBe(copy.bytes.buffer);
+			expect([copy.bytes.byteOffset, copy.view.byteOffset]).toEqual([2, 1]);
+			expect(Object.keys(copy.protoKey)).toEqual(['__proto__']);
+		});
+
+		it('sends a graph holding anything else, whole, to @ungap/structured-clone', () => {
+			class Reading {
+				constructor(readonly value: number) { }
+			}
+			const shared = { n: 1 };
+			// The instance sits below data the polyfill copies, so it has begun a copy before
+			// it meets the value it cannot.
+			const withInstance = { first: shared, nested: { second: shared, reading: new Reading(5) } };
+			// A Uint8Array subclass, so not one of the standard typed arrays.
+			const nodeBuffer = Buffer.from([1, 2, 3]);
+
+			for (const source of [withInstance, nodeBuffer]) {
+				const { copy, handedToUngap } = cloneRecordingFallback<unknown>(source);
+				expect(handedToUngap).toHaveLength(1);
+				expect(handedToUngap[0]).toBe(source);
+				expect(copy).toStrictEqual(structuredClone(source));
+			}
+		});
 	});
 
 	it('gives Promise.withResolvers back', async () => {
