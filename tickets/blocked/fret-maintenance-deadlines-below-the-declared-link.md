@@ -75,3 +75,7 @@ Above the declared link the queue, not the declaration, sets how long a ping tak
 ## Rechecked at p2p-fret 1.2.1 (2026-10-20, `adopt-optimystic-1-17-0`)
 
 Unchanged: `MAINTENANCE_RPC_TIMEOUT_MS` is 2 000, `MAINTENANCE_SNAPSHOT_TIMEOUT_MS` 1 000, `STABILIZE_TICK_BUDGET_MS` 5 000, `STABILIZE_PHASE_ONE_BUDGET_MS` 3 000 (`fret-service.ts` ~501-559) and `RPC_TIMEOUT_MS` 5 000 (`rpc/protocols.ts` 27), and `FretConfig` has no `linkRoundTripMs`. FRET 1.2.0 added a dead-verdict grace for long-lived peers (`maxDeadGraceMs`, up to 5 minutes); it delays only the `dead` verdict for a peer seen up 10 minutes or more, and does nothing for a strand member that joined recently.
+
+## Rechecked at Optimystic 1.19.0 (2026-10-25, `adopt-optimystic-1-19-0`)
+
+Unchanged. p2p-fret is still 1.2.1: `../Fret` has no newer tag, and its HEAD is the 1.2.1 release commit `439b85e`. db-p2p 1.19.0 still declares `p2p-fret` ^1.2.1, and between `v1.18.0` and `v1.19.0` `libp2p-node-base.ts` changed only its commit-certificate sink, so Optimystic still builds FRET without the link round trip.

@@ -34,10 +34,11 @@
  *    an authorize 168.9 s because it queued behind a background control write
  *    that spent its own 84 s first. Naming
  *    `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`;
- *  - answers the pend, then never answers → the same named failure ~189 s after
- *    the member goes silent (three commit attempts of two rounds each, then
- *    three cancel rounds; measured 189.3–189.5 s on 2026-10-21), and the next
- *    write after the member returns commits in ~0.5–1.5 s.
+ *  - answers the pend, then never answers → the same named failure ~210 s after
+ *    the member goes silent (one round for the batched commit, then three commit
+ *    attempts of two rounds each, then three cancel rounds; measured 210.3–210.4 s
+ *    on 2026-10-25), and the next write after the member returns commits in
+ *    ~0.5–1.5 s.
  *
  * Control writes run one at a time under the node's write lock, so while a
  * member stalls each failing write holds every other control write on the node
@@ -136,8 +137,8 @@ const log = debug('sereus:integration:degraded-cohort');
 //                                      write queued behind a failing background one
 //   recovery after a failed write .... ~0.7–1.8 s
 //   transient-reset absorb ........... ~0.9–1.6 s (commits on attempt 3)
-//   member silent after the pend ..... ~189 s from the silence to the failure,
-//                                      then ~0.5–1.5 s for the next write (2026-10-21)
+//   member silent after the pend ..... ~210 s from the silence to the failure,
+//                                      then ~0.5–1.5 s for the next write (2026-10-25)
 //
 // The absorb row was ~0.7 s on attempt 2 when this table was first measured
 // (2026-08-12). Re-measured 2026-09-17 over three isolated rounds
@@ -319,11 +320,14 @@ const STALLED_WRITE_TIMEOUT_MS = FAILURE_CEILING_MS + STALLED_ROUND_MS;
 const TRANSACTION_COMMIT_ATTEMPTS = 3;
 /**
  * A control write whose COMMIT meets the never-answering member, the member having answered its
- * pend, measured from the moment the member goes silent: each commit attempt is two rounds (the
- * one-round commit, then the tail commit), and then the cancel runs {@link STALLED_CANCEL_ROUNDS}
- * rounds. 189 s at the default declared link; measured 189.4 s on 2026-10-21.
+ * pend, measured from the moment the member goes silent: one round for the batched commit of all
+ * its collections, which throws, after which the transactor commits each collection on its own
+ * (`NetworkTransactor.commitMany` in db-core); each of those attempts is two rounds (the one-round
+ * commit, then the tail commit); and then the cancel runs {@link STALLED_CANCEL_ROUNDS} rounds.
+ * 210 s at the default declared link; measured 210.3 s and 210.4 s on 2026-10-25 (Optimystic
+ * 1.19.0), and 189.4 s on 2026-10-21, before the batched commit existed.
  */
-const SILENT_AFTER_PEND_FAILURE_MS = (2 * TRANSACTION_COMMIT_ATTEMPTS + STALLED_CANCEL_ROUNDS) * STALLED_ROUND_MS;
+const SILENT_AFTER_PEND_FAILURE_MS = (1 + 2 * TRANSACTION_COMMIT_ATTEMPTS + STALLED_CANCEL_ROUNDS) * STALLED_ROUND_MS;
 /**
  * Assertion bounds for that write, from the moment the member goes silent, so the write lock and
  * the pend before it are outside them. Floor: a commit that met the silent member cannot fail

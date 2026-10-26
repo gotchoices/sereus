@@ -183,6 +183,34 @@
  *
  * The strand settle window's 42 A->B drain re-sends are gone (2 block-transfer streams in B addStrand
  * remain, the backfill's push), and the cadre cases' idle minutes open no Optimystic or Sereus stream.
+ *
+ * MEASURED_ON 2026-10-25, one run of all three cases, 238 s, on Optimystic 1.19.0 (`adopt-optimystic-1-19-0`;
+ * sereus `2e1b052c`, `@optimystic/*` linked at `cc87a138`, past the `v1.19.0` tag `f1f774ea` by two tickets
+ * that change how a refused or short write is reported, not what a write sends; FRET 1.2.1). What 1.19.0
+ * adds for this instrument is #42, a transaction's collections pended and committed together, one request
+ * per member per phase:
+ *
+ *   strand               2026-10-21               2026-10-25
+ *   B addStrand          195 ms, 7 app, 54 gets   234 ms, 9 app, 54 gets   5 sync B->A, 2 block-transfer A->B
+ *   B first insert       (not broken out)         151 ms, 20 app, 8 gets   16 sync + 4 cluster, as on 2026-10-20
+ *   settle 15 s          31 app, 41 gets          17 app, 35 gets          6 cluster + 7 sync B->A (2026-10-20: 20 + 17)
+ *   idle 60 s            0 app, 30 upkeep         0 app, 30 upkeep
+ *   one steady write     (not broken out)         6-7 app                  4 cluster + 2-3 sync, as on 2026-10-20
+ *
+ *   cadre (admitMember)  join 651 ms, 27 app, 54 gets   join 446 ms, 10 app, 51 gets
+ *                        settle 16 app, 23 gets         settle 26 app, 23 gets
+ *   invite (redeem)      join 767 ms, 51 app, 71 gets   join 637 ms, 33 app, 63 gets
+ *                        settle 7 app, 0 gets           settle 7 app, 1 get
+ *   both cadre cases     idle 60 s: 0 app, 0 gets       idle 60 s: 0 app, 0 gets
+ *
+ * - #42: the strand settle window's `cluster` streams went 20 -> 6. They are B's two membership commits,
+ *   the invitation redemption (`consumeInvite`: `Member`, `ConsumedInvite` and their unique trees) and
+ *   the `MemberPeer` binding (`registerMemberPeer`), which cost about 4 per collection before and 6
+ *   between them now. B's first insert and the steady writes touch one collection (`App.Seat`,
+ *   `App.Ledger`, no index), which #42 does not change, and still cost 4 `cluster` each.
+ * - The cadre and invite joins also fell (27 -> 10 and 51 -> 33 app streams), but the cadre case's settle
+ *   window rose 16 -> 26, so part of that is background work landing in the next phase. This is one run,
+ *   and the 2026-10-21 block has no per-protocol breakdown to attribute the rest, or B addStrand's 7 -> 9.
  */
 
 import { describe, it } from 'vitest'

@@ -29,3 +29,7 @@ Run `harness-topology`'s cross-party share (a joiner launched with no seed, dial
 ## Expected behaviour
 
 When the gate opens, every collection of every table the machine may write, index and unique-enforcement trees included, has been fetched from a peer or is held locally, exactly as the main trees are.
+
+## Optimystic 1.19.0 (2026-10-25, `adopt-optimystic-1-19-0`)
+
+Still open. 1.19.0's change hold (gotchoices/Optimystic#47) delays a table's change event on a machine that pended the same commit's index collections until those land too. That does not reach this gap: the gate probes on the storage-wide feed, which is never held, and the gap is an index tree the joiner never fetched, not a wake that came too early.

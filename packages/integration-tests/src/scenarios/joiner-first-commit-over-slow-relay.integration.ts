@@ -588,7 +588,8 @@ describe("a joiner's first transaction over a relayed link", () => {
 	// arm passes: that drop cycle no longer cuts a commit on this link, so make it a plain `it`.
 	// NOTE: failed in 2 of 2 runs (2026-10-17), and in the 2026-10-20 run with every node's ping
 	// handler at 60 s, but only because a drop landed while the commit was in flight; if it turns red
-	// once and not on a rerun, the commit missed a drop by timing.
+	// once and not on a rerun, the commit missed a drop by timing. Still failing in the one run on
+	// Optimystic 1.19.0 (2026-10-25), cause not traced.
 	it.fails('commits, and its rows outlive the joiner, on a 20 ms frame cap with a 70%-busy event loop', async () => {
 		await runJoinerFirstCommit({ latency: { delayMs: 20, mode: 'serial' }, eventLoopBusy: 0.7 });
 	}, 1_800_000);

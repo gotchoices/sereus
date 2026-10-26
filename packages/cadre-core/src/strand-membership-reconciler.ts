@@ -577,11 +577,10 @@ export class StrandMembershipReconciler {
     try {
       if (!(await this.ensureMembership(db, keyPair))) return;
       // NOTE: accepted tradeoff — the redemption (`Member` + `ConsumedInvite`) and the binding
-      // below stay two SEPARATE commits on purpose. One transaction would save no `/cluster`
-      // requests: Optimystic pends and commits each collection on its own, about 4 requests per
-      // collection (`blocked/optimystic-multi-collection-commit-costs-four-requests-per-collection`),
-      // and both commits already span several collections (each table plus its UNIQUE trees),
-      // so merging saves only one commit's serial latency. It would also let a torn commit
+      // below stay two SEPARATE commits on purpose. Merging them would save one commit: its
+      // serial latency and, since Optimystic 1.19.0 pends and commits a transaction's collections
+      // together, its `/cluster` requests (the two commits cost 6 on a two-member strand in
+      // `message-cost-accounting` on 2026-10-25, 20 before). It would also let a torn commit
       // (Optimystic can report a multi-collection commit partly saved) or the cohort applying
       // the collections out of order show this machine's `MemberPeer` without its `Member`,
       // which the revocation enforcer reads as a removed member and hangs up on — fail closed,
@@ -589,8 +588,7 @@ export class StrandMembershipReconciler {
       // `strand-revocation-enforcer.ts`). And it would add a half-committed shape (`MemberPeer`
       // saved, the invitation still live) that {@link reportHalfCommittedJoin}'s dropping of the
       // invitation gets wrong. Revisit when Optimystic offers an all-or-nothing multi-collection
-      // commit, or when its per-coordinator batching lands and the enforcer can tell a
-      // not-yet-seated binding from a removed member's.
+      // commit, or when the enforcer can tell a not-yet-seated binding from a removed member's.
       await this.ensureBinding(db, keyPair);
     } finally {
       this.noteAttemptOutcome();

@@ -71,3 +71,7 @@ One run of the phone arm on Optimystic 1.17.0 and p2p-fret 1.2.1, with `DEBUG` o
 | `aborting connection due to ping failure` | 9, over the rounds | 55, over the whole arm until it was stopped in round 4 |
 
 The backoff was in effect (coordinator retries waited 3.5 s, or as long as the failed request was outstanding; silent consults held the next one for 3.5 s, 7 s, 14 s). This is one run against one, on a link whose earlier runs varied widely (the 2026-10-17 measurement's own first run failed in setup), so it is not attributed. The 2026-10-13 experiment on `complete/optimystic-ping-handler-timeout-below-the-monitor-deadline` saw the same direction with the handler raised alone: connections that stay up stay saturated. Measure a series before reading it as a regression.
+
+## Optimystic 1.19.0 (2026-10-25, `adopt-optimystic-1-19-0`)
+
+The phone-arm series was not run. The arm's last run took 3 464 s (`adopt-optimystic-1-17-0`), and one command here may run for 10 minutes, so a series needs a human or CI. 1.19.0 moves no deadline in `docs/cadre-consistency.md` → "Deadlines Below Cadre" (re-stamped at `f1f774ea`). Two of its changes bear on this arm: a write to several tables or indexes now sends one request per member per phase, not one per table, index and `unique` column (gotchoices/Optimystic#42), which shrinks the joiner's seat and membership commits, and a change event from such a commit waits up to 10 s for its other tables (`DEFAULT_CHANGE_HOLD_MS`). Neither changes how a deadline is sized, so the proposal stands as written.
