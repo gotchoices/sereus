@@ -318,7 +318,8 @@ describe('linked sibling packages', () => {
 			const problem = checkLinkedTarget(tmp, LINKED_TARGET);
 
 			expect(problem).toContain('dist is stale');
-			expect(problem).toContain(`Run in ${siblingRepo}: yarn workspace @sibling/pkg build`);
+			expect(problem).toContain('do not build it from here');
+			expect(problem).toContain(`yarn workspace @sibling/pkg build in ${siblingRepo}`);
 		});
 
 		it('reports a linked sibling that has never been built', () => {
@@ -328,7 +329,7 @@ describe('linked sibling packages', () => {
 			const problem = checkLinkedTarget(tmp, LINKED_TARGET);
 
 			expect(problem).toContain(`not built (missing ${SIBLING_ENTRY})`);
-			expect(problem).toContain(`Run in ${siblingRepo}: yarn workspace @sibling/pkg build`);
+			expect(problem).toContain(`yarn workspace @sibling/pkg build in ${siblingRepo}`);
 		});
 
 		it('falls back to a plain build command when the sibling is not in a workspace', () => {
@@ -337,7 +338,7 @@ describe('linked sibling packages', () => {
 			writeFixture(join(lonely, 'src', 'index.ts'), NEW);
 			symlinkSync(lonely, installedAt, 'junction');
 
-			expect(checkLinkedTarget(tmp, LINKED_TARGET)).toContain(`Run in ${lonely}: yarn build`);
+			expect(checkLinkedTarget(tmp, LINKED_TARGET)).toContain(`yarn build in ${lonely}`);
 		});
 
 		it('skips a registry-installed copy even when packing left src newer than dist', () => {

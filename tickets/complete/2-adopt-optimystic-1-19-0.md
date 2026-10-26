@@ -1,7 +1,7 @@
-description: Sereus moves onto Optimystic 1.19.0, which sends a write spanning several tables in one round of requests and lets larger writes and blocks travel between machines. This pass measured what that changed, settled the waiting tickets it answers, wrote the release notes, and ran the release gate; two integration tests are red and were handed to triage.
+description: Sereus moves onto Optimystic 1.19.0, which sends a write spanning several tables in one round of requests and lets larger writes and blocks travel between machines. This pass measured what that changed, settled the waiting tickets it answers, wrote the release notes, and ran the release gate; one integration test that fails by timing is still with triage.
 prereq: backfill-pushes-blocks-in-the-optimystic-1-19-form, hermes-text-decoding-and-cloning-fast-paths
 architecture: docs/testing.md#declared-dependency-range-vs-linked-workspace-keep-them-equal
-files: .release-notes.pending.md, packages/integration-tests/src/scenarios/message-cost-accounting.integration.ts (new 2026-10-25 block at the end of the doc comment), packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts (`SILENT_AFTER_PEND_FAILURE_MS` and the header's figures), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (frame-cap arm NOTE), packages/cadre-core/src/strand-membership-reconciler.ts (the two-commit NOTE in `attempt`), docs/cadre-consistency.md ("Deadlines Below Cadre" stamp and new change-hold row; the silent-after-pend paragraph), docs/architecture.md ("Table change subscriptions" → What it hears), docs/strands.md (redemption bullet; reactivity "Known cost"), tickets/complete/optimystic-multi-collection-commit-costs-four-requests-per-collection.md, tickets/blocked/ (four rechecked), tickets/backlog/debt-first-sync-gate-leaves-index-trees-unfetched.md, tickets/.pre-existing-error.md, tickets/.garden-report.md
+files: .release-notes.pending.md, test-harness/build-freshness.ts (`linkedRemedy`, review), docs/testing.md (sibling-build paragraph, review), packages/integration-tests/src/scenarios/message-cost-accounting.integration.ts (new 2026-10-25 block at the end of the doc comment), packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts (`SILENT_AFTER_PEND_FAILURE_MS` and the header's figures), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (frame-cap arm NOTE), packages/cadre-core/src/strand-membership-reconciler.ts (the two-commit NOTE in `attempt`), docs/cadre-consistency.md ("Deadlines Below Cadre" stamp and new change-hold row; the silent-after-pend paragraph), docs/architecture.md ("Table change subscriptions" → What it hears), docs/strands.md (redemption bullet; reactivity "Known cost"), tickets/complete/optimystic-multi-collection-commit-costs-four-requests-per-collection.md, tickets/blocked/ (four rechecked), tickets/backlog/debt-first-sync-gate-leaves-index-trees-unfetched.md, tickets/.pre-existing-error.md, tickets/.garden-report.md
 ----
 # Adopt Optimystic 1.19.0
 
@@ -118,3 +118,34 @@ All three, measured with `--silent=false`, equal their pins exactly, so nothing 
 ## Tests
 
 None added. One scenario bound (`SILENT_AFTER_PEND_FAILURE_MS`) now counts the batched commit's round. It is a derived constant in an existing case, re-measured three times.
+
+## Review findings
+
+Read the implement diff (`ticket(implement): adopt-optimystic-1-19-0`) and the triage commit after it (`tess: triage pre-existing test failure`) before the handoff.
+
+**Checked against upstream source, no change needed:**
+- The silent-after-pend derivation: `NetworkTransactor.commitMany` at `v1.19.0` logs "batched commit threw; committing each request on its own", and the coordinator takes the batched path when a transaction has more than one collection. So 1 + 2×3 + 3 = 10 rounds of 21 s, which is 210 s, with the ceiling one round above it (231 s). The scenario constant, its doc comment, `docs/cadre-consistency.md` and the release notes agree.
+- `DEFAULT_CHANGE_HOLD_MS` is 10 000 in db-p2p `storage/storage-repo.ts` at `v1.19.0`, and only a `StorageRepo` option sets it, so the new "Deadlines Below Cadre" row and the `docs/architecture.md` sentence are accurate.
+- The reactivity "one read per tick" claim (`docs/strands.md`, release notes) matches upstream's `the-reactivity-backstop-check-costs-nothing-while-idle`.
+- The reconciler NOTE's figures (6 vs 20) match the scenario's 2026-10-25 block. The new revisit condition is coherent now that batching has landed.
+- No other doc or source still says 189 s or nine rounds (grep over `docs/` and `packages/*/src`).
+- Docs touched follow the "system as it is now" rule. The dated history is kept in the scenario comments and ticket bodies, where this repo keeps measurements.
+
+**Fixed in this pass:**
+- *Red 1 was lost after triage.* The triage pass fixed red 2 but ended before it reached a conclusion on red 1: it had left its runs waiting in the background, and the runner ended the turn. It still deleted `tickets/.pre-existing-error.md`, and no ticket or `.pre-existing-known.md` entry recorded red 1. In this pass, the stall case followed by the stalled-read case **passed at 209.1 s against the 210 s limit**, so the doubled pend phase is still present on the current upstream (`81f81d69` dirty → `39f75db5` clean during the run). Re-filed in `tickets/.pre-existing-error.md` with the original trace and the new run, for the runner's triage to pick up.
+- *The stale-build guard told agents to build a sibling.* For a linked sibling, the message's remedy was the bare command `Run in ../optimystic: yarn workspace … build`, which `tickets/rules/sibling-repos.md` forbids. The triage agent ran it, building `../optimystic`'s `db-core` and Quereus plugin from that repository's uncommitted work (log line ~973). This is the class-level fix (the message at the seam), not a ticket. `linkedRemedy` in `test-harness/build-freshness.ts` now says the package is a read-only sibling, not to build it from here, and to record the work as blocked; it still names the owner's command. The three spec expectations changed with it (37/37 pass). `docs/testing.md` → "When it fires because a sibling's own runner is mid-ticket" contradicted the rule ("Check before building") and now says agents never build a sibling and only a human checks before building.
+- *Release-notes wording.* "Sereus 1.18.0 installed fresh today" became "installed fresh now", because "today" will be wrong by the time anyone reads the notes.
+- *Garden report.* The 2026-10-26 entry now says red 2 is fixed and red 1 is re-filed.
+
+**Verified, the triage fix for red 2:** none of triage's four runs of its own fix ran: each stopped at the stale-build guard (`triage-always-on.fix{1..4}.log`). In this pass `strand-always-on-replica-hosts-cross-party-join` passed **8 of 8** (`tickets/.logs/adopt-optimystic-1-19-0.review.always-on.r{1..8}.log`), where it had failed 3 of 5 before the fix. Read the fix: `awaitBootRecordOnPhone` waits until the phone holds a `CadrePeer` row with a later `UpdatedAt` than the vouched one, bounded by the 30 s converge budget, and describes what it waited for. It replaces the fixed sleep at the one site the scenario's NOTE named. No change.
+
+**Gate in this pass:** `yarn lint` (exit 0), `yarn typecheck`, `yarn check:dep-ranges` pass; `test-harness/build-freshness.spec.ts` 37/37. The full integration gate was not re-run: the implement pass ran it in 15 batches, and this pass changed only the guard's message text and docs.
+
+**Tests:** none added. The implementer added none either. The one changed scenario bound is a derived constant re-measured three times; the guard's spec expectations follow the new message.
+
+**Tripwires:** none new.
+
+**Not done, needs a human:**
+- `blocked/optimystic-write-made-alone-owes-no-one` still needs its sixth arm confirmed on a clean release build before it closes.
+- Whether the release goes out with red 1 open is a human's call. It is a slower failure on a deliberately degraded cohort that now lands either side of its hang limit, and it loses no data.
+- The phone-arm series on `blocked/decide-link-deadlines-from-measured-response-time` takes longer than one agent command may run.

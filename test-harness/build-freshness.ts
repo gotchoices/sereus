@@ -291,14 +291,20 @@ function linkTarget(entry: string): string {
 
 /**
  * `yarn workspace` only reaches this repository's own workspaces, so a linked
- * sibling has to be built from its own checkout — name that checkout, because
- * whoever hits this has to go there to fix it.
+ * sibling is built from its own checkout, by that checkout's owner. The message
+ * says not to build it from here because agents followed the bare command: a
+ * stale sibling is usually one its own runner is editing, and building it
+ * compiles that unfinished work into what every test here runs against
+ * (`tickets/rules/sibling-repos.md`).
  */
 function linkedRemedy(packageName: string, packageRoot: string): string {
 	const repoRoot = findWorkspaceRoot(packageRoot);
-	return repoRoot === undefined
-		? `Run in ${packageRoot}: yarn build`
-		: `Run in ${repoRoot}: yarn workspace ${packageName} build`;
+	const build = repoRoot === undefined
+		? `yarn build in ${packageRoot}`
+		: `yarn workspace ${packageName} build in ${repoRoot}`;
+	return 'It is a linked sibling, read-only from this repository: do not build it from here '
+		+ "(tickets/rules/sibling-repos.md); stop and record the work as blocked on the sibling's build. "
+		+ `Its owner builds it with: ${build}`;
 }
 
 /**

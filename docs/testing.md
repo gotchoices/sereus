@@ -161,14 +161,14 @@ against when there is none.
 `../optimystic` and `../quereus` run ticket automation of their own, and while it is working, their
 `src` is newer than their `dist` continuously. The guard then aborts **every** guarded suite here —
 7 of 9 packages — in global setup, so `yarn test` and `yarn check` fail without running a single
-test. The message names the sibling and says to build it.
+test. The message names the sibling, says not to build it from here, and gives the command its owner runs.
 
-**Do not follow that remedy while the sibling's runner is active.** Building mid-ticket compiles a
+**An agent never builds a sibling** (`tickets/rules/sibling-repos.md`): it stops the work that needs it and records it as blocked on the sibling's build. Building mid-ticket compiles a
 half-finished change into the `dist` this repo measures against; for `../quereus` that is
 `core/database.ts` and the planner, which is exactly what the control-database scenarios exercise.
 A green or red result obtained that way describes nothing that will ever be published.
 
-Check before building:
+A human building a sibling checks first:
 
 ```bash
 ls ../quereus/tickets/.in-progress ../optimystic/tickets/.in-progress   # absent = idle
