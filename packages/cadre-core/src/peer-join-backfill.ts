@@ -1,6 +1,6 @@
 import debug from 'debug';
 import type { IdentifyResult, Libp2p, PeerId } from '@libp2p/interface';
-import type { ActionId, ActionRev, IPeerNetwork } from '@optimystic/db-core';
+import { jsonEncodedBytes, MAX_BLOCK_BYTES, type ActionId, type ActionRev, type BlockId, type IBlock, type IPeerNetwork } from '@optimystic/db-core';
 import { BlockTransferClient, buildBlockTransferProtocol, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 import { peerJoinPushBudget } from './link-budget.js';
 import type { Libp2pNodeWithRepo } from './types.js';
@@ -182,15 +182,6 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // clear the pending timer in that handler.
 
 const log = debug('sereus:cadre:peer-join-backfill');
-const blockEncoder = new TextEncoder();
-
-/**
- * The block-transfer protocol's hard cap on one length-prefixed message. Mirrors
- * `MAX_BLOCK_MESSAGE_BYTES` in `@optimystic/db-p2p`'s `protocol-limits.ts` (8 MiB), which
- * that package does not re-export from its index — keep the two in sync if upstream ever
- * changes it or starts exporting it.
- */
-export const MAX_BLOCK_MESSAGE_BYTES = 8 * 1024 * 1024;
 
 /**
  * Whether an identified peer's protocol list names this network's own block-transfer
@@ -222,7 +213,11 @@ export interface PeerJoinBackfillConfig {
   debounceMs?: number;
   /** Ceiling on blocks copied in one catch-up. Default 10_000. Reaching it is LOGGED, never silent. */
   maxBlocks?: number;
-  /** Soft byte budget per push message. Default 1 MiB. Protocol hard cap is {@link MAX_BLOCK_MESSAGE_BYTES} (8 MiB). */
+  /**
+   * Soft byte budget per push message, as the sum of its blocks' `jsonEncodedBytes` (the form they
+   * travel in). Default 1 MiB. A single block over it still ships alone; one over `MAX_BLOCK_BYTES`
+   * never ships (see {@link PeerJoinBackfillResult.oversized}).
+   */
   maxChunkBytes?: number;
   /** Max blocks per push message. Default 64. */
   maxChunkBlocks?: number;
@@ -328,7 +323,7 @@ export interface PeerJoinBackfillResult {
   unmaterialized: number;
   /** Not attempted because `maxBlocks` was reached. */
   capped: number;
-  /** Skipped: a single block whose wire size alone exceeds {@link MAX_BLOCK_MESSAGE_BYTES}. */
+  /** Skipped: a block whose `jsonEncodedBytes` exceeds db-core's per-block limit, `MAX_BLOCK_BYTES`. */
   oversized: string[];
   /** True when the `authorizePeer` gate refused (or threw) — nothing was pushed, peer not memoized. */
   denied: boolean;
@@ -384,8 +379,8 @@ function recordReply(memo: PeerMemo, revs: Readonly<Record<string, { rev: number
 
 /** One in-flight push message being accumulated. */
 interface Chunk {
-  ids: string[];
-  buffers: Uint8Array[];
+  /** Each block as read from this store, keyed by its id — the form `pushBlocks` sends. */
+  blocks: Record<BlockId, IBlock>;
   meta: Record<string, { rev: number; actionId: ActionId }>;
   /**
    * The cohort commit proof retained for each block's pushed revision, where one exists.
@@ -400,15 +395,12 @@ interface Chunk {
    * `latest` in one place.
    */
   proofs: Record<string, BlockCommitProof>;
+  /** The sum of the blocks' `jsonEncodedBytes`, judged against `maxChunkBytes`. */
   bytes: number;
 }
 
-/**
- * Base64 wire size of a raw buffer — `pushBlocks` base64-encodes each block into the JSON
- * request, so the protocol cap must be judged against the encoded size, not the raw bytes.
- */
-function base64WireBytes(rawBytes: number): number {
-  return Math.ceil(rawBytes / 3) * 4;
+function emptyChunk(): Chunk {
+  return { blocks: {}, meta: {}, proofs: {}, bytes: 0 };
 }
 
 /**
@@ -828,7 +820,7 @@ export class PeerJoinBackfill {
 
     const client = this.createPushClient(peerId);
     const memo = this.memoFor(key);
-    let chunk: Chunk = { ids: [], buffers: [], meta: {}, proofs: {}, bytes: 0 };
+    let chunk = emptyChunk();
     let chunkFailed = false;
     let anyChunkDelivered = false;
     /**
@@ -840,13 +832,14 @@ export class PeerJoinBackfill {
     const peerUnreachable = (): boolean => chunkFailed && !anyChunkDelivered;
 
     const flush = async (): Promise<void> => {
-      if (chunk.ids.length === 0) return;
-      const { ids, buffers, meta, proofs } = chunk;
-      chunk = { ids: [], buffers: [], meta: {}, proofs: {}, bytes: 0 };
+      const { blocks, meta, proofs } = chunk;
+      const ids = Object.keys(blocks);
+      if (ids.length === 0) return;
+      chunk = emptyChunk();
       try {
         // ONE certification value rather than two arguments, so a caller cannot pair a proof
         // for one revision with meta for another — both were written from the same `latest`.
-        const response = await client.pushBlocks(ids, buffers, 'replication',
+        const response = await client.pushBlocks(blocks, 'replication',
           { blockMeta: meta, blockProofs: proofs }, {
           dialTimeoutMs: this.config.dialTimeoutMs,
           responseTimeoutMs: this.config.responseTimeoutMs
@@ -886,18 +879,18 @@ export class PeerJoinBackfill {
 
       // Flush before adding when this block would overflow either budget. A single block
       // larger than maxChunkBytes still ships — alone, in its own chunk.
-      if (chunk.ids.length > 0
-        && (chunk.ids.length + 1 > this.config.maxChunkBlocks || chunk.bytes + offer.buffer.length > this.config.maxChunkBytes)) {
+      const inChunk = Object.keys(chunk.blocks).length;
+      if (inChunk > 0
+        && (inChunk + 1 > this.config.maxChunkBlocks || chunk.bytes + offer.bytes > this.config.maxChunkBytes)) {
         await flush();
         if (this.stopped || peerUnreachable()) break;
       }
-      chunk.ids.push(blockId);
-      chunk.buffers.push(offer.buffer);
+      chunk.blocks[blockId] = offer.block;
       chunk.meta[blockId] = { rev: offer.latest.rev, actionId: offer.latest.actionId };
       if (offer.proof) {
         chunk.proofs[blockId] = offer.proof;
       }
-      chunk.bytes += offer.buffer.length;
+      chunk.bytes += offer.bytes;
       result.offered += 1;
     }
 
@@ -916,7 +909,7 @@ export class PeerJoinBackfill {
   /**
    * Read one block for the push to `key`, or count why it is skipped in `result` and return
    * nothing: not committed, already held by the peer (memo or its own commit signature), not
-   * materialized, or too large for one message. The proof is read for EXACTLY the revision the
+   * materialized, or over the per-block size limit. The proof is read for EXACTLY the revision the
    * meta will name, from the same `latest`; absent is normal (nothing retained a proof for that
    * revision), and the block still ships with its meta for the receiver to decide.
    */
@@ -925,7 +918,7 @@ export class PeerJoinBackfill {
     key: string,
     memo: PeerMemo,
     result: PeerJoinBackfillResult
-  ): Promise<{ latest: ActionRev; buffer: Uint8Array; proof: BlockCommitProof | undefined } | undefined> {
+  ): Promise<{ latest: ActionRev; block: IBlock; bytes: number; proof: BlockCommitProof | undefined } | undefined> {
     const { storage } = this.deps;
     const latest = (await storage.getMetadata(blockId))?.latest;
     if (!latest) {
@@ -953,19 +946,16 @@ export class PeerJoinBackfill {
       log('[%s] block=%s has latest rev %d but no materialized content; skipped', this.deps.label, blockId, latest.rev);
       return undefined;
     }
-    const buffer = blockEncoder.encode(JSON.stringify(block));
-    // NOTE: MAX_BLOCK_MESSAGE_BYTES caps the whole framed request, not one block, and
-    // this test ignores the request envelope (ids array, blockMeta, JSON punctuation).
-    // A lone block within a few KiB of the cap therefore still ships and is rejected by
-    // the receiver's length-prefix decoder — a permanent chunk failure for that peer. No
-    // block comes close today; if one ever can, subtract a measured envelope allowance
-    // here rather than raising the cap.
-    if (base64WireBytes(buffer.length) >= MAX_BLOCK_MESSAGE_BYTES) {
+    // A writer refuses a block over MAX_BLOCK_BYTES, and Optimystic sizes the push frame to carry
+    // one block at that limit with its meta and proof. A block past the limit grew some other way
+    // and may not fit the frame, and a push that does not fit fails on every run.
+    const bytes = jsonEncodedBytes(block);
+    if (bytes > MAX_BLOCK_BYTES) {
       result.oversized.push(blockId);
-      log('[%s] block=%s is %d bytes (%d on the wire) — exceeds the %d-byte protocol cap alone; skipped',
-        this.deps.label, blockId, buffer.length, base64WireBytes(buffer.length), MAX_BLOCK_MESSAGE_BYTES);
+      log('[%s] block=%s encodes to %d bytes, over the %d-byte per-block limit; skipped',
+        this.deps.label, blockId, bytes, MAX_BLOCK_BYTES);
       return undefined;
     }
-    return { latest, buffer, proof };
+    return { latest, block, bytes, proof };
   }
 }

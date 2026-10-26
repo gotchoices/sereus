@@ -249,7 +249,6 @@ export {
 export {
   PeerJoinBackfill,
   DEFAULT_PEER_JOIN_BACKFILL,
-  MAX_BLOCK_MESSAGE_BYTES,
   PEER_JOIN_BACKFILL_WARN_AFTER_FAILURES,
   type PeerJoinBackfillConfig,
   type PeerJoinBackfillDeps,

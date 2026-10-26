@@ -1,10 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Libp2p, PeerId } from '@libp2p/interface';
-import type { ActionRev, IBlock, IPeerNetwork } from '@optimystic/db-core';
+import { jsonEncodedBytes, MAX_BLOCK_BYTES, type ActionRev, type IBlock, type IPeerNetwork } from '@optimystic/db-core';
 import { buildBlockTransferProtocol, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 import {
   PeerJoinBackfill,
-  MAX_BLOCK_MESSAGE_BYTES,
   type PeerJoinBackfillDeps,
   type PeerJoinBackfillConfig,
   type PeerJoinBackfillPushClient
@@ -195,8 +194,9 @@ function peer(id: string): PeerId {
 }
 
 interface CapturedPush {
+  /** The keys of the blocks record, as the receiver reads them: its `missing` names these. */
   ids: string[];
-  buffers: Uint8Array[];
+  blocks: Record<string, IBlock>;
   reason: string | undefined;
   meta: { blockMeta?: Record<string, { rev: number; actionId: string }>; blockProofs?: Record<string, unknown> } | undefined;
   options: { dialTimeoutMs?: number; responseTimeoutMs?: number } | undefined;
@@ -211,11 +211,11 @@ function makePushClient(
 ) {
   const pushes: CapturedPush[] = [];
   const client: PeerJoinBackfillPushClient = {
-    pushBlocks: async (ids, buffers, reason, meta, options) => {
-      const push: CapturedPush = { ids: [...ids], buffers: [...buffers], reason, meta, options };
+    pushBlocks: async (blocks, reason, meta, options) => {
+      const push: CapturedPush = { ids: Object.keys(blocks), blocks: { ...blocks }, reason, meta, options };
       pushes.push(push);
       const { missing } = respond(push);
-      return { blocks: {}, missing };
+      return { accepted: push.ids.filter((id) => !missing.includes(id)), missing };
     }
   };
   return { pushes, client };
@@ -266,6 +266,8 @@ describe('PeerJoinBackfill', () => {
     expect(result.unmaterialized).toBe(0);
     expect(result.capped).toBe(0);
 
+    // The pushed record is keyed by block id: a push that reached the receiver keyed by array
+    // index had every block reported missing (gotchoices/sereus#52).
     const allIds = pushes.flatMap((p) => p.ids).sort();
     expect(allIds).toEqual(['b1', 'b2', 'b3']);
     for (const push of pushes) {
@@ -273,10 +275,9 @@ describe('PeerJoinBackfill', () => {
       // Both deadlines are DERIVED from the declared link round trip (`link-budget.ts`), not
       // typed here — a fixed 3000 ms dial could never open a relayed connection at all.
       expect(push.options).toEqual(peerJoinPushBudget());
-      for (const [i, id] of push.ids.entries()) {
+      for (const id of push.ids) {
         expect(push.meta?.blockMeta?.[id]).toEqual({ rev: blocks[id]!.latest!.rev, actionId: blocks[id]!.latest!.actionId });
-        // The buffer is the block's own JSON, encoded once.
-        expect(JSON.parse(new TextDecoder().decode(push.buffers[i]!))).toEqual(blocks[id]!.block);
+        expect(push.blocks[id]).toEqual(blocks[id]!.block);
       }
     }
   });
@@ -355,7 +356,7 @@ describe('PeerJoinBackfill', () => {
     expect(result.offered).toBe(4);
     expect(pushes.length).toBeGreaterThan(1);
     for (const push of pushes) {
-      const bytes = push.buffers.reduce((sum, b) => sum + b.length, 0);
+      const bytes = Object.values(push.blocks).reduce((sum, block) => sum + jsonEncodedBytes(block), 0);
       // A multi-block chunk stays inside the budget; only a single oversized block
       // may exceed it (covered by the ship-alone test below).
       if (push.ids.length > 1) expect(bytes).toBeLessThanOrEqual(budget);
@@ -380,11 +381,10 @@ describe('PeerJoinBackfill', () => {
     expect(hugePush?.ids).toEqual(['huge']);
   });
 
-  it('skips a block whose wire size alone exceeds MAX_BLOCK_MESSAGE_BYTES, naming it', async () => {
-    // base64 wire bytes = ceil(raw/3)*4, so raw >= 6 MiB crosses the 8 MiB cap.
-    const rawOverCap = Math.ceil((MAX_BLOCK_MESSAGE_BYTES * 3) / 4);
+  it('skips a block whose encoded size exceeds MAX_BLOCK_BYTES, naming it', async () => {
+    // The fill alone is the limit, so the block's JSON (header and punctuation) is past it.
     const { backfill, pushes } = makeBackfill({
-      giant: committed('giant', 1, 'z'.repeat(rawOverCap)),
+      giant: committed('giant', 1, 'z'.repeat(MAX_BLOCK_BYTES)),
       real: committed('real')
     });
 
