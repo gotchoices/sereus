@@ -1,6 +1,12 @@
 description: Each Sereus package accepts any later Optimystic release with the same major version, but Optimystic changed one of its functions in a minor release, so the already-published Sereus 1.18.0 now breaks for anyone installing it fresh. Decide whether Sereus should accept only patch releases of Optimystic, and what to do about the published 1.18.0.
 files: scripts/check-dep-ranges.mjs, docs/testing.md ("Declared dependency range vs linked workspace"), packages/*/package.json, package.json (`upgrade:optimystic`)
 ----
+## Decision (2026-10-25, maintainer)
+
+Keep the `^` ranges. The `pushBlocks` change should have waited for a major version; Optimystic follows semver from here on, so no Sereus-side range policy is needed. No npm deprecation of the published 1.18.0: the next Sereus release (on Optimystic 1.19.0) follows within a day, so few or no installs will land on 1.18.0 in between. The release notes still state the 1.18.0 + 1.19.0 limitation (`adopt-optimystic-1-19-0`).
+
+## Original proposal
+
 **Category: the specification is silent.** A human must choose a range policy for `@optimystic/*`, and decide whether to act on the published `@serfab/*` 1.18.0 packages.
 
 ## What happened
