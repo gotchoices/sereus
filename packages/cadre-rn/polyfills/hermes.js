@@ -327,6 +327,9 @@ if (typeof globalThis.structuredClone !== 'function') {
 		return copy;
 	}
 
+	// NOTE: a graph that gives up pays for the partial walk and then for ungap. db-core's
+	// blocks are plain data, so nothing hot gives up today; if a profile shows a caller that
+	// does, give that type a copier rather than detecting it up front.
 	globalThis.structuredClone = function structuredClone(value, options) {
 		// A call with options (a transfer list, which neither path honours) is left exactly
 		// as it was: ungap, with the options dropped.
