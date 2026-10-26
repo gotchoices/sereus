@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import type { Connection, IdentifyResult, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
+import type { Connection, IdentifyResult, Libp2p, PeerId, PeerUpdate, PrivateKey } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
@@ -205,6 +205,7 @@ import {
   type CircuitRelayTarget
 } from './delegate-admission.js';
 import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, RelayReservationFailedError } from './relay-addrs.js';
+import { selfAddressesChanged } from './self-address-update.js';
 import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer, type ResolvedRelayServer } from './relay-server.js';
 import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
@@ -1081,7 +1082,7 @@ export class CadreNode implements SAppIdLookup {
   /** TTL heartbeat that re-publishes the self record before it goes stale. */
   private recordRefreshTimer: ReturnType<typeof setInterval> | null = null;
   /** Listener that re-publishes the self record when reachable addresses change. */
-  private selfPeerUpdateHandler: (() => void) | null = null;
+  private selfPeerUpdateHandler: ((event: CustomEvent<PeerUpdate>) => void) | null = null;
   /**
    * The reconcile pass's schedule (see {@link reconcileControlCohort}): single-flight
    * runs on `table-change-watch.ts`'s rule, with no table subscription of its own — the
@@ -3741,8 +3742,10 @@ export class CadreNode implements SAppIdLookup {
 
     // Address churn re-publishes the self record AND re-checks the control cohort:
     // a relay-reservation rotation / NAT change can drop a sibling connection, so
-    // the next pass should re-observe and re-dial it.
-    this.selfPeerUpdateHandler = () => {
+    // the next pass should re-observe and re-dial it. Only address churn: libp2p also
+    // fires this for a protocol handler registered or removed (see selfAddressesChanged).
+    this.selfPeerUpdateHandler = (event) => {
+      if (!selfAddressesChanged(event.detail)) return;
       republish('self:peer:update');
       this.controlReconcileRuns?.trigger(0);
     };
