@@ -46,7 +46,7 @@ import {
 } from '@serfab/cadre-core/edge-node';
 import type { CadreNode, ImportedOwnerKey, StrandMoveReport, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
-import { markDelivered } from './messages.svelte.js';
+import { followOfflineStatus, followQueueState, markDelivered } from './messages.svelte.js';
 import { resetAddDeviceCard } from './add-device.svelte.js';
 import { resetMachinesCard } from './machines.svelte.js';
 import { errorMessage, ownerFingerprint } from './cadre-format.js';
@@ -181,6 +181,8 @@ edgeNode.on('strand:writable', ({ strandId }) => {
 	syncStrand();
 });
 edgeNode.on('strand:commit-held', markDelivered);
+edgeNode.on('strand:offline-status', followOfflineStatus);
+edgeNode.on('strand:queue-state', followQueueState);
 edgeNode.on('strand:idle', ({ strandId }) => record('strand:idle', strandId));
 edgeNode.on('strand:hibernating', ({ strandId }) => record('strand:hibernating', strandId));
 edgeNode.on('strand:waking', ({ strandId }) => record('strand:waking', strandId));

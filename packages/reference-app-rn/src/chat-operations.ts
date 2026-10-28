@@ -6,7 +6,7 @@
  * DDL in `declare schema App { … }; apply schema App;`).
  */
 
-import type { StrandInstance } from '@serfab/cadre-core';
+import { EntryNotDiscardableError, UnknownEntryError, type StrandInstance } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import { uuid } from './uuid';
 
@@ -86,6 +86,23 @@ function getDb(strand: StrandInstance): Database {
 export function isHeldOnlyHere(strand: StrandInstance, transactionId: string): boolean {
   const durability = strand.database?.commitDurability(transactionId);
   return durability !== undefined && !durability.heldElsewhere;
+}
+
+/**
+ * Withdraw a message still waiting in the strand's offline queue: its transaction fails with
+ * reason `discarded` and its row leaves this device's view. Returns what to tell the user when the
+ * queue refuses, because an attempt to send it may already have landed; null otherwise, including
+ * for a transaction that settled meanwhile.
+ */
+export function discardQueuedMessage(strand: StrandInstance, transactionId: string): string | null {
+  try {
+    strand.database?.offline?.discard(transactionId);
+    return null;
+  } catch (err) {
+    if (err instanceof EntryNotDiscardableError) return 'Already being sent, so it can no longer be discarded.';
+    if (err instanceof UnknownEntryError) return null;
+    throw err;
+  }
 }
 
 // ── Participant operations ───────────────────────────────────────────────────

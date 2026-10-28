@@ -33,6 +33,7 @@ import type {
   RemoveOwnerOptions,
   StrandInstance,
   StrandConfig,
+  StrandOfflineMode,
   ConnectionPathSummary,
   MachineRemovalPlan,
   MachineRemovalResult,
@@ -66,6 +67,7 @@ import { AppRecommendationStore, LinkRequestStore, type SereusApp } from '@serfa
 import { providerTokensSlot, rentalStore, type ProviderTokensSlot } from '@serfab/cadre-rn/provider';
 import { defaultNoiseCryptoMode } from './noise-crypto-config';
 import { NODE_LOCAL_DB_NAME, NODE_LOCAL_KV_PREFIX, START_OPTIONS_KV_KEY, STORAGE_PREFIX } from './node-local-names';
+import { QueuedMessageRecord } from './queued-messages';
 import { resolveRelayAddrs } from './relay-config';
 
 export type { JoinCadreResult, JoinCredential, PhoneJoinProgress, PhoneNodeOptions, PhoneNodeStatus, RedeemedOwnerGrant, StrandMoveOutcome } from '@serfab/cadre-rn/phone-node';
@@ -265,6 +267,12 @@ export const recommendations = new AppRecommendationStore(phone.recommendationSl
 export const rentals = rentalStore(phone.nodeLocalRecords());
 
 /**
+ * The chat's messages sent in offline mode that their strand's queue has not settled yet, saved in
+ * the node-local database so the chat marks them again after a restart. One per app.
+ */
+export const queuedMessages = new QueuedMessageRecord(phone.nodeLocalRecords());
+
+/**
  * Where this app keeps its tokens for the provider `providerId`: the secure store, ungated, with the
  * default accessibility (the tokens are used only while the app is in front, unlike the identity).
  */
@@ -322,6 +330,23 @@ export function getNoiseCryptoMode(): NoiseCryptoMode | null {
  */
 export function getOwnerPublicKey(): string | null {
   return phone.ownerPublicKey();
+}
+
+/**
+ * The offline mode the running node's strands start in (the `strandOfflineMode` start option);
+ * `'online'` when the start named none, and null unless running.
+ */
+export function getStrandOfflineMode(): StrandOfflineMode | null {
+  const options = phone.options;
+  return options ? options.strandOfflineMode ?? 'online' : null;
+}
+
+/**
+ * Put every strand in `mode` now and save it as the start option, so the next start, a background
+ * restart and a push wake start every strand in it. Thin pass-through to the kit's `setStrandOfflineMode`.
+ */
+export function setStrandOfflineMode(mode: StrandOfflineMode): Promise<void> {
+  return phone.setStrandOfflineMode(mode);
 }
 
 /** The running node, or a throw naming why there is none. */

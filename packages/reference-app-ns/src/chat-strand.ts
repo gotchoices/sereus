@@ -22,7 +22,7 @@ table Participant (
 );
 
 table Message (
-    Id text primary key,
+    Id text primary key with tags ("optimystic.fresh" = true),
     ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,

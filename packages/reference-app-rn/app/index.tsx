@@ -15,9 +15,11 @@ import {
   View,
 } from 'react-native';
 import { useCadre } from '../src/cadre-context';
+import { queuedMessages } from '../src/cadre-phone';
 import { useChat } from '../src/use-chat';
 import { participantDisplayName, parseStoredDatetime, type ChatMessage } from '../src/chat-operations';
 import { connectionBanner } from '../src/connection-status';
+import { sendMarkText, type SendMark, type SentMessage } from '../src/send-marks';
 import { TEST_IDS } from '../src/test-ids';
 
 export default function ChatScreen() {
@@ -26,12 +28,14 @@ export default function ChatScreen() {
 
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState<string | null>(null);
+  const [discardError, setDiscardError] = useState<string | null>(null);
 
   const chat = useChat({
     node: cadre.node,
     strand: activeStrand,
     participantId: cadre.peerId,
     participantName: cadre.peerId ? participantDisplayName(cadre.peerId) : undefined,
+    queuedMessages,
     // A send that reported failure did land. Leave text the user has since typed alone.
     onDraftSettled: (text) => {
       setSendError(null);
@@ -42,6 +46,10 @@ export default function ChatScreen() {
   const handleChangeText = (text: string) => {
     setDraft(text);
     chat.composerChanged(text.trim());
+  };
+
+  const handleDiscard = (messageId: string) => {
+    setDiscardError(chat.discard(messageId));
   };
 
   const listRef = useRef<FlatList<ChatMessage>>(null);
@@ -112,26 +120,37 @@ export default function ChatScreen() {
         onSelect={cadre.selectStrand}
       />
 
-      {/* Error banner — a send that did not confirm wins over a stale poll error. */}
-      {(sendError ?? chat.error) && (
+      {/* Error banner — a send that did not confirm wins over a refused discard, and both over a stale poll error. */}
+      {(sendError ?? discardError ?? chat.error) && (
         <View style={styles.errorBar}>
-          <Text style={styles.errorText}>{sendError ?? chat.error}</Text>
+          <Text style={styles.errorText}>{sendError ?? discardError ?? chat.error}</Text>
         </View>
       )}
+
+      {/* The strand's offline queue, while it holds anything */}
+      {chat.queueLine && (
+        <Text testID={TEST_IDS.chat.queueLine} style={styles.queueLine}>{chat.queueLine}</Text>
+      )}
+
+      {/* Messages refused when sent: their rows are gone, so say so here */}
+      {chat.unsent.map((m) => (
+        <UnsentNotice key={m.messageId} message={m} onDismiss={() => chat.dismissUnsent(m.messageId)} />
+      ))}
 
       {/* Message list */}
       <FlatList
         ref={listRef}
         testID={TEST_IDS.chat.messageList}
         data={chat.messages}
-        // FlatList re-renders rows only when `data` or `extraData` changes, and a mark clearing leaves `data` as it was.
-        extraData={chat.undelivered}
+        // FlatList re-renders rows only when `data` or `extraData` changes, and a mark changing leaves `data` as it was.
+        extraData={chat.marks}
         keyExtractor={(m) => String(m.Id)}
         renderItem={({ item }) => (
           <MessageBubble
             msg={item}
             isOwn={item.ParticipantId === cadre.peerId}
-            undelivered={chat.undelivered.has(item.Id)}
+            mark={chat.marks.get(item.Id)}
+            onDiscard={handleDiscard}
           />
         )}
         contentContainerStyle={styles.list}
@@ -216,7 +235,12 @@ function StrandPicker({
   );
 }
 
-function MessageBubble({ msg, isOwn, undelivered }: { msg: ChatMessage; isOwn: boolean; undelivered: boolean }) {
+function MessageBubble({ msg, isOwn, mark, onDiscard }: {
+  msg: ChatMessage;
+  isOwn: boolean;
+  mark: SendMark | undefined;
+  onDiscard: (messageId: string) => void;
+}) {
   return (
     <View testID={TEST_IDS.chat.messageRow(msg.Id)} style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}>
       {!isOwn && (
@@ -226,11 +250,29 @@ function MessageBubble({ msg, isOwn, undelivered }: { msg: ChatMessage; isOwn: b
       <Text style={styles.time}>
         {parseStoredDatetime(msg.Timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </Text>
-      {undelivered && (
-        <Text testID={TEST_IDS.chat.undeliveredMark(msg.Id)} style={styles.undelivered}>
-          Not yet delivered
+      {mark && (
+        <Text testID={TEST_IDS.chat.sendMark(msg.Id)} style={styles.sendMark}>
+          {sendMarkText(mark)}
         </Text>
       )}
+      {mark?.kind === 'waiting' && mark.discardable && (
+        <Pressable onPress={() => onDiscard(msg.Id)} testID={TEST_IDS.chat.discardBtn(msg.Id)}>
+          <Text style={styles.discard}>Discard</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function UnsentNotice({ message, onDismiss }: { message: SentMessage; onDismiss: () => void }) {
+  return (
+    <View testID={TEST_IDS.chat.unsentNotice(message.messageId)} style={styles.unsent}>
+      <Text style={styles.unsentText}>
+        {`“${message.content}” — ${sendMarkText(message.mark)}`}
+      </Text>
+      <Pressable onPress={onDismiss} testID={TEST_IDS.chat.dismissUnsentBtn(message.messageId)}>
+        <Text style={styles.discard}>Dismiss</Text>
+      </Pressable>
     </View>
   );
 }
@@ -256,7 +298,11 @@ const styles = StyleSheet.create({
   sender: { color: '#aaa', fontSize: 11, marginBottom: 2 },
   msgText: { color: '#fff', fontSize: 15 },
   time: { color: 'rgba(255,255,255,0.5)', fontSize: 10, marginTop: 4, textAlign: 'right' },
-  undelivered: { color: '#ffd54f', fontSize: 10, marginTop: 2, textAlign: 'right' },
+  sendMark: { color: '#ffd54f', fontSize: 10, marginTop: 2, textAlign: 'right' },
+  discard: { color: '#fff', fontSize: 11, fontWeight: '600', marginTop: 4, textAlign: 'right', textDecorationLine: 'underline' },
+  queueLine: { color: '#ffd54f', fontSize: 12, textAlign: 'center', paddingVertical: 4, paddingHorizontal: 12, backgroundColor: '#1a1a2e' },
+  unsent: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#3e2723', paddingVertical: 4, paddingHorizontal: 12 },
+  unsentText: { flex: 1, color: '#ffccbc', fontSize: 12 },
   composer: { flexDirection: 'row', padding: 8, borderTopWidth: 1, borderTopColor: '#333', backgroundColor: '#1a1a2e' },
   input: { flex: 1, backgroundColor: '#2a2a3e', color: '#fff', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, fontSize: 15 },
   sendBtn: { marginLeft: 8, backgroundColor: '#6c63ff', borderRadius: 20, paddingHorizontal: 16, justifyContent: 'center' },

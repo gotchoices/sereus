@@ -46,6 +46,7 @@ import type {
 	RemoveOwnerOptions,
 	StrandFormationDisclosure,
 	StrandInstance,
+	StrandOfflineMode,
 } from '@serfab/cadre-core';
 import type { EdgeNode, OwnerGenesisResult } from '@serfab/cadre-core/edge-node';
 import type { Libp2p } from '@libp2p/interface';
@@ -57,6 +58,7 @@ import { createWebEdgeNode } from './web-edge-platform.js';
 import { getStoreHandle, getStoreStorage, NODE_LOCAL_STORE_KEY } from './strand-storage.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
+import { QueuedMessageRecord } from './queued-messages.js';
 
 /** The tab's edge node. One per tab: a development reload re-runs this module, which replaces a stopped one. */
 export const edgeNode: EdgeNode = createWebEdgeNode();
@@ -245,6 +247,29 @@ export function ownerKeyWired(): boolean {
 export function getRelayState(): RelayState {
 	return edgeNode.node?.getRelayReservationState() ?? noRelayState();
 }
+
+/**
+ * The offline mode the running node's strands start in (the `strandOfflineMode` start option);
+ * `'online'` when the start named none, and null unless running.
+ */
+export function getStrandOfflineMode(): StrandOfflineMode | null {
+	const options = edgeNode.options;
+	return options ? (options.strandOfflineMode ?? 'online') : null;
+}
+
+/**
+ * Put every strand in `mode` now and save it as the start option, so the next load starts every
+ * strand in it. Thin pass-through to the edge node's `setStrandOfflineMode`.
+ */
+export function setStrandOfflineMode(mode: StrandOfflineMode): Promise<void> {
+	return edgeNode.setStrandOfflineMode(mode);
+}
+
+/**
+ * The Messages page's messages sent in offline mode that the strand's queue has not settled yet,
+ * saved in the node-local database so the page marks them again after a reload.
+ */
+export const queuedMessages = new QueuedMessageRecord(edgeNode.nodeLocalRecords());
 
 /** Strands joined this session via the consent/invitation formation flow. */
 export function getFormedStrands(): FormedStrand[] {

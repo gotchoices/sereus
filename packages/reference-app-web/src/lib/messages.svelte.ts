@@ -11,10 +11,18 @@
  * Polling stays cheap: a 4s visibility-gated refresh while the route is mounted.
  */
 
-import { getCadreNode, getChatStrandId } from './cadre-web.js';
-import type { StrandCommitHeld, StrandInstance } from '@serfab/cadre-core';
+import { getCadreNode, getChatStrandId, getStrandOfflineMode, queuedMessages, setStrandOfflineMode } from './cadre-web.js';
+import {
+	EntryNotDiscardableError,
+	UnknownEntryError,
+	type StrandCommitHeld,
+	type StrandInstance,
+	type StrandOfflineStatus,
+	type StrandQueueState,
+} from '@serfab/cadre-core';
 import { chatMessageExists, insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
 import { pushError } from './diagnostics.svelte.js';
+import { isSettled, markForStatus, markOnSend, queueStatusLine, type SendMark, type SentMessage } from './send-marks.js';
 
 const REFRESH_INTERVAL_MS = 4_000;
 
@@ -27,16 +35,6 @@ export interface ChatMessage {
 	ParticipantName?: string;
 }
 
-/**
- * A message this device sent whose commit no other member held when the insert returned. Kept
- * per strand, so a `strand:commit-held` for one strand cannot clear a mark on another.
- */
-interface UndeliveredMark {
-	strandId: string;
-	transactionId: string;
-	messageId: string;
-}
-
 interface MessagesState {
 	ready: boolean;
 	loading: boolean;
@@ -44,10 +42,17 @@ interface MessagesState {
 	messages: ChatMessage[];
 	updatedMs: number | null;
 	/**
-	 * In memory only: a message read from storage carries no mark, and a mark whose commit
-	 * nothing follows stays until the page reloads (docs/strands.md, "A commit's durability").
+	 * The messages this tab sent that no other member holds yet, with their marks. Kept per strand,
+	 * so an event for one strand cannot change a mark on another. In memory, except that a queued
+	 * message is also recorded in `queuedMessages` until its queue settles it: a message read from
+	 * storage carries no mark otherwise, and a mark whose commit nothing follows stays until the
+	 * page reloads (docs/strands.md, "A commit's durability").
 	 */
-	undelivered: UndeliveredMark[];
+	sent: SentMessage[];
+	/** Each strand's offline queue, as its last `strand:queue-state` reported it. */
+	queueStates: Record<string, StrandQueueState['state']>;
+	/** Whether the tab's strands are in offline mode; null while no node runs. */
+	offline: boolean | null;
 }
 
 const state = $state<MessagesState>({
@@ -56,7 +61,9 @@ const state = $state<MessagesState>({
 	error: null,
 	messages: [],
 	updatedMs: null,
-	undelivered: [],
+	sent: [],
+	queueStates: {},
+	offline: null,
 });
 
 let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -110,6 +117,14 @@ export async function ensureReady(): Promise<void> {
 		state.ready = false;
 		state.messages = [];
 		return;
+	}
+	state.offline = getStrandOfflineMode() === 'offline';
+	// The strand may have been published before the store heard its queue's state (the chat strand
+	// is added after the node reports running, but a reload restores it with the node).
+	const queue = strand.database?.offline;
+	if (queue) {
+		state.queueStates[strand.strandId] = queue.queueState();
+		restoreMarksLogged(strand.strandId);
 	}
 	if (!state.ready) {
 		state.ready = true;
@@ -223,7 +238,7 @@ export async function sendMessage(author: string, content: string): Promise<void
 		const alreadyStored = resend !== null && (await chatMessageExists(db(strand), draft.id));
 		if (!alreadyStored) {
 			const transactionId = await insertChatMessage(db(strand), draft.id, author, content);
-			if (transactionId) markIfHeldOnlyHere(strand, transactionId, draft.id);
+			if (transactionId) markSent(strand, { strandId: strand.strandId, transactionId, messageId: draft.id, content });
 		}
 		pendingDraft = null;
 		await refresh();
@@ -237,28 +252,128 @@ export async function sendMessage(author: string, content: string): Promise<void
 }
 
 /**
- * Record the message as not yet delivered when the strand reports its commit held by no other
- * member. The read and the record share one synchronous step: cadre-core updates the record before
- * it emits `strand:commit-held`, so an event that already landed shows in the read, and a later one
- * finds the mark to clear.
+ * Mark the message by its commit's standing: queued, or held by no other member. The read and the
+ * record share one synchronous step (`markOnSend`), so a status or a `strand:commit-held` that
+ * already landed shows in the read, and a later one finds the mark to change. A queued message is
+ * also recorded, so a reload marks it again.
  */
-function markIfHeldOnlyHere(strand: StrandInstance, transactionId: string, messageId: string): void {
-	const durability = strand.database?.commitDurability(transactionId);
-	if (durability && !durability.heldElsewhere) {
-		state.undelivered.push({ strandId: strand.strandId, transactionId, messageId });
+function markSent(strand: StrandInstance, message: Omit<SentMessage, 'mark'>): void {
+	const mark = markOnSend(strand, message.transactionId);
+	if (!mark) return;
+	state.sent.push({ ...message, mark });
+	if (mark.kind === 'waiting' || mark.kind === 'sending') {
+		queuedMessages.add(message).catch((err: unknown) => pushError('messages.record', err));
 	}
+}
+
+/** The index in `state.sent` of the message `transactionId` stores in strand `strandId`, or -1. */
+function sentIndex(strandId: string, transactionId: string): number {
+	return state.sent.findIndex((m) => m.strandId === strandId && m.transactionId === transactionId);
 }
 
 /** `strand:commit-held`: another member now holds the commit, so clear its message's mark. */
 export function markDelivered({ strandId, transactionId }: StrandCommitHeld): void {
-	const index = state.undelivered.findIndex((m) => m.strandId === strandId && m.transactionId === transactionId);
-	if (index >= 0) state.undelivered.splice(index, 1);
+	const index = sentIndex(strandId, transactionId);
+	if (index >= 0) state.sent.splice(index, 1);
 }
 
-/** Whether the chat strand's message `messageId` was sent here and no other member holds it yet. */
-export function isUndelivered(messageId: string): boolean {
+/** `strand:offline-status`: move the mark of the message the transaction stores along, or clear it. */
+export function followOfflineStatus({ strandId, status }: StrandOfflineStatus): void {
+	const index = sentIndex(strandId, status.transactionId);
+	if (index >= 0) {
+		const previous = state.sent[index];
+		const mark = markForStatus(getCadreNode()?.getStrand(strandId), status, previous.mark);
+		if (!mark) state.sent.splice(index, 1);
+		else if (mark !== previous.mark) state.sent[index] = { ...previous, mark };
+	}
+	if (isSettled(status)) forgetQueued(status.transactionId);
+}
+
+/** `strand:queue-state`: the line above the list, and the cue that a database was published, possibly over a restored queue. */
+export function followQueueState({ strandId, state: queue }: StrandQueueState): void {
+	state.queueStates[strandId] = queue;
+	restoreMarksLogged(strandId);
+}
+
+// The offline queues whose marks were rebuilt from `queuedMessages`: once per database build,
+// since a build's restore delivers its `queued` statuses before anything can listen.
+const restoredQueues = new WeakSet<object>();
+
+/**
+ * Rebuild the marks of the strand's recorded messages from what its queue says of each now, and
+ * drop from the record those it has settled or no longer knows.
+ */
+async function restoreMarks(strandId: string): Promise<void> {
+	const queue = getCadreNode()?.getStrand(strandId)?.database?.offline;
+	if (!queue || restoredQueues.has(queue)) return;
+	restoredQueues.add(queue);
+	for (const message of await queuedMessages.forStrand(strandId)) {
+		const status = queue.status(message.transactionId);
+		if (!status || isSettled(status)) forgetQueued(message.transactionId);
+		const mark = status ? markForStatus(getCadreNode()?.getStrand(strandId), status, null) : null;
+		const index = sentIndex(strandId, message.transactionId);
+		if (index >= 0) state.sent.splice(index, 1);
+		if (mark) state.sent.push({ ...message, mark });
+	}
+}
+
+function restoreMarksLogged(strandId: string): void {
+	restoreMarks(strandId).catch((err: unknown) => pushError('messages.restore', err));
+}
+
+function forgetQueued(transactionId: string): void {
+	queuedMessages.remove(transactionId).catch((err: unknown) => pushError('messages.record', err));
+}
+
+/** The mark on the chat strand's message `messageId`, sent here and held by no other member yet. */
+export function sendMarkOf(messageId: string): SendMark | undefined {
 	const strandId = getChatStrandId();
-	return state.undelivered.some((m) => m.strandId === strandId && m.messageId === messageId);
+	return state.sent.find((m) => m.strandId === strandId && m.messageId === messageId)?.mark;
+}
+
+/** The chat strand's messages refused when sent, whose rows have left the list. */
+export function unsentMessages(): SentMessage[] {
+	const strandId = getChatStrandId();
+	return state.sent.filter((m) => m.strandId === strandId && m.mark.kind === 'failed' && !state.messages.some((row) => row.Id === m.messageId));
+}
+
+/** The line above the list while the chat strand's offline queue holds anything; null while it is empty. */
+export function queueLine(): string | null {
+	const strandId = getChatStrandId();
+	return queueStatusLine(strandId === null ? undefined : state.queueStates[strandId]);
+}
+
+/**
+ * Withdraw a message still waiting in the chat strand's offline queue: its transaction fails with
+ * reason `discarded`, which clears the mark, and its row leaves the next read. Returns what to tell
+ * the user when the queue refuses, because an attempt to send it may already have landed; null
+ * otherwise, including for a transaction that settled meanwhile.
+ */
+export function discardMessage(messageId: string): string | null {
+	const strand = activeStrand();
+	const message = state.sent.find((m) => m.strandId === strand?.strandId && m.messageId === messageId);
+	if (!strand || !message) return null;
+	try {
+		strand.database?.offline?.discard(message.transactionId);
+		return null;
+	} catch (err) {
+		if (err instanceof EntryNotDiscardableError) return 'Already being sent, so it can no longer be discarded.';
+		if (err instanceof UnknownEntryError) return null;
+		throw err;
+	}
+}
+
+/** Stop showing a message that was not sent. */
+export function dismissUnsent(messageId: string): void {
+	const strandId = getChatStrandId();
+	const index = state.sent.findIndex((m) => m.strandId === strandId && m.messageId === messageId);
+	if (index >= 0) state.sent.splice(index, 1);
+}
+
+/** Put every strand in offline mode, or take them out of it, and keep the choice for the next load. */
+export async function changeOfflineMode(offline: boolean): Promise<void> {
+	await setStrandOfflineMode(offline ? 'offline' : 'online');
+	state.offline = offline;
 }
 
 /**

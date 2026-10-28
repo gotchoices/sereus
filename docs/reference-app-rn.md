@@ -210,7 +210,8 @@ table Message (
     -- posts into a shared strand never collide. A max(Id)+1 integer key would
     -- be correct but not free: two peers computing the same next id race, the
     -- loser is refused, and the app must catch that, recompute and retry.
-    Id text primary key,
+    -- Tagged fresh so a message queued in offline mode reads as sure to go through.
+    Id text primary key with tags ("optimystic.fresh" = true),
     ParticipantId text not null,
     Content text not null,
     Timestamp datetime not null,
@@ -227,6 +228,22 @@ No signature verification, no invite flow, no authorization constraints. This ke
 ## Messages Not Yet Delivered
 
 A message this phone sends is stored even when no other member is connected to take a copy, and is then lost if the phone is lost before it reconnects. The chat shows such a message as "Not yet delivered" ([`strands.md` → A commit's durability](strands.md#a-commits-durability)): `insertMessage` ([`chat-operations.ts`](../packages/reference-app-rn/src/chat-operations.ts)) inserts with `returning StampId() as Tx`, and [`use-chat.ts`](../packages/reference-app-rn/src/use-chat.ts) reads that commit's durability in the same step that records the mark (an earlier read could miss a `strand:commit-held` emitted while the send's awaits unwound) and clears the mark when `strand:commit-held` names the commit. The NativeScript (`chat-vm.ts`) and web (`messages.svelte.ts`) reference apps do the same. A founder alone in its strand sees every message marked until a member joins and takes the copies. The marks are held in memory: a message read from storage carries none, and a mark whose commit nothing follows (or whose follow a hibernation forgot) stays until the app restarts: it means "not confirmed delivered", not "lost".
+
+### In offline mode
+
+Settings → Node's **Offline mode** switch puts every strand in offline mode ([strands.md → Offline mode](strands.md#offline-mode)) through the kit's `setStrandOfflineMode`, which also saves it as the `strandOfflineMode` start option, so a restart, a background restart and a push wake start every strand in it. Off by default. A message sent in offline mode is stored once this phone has queued it, and the chat shows where it is, by the transaction id its insert returned (the rules are in [`send-marks.ts`](../packages/reference-app-rn/src/send-marks.ts)):
+
+- **"Waiting to send"** while the queue holds it (`strand:offline-status` `queued`), with "May not go through" when its outlook is `exposed`. `Message.Id` is tagged `"optimystic.fresh" = true` ([Simplified Chat Schema](#simplified-chat-schema)) because the app generates it, so an ordinary message is assured.
+- **"Sending"** while the queue sends it (`submitting`, `partially-committed`).
+- **"Not yet delivered"**, as above, once it commits while no other member holds it: a drained commit's durability report and `strand:commit-held` arrive as for an online one.
+- **"Not sent"** with the reason when the members refused it (`failed`). The refusal takes its row out of this phone's view, so the next read drops it from the list, and the chat then names it in a line above the list until the user dismisses it.
+- **Discard** on a waiting message that no attempt can have delivered (`inDoubt` false) withdraws it (`strand.database.offline.discard`). A queue that refuses because a send may already have landed (`EntryNotDiscardableError`) is shown as "Already being sent".
+
+A line above the list shows the open strand's queue from `strand:queue-state`: nothing while it is empty, else "N waiting to send", plus "waiting for the other members" while the queue waits for its cohort and "showing saved messages" while reads are served from this phone's copy. The marks follow `CadreNode` events rather than `strand.database.offline` listeners, because the events survive a hibernation's rebuild of the database.
+
+The queue reports a transaction only by its id, so the chat records which message each queued transaction stores ([Queued messages](#queued-messages-app-private-leveldb)). Each time a strand's database is published (its `strand:queue-state`, and once for every strand already published when the chat attaches to the node), the chat reads each recorded transaction's status (`offline.status`), marks its message from it, and drops the record of one that has settled. This covers a restart, whose restored transactions reported `queued` before anything listened.
+
+The web reference app does the same ([its README → Messages in offline mode](../packages/reference-app-web/README.md#messages-in-offline-mode)). The NativeScript app has no offline journal, so no offline mode (backlog `feat-strand-offline-mode-nativescript`). The leave prompt that offers to discard waiting messages (`StrandQueueNotEmptyError`, `{ discardQueued: true }`) is not built: neither reference app has a leave action.
 
 ## Node-Local Persistence
 
@@ -266,7 +283,7 @@ Both records are party-scoped, as are the enrolled-machine count and the strand 
 
 What the node last started with — party id, bootstrap addresses, relay addresses, Noise crypto mode, the strands' default offline mode, and how the app came to that party (`origin`, `formerPartyId`, below) — plus `autoStart`, whether to start again unattended. One record under the key `start-options` in the same `sereus-node-local` database, deliberately **not** party-scoped: it is what selects the party every record above is filed under. The kit's `parseSavedStart` (`@serfab/cadre-rn/phone-node`) parses it: unparseable JSON, an unknown version or a missing party id counts as no record (logged), while a malformed address list or Noise mode falls back to its default rather than costing the phone its party id. Not the enclave: nothing in it is secret or trust-bearing, and a relay list can outgrow SecureStore's value limit.
 
-- **Written** only by the kit's `PhoneNode` (`cadre-phone.ts` is this app's): after every successful start and after a join a member admitted (`autoStart: true`, with the options exactly as the node ran with them), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
+- **Written** only by the kit's `PhoneNode` (`cadre-phone.ts` is this app's): after every successful start and after a join a member admitted (`autoStart: true`, with the options exactly as the node ran with them), when Settings → Node's **Offline mode** switch changes `strandOfflineMode` (`setStrandOfflineMode`), and on Settings → **Disconnect** (`autoStart: false`, same options — Disconnect is logging out, which also clears the push-wake device token). A failed start writes nothing, so a typo in Settings cannot replace the last configuration that came up. An OS kill runs no code, so `autoStart` stays true across one. Both writes are best-effort: a failure is logged and the node carries on.
 - **Read** once at app launch (`use-cadre.ts`). With `autoStart` true the app connects by itself with those options, exactly as a Connect tap would — this is what keeps a solo phone in the same party across relaunches instead of founding a new one. Either way the Settings form prefills from them. The same options are what the background runner's cold start uses after the OS kills the node, and what a push wake into a killed process starts from (`push-wake-native.ts`), again only while `autoStart` is true. A read fault shows "Could not read the saved connection settings" under the Node card and starts nothing. After a join, or the removal of the cadre it left, the form refills from the options the node then runs with, so a later Disconnect → Connect starts the joined party.
 - **Stored values win over build defaults.** Relays and Noise mode are saved as resolved, not as "use the build default", so a later build with a different `EXPO_PUBLIC_RELAY_ADDR` or `EXPO_PUBLIC_NOISE_CRYPTO` does not change a device that has already connected. To pick up a new default: Disconnect, clear the Relay field (empty means the build default) or choose the mode, and Connect.
 - **Switching party** is Disconnect, edit Party ID, Connect. The old party's records stay on disk and are read again if the phone switches back.
@@ -300,6 +317,10 @@ The access and refresh tokens this app holds for a hosting provider's account, a
 ### Provider rentals (app-private LevelDB)
 
 The nodes this app rented from a hosting provider, by party: a list of `{ providerId, providerName, containerId, join, peerId?, createdAt, finished }` under the kit's `rentals.<partyId>` key in the same `sereus-node-local` database (the kit's `rentalStore` in `@serfab/cadre-rn/provider`, over `PhoneNode.nodeLocalRecords()`). cadre-core's `rentNode` persists nothing, so this record is what lets the app find a rental it was killed in the middle of (`finished: false`) and offer Finish adding, poll the provider for each node's standing, and mark a rented node in Devices and nodes. Not trust-bearing: it names a container to ask the provider about, and the provider's answer, not the record, is what the app shows; a record that cannot be read reads as no rentals, logged, since the containers still exist on the provider's own pages. Written when the provider creates the container, updated when `rentNode` or `finishRental` returns and when a status read first reports the node's peer id, and dropped by Cancel, Forget and Remove from cadre.
+
+### Queued messages (app-private LevelDB)
+
+The chat's messages sent in offline mode that their strand's queue has not settled yet: a list of `{ strandId, transactionId, messageId, content }` under the key `chat-queued-messages` in the same `sereus-node-local` database (`QueuedMessageRecord` in [`queued-messages.ts`](../packages/reference-app-rn/src/queued-messages.ts), over `PhoneNode.nodeLocalRecords()`). The queue names a transaction only by its id, so this record is what lets the chat mark those messages again after a restart ([In offline mode](#in-offline-mode)). Added when a send is queued, removed when the queue reports the transaction committed or failed, or no longer knows it. Not trust-bearing, and a record that cannot be read reads as none, logged: the marks are a convenience, and the messages themselves are in the strand.
 
 ### Offline queue (each strand's LevelDB)
 
@@ -464,6 +485,8 @@ packages/reference-app-rn/
     chat-strand.ts            # Strand lifecycle: create/join strand, load chat schema
     chat-operations.ts        # Quereus operations: insert message, query messages
     chat-send.ts              # Composer send rule: one message id per draft, held across retries
+    send-marks.ts             # What a sent message's mark and the queue line say, from the offline queue's statuses
+    queued-messages.ts        # The node-local record of queued messages, so a restart marks them again
     strand-selection.ts       # Which strand the chat screen is showing
     app-state.ts              # The AppState passed to the kit's lifecycle runner; use-cadre's spec fakes it
     push-wake.ts              # Platform-agnostic push-wake decision logic
@@ -472,7 +495,7 @@ packages/reference-app-rn/
     relay-config.ts           # Relay multiaddr(s): Settings field, else EXPO_PUBLIC_RELAY_ADDR
     noise-crypto-config.ts    # Default Noise crypto mode: EXPO_PUBLIC_NOISE_CRYPTO, else symmetric
     cadre-context.tsx         # React context provider for the node
-    use-chat.ts               # React hook: message list, send, "not yet delivered" marks
+    use-chat.ts               # React hook: message list, send, the marks on sent messages, the queue line, discard
     use-cadre.ts              # React hook: cadre lifecycle, seed application, strands, invitations
     use-join-flow.ts          # Its part behind Join my existing cadre: the join, moving chats, removing the old cadre
     use-link-request.ts       # Its part behind Choose the app that holds your cadre: the request opened as a link, the answer taken
@@ -482,6 +505,7 @@ packages/reference-app-rn/
     join-flow.ts              # The steps after Join (joining, moving chats, removing the old cadre) and their words
     join-failure.ts           # Plain words for each way a join can fail before admission (NS carries a copy)
     settings-controls.tsx     # Section, button, input, confirmation prompt and styles shared by Settings and its sections
+    offline-mode-switch.tsx   # Settings → Node's Offline mode switch: every strand, and the next start
     owner-standing.ts         # Whether this app is an owner of its cadre, for the sections with owner-only actions
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
     add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw open ones

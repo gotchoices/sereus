@@ -22,6 +22,7 @@ import { AddDeviceSection } from '../src/add-device-section';
 import { AddNodeSection } from '../src/add-node-section';
 import { useCadre } from '../src/cadre-context';
 import { MachinesSection } from '../src/machines-section';
+import { OfflineModeSwitch } from '../src/offline-mode-switch';
 import { OwnerKeysSection } from '../src/owner-keys-section';
 import { ownerFingerprint } from '../src/node-claim';
 import { PROVIDERS, ProviderStoreSection } from '../src/provider-store-section';
@@ -361,6 +362,7 @@ export default function SettingsScreen() {
               testID={TEST_IDS.settings.noiseCryptoRow}
             />
             <InfoRow label="Reachable" value={RELAY_STATUS_LABEL[cadre.relayStatus]} color={cadre.relayStatus === 'reserved' ? '#4caf50' : '#ff9800'} />
+            <OfflineModeSwitch showAlert={showAlert} />
             <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
           </>
         ) : switching ? (

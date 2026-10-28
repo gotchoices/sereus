@@ -5,12 +5,18 @@
 		ensureReady,
 		sendMessage,
 		composerChanged,
-		isUndelivered,
+		changeOfflineMode,
+		discardMessage,
+		dismissUnsent,
 		onDraftSettled,
+		queueLine,
 		refresh,
+		sendMarkOf,
 		startPolling,
 		stopPolling,
+		unsentMessages,
 	} from './lib/messages.svelte.js';
+	import { sendMarkText } from './lib/send-marks.js';
 	import { nodeState } from './lib/store.svelte.js';
 
 	const msgs = messagesState();
@@ -18,6 +24,27 @@
 
 	let author = $state('');
 	let content = $state('');
+	let markError: string | null = $state(null);
+	let modeBusy = $state(false);
+	const line = $derived(queueLine());
+	const unsent = $derived(unsentMessages());
+
+	function onDiscard(messageId: string) {
+		markError = discardMessage(messageId);
+	}
+
+	async function onOfflineChange(evt: Event) {
+		const offline = (evt.currentTarget as HTMLInputElement).checked;
+		modeBusy = true;
+		markError = null;
+		try {
+			await changeOfflineMode(offline);
+		} catch (err) {
+			markError = `Could not change offline mode: ${err instanceof Error ? err.message : String(err)}`;
+		} finally {
+			modeBusy = false;
+		}
+	}
 	let composeError: string | null = $state(null);
 
 	$effect(() => {
@@ -77,6 +104,16 @@
 	<header class="page-head">
 		<h2>Messages</h2>
 		<div class="meta">
+			<label class="mode" title="On: a message counts as sent once this tab has saved it, and goes to the other members, in order, when they can be reached. Off: once the members this tab can reach hold it.">
+				<input
+					type="checkbox"
+					checked={msgs.offline === true}
+					onchange={onOfflineChange}
+					disabled={msgs.offline === null || modeBusy || node.status !== 'running'}
+					data-testid="toggle-offline"
+				/>
+				Offline mode
+			</label>
 			<span>strand {node.strandStatus ?? '—'}</span>
 			{#if msgs.updatedMs}
 				<span>refreshed {new Date(msgs.updatedMs).toLocaleTimeString()}</span>
@@ -106,6 +143,10 @@
 		<p class="error">{msgs.error}</p>
 	{/if}
 
+	{#if markError}
+		<p class="error" data-testid="mark-error">{markError}</p>
+	{/if}
+
 	{#if msgs.ready}
 		<form class="compose" onsubmit={onSubmit}>
 			<input
@@ -129,20 +170,36 @@
 		{#if composeError}
 			<p class="error">{composeError}</p>
 		{/if}
+		{#if line}
+			<p class="queue" data-testid="queue-line">{line}</p>
+		{/if}
+
+		{#each unsent as m (m.messageId)}
+			<p class="unsent" data-testid="message-unsent" data-message-id={m.messageId}>
+				“{m.content}” — {sendMarkText(m.mark)}
+				<button type="button" onclick={() => dismissUnsent(m.messageId)} data-testid="btn-dismiss-unsent">Dismiss</button>
+			</p>
+		{/each}
 
 		{#if msgs.messages.length === 0}
 			<p class="empty">No messages yet. Send the first one above.</p>
 		{:else}
 			<ul class="list">
 				{#each msgs.messages as msg (msg.Id)}
+					{@const mark = sendMarkOf(msg.Id)}
 					<li data-testid="message-row" data-message-id={msg.Id}>
 						<div class="msg-head">
 							<span class="author">{msg.ParticipantName ?? msg.ParticipantId}</span>
 							<span class="ts">{formatWhen(msg.Timestamp)}</span>
 						</div>
 						<p class="body" data-testid="message-body">{msg.Content}</p>
-						{#if isUndelivered(msg.Id)}
-							<span class="undelivered" data-testid="message-undelivered">Not yet delivered</span>
+						{#if mark}
+							<span class="send-mark" data-testid="message-send-mark">
+								{sendMarkText(mark)}
+								{#if mark.kind === 'waiting' && mark.discardable}
+									<button type="button" onclick={() => onDiscard(msg.Id)} data-testid="btn-discard">Discard</button>
+								{/if}
+							</span>
 						{/if}
 						<code class="id">#{msg.Id}</code>
 					</li>
@@ -275,10 +332,39 @@
 		word-break: break-word;
 	}
 
-	.undelivered {
+	.send-mark {
 		justify-self: end;
 		color: #9a6700;
 		font-size: 0.75rem;
+	}
+
+	.send-mark button,
+	.unsent button {
+		font: inherit;
+		margin-left: 0.5rem;
+		padding: 0 0.375rem;
+		border: 1px solid #d4d6db;
+		border-radius: 0.25rem;
+		background: white;
+		cursor: pointer;
+	}
+
+	.queue {
+		margin: 0;
+		color: #9a6700;
+		font-size: 0.8125rem;
+	}
+
+	.unsent {
+		margin: 0;
+		color: #b3261e;
+		font-size: 0.8125rem;
+	}
+
+	.mode {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
 	}
 
 	.id {

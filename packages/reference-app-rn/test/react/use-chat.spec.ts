@@ -23,6 +23,7 @@ import { queryMessages, type ChatMessage } from '../../src/chat-operations';
 // `chat-send.ts` (reached through the hook's sender) imports from here too, so the mock has
 // to carry its whole surface even though this spec never sends.
 vi.mock('../../src/chat-operations', () => ({
+  discardQueuedMessage: vi.fn(() => null),
   insertParticipant: vi.fn(async () => {}),
   insertMessage: vi.fn(),
   isHeldOnlyHere: vi.fn(() => false),

@@ -339,6 +339,7 @@ The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-nod
 - **One store per scope until the storage closes.** A store serves its unflushed writes from memory, so a second store over the handle would not see them. The edge node's stop stops the node, its strands included, before `EdgeNodeStorage.close` flushes and closes the journals; `destroyScope` closes the scope's journal before deleting the database.
 - **NativeScript has no journal**, so `setStrandOfflineMode` throws `StrandOfflineUnavailableError` there.
 - **`EdgeNodeOptions.strandOfflineMode` is the app's default** (`'online'` or `'offline'`, default `'online'`). It becomes `strandOffline.initialMode` and is saved with the start options, so a background restart or a push wake starts every strand in it again; it carries into a joined cadre, and back to the founded one after a removal, as the Noise mode does.
+- **`EdgeNode.setStrandOfflineMode(mode)` changes that default without a restart.** Every strand the running node runs takes the mode at once, each strand it starts later takes it too (on `strand:started`, since the node applies the mode it was built with to every launch), and the saved start keeps it. It throws while no node runs and on a platform with no journal. The reference apps' offline switch calls it.
 - **An app that turns the mode on should leave it on.** Its later commits are network-acknowledged once it is off, and each waits behind the transactions still queued.
 
 #### What the app reads

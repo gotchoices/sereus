@@ -14,6 +14,8 @@ export const TEST_IDS = {
 		noiseCryptoOption: (mode: string) => `option-noise-crypto-${mode}`,
 		/** Connected Node card row naming the mode the running node was built with. */
 		noiseCryptoRow: 'row-noise-crypto',
+		/** Connected Node card: the "Offline mode" switch, for every strand and the next start. */
+		offlineModeSwitch: 'switch-offline-mode',
 		connectBtn: 'btn-connect',
 		/** First launch, no cadre yet: "Do you already use Sereus apps?" — Yes shows the join section, No the Connect form. */
 		firstLaunchJoinBtn: 'btn-first-launch-join',
@@ -223,7 +225,14 @@ export const TEST_IDS = {
 		strandRow: (id: string) => `chat-strand-${id}`,
 		/** Per-row id; pass the message Id. */
 		messageRow: (id: number | string) => `message-row-${id}`,
-		/** "Not yet delivered" label on a row whose commit no other member holds yet; pass the message Id. */
-		undeliveredMark: (id: string) => `message-undelivered-${id}`,
+		/** The line above the list while the strand's offline queue holds anything ("2 waiting to send · …"). */
+		queueLine: 'chat-queue-line',
+		/** The mark on a row this phone sent that no other member holds yet ("Waiting to send", "Not yet delivered", …); pass the message Id. */
+		sendMark: (id: string) => `message-send-mark-${id}`,
+		/** Discard on a row still waiting to send; pass the message Id. */
+		discardBtn: (id: string) => `btn-discard-${id}`,
+		/** A message refused when sent, whose row has left the list, and its Dismiss; pass the message Id. */
+		unsentNotice: (id: string) => `message-unsent-${id}`,
+		dismissUnsentBtn: (id: string) => `btn-dismiss-unsent-${id}`,
 	},
 } as const;

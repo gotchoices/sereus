@@ -38,6 +38,7 @@ import type {
 	RemoveOwnerOptions,
 } from '../types.js';
 import type { Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
+import type { StrandOfflineMode } from '../strand-offline.js';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webSockets } from '@libp2p/websockets';
 import { buildEdgeNodeConfig, requireOwnerKeyLabel, runOwnerGenesis, wireJoinedOwnerKey, type OwnerGenesisResult } from './config.js';
@@ -167,6 +168,15 @@ export interface EdgeNode {
 	 * is built. `autoStart` is not cleared on the way, so a crash mid-restart still starts again.
 	 */
 	restart(options: EdgeNodeOptions): Promise<CadreNode>;
+	/**
+	 * Change the app's offline mode ({@link EdgeNodeOptions.strandOfflineMode}) without a restart:
+	 * every strand the running node runs takes it at once (`CadreNode.setStrandOfflineMode`), so
+	 * does each strand it starts later, and the saved start keeps it, so the next start, a
+	 * background restart and a push wake start every strand in it. In turn with start, stop and
+	 * join. Throws while no node runs, and on a platform with no offline journal
+	 * (`EdgeNodeStorage.offlineJournal`).
+	 */
+	setStrandOfflineMode(mode: StrandOfflineMode): Promise<void>;
 	/**
 	 * Join the cadre `credential` names: this app's one node moves to that party, keeping its
 	 * identity, so the peer id an owner targeted is the one that redeems. A machine invitation
@@ -362,6 +372,8 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 	 */
 	private transitions: Promise<unknown> = Promise.resolve();
 	private currentStatus: EdgeNodeStatus = { state: 'stopped' };
+	/** The mode {@link setStrandOfflineMode} set on the running node, which it was not built with; null until then. */
+	private changedOfflineMode: { node: CadreNode; mode: StrandOfflineMode } | null = null;
 	private lastUnfinishedRemoval: UnfinishedRemoval | null = null;
 	private readonly subscriptions = new Set<Subscription>();
 	private readonly statusListeners = new Set<(status: EdgeNodeStatus) => void>();
@@ -421,6 +433,19 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 		return this.trackStart(async () => {
 			await this.shutDown();
 			return this.buildAndStart(options);
+		});
+	}
+
+	setStrandOfflineMode(mode: StrandOfflineMode): Promise<void> {
+		return this.inTurn(async () => {
+			const node = this.node;
+			const running = this.options;
+			if (!node || !running) throw new Error('Cannot set the offline mode: the edge node is not running');
+			if (!this.platform.storage.offlineJournal) throw new Error('Cannot set the offline mode: this platform keeps no offline journal');
+			for (const strandId of node.getStrands().keys()) node.setStrandOfflineMode(strandId, mode);
+			this.changedOfflineMode = { node, mode };
+			this.runningOptions = { ...running, strandOfflineMode: mode };
+			await this.saveRunningStart(this.runningOptions);
 		});
 	}
 
@@ -670,6 +695,7 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 		this.current = node;
 		for (const subscription of this.subscriptions) subscription.attach(node);
 		this.watchRemoval(node);
+		this.followOfflineMode(node);
 		await node.start();
 		return { node, resolved };
 	}
@@ -863,6 +889,22 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 	}
 
 	/**
+	 * A strand that starts after {@link setStrandOfflineMode} changed the mode takes the new one:
+	 * the node applies the mode it was built with (`strandOffline.initialMode`) to every launch.
+	 */
+	private followOfflineMode(node: CadreNode): void {
+		node.on('strand:started', ({ strandId }) => {
+			const changed = this.changedOfflineMode;
+			if (changed?.node !== node) return;
+			try {
+				node.setStrandOfflineMode(strandId, changed.mode);
+			} catch (err) {
+				console.warn(`[cadre-core/edge-node] strand ${strandId} started in the mode the node was built with, not ${changed.mode}:`, err);
+			}
+		});
+	}
+
+	/**
 	 * In turn with start, stop and join: stop the removed party's node, point the saved start away
 	 * from that party, delete its local storage and report `removed`. A node of another party, started
 	 * by a join that ran before this turn, keeps running; only the removed party's storage goes.
@@ -945,6 +987,7 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 		const stopping = this.current;
 		this.current = null;
 		this.runningOptions = null;
+		this.changedOfflineMode = null;
 		try {
 			if (stopping) {
 				for (const subscription of this.subscriptions) subscription.detach(stopping);

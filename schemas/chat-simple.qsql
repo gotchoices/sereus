@@ -17,7 +17,11 @@ table Message (
     -- with UNIQUE constraint failed, and the app must catch that, recompute and
     -- retry. A local UUID needs no retry. See docs/schema-guide.md
     -- "Ordering Events (There Is No Commit-Order Column)".
-    Id text primary key,
+    -- Tagged fresh because the app generates it, so no other machine can take the
+    -- same key: a message queued in offline mode then reads as sure to go through
+    -- (docs/strands.md → "Offline mode"). A false tag would make a refused insert
+    -- read as assured.
+    Id text primary key with tags ("optimystic.fresh" = true),
     ParticipantId text not null,
     Content text not null,
     -- NOTE: client-asserted, not server-verified — the engine has no server-assigned

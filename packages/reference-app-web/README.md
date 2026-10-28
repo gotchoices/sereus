@@ -55,8 +55,9 @@ control/strand network gets its own IndexedDB database:
 
 - `sereus-strand-control` — the key store (identity, owner key, joined-strand and strand-move
   records) and the node-local records: the saved start (`start-options`), the per-party records
-  (`<record>.<partyId>`) and, while the old cadre is being removed, the dissolve marker
-  (`dissolving-party`).
+  (`<record>.<partyId>`), the Messages page's queued messages (`chat-queued-messages`, see
+  [Messages in offline mode](#messages-in-offline-mode)) and, while the old cadre is being
+  removed, the dissolve marker (`dissolving-party`).
 - `sereus-strand-control-<encoded party id>` — one party's control network blocks.
 - `sereus-strand-sereus-web-chat` — the chat strand's blocks (participants/messages) and, in its
   `kv` store, the transactions offline mode queued and has not yet sent.
@@ -142,6 +143,27 @@ Owner genesis is **fail-soft and bounded** (the edge node's `runOwnerGenesis`, 6
 round-trip runs on the solo node and does not depend on owner, so a genesis that fails or does not
 settle is logged and shown as `failed` or `timed-out` on Home / Diagnostics rather than aborting
 startup.
+
+### Messages in offline mode
+
+The Messages page shows the same four things as the phone app ([reference-app-rn.md → Messages
+Not Yet Delivered](../../docs/reference-app-rn.md#messages-not-yet-delivered)), with the rules in
+`lib/send-marks.ts`:
+
+- **Offline mode**, a checkbox beside the strand status, calls the edge node's
+  `setStrandOfflineMode`: every strand takes it at once, and the saved start keeps it, so the next
+  load starts every strand in it. Off by default.
+- **The queue line** ("2 waiting to send · waiting for the other members · showing saved messages")
+  follows `strand:queue-state` and is absent while the queue is empty.
+- **Each message's mark** follows `strand:offline-status` by the transaction id its insert
+  returned: "Waiting to send" (with "May not go through" when another writer could make it fail),
+  "Sending", then "Not yet delivered" until another member holds it, or "Not sent" with the reason,
+  shown above the list once the refused row has gone. A waiting message that was never sent has
+  **Discard**; a queue that refuses because a send may already have landed is shown as "Already
+  being sent".
+- **After a reload** the page rebuilds the marks from `chat-queued-messages`, which names the
+  message each queued transaction stores until the queue settles it (`lib/queued-messages.ts`):
+  the queue reports transactions only by id.
 
 ### The tab's owner key
 
@@ -666,7 +688,9 @@ src/
     join-flow.ts             # the join's steps, their words, and the words for each failure
     cadre-format.ts          # peer-id code, key fingerprint, expiry and error text shared by the Cadre page's cards
     relay-config.ts          # optional circuit-relay multiaddr from a runtime manifest
-    messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
+    messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling, the marks on sent messages, offline mode
+    send-marks.ts            # what a sent message's mark and the queue line say, from the offline queue's statuses
+    queued-messages.ts       # the node-local record of queued messages, so a reload marks them again
     router.svelte.ts         # tiny hash-based router (#/, #/cadre, #/messages, #/log, #/diag)
     diagnostics.svelte.ts    # tick-driven snapshot store powering /diag
     Copyable.svelte          # copy-to-clipboard chip used in /diag and /cadre
