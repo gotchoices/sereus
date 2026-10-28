@@ -543,17 +543,16 @@ function matchesRetriableFailure(
 	if (reportsIndeterminateCommit(messages)) {
 		return false;
 	}
-	// NOTE: an unanswered read can fail AFTER this write's log entry is stored. Between commit
-	// attempts upstream finishes the write's own entry (`Collection.completeOwnEntry`), and when it
-	// has no retained attempt at that entry's revision (a forked lineage — both commit paths retain
-	// the failed attempt before refreshing) it asks `getStatus` whether the rest landed; the log-end
-	// reads of the same refresh can fail the same way. Either throw escapes the refresh loop
-	// unwrapped and reaches this claim, as the `[block:` aggregate from the same reads reaches the
-	// text matcher. Retried anyway: the re-run is a new transaction whose body re-reads, so it diffs
-	// to nothing or fails on `UNIQUE` (the `[blocks:` veto's rationale on
-	// {@link isUncommittedTransactorAggregate}) and applies nothing twice. A refresh that already
-	// saved a sibling collection arrives as `CoordinatorPartialCommitError`, which the veto above
-	// declines.
+	// NOTE: an unanswered read can fail AFTER this write's log entry is stored: the refresh between
+	// commit attempts reads the collection's log ends, and finishing the write's own entry
+	// (`Collection.completeOwnEntry`) asks `getStatus` when no attempt is retained at the entry's
+	// revision (a forked lineage — both commit paths retain the failed attempt before refreshing).
+	// Either throw escapes the refresh loop unwrapped. Claimed anyway, because the `[block:`
+	// aggregate those same reads raise is already claimed by the text matcher, so the typed form
+	// adds no new case: the re-run is a new transaction whose body re-reads the blocks, so it diffs
+	// to nothing or fails on `UNIQUE` where the earlier write landed, and writes it once where it did
+	// not. A refresh that already saved a sibling collection arrives as
+	// `CoordinatorPartialCommitError`, which the veto above declines.
 	if (reportsUnreachableCohort(links)
 		|| links.some(link => isFinalTornWrite(link) || claimsLink?.(link) === true)) {
 		return true;
