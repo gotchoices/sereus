@@ -357,7 +357,7 @@ describe('createPhoneNode — the saved start', () => {
 		expect((await phone.loadSavedStart())?.options.relayAddrs).toEqual([]);
 	}, LIFECYCLE_MS * 2);
 
-	it('changes every strand\'s offline mode without a restart, a strand started later included, and saves it for the next start', async () => {
+	it('changes every strand\'s offline mode without a restart, a strand started later included, and keeps it for a start whose options name none', async () => {
 		const { platform, partyId } = device();
 		const phone = phoneNode(platform);
 		const node = await phone.start(options(partyId));
@@ -368,8 +368,12 @@ describe('createPhoneNode — the saved start', () => {
 
 		expect(node.getStrandOfflineMode(`${partyId}-before`)).toBe('offline');
 		expect(node.getStrandOfflineMode(`${partyId}-after`)).toBe('offline');
+		// The app's Connect form and its cold start pass options held from before the change.
+		await phone.stop();
+		await phone.start(options(partyId));
+		expect(phone.options?.strandOfflineMode).toBe('offline');
 		expect((await phone.loadSavedStart())?.options.strandOfflineMode).toBe('offline');
-	}, LIFECYCLE_MS);
+	}, LIFECYCLE_MS * 2);
 });
 
 describe('createPhoneNode — restart and subscriptions', () => {

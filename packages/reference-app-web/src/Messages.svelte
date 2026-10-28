@@ -34,12 +34,15 @@
 	}
 
 	async function onOfflineChange(evt: Event) {
-		const offline = (evt.currentTarget as HTMLInputElement).checked;
+		const input = evt.currentTarget as HTMLInputElement;
+		const offline = input.checked;
 		modeBusy = true;
 		markError = null;
 		try {
 			await changeOfflineMode(offline);
 		} catch (err) {
+			// `msgs.offline` did not change, so nothing re-renders the box the click toggled.
+			input.checked = !offline;
 			markError = `Could not change offline mode: ${err instanceof Error ? err.message : String(err)}`;
 		} finally {
 			modeBusy = false;

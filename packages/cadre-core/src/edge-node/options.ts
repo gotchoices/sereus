@@ -50,8 +50,8 @@ export interface EdgeNodeOptions {
 	 */
 	formerPartyId?: string;
 	/**
-	 * The offline mode every strand starts in (`CadreNodeConfig.strandOffline.initialMode`); default
-	 * `'online'`. Read only on a platform with an offline journal (`EdgeNodeStorage.offlineJournal`).
+	 * The offline mode every strand starts in (`CadreNodeConfig.strandOffline.initialMode`); absent,
+	 * the saved start's, else `'online'`. Read only on a platform with an offline journal (`EdgeNodeStorage.offlineJournal`).
 	 * `EdgeNode.setStrandOfflineMode` changes it while running, and saves it; `CadreNode.setStrandOfflineMode`
 	 * changes one strand's mode until the process exits.
 	 */

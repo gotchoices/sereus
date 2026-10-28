@@ -43,7 +43,12 @@ export class QueuedMessageRecord {
 		return this.update((all) => all.filter((m) => m.transactionId !== transactionId));
 	}
 
-	/** The strand's queued messages. */
+	/**
+	 * The strand's queued messages.
+	 *
+	 * NOTE: entries are pruned only when their strand's database is published again; if the app gains a
+	 * leave-strand action, drop the strand's entries there too, or they stay for good.
+	 */
 	forStrand(strandId: string): Promise<QueuedMessage[]> {
 		return this.inTurn(async () => (await this.read()).filter((m) => m.strandId === strandId));
 	}

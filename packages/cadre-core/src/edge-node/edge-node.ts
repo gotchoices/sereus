@@ -766,19 +766,22 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 	 * build's default does not change a device that already ran. Options naming no `origin`
 	 * take the saved start's `origin` and `formerPartyId` when it is for the same party, so a
 	 * party this app joined, started again from a hand-typed party id, does not run owner genesis.
+	 * Options naming no `strandOfflineMode` take the saved start's, whatever its party: the mode is
+	 * the app's choice ({@link setStrandOfflineMode}), and a start built from a form or from options
+	 * held since before that choice would otherwise drop it.
 	 */
 	private async resolveOptions(options: EdgeNodeOptions): Promise<EdgeNodeOptions> {
 		requireOwnerKeyLabel(options.ownerKeyLabel);
 		const resolved = { ...options };
 		const defaultMode = this.platform.noiseCrypto?.defaultMode;
 		if (resolved.noiseCryptoMode === undefined && defaultMode !== undefined) resolved.noiseCryptoMode = defaultMode;
-		if (resolved.origin === undefined) {
-			const saved = (await this.readSavedStart())?.options;
-			if (saved?.partyId === resolved.partyId) {
-				if (saved.origin !== undefined) resolved.origin = saved.origin;
-				if (saved.formerPartyId !== undefined) resolved.formerPartyId = saved.formerPartyId;
-			}
+		if (resolved.origin !== undefined && resolved.strandOfflineMode !== undefined) return resolved;
+		const saved = (await this.readSavedStart())?.options;
+		if (resolved.origin === undefined && saved?.partyId === resolved.partyId) {
+			if (saved.origin !== undefined) resolved.origin = saved.origin;
+			if (saved.formerPartyId !== undefined) resolved.formerPartyId = saved.formerPartyId;
 		}
+		if (resolved.strandOfflineMode === undefined && saved?.strandOfflineMode !== undefined) resolved.strandOfflineMode = saved.strandOfflineMode;
 		return resolved;
 	}
 
@@ -892,6 +895,8 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 	 * A strand that starts after {@link setStrandOfflineMode} changed the mode takes the new one:
 	 * the node applies the mode it was built with (`strandOffline.initialMode`) to every launch.
 	 */
+	// NOTE: this, and setStrandOfflineMode's loop, override a mode an app set on one strand with
+	// `CadreNode.setStrandOfflineMode`; if an app ever mixes per-strand modes with this call, keep the per-strand ones.
 	private followOfflineMode(node: CadreNode): void {
 		node.on('strand:started', ({ strandId }) => {
 			const changed = this.changedOfflineMode;
