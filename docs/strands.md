@@ -329,6 +329,18 @@ A strand's `Database` is closed and rebuilt on hibernation, wake and every other
 - **`CadreNode.getStrandOfflineMode(strandId)`** reads it: the mode last set, else `initialMode`, else `'online'`.
 - **The mode lasts as long as the process.** After a restart every strand starts in `initialMode` again; an app that wants something else sets it again at startup.
 
+#### On the edge node
+
+The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-node` and the web reference app run) passes `strandOffline` when its platform's storage has `EdgeNodeStorage.offlineJournal(scope)`, and none otherwise.
+
+- **The journal is in the strand's own database**, beside the blocks its transactions refer to. The phone's is a `LevelDBKVStore` over the strand's rn-leveldb database (`sereus-<strandId>`), the browser's an `IndexedDBKVStore` over its IndexedDB database (`sereus-strand-<strandId>`, the `kv` object store). Both stores keep their key-value keys apart from blocks, so the journal's records (under `optimystic-offline/`) cannot collide with them.
+- **Under the store's default key prefix**, which is also what the plugin's own browser connect (`connectToStrandBrowser`) journals under in that same IndexedDB database, so a strand database holds its queue under one set of keys whichever code opened it.
+- **One store per scope until the storage closes.** A store serves its unflushed writes from memory, so a second store over the handle would not see them. The edge node's stop stops the node, its strands included, before `EdgeNodeStorage.close` flushes and closes the journals; `destroyScope` closes the scope's journal before deleting the database.
+- **NativeScript has no journal**, so `setStrandOfflineMode` throws `StrandOfflineUnavailableError` there.
+- **A Node embedder of cadre-core sets `strandOffline.journal` itself**, for example a `FileKVStore` (`@optimystic/db-p2p-storage-fs`) in the strand's directory, since cadre-core has no edge node there to supply one.
+- **`EdgeNodeOptions.strandOfflineMode` is the app's default** (`'online'` or `'offline'`, default `'online'`). It becomes `strandOffline.initialMode` and is saved with the start options, so a background restart or a push wake starts every strand in it again; it carries into a joined cadre, and back to the founded one after a removal, as the Noise mode does.
+- **An app that turns the mode on should leave it on.** Its later commits are network-acknowledged once it is off, and each waits behind the transactions still queued.
+
 #### What the app reads
 
 - **`strand.database.offline`** (`StrandOfflineQueue`) is the connection's controller less the mode switch: `queueState`, `entries`, `status`, `outcomes`, `acknowledge`, `discard`, `whenDrained`, `onStatus`, `onQueueState`. Listeners taken on it die with the database, as `watchTables` subscriptions do.

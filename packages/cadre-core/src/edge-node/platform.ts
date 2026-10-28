@@ -4,7 +4,7 @@
  * for it. Fixed for the app's lifetime.
  */
 
-import type { IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
+import type { IKVStore, IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { KeyStore } from '../key-store.js';
 import type { DurableSlot } from '../node-local-snapshot.js';
 import type { CadreNodeConfig } from '../types.js';
@@ -123,6 +123,17 @@ export interface EdgeNodeStorage {
 	 * strand stops.
 	 */
 	rawStorage(scope: string): IRawStorage;
+	/**
+	 * A strand's offline journal (`CadreNodeConfig.strandOffline.journal`), kept in the strand
+	 * scope's own database beside its blocks: the journal's keys are all under
+	 * `optimystic-offline/`, a node key-value namespace the platform stores apart from blocks. The
+	 * same instance for the same scope until {@link close}, which flushes and closes it with the
+	 * scope's handle; cadre-core asks again on every rebuild of the strand, and a second store over
+	 * one handle would not see the first one's unflushed writes. {@link destroyScope} closes it too.
+	 * A rejection fails the strand's build. Absent: no offline mode on this platform
+	 * (`setStrandOfflineMode` throws `StrandOfflineUnavailableError`).
+	 */
+	offlineJournal?(scope: string): Promise<IKVStore>;
 	/** Delete a scope's storage. No handle on it may be open. Resolves when it is gone or was absent. */
 	destroyScope(scope: string): Promise<void>;
 	/**
@@ -132,8 +143,9 @@ export interface EdgeNodeStorage {
 	 */
 	nodeLocal(): NodeLocalKv;
 	/**
-	 * Flush and close the node-local store, then close every handle {@link rawStorage} opened. A
-	 * failure closing one is logged and the rest still close; the call does not reject.
+	 * Flush and close the node-local store and every {@link offlineJournal}, then close every
+	 * handle {@link rawStorage} opened. A failure closing one is logged and the rest still close;
+	 * the call does not reject.
 	 */
 	close(): Promise<void>;
 	/**

@@ -20,7 +20,7 @@ import { supportsStrictDurability } from '@optimystic/db-p2p-storage-web';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC, webRTCDirect } from '@libp2p/webrtc';
-import { closeStores, deleteStore, NODE_LOCAL_STORE_KEY, openHandle, openStore } from './strand-storage.js';
+import { closeStores, deleteStore, NODE_LOCAL_STORE_KEY, openHandle, openJournal, openStore } from './strand-storage.js';
 import { nodeLocalKeyStore, nodeLocalKv } from './node-local-slots.js';
 
 /** `EdgeNodeStorage.id`: one tab, one node. Two tabs are two processes, each with an edge node of this id. */
@@ -43,7 +43,8 @@ export function createWebEdgeNode(): EdgeNode {
 }
 
 /**
- * The tab's storage: a database per scope, the node-local store beside them. No `trustedOwnerSlot`:
+ * The tab's storage: a database per scope, holding a strand's offline journal beside its blocks,
+ * and the node-local store beside them. No `trustedOwnerSlot`:
  * the anchor is the node-local record cadre-core files under `trusted-owners.<partyId>`, the key
  * tabs used before the edge node.
  */
@@ -53,6 +54,7 @@ function webEdgeStorage(nodeLocal: NodeLocalKv): EdgeNodeStorage {
 	return {
 		id: WEB_STORAGE_ID,
 		rawStorage: (scope): IRawStorage => lazyRawStorage(() => openStore(scope), durability),
+		offlineJournal: (scope) => openJournal(scope),
 		destroyScope: (scope) => deleteStore(scope),
 		nodeLocal: () => nodeLocal,
 		close: () => closeStores(),

@@ -770,6 +770,7 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 			noiseCrypto: this.buildNoiseCrypto(options.noiseCryptoMode),
 			keyStore: this.keyStore,
 			storageProvider: (scope) => platform.storage.rawStorage(scope),
+			offlineJournal: platform.storage.offlineJournal?.bind(platform.storage),
 			transports: (platform.transports ?? defaultTransports)(relayAddrs),
 			listenAddrs: platform.listenAddrs?.(relayAddrs) ?? [],
 			allowPrivateDial: platform.allowPrivateDial ?? true,

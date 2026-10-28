@@ -16,6 +16,7 @@ const SAVED: SavedStart = {
 		origin: 'joined',
 		formerPartyId: 'party-1c9e',
 		ownerKeyLabel: 'phone',
+		strandOfflineMode: 'offline',
 	},
 	autoStart: true,
 	writtenBy: 'app-data-3',
@@ -45,7 +46,7 @@ describe('parseSavedStart', () => {
 	});
 
 	it('keeps the party id when a lesser field is malformed, defaulting that field', () => {
-		const parsed = parseSavedStart(recordWith({ noiseCryptoMode: 'turbo', relayAddrs: 'not-a-list', origin: 'adopted', formerPartyId: 7, ownerKeyLabel: 7 }));
+		const parsed = parseSavedStart(recordWith({ noiseCryptoMode: 'turbo', relayAddrs: 'not-a-list', origin: 'adopted', formerPartyId: 7, ownerKeyLabel: 7, strandOfflineMode: 'local' }));
 
 		expect(parsed).toEqual({
 			options: { partyId: SAVED.options.partyId, bootstrapAddrs: SAVED.options.bootstrapAddrs, relayAddrs: [] },

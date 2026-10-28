@@ -13,15 +13,17 @@
  * network lists gets storage like any other. One handle and one `IndexedDBRawStorage` per key,
  * cached here until {@link closeStores} (which the edge node calls on every stop), so two proxies
  * over one scope share a store and diagnostics can read the control database once the node has
- * opened it ({@link getStoreHandle}).
+ * opened it ({@link getStoreHandle}). A strand's offline journal ({@link openJournal}) is the
+ * `kv` object store of that same database, over the same handle.
  */
 
 import {
+	IndexedDBKVStore,
 	IndexedDBRawStorage,
 	openOptimysticWebDb,
 	type OptimysticWebDBHandle,
 } from '@optimystic/db-p2p-storage-web';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import type { IKVStore, IRawStorage } from '@optimystic/db-p2p';
 
 /** IndexedDB database-name prefix; one database per scope key. */
 const DB_PREFIX = 'sereus-strand-';
@@ -51,6 +53,7 @@ export const NODE_LOCAL_STORE_KEY = 'control';
 
 const handles = new Map<string, OptimysticWebDBHandle>();
 const storages = new Map<string, IRawStorage>();
+const journals = new Map<string, IndexedDBKVStore>();
 /** Opens in flight, so two first uses of one key (a strand's read and its write) share one open. */
 const opening = new Map<string, Promise<OptimysticWebDBHandle>>();
 
@@ -82,6 +85,22 @@ export async function openStore(key: string): Promise<IRawStorage> {
 	return storage;
 }
 
+/**
+ * The strand's offline journal for `key`, over {@link openHandle}'s handle: `EdgeNodeStorage.offlineJournal`.
+ * One per key until {@link closeStores}, because the store serves its unflushed writes from memory
+ * and a second one over the handle would not see them. The store's default key prefix, as the
+ * plugin's own browser connect uses over the same database (`connectToStrandBrowser`).
+ */
+export async function openJournal(key: string): Promise<IKVStore> {
+	const handle = await openHandle(key);
+	let journal = journals.get(key);
+	if (!journal) {
+		journal = new IndexedDBKVStore(handle);
+		journals.set(key, journal);
+	}
+	return journal;
+}
+
 /** The open IndexedDB handle for `key`, or null if not opened. */
 export function getStoreHandle(key: string): OptimysticWebDBHandle | null {
 	return handles.get(key) ?? null;
@@ -93,9 +112,9 @@ export function getStoreStorage(key: string): IRawStorage | null {
 }
 
 /**
- * Close every open handle and drop the caches: `EdgeNodeStorage.close`. Each storage applies
- * what it still holds before its handle closes; a failure doing so is logged and the rest still
- * close. Waits for an open in flight first, so it cannot land a handle after the clear.
+ * Close every open handle and drop the caches: `EdgeNodeStorage.close`. Each storage and journal
+ * applies what it still holds before its handle closes; a failure doing so is logged and the rest
+ * still close. Waits for an open in flight first, so it cannot land a handle after the clear.
  */
 export async function closeStores(): Promise<void> {
 	await Promise.allSettled([...opening.values()]);
@@ -103,7 +122,10 @@ export async function closeStores(): Promise<void> {
 	handles.clear();
 	const stores = [...storages.values()];
 	storages.clear();
+	const openJournals = [...journals.values()];
+	journals.clear();
 	for (const storage of stores) await closeStorage(storage);
+	for (const journal of openJournals) await closeJournal(journal);
 	for (const [, handle] of open) handle.close();
 }
 
@@ -112,6 +134,14 @@ async function closeStorage(storage: IRawStorage): Promise<void> {
 		await storage.close?.();
 	} catch (err) {
 		console.warn('[reference-app-web] closing a raw storage failed:', err);
+	}
+}
+
+async function closeJournal(journal: IndexedDBKVStore): Promise<void> {
+	try {
+		await journal.close();
+	} catch (err) {
+		console.warn('[reference-app-web] closing an offline journal failed:', err);
 	}
 }
 
@@ -147,6 +177,9 @@ export async function deleteStore(key: string): Promise<void> {
 	const storage = storages.get(key);
 	storages.delete(key);
 	if (storage) await closeStorage(storage);
+	const journal = journals.get(key);
+	journals.delete(key);
+	if (journal) await closeJournal(journal);
 	handles.get(key)?.close();
 	handles.delete(key);
 	await deleteDatabase(key);

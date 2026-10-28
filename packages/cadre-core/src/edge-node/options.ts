@@ -9,6 +9,8 @@
  * start the node unattended.
  */
 
+import type { StrandOfflineMode } from '../strand-offline.js';
+
 /**
  * How much of Noise's crypto the platform replaces (`EdgeNodePlatform.noiseCrypto`): none, the
  * per-frame hash and cipher, or those and the handshake's key exchange too. Named here, apart from
@@ -47,6 +49,12 @@ export interface EdgeNodeOptions {
 	 * stays on disk under its own names, for moving its strands and dissolving the old cadre.
 	 */
 	formerPartyId?: string;
+	/**
+	 * The offline mode every strand starts in (`CadreNodeConfig.strandOffline.initialMode`); default
+	 * `'online'`. Read only on a platform with an offline journal (`EdgeNodeStorage.offlineJournal`).
+	 * `CadreNode.setStrandOfflineMode` changes one strand's mode until the process exits.
+	 */
+	strandOfflineMode?: StrandOfflineMode;
 }
 
 /** Whether this app founded its party, or joined it by invitation. */
@@ -73,10 +81,11 @@ export interface SavedStart {
  * store, which every start reads.
  */
 export function startAfterRemoval(saved: SavedStart): SavedStart | undefined {
-	const { partyId, formerPartyId, relayAddrs, noiseCryptoMode } = saved.options;
+	const { partyId, formerPartyId, relayAddrs, noiseCryptoMode, strandOfflineMode } = saved.options;
 	if (formerPartyId === undefined || formerPartyId === partyId) return undefined;
 	const options: EdgeNodeOptions = { partyId: formerPartyId, bootstrapAddrs: [], relayAddrs, origin: 'founded' };
 	if (noiseCryptoMode !== undefined) options.noiseCryptoMode = noiseCryptoMode;
+	if (strandOfflineMode !== undefined) options.strandOfflineMode = strandOfflineMode;
 	return { options, autoStart: false, ...(saved.writtenBy !== undefined && { writtenBy: saved.writtenBy }) };
 }
 
@@ -99,12 +108,13 @@ interface StartRecord {
 	origin?: EdgeNodeOrigin;
 	formerPartyId?: string;
 	ownerKeyLabel?: string;
+	strandOfflineMode?: StrandOfflineMode;
 	autoStart: boolean;
 	writtenBy?: string;
 }
 
 export function serializeSavedStart(saved: SavedStart): string {
-	const { partyId, bootstrapAddrs, relayAddrs, noiseCryptoMode, origin, formerPartyId, ownerKeyLabel } = saved.options;
+	const { partyId, bootstrapAddrs, relayAddrs, noiseCryptoMode, origin, formerPartyId, ownerKeyLabel, strandOfflineMode } = saved.options;
 	const record: StartRecord = {
 		version: RECORD_VERSION,
 		partyId,
@@ -114,6 +124,7 @@ export function serializeSavedStart(saved: SavedStart): string {
 		origin,
 		formerPartyId,
 		ownerKeyLabel,
+		strandOfflineMode,
 		autoStart: saved.autoStart,
 		writtenBy: saved.writtenBy,
 	};
@@ -125,8 +136,9 @@ export function serializeSavedStart(saved: SavedStart): string {
  *
  * Only the party id is worth discarding a record over. A malformed optional field falls back to
  * its default — `[]` for an address list, the build default for the Noise mode, absent for
- * `origin`, `formerPartyId` and `ownerKeyLabel`, `false` for `autoStart` — so a damaged record still keeps the
- * app in its party, at worst needing the user to start the node by hand.
+ * `origin`, `formerPartyId`, `ownerKeyLabel` and `strandOfflineMode` (which is `'online'`), `false`
+ * for `autoStart` — so a damaged record still keeps the app in its party, at worst needing the
+ * user to start the node by hand.
  */
 export function parseSavedStart(text: string | undefined): SavedStart | undefined {
 	if (text === undefined) return undefined;
@@ -148,6 +160,9 @@ export function parseSavedStart(text: string | undefined): SavedStart | undefine
 		options.formerPartyId = record.formerPartyId;
 	}
 	if (typeof record.ownerKeyLabel === 'string') options.ownerKeyLabel = record.ownerKeyLabel;
+	if (record.strandOfflineMode === 'online' || record.strandOfflineMode === 'offline') {
+		options.strandOfflineMode = record.strandOfflineMode;
+	}
 	const saved: SavedStart = { options, autoStart: record.autoStart === true };
 	if (typeof record.writtenBy === 'string') saved.writtenBy = record.writtenBy;
 	return saved;

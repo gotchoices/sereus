@@ -140,6 +140,7 @@ async function switchParty(
 	};
 	const noiseCryptoMode = options.noiseCryptoMode ?? leaving?.noiseCryptoMode;
 	if (noiseCryptoMode !== undefined) joined.noiseCryptoMode = noiseCryptoMode;
+	if (leaving?.strandOfflineMode !== undefined) joined.strandOfflineMode = leaving.strandOfflineMode;
 	if (formerPartyId !== undefined) joined.formerPartyId = formerPartyId;
 	const movingFrom = founded ? await recordStrandMove(runtime, founded, credential) : undefined;
 	try {

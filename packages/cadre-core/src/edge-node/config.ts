@@ -13,7 +13,7 @@ import type { BootstrapPeerStore } from '../bootstrap-peer-store.js';
 import type { EnrolledMachineStore } from '../enrolled-machine-store.js';
 import type { StrandNetworkStateStore } from '../strand-network-state.js';
 import type { TrustedOwnerStore } from '../trusted-owner-store.js';
-import type { IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
+import type { IKVStore, IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { EdgeNodeOptions } from './options.js';
 
 /** What {@link buildEdgeNodeConfig} takes: one start's options plus what the platform built. */
@@ -31,6 +31,11 @@ export interface EdgeNodeConfigInputs extends EdgeNodeOptions {
 	 * segment — use it verbatim, do not parse it.
 	 */
 	storageProvider: (scope: string) => IRawStorage;
+	/**
+	 * A strand's offline journal (`EdgeNodeStorage.offlineJournal`). Absent: no offline mode, and
+	 * {@link EdgeNodeOptions.strandOfflineMode} is ignored.
+	 */
+	offlineJournal?: (scope: string) => Promise<IKVStore>;
 	/** libp2p transport factories: what the node dials with, and what listens on `listenAddrs`. */
 	transports: Libp2pTransports;
 	/**
@@ -50,7 +55,8 @@ export interface EdgeNodeConfigInputs extends EdgeNodeOptions {
  * The edge node's config: transaction profile (Ring Zulu only, intermittent connectivity), no
  * listen address unless the platform names one, reachability through the configured relays (if
  * any) but never a hard requirement for one, every strand the control network lists, and no
- * automatic hibernation (the app's lifecycle runner hibernates on background). Schema signing is
+ * automatic hibernation (the app's lifecycle runner hibernates on background), and offline mode
+ * on strands when the platform keeps an offline journal. Schema signing is
  * left at cadre-core's fail-closed default; an app with unsigned schemas relaxes it in
  * `EdgeNodePlatform.configure`.
  */
@@ -102,6 +108,9 @@ export function buildEdgeNodeConfig(inputs: EdgeNodeConfigInputs): CadreNodeConf
 			// gated by `denyDialPeer` and the inbound hooks. cadre-core hands this gater to strand nodes too.
 			...(inputs.allowPrivateDial ? { connectionGater: { denyDialMultiaddr: () => false } } : {}),
 		},
+		...(inputs.offlineJournal && {
+			strandOffline: { journal: inputs.offlineJournal, initialMode: inputs.strandOfflineMode ?? 'online' },
+		}),
 		strandFilter: { mode: 'all' },
 		hibernation: { enabled: false },
 		trustedOwners: { store: inputs.trustedOwnerStore },

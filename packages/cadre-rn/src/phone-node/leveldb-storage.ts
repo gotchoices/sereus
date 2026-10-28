@@ -1,8 +1,9 @@
 /**
  * The phone's `EdgeNodeStorage`: one rn-leveldb database per cadre-core storage scope, named
- * `<storagePrefix><scope>`, and one more (`nodeLocalDb`) holding the node-local records under
- * `nodeLocalKvPrefix`. rn-leveldb holds a lock per name, so one left open fails the next start;
- * `close` is what the edge node calls on every stop so that cannot happen.
+ * `<storagePrefix><scope>`, holding the scope's blocks and, for a strand, its offline journal; and
+ * one more (`nodeLocalDb`) holding the node-local records under `nodeLocalKvPrefix`. rn-leveldb
+ * holds a lock per name, so one left open fails the next start; `close` is what the edge node
+ * calls on every stop so that cannot happen.
  */
 
 import {
@@ -12,7 +13,7 @@ import {
 	type RNLevelDBOpenFn,
 	type RNLevelDBWriteBatchCtor,
 } from '@optimystic/db-p2p-storage-rn';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import type { IKVStore, IRawStorage } from '@optimystic/db-p2p';
 import type { EdgeNodeStorage, NodeLocalKv, RemovableSlot } from '@serfab/cadre-core/edge-node';
 
 /**
@@ -47,6 +48,8 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 	 * neither read it back nor flush it. Closed, which flushes it, before the database is.
 	 */
 	private nodeLocalStore: LevelDBKVStore | null = null;
+	/** Each strand scope's offline journal, by scope: one store per handle, as {@link nodeLocalStore} is. */
+	private readonly journals = new Map<string, LevelDBKVStore>();
 
 	constructor(
 		private readonly leveldb: LevelDBNative,
@@ -61,8 +64,32 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 		return new LevelDBRawStorage(this.database(this.names.storagePrefix + scope));
 	}
 
+	/**
+	 * Over the scope's database, whose key-value keys are tagged apart from its blocks', under the
+	 * store's default key prefix, as the browser's journal is.
+	 */
+	async offlineJournal(scope: string): Promise<IKVStore> {
+		let journal = this.journals.get(scope);
+		if (!journal) {
+			journal = new LevelDBKVStore(this.database(this.names.storagePrefix + scope));
+			this.journals.set(scope, journal);
+		}
+		return journal;
+	}
+
+	/** rn-leveldb's `destroyDB` throws on an open database, so this storage's own handle on it closes first. */
 	async destroyScope(scope: string): Promise<void> {
-		this.leveldb.destroy(this.names.storagePrefix + scope);
+		const name = this.names.storagePrefix + scope;
+		const journal = this.journals.get(scope);
+		this.journals.delete(scope);
+		const db = this.databases.get(name);
+		this.databases.delete(name);
+		try {
+			await journal?.close();
+		} finally {
+			await db?.close();
+		}
+		this.leveldb.destroy(name);
 	}
 
 	nodeLocal(): NodeLocalKv {
@@ -77,12 +104,21 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 	async close(): Promise<void> {
 		const store = this.nodeLocalStore;
 		this.nodeLocalStore = null;
+		const journals = [...this.journals.values()];
+		this.journals.clear();
 		const open = [...this.databases.values()];
 		this.databases.clear();
 		try {
 			await store?.close();
 		} catch (err) {
 			console.warn('[cadre-rn/phone-node] closing the node-local store failed:', err);
+		}
+		for (const journal of journals) {
+			try {
+				await journal.close();
+			} catch (err) {
+				console.warn('[cadre-rn/phone-node] closing an offline journal failed:', err);
+			}
 		}
 		for (const db of open) {
 			try {
