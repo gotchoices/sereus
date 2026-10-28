@@ -55,7 +55,7 @@ On the phone link of #48 the delay is not the declared round trip: each outbound
 
 ## If nothing is done
 
-Every relayed strand member whose ping takes more than 2 s drops out of the other's cohorts, though the connection stays up. Writes then succeed alone on each side and are owed to no one unless Optimystic records the missing member (`blocked/optimystic-write-made-alone-owes-no-one`). They reconcile only when FRET revives the peer, which on a slow link needs a ping that answers within 2 s.
+Every relayed strand member whose ping takes more than 2 s drops out of the other's cohorts, though the connection stays up. Writes then succeed alone on each side. From Optimystic 1.20.0 a write made alone names as owed the members its node knows but is not connected to (`complete/optimystic-write-made-alone-owes-no-one`); whether it names one FRET marked `dead` while the connection stays up was not measured. They reconcile only when FRET revives the peer, which on a slow link needs a ping that answers within 2 s.
 
 ## Reversibility
 
@@ -79,3 +79,7 @@ Unchanged: `MAINTENANCE_RPC_TIMEOUT_MS` is 2 000, `MAINTENANCE_SNAPSHOT_TIMEOUT_
 ## Rechecked at Optimystic 1.19.0 (2026-10-25, `adopt-optimystic-1-19-0`)
 
 Unchanged. p2p-fret is still 1.2.1: `../Fret` has no newer tag, and its HEAD is the 1.2.1 release commit `439b85e`. db-p2p 1.19.0 still declares `p2p-fret` ^1.2.1, and between `v1.18.0` and `v1.19.0` `libp2p-node-base.ts` changed only its commit-certificate sink, so Optimystic still builds FRET without the link round trip.
+
+## Rechecked at Optimystic 1.20.0 (2026-10-28, `adopt-optimystic-1-20-0`)
+
+Unchanged. p2p-fret is still 1.2.1: `../Fret` has no tag after `v1.2.1`, and its HEAD is still `439b85e`. db-p2p 1.20.0 still declares `p2p-fret` ^1.2.1. Between `v1.19.0` and `v1.20.0`, `libp2p-node-base.ts` gained only the cohort reachability gate's option (`cohortReachability.wakeDebounceMs`), so Optimystic still builds FRET without the link round trip. One thing in 1.20.0 bears on this ticket: strand offline mode (new in this Sereus release) decides when to send a queued transaction from the cohort FRET assembles (`KeyNetworkCohortReachability`). A member FRET wrongly marks `dead` leaves a self-only cohort, and the queue then waits only if the gate also lists that member as absent (`absentCohortMembers`); otherwise the transaction commits alone. Which happens was not checked.

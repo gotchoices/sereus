@@ -74,7 +74,8 @@
  *
  * The sixth arm checks what the app is told about a write made alone (docs/strands.md, "A commit's
  * durability"), on an undelayed link: with the joiner stopped, the founder writes one row, and its
- * strand database must report that commit held only here and followed; once the joiner restarts
+ * strand database must report that commit held only here, followed, and owed to the stopped joiner's
+ * strand node (gotchoices/sereus#44); once the joiner restarts
  * over its kept storage and takes the copies it is owed, the founder must emit `strand:commit-held`
  * for it.
  */
@@ -495,8 +496,8 @@ function describeCommit(commit: StrandCommitDurability | undefined): string {
 
 /**
  * Founder and joiner synced, the joiner stopped, then the founder writes one row alone. The founder
- * must report that commit held only on itself and followed, and once the joiner restarts over its
- * kept storage, report it held.
+ * must report that commit held only on itself, followed and owed to the joiner's strand node, and once
+ * the joiner restarts over its kept storage, report it held.
  */
 async function runWriteMadeAloneReportedThenHeld(): Promise<void> {
 	let relay: DedicatedRelay | undefined;
@@ -547,9 +548,12 @@ async function runWriteMadeAloneReportedThenHeld(): Promise<void> {
 		const written = await aDb.get(`insert into App.Party (Sid, Name) values ('sid-a2', 'written alone') returning StampId() as Tx`);
 		const tx = String(written!.Tx);
 		const alone = aStrand.commitDurability(tx);
-		console.log(`[first-commit ${label}] founder's write with the joiner stopped: ${describeCommit(alone)}`);
-		expect({ heldElsewhere: alone?.heldElsewhere, followed: alone?.followed }, describeCommit(alone))
-			.toEqual({ heldElsewhere: false, followed: true });
+		console.log(`[first-commit ${label}] founder's write with the joiner stopped (joiner strand ${bStrandPeer}): ${describeCommit(alone)}`);
+		expect({
+			heldElsewhere: alone?.heldElsewhere,
+			followed: alone?.followed,
+			unconfirmed: alone?.report.durability.overall?.unconfirmed,
+		}, describeCommit(alone)).toEqual({ heldElsewhere: false, followed: true, unconfirmed: [bStrandPeer.toString()] });
 
 		const tRestart = Date.now();
 		B = await startPartyNode(bHome, relay);

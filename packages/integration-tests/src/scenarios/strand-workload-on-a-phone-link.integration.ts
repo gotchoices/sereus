@@ -125,7 +125,7 @@
  * remaining rounds started at 10:39:57.0 and each committed with a cohort of only its writer
  * (`commit:solo-cohort`), which is every row that differs. The strand nodes reconnected at
  * 10:40:04, and the rows made alone were not exchanged in the 180 s that followed
- * (`blocked/optimystic-write-made-alone-owes-no-one`). Read repair did not heal them either: in
+ * (`complete/optimystic-write-made-alone-owes-no-one`, fixed by Optimystic 1.20.0). Read repair did not heal them either: in
  * those 180 s every consult on both strand nodes (224) found the other silent, each block re-asked
  * about every 8 s, since a consult that finds the peer silent leaves the block unchecked.
  *

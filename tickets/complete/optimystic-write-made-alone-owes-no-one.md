@@ -1,7 +1,15 @@
-description: Optimystic lets a machine that knows other members exist, but is connected to none of them, save a change on its own and then records that nobody else needs a copy. Sereus needs the Optimystic fix released and adopted before the reproduction for GitHub issue 44 can pass.
-files: packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts, package.json (resolutions, @optimystic/* floors), packages/cadre-core/package.json
+description: A machine that knew other members existed but was connected to none of them could save a change on its own and record that nobody else needed a copy (GitHub issue 44). On Optimystic 1.20.0 the founder's write made while the other member is stopped names that member as owed in every run, and the reproduction now asserts it.
+files: packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (sixth arm, `runWriteMadeAloneReportedThenHeld`)
+repro: verified
 ----
 # Upstream: a write made alone while other members are known owes no one a copy
+
+**Resolved on Optimystic 1.20.0** (`adopt-optimystic-1-20-0`, 2026-10-28). Still to do by a human: reply on gotchoices/sereus#44 and close it.
+
+- **The check this ticket set passes.** The sixth arm of `joiner-first-commit-over-slow-relay` reported the founder's write with the joiner stopped as `local (1/2, unconfirmed [<the joiner's strand node>], recordedBy <the founder's strand node>)`, followed, in 4 of 4 runs (one in a batch with the file's first three arms, three of the arm alone). The linked upstream was `1db4ff9a` (the `v1.20.0` release commit `59679072` plus the upgrade-check fixture commit), with one uncommitted file, a plugin test spec that no build includes.
+- **The arm now asserts it.** It printed the unconfirmed list without the joiner's strand peer id, so the 2026-10-25 runs could only infer the match. It now prints the id and asserts that `unconfirmed` is exactly `[<joiner strand peer>]`, beside `heldElsewhere: false, followed: true`; the three arm-alone runs ran with that assertion. `strand:commit-held` came 2.3–2.4 s after the joiner's restart began.
+- **The fourth and fifth arms** again named the hibernated founder as owed (`local (1/2, unconfirmed [<founder strand peer>])`), one run each.
+- **Which upstream change did it is not established.** The 2026-10-25 runs already passed the check on a tree past `v1.19.0`. 1.20.0's solo refusal (upstream `6.2-offline-sync-solo-refusal`) changes `commitSolo` only for a write that asks not to commit alone, which a strand write outside offline mode does not.
 
 **Blocked on:** a dependency outside this repo. Unblocks when Optimystic releases a fix for `../optimystic/tickets/fix/1-a-write-made-alone-while-other-members-are-known-never-reaches-them` and Sereus adopts that release.
 

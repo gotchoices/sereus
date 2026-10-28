@@ -159,11 +159,17 @@ const SINGLE_BLOCK_BATCH_TOKEN = '[block:';
 const COMMIT_BATCH_TOKEN = '[blocks:';
 
 /**
- * The cluster coordinator's super-majority shortfall (`db-p2p/src/repo/cluster-coordinator.ts`),
- * matched ONLY with a ZERO rejection count. The same message with a non-zero count means a
- * member actually voted no (that branch carries `membership-not-admitted` rejections), and
- * retrying it would re-present a spent signature to a cohort that already refused it. This one
- * is raised while collecting PROMISES, before any commit, so re-presenting it is safe.
+ * The cluster coordinator's super-majority shortfall (`PromiseShortfallError`, db-core), matched
+ * ONLY with a ZERO rejection count. The same message with a non-zero count means a member actually
+ * voted no (that branch carries `membership-not-admitted` rejections), and retrying it would
+ * re-present a spent signature to a cohort that already refused it. A pend's shortfall reaches this
+ * funnel as that error on its own, before any commit, so re-presenting it is safe; a commit's
+ * arrives inside the `[blocks:` aggregate, which {@link reportsIndeterminateCommit} vetoes (both
+ * seen live in `control-write-degraded-cohort-member`).
+ *
+ * NOTE: matched by TEXT although the error is typed. Upstream keeps this sentence byte for byte as a
+ * downstream contract, so the regex is stable; moving to `instanceof PromiseShortfallError` with
+ * `rejections === 0` is backlog `debt-control-write-retry-matches-the-shortfall-by-type`.
  *
  * This regex itself never matches a decisive rejection (`ValidatorRejectionError`, `Transaction
  * rejected by validators`) — that text carries no `Failed to get super-majority:` prefix. But the
@@ -208,10 +214,12 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * NOTE: the discriminator is a formatting detail of another repo. If Optimystic ever reformats
  * those per-batch details, this fails CLOSED — the aggregate stops matching and control writes
  * simply stop being retried, silently losing the absorption rather than doing anything unsafe.
- * The guard against that is live: `control-write-degraded-cohort-member.integration.ts` asserts
- * this classifier against the real degraded-cohort failure object and asserts the `[block:`
- * token on the live aggregate; if it reddens there, an upstream reformat is the first thing to
- * check.
+ * The guard is `control-write-degraded-cohort-member.integration.ts`, which asserts the `[block:`
+ * token on any live aggregate a degraded case produces; if it reddens there, an upstream reformat
+ * is the first thing to check. NOTE: on Optimystic 1.20.0 none of its cases produced this form
+ * (2026-10-28: the injected reset failed the write's read typed, and a pend's shortfall arrives on
+ * its own), so the guard can pass without seeing it; if the form is ever needed live again, inject
+ * the reset at the pend's batch rather than the read's.
  *
  * NOTE: the discriminator is the prefix AND the token within ONE message — never relax it to
  * "contains `[block:`". Beyond the `get` and `pend` sites above, Optimystic renders `[block:` in
@@ -484,11 +492,11 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  *
  * NOTE: this depends on engine/transactor error TEXT. The messages producible without a
  * network are driven from the REAL engine in `control-formation-seat-budget.spec.ts`, so
- * a rewording reddens a spec rather than silently disabling the retry. The two RETRIABLE
- * messages need a real multi-node cluster to produce; the degraded-cohort scenario
- * (`control-write-degraded-cohort-member.integration.ts`) asserts this classifier against
- * both LIVE — the super-majority shortfall from a real silent member, and the transactor
- * aggregate from a real stream reset, which the retry there absorbs end to end.
+ * a rewording reddens a spec rather than silently disabling the retry. The RETRIABLE failures
+ * need a real multi-node cluster to produce; the degraded-cohort scenario
+ * (`control-write-degraded-cohort-member.integration.ts`) asserts this classifier against the
+ * super-majority shortfall from a real silent member, and absorbs a real stream reset end to end
+ * (on Optimystic 1.20.0 the reset fails the write's read as an unanswered block, claimed by type).
  */
 export function isRetriableControlWriteFailure(error: unknown): boolean {
 	return matchesRetriableFailure(error, RETRIABLE_CONTROL_WRITE_MATCHERS);

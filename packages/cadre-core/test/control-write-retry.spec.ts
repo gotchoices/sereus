@@ -40,8 +40,9 @@ import type { ControlRetryAbandonment } from '../src/control-retry.js';
  *    multi-node cluster (the network transactor's aggregate, the cluster coordinator's
  *    super-majority shortfall), which needs an integration scenario, not a unit spec.
  *    `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
- *    now produces both LIVE and asserts this classifier against them, so an upstream
- *    rewording reddens there rather than silently disabling the retry. The literals below
+ *    produces the shortfall LIVE and asserts this classifier against it, so an upstream
+ *    rewording reddens there rather than silently disabling the retry (on Optimystic 1.20.0 it
+ *    no longer produces the aggregate: see `isUncommittedTransactorAggregate`'s NOTE). The literals below
  *    are transcribed from the transactor's own format strings
  *    (`db-core/src/transactor/network-transactor.ts`) — they are not claimed to be
  *    captured output.
@@ -165,11 +166,12 @@ const SUPER_MAJORITY_REJECTED =
 const SUPER_MAJORITY_THIRD_NODE_JOIN =
 	'Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
 /**
- * How the coordinator's shortfall actually reaches this classifier: NOT as a bare sentence but
- * inline, as one batch's `cause=` inside a transactor aggregate, with the same text repeated as
- * the aggregate's `root:`. `ClusterCoordinator.executeClusterTransaction` raises the shortfall
- * and BOTH `CoordinatorRepo.pend` and `.commit` call it, so the identical sentence can arrive
- * from either phase — and only the bracket token tells them apart.
+ * How a pend's shortfall reached this classifier before Optimystic 1.20.0: inline, as one batch's
+ * `cause=` inside a transactor aggregate, with the same text repeated as the aggregate's `root:`.
+ * From 1.20.0 the coordinator returns a pend's shortfall and the writer raises it on its own (the
+ * bare-sentence cases above), while a commit's still arrives this way ({@link
+ * SUPER_MAJORITY_IN_COMMIT_AGGREGATE}) — so the identical sentence can arrive from either phase, and
+ * only the bracket token tells them apart.
  *
  * This pend-phase form is retried twice over: `isUncommittedTransactorAggregate` claims it on
  * `[block:`, and `isUnansweredSuperMajorityShortfall` claims the inline sentence.
