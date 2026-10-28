@@ -305,6 +305,8 @@ A tag change is not refused while transactions are queued, so a store whose tabl
 
 Optimystic refuses a schema change that alters how a table's rows are stored (an index, a column) while queued transactions wrote that table, with `QueuedEntriesBlockSchemaChangeError`. When the connect's `App` apply is refused that way (`applyAppSchemaAfterQueue`), the connect still succeeds: the strand comes up on the `App` schema it already had (Quereus unwinds the refused apply), and the apply is retried each time the queue drains, for as long as the queue is what refuses it. The result's `appSchemaDeferredBy` names the queued transactions the first refusal named, and `appSchema` settles `{ state: 'applied', deferred: true }` when a retry lands, `{ state: 'failed', error }` when one fails for another reason, or `{ state: 'cancelled' }` when the connection shuts down first. An apply that succeeds at connect settles `{ state: 'applied' }` at once, and any other connect-time apply error still fails the connect.
 
+A retry runs while the app is using the database, so it never runs inside a transaction someone else holds open: it waits for that transaction to end. Applied inside it, the schema change would be committed or rolled back with the app's rows, and a rollback leaves a new index holding entries for rows that are gone.
+
 Waiting for the queue to drain before the connect returns was rejected: offline, it would withhold the strand from the app right after an app update. Failing the connect was rejected because the queue can drain only while the connection is up.
 
 `StrandDatabase.attachAppSchema` (an app claiming a storage replica) is not deferred: a replica writes no app transactions, so nothing queued can have written an `App` table.

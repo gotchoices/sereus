@@ -8,7 +8,8 @@ import { readFileSync } from 'node:fs';
 import { parseConfig } from '../src/plugin.js';
 import { PLUGIN_SETTING_KEYS } from '../src/parse-config.js';
 import { connectToStrand } from '../src/connect.js';
-import { applyAppSchema, composeStrand } from '../src/compose-strand.js';
+import { composeStrand } from '../src/compose-strand.js';
+import { applyAppSchema } from '../src/app-schema.js';
 import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
 import {
 	COHORT_READ_DEADLINE_MS,

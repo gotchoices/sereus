@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { Database, type SqlValue } from '@quereus/quereus';
 import type { ICohortReachability } from '@optimystic/db-core';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
-import { applyAppSchema, applyAppSchemaAfterQueue, applyRegistrations } from '../src/compose-strand.js';
+import { applyRegistrations } from '../src/compose-strand.js';
+import { applyAppSchema, applyAppSchemaAfterQueue } from '../src/app-schema.js';
 
 /**
  * Step 7 of `composeStrand` when queued offline transactions refuse the sApp schema apply: the
@@ -55,29 +56,61 @@ async function selectAll(db: Database, sql: string): Promise<Array<Record<string
 const noteIndexes = (db: Database): string[] =>
 	(db.schemaManager.findTable('Note', 'App')!.indexes ?? []).map(index => index.name);
 
+/**
+ * `Note` with one row queued, as a connect meets it: it applies its schema before the app can enter
+ * the mode, so the queue it meets is what `hydrate` restored.
+ */
+async function queueOneNote(db: Database, plugin: ReturnType<typeof registerOffline>) {
+	await applyAppSchema(db, SCHEMA);
+	plugin.offline.enter();
+	await db.exec(`insert into App.Note (Id, Body) values (1, 'queued')`);
+	plugin.offline.exit();
+	const [queued] = plugin.offline.entries();
+	expect(queued?.status.kind).toBe('queued');
+	return queued!;
+}
+
 describe('applyAppSchemaAfterQueue', () => {
 	it('defers an apply queued transactions refuse, and applies it once they drain', async () => {
 		const db = new Database();
 		const gate = new Gate();
 		const plugin = registerOffline(db, gate);
 		try {
-			await applyAppSchema(db, SCHEMA);
-			plugin.offline.enter();
-			await db.exec(`insert into App.Note (Id, Body) values (1, 'queued')`);
-			// A connect applies its schema before the app can enter the mode: the queue it meets is
-			// what `hydrate` restored.
-			plugin.offline.exit();
-			const [queued] = plugin.offline.entries();
-			expect(queued?.status.kind).toBe('queued');
+			const queued = await queueOneNote(db, plugin);
 
 			const apply = await applyAppSchemaAfterQueue(db, UPGRADED, plugin.offline, new AbortController().signal);
-			expect(apply.appSchemaDeferredBy).toEqual([queued!.transactionId]);
+			expect(apply.appSchemaDeferredBy).toEqual([queued.transactionId]);
 			expect(noteIndexes(db)).toEqual([]);
 			expect(await selectAll(db, 'select Id, Body from App.Note')).toEqual([{ Id: 1, Body: 'queued' }]);
 
 			gate.open();
 			expect(await apply.appSchema).toEqual({ state: 'applied', deferred: true });
 			expect(noteIndexes(db)).toEqual(['NoteByBody']);
+		} finally {
+			db.close();
+			await plugin.dispose();
+		}
+	});
+
+	it('waits for a transaction the app holds open to end instead of applying inside it', async () => {
+		const db = new Database();
+		const gate = new Gate();
+		const plugin = registerOffline(db, gate);
+		try {
+			await queueOneNote(db, plugin);
+			const apply = await applyAppSchemaAfterQueue(db, UPGRADED, plugin.offline, new AbortController().signal);
+
+			await db.beginTransaction();
+			await db.exec(`insert into App.Note (Id, Body) values (2, 'rolled back')`);
+			gate.open();
+			await plugin.offline.whenDrained();
+			// Room for the retry to meet the open transaction before the app rolls it back.
+			await new Promise(resolve => setTimeout(resolve, 50));
+			await db.rollback();
+
+			expect(await apply.appSchema).toEqual({ state: 'applied', deferred: true });
+			const [report] = await plugin.verifyIndexes(db, 'Note', 'App');
+			expect(report).toMatchObject({ index: 'NoteByBody', missing: [], orphaned: [] });
 		} finally {
 			db.close();
 			await plugin.dispose();

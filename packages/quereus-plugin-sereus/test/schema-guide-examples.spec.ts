@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Database, Parser, createScalarFunction, quoteIdentifier, registerPlugin } from '@quereus/quereus';
 import type { TableSchema } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
-import { applyAppSchema } from '../src/compose-strand.js';
+import { applyAppSchema } from '../src/app-schema.js';
 import { fencedBlocks } from './helpers/fenced-blocks.js';
 
 /**

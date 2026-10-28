@@ -552,7 +552,7 @@ apply schema main with seed;
 
 Quereus also parses a `seed <table> values (<columns>) values (...)` form, but it ignores that column list and inserts each row positionally: a row that omits a column fails, and one that lists columns out of declaration order lands its values in the wrong columns. List every column instead.
 
-Quereus inserts seed rows only when a schema is applied `with seed`, idempotently (`on conflict do nothing`). **Sereus refuses an sApp schema containing a `seed` item** (`applyAppSchema` in `packages/quereus-plugin-sereus/src/compose-strand.ts`): the schema is applied on every node of the strand at every connect, and two nodes inserting the same seed key at once would collide (see [Ordering Events](#ordering-events-there-is-no-commit-order-column)). An app that needs rows at birth inserts them itself from the node that founds the strand.
+Quereus inserts seed rows only when a schema is applied `with seed`, idempotently (`on conflict do nothing`). **Sereus refuses an sApp schema containing a `seed` item** (`applyAppSchema` in `packages/quereus-plugin-sereus/src/app-schema.ts`): the schema is applied on every node of the strand at every connect, and two nodes inserting the same seed key at once would collide (see [Ordering Events](#ordering-events-there-is-no-commit-order-column)). An app that needs rows at birth inserts them itself from the node that founds the strand.
 
 ---
 
