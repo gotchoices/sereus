@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => {
       eval: async function* () { if ((headerCounts.get(config.strandId) ?? 0) > 0) yield { 1: 1 }; },
       schemaManager: { getSchema: () => undefined }
     };
-    return { initialize, close, ensureFounderBootstrap, getDatabase: () => db, reportPublished: () => {} };
+    return { initialize, close, ensureFounderBootstrap, getDatabase: () => db, reportPublished: () => {}, queuedTransactionIds: () => undefined };
   });
   return { stop, close, initialize, ensureFounderBootstrap, createLibp2pNode, StrandDatabase, headerCounts };
 });

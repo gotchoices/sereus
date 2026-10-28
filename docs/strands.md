@@ -299,7 +299,7 @@ Every `Strand` table is tagged `"optimystic.offline" = 'network'` in `schemas/st
 
 - A transaction that writes any `Strand` table is acknowledged by the network as a whole, its `App` writes included.
 - A live read of a `Strand` table is not answered from this machine's own view while the members cannot be reached; it fails as it does outside offline mode.
-- A network-acknowledged commit made while transactions are queued waits behind them, holding Quereus's execution lock, for up to the plugin's `networkCommitTimeoutMs` (five minutes by default, kept because nothing was measured to choose another). `strand-offline-cadre-guards` keeps sereus's own writers out of that wait.
+- A network-acknowledged commit made while transactions are queued waits behind them, holding Quereus's execution lock, for up to the plugin's `networkCommitTimeoutMs` (five minutes by default, kept because nothing was measured to choose another). On a cadre node sereus's own membership writers stay out of that wait ([Membership writes are refused while transactions are queued](#membership-writes-are-refused-while-transactions-are-queued)).
 
 A tag change is not refused while transactions are queued, so a store whose tables predate the tag gets it on its next connect, as one `alter table … set tags` per table.
 
@@ -355,6 +355,27 @@ When a build's `App` apply waits for the queue ([above](#an-app-schema-upgrade-w
 - **`strand:app-schema-deferred`** (`{ strandId, transactionIds }`) is emitted at publication, and **`strand:app-schema-applied`** (`{ strandId }`) when the retry lands. A retry that fails for another reason is emitted as `strand:error` and leaves `'failed'`; a cancelled one emits nothing.
 - **The events begin at publication.** A retry that lands while the database is still behind the first-sync gate is not announced, since the app never saw the earlier schema; one that fails then is announced at publication.
 - **`'waiting-for-queue'` can outlast the drain.** The retry also waits while any caller holds a transaction open on the database, for as long as that transaction stays open.
+
+#### Membership writes are refused while transactions are queued
+
+Every membership writer (`strand-membership-writer.ts`, through `execStrandTransaction`) refuses with `StrandOfflineQueueBusyError` while the strand's queue lists any transaction, the journaled ones a restore has not put back yet included, and writes nothing; its `transactionIds` name them. A `Strand` write is network-acknowledged, so its commit would wait behind them inside `db.exec`, holding Quereus's execution lock, and every other statement on the strand database, the app's included, would wait with it for up to `networkCommitTimeoutMs`. An app awaits `strand.database.offline.whenDrained()` and retries.
+
+- **Every writer, inside an app transaction or not.** A writer joining a transaction the app opened is refused too: it would make that transaction network-acknowledged, and the app's own commit would take the same wait.
+- **The background writers retry.** The membership reconciler treats the refusal as it treats an open app transaction and retries on its ladder until the queue drains. The unpublish binding cleanup logs it and leaves the binding, as it does any failed write.
+- **The check is not atomic with the write.** An app commit queued between the check and the membership `exec` makes that membership commit wait behind it, the bounded wait the plugin gives. A reconciler write that times out (`OfflineCommitTimeoutError`) is retried by the next pass, which reads the state first, so one that landed anyway (`sent: true`) is found rather than written twice.
+
+#### Leaving a strand with unsent transactions
+
+`CadreNode.forgetJoinedStrand(strandId, options?)` and `CadreNode.unpublishStrand(strandId, options?)` check the strand's queue on this machine before they change anything (`StrandLeaveOptions`).
+
+- **A queue holding transactions refuses the leave** with `StrandQueueNotEmptyError` (`transactionIds`), and nothing is left or removed. The app was told each of those transactions was acknowledged, so it shows the user the unsent changes and asks.
+- **`discardQueued: true` withdraws them, then leaves.** Optimystic refuses to withdraw a transaction that was sent or is being sent (`EntryNotDiscardableError`), since the members may already hold it. Those stay in the journal, named in one `console.warn`, and settle if this machine attaches the strand again; the leave goes on, or a cohort that never returns would block it forever.
+- **A hibernating strand is checked without waking it,** from what its queue listed when its database last closed; nothing drains a journal without a database. Discarding wakes it first, since its queue is back only once a build restores it; a wake that builds no database (no seed peer has answered) discards nothing, and the leave goes on with a warning naming them.
+- **The discard runs before the control-plane write.** A leave refused after it (this machine cannot sign the removal) leaves the discarded transactions discarded.
+- **A strand this process has built no database for is not checked.** Its journal may hold transactions from an earlier run, and they come back if the strand is attached again.
+- **Deleting the journal records without asking was rejected,** for the same reason as the refusal: dropping acknowledged transactions must be the user's explicit choice.
+
+The other ways a strand goes away consult nothing. `stopStrand` leaves the journal, and the next build restores the queue. A strand moved to another cadre keeps its storage scope, its strand id, so its journal goes with it unchanged. Self-revocation does not consult the queue either: the strand keeps running for the session (`strand:revoked`), and its queued transactions cannot land, since the remaining members refuse a removed party's writes.
 
 ## Same-Named Tables in `Strand` and `App`
 

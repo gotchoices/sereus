@@ -220,6 +220,8 @@ export type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-d
 // `StrandDatabase.offline`): a commit resolves once the transaction is queued on this machine.
 export {
   StrandOfflineUnavailableError,
+  StrandQueueNotEmptyError,
+  type StrandLeaveOptions,
   type StrandOfflineConfig,
   type StrandOfflineMode,
   type StrandOfflineQueue,
@@ -396,6 +398,7 @@ export {
   sealStrand,
   isStrandSealed,
   StrandTransactionBusyError,
+  StrandOfflineQueueBusyError,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
   type FounderBootstrapParams,

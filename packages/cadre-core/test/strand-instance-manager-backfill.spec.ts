@@ -32,7 +32,7 @@ const mocks = vi.hoisted(() => {
   // reports the row held, so every launch here is a machine that has synced before.
   const headerHeldDb = { eval: async function* () { yield { Count: 1 }; }, schemaManager: { getSchema: () => undefined } };
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
-    return { initialize: vi.fn(async () => {}), close: vi.fn(async () => {}), getDatabase: () => headerHeldDb, reportPublished: () => {} };
+    return { initialize: vi.fn(async () => {}), close: vi.fn(async () => {}), getDatabase: () => headerHeldDb, reportPublished: () => {}, queuedTransactionIds: () => undefined };
   });
   const backfillStart = vi.fn();
   const backfillStop = vi.fn();

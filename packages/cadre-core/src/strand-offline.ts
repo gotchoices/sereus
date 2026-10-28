@@ -1,4 +1,5 @@
 import debug from 'debug';
+import { EntryNotDiscardableError, UnknownEntryError } from '@optimystic/db-core';
 import type { IKVStore } from '@optimystic/db-p2p';
 import type {
   AppSchemaOutcome, OfflineModeState, QueuedTransactionStatus, SereusPluginResult, StrandOfflineController,
@@ -88,6 +89,61 @@ export class StrandOfflineUnavailableError extends Error {
     this.name = 'StrandOfflineUnavailableError';
     this.strandId = strandId;
   }
+}
+
+/** Options for leaving a strand: `CadreNode.forgetJoinedStrand` and `CadreNode.unpublishStrand`. */
+export interface StrandLeaveOptions {
+  /**
+   * Withdraw the strand's queued offline transactions that were never sent, then leave. Without
+   * it a leave refuses with {@link StrandQueueNotEmptyError} while the queue holds any: the app was
+   * told each of them was acknowledged, so dropping them is the user's choice to make.
+   */
+  discardQueued?: boolean;
+}
+
+/**
+ * Thrown by a leave ({@link StrandLeaveOptions}) while the strand's offline queue holds
+ * transactions and `discardQueued` was not given. Nothing was left or removed.
+ */
+export class StrandQueueNotEmptyError extends Error {
+  readonly strandId: string;
+  /** The queued transactions, by the `StampId()` each one's statements returned. */
+  readonly transactionIds: readonly string[];
+
+  constructor(strandId: string, transactionIds: readonly string[]) {
+    super(
+      `Cannot leave strand ${strandId}: its offline queue holds ${transactionIds.length} transaction(s) its ` +
+      `members have not taken yet (${transactionIds.join(', ')}), so nothing was left or removed. Show the user ` +
+      'the unsent changes, then leave again with { discardQueued: true } to drop them, or once ' +
+      'strand.database.offline.whenDrained() resolves.'
+    );
+    this.name = 'StrandQueueNotEmptyError';
+    this.strandId = strandId;
+    this.transactionIds = transactionIds;
+  }
+}
+
+/**
+ * Withdraw every transaction in `queue` that was never sent, for a leave the app confirmed
+ * ({@link StrandLeaveOptions.discardQueued}). Returns the ones Optimystic refuses to withdraw
+ * (`EntryNotDiscardableError`): each was sent, or is being sent or restored, and the strand's
+ * members may already hold it, so it stays in the journal. One that settled meanwhile, or failed
+ * with a transaction it depended on, is already gone.
+ */
+export function discardQueued(queue: Pick<StrandOfflineController, 'entries' | 'discard'>): string[] {
+  const kept: string[] = [];
+  for (const { transactionId } of queue.entries()) {
+    try {
+      queue.discard(transactionId);
+    } catch (error) {
+      if (error instanceof EntryNotDiscardableError) {
+        kept.push(transactionId);
+      } else if (!(error instanceof UnknownEntryError)) {
+        throw error;
+      }
+    }
+  }
+  return kept;
 }
 
 /**

@@ -461,7 +461,7 @@ describe('waiting and failure classification', () => {
     expect(reconciler.done).toBe(false);
     expect(reconciler.stopped).toBe(false);
     expect(lines.some(line => DEAD_INVITE_LINE.test(line))).toBe(false);
-    expect(lines.some(line => /app has a transaction open/.test(line))).toBe(true);
+    expect(lines.some(line => /redeeming the staged invitation deferred/.test(line))).toBe(true);
 
     // The app's transaction is closed: the next pass redeems the same invitation.
     await reconciler.reconcile();

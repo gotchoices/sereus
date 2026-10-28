@@ -12,7 +12,7 @@ import { StrandCommitRecord } from './strand-commit-durability.js';
 import type { StrandCommitDurability, StrandCommitListeners } from './strand-commit-durability.js';
 import { TableWatchRegistry } from './table-change-watch.js';
 import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
-import { StrandOfflineReport } from './strand-offline.js';
+import { discardQueued, StrandOfflineReport } from './strand-offline.js';
 import type { StrandAppSchemaState, StrandOfflineListeners, StrandOfflineMode, StrandOfflineQueue } from './strand-offline.js';
 
 const log = debug('sereus:cadre:strand-db');
@@ -182,6 +182,12 @@ export class StrandDatabase {
     // applied (connectToStrand has returned). A throw here propagates out of
     // initialize(), and the caller closes this half-built database (close() runs the
     // composition's shutdown). Joiners skip this — their rows arrive via sync.
+    // NOTE: a bootstrap with rows to write while `hydrate` restored queued transactions is refused
+    // (`StrandOfflineQueueBusyError`), failing every build, so that queue could never drain. Not
+    // reachable today: rows are written only while the founding is incomplete (Member empty, or no
+    // Manager and none retired), and an incomplete founding fails the build before the database is
+    // ever published for the app to queue in. If a founder is ever published with its founding
+    // incomplete, skip the bootstrap here while the queue is non-empty and run it once the queue drains.
     if (this.config.founder === true) {
       await this.bootstrapFounder();
     }
@@ -394,6 +400,21 @@ export class StrandDatabase {
   appSchemaState(): StrandAppSchemaState {
     this.ensureInitialized();
     return this.offlineReport?.appSchemaState() ?? 'applied';
+  }
+
+  /**
+   * The transaction ids the offline queue lists (`entries()`, the ones a restore has not put back
+   * yet included), or `undefined` with no queue: none configured, not composed yet, or closed.
+   * Unlike {@link offline} it does not require {@link initialize} to have finished, so the manager
+   * can read a database still being built or about to close.
+   */
+  queuedTransactionIds(): readonly string[] | undefined {
+    return this.offlineQueue?.entries().map((entry) => entry.transactionId);
+  }
+
+  /** {@link discardQueued} on this database's queue; `undefined` with no queue, as {@link queuedTransactionIds}. */
+  discardQueuedTransactions(): readonly string[] | undefined {
+    return this.offlineQueue ? discardQueued(this.offlineQueue) : undefined;
   }
 
   /**

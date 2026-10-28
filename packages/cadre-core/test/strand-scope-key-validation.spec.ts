@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => {
   const createLibp2pNode = vi.fn(async () => ({ coordinatedRepo: {}, stop, peerId: { toString: () => 'strand-peer' }, getConnections: () => [], addEventListener: () => {}, removeEventListener: () => {} }));
   const headerHeldDb = { eval: async function* () { yield { Count: 1 }; }, schemaManager: { getSchema: () => undefined } };
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
-    return { initialize, close, getDatabase: () => headerHeldDb, reportPublished: () => {} };
+    return { initialize, close, getDatabase: () => headerHeldDb, reportPublished: () => {}, queuedTransactionIds: () => undefined };
   });
   return { stop, close, initialize, createLibp2pNode, StrandDatabase };
 });

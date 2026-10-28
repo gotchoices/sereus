@@ -168,7 +168,7 @@ offline](strands.md#joining-while-the-inviter-is-offline).
 
 Leaving a joined strand:
 ```ts
-forgetJoinedStrand(strandId: string): Promise<void>;
+forgetJoinedStrand(strandId: string, options?: { discardQueued?: boolean }): Promise<void>;
 ```
 
 Leaves the strand for the whole party: removes the party-wide `JoinedStrand` row (owner-signed,
@@ -182,6 +182,11 @@ tell whether a party-wide row exists; retry once connected. A join
 still local to this machine has no party-wide row and is simply forgotten and stopped. It tells no
 other member of the strand anything, and this party's membership row in the strand stays.
 `stopStrand` on its own keeps the join, and the strand comes back on the next start.
+
+On a node with offline mode it throws `StrandQueueNotEmptyError` (with the `transactionIds`), leaving
+nothing, while the strand's offline queue on this machine holds transactions; `discardQueued: true`
+withdraws the ones never sent and leaves. `unpublishStrand` takes the same option. See [strands.md →
+Leaving a strand with unsent transactions](strands.md#leaving-a-strand-with-unsent-transactions).
 
 ## Validate Strand Formation (approval hook)
 

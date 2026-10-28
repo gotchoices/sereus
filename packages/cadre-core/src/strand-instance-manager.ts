@@ -576,6 +576,13 @@ export class StrandInstanceManager {
    * it outlives hibernation, every rebuild and a stop, for as long as the process runs.
    */
   private offlineModes: Map<string, StrandOfflineMode> = new Map();
+  /**
+   * The transaction ids each strand's offline queue listed when its database last closed
+   * ({@link releaseRuntime}), for a leave from a hibernating strand, whose queue is then only in
+   * its journal ({@link queuedTransactionIds}). Exact while the strand hibernates: nothing drains
+   * a journal without a database. Deleted with the instance on {@link stopStrand}.
+   */
+  private closedQueues: Map<string, readonly string[]> = new Map();
   private stopping = false;
 
   constructor() {
@@ -1394,9 +1401,11 @@ export class StrandInstanceManager {
     if (gate) {
       gate.stop();
       this.firstSyncGates.delete(instance.strandId);
+      this.rememberQueue(instance.strandId, gate.database);
       await gate.database.close();
     }
     if (instance.database) {
+      this.rememberQueue(instance.strandId, instance.database);
       await instance.database.close();
       instance.database = undefined;
     }
@@ -1537,8 +1546,9 @@ export class StrandInstanceManager {
    * this removal again — the in-memory retained key is the last chance.
    *
    * Never throws. Quiet no-op for a strand that is untracked, open, or launched
-   * without a party key; a quiesced (hibernating) strand, or a strand whose write
-   * quorum is already unreachable, leaves the stale binding behind with a log —
+   * without a party key; a quiesced (hibernating) strand, a strand whose offline queue
+   * still holds transactions (the writer refuses with `StrandOfflineQueueBusyError`), or a
+   * strand whose write quorum is already unreachable, leaves the stale binding behind with a log —
    * it grants nothing today (admission is not allowlist-gated) and only
    * mis-credits diversity. The strand's own membership reconciler is stopped —
    * and its in-flight pass awaited — FIRST, so a pass that was already past its
@@ -1570,7 +1580,8 @@ export class StrandInstanceManager {
       return;
     }
     try {
-      // Background write on the app's database: never join a transaction the app has open.
+      // Background write on the app's database: never join a transaction the app has open, and
+      // never wait behind its offline queue (the writer refuses both; the catch below logs it).
       await removeMemberPeer(db, {
         memberKeyPair: strandMemberKeyPair(config.partyMemberPrivateKey),
         peerId
@@ -2039,7 +2050,41 @@ export class StrandInstanceManager {
       throw new Error(`Cannot set the offline mode of strand ${strandId}: not tracked`);
     }
     this.offlineModes.set(strandId, mode);
-    (instance.database ?? this.firstSyncGates.get(strandId)?.database)?.applyOfflineMode();
+    this.liveDatabase(strandId)?.applyOfflineMode();
+  }
+
+  /**
+   * The transaction ids a strand's offline queue holds: its live database's, else what its
+   * database listed when it last closed (a hibernating strand, see {@link closedQueues}), else none.
+   *
+   * NOTE: a strand this process has built no database for reads as empty, though its journal may
+   * hold transactions from an earlier run, which come back if the strand is ever attached again.
+   * If apps are found leaving strands with transactions journaled that way, read the journal here.
+   */
+  queuedTransactionIds(strandId: string): readonly string[] {
+    return this.liveDatabase(strandId)?.queuedTransactionIds() ?? this.closedQueues.get(strandId) ?? [];
+  }
+
+  /**
+   * Withdraw what the live database's offline queue never sent (`StrandDatabase.discardQueuedTransactions`),
+   * returning the ids it kept; `undefined` when no live database has a queue (a hibernating
+   * strand, whose queue is back once a build restores it from the journal).
+   */
+  discardQueuedTransactions(strandId: string): readonly string[] | undefined {
+    return this.liveDatabase(strandId)?.discardQueuedTransactions();
+  }
+
+  /** A strand's database: the published one, else the one still behind the first-sync gate. */
+  private liveDatabase(strandId: string): StrandDatabase | undefined {
+    return this.instances.get(strandId)?.database ?? this.firstSyncGates.get(strandId)?.database;
+  }
+
+  /** Keep what a closing database's queue lists, for {@link queuedTransactionIds}; one with no queue changes nothing. */
+  private rememberQueue(strandId: string, database: StrandDatabase): void {
+    const queued = database.queuedTransactionIds();
+    if (queued !== undefined) {
+      this.closedQueues.set(strandId, queued);
+    }
   }
 
   /** Reject every {@link whenWritable} waiter for a strand that is going away. */
@@ -2129,6 +2174,7 @@ export class StrandInstanceManager {
       instance.status = 'stopped';
       this.instances.delete(strandId);
       this.launchConfigs.delete(strandId);
+      this.closedQueues.delete(strandId);
       // Storage is released only here — NOT in releaseRuntime, which a quiesce shares.
       await this.disposeStrandStorage(strandId);
       log('Strand %s stopped successfully', strandId);

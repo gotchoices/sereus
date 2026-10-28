@@ -120,6 +120,15 @@
  * written nothing, and the pass retries on the ladder. A busy refusal is never read as a
  * dead invitation, and a busy burn leaves the invitation staged for the next pass.
  *
+ * A write refused because the strand's offline queue holds transactions
+ * (`StrandOfflineQueueBusyError`, docs/strands.md → "Offline mode") is a busy refusal too: it
+ * wrote nothing, and the ladder retries it until the queue drains. A membership commit queued
+ * behind an app commit anyway (the race that refusal leaves open) can fail with Optimystic's
+ * `OfflineCommitTimeoutError`, which is an unclassified failure here: a redemption keeps the
+ * invitation and retries, and a binding is retried by the next pass. Each pass reads the state
+ * before it writes (the member row, then the binding, which is insert-if-absent), so a write that
+ * landed after all (`sent: true`) is found by that pass rather than written twice.
+ *
  * ## Half-committed join
  *
  * On a networked strand optimystic commits `Member` and `ConsumedInvite` as separate
@@ -144,6 +153,7 @@ import type { Ed25519KeyPair } from './ed25519-key.js';
 import type { StrandMembershipInvite } from './types.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import {
+  StrandOfflineQueueBusyError,
   StrandTransactionBusyError,
   burnInvite,
   consumeInvite,
@@ -231,7 +241,10 @@ export interface HalfCommittedJoin {
 /** Where {@link classifyConsumeFailure} routes a failed `consumeInvite` or `burnInvite`. */
 export type ConsumeFailure =
   | HalfCommittedJoin
-  /** The app had a transaction open, so nothing was tried — keep the invitation, retry. */
+  /**
+   * The app had a transaction open, or the strand's offline queue held transactions, so nothing
+   * was tried — keep the invitation, retry.
+   */
   | { kind: 'busy' }
   /** The strand is sealed — terminal for a non-member; a member's leftover invitation is merely dead. */
   | { kind: 'sealed' }
@@ -289,9 +302,13 @@ function halfCommittedJoin(error: unknown): HalfCommittedJoin | undefined {
   return undefined;
 }
 
-/** Whether a writer refused because another transaction was open (see "Sharing the database with the app"). */
+/**
+ * Whether a writer refused having written nothing, because another transaction was open or the
+ * offline queue held transactions (see "Sharing the database with the app").
+ */
 function isTransactionBusy(error: unknown): boolean {
-  return causeChain(error).some((link) => link instanceof StrandTransactionBusyError);
+  return causeChain(error).some((link) =>
+    link instanceof StrandTransactionBusyError || link instanceof StrandOfflineQueueBusyError);
 }
 
 function errorMessage(error: unknown): string {
@@ -712,8 +729,8 @@ export class StrandMembershipReconciler {
     const failure = classifyConsumeFailure(error);
     switch (failure.kind) {
       case 'busy':
-        log('[%s] burning the leftover invitation deferred — the app has a transaction open; it stays staged '
-          + 'for the next pass', this.deps.label);
+        log('[%s] burning the leftover invitation deferred — nothing was tried; it stays staged for the next '
+          + 'pass: %s', this.deps.label, errorMessage(error));
         return;
       case 'sealed':
       case 'dead-invite':
@@ -761,8 +778,8 @@ export class StrandMembershipReconciler {
     const failure = classifyConsumeFailure(error);
     switch (failure.kind) {
       case 'busy':
-        log('[%s] redeeming the staged invitation deferred — the app has a transaction open on the strand '
-          + 'database; retrying next tick', this.deps.label);
+        log('[%s] redeeming the staged invitation deferred — nothing was tried; retrying next tick: %s',
+          this.deps.label, errorMessage(error));
         return;
       case 'half-committed':
         this.reportHalfCommittedJoin(failure, error, invite);

@@ -70,7 +70,14 @@ import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WIND
 import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
-import { isSendingStatus, StrandOfflineUnavailableError, type StrandOfflineMode, type StrandOfflineStatus } from './strand-offline.js';
+import {
+  isSendingStatus,
+  StrandOfflineUnavailableError,
+  StrandQueueNotEmptyError,
+  type StrandLeaveOptions,
+  type StrandOfflineMode,
+  type StrandOfflineStatus
+} from './strand-offline.js';
 import {
   assertScopeKeyCharset,
   assertStrandScopeKey,
@@ -6827,16 +6834,25 @@ export class CadreNode implements SAppIdLookup {
    * caller ever needs removal to mean "and erase the local copy", that is a separate purge
    * step, not a widening of this method.
    *
+   * Refuses while the strand's offline queue on this machine holds transactions, unless
+   * `options.discardQueued` (docs/strands.md → "Leaving a strand with unsent transactions"). The
+   * check and the discard run before the control-plane delete, so a delete refused afterwards
+   * leaves the discarded transactions discarded.
+   *
    * @param strandId - The `Strand` row id to remove (as passed to {@link publishStrand}).
+   * @param options - `discardQueued`: withdraw the queued transactions that were never sent, and remove.
+   * @throws StrandQueueNotEmptyError when the queue holds transactions and `discardQueued` is not
+   *   set; nothing was removed.
    * @throws if the node is not started, has no owner signer wired, the id is blank, or
    *   the signer is not an enrolled owner (the schema's `Strand.AuthorizedDelete` rejects
    *   the write and the row survives). A rejection does NOT imply the row survived: the
    *   local stop runs after the control-plane delete has already committed, so a failure
    *   there throws over a completed removal.
    */
-  async unpublishStrand(strandId: string): Promise<void> {
+  async unpublishStrand(strandId: string, options?: StrandLeaveOptions): Promise<void> {
     const signer = this.requireOwnerSigner(`unpublish strand ${strandId}`);
     const trimmed = requireNonBlank(strandId, 'strand id');
+    await this.settleQueueBeforeLeave(trimmed, options);
     // One approval: the strand delete and its party key's, each with its tombstone.
     const removed = await signer.approve({ partyId: this.partyId, action: `Remove the strand ${trimmed} from the cadre` },
       (sign) => this.controlDatabase!.deleteStrand(trimmed, signer.publicKey, sign));
@@ -8056,17 +8072,74 @@ export class CadreNode implements SAppIdLookup {
    * The other members of the strand are not told, and this party's membership row in the
    * strand stays, so a later re-formation reuses the same identity.
    *
+   * Refuses while the strand's offline queue on this machine holds transactions, unless
+   * `options.discardQueued` (docs/strands.md → "Leaving a strand with unsent transactions"). The
+   * check and the discard run before the party-wide row is removed, so a removal refused
+   * afterwards leaves the discarded transactions discarded.
+   *
+   * @param options - `discardQueued`: withdraw the queued transactions that were never sent, and leave.
+   * @throws StrandQueueNotEmptyError when the queue holds transactions and `discardQueued` is not
+   *   set; nothing was left.
    * @throws when a party-wide row exists and this machine cannot sign its removal (not an
    *   enrolled owner) — {@link stopStrand} stops the strand on this machine only — or when
    *   the party-wide table cannot be read.
    */
-  async forgetJoinedStrand(strandId: string): Promise<void> {
+  async forgetJoinedStrand(strandId: string, options?: StrandLeaveOptions): Promise<void> {
     if (!this._running) {
       throw new Error('CadreNode not running');
     }
+    await this.settleQueueBeforeLeave(strandId, options);
     await this.joinedStrands!.leave(strandId);
     this.forgetStrandPeers(strandId, 'forgetJoinedStrand');
     await this.stopStrand(strandId);
+  }
+
+  /**
+   * Before a leave changes anything: refuse while the strand's offline queue holds transactions,
+   * unless the app asked to discard them (docs/strands.md → "Leaving a strand with unsent
+   * transactions"). Transactions Optimystic will not withdraw stay in the journal, named in one
+   * warning, and the leave goes on: they may already be saved, and a cohort that never returns
+   * would otherwise block the leave forever.
+   *
+   * @throws StrandQueueNotEmptyError when the queue holds transactions and `discardQueued` is not set.
+   * @throws when a hibernating strand has to be woken to discard and the wake fails.
+   */
+  private async settleQueueBeforeLeave(strandId: string, options: StrandLeaveOptions | undefined): Promise<void> {
+    const queued = this.strandManager.queuedTransactionIds(strandId);
+    if (queued.length === 0) {
+      return;
+    }
+    if (options?.discardQueued !== true) {
+      throw new StrandQueueNotEmptyError(strandId, queued);
+    }
+    const kept = await this.discardQueuedForLeave(strandId);
+    if (kept === undefined) {
+      console.warn(
+        `[sereus] strand ${strandId}: leaving with ${queued.length} queued transaction(s) not discarded ` +
+        `(${queued.join(', ')}): the strand's database could not be built to reach its queue. They stay in ` +
+        'this machine\'s offline journal and come back if this machine attaches the strand again.'
+      );
+    } else if (kept.length > 0) {
+      console.warn(
+        `[sereus] strand ${strandId}: leaving with ${kept.length} queued transaction(s) that could not be ` +
+        `discarded (${kept.join(', ')}): each was sent, or is being sent, and the strand's members may already ` +
+        'hold it. They stay in this machine\'s offline journal and settle if this machine attaches the strand again.'
+      );
+    }
+  }
+
+  /**
+   * Discard from the strand's live queue, waking a hibernating strand first (its queue is back
+   * once a build restores it from the journal), and return what was kept. `undefined` when the
+   * wake built no database (no seed peer has answered), so there was no queue to discard from.
+   */
+  private async discardQueuedForLeave(strandId: string): Promise<readonly string[] | undefined> {
+    const kept = this.strandManager.discardQueuedTransactions(strandId);
+    if (kept !== undefined) {
+      return kept;
+    }
+    await this.wakeStrand(strandId);
+    return this.strandManager.discardQueuedTransactions(strandId);
   }
 
   /**

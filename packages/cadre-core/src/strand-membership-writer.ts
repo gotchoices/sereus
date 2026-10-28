@@ -3,6 +3,7 @@ import { toString as uint8ArrayToString } from 'uint8arrays';
 import { TransactionActiveError } from '@quereus/quereus';
 import type { Database, SqlValue } from '@quereus/quereus';
 import { digest, sign, verify, generatePrivateKey, getPublicKey, randomBytes } from '@optimystic/quereus-plugin-crypto';
+import { offlineControllerOf } from '@serfab/quereus-plugin-sereus';
 import type { SAppConfig } from './types.js';
 import type { Ed25519KeyPair } from './ed25519-key.js';
 import { canonicalDatetime } from './canonical-datetime.js';
@@ -146,6 +147,31 @@ export class StrandTransactionBusyError extends Error {
   }
 }
 
+/**
+ * A membership write refused because the strand's offline queue holds transactions its members
+ * have not taken yet (docs/strands.md → "Offline mode"). Every `Strand` table is network-acknowledged, and a
+ * network-acknowledged commit made while transactions are queued waits for them to settle while
+ * holding Quereus's execution lock, so every other statement on the strand database, the app's
+ * included, would wait with it for up to the plugin's `networkCommitTimeoutMs`. Nothing was
+ * written. Raised whether or not the write would have joined an open transaction: joining would
+ * make the app's own commit wait the same way.
+ */
+export class StrandOfflineQueueBusyError extends Error {
+  /** The queued transactions the write would have waited behind, in queue order. */
+  readonly transactionIds: readonly string[];
+
+  constructor(transactionIds: readonly string[]) {
+    super(
+      `The strand's offline queue holds ${transactionIds.length} transaction(s) its members have not taken yet `
+      + `(${transactionIds.join(', ')}). A membership write is acknowledged by the strand's members and would `
+      + 'wait behind them, holding the strand database, so nothing was written; await '
+      + 'strand.database.offline.whenDrained() and retry.',
+    );
+    this.name = 'StrandOfflineQueueBusyError';
+    this.transactionIds = transactionIds;
+  }
+}
+
 /** Options every transactional membership writer accepts. */
 export interface StrandWriteOptions {
   /**
@@ -207,6 +233,8 @@ function combineStatements(...fragments: StrandStatements[]): StrandStatements {
  * autocommit statement is merely in flight, which would make a background writer refuse
  * spuriously and a composing caller run its statements as separate autocommits.
  *
+ * - The strand's offline queue holds transactions: {@link StrandOfflineQueueBusyError}, before
+ *   anything runs, every writer and every option alike (see {@link refuseBehindOfflineQueue}).
  * - No transaction was open: the batch commits or fails as a unit, leaving nothing open.
  * - One was already open, so the batch refuses with `TransactionActiveError` having run
  *   nothing. With `joinOpenTransaction: false` that becomes a
@@ -219,6 +247,7 @@ async function execStrandTransaction(
   statements: StrandStatements,
   options?: StrandWriteOptions,
 ): Promise<void> {
+  refuseBehindOfflineQueue(db);
   try {
     await db.exec(statements.sql, statements.params, { transaction: true });
     return;
@@ -242,6 +271,24 @@ async function execStrandTransaction(
   // membership rows without awaiting, give it `joinOpenTransaction: false` rather than relying on
   // this path.
   await db.exec(statements.sql, statements.params);
+}
+
+/**
+ * Throw {@link StrandOfflineQueueBusyError} while the strand's offline queue lists any
+ * transaction. `entries()` also lists the journaled ones a restore has not put back yet, and a
+ * network-acknowledged commit waits behind those too.
+ *
+ * NOTE: racy by nature: an app commit queued between this check and the batch's `exec` makes the
+ * membership commit wait behind it, for up to `networkCommitTimeoutMs`, holding the execution
+ * lock. That is upstream's bounded wait in the rare case. If a frozen strand database is ever
+ * traced to a membership write that slipped past this check, hold the app's writes during
+ * membership commits instead.
+ */
+function refuseBehindOfflineQueue(db: Database): void {
+  const queued = offlineControllerOf(db)?.entries() ?? [];
+  if (queued.length > 0) {
+    throw new StrandOfflineQueueBusyError(queued.map((entry) => entry.transactionId));
+  }
 }
 
 /**
@@ -736,12 +783,12 @@ export async function issueInvite(db: Database, params: IssueInviteParams): Prom
   const managerSignature = signStrandPayload(payload, managerKeyPair.privateKeyB64);
   const inviteSignature = signStrandPayload(payload, invitePrivateKey);
 
-  await db.exec(
-    `insert into Strand.Invite (Key, Expiration)
-       with context ManagerKey = ?, ManagerSignature = ?, InviteSignature = ?
-       values (?, ?)`,
-    [managerKeyPair.publicKeyB64, managerSignature, inviteSignature, inviteKey, expirationColumn],
-  );
+  await execStrandTransaction(db, {
+    sql: `insert into Strand.Invite (Key, Expiration)
+       with context ManagerKey = :managerKey, ManagerSignature = :managerSignature, InviteSignature = :inviteSignature
+       values (:inviteKey, :expiration);`,
+    params: { managerKey: managerKeyPair.publicKeyB64, managerSignature, inviteSignature, inviteKey, expiration: expirationColumn },
+  });
   log('Issued invite %s (expires=%s)', inviteKey, expirationColumn ?? 'never');
 
   return { inviteKey, invitePrivateKey };
@@ -937,8 +984,8 @@ export interface CancelInviteParams {
  * `digest('Strand.CancelledInvite', 'cancel', InviteKey)`. The digest binds the exact
  * invite key, so an approval minted for one invitation cannot cancel another.
  *
- * One row, one statement — no transaction needed. `CancelledInvite.Authorized` is a
- * deferred (subquery-bearing) check, so it fires at this statement's own auto-commit.
+ * One row, one statement. `CancelledInvite.Authorized` is a deferred (subquery-bearing)
+ * check, so it fires at the batch's commit, or at the caller's when it joins an open one.
  *
  * Insert-if-absent, matching {@link registerMemberPeer}'s and {@link revokeMember}'s
  * restart-safe shape: a repeat cancellation logs and returns rather than throwing on the
@@ -973,12 +1020,12 @@ export async function cancelInvite(db: Database, params: CancelInviteParams): Pr
     ['Strand.CancelledInvite', 'cancel', inviteKey],
     managerKeyPair.privateKeyB64,
   );
-  await db.exec(
-    `insert into Strand.CancelledInvite (InviteKey)
-       with context ManagerKey = ?, ManagerSignature = ?
-       values (?)`,
-    [managerKeyPair.publicKeyB64, signature, inviteKey],
-  );
+  await execStrandTransaction(db, {
+    sql: `insert into Strand.CancelledInvite (InviteKey)
+       with context ManagerKey = :managerKey, ManagerSignature = :managerSignature
+       values (:inviteKey);`,
+    params: { managerKey: managerKeyPair.publicKeyB64, managerSignature: signature, inviteKey },
+  });
   log('Cancelled invite %s by manager %s', inviteKey, managerKeyPair.publicKeyB64);
 }
 
