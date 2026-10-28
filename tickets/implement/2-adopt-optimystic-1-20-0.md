@@ -1,5 +1,5 @@
-description: Sereus moves onto Optimystic 1.20.0 and Quereus 4.21.0. Upstream's release is mostly an opt-in offline mode for the Quereus plugin, which Sereus does not turn on, but it also gives commit and read failures typed errors and changes the error a read throws when no peer answers. This pass checks Sereus's retry classifier against those errors, writes the release notes, and runs the release gate so Sereus can be released.
-prereq: control-write-retries-an-unanswered-read-again
+description: Sereus moves onto Optimystic 1.20.0 and Quereus 4.21.0. Upstream's release is mostly an opt-in offline mode for the Quereus plugin, which Sereus adopts for strand databases in `strand-offline-mode`. It also gives commit and read failures typed errors and changes the error a read throws when no peer answers. This pass checks Sereus's retry classifier against those errors, writes the release notes, and runs the release gate so Sereus can be released.
+prereq: control-write-retries-an-unanswered-read-again, strand-offline-mode
 architecture: docs/testing.md#declared-dependency-range-vs-linked-workspace-keep-them-equal
 files: .release-notes.pending.md, packages/cadre-core/src/control-write-retry.ts (`SUPER_MAJORITY_SHORTFALL_UNANSWERED`), docs/cadre-consistency.md ("Deadlines Below Cadre"), tickets/blocked/ (recheck), tickets/.pre-existing-known.md, tickets/.garden-report.md, ../optimystic/tickets/complete/ (read only), ../optimystic/docs/offline-sync.md (read only)
 ----
@@ -9,7 +9,7 @@ Optimystic 1.20.0 is on npm (tag `v1.20.0`, `59679072`); it raises its Quereus p
 
 ## What 1.20.0 contains
 
-All 31 tickets in `git -C ../optimystic log --oneline v1.19.0..v1.20.0` are offline-sync stages (`../optimystic/docs/offline-sync.md`). The public API changes only by additions: db-core exports `./offline/*` and `visit-every`, db-p2p exports `cohort-reachability`, and the plugin exports `OfflineMode` and its errors and status types. Offline mode is opt-in (the `offline` register option), and Sereus does not set it.
+All 31 tickets in `git -C ../optimystic log --oneline v1.19.0..v1.20.0` are offline-sync stages (`../optimystic/docs/offline-sync.md`). The public API changes only by additions: db-core exports `./offline/*` and `visit-every`, db-p2p exports `cohort-reachability`, and the plugin exports `OfflineMode` and its errors and status types. Offline mode is opt-in (the `offline` register option). Sereus adopts it for strand databases in the prereq `strand-offline-mode`; read its complete ticket(s).
 
 Parts that reach a Sereus node without offline mode, from the upstream tickets in `../optimystic/tickets/complete/`:
 
@@ -32,9 +32,9 @@ Check whether `db-p2p`'s `p2p-fret` range moved (FRET is still 1.2.1 on npm).
   - Do not adopt upstream's `classifyCommitFailure` wholesale in this pass. Its categories are offline-queue categories, and Sereus's retry rules differ (see the file's header). If it would retire most of the text matchers, file a `debt-` ticket.
 - **Recheck the upstream-blocked tickets** (`optimystic-write-made-alone-owes-no-one`, `forked-control-collection-sync-livelocks`, `fret-maintenance-deadlines-below-the-declared-link`, `decide-link-deadlines-from-measured-response-time`). Give each a dated recheck line. The first one asked a human to confirm its sixth arm on a clean release build. 1.20.0 is that build, so run the arm and close or keep the ticket accordingly. 1.20.0's cohort-reachability and solo-refusal work also bears on it.
 - **Deadlines Below Cadre** in `docs/cadre-consistency.md`: re-stamp at 1.20.0 (`59679072`). Diff the same files the 1.19.0 pass listed between `v1.19.0` and `v1.20.0`, add `network/cohort-reachability.ts` if it introduced a timing value on the normal (non-offline) path, and change only the rows that moved.
-- **Offline mode.** Do not adopt it here. If no backlog ticket already proposes it, file one backlog `feat-` ticket proposing it for the phone (`cadre-rn`) and the web reference app, with its `tradeoffs:` line. Note how it interacts with cadre control writes, which must not be queued locally.
 - **Release notes.** `.release-notes.pending.md` is empty after v1.19.0. Follow the house style (see that file's git history):
-  - Dependencies: Optimystic 1.20.0 and Quereus 4.21.0, with one line per upstream change an embedder can observe (typed shortfall and rejection errors, the unreachable-read error, offline mode available but not enabled by Sereus).
+  - Dependencies: Optimystic 1.20.0 and Quereus 4.21.0, with one line per upstream change an embedder can observe (typed shortfall and rejection errors, the unreachable-read error, offline mode).
+  - New: offline mode for strand databases, as `strand-offline-mode` built it. Cover what an app turns on, what a locally acknowledged commit promises, the journal per platform, and the Sereus tables that stay network-acknowledged.
   - Upgrading: mixed versions (below).
   - Fixes: the control-write retry for an unanswered read (from the prereq), stated as what an embedder would have seen on 1.19 cadre-core + 1.20 Optimystic (a control write failing on its first attempt while a connection forms), and any shortfall-matcher change.
 - **Gate**, as the 1.19.0 adoption ran it: `yarn lint`, `yarn typecheck`, `yarn build`, every workspace's tests, the root `test:*` suites, all integration files in batches each under the 10-minute idle limit (tee each batch to `tickets/.logs/adopt-optimystic-1-20-0.it-*.log`, with the `upstream:` line naming the linked upstream commit and its dirty-file count), and `node scripts/smoke-published-install.mjs --skip-build` against the published 1.20.0. Check `tickets/.pre-existing-known.md` for every red before reporting it. Pinned budgets (`strand-solo-write-budget`, `control-founding-consult-budget`, `control-start-storage-op-budget`) are re-pinned only with a measured run and a history line.
@@ -61,6 +61,5 @@ None expected. The classifier spec belongs to the prereq. A shortfall-matcher ch
 - Decide on the shortfall matcher.
 - Recheck the blocked tickets; run the `optimystic-write-made-alone-owes-no-one` sixth arm on the release build.
 - Re-stamp Deadlines Below Cadre.
-- File the offline-mode backlog `feat-` ticket if none exists.
 - Write `.release-notes.pending.md`.
 - Run the full gate; record results in the handoff and the garden report.
