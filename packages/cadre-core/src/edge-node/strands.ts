@@ -40,8 +40,9 @@ export async function attachStrandWhenWritable(
  * Optimystic's cluster coordinator reports a write that could not gather enough approvals this
  * way. It is transient right after a node restarts alone: its cohort has not reconnected yet.
  *
- * NOTE: matched on the message because Optimystic throws a plain `Error` here. If it gains a typed
- * error, match on that instead — a reworded message would silently stop the retries.
+ * NOTE: matched on the message. Optimystic 1.20.0 raises this failure as `PromiseShortfallError` and
+ * keeps the sentence unchanged as a contract, so the match holds; moving to the type is the second arm
+ * of backlog `debt-control-write-retry-matches-the-shortfall-by-type`.
  */
 const SUPER_MAJORITY_FAILURE = /Failed to get super-majority/i;
 

@@ -11,7 +11,7 @@ repro: verified
 - **The fourth and fifth arms** again named the hibernated founder as owed (`local (1/2, unconfirmed [<founder strand peer>])`), one run each.
 - **Which upstream change did it is not established.** The 2026-10-25 runs already passed the check on a tree past `v1.19.0`. 1.20.0's solo refusal (upstream `6.2-offline-sync-solo-refusal`) changes `commitSolo` only for a write that asks not to commit alone, which a strand write outside offline mode does not.
 
-**Blocked on:** a dependency outside this repo. Unblocks when Optimystic releases a fix for `../optimystic/tickets/fix/1-a-write-made-alone-while-other-members-are-known-never-reaches-them` and Sereus adopts that release.
+**Was blocked on** (until the resolution above): a dependency outside this repo. It was to unblock once Optimystic released a fix for `../optimystic/tickets/fix/1-a-write-made-alone-while-other-members-are-known-never-reaches-them` (landed as its `a-write-made-alone-names-the-members-it-is-owed-to`, in every tag from `v1.13.0`) and Sereus adopted that release.
 
 ## The defect
 

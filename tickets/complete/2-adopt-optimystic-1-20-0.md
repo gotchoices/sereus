@@ -1,7 +1,7 @@
-description: Sereus moves onto Optimystic 1.20.0 and Quereus 4.21.0. This pass checked the control-write retry against Optimystic's new typed errors on a live degraded cohort, closed the GitHub issue 44 ticket on the release build, wrote the release notes, and ran the full release gate, which is green.
+description: Sereus moved onto Optimystic 1.20.0 and Quereus 4.21.0. The control-write retry was checked against Optimystic's new typed errors on a live degraded cohort, the GitHub issue 44 ticket was closed on the release build, the release notes were written, and the full release gate is green.
 prereq: control-write-retries-an-unanswered-read-again, strand-offline-mode
 architecture: docs/testing.md#declared-dependency-range-vs-linked-workspace-keep-them-equal
-files: .release-notes.pending.md, packages/cadre-core/src/control-write-retry.ts (comments only: `SUPER_MAJORITY_SHORTFALL_UNANSWERED`, `isUncommittedTransactorAggregate`'s guard NOTE, `isRetriableControlWriteFailure`'s NOTE), packages/cadre-core/test/control-write-retry.spec.ts (comments only), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (sixth arm assertion), packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts (one reference), docs/cadre-consistency.md ("Deadlines Below Cadre" stamp), docs/strands.md (two sentences on writes made alone), tickets/complete/optimystic-write-made-alone-owes-no-one.md (moved from blocked/), tickets/blocked/ (three rechecked), tickets/backlog/debt-control-write-retry-matches-the-shortfall-by-type.md (new), tickets/.garden-report.md
+files: .release-notes.pending.md, packages/cadre-core/src/control-write-retry.ts (comments), packages/cadre-core/src/edge-node/strands.ts (NOTE on `SUPER_MAJORITY_FAILURE`), packages/cadre-core/test/control-write-retry.spec.ts (comments), packages/integration-tests/src/scenarios/joiner-first-commit-over-slow-relay.integration.ts (sixth arm assertion), packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts (one reference), docs/cadre-consistency.md, docs/strands.md, tickets/complete/optimystic-write-made-alone-owes-no-one.md, tickets/backlog/debt-control-write-retry-matches-the-shortfall-by-type.md, tickets/.garden-report.md
 ----
 # Adopt Optimystic 1.20.0 and Quereus 4.21.0
 
@@ -61,3 +61,37 @@ Two files ran longer than one 10-minute command at 1.19.0 (615 s and 827 s), so 
 - The comment-only edits in `control-write-retry.ts` rest on one live run each (b4a, b4b). In particular, "no case produces the `[block:` aggregate on 1.20.0" is from this one run of the file.
 - The release notes' "New" section summarises `docs/strands.md` → "Offline mode"; check it against that section rather than the code.
 - No `.pre-existing-error.md` written: nothing failed.
+
+## Review findings
+
+Read the diff of `ticket(implement): adopt-optimystic-1-20-0` first, then checked its claims against the gate logs in `tickets/.logs/adopt-optimystic-1-20-0.*` and against `../optimystic` (read only).
+
+### Checked, no change needed
+
+- **Live claims behind the comment edits in `control-write-retry.ts`.** `it-b4a`/`it-b4b`: the pend shortfall arrives as a bare `PromiseShortfallError` (4 occurrences), the commit-phase shortfall arrives inside `[blocks:1]` and is declined non-transiently, the transient reset fails the read as `Block … is unavailable (peers-unreachable)` and is retried, and no `[block:` aggregate appears in either log. The comments say exactly this. The `[block:` guard being vacuous on 1.20.0 is already a `NOTE:` tripwire at `isUncommittedTransactorAggregate` with the way to make it live again; left as is.
+- **Sixth arm assertion.** `bStrandPeer` is the joiner's strand peer captured before the stop; the three `made-alone.r*` logs show `unconfirmed [<that id>]` and the assertion passing. One behaviour, one assertion; kept.
+- **Release notes "New" vs `docs/strands.md` → "Offline mode".** Consistent: promise list, journal locations, where it is not offered, `Strand` tables network-acknowledged, membership writers refusing, leave refusal, deferred app schema.
+- **`docs/strands.md` "names the members it knows but could not reach".** Matches upstream `soloCohortOf`/`absentCohortMembers` ("every member the key network knows belongs in this cohort but could not place in it").
+- **Backlog `debt-control-write-retry-matches-the-shortfall-by-type`.** Passes the filing bar (rung 1: a typed match retires the text-coupling class), carries `tradeoffs:` and names the live evidence; its second arm covers the edge-node retry.
+- **Blocked re-checks** (`forked-control-collection-sync-livelocks`, `fret-maintenance-deadlines-below-the-declared-link`, `decide-link-deadlines-from-measured-response-time`): dated, state what was and was not checked; no change.
+- **Tests.** No test added or cut: the only test change is the sixth arm's assertion, which pins the #44 behaviour the arm exists for.
+- **Lint and typecheck** pass after the review edits; cadre-core rebuilt (one comment changed in `edge-node/strands.ts`). Unit and integration suites were not re-run: the review changed only comments, a markdown note and a ticket, and the implement gate is recorded above.
+
+### Found and fixed (minor)
+
+- **Release notes left out #44.** The issue is closed with this release and a human is to reply on it, but the notes did not mention it. Added a Fixes entry, stated as observed: on 1.20.0 a write made with the other member stopped lists it under `unconfirmed` and reaches it on restart; on 1.17.0 the same arm reported no owed member; which Optimystic change brought it is not established.
+- **Release notes overstated the 1.19.0 fresh-install break.** "its control writes then fail on their first attempt" read as every control write; narrowed to a control write whose read no member answered, which is what the Fixes entry and the prereq describe.
+- **`strand-workload-on-a-phone-link` comment overclaimed.** It said the solo-commit divergence there was "fixed by Optimystic 1.20.0". That divergence came from FRET marking a still-connected member `dead`, and whether such a member is named as owed was not measured (the FRET ticket says so). Reworded to say the completed ticket covered a stopped member and point at `blocked/fret-maintenance-deadlines-below-the-declared-link`. The phrase was also inaccurate on its own terms: upstream's owed-member change is in every tag from `v1.13.0`.
+- **Stale NOTE in `edge-node/strands.ts`.** `SUPER_MAJORITY_FAILURE`'s NOTE said to switch to a typed error "if it gains" one; its condition has tripped (1.20.0 has `PromiseShortfallError`). The NOTE now says so and points at the backlog ticket's second arm.
+- **The completed `optimystic-write-made-alone-owes-no-one` still read "Blocked on … Unblocks when".** Put it in the past tense and named the upstream ticket and the tag it landed in.
+
+### Not done, left for a human
+
+- **The reply on gotchoices/sereus#44** (posting to GitHub). Recorded in the completed ticket and the garden report.
+- **A whole-file run** of `control-write-degraded-cohort-member` and `joiner-first-commit-over-slow-relay` (each was split by `-t` to fit a 10-minute command), so cross-case interactions in those two files were not exercised in one process on 1.20.0.
+
+### Empty categories
+
+- **Major findings / new tickets:** none. Nothing found reaches past a comment or a note.
+- **New tripwires:** none; the one relevant tripwire (vacuous `[block:` guard) was added by the implementer at its site.
+- **Resource cleanup, error handling, type safety, performance:** no runtime code changed in this ticket, so there was nothing new to review on these axes.
