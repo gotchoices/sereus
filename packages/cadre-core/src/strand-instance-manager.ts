@@ -580,7 +580,8 @@ export class StrandInstanceManager {
    * The transaction ids each strand's offline queue listed when its database last closed
    * ({@link releaseRuntime}), for a leave from a hibernating strand, whose queue is then only in
    * its journal ({@link queuedTransactionIds}). Exact while the strand hibernates: nothing drains
-   * a journal without a database. Deleted with the instance on {@link stopStrand}.
+   * a journal without a database. Deleted with the instance: on {@link stopStrand}, and when a
+   * {@link startStrand} fails.
    */
   private closedQueues: Map<string, readonly string[]> = new Map();
   private stopping = false;
@@ -704,6 +705,8 @@ export class StrandInstanceManager {
       // reads both, and a config without an instance would strand the config.
       this.instances.delete(strandId);
       this.launchConfigs.delete(strandId);
+      // The cleanup above remembered the half-built database's queue; an untracked strand keeps none.
+      this.closedQueues.delete(strandId);
       // The store this launch resolved goes with it: nothing owns it any more, and a
       // retained cache wrapper would be handed back (already retired) on a retry.
       await this.disposeStrandStorage(strandId);
