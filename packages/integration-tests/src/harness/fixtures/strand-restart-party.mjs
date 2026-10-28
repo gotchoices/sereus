@@ -248,10 +248,15 @@ async function stopAndExit(code) {
 	stopping = true;
 	try {
 		await node.stop();
-		// After the node, whose strand databases journal into these until they close.
-		await Promise.all([...journals.values()].map((journal) => journal.close()));
 	} catch (error) {
 		console.error(`[restart-party ${label}] stop failed:`, error);
+		code = 1;
+	}
+	// After the node, whose strand databases journal into these until they close; even after a
+	// failed stop, so what the journals hold is flushed before the next process reads them.
+	const closed = await Promise.allSettled([...journals.values()].map((journal) => journal.close()));
+	for (const { reason } of closed.filter(({ status }) => status === 'rejected')) {
+		console.error(`[restart-party ${label}] journal close failed:`, reason);
 		code = 1;
 	}
 	process.exit(code);

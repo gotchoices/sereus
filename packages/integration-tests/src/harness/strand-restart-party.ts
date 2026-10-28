@@ -192,6 +192,8 @@ export async function startStrandRestartParty(options: StrandRestartPartyOptions
 		else request.resolve(message.result);
 	});
 
+	// NOTE: the child's exit code (1 after a failed node stop or journal close) is not checked, only
+	// printed on its stderr; if a scenario's assertion ever depends on a clean stop, fail on it here.
 	const exit = async (): Promise<void> => {
 		if (child.exitCode === null && child.signalCode === null && child.connected) child.send({ op: 'stop' });
 		const timer = setTimeout(() => child.kill(), EXIT_GRACE_MS);

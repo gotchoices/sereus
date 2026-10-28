@@ -89,7 +89,7 @@ type PartyOptions = Omit<StrandRestartPartyOptions, 'relayAddr'>;
 
 const byKey = (a: DataRow, b: DataRow): number => a.key.localeCompare(b.key);
 
-/** The statuses `party` has forwarded for `transactionId`, of `kind`. */
+/** How many statuses of `kind` `party` has forwarded for `transactionId`. */
 function statusesOf(party: StrandRestartParty, transactionId: string, kind: string): number {
 	return party.offlineStatuses.filter(({ status }) => status.transactionId === transactionId && status.kind === kind).length;
 }
@@ -161,13 +161,15 @@ async function runOfflineQueueSurvivesRestart(): Promise<void> {
 		expect((await B.request('rows', { strandId })).rows).toContainEqual(bQueuedRow);
 		// The restored queue submits at once: A, restored from the saved table, reads as serving
 		// until its liveness drops it, so the attempt runs on a cohort of two and falls short.
-		// Waiting for it to settle back to `queued` is what shows B did not commit it alone.
+		// Waiting for it to settle back to `queued` is what shows B did not commit it alone. A restore
+		// lists it `queued` with no `waitingFor` before its first send, so the wait is for a
+		// `waitingFor` only a send or the reachability gate sets.
 		const secondB = B;
 		let restored: OfflineEntrySummary | undefined;
 		await waitUntil(async () => {
 			restored = (await secondB.request('offlineEntries', { strandId })).entries.find((entry) => entry.transactionId === tx);
-			return restored === undefined || restored.status.kind === 'queued';
-		}, { ...RESTART_GATE, description: `B's restored ${tx} to settle back to queued` });
+			return restored === undefined || (restored.status.kind === 'queued' && restored.status.waitingFor != null);
+		}, { ...RESTART_GATE, description: `B's restored ${tx} to settle back to queued after a send` });
 		say("step 4: B's restored entry: %s", JSON.stringify(restored));
 		expect(restored, `offline.entries() after the restart lists ${tx}`).toMatchObject({ persisted: true, status: { kind: 'queued' } });
 
