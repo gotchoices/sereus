@@ -58,7 +58,8 @@ control/strand network gets its own IndexedDB database:
   (`<record>.<partyId>`) and, while the old cadre is being removed, the dissolve marker
   (`dissolving-party`).
 - `sereus-strand-control-<encoded party id>` — one party's control network blocks.
-- `sereus-strand-sereus-web-chat` — the chat strand's blocks (participants/messages).
+- `sereus-strand-sereus-web-chat` — the chat strand's blocks (participants/messages) and, in its
+  `kv` store, the transactions offline mode queued and has not yet sent.
 
 Delete those databases from DevTools → Application → Storage to reset identity
 and stored messages.
@@ -92,6 +93,9 @@ so the platform returns cadre-core's `lazyRawStorage` over `openStore(scope)`: a
 (`sereus-strand-<key>`) opens on its first use, nothing is opened ahead of a start or an
 `addStrand`, and a strand the control network lists gets storage like any other. One handle and
 one `IndexedDBRawStorage` per key, cached until the edge node's stop closes them (`closeStores`).
+A strand's offline journal (`openJournal`, `EdgeNodeStorage.offlineJournal`) is one
+`IndexedDBKVStore` over that same handle, cached and closed the same way
+([strands.md → On the edge node](../../docs/strands.md#on-the-edge-node)).
 
 ### Two databases, not one
 

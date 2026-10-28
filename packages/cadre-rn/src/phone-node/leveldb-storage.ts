@@ -108,25 +108,9 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 		this.journals.clear();
 		const open = [...this.databases.values()];
 		this.databases.clear();
-		try {
-			await store?.close();
-		} catch (err) {
-			console.warn('[cadre-rn/phone-node] closing the node-local store failed:', err);
-		}
-		for (const journal of journals) {
-			try {
-				await journal.close();
-			} catch (err) {
-				console.warn('[cadre-rn/phone-node] closing an offline journal failed:', err);
-			}
-		}
-		for (const db of open) {
-			try {
-				await db.close();
-			} catch (err) {
-				console.warn('[cadre-rn/phone-node] closing a database failed:', err);
-			}
-		}
+		if (store) await closeLogged('the node-local store', store);
+		for (const journal of journals) await closeLogged('an offline journal', journal);
+		for (const db of open) await closeLogged('a database', db);
 	}
 
 	/** The open database of this name, opening it on first use: one native handle per name. */
@@ -138,5 +122,14 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 			this.databases.set(name, db);
 		}
 		return db;
+	}
+}
+
+/** {@link LevelDBEdgeStorage.close}'s rule: a failure closing one is logged and the rest still close. */
+async function closeLogged(what: string, closable: { close(): Promise<void> }): Promise<void> {
+	try {
+		await closable.close();
+	} catch (err) {
+		console.warn(`[cadre-rn/phone-node] closing ${what} failed:`, err);
 	}
 }

@@ -92,6 +92,9 @@ export async function openStore(key: string): Promise<IRawStorage> {
  * plugin's own browser connect uses over the same database (`connectToStrandBrowser`).
  */
 export async function openJournal(key: string): Promise<IKVStore> {
+	// NOTE: like openStore, a call whose handle was cached before a concurrent closeStores cleared
+	// the maps caches a journal over a closed handle. The edge node stops its strands before closing
+	// storage, so no build asks then; if one ever can, check the handle is still `handles.get(key)`.
 	const handle = await openHandle(key);
 	let journal = journals.get(key);
 	if (!journal) {
@@ -124,24 +127,16 @@ export async function closeStores(): Promise<void> {
 	storages.clear();
 	const openJournals = [...journals.values()];
 	journals.clear();
-	for (const storage of stores) await closeStorage(storage);
-	for (const journal of openJournals) await closeJournal(journal);
+	for (const storage of stores) await closeLogged('a raw storage', storage);
+	for (const journal of openJournals) await closeLogged('an offline journal', journal);
 	for (const [, handle] of open) handle.close();
 }
 
-async function closeStorage(storage: IRawStorage): Promise<void> {
+async function closeLogged(what: string, closable: { close?(): Promise<void> }): Promise<void> {
 	try {
-		await storage.close?.();
+		await closable.close?.();
 	} catch (err) {
-		console.warn('[reference-app-web] closing a raw storage failed:', err);
-	}
-}
-
-async function closeJournal(journal: IndexedDBKVStore): Promise<void> {
-	try {
-		await journal.close();
-	} catch (err) {
-		console.warn('[reference-app-web] closing an offline journal failed:', err);
+		console.warn(`[reference-app-web] closing ${what} failed:`, err);
 	}
 }
 
@@ -176,10 +171,10 @@ export async function deleteStore(key: string): Promise<void> {
 	if (inFlight) await inFlight.catch(() => undefined);
 	const storage = storages.get(key);
 	storages.delete(key);
-	if (storage) await closeStorage(storage);
+	if (storage) await closeLogged('a raw storage', storage);
 	const journal = journals.get(key);
 	journals.delete(key);
-	if (journal) await closeJournal(journal);
+	if (journal) await closeLogged('an offline journal', journal);
 	handles.get(key)?.close();
 	handles.delete(key);
 	await deleteDatabase(key);

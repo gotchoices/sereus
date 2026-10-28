@@ -319,6 +319,7 @@ Waiting for the queue to drain before the connect returns was rejected: offline,
 
 - **A journal is required.** cadre-core never builds a memory-only queue, because an acknowledgement that a process exit loses breaks the promise a local commit makes. `journal` is called once per database build with the strand id (its storage scope key); a throw or rejection fails the build, as a storage provider's does.
 - **Absent, nothing changes.** No strand database gets a queue, `StrandDatabase.offline` is `undefined`, and `setStrandOfflineMode` throws `StrandOfflineUnavailableError`. The always-on programs (cadre-host, cadre-provider, cadre-cli) configure none, because an always-on node gains nothing from a local acknowledgement.
+- **A Node embedder supplies its own journal**, for example a `FileKVStore` (`@optimystic/db-p2p-storage-fs`) in the strand's directory; only the edge node ([On the edge node](#on-the-edge-node)) builds one for the app.
 - **Strand databases only.** The control database (`control-database.ts`) registers Optimystic without `offline`. Its writes are owner-signed membership and authorization facts, and the retry and veto rules of `control-write-retry.ts` assume a network answer.
 
 #### The mode belongs to the strand
@@ -337,7 +338,6 @@ The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-nod
 - **Under the store's default key prefix**, which is also what the plugin's own browser connect (`connectToStrandBrowser`) journals under in that same IndexedDB database, so a strand database holds its queue under one set of keys whichever code opened it.
 - **One store per scope until the storage closes.** A store serves its unflushed writes from memory, so a second store over the handle would not see them. The edge node's stop stops the node, its strands included, before `EdgeNodeStorage.close` flushes and closes the journals; `destroyScope` closes the scope's journal before deleting the database.
 - **NativeScript has no journal**, so `setStrandOfflineMode` throws `StrandOfflineUnavailableError` there.
-- **A Node embedder of cadre-core sets `strandOffline.journal` itself**, for example a `FileKVStore` (`@optimystic/db-p2p-storage-fs`) in the strand's directory, since cadre-core has no edge node there to supply one.
 - **`EdgeNodeOptions.strandOfflineMode` is the app's default** (`'online'` or `'offline'`, default `'online'`). It becomes `strandOffline.initialMode` and is saved with the start options, so a background restart or a push wake starts every strand in it again; it carries into a joined cadre, and back to the founded one after a removal, as the Noise mode does.
 - **An app that turns the mode on should leave it on.** Its later commits are network-acknowledged once it is off, and each waits behind the transactions still queued.
 
