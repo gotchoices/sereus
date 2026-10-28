@@ -1,7 +1,7 @@
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
-import type { SqlCommitDurabilityListener, CommitFullyHeldListener } from '@optimystic/quereus-plugin-optimystic/plugin';
+import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
 
 /**
  * Which Optimystic transactor a strand connection commits through — a choice of
@@ -73,7 +73,43 @@ export interface StrandConnectionOptions {
 	 *    one is injected. Unit tests only.
 	 */
 	transactor?: StrandTransactor;
+	/**
+	 * Turn on Optimystic's offline queue for this connection (docs/strands.md → "Offline mode").
+	 * Absent: no offline configuration reaches the plugin, and the result carries no
+	 * {@link SereusPluginResult.offline}. Programmatic only — the SQL plugin config cannot carry it.
+	 */
+	offline?: StrandOfflineOptions;
 }
+
+/**
+ * The Optimystic plugin's `offline` registration block (its README § "Offline mode"), less
+ * `journalLabel`: the composition derives the label from the strand id (`strandJournalLabel`).
+ * Without a `journal` the queue lives in memory, except where a platform defaults one (the browser
+ * connect journals into the strand's IndexedDB database).
+ */
+export type StrandOfflineOptions = Omit<OfflineConfig, 'journalLabel'>;
+
+/**
+ * The application's handle on a strand connection's offline queue: the part of Optimystic's
+ * `OfflineMode` an app calls. The class's other public methods are the plugin's internals.
+ */
+export type StrandOfflineController = Pick<OfflineMode,
+	'enter' | 'exit' | 'isEntered' | 'whenDrained' | 'onStatus' | 'onQueueState' | 'queueState'
+	| 'entries' | 'status' | 'discard' | 'outcomes' | 'acknowledge'>;
+
+/**
+ * How a connection's sApp schema apply ended (see {@link SereusPluginResult.appSchema}):
+ *
+ *  - `applied` — the schema is in place. `deferred` when queued offline transactions refused the
+ *    first apply and a later one, once they had settled, landed.
+ *  - `failed` — a deferred retry failed for a reason other than the queue; the connection keeps the
+ *    schema it had before.
+ *  - `cancelled` — the connection shut down before a deferred retry landed.
+ */
+export type AppSchemaOutcome =
+	| { state: 'applied'; deferred?: true }
+	| { state: 'failed'; error: unknown }
+	| { state: 'cancelled' };
 
 export interface SereusPluginResult {
 	vtables: [];
@@ -122,6 +158,18 @@ export interface SereusPluginResult {
 	 * `sync()` commits whatever is staged in it, outside any SQL transaction.
 	 */
 	createEmptyCollections: (except?: readonly string[]) => Promise<number>;
+	/** The offline queue's controller. Present only when {@link StrandConnectionOptions.offline} was given. */
+	offline?: StrandOfflineController;
+	/**
+	 * Present when {@link StrandConnectionOptions.schema} was given; never rejects. Resolves
+	 * `{ state: 'applied' }` at once when the apply succeeded at connect. When queued offline
+	 * transactions refused it, the connection comes up on the `App` schema it already had and
+	 * retries each time the queue drains; this settles when a retry lands, fails otherwise, or
+	 * {@link shutdown} runs first.
+	 */
+	appSchema?: Promise<AppSchemaOutcome>;
+	/** The queued transaction ids that refused the connect-time apply. Present only when it was deferred. */
+	appSchemaDeferredBy?: readonly string[];
 	/** Shuts down the libp2p node and collection factory. Call when done. */
 	shutdown: () => Promise<void>;
 }

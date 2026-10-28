@@ -50,7 +50,7 @@ declare schema Strand {
 
         primary key (/* empty - singleton */),
         constraint InsertOnly check on update, delete (false),  -- One-time insert only for now - TODO: revisit for versioning
-    );
+    ) with tags ("optimystic.offline" = 'network');
 
     -- An invitation to join a strand as a member
     table Invite (
@@ -71,7 +71,7 @@ declare schema Strand {
                 -- and must also prove invite private key held by issuing manager
                 and verify(digest(new.Key || '|' || coalesce(new.Expiration, '')), context.InviteSignature, new.Key, 'ed25519')
         )
-    ) with context (ManagerKey text null, ManagerSignature text null, InviteSignature text null);
+    ) with tags ("optimystic.offline" = 'network') with context (ManagerKey text null, ManagerSignature text null, InviteSignature text null);
 
     -- Invite [InviteKey] has been used to add [MemberKey] as a member
     -- No StampId here or on Invite: both tables are insert-only and their primary keys are
@@ -120,7 +120,7 @@ declare schema Strand {
         constraint NotSealed check on insert (
             exists (select 1 from Manager)
         )
-    ) with context (InviteSignature text null, Now datetime null);
+    ) with tags ("optimystic.offline" = 'network') with context (InviteSignature text null, Now datetime null);
 
     -- A manager has cancelled invitation [InviteKey]: it may never be consumed.
     --
@@ -169,7 +169,7 @@ declare schema Strand {
                     and verify(digest('Strand.CancelledInvite', 'cancel', new.InviteKey),
                                context.ManagerSignature, A.MemberKey, 'ed25519'))
         )
-    ) with context (ManagerKey text, ManagerSignature text);
+    ) with tags ("optimystic.offline" = 'network') with context (ManagerKey text, ManagerSignature text);
 
     -- A party in the closed strand network
     table Member (
@@ -286,7 +286,7 @@ declare schema Strand {
                 or (new.Key is null
                     and verify(digest('Strand.Member', 'leave', old.Key, old.StampId), context.MemberSignature, old.Key, 'ed25519'))
         ),
-    ) with context (ManagerKey text null, ManagerSignature text null, MemberSignature text null);
+    ) with tags ("optimystic.offline" = 'network') with context (ManagerKey text null, ManagerSignature text null, MemberSignature text null);
 
     -- A member-associated peer (node)
     --
@@ -350,7 +350,7 @@ declare schema Strand {
                             and verify(digest('Strand.MemberPeer', 'manager-remove', old.MemberKey, old.PeerId, old.StampId), context.ManagerSignature, A.MemberKey, 'ed25519')
                 ))
         ),
-    ) with context (Signature text null, ManagerKey text null, ManagerSignature text null);
+    ) with tags ("optimystic.offline" = 'network') with context (Signature text null, ManagerKey text null, ManagerSignature text null);
 
     -- A manager is a member that can issue invites, authorize members, and rotate managers
     table Manager (
@@ -512,7 +512,7 @@ declare schema Strand {
                             and A.MemberKey <> old.MemberKey
                             and verify(digest('Strand.Manager', 'remove', old.MemberKey, old.StampId), context.Signature, A.MemberKey, 'ed25519')))
         )
-    ) with context (ManagerKey text null, Signature text null);
+    ) with tags ("optimystic.offline" = 'network') with context (ManagerKey text null, Signature text null);
 
     -- Permanent tombstones for retired per-row authorization nonces (StampIds) — the
     -- delete half of the retired-stamp anti-replay idiom on Member / Manager /
@@ -574,5 +574,5 @@ declare schema Strand {
                 where M.Key = context.MemberKey
                     and verify(digest('Strand.Revocation', 'retire', new.TableName, new.StampId), context.Signature, M.Key, 'ed25519'))
         )
-    ) with context (MemberKey text, Signature text);
+    ) with tags ("optimystic.offline" = 'network') with context (MemberKey text, Signature text);
 }

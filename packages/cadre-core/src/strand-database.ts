@@ -268,6 +268,10 @@ export class StrandDatabase {
    */
   async attachAppSchema(sAppConfig: SAppConfig): Promise<void> {
     this.ensureInitialized();
+    // NOTE: unlike the connect-time apply (`applyAppSchemaAfterQueue`), this is not deferred behind
+    // the offline queue: a replica writes no app transactions, so no queued transaction wrote an
+    // `App` table and `QueuedEntriesBlockSchemaChangeError` cannot refuse it. If a replica ever
+    // writes app rows offline, route this through the deferral instead of throwing.
     await applyAppSchema(this.db!, sAppConfig.schema);
     this.config.sAppConfig = sAppConfig;
     log('StrandDatabase for strand %s attached sApp %s v%s', this.config.strandId, sAppConfig.id, sAppConfig.version);

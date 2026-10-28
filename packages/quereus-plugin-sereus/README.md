@@ -274,6 +274,10 @@ on shutdown.
 
 The result's `onCommitDurability(listener)` is called after every commit that wrote something, before the commit returns, with who holds what it wrote; `onCommitFullyHeld(listener)` is called once when a commit reported `followed` below full replication becomes held by its whole cohort. Both pass through from `@optimystic/quereus-plugin-optimystic`, whose README explains the report ([A commit's durability](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#a-commits-durability--pluginoncommitdurabilitylistener)); the `SqlCommitDurability` and `CommitFullyHeld` types are re-exported here. A cadre app reads the same reports through `@serfab/cadre-core` ([strands.md → A commit's durability](../../docs/strands.md#a-commits-durability)).
 
+### Offline mode
+
+With `offline` given, the result's `offline` is the queue's controller (`enter()`, `exit()`, `whenDrained()`, `onStatus(listener)`, `entries()`, …), passed through from `@optimystic/quereus-plugin-optimystic` ([Offline mode](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#offline-mode--pluginoffline)); `offlineControllerOf(db)` finds it from the `Database`, and the status, state and error types are re-exported here. The `Strand` tables are always acknowledged by the network, and an `App` schema apply that queued transactions refuse is retried once they drain rather than failing the connect: the result's `appSchema` settles with how it ended, and `appSchemaDeferredBy` names the transactions that refused it. Both, and where the queue is saved, are in [strands.md → Offline mode](../../docs/strands.md#offline-mode).
+
 ### Founding a strand: `createEmptyCollections()`
 
 A table nobody has written has no collection, so no single machine can show it empty: every read of it asks the other members, and fails while they are offline. The result's `createEmptyCollections(except?)` commits an empty collection for every table the `Strand` and `App` schemas declare that has none yet, and resolves to how many it committed. `except` lists qualified tables (`'Strand.Header'`) the caller is about to write: their inserts create their collections, so every tree of those tables is left out, and a name matching no declared table throws. The founder calls it once, before its founding write, while no other machine can have written to the strand; cadre-core's founder bootstrap does this, leaving out the tables its founding transaction writes ([strands.md → Joining](../../docs/strands.md#joining-no-writes-before-the-first-sync)). Call it only while nothing else writes through the `Database`: it commits whatever is staged in those collections outside any SQL transaction.
@@ -301,6 +305,7 @@ The same step is exported on its own as `createEmptyCollections(db, bridge, sche
 | `coordinatedRepo` | IRepo | — | Required when `libp2pNode` is provided |
 | `transactor` | `'local' \| 'network' \| 'test'` | `'network'` | Storage engine transactions go through. `'network'`: the strand's libp2p cohort, which a lone node coordinates for itself — the only value an application should use. `'local'`: this process's raw storage directly, no peers consulted (in-process tests and tooling). `'test'`: Optimystic's in-memory fake; no libp2p node is created unless one is injected (unit tests) |
 | `storage` | IRawStorage | — | Persistent raw storage. Borrowed — not closed on `shutdown()` |
+| `offline` | `StrandOfflineOptions` | — | Turn on Optimystic's offline queue: the plugin's `offline` block less `journalLabel`, which is derived from the strand id. Programmatic only; no plugin setting carries it. See [Offline mode](#offline-mode) |
 
 ### Plugin settings (plugin-loader / Quoomb)
 

@@ -1,11 +1,14 @@
 import debug from 'debug';
 import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInfo } from '@quereus/quereus';
-import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
-import type { SqlCommitDurabilityListener, CommitFullyHeldListener } from '@optimystic/quereus-plugin-optimystic/plugin';
+import optimysticPlugin, { QueuedEntriesBlockSchemaChangeError, QueueDisposedError } from '@optimystic/quereus-plugin-optimystic/plugin';
+import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { IRawStorage, NodeOptions } from '@optimystic/db-p2p';
-import type { StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo } from './types.js';
+import type { IKVStore, IRawStorage, NodeOptions } from '@optimystic/db-p2p';
+import type {
+	StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo,
+	StrandOfflineOptions, StrandOfflineController, AppSchemaOutcome,
+} from './types.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
 import { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
@@ -16,6 +19,18 @@ const timing = debug('sereus:plugin:strand:timing');
 
 /** The schemas whose tables a strand founder gives a collection: strand membership, then the sApp's. */
 const FOUNDED_SCHEMAS = ['Strand', 'App'] as const;
+
+/** The offline controller of each live strand composition composed with `offline`, by its `Database`. */
+const offlineControllers = new WeakMap<Database, StrandOfflineController>();
+
+/**
+ * The offline controller of the live strand composition over `db`, or `undefined` when it was
+ * composed without `offline`, has shut down, or `db` is no strand composition. For Sereus's own
+ * writers, which are handed a bare `Database` and must see whether its queue holds transactions.
+ */
+export function offlineControllerOf(db: Database): StrandOfflineController | undefined {
+	return offlineControllers.get(db);
+}
 
 /**
  * Minimal interface for the CollectionFactory returned by the optimystic plugin.
@@ -30,17 +45,22 @@ interface CollectionFactory {
 }
 
 /**
- * Release a composition's hold on the optimystic plugin. The transaction bridge goes first: its
- * durability follower subscribes to the node's `StorageRepo`, and cadre-core keeps a strand's node
- * across a database rebuild, so a bridge never disposed stays subscribed once per rebuild. Then the
- * collection factory: a node the composition created is stopped with it; an injected node is left
- * running, because it belongs to the caller — cadre-core keeps a strand's node up across a failed
- * database build and retries the build on it.
+ * Release a composition's hold on the optimystic plugin. The offline queue goes first: its drain
+ * keeps timers and may have a submission in flight, which reports its commit through the bridge's
+ * follower, so the bridge must outlive it (the plugin's own `dispose()` orders them the same way).
+ * A queue `hydrate` restored before a failed composition is stopped here too. Then the transaction
+ * bridge: its durability follower subscribes to the node's `StorageRepo`, and cadre-core keeps a
+ * strand's node across a database rebuild, so a bridge never disposed stays subscribed once per
+ * rebuild. Then the collection factory: a node the composition created is stopped with it; an
+ * injected node is left running, because it belongs to the caller — cadre-core keeps a strand's
+ * node up across a failed database build and retries the build on it.
  *
- * Disposes the bridge itself rather than calling the plugin's `dispose()`, which would release the
- * factory a second time on the created-node path (`shutdown()` ends with the same `dispose()`).
+ * Disposes the queue and bridge itself rather than calling the plugin's `dispose()`, which would
+ * release the factory a second time on the created-node path (`shutdown()` ends with the same
+ * `dispose()`).
  */
 async function releaseOptimysticPlugin(plugin: OptimysticPluginResult, createdNode: Libp2p | null): Promise<void> {
+	await plugin.offline.dispose();
 	// NOTE: the bridge's follower re-subscribes at the start of any transaction, so a write begun on
 	// this `Database` after release (before its owner closes it) subscribes again and nothing
 	// releases it. cadre-core stops its own writers before releasing; if an app write in flight at
@@ -84,6 +104,8 @@ interface OptimysticPluginResult {
 	 * {@link createEmptyCollections}).
 	 */
 	txnBridge: { dispose(): void } & CollectionRegistrySource;
+	/** The offline queue, constructed on every registration; idle until something is queued. */
+	offline: OfflineMode;
 	[key: string]: unknown;
 }
 
@@ -170,6 +192,13 @@ export interface StrandPlatform {
 	 * default to IndexedDB so a reload survives.
 	 */
 	resolveStorage?(ctx: ResolveStorageContext): Promise<IRawStorage | undefined> | IRawStorage | undefined;
+	/**
+	 * The store to journal offline transactions in when `options.offline` names no `journal`.
+	 * Called after {@link resolveStorage}, only when `options.offline` is given. Optional — when
+	 * omitted, or when it answers `undefined`, the queue lives in memory (Node). The browser answers
+	 * a store over the IndexedDB database it defaulted the strand's storage to.
+	 */
+	defaultOfflineJournal?(): IKVStore | undefined;
 	/**
 	 * Create a libp2p node. Called only when no node is injected and the
 	 * transactor needs one. Node creates a TCP node via `@optimystic/db-p2p`;
@@ -264,6 +293,7 @@ export async function composeStrand(
 			networkName,
 			enableCache,
 			storage,
+			offline: options.offline && strandOfflineConfig(strandId, options.offline, platform),
 		});
 	} catch (err) {
 		await releaseStorageCache();
@@ -271,6 +301,13 @@ export async function composeStrand(
 	}
 
 	const { collectionFactory } = pluginResult;
+	const offline: StrandOfflineController | undefined = options.offline && pluginResult.offline;
+	if (offline) {
+		offlineControllers.set(db, offline);
+	}
+	// Aborted by `shutdown`, so a deferred sApp schema apply still waiting settles `cancelled`.
+	const released = new AbortController();
+	let appSchemaApply: AppSchemaApply | undefined;
 
 	let createdNode: Libp2p | null = null;
 	let hydrated: { tables: number; indexes: number } | undefined;
@@ -346,6 +383,13 @@ export async function composeStrand(
 		// nothing here writes membership rows. Founder bootstrap (Header, founding
 		// Manager/Member, invite/peer flows) is owned by the lifecycle ticket
 		// `strand-membership-lifecycle-population`.
+		//
+		// NOTE: unlike step 7, this apply is not deferred behind the offline queue. Every `Strand`
+		// table is tagged `"optimystic.offline" = 'network'`, so the only queued transactions that
+		// write one are network-acknowledged commits waiting behind app transactions, and the only
+		// change this schema has made since is a tag, which the queue does not refuse. If a
+		// later strand schema changes how a table's rows are stored (an index, a column), this apply
+		// can be refused by `QueuedEntriesBlockSchemaChangeError` the same way and needs step 7's path.
 		log('Applying Strand membership schema for strand %s', strandId);
 		await db.exec(`
 			declare schema Strand {
@@ -371,13 +415,17 @@ export async function composeStrand(
 		// differ: once one has run, any later step that fails leaves the schema partially
 		// migrated instead of restored. No schema in this repo evolves that way, so this
 		// is a note for whoever first ships a migration that does.
+		//
+		// The one exception: an apply refused by queued offline transactions does not fail the
+		// connect. The strand comes up on the `App` schema it had, and the apply is retried as the
+		// queue drains (see `applyAppSchemaAfterQueue`).
 		if (schema) {
 			log('Applying sApp schema for strand %s', strandId);
-			await applyAppSchema(db, schema);
-			log('sApp schema applied');
+			appSchemaApply = await applyAppSchemaAfterQueue(db, schema, pluginResult.offline, released.signal);
 		}
 	} catch (err) {
 		// Clean up resources if setup fails after partial initialization.
+		offlineControllers.delete(db);
 		await releaseOptimysticPlugin(pluginResult, createdNode);
 		await releaseStorageCache();
 		throw err;
@@ -395,8 +443,15 @@ export async function composeStrand(
 		onCommitDurability: listener => pluginResult.onCommitDurability(listener),
 		onCommitFullyHeld: listener => pluginResult.onCommitFullyHeld(listener),
 		createEmptyCollections: except => createEmptyCollections(db, pluginResult.txnBridge, FOUNDED_SCHEMAS, except),
+		...(offline && { offline }),
+		...appSchemaApply,
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
+			// NOTE: a deferred sApp schema apply already running is not awaited: it runs on against the
+			// released plugin, Quereus unwinds it when it fails, and `appSchema` settles `cancelled`. If
+			// that ever leaves a catalog write landing after close, await `appSchema` here first.
+			released.abort();
+			offlineControllers.delete(db);
 			await releaseOptimysticPlugin(pluginResult, createdNode);
 			await releaseStorageCache();
 			log('Strand connection %s shut down', strandId);
@@ -431,6 +486,92 @@ export async function applyAppSchema(db: Database, schema: string): Promise<void
 	await db.exec('apply schema App;');
 }
 
+/** What {@link applyAppSchemaAfterQueue} reports, in the shape {@link SereusPluginResult} carries it. */
+export interface AppSchemaApply {
+	appSchema: Promise<AppSchemaOutcome>;
+	appSchemaDeferredBy?: readonly string[];
+}
+
+/**
+ * Step 7 of {@link composeStrand}: {@link applyAppSchema}, except that an apply refused by queued
+ * offline transactions (`QueuedEntriesBlockSchemaChangeError` on the error's `cause` chain) does not
+ * throw. Quereus unwinds the refused apply, so `db` keeps the `App` schema it had; the apply is
+ * retried in the background each time `queue` drains, for as long as the queue is what refuses it,
+ * and `appSchema` settles with how that ended. Any other error from the first apply is thrown.
+ *
+ * Waiting for the queue before returning was rejected: offline, that withholds the strand from the
+ * app right after an app update, which is when offline mode matters. So was refusing the connect:
+ * the queue can drain only while the composition is alive.
+ *
+ * `released` is aborted when the composition shuts down; a retry not yet landed then settles
+ * `cancelled`.
+ */
+export async function applyAppSchemaAfterQueue(
+	db: Database,
+	schema: string,
+	queue: Pick<StrandOfflineController, 'whenDrained'>,
+	released: AbortSignal,
+): Promise<AppSchemaApply> {
+	try {
+		await applyAppSchema(db, schema);
+		log('sApp schema applied');
+		return { appSchema: Promise.resolve({ state: 'applied' }) };
+	} catch (err) {
+		const refusal = queueRefusalIn(err);
+		if (!refusal) {
+			throw err;
+		}
+		log('sApp schema apply refused by queued transactions %o; retrying once they settle', refusal.transactionIds);
+		return {
+			appSchema: retryAppSchemaAfterDrain(db, schema, queue, released),
+			appSchemaDeferredBy: refusal.transactionIds,
+		};
+	}
+}
+
+async function retryAppSchemaAfterDrain(
+	db: Database,
+	schema: string,
+	queue: Pick<StrandOfflineController, 'whenDrained'>,
+	released: AbortSignal,
+): Promise<AppSchemaOutcome> {
+	// NOTE: this loops without a pause when `whenDrained` resolves at once while the refusal stands
+	// (a segment left sealed with nothing queued, say). Upstream counts a removal still in progress
+	// as undrained, so no such state is known; if one shows up as a busy loop, back off between tries.
+	for (;;) {
+		try {
+			await queue.whenDrained();
+			if (released.aborted) {
+				return { state: 'cancelled' };
+			}
+			await applyAppSchema(db, schema);
+			log('Deferred sApp schema applied');
+			return { state: 'applied', deferred: true };
+		} catch (err) {
+			if (released.aborted || err instanceof QueueDisposedError) {
+				log('Deferred sApp schema apply cancelled by shutdown');
+				return { state: 'cancelled' };
+			}
+			const refusal = queueRefusalIn(err);
+			if (!refusal) {
+				log('Deferred sApp schema apply failed: %O', err);
+				return { state: 'failed', error: err };
+			}
+			log('sApp schema apply refused again by queued transactions %o', refusal.transactionIds);
+		}
+	}
+}
+
+/** The offline queue's refusal `err` is or wraps: Quereus rewraps it out of `apply schema`, keeping it as `cause`. */
+function queueRefusalIn(err: unknown): QueuedEntriesBlockSchemaChangeError | undefined {
+	for (let at = err; at instanceof Error; at = at.cause) {
+		if (at instanceof QueuedEntriesBlockSchemaChangeError) {
+			return at;
+		}
+	}
+	return undefined;
+}
+
 function declaredAppItems(db: Database) {
 	return db.declaredSchemaManager.getDeclaredSchema('App')?.items ?? [];
 }
@@ -452,6 +593,26 @@ function assertNoSeedItems(db: Database): void {
 }
 
 /**
+ * The Optimystic plugin's `offline` block for this strand: the caller's options, the platform's
+ * journal when the caller named none, and the journal label, which the plugin refuses without one.
+ */
+function strandOfflineConfig(strandId: string, offline: StrandOfflineOptions, platform: StrandPlatform): OfflineConfig {
+	const journal = offline.journal ?? platform.defaultOfflineJournal?.();
+	return journal === undefined
+		? { ...offline }
+		: { ...offline, journal, journalLabel: strandJournalLabel(strandId) };
+}
+
+/**
+ * The offline journal label for a strand. A label is `[a-z0-9_-]` and a strand id `[a-z0-9._-]`, so
+ * `_` becomes `__` and `.` becomes `_d`: no two strand ids share a label, and two strands journaling
+ * into one store keep their records apart.
+ */
+function strandJournalLabel(strandId: string): string {
+	return `strand-${strandId.replaceAll('_', '__').replaceAll('.', '_d')}`;
+}
+
+/**
  * Steps 1-2 of {@link composeStrand}: register the crypto plugin, then the optimystic
  * plugin carrying this strand's transactor defaults. Split out so the composition can
  * guard the pair against the storage-cache claim it has already taken.
@@ -464,6 +625,7 @@ async function registerStrandPlugins(
 		networkName: string;
 		enableCache: boolean;
 		storage: IRawStorage | undefined;
+		offline: OfflineConfig | undefined;
 	},
 ): Promise<OptimysticPluginResult> {
 	await platform.registerCrypto(db);
@@ -481,9 +643,16 @@ async function registerStrandPlugins(
 		const storage = strand.storage;
 		pluginConfig.rawStorageFactory = () => storage;
 	}
+	// NOTE: `networkCommitTimeoutMs` is left at upstream's default (five minutes); nothing was
+	// measured to choose another. A network-acknowledged commit made while transactions are queued
+	// (any `Strand` write, all of them tagged 'network') waits that long behind them holding
+	// Quereus's execution lock. If that ever shows up as a frozen app, lower it for strands here.
+	if (strand.offline) {
+		pluginConfig.offline = strand.offline;
+	}
 	// The plugin's published signature is `Record<string, SqlValue>` but it also reads
-	// `rawStorageFactory` (a function reference) from the same map. Cast through unknown
-	// rather than widen the public type.
+	// `rawStorageFactory` (a function reference) and `offline` (an object) from the same
+	// map. Cast through unknown rather than widen the public type.
 	const pluginResult = optimysticPlugin(
 		db,
 		pluginConfig as unknown as Parameters<typeof optimysticPlugin>[1],
