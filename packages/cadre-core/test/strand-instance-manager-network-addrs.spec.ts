@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => {
   // reports the row held, so every launch here is a machine that has synced before.
   const headerHeldDb = { eval: async function* () { yield { Count: 1 }; }, schemaManager: { getSchema: () => undefined } };
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
-    return { initialize: vi.fn(async () => {}), close: vi.fn(async () => {}), getDatabase: () => headerHeldDb };
+    return { initialize: vi.fn(async () => {}), close: vi.fn(async () => {}), getDatabase: () => headerHeldDb, reportPublished: () => {} };
   });
   // The per-relay reservation supervisor is wiring the manager does over the node it
   // built; `strand-instance-manager-relay.spec.ts` pins that wiring. Here it only has

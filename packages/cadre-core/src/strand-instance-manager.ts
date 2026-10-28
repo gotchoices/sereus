@@ -2,8 +2,9 @@ import debug from 'debug';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
-import { StrandDatabase } from './strand-database.js';
+import { StrandDatabase, type StrandDatabaseOffline } from './strand-database.js';
 import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
+import type { StrandOfflineConfig, StrandOfflineListeners, StrandOfflineMode } from './strand-offline.js';
 import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import { strandNetworkStatePersistence, type StrandNetworkStateStore } from './strand-network-state.js';
 import {
@@ -305,6 +306,14 @@ export interface StartStrandConfig {
   onCommitHeld?: (event: StrandCommitHeld) => void;
 
   /**
+   * Offline mode for this strand (docs/strands.md → "Offline mode"), forwarded from
+   * `CadreNodeConfig.strandOffline`, with where each database built for the launch reports its
+   * queue and its app-schema apply (`CadreNode` emits them as events). Absent: no database gets an
+   * offline queue. The mode itself is the manager's, per strand ({@link StrandInstanceManager.setOfflineMode}).
+   */
+  offline?: StrandOfflineConfig & StrandOfflineListeners;
+
+  /**
    * Re-announce this strand's delegate peer id (`delegatePeerId` — the strand
    * node's own transport peer id) to ONE relay (`relayAddr`, a direct dial addr
    * with a trailing `/p2p/<relayPeerId>`), unthrottled. Awaited before every
@@ -561,6 +570,12 @@ export class StrandInstanceManager {
    * {@link releaseRuntime}, so a stop or a quiesce cancels it.
    */
   private unreachableJoinRetries: Map<string, unknown> = new Map();
+  /**
+   * The offline mode set per strand id ({@link setOfflineMode}); a strand absent here runs in its
+   * launch's `initialMode`. Never cleared: the mode belongs to the strand, not to one database, so
+   * it outlives hibernation, every rebuild and a stop, for as long as the process runs.
+   */
+  private offlineModes: Map<string, StrandOfflineMode> = new Map();
   private stopping = false;
 
   constructor() {
@@ -1127,7 +1142,8 @@ export class StrandInstanceManager {
       // reconciler that would otherwise write it is disarmed (see buildStrandRuntime).
       bindFounderPeer: config.membershipReconciliation?.enabled !== false,
       onCommitDurability: config.onCommitDurability,
-      onCommitHeld: config.onCommitHeld
+      onCommitHeld: config.onCommitHeld,
+      offline: this.offlineDatabaseConfig(strandId, config.offline)
     });
     const storageRepo = node.storageRepo;
     const gate = new StrandFirstSyncGate({
@@ -1199,6 +1215,23 @@ export class StrandInstanceManager {
       gate.start();
     }
     return 'built';
+  }
+
+  /**
+   * One build's {@link StrandDatabaseOffline}: the strand's journal, which the database resolves as
+   * it initializes (a throw or rejection fails the build), and the strand's mode, which it reads each
+   * time it applies it.
+   */
+  private offlineDatabaseConfig(strandId: string, offline: StartStrandConfig['offline']): StrandDatabaseOffline | undefined {
+    if (!offline) {
+      return undefined;
+    }
+    const { journal, initialMode: _initialMode, ...listeners } = offline;
+    return {
+      ...listeners,
+      journal: () => journal(strandId),
+      mode: () => this.currentOfflineMode(strandId, offline)
+    };
   }
 
   /**
@@ -1966,11 +1999,47 @@ export class StrandInstanceManager {
     if (wasGated) {
       this.launchConfigs.get(strandId)?.onWritable?.(strandId);
     }
+    database.reportPublished();
     // Neither throws nor awaits: publishing must stay synchronous. `start()` is a no-op on an
     // enforcer already started or stopped, and the reconciler pass chains on the loop's own
     // tail, so it cannot overlap a pass already in flight.
     this.revocationEnforcers.get(strandId)?.start();
     void this.membershipReconcilers.get(strandId)?.reconcile();
+  }
+
+  /**
+   * A tracked strand's offline mode: the one last set ({@link setOfflineMode}), else its launch's
+   * `initialMode`, else `'online'`.
+   *
+   * @throws when the strand is not tracked.
+   */
+  offlineMode(strandId: string): StrandOfflineMode {
+    const config = this.launchConfigs.get(strandId);
+    if (!config) {
+      throw new Error(`Cannot read the offline mode of strand ${strandId}: not tracked`);
+    }
+    return this.currentOfflineMode(strandId, config.offline);
+  }
+
+  private currentOfflineMode(strandId: string, offline: StrandOfflineConfig | undefined): StrandOfflineMode {
+    return this.offlineModes.get(strandId) ?? offline?.initialMode ?? 'online';
+  }
+
+  /**
+   * Set a tracked strand's offline mode, for the rest of the process (see {@link offlineModes}).
+   * A live database takes it now, published or still behind the first-sync gate, for transactions
+   * begun from then on; a build in progress reads it when it applies the mode, and a hibernating
+   * strand gets it at its next build.
+   *
+   * @throws when the strand is not tracked.
+   */
+  setOfflineMode(strandId: string, mode: StrandOfflineMode): void {
+    const instance = this.instances.get(strandId);
+    if (!instance) {
+      throw new Error(`Cannot set the offline mode of strand ${strandId}: not tracked`);
+    }
+    this.offlineModes.set(strandId, mode);
+    (instance.database ?? this.firstSyncGates.get(strandId)?.database)?.applyOfflineMode();
   }
 
   /** Reject every {@link whenWritable} waiter for a strand that is going away. */

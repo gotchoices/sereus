@@ -52,6 +52,7 @@ const mocks = vi.hoisted(() => {
       initialize: vi.fn(async () => {}),
       close: vi.fn(async () => {}),
       getDatabase: vi.fn(() => fakeDb),
+      reportPublished: () => {},
     };
   });
   const reconcilerStart = vi.fn();

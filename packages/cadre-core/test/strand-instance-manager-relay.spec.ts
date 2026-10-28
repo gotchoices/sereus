@@ -42,7 +42,8 @@ const mocks = vi.hoisted(() => {
         }
       }),
       close: vi.fn(async () => { sequence.push('database.close'); }),
-      getDatabase: () => headerHeldDb
+      getDatabase: () => headerHeldDb,
+      reportPublished: () => {}
     };
   });
   interface FakeSupervisor {

@@ -264,6 +264,8 @@ How an app reads it:
 - **`strand:commit-durability` carries the same record as each commit happens**, synchronously inside the commit, so a handler must be short. It covers every commit on the strand database, cadre-core's own membership writes included, so an app filters by the ids it holds. A handler that throws is logged; the commit is unaffected.
 - **`commitDurability(Tx)` returns `undefined`** for a commit that wrote nothing (an `insert or ignore` that ignored, an update that matched no rows), one made before this database was built, and one more than 256 commits back. An app treats it as "nothing new to mark".
 
+  *In offline mode* it is also `undefined` for a transaction still queued ([Offline mode](#offline-mode)), which is not "nothing to mark": the transaction has not reached anyone yet. An app reads `strand.database.offline.status(Tx)` first. When the queue sends the transaction and it commits, the plugin's durability report arrives during no statement of the app's, the record takes it, and `strand:commit-durability` and later `strand:commit-held` fire as for an online commit.
+
 Limits:
 
 - **Followed commits are held in memory.** Closing the database, hibernation and a restart forget them, and `strand:commit-held` never fires for a forgotten commit, though its rows still reach the others when this machine next connects. Asking afterwards whether an earlier commit is held is Optimystic backlog `feat-a-host-can-ask-whether-an-earlier-commit-is-fully-held`.
@@ -311,6 +313,49 @@ Waiting for the queue to drain before the connect returns was rejected: offline,
 
 `StrandDatabase.attachAppSchema` (an app claiming a storage replica) is not deferred: a replica writes no app transactions, so nothing queued can have written an `App` table.
 
+### On a cadre node
+
+`CadreNodeConfig.strandOffline` (`packages/cadre-core/src/strand-offline.ts`) offers the mode on a node's strands: `{ journal: (scope) => IKVStore | Promise<IKVStore>, initialMode?: 'online' | 'offline' }`.
+
+- **A journal is required.** cadre-core never builds a memory-only queue, because an acknowledgement that a process exit loses breaks the promise a local commit makes. `journal` is called once per database build with the strand id (its storage scope key); a throw or rejection fails the build, as a storage provider's does.
+- **Absent, nothing changes.** No strand database gets a queue, `StrandDatabase.offline` is `undefined`, and `setStrandOfflineMode` throws `StrandOfflineUnavailableError`. The always-on programs (cadre-host, cadre-provider, cadre-cli) configure none, because an always-on node gains nothing from a local acknowledgement.
+- **Strand databases only.** The control database (`control-database.ts`) registers Optimystic without `offline`. Its writes are owner-signed membership and authorization facts, and the retry and veto rules of `control-write-retry.ts` assume a network answer.
+
+#### The mode belongs to the strand
+
+A strand's `Database` is closed and rebuilt on hibernation, wake and every other runtime rebuild, and Optimystic's mode lives on one database's plugin. So `StrandInstanceManager` keeps the mode per strand id, and each build applies it at the end of `StrandDatabase.initialize`: after `connectToStrand` returns (its `hydrate` has restored the queue) and after the founder bootstrap (whose `Strand` writes are network-acknowledged in either mode), before the first-sync probe and publication. The build reads the mode at that moment, so a mode set while it runs wins.
+
+- **`CadreNode.setStrandOfflineMode(strandId, mode)`** records the mode, and applies it at once to a live database, published or still behind the first-sync gate. Optimystic fixes a transaction's acknowledgement when the transaction begins, so one already open keeps its own. A hibernating strand takes the mode at its next build. A strand this node does not run throws.
+- **`CadreNode.getStrandOfflineMode(strandId)`** reads it: the mode last set, else `initialMode`, else `'online'`.
+- **The mode lasts as long as the process.** After a restart every strand starts in `initialMode` again; an app that wants something else sets it again at startup.
+
+#### What the app reads
+
+- **`strand.database.offline`** (`StrandOfflineQueue`) is the connection's controller less the mode switch: `queueState`, `entries`, `status`, `outcomes`, `acknowledge`, `discard`, `whenDrained`, `onStatus`, `onQueueState`. Listeners taken on it die with the database, as `watchTables` subscriptions do.
+- **`CadreNode` events survive rebuilds.** `strand:offline-status` (`{ strandId, status }`) carries every status the queue delivers. `strand:queue-state` (`{ strandId, state }`) carries every change of the queue's state or mode, plus one at each publication with the current `queueState()`.
+- **Restored transactions are announced only by that publication event.** Their `queued` statuses are delivered during `hydrate`, before cadre-core subscribes, so an app reads `offline.entries()` when the publication's `strand:queue-state` arrives.
+- **Nothing arrives from a closing connection.** `StrandDatabase.close` unsubscribes the queue's listeners first, as it does the commit listeners.
+
+#### First sync in offline mode
+
+The first-sync gate ([Joining: no writes before the first sync](#joining-no-writes-before-the-first-sync)) is unchanged; applying the mode before its probe is what lets it pass offline. In offline mode a read the cohort cannot answer is served from this machine's copy, so a machine that holds every collection passes the probe with its peers unreachable, and one that never held a table still fails it (`BlockUnavailableError`). A restored non-empty queue does not skip the gate: its transactions may cover only some tables, and the gate's rule is what the local store holds.
+
+#### Sending is activity
+
+Each `submitting`, `committed`, `partially-committed` or `failed` status counts as activity on the strand (`HibernationManager.recordActivity`, not `CadreNode.recordStrandActivity`, whose push fan-out would wake other phones). So a check-in window that finds the cohort reachable stays up while the queue drains, and the idle timer does not cut a drain short.
+
+- **Waiting is not activity.** A queue waiting for its cohort (`queued`) records nothing, or an offline phone would never hibernate.
+- **Not while quiescing.** Activity on a strand being quiesced wakes it again once the quiesce ends, which would undo a `hibernateAll` made as the app went to the background.
+- **A hibernation that closes the database mid-send is safe.** The send was journaled before it went out, and the next build's restore re-sends it under the same action id (the Optimystic plugin README, "Restarting").
+
+#### The app schema while the queue holds it back
+
+When a build's `App` apply waits for the queue ([above](#an-app-schema-upgrade-waits-for-the-queue)), `StrandInstance.sAppInfo` names the new version while the database still runs the earlier schema. `StrandDatabase.appSchemaState()` says which: `'applied'`, `'waiting-for-queue'` or `'failed'`. An app checks it before relying on new tables or columns.
+
+- **`strand:app-schema-deferred`** (`{ strandId, transactionIds }`) is emitted at publication, and **`strand:app-schema-applied`** (`{ strandId }`) when the retry lands. A retry that fails for another reason is emitted as `strand:error` and leaves `'failed'`; a cancelled one emits nothing.
+- **The events begin at publication.** A retry that lands while the database is still behind the first-sync gate is not announced, since the app never saw the earlier schema; one that fails then is announced at publication.
+- **`'waiting-for-queue'` can outlast the drain.** The retry also waits while any caller holds a transaction open on the database, for as long as that transaction stays open.
+
 ## Same-Named Tables in `Strand` and `App`
 
 Every strand database holds two engine schemas: `Strand`, the built-in membership tables ([`schemas/strand.qsql`](../schemas/strand.qsql), embedded at runtime as `STRAND_SCHEMA`), and `App`, the sApp's own tables. An sApp may name a table like a `Strand` table (`Member`, `Header`, `Invite`, …): the two are stored separately. Optimystic stores a table declared without an explicit `using optimystic('<uri>')` at `tree://default/<schema>/<Table>` and files its catalog record under its schema and name together, so `Strand.Member` lives at `tree://default/strand/Member` and `App.Member` at `tree://default/app/Member`. Each keeps its own rows and columns, including across a warm restart (pinned by "an sApp table named like a strand table" in `packages/quereus-plugin-sereus/test/plugin.spec.ts`).
@@ -322,6 +367,8 @@ Apps address their own tables as `App.<Table>`. Quereus's `schema_path` defaults
 ## Change notifications (reactivity)
 
 By default a strand table's `Database.watch` subscribers wake only on commits this machine's own storage applies. A phone that stores none of a table's blocks is never woken by another machine's commit and has to poll. Optimystic's change notifications close that gap: a strand node built with them announces (originates a signed notification for) every commit whose collection log tail it applied, and a watched table on any machine with them hears those announcements.
+
+*In offline mode* ([Offline mode](#offline-mode)) a watch (`StrandDatabase.watchTables` included) also fires on a queued commit, which is a local commit, and on a refused transaction's removal from this machine's view, which Optimystic announces with `Database.notifyExternalChange`. What follows about other machines' commits is unchanged.
 
 Two things have to be true for a table to be woken this way:
 

@@ -213,8 +213,22 @@ export {
 } from './storage-scope.js';
 
 // Strand database
-export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';
+export { StrandDatabase, type StrandDatabaseConfig, type StrandDatabaseOffline } from './strand-database.js';
 export type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
+
+// Offline mode on strands (`CadreNodeConfig.strandOffline`, `CadreNode.setStrandOfflineMode`,
+// `StrandDatabase.offline`): a commit resolves once the transaction is queued on this machine.
+export {
+  StrandOfflineUnavailableError,
+  type StrandOfflineConfig,
+  type StrandOfflineMode,
+  type StrandOfflineQueue,
+  type StrandOfflineListeners,
+  type StrandOfflineStatus,
+  type StrandQueueState,
+  type StrandAppSchemaState,
+  type StrandAppSchemaDeferred
+} from './strand-offline.js';
 
 // Strand management
 export {

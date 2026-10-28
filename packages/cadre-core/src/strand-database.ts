@@ -1,9 +1,10 @@
 import debug from 'debug';
 import { Database } from '@quereus/quereus';
 import { applyAppSchema, connectToStrand } from '@serfab/quereus-plugin-sereus';
-import type { SereusPluginResult } from '@serfab/quereus-plugin-sereus';
+import type { SereusPluginResult, StrandOfflineController } from '@serfab/quereus-plugin-sereus';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
+import type { IKVStore } from '@optimystic/db-p2p';
 import type { SAppConfig } from './types.js';
 import { bootstrapFounderMembership } from './strand-membership-writer.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
@@ -11,6 +12,8 @@ import { StrandCommitRecord } from './strand-commit-durability.js';
 import type { StrandCommitDurability, StrandCommitListeners } from './strand-commit-durability.js';
 import { TableWatchRegistry } from './table-change-watch.js';
 import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
+import { StrandOfflineReport } from './strand-offline.js';
+import type { StrandAppSchemaState, StrandOfflineListeners, StrandOfflineMode, StrandOfflineQueue } from './strand-offline.js';
 
 const log = debug('sereus:cadre:strand-db');
 const timing = debug('sereus:cadre:timing');
@@ -64,6 +67,25 @@ export interface StrandDatabaseConfig extends StrandCommitListeners {
    * fixture that hand-drives the membership writers sees only the rows it wrote. Defaults to false.
    */
   bindFounderPeer?: boolean;
+  /**
+   * Turn on the connection's offline queue (docs/strands.md → "Offline mode"). Absent: no queue,
+   * and {@link StrandDatabase.offline} is undefined.
+   */
+  offline?: StrandDatabaseOffline;
+}
+
+/** {@link StrandDatabaseConfig.offline}: one build's journal, the strand's mode, and where to report. */
+export interface StrandDatabaseOffline extends StrandOfflineListeners {
+  /**
+   * This build's journal, resolved by {@link StrandDatabase.initialize}, so a launch released while
+   * it resolves is caught like one released during the rest of the build. A throw fails initialize.
+   */
+  journal: () => IKVStore | Promise<IKVStore>;
+  /**
+   * The strand's mode, read at the end of {@link StrandDatabase.initialize} and at every
+   * {@link StrandDatabase.applyOfflineMode}, never captured, so the newest choice wins.
+   */
+  mode: () => StrandOfflineMode;
 }
 
 /**
@@ -91,6 +113,8 @@ export class StrandDatabase {
   private initialized = false;
   private readonly commits: StrandCommitRecord;
   private unsubscribeCommits: (() => void) | null = null;
+  private offlineQueue: StrandOfflineController | null = null;
+  private offlineReport: StrandOfflineReport | null = null;
   /** Subscriptions handed out by {@link watchTables}. */
   private readonly tableWatches = new TableWatchRegistry();
 
@@ -120,6 +144,7 @@ export class StrandDatabase {
     log('Initializing StrandDatabase for strand: %s (%s)', sid,
       sAppConfig ? `sApp: ${sAppConfig.id} v${sAppConfig.version}` : 'storage replica');
 
+    const offline = this.config.offline && { journal: await this.config.offline.journal() };
     this.db = new Database();
 
     // Delegate to the shared composition. The node is injected, so:
@@ -141,12 +166,14 @@ export class StrandDatabase {
       libp2pNode: this.config.libp2pNode,
       coordinatedRepo: this.config.coordinatedRepo,
       enableCache: true,
+      offline,
     });
     this.shutdownStrand = result.shutdown;
     this.resolvedTransactor = result.transactor;
     this.createEmptyCollections = result.createEmptyCollections;
     // Before the founder bootstrap, so its commits are reported like any other.
     this.subscribeToCommits(result);
+    this.followOffline(result);
     timing('[strandDb:%s] connectToStrand: %dms (hydrated tables=%d, indexes=%d)',
       sid, Math.round(performance.now() - t0),
       result.hydrated?.tables ?? 0, result.hydrated?.indexes ?? 0);
@@ -159,6 +186,10 @@ export class StrandDatabase {
       await this.bootstrapFounder();
     }
 
+    // After `hydrate` restored the queue and after the founder bootstrap (its `Strand` writes are
+    // network-acknowledged in either mode); before the first-sync probe, so in offline mode a read
+    // the cohort cannot answer is served from this machine's copy there as it is to the app.
+    this.applyOfflineMode();
     this.initialized = true;
     log('StrandDatabase for strand %s initialized successfully', sid);
   }
@@ -170,6 +201,41 @@ export class StrandDatabase {
       unsubscribeDurability();
       unsubscribeHeld();
     };
+  }
+
+  private followOffline(result: SereusPluginResult): void {
+    const { offline } = this.config;
+    if (!offline) {
+      return;
+    }
+    this.offlineQueue = result.offline ?? null;
+    this.offlineReport = new StrandOfflineReport(this.config.strandId, offline, result);
+  }
+
+  /**
+   * Put the queue in the strand's current mode ({@link StrandDatabaseOffline.mode}). It sets the
+   * acknowledgement of transactions begun from now on; an open one keeps the one it began with.
+   * No-op without a queue, and before {@link initialize} has composed one (it applies the mode itself).
+   */
+  applyOfflineMode(): void {
+    const queue = this.offlineQueue;
+    if (!queue || !this.config.offline) {
+      return;
+    }
+    if (this.config.offline.mode() === 'offline') {
+      queue.enter();
+    } else {
+      queue.exit();
+    }
+  }
+
+  /**
+   * The database was handed to the app (`StrandInstanceManager.publishDatabase`): report the
+   * queue's state, since restored transactions' `queued` statuses were delivered before anything
+   * subscribed, and an `App` schema apply still waiting for the queue.
+   */
+  reportPublished(): void {
+    this.offlineReport?.published();
   }
 
   /**
@@ -311,6 +377,26 @@ export class StrandDatabase {
   }
 
   /**
+   * The strand connection's offline queue (docs/strands.md → "Offline mode"), or `undefined` on a
+   * node without `strandOffline`. The mode is set through `CadreNode.setStrandOfflineMode`, which
+   * outlives this database; listeners taken here die with it, as {@link watchTables} subscriptions do.
+   */
+  get offline(): StrandOfflineQueue | undefined {
+    this.ensureInitialized();
+    return this.offlineQueue ?? undefined;
+  }
+
+  /**
+   * Whether this database runs the `App` schema its launch was given. `'waiting-for-queue'` while
+   * queued transactions hold the apply back, so `StrandInstance.sAppInfo` names a version whose new
+   * tables or columns are not here yet; check this before relying on them.
+   */
+  appSchemaState(): StrandAppSchemaState {
+    this.ensureInitialized();
+    return this.offlineReport?.appSchemaState() ?? 'applied';
+  }
+
+  /**
    * The Optimystic transactor this strand's connection resolved to — always
    * `'network'` here, since cadre-core passes no `transactor` option and takes
    * the plugin's default. Exposed so a spec measuring or asserting the network
@@ -332,6 +418,9 @@ export class StrandDatabase {
     // First, so an event from the closing connection reaches no app handler or table watch.
     this.unsubscribeCommits?.();
     this.unsubscribeCommits = null;
+    this.offlineReport?.release();
+    this.offlineReport = null;
+    this.offlineQueue = null;
     this.tableWatches.disposeAll();
     if (this.shutdownStrand) {
       await this.shutdownStrand();

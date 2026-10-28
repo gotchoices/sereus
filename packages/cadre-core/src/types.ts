@@ -9,6 +9,7 @@ import type { StrandMembershipReconciliationConfig } from './strand-membership-r
 import type { StrandFirstSyncConfig } from './strand-first-sync-gate.js';
 import type { StrandDatabase } from './strand-database.js';
 import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
+import type { StrandAppSchemaDeferred, StrandOfflineConfig, StrandOfflineStatus, StrandQueueState } from './strand-offline.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
@@ -961,6 +962,16 @@ export interface CadreNodeConfig {
    */
   strandFirstSync?: StrandFirstSyncConfig;
 
+  /**
+   * Offline mode on this node's strands (docs/strands.md → "Offline mode"): with it, an app can
+   * switch a strand so that a commit resolves once the transaction is queued on this machine
+   * (`CadreNode.setStrandOfflineMode`), and the queue is saved in `journal` so it survives a
+   * restart. Absent: no strand gets a queue, and `setStrandOfflineMode` throws
+   * `StrandOfflineUnavailableError`. The control database never gets one. The always-on programs
+   * configure none: a node that is always connected gains nothing from a local acknowledgement.
+   */
+  strandOffline?: StrandOfflineConfig;
+
   /** Hibernation configuration */
   hibernation?: HibernationConfig;
 
@@ -1760,6 +1771,29 @@ export interface CadreNodeEvents {
    * because its database closed, hibernated or the node restarted.
    */
   'strand:commit-held': StrandCommitHeld;
+  /**
+   * Emitted for every status of a transaction queued in a strand's offline queue (`queued`,
+   * `submitting`, `committed`, …), by the `StampId()` its statement returned. Survives hibernation
+   * and every rebuild, unlike a listener on `StrandDatabase.offline`. A restored transaction's
+   * `queued` status after a restart is not emitted: it was delivered before anything subscribed, so
+   * read `offline.entries()` on the `strand:queue-state` that publication emits. A drained commit
+   * also emits `strand:commit-durability` as an online one does. See docs/strands.md, "Offline mode".
+   */
+  'strand:offline-status': StrandOfflineStatus;
+  /**
+   * Emitted whenever a strand's offline queue or mode changes, and once each time the strand's
+   * database is published with the queue's state at that moment.
+   */
+  'strand:queue-state': StrandQueueState;
+  /**
+   * Emitted when a strand's database is published while queued offline transactions hold its `App`
+   * schema apply back: the database runs the earlier schema although `StrandInstance.sAppInfo` names
+   * the new version, and `StrandDatabase.appSchemaState()` reads `'waiting-for-queue'`. A retry that
+   * fails for another reason is emitted as `strand:error`; a cancelled one emits nothing.
+   */
+  'strand:app-schema-deferred': StrandAppSchemaDeferred;
+  /** Emitted when an `App` schema apply that `strand:app-schema-deferred` reported lands. */
+  'strand:app-schema-applied': { strandId: string };
   /**
    * Emitted when this node discovers it is no longer a member of a CLOSED
    * strand — its party was removed by a manager, or it left. Detected by the

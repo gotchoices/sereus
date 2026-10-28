@@ -1387,6 +1387,8 @@ flowchart LR
 
 An operator can build chosen strand nodes with Optimystic's change notifications, so a watched table on another machine is woken by a commit instead of polling; see [strands.md → Change notifications (reactivity)](strands.md#change-notifications-reactivity).
 
+An app can switch a strand into offline mode, where a commit resolves once the transaction is queued on this machine. `CadreNodeConfig.strandOffline` supplies the queue's journal; `CadreNode.setStrandOfflineMode` and `getStrandOfflineMode` set and read the mode per strand, which outlives every rebuild; `StrandDatabase.offline` and `appSchemaState()` expose the queue and the `App` schema it may be holding back; and the events `strand:offline-status`, `strand:queue-state`, `strand:app-schema-deferred` and `strand:app-schema-applied` follow them across rebuilds. See [strands.md → On a cadre node](strands.md#on-a-cadre-node).
+
 ### One Transactor Per Strand
 
 Every strand runs on the network transactor — there is no per-strand mode. A device alone is a situation the *storage engine* handles, not the application layer: at a cohort of one, Optimystic resolves the node as its own coordinator, so schema apply, DML, and the founder membership bootstrap all commit with no peer round trips. The coordinator still consults the block's cohort, but on a cohort of one that consult is a local lookup; how many it issues while a solo party is founded is pinned by `control-founding-consult-budget.spec.ts`. The solo evidence is committed: `strand-solo-write-budget.spec.ts` pins two-sided storage-operation budgets for a solo launch/insert/select (a solo insert cost 1.005× what the retired local transactor did — +2 operations over 5 inserts, measured 2026-08-13 before the write-through raw-storage cache; the budgets were re-baselined far lower on 2026-08-17 when Sereus wired that cache, see `cached-storage.ts` in `@serfab/quereus-plugin-sereus`), `strand-transactor-handover.spec.ts` proves blocks written by the old local transactor stay readable and extensible on the network transactor across a restart, and `strand-membership-network-transactor-parity.spec.ts` proves the deferred membership CHECK constraints bite identically. The control database has always worked this way; strands now match it.
@@ -1733,6 +1735,8 @@ stateDiagram-v2
 ```
 
 A joiner that never reaches another member follows the same idle → hibernating path from `syncing` (nothing records activity on it), and each check-in resume re-probes for the Header over the same store.
+
+A strand's offline queue sending a transaction counts as activity; a queue waiting for its cohort does not ([strands.md → Sending is activity](strands.md#sending-is-activity)).
 
 **Idle vs. Hibernating Behavior:**
 - `idle` is currently a lightweight status flag: the strand keeps its libp2p node and `StrandDatabase` fully running. Trimming connections while idle ("minimal connections") is a planned refinement, not yet implemented.

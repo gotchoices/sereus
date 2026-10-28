@@ -42,7 +42,7 @@ const mocks = vi.hoisted(() => {
   const headerHeldDb = { eval: async function* () { yield { Count: 1 }; }, schemaManager: { getSchema: () => undefined } };
   // Use a non-arrow implementation so `new StrandDatabase(...)` is constructable.
   const StrandDatabase = vi.fn(function StrandDatabaseMock() {
-    return { initialize, close, getDatabase: () => headerHeldDb };
+    return { initialize, close, getDatabase: () => headerHeldDb, reportPublished: () => {} };
   });
   return { stop, close, initialize, createLibp2pNode, StrandDatabase };
 });

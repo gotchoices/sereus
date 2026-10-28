@@ -70,6 +70,7 @@ import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WIND
 import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
+import { isSendingStatus, StrandOfflineUnavailableError, type StrandOfflineMode, type StrandOfflineStatus } from './strand-offline.js';
 import {
   assertScopeKeyCharset,
   assertStrandScopeKey,
@@ -5871,6 +5872,24 @@ export class CadreNode implements SAppIdLookup {
     this.emit('strand:writable', { strandId });
   }
 
+  /**
+   * A status from a strand's offline queue (`StartStrandConfig.offline`). The queue sending counts
+   * as activity ({@link isSendingStatus}), so a check-in window that finds the cohort reachable stays
+   * up while the queue drains, and the idle timer does not cut a drain short. Recorded through the
+   * hibernation manager, not {@link recordStrandActivity}, whose push fan-out would wake other phones.
+   *
+   * Not on a strand being quiesced: activity there wakes it again once the quiesce ends, which would
+   * undo a `hibernateAll` made as the app went to the background. A send that quiesce cuts short was
+   * journaled before it went out, and the next build's restore re-sends it under the same action id.
+   */
+  private handleOfflineStatus(event: StrandOfflineStatus): void {
+    const instance = this.strandManager.getInstance(event.strandId);
+    if (instance && isSendingStatus(event.status) && !this.strandManager.isQuiescing(event.strandId)) {
+      this.hibernationManager.recordActivity(instance);
+    }
+    this.emit('strand:offline-status', event);
+  }
+
   // Hibernation callbacks
   private async handleStrandIdle(strandId: string): Promise<void> {
     const instance = this.strandManager.getInstance(strandId);
@@ -6296,6 +6315,33 @@ export class CadreNode implements SAppIdLookup {
     return await this.strandManager.whenWritable(strandId, {
       timeoutMs: options?.timeoutMs ?? this.config.strandFirstSync?.timeoutMs
     });
+  }
+
+  /**
+   * Switch a strand between offline mode, where a commit resolves once the transaction is queued on
+   * this machine, and online mode (docs/strands.md → "Offline mode"). Affects transactions begun from
+   * now on; one already open keeps the acknowledgement it began with. The mode belongs to the strand:
+   * a hibernating strand takes it at its next build, and it lasts across hibernation and every
+   * rebuild until the process exits, after which the strand starts in `strandOffline.initialMode`.
+   *
+   * @throws StrandOfflineUnavailableError when `CadreNodeConfig.strandOffline` is not configured.
+   * @throws when this node does not run the strand.
+   */
+  setStrandOfflineMode(strandId: string, mode: StrandOfflineMode): void {
+    if (!this.config.strandOffline) {
+      throw new StrandOfflineUnavailableError(strandId);
+    }
+    this.strandManager.setOfflineMode(strandId, mode);
+  }
+
+  /**
+   * A strand's offline mode ({@link setStrandOfflineMode}); `'online'` on a node without
+   * `strandOffline`. The queue's own view, with what it holds, is `strand.database.offline.queueState()`.
+   *
+   * @throws when this node does not run the strand.
+   */
+  getStrandOfflineMode(strandId: string): StrandOfflineMode {
+    return this.strandManager.offlineMode(strandId);
   }
 
   /**
@@ -7264,6 +7310,14 @@ export class CadreNode implements SAppIdLookup {
       onWritable: (writableStrandId) => this.handleStrandWritable(writableStrandId),
       onCommitDurability: (commit) => this.emit('strand:commit-durability', commit),
       onCommitHeld: (held) => this.emit('strand:commit-held', held),
+      offline: this.config.strandOffline && {
+        ...this.config.strandOffline,
+        onOfflineStatus: (event) => this.handleOfflineStatus(event),
+        onQueueState: (event) => this.emit('strand:queue-state', event),
+        onAppSchemaDeferred: (event) => this.emit('strand:app-schema-deferred', event),
+        onAppSchemaApplied: (event) => this.emit('strand:app-schema-applied', event),
+        onAppSchemaFailed: (event) => this.emit('strand:error', event)
+      },
       // Re-announce the delegate to ONE relay before the strand node's reservation
       // supervisor re-drives it (see announceDelegateToRelay). Retained with the
       // launch config, so a hibernation wake's rebuilt supervisors get it too.
