@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+	BlockUnavailableError,
 	CoordinatorPartialCommitError,
 	SyncRetryExhaustedError,
 	SyncRevisionStalledError,
@@ -185,8 +186,8 @@ const SUPER_MAJORITY_IN_PEND_AGGREGATE =
  * produces: contention now votes `held` and counts toward neither approvals nor rejections, so a
  * contended write reaches this funnel as {@link SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT} instead.
  * The literal is kept because the WRAPPER shape it demonstrates is not historical at all — stale
- * revision, block-unavailable, membership-not-admitted and a configured validator's refusal all
- * still arrive rejected inside this same aggregate, and stale revision is the one this loop
+ * revision, membership-not-admitted, an expired transaction and a configured validator's refusal
+ * all still arrive rejected inside this same aggregate, and stale revision is the one this loop
  * genuinely rescues (it re-runs the write body's reads). Read the cause text as an example of a
  * rejection, not as a claim about what contention looks like now.
  *
@@ -713,6 +714,23 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 			partial.cause = tornWrite(true);
 			expect(classify(viaQuereus(partial))).toBe(false);
 		}
+	});
+});
+
+/**
+ * A read in the write body that no coordinator answered, as Optimystic reports it: a typed
+ * `BlockUnavailableError`, not the `[block:` aggregate (which a read raises only when a coordinator
+ * answered and left the block out). Claimed
+ * by type in the classifiers' shared body, after both vetoes — so schema init inherits it, and the
+ * same read on a chain that also reports a commit-phase batch stays declined.
+ */
+describe.each(WRITE_CLASSIFIERS)('%s — typed unanswered read', (_name, classify) => {
+	it('retries a block read the cohort could not answer, unless the chain reports a commit-phase batch', () => {
+		const unanswered = new BlockUnavailableError('PaWaynQLVfuwhcw4tGh0uX', 'peers-unreachable');
+		for (const delivered of [unanswered, viaQuereus(unanswered)]) {
+			expect(classify(delivered)).toBe(true);
+		}
+		expect(classify(viaQuereus(new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, { cause: unanswered })))).toBe(false);
 	});
 });
 

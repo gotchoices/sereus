@@ -26,15 +26,16 @@ import { captureDebugLog } from './capture-debug-log.js';
  * failure during iteration killed `queryRevokedStamps` after exactly one `eval` call
  * while the same injection against `exec` was absorbed; measured 2026-09-01).
  *
- * The retry classifier table asserts against message LITERALS, a known dependency on
- * engine/transactor/optimystic error text (why text, in `control-read-retry.ts`'s module
- * comment); every matcher fails CLOSED — an upstream rewording stops the retry engaging
- * rather than making it unsafe. The `Block <id> is unavailable (<reason>)` literals below
- * are transcribed from `BlockUnavailableError` / `BlockPossiblyStaleError` in
- * `optimystic/packages/db-core/src/network/struct.ts`.
+ * The transactor-aggregate cases assert against message LITERALS, a known dependency on
+ * transactor error text (upstream raises the aggregate as a plain `Error`); every matcher fails
+ * CLOSED — an upstream rewording stops the retry engaging rather than making it unsafe.
  *
- * `isCohortUnreachableRead` is the exception: it matches the typed error, so its cases build
- * real `BlockUnavailableError`s wrapped the way the scan path wraps them.
+ * Block unavailability is matched by TYPE, by the retry classifier and by
+ * `isCohortUnreachableRead` alike, so those cases build real `BlockUnavailableError`s /
+ * `BlockPossiblyStaleError`s wrapped the way the scan path wraps them. The
+ * `Block <id> is unavailable (<reason>)` literal below (transcribed from `BlockUnavailableError`
+ * in `optimystic/packages/db-core/src/network/struct.ts`) survives only to pin that the same
+ * words with no typed error behind them match nothing.
  */
 
 /**
@@ -74,10 +75,6 @@ function blockUnavailable(reason: string): string {
 	return `Block PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk is unavailable (${reason}): the repo could not determine whether it exists`;
 }
 
-/** Upstream's exact `BlockPossiblyStaleError` template. */
-const BLOCK_POSSIBLY_STALE =
-	'Block PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk may be stale: a cohort peer claimed rev 5 that no reachable coordinator could confirm or refute';
-
 /**
  * How a scan-path failure reaches this repo as TEXT: optimystic's `Query failed:` rethrow,
  * wrapped by Quereus' scan emitter into `Error during query on table '<T>': …` (which embeds
@@ -100,7 +97,11 @@ const REVOCATION_BLOCK_ID = 'default/cadrecontrol/Revocation';
  * `cause`) → the typed `BlockUnavailableError` itself.
  */
 function typedScanWrapped(reason: BlockUnavailableReason): Error {
-	const typed = new BlockUnavailableError(REVOCATION_BLOCK_ID, reason);
+	return scanWrappedTyped(new BlockUnavailableError(REVOCATION_BLOCK_ID, reason));
+}
+
+/** {@link typedScanWrapped} for any typed read failure. */
+function scanWrappedTyped(typed: Error): Error {
 	return new Error(`Error during query on table 'Revocation': Query failed: ${typed.message}`, {
 		cause: new Error(`Query failed: ${typed.message}`, { cause: typed }),
 	});
@@ -121,9 +122,9 @@ describe('isRetriableControlReadFailure', () => {
 	 * the read budget bounds the cost of being wrong.
 	 */
 	it('retries the two block-unavailability reasons a repeat read can improve on', () => {
-		for (const reason of ['peers-unreachable', 'cohort-unreachable']) {
-			expect(isRetriableControlReadFailure(nested(blockUnavailable(reason)))).toBe(true);
-			expect(isRetriableControlReadFailure(scanWrapped(blockUnavailable(reason)))).toBe(true);
+		for (const reason of ['peers-unreachable', 'cohort-unreachable'] as const) {
+			expect(isRetriableControlReadFailure(new BlockUnavailableError(REVOCATION_BLOCK_ID, reason))).toBe(true);
+			expect(isRetriableControlReadFailure(typedScanWrapped(reason))).toBe(true);
 		}
 	});
 
@@ -135,22 +136,24 @@ describe('isRetriableControlReadFailure', () => {
 	 * data problem a second read re-reads.
 	 */
 	it('never retries the block-unavailability reasons a repeat read cannot improve on', () => {
-		for (const reason of ['claimed-elsewhere', 'unmaterializable']) {
-			expect(isRetriableControlReadFailure(nested(blockUnavailable(reason)))).toBe(false);
-			expect(isRetriableControlReadFailure(scanWrapped(blockUnavailable(reason)))).toBe(false);
+		for (const reason of ['claimed-elsewhere', 'unmaterializable'] as const) {
+			expect(isRetriableControlReadFailure(new BlockUnavailableError(REVOCATION_BLOCK_ID, reason))).toBe(false);
+			expect(isRetriableControlReadFailure(typedScanWrapped(reason))).toBe(false);
 		}
 	});
 
 	it('never retries a possibly-stale read — currency, not existence, and it will not resolve in a backoff', () => {
-		expect(isRetriableControlReadFailure(nested(BLOCK_POSSIBLY_STALE))).toBe(false);
-		expect(isRetriableControlReadFailure(scanWrapped(BLOCK_POSSIBLY_STALE))).toBe(false);
+		const stale = new BlockPossiblyStaleError(REVOCATION_BLOCK_ID, 5);
+		expect(isRetriableControlReadFailure(stale)).toBe(false);
+		expect(isRetriableControlReadFailure(scanWrappedTyped(stale))).toBe(false);
 	});
 
 	/**
 	 * Everything unmatched defaults to no retry: the commit-phase aggregate a read cannot
 	 * produce, the write side's bare super-majority shortfall (a read presents no
 	 * transaction; if the sentence ever reaches a read it arrives inside the aggregate,
-	 * which the first case already claims), durable faults, and constraint refusals.
+	 * which the first case already claims), durable faults, constraint refusals, and an
+	 * unavailability that survived only as text (the match is by type).
 	 */
 	it('never retries anything unmatched — the default is no retry', () => {
 		for (const message of [
@@ -159,6 +162,7 @@ describe('isRetriableControlReadFailure', () => {
 			'Missing block (jQlkVafUFlI6FzOGGAlViyK5GrgcSm_4SL7HfPKwhis)',
 			'CHECK constraint failed: Authorized',
 			'no such table: CadreControl.CadrePeer',
+			blockUnavailable('peers-unreachable'),
 		]) {
 			expect(isRetriableControlReadFailure(nested(message))).toBe(false);
 		}
@@ -216,7 +220,7 @@ describe('retryControlRead', () => {
 		const result = await retryControlRead(async () => {
 			runs++;
 			if (runs === 1) {
-				throw nested(blockUnavailable('peers-unreachable'));
+				throw typedScanWrapped('peers-unreachable');
 			}
 			return ['row'];
 		}, immediatePacing());
@@ -267,7 +271,7 @@ describe('retryControlRead', () => {
 
 	it('propagates a non-retriable failure from the first attempt, unretried', async () => {
 		let runs = 0;
-		const failure = nested(blockUnavailable('claimed-elsewhere'));
+		const failure = typedScanWrapped('claimed-elsewhere');
 		await expect(retryControlRead(async () => {
 			runs++;
 			throw failure;
@@ -479,8 +483,7 @@ describe('ControlDatabase — read retry', () => {
 	it('surfaces a non-retriable read failure from the first attempt, unretried', async () => {
 		const slots = pacingSlots(db);
 		const savedReadPacing = slots.controlReadRetryPacing;
-		const failure = new Error(
-			'Query failed: Block blk-1 is unavailable (claimed-elsewhere): the repo could not determine whether it exists');
+		const failure = typedScanWrapped('claimed-elsewhere');
 		const rig = rigEval('from CadreControl.Revocation', () => failingIteration(failure));
 		try {
 			slots.controlReadRetryPacing = { sleep: () => Promise.resolve() };

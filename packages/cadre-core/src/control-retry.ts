@@ -1,4 +1,5 @@
 import debug from 'debug';
+import { isCohortUnreachableRead } from '@optimystic/db-core';
 import { unwrapError } from '@quereus/quereus';
 
 const log = debug('sereus:cadre:control-db');
@@ -232,10 +233,10 @@ function notifyAbandoned(
 }
 
 /**
- * Every message in the failure's `cause` chain — the shared substrate both retry classifiers
- * match against. They match text (why, in `control-read-retry.ts`'s module comment); every
- * wrap on the way out of optimystic and Quereus embeds the inner message, so the text of
- * the deepest failure is visible at every level.
+ * Every message in the failure's `cause` chain — the substrate both retry classifiers match
+ * their text matchers against (the transactor's aggregate and the coordinator's shortfall are
+ * plain `Error`s, recognisable only by text); every wrap on the way out of optimystic and
+ * Quereus embeds the inner message, so the text of the deepest failure is visible at every level.
  *
  * `unwrapError` declares its `message` as `string`, but it follows `.cause` without checking
  * what that holds — a chain link that is not an `Error` (a stream rejected with a bare string
@@ -256,8 +257,8 @@ export function chainMessages(error: Error): string[] {
 
 /**
  * `error` and every `cause` below it, outermost first — the substrate for the classifiers that
- * match by TYPE rather than text (the read side's cohort-unreachable check, the write side's
- * possibly-stored veto). Stops at a non-`Error` link (it can carry no further `cause` worth
+ * match by TYPE rather than text ({@link reportsUnreachableCohort}, the read side's isolated-node
+ * check, the write side's possibly-stored veto). Stops at a non-`Error` link (it can carry no further `cause` worth
  * trusting) and at a repeat, so a cyclic chain terminates.
  */
 export function causeChain(error: unknown): Error[] {
@@ -268,6 +269,53 @@ export function causeChain(error: unknown): Error[] {
 		current = current.cause;
 	}
 	return links;
+}
+
+/**
+ * Does any link of the `cause` chain report a block read that failed because the cohort could not
+ * be asked — a `BlockUnavailableError` whose reason is `peers-unreachable` or `cohort-unreachable`?
+ * The one block-unavailability test both retry classifiers share, so the read and write policies
+ * cannot disagree on which reasons a repeat can improve on:
+ *
+ * - **`peers-unreachable`** — part of the cohort answered and part could not be asked, or no
+ *   coordinator answered the read at all (`NetworkTransactor.get` flags such a block rather than
+ *   failing the whole read). Another attempt can reach one that answers; upstream's own definition
+ *   invites the second attempt.
+ * - **`cohort-unreachable`** — the marginal member of the set. Upstream says the answer will not
+ *   improve until this node's connectivity does — but during bring-up connectivity DOES improve
+ *   within a second (the boot-time failure shape recorded in
+ *   `tickets/blocked/control-read-over-fresh-edge-stream-resets`), and each policy's elapsed budget
+ *   bounds the cost of being wrong, which is the whole reason it is safe to include.
+ *
+ * Deliberately NOT matched:
+ *
+ * - **`claimed-elsewhere`** — a cohort peer positively claims the block exists and nobody could
+ *   corroborate or acquire it. MEASURED not to clear: reissuing the same call every second for 60 s
+ *   returned the identical error every time (2026-08-20, recorded in the fix ticket). Retrying spends
+ *   the whole budget and fails anyway. The measured cause (a block only one machine held) was fixed
+ *   upstream by the solo-commit proof in `@optimystic/db-p2p` 0.28.0
+ *   (`tickets/complete/block-held-by-only-one-machine-is-unreadable`), so a `claimed-elsewhere` that
+ *   surfaces now is a new defect — a retry must not hide it.
+ * - **`unmaterializable`** — records are held locally but cannot be reassembled. A local data
+ *   problem; a second read reads the same records.
+ * - **`BlockPossiblyStaleError`** (`Block <id> may be stale`) — about currency, not existence: a
+ *   cohort claim no reachable coordinator could confirm or refute will not resolve inside a few
+ *   hundred milliseconds of backoff.
+ *
+ * The reason set is upstream's (`isCohortUnreachableRead`, `db-core/src/transaction/commit-failure-class.ts`),
+ * the rule its commit-failure sort and the plugin's offline reads use for "the cohort could not be
+ * reached". NOTE: a reason upstream adds to that set is therefore retried here with no change in
+ * this repo — the right default for a set defined as unreachability; if it ever grows, re-check it
+ * against the exclusions above.
+ *
+ * Matched by TYPE. Upstream builds this error only on the node doing the read, from the
+ * `unavailable` flag a get result carries (`TransactorSource.tryGet`, `NetworkTransactor.getStatus`),
+ * never from a peer's error, and every rewrap on the way to either funnel keeps `cause`. NOTE: an
+ * error built by a second loaded copy of `@optimystic/db-core`, or one rebuilt as a plain `Error`
+ * from its text, fails `instanceof` and is not retried — the safe side.
+ */
+export function reportsUnreachableCohort(links: readonly Error[]): boolean {
+	return links.some(link => isCohortUnreachableRead(link));
 }
 
 /**

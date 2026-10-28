@@ -1,5 +1,5 @@
 import { BlockUnavailableError } from '@optimystic/db-core';
-import { causeChain, chainMessages, retryControlOperation } from './control-retry.js';
+import { causeChain, chainMessages, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 import { isUncommittedTransactorAggregate } from './control-write-retry.js';
 
@@ -21,16 +21,14 @@ import { isUncommittedTransactorAggregate } from './control-write-retry.js';
  * This is deliberately NOT "the write classifier minus its commit veto" — the retriable
  * set differs in both directions (see {@link isRetriableControlReadFailure}). The loop
  * lives in `control-retry.ts`, shared with the write policy; this module owns only the
- * read policy. And like the write side, the retry classifies by TEXT. That was forced when
- * it was written — optimystic's scan path used to rethrow `new Error('Query failed: ' +
- * message)` with no `cause` — and is no longer: `OptimysticVirtualTable` now rethrows
- * through `rewrapAsQueryError` (`quereus-plugin-optimystic/src/optimystic-module.ts`),
- * which keeps the typed `BlockUnavailableError` on `cause`, and Quereus wraps that as
+ * read policy. A block-unavailability failure is matched by TYPE: `OptimysticVirtualTable`
+ * rethrows a scan failure through `rewrapAsQueryError`
+ * (`quereus-plugin-optimystic/src/optimystic-module.ts`), which keeps the typed
+ * `BlockUnavailableError` on `cause`, and Quereus wraps that as
  * `Error during query on table '<T>': …`, again preserving `cause`
- * (`quereus/src/runtime/emit/scan.ts`). The text matchers still work because every wrap
- * embeds the inner message. Every matcher fails CLOSED — an upstream rewording stops the
- * retry engaging, it never makes it unsafe. {@link isCohortUnreachableRead}, which is not a
- * retry classifier, matches by type.
+ * (`quereus/src/runtime/emit/scan.ts`). The transactor's aggregate is matched by TEXT, since
+ * upstream raises it as a plain `Error`. Every matcher fails CLOSED — an upstream rewording or
+ * a lost `cause` stops the retry engaging, it never makes it unsafe.
  */
 
 /**
@@ -84,45 +82,6 @@ export const CONTROL_READ_RETRY_DELAYS_MS: readonly number[] = [100, 400];
 export const CONTROL_READ_RETRY_BUDGET_MS = 1_500;
 
 /**
- * The block-unavailability reasons a repeat read can actually improve on, matched against
- * upstream's exact template `Block <id> is unavailable (<reason>): …`
- * (`BlockUnavailableError`, `db-core/src/network/struct.ts`):
- *
- * - **`peers-unreachable`** — part of the cohort answered and part could not be asked, and
- *   OTHER coordinators are reachable, so asking one of them can still settle it. Upstream's
- *   own definition invites the second attempt.
- * - **`cohort-unreachable`** — the marginal member of the set. Upstream says the answer
- *   will not improve until this node's connectivity does — but during bring-up connectivity
- *   DOES improve within a second (the boot-time failure shape recorded in
- *   `tickets/blocked/control-read-over-fresh-edge-stream-resets`), and the cost of being
- *   wrong is bounded by {@link CONTROL_READ_RETRY_BUDGET_MS}, which is the whole reason it
- *   is safe to include.
- *
- * Deliberately NOT matched:
- *
- * - **`claimed-elsewhere`** — a cohort peer positively claims the block exists and nobody
- *   could corroborate or acquire it. MEASURED not to clear: reissuing the same call every
- *   second for 60 s returned the identical error every time (2026-08-20, recorded in the
- *   fix ticket). Retrying spends the whole budget and fails anyway. The measured cause (a
- *   block only one machine held) was fixed upstream by the solo-commit proof in
- *   `@optimystic/db-p2p` 0.28.0 (`tickets/complete/block-held-by-only-one-machine-is-unreadable`),
- *   so a `claimed-elsewhere` that surfaces now is a new defect — this retry must not hide it.
- * - **`unmaterializable`** — records are held locally but cannot be reassembled. A local
- *   data problem; a second read reads the same records.
- * - **`Block <id> may be stale`** (`BlockPossiblyStaleError`) — about currency, not
- *   existence: a cohort claim no reachable coordinator could confirm or refute will not
- *   resolve inside a few hundred milliseconds of backoff.
- * - Anything unmatched. The default is no retry.
- */
-const RETRIABLE_BLOCK_UNAVAILABLE =
-	/Block \S+ is unavailable \((?:peers-unreachable|cohort-unreachable)\)/;
-
-/** A block-unavailable read failure whose reason a repeat read can improve on. */
-function isRetriableBlockUnavailable(message: string): boolean {
-	return RETRIABLE_BLOCK_UNAVAILABLE.test(message);
-}
-
-/**
  * Pacing overrides for {@link retryControlRead} — the read twin of
  * `ControlWriteRetryOptions`. Every field defaults to the shipped read policy
  * ({@link CONTROL_READ_ATTEMPTS}, {@link CONTROL_READ_RETRY_DELAYS_MS},
@@ -141,18 +100,20 @@ export type ControlReadRetryOptions = ControlRetryOptions;
  *   `[block:` token, and a read can never produce the commit-phase `[blocks:` token, so
  *   the write side's indeterminate-commit veto has nothing to veto here (a read commits
  *   nothing and re-running it is always safe);
- * - the block-unavailability reasons in {@link RETRIABLE_BLOCK_UNAVAILABLE} (and only
- *   those — see its comment for the measured exclusions).
+ * - a block read the cohort could not answer ({@link reportsUnreachableCohort}, the
+ *   predicate the write classifier shares — see it for the reasons and the measured
+ *   exclusions).
  *
- * Classifies by MESSAGE, walking the `cause` chain with the shared `chainMessages` (why
- * text, in the module comment). Anything that is not an `Error` is never retried.
+ * The aggregate is matched by message at any depth of the `cause` chain (`chainMessages`),
+ * the unavailability by type on the same chain. Anything that is not an `Error` is never
+ * retried, and anything unmatched is not retried either.
  */
 export function isRetriableControlReadFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) {
 		return false;
 	}
-	return chainMessages(error).some(message =>
-		isUncommittedTransactorAggregate(message) || isRetriableBlockUnavailable(message));
+	return reportsUnreachableCohort(causeChain(error))
+		|| chainMessages(error).some(isUncommittedTransactorAggregate);
 }
 
 /**
@@ -165,9 +126,12 @@ export function isRetriableControlReadFailure(error: unknown): boolean {
  * never-received `Revocation` block as "no revocations known" (the reasoning is in the NOTE
  * there). Upstream names this the one reason a caller may treat permissively
  * (`db-core/src/transactor/network-transactor.ts`). The other reasons do NOT match:
- * `peers-unreachable` means part of the cohort answered, and `claimed-elsewhere` /
- * `unmaterializable` mean the block is known to exist, so an empty answer could hide a
- * real revocation.
+ * `peers-unreachable` means part of the cohort answered (or no coordinator did), and
+ * `claimed-elsewhere` / `unmaterializable` mean the block is known to exist, so an empty
+ * answer could hide a real revocation. NOTE: narrower than upstream's same-named
+ * `isCohortUnreachableRead` (`@optimystic/db-core`), which also matches `peers-unreachable`
+ * and is what the retry classifiers use ({@link reportsUnreachableCohort}); do not swap one
+ * for the other.
  *
  * Matched by TYPE, since the typed error survives upstream's rewraps (module comment).
  * Fails CLOSED: a non-`Error`, a text-only copy of the message, and an error built by a

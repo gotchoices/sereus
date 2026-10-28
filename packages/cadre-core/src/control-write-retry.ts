@@ -1,6 +1,6 @@
 import { CoordinatorPartialCommitError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
 import { ConcurrentModificationError, PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
-import { causeChain, chainMessages, retryControlOperation } from './control-retry.js';
+import { causeChain, chainMessages, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 
 /**
@@ -183,7 +183,9 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * re-present:
  *
  * - `get` (a block read, which a write body also performs) and `pend` (phase 1) fail before
- *   anything commits, so the write is known not to have landed;
+ *   anything commits, so the write is known not to have landed. `get` raises it only when a
+ *   coordinator answered and left a block out; a block nobody answered for fails typed
+ *   instead, which {@link matchesRetriableFailure} claims ({@link reportsUnreachableCohort});
  * - `commitBlocks` (phase 2) is REACHABLE here and NOT safe. `commitBlock` throws the
  *   aggregate when a header/tail commit got NO response at all — precisely the transient
  *   class this retry targets — and that escapes `commit()`, survives `TransactorSource`'s
@@ -234,12 +236,14 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  *    have left its log entry standing), and its collection sync has already spent ten retries on
  *    the race. The torn-write rule beside it: a `TornActionError` is re-presented only when
  *    `final` is true; any other torn write is declined.
- *  - What remains rejectable at the promise phase is stale revision, block-unavailable,
- *    membership-not-admitted, and a configured validator's refusal. Only the first is worth a
- *    retry — and it is worth one: this loop re-runs the WHOLE write body, reads included
+ *  - What remains rejectable at the promise phase is stale revision, membership-not-admitted, an
+ *    expired transaction, and a configured validator's refusal (`ClusterMember.evaluatePromise`).
+ *    A block whose revision a member cannot establish is approved, not refused: the member logs
+ *    `validation-block-unavailable` and votes on (`judgeStaleRevisions`). Stale revision is worth
+ *    a retry: this loop re-runs the WHOLE write body, reads included
  *    (`ControlDatabase.withWriteLock`'s contract), so attempt 2 presents a pend against the
  *    revision that made attempt 1 stale. A blanket "decline any chain reporting a validator
- *    rejection" rule would remove that retry to save two wasted attempts on the other three.
+ *    rejection" rule would remove that retry to save two wasted attempts on the others.
  *
  * Revisit if a re-presentation ever becomes expensive relative to what it buys — a rejection class
  * that costs a full cohort round-trip to re-present, or a write body whose reads are no longer
@@ -404,7 +408,9 @@ function isSelfCoordinationGraceRefusal(message: string): boolean {
 /**
  * The error messages that mean "the cohort did not answer AND nothing committed", and nothing
  * else. The observed one-shot failure was `registerSelf()` racing a connection still forming:
- * a read/pend-phase transactor aggregate with `cause=The stream has been reset`.
+ * a read/pend-phase transactor aggregate with `cause=The stream has been reset`. When none of
+ * the cohort answers the read at all, that failure arrives typed instead, and is claimed by
+ * type in {@link matchesRetriableFailure} ({@link reportsUnreachableCohort}), not here.
  *
  * Deliberately NOT matched: every constraint / authorization failure
  * (`CHECK constraint failed:`, `UNIQUE constraint failed:`) — those reach the same funnel
@@ -471,8 +477,10 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * Two vetoes run over the whole chain before any matcher: {@link reportsPossiblyStoredWrite}
  * (by type — a spent sync budget, a non-final torn write, a partial commit) and
  * {@link reportsIndeterminateCommit} (by text — a commit-phase batch). A chain either veto flags,
- * at any level, is never retried on the strength of some other level looking transient. The one
- * typed failure claimed as retriable is a final torn write ({@link isFinalTornWrite}).
+ * at any level, is never retried on the strength of some other level looking transient. Two typed
+ * failures are claimed as retriable: a block read the cohort could not answer
+ * ({@link reportsUnreachableCohort}, shared with the read classifier) and a final torn write
+ * ({@link isFinalTornWrite}).
  *
  * NOTE: this depends on engine/transactor error TEXT. The messages producible without a
  * network are driven from the REAL engine in `control-formation-seat-budget.spec.ts`, so
@@ -511,12 +519,13 @@ export function isRetriableLostUpdateFailure(error: unknown): boolean {
 /**
  * Shared body of the three classifiers: walk the `cause` chain, let
  * {@link reportsPossiblyStoredWrite} and then {@link reportsIndeterminateCommit} veto it, then claim
- * a final torn write ({@link isFinalTornWrite}) or any link `claimsLink` names, then ask `matchers`.
- * The vetoes run BEFORE any claim for every policy — a chain reporting a possibly-stored write or a
- * commit-phase batch is never retried, however transient some other level looks, and a final torn
- * write or a lost update carried by a partial commit is still declined because a sibling collection
- * landed. `claimsLink` is the one typed claim a policy may add; it sits here beside the torn-write
- * claim so the vetoes stay in one place above both.
+ * a block read the cohort could not answer ({@link reportsUnreachableCohort}), a final torn write
+ * ({@link isFinalTornWrite}) or any link `claimsLink` names, then ask `matchers`. The vetoes run
+ * BEFORE any claim for every policy — a chain reporting a possibly-stored write or a commit-phase
+ * batch is never retried, however transient some other level looks, and a final torn write or a
+ * lost update carried by a partial commit is still declined because a sibling collection landed.
+ * `claimsLink` is the one typed claim a policy may add; it sits here beside the shared typed claims
+ * so the vetoes stay in one place above all of them.
  */
 function matchesRetriableFailure(
 	error: unknown,
@@ -534,7 +543,19 @@ function matchesRetriableFailure(
 	if (reportsIndeterminateCommit(messages)) {
 		return false;
 	}
-	if (links.some(link => isFinalTornWrite(link) || claimsLink?.(link) === true)) {
+	// NOTE: an unanswered read can fail AFTER this write's log entry is stored. Between commit
+	// attempts upstream finishes the write's own entry (`Collection.completeOwnEntry`), and when it
+	// has no retained attempt at that entry's revision (a forked lineage — both commit paths retain
+	// the failed attempt before refreshing) it asks `getStatus` whether the rest landed; the log-end
+	// reads of the same refresh can fail the same way. Either throw escapes the refresh loop
+	// unwrapped and reaches this claim, as the `[block:` aggregate from the same reads reaches the
+	// text matcher. Retried anyway: the re-run is a new transaction whose body re-reads, so it diffs
+	// to nothing or fails on `UNIQUE` (the `[blocks:` veto's rationale on
+	// {@link isUncommittedTransactorAggregate}) and applies nothing twice. A refresh that already
+	// saved a sibling collection arrives as `CoordinatorPartialCommitError`, which the veto above
+	// declines.
+	if (reportsUnreachableCohort(links)
+		|| links.some(link => isFinalTornWrite(link) || claimsLink?.(link) === true)) {
 		return true;
 	}
 	return messages.some(message => matchers.some(matches => matches(message)));
