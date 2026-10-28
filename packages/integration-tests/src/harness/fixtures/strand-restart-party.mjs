@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Test fixture: ONE party of the two-process arm of
- * `scenarios/strand-relay-only-restart-reconverges.integration.ts`, run as its own `node`
+ * Test fixture: ONE party of a two-process strand scenario
+ * (`scenarios/strand-relay-only-restart-reconverges.integration.ts`'s two-process arm,
+ * `scenarios/strand-offline-queue-survives-restart.integration.ts`), run as its own `node`
  * process by `harness/strand-restart-party.ts`, which documents the request set
  * (`StrandRestartOps`) this script answers over the IPC channel.
  *
@@ -12,19 +13,23 @@
  *                 and (as the node's default `joinedStrands` store over its `keyStore`) the
  *                 strands joined from another party;
  *   - `node/`     `FileStrandNetworkStateStore` — each strand node's saved network state;
- *   - `storage/`  one `FileRawStorage` directory per storage scope, cadre-cli's layout.
+ *   - `storage/`  one `FileRawStorage` directory per storage scope, cadre-cli's layout;
+ *   - `offline/`  with `offline: true` only, one `FileKVStore` per strand scope: the strand's
+ *                 offline journal (`CadreNodeConfig.strandOffline`, every strand starting in
+ *                 offline mode), closed after the node stops.
  *
  * The node config mirrors `harness/node-fixtures.ts` `controlNodeConfig`, which this plain
  * ESM script cannot import (it is TypeScript source).
  *
  * argv[2] is the JSON `StrandRestartPartyOptions`. The script sends `{ type: 'ready' }` once
  * the node has started, answers each `{ id, op, args }` with `{ type: 'reply', id, result }`
- * or `{ ..., error }`, and on `{ op: 'stop' }` stops the node and exits.
+ * or `{ ..., error }`, forwards every `strand:offline-status` as `{ type: 'offline-status', … }`,
+ * and on `{ op: 'stop' }` stops the node and exits.
  */
 import { join } from 'node:path';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { FileKVStore, FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import {
 	CadreNode,
 	createOwnerKey,
@@ -39,10 +44,23 @@ const YEAR_MS = 365 * 24 * 3600_000;
 const POLL_MS = 250;
 
 const options = JSON.parse(process.argv[2]);
-const { label, partyId, stateDir, relayAddr, profile } = options;
+const { label, partyId, stateDir, relayAddr, profile, offline } = options;
 const say = (msg) => console.log(`[restart-party ${label}] ${msg}`);
 
 const keyStore = new FileKeyStore(join(stateDir, 'keys'));
+/**
+ * One journal per strand scope: every database build asks again, and a second store over the
+ * directory would not see the first's unflushed writes.
+ */
+const journals = new Map();
+const journalFor = (scope) => {
+	let journal = journals.get(scope);
+	if (!journal) {
+		journal = new FileKVStore(join(stateDir, 'offline', scope));
+		journals.set(scope, journal);
+	}
+	return journal;
+};
 const node = new CadreNode({
 	controlNetwork: { partyId, bootstrapNodes: [] },
 	profile,
@@ -60,6 +78,7 @@ const node = new CadreNode({
 		enableRelay: false,
 	},
 	hibernation: { enabled: false },
+	...(offline ? { strandOffline: { journal: journalFor, initialMode: 'offline' } } : {}),
 });
 
 /** Owner genesis, as `makeOwnOwner` does, over an owner key this party keeps in its key store's owner slot. */
@@ -77,12 +96,35 @@ function strandOf(strandId) {
 	return instance;
 }
 
+/** Every App.Data row, by an unfiltered scan (a where-equality on the key can miss on a networked strand). */
 async function readDataRows(strandId) {
-	const rows = new Map();
+	const rows = [];
 	for await (const row of strandOf(strandId).database.getDatabase().eval('select Key, Val from App.Data')) {
-		rows.set(row.Key, row.Val);
+		rows.push({ key: row.Key, val: row.Val });
 	}
 	return rows;
+}
+
+function offlineQueueOf(strandId) {
+	const queue = strandOf(strandId).database.offline;
+	if (!queue) throw new Error(`strand ${strandId} has no offline queue (this party runs without offline: true)`);
+	return queue;
+}
+
+/**
+ * The parts of a `QueuedTransactionStatus` the scenarios read, in a shape the IPC channel's
+ * JSON carries: an `Error` there arrives as `{}`, so a failure travels as its message.
+ */
+function statusSummary(status) {
+	const summary = { kind: status.kind, transactionId: status.transactionId };
+	if (status.kind === 'queued') {
+		Object.assign(summary, { persisted: status.persisted, waitingFor: status.waitingFor ?? null, attempts: status.attempts });
+	} else if (status.kind === 'committed') {
+		summary.effect = status.effect;
+	} else if (status.kind === 'failed') {
+		Object.assign(summary, { reason: status.reason, error: errorChain(status.error) });
+	}
+	return summary;
 }
 
 /** Poll `probe` until it returns a value other than undefined; a throw is "not yet". */
@@ -152,13 +194,31 @@ const handlers = {
 	},
 
 	async write({ strandId, key, val }) {
-		await strandOf(strandId).database.getDatabase().exec('insert into App.Data (Key, Val) values (?, ?)', [key, val]);
-		return {};
+		// One statement is one commit, and its `returning` hands back that commit's id.
+		const written = await strandOf(strandId).database.getDatabase()
+			.get('insert into App.Data (Key, Val) values (?, ?) returning StampId() as Tx', [key, val]);
+		return { transactionId: String(written.Tx) };
+	},
+
+	async rows({ strandId }) {
+		return { rows: await readDataRows(strandId) };
 	},
 
 	async waitRow({ strandId, key, val, timeoutMs }) {
-		await pollFor(async () => ((await readDataRows(strandId)).get(key) === val ? true : undefined), timeoutMs, `row ${key} = ${val}`);
+		await pollFor(async () => ((await readDataRows(strandId)).some((row) => row.key === key && row.val === val) ? true : undefined),
+			timeoutMs, `row ${key} = ${val}`);
 		return {};
+	},
+
+	async offlineEntries({ strandId }) {
+		const entries = offlineQueueOf(strandId).entries()
+			.map((entry) => ({ transactionId: entry.transactionId, persisted: entry.persisted, status: statusSummary(entry.status) }));
+		return { entries };
+	},
+
+	async offlineStatus({ strandId, transactionId }) {
+		const status = offlineQueueOf(strandId).status(transactionId);
+		return { status: status === undefined ? null : statusSummary(status) };
 	},
 
 	async waitSavedAddressRecord({ strandId, peerId, timeoutMs }) {
@@ -188,6 +248,8 @@ async function stopAndExit(code) {
 	stopping = true;
 	try {
 		await node.stop();
+		// After the node, whose strand databases journal into these until they close.
+		await Promise.all([...journals.values()].map((journal) => journal.close()));
 	} catch (error) {
 		console.error(`[restart-party ${label}] stop failed:`, error);
 		code = 1;
@@ -219,6 +281,13 @@ function errorChain(error) {
 	}
 	return parts.join(' <- ');
 }
+
+node.on('strand:offline-status', ({ strandId, status }) => {
+	const summary = statusSummary(status);
+	say(`offline status ${strandId} ${summary.transactionId}: ${summary.kind}`);
+	// A status delivered while the node stops after the parent went away has nowhere to go.
+	if (process.connected) process.send({ type: 'offline-status', strandId, status: summary });
+});
 
 await node.start();
 say(`started (control peer ${node.peerId.toString()})`);

@@ -1,14 +1,15 @@
 /**
- * Parent side of the two-process restart arm of
- * `scenarios/strand-relay-only-restart-reconverges.integration.ts`: runs ONE party's
+ * Parent side of the two-process strand scenarios — the two-process arm of
+ * `scenarios/strand-relay-only-restart-reconverges.integration.ts`, and
+ * `scenarios/strand-offline-queue-survives-restart.integration.ts`: runs ONE party's
  * `CadreNode` in its own `node` child process (`fixtures/strand-restart-party.mjs`) and
  * drives it over the process's IPC channel.
  *
  * The child keeps everything a phone keeps on disk under `stateDir` — its identity key and
  * joined-strand records (`FileKeyStore`), its strand network state
- * (`FileStrandNetworkStateStore`) and its raw stores (`FileRawStorage`) — so a child that
- * exits and is respawned over the same directory is a real restart: a new process, with no
- * module state carried over.
+ * (`FileStrandNetworkStateStore`), its raw stores (`FileRawStorage`) and, with `offline`, its
+ * offline journals (`FileKVStore`) — so a child that exits and is respawned over the same
+ * directory is a real restart: a new process, with no module state carried over.
  *
  * The child imports the BUILT `@serfab/cadre-core`, which the suite's stale-build guard
  * (`test/global-setup.ts`) already holds fresh.
@@ -17,7 +18,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import type { SAppConfig, StrandStatus } from '@serfab/cadre-core';
+import type { SAppConfig, StrandOfflineStatus, StrandStatus } from '@serfab/cadre-core';
 
 const CHILD_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'strand-restart-party.mjs');
 
@@ -43,9 +44,15 @@ export interface StrandRestartOps {
 		args: { strandId: string; sApp: SAppConfig; timeoutMs: number };
 		result: { status: StrandStatus; strandPeerId: string };
 	};
+	/** One insert into App.Data; its commit's `StampId()`. */
 	write: {
 		args: { strandId: string; key: string; val: string };
-		result: Record<string, never>;
+		result: { transactionId: string };
+	};
+	/** Every App.Data row, in scan order. */
+	rows: {
+		args: { strandId: string };
+		result: { rows: DataRow[] };
 	};
 	/** Poll until App.Data holds `key` = `val`. */
 	waitRow: {
@@ -62,6 +69,54 @@ export interface StrandRestartOps {
 		args: { strandId: string; peerId: string };
 		result: { kinds: string[] };
 	};
+	/** `strand.database.offline.entries()`; needs `offline`. */
+	offlineEntries: {
+		args: { strandId: string };
+		result: { entries: OfflineEntrySummary[] };
+	};
+	/** `strand.database.offline.status(transactionId)`, `null` where it returns `undefined`; needs `offline`. */
+	offlineStatus: {
+		args: { strandId: string; transactionId: string };
+		result: { status: OfflineStatusSummary | null };
+	};
+}
+
+export interface DataRow {
+	key: string;
+	val: string;
+}
+
+/**
+ * The parts of a queued transaction's status (`StrandOfflineStatus.status`) the scenarios read.
+ * The IPC channel carries JSON, so a failure's `error` arrives as its message chain.
+ */
+export interface OfflineStatusSummary {
+	kind: StrandOfflineStatus['status']['kind'];
+	transactionId: string;
+	/** `queued` only. */
+	persisted?: boolean;
+	/** `queued` only; `null` where the status has none. */
+	waitingFor?: string | null;
+	/** `queued` only. */
+	attempts?: number;
+	/** `committed` only. */
+	effect?: string;
+	/** `failed` only. */
+	reason?: string;
+	/** `failed` only. */
+	error?: string;
+}
+
+export interface OfflineEntrySummary {
+	transactionId: string;
+	persisted: boolean;
+	status: OfflineStatusSummary;
+}
+
+/** One `strand:offline-status` event, as the child forwarded it. */
+export interface ForwardedOfflineStatus {
+	strandId: string;
+	status: OfflineStatusSummary;
 }
 
 export interface StrandRestartPartyOptions {
@@ -72,18 +127,27 @@ export interface StrandRestartPartyOptions {
 	stateDir: string;
 	relayAddr: string;
 	profile: 'storage' | 'transaction';
+	/**
+	 * Offer offline mode on the party's strands, every strand starting in it
+	 * (`CadreNodeConfig.strandOffline` with `initialMode: 'offline'`), each journaling into a
+	 * `FileKVStore` under `stateDir/offline/<strand id>`.
+	 */
+	offline?: boolean;
 }
 
 export interface StrandRestartParty {
 	readonly label: string;
 	request<K extends keyof StrandRestartOps>(op: K, args: StrandRestartOps[K]['args']): Promise<StrandRestartOps[K]['result']>;
+	/** Every `strand:offline-status` this process has forwarded so far, in arrival order. */
+	readonly offlineStatuses: readonly ForwardedOfflineStatus[];
 	/** Stop the node, let the process exit (killed past a grace period). Idempotent. */
 	exit(): Promise<void>;
 }
 
 type ChildMessage =
 	| { type: 'ready'; peerId: string }
-	| { type: 'reply'; id: number; result?: unknown; error?: string };
+	| { type: 'reply'; id: number; result?: unknown; error?: string }
+	| ({ type: 'offline-status' } & ForwardedOfflineStatus);
 
 interface Pending {
 	resolve: (value: unknown) => void;
@@ -114,7 +178,12 @@ export async function startStrandRestartParty(options: StrandRestartPartyOptions
 		pending.clear();
 	});
 	const ready = waitForReady(child, options.label);
+	const offlineStatuses: ForwardedOfflineStatus[] = [];
 	child.on('message', (message: ChildMessage) => {
+		if (message.type === 'offline-status') {
+			offlineStatuses.push({ strandId: message.strandId, status: message.status });
+			return;
+		}
 		if (message.type !== 'reply') return;
 		const request = pending.get(message.id);
 		if (!request) return;
@@ -147,6 +216,7 @@ export async function startStrandRestartParty(options: StrandRestartPartyOptions
 				child.send({ id, op, args });
 			});
 		},
+		offlineStatuses,
 		exit,
 	};
 }

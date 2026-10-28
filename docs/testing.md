@@ -696,6 +696,7 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   the same live in-memory stores and keeps module state. The two-process arm takes 12–15 s and
   could run by default; it is opt-in only because the in-process arm already gates the
   behaviour. Loopback-instant link, one shared relay.
+- Relayed strand plane across parties, a phone-shaped party in OFFLINE MODE restarted with a write queued (the two-process arm above, its harness's `offline: true` on B: a `FileKVStore` journal per strand under the state directory, every strand starting in offline mode) — `strand-offline-queue-survives-restart.integration.ts`. With A, B's only partner, stopped, B's insert resolves `queued` with `persisted: true`; B's process is respawned with A still down, its strand reaches `active` on its own copy, and its queue still lists the transaction `queued`; once A's process returns, B reports it `committed` exactly once and A holds exactly the rows written. Relay-only because a strand node always listens on an ephemeral port, so two parties that each restart while the other is down could not find each other at direct addresses. About 14 s. Loopback-instant link, one shared relay.
 - Relayed strand plane across parties, the JOINER'S FIRST WRITE on a slow link (the
   blind-relay shape; the joiner writes three tables in one transaction and stops the moment
   the commit returns, and the founder must then hold every row) —
