@@ -222,13 +222,18 @@ vi.mock('../../src/chat-strand', () => ({
   CHAT_SAPP_ID: 'chat-test',
 }));
 
-vi.mock('@serfab/cadre-core', () => ({
-  decodeCadreInvitation: vi.fn(),
-  decodeOwnerGrant: vi.fn(),
-  OWNER_GRANT_PREFIX: 'sereus-owner-grant:1.',
-  rentNode: vi.fn(),
-  finishRental: vi.fn(),
-}));
+vi.mock('@serfab/cadre-core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@serfab/cadre-core')>();
+  return {
+    decodeCadreInvitation: vi.fn(),
+    decodeOwnerGrant: vi.fn(),
+    OWNER_GRANT_PREFIX: 'sereus-owner-grant:1.',
+    rentNode: vi.fn(),
+    finishRental: vi.fn(),
+    // Real: the hook's error paths format with it, and a missing export there rejects unhandled.
+    describeThrown: actual.describeThrown,
+  };
+});
 
 // ── Harness ───────────────────────────────────────────────────────────────────
 
