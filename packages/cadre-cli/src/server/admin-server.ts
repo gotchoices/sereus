@@ -11,6 +11,7 @@ import {
   type StrandInstance,
   type StrandRow,
   type StrandStatus,
+  describeThrown,
 } from '@serfab/cadre-core';
 import { checkBearer } from './bearer.js';
 
@@ -213,7 +214,7 @@ export class AdminServer {
       if (err instanceof AdminError) {
         this.sendError(res, err.code, err.message);
       } else {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = describeThrown(err);
         this.sendError(res, classifyError(message), message);
       }
     }
@@ -375,7 +376,7 @@ export class AdminServer {
       }
       return parsed as Record<string, unknown>;
     } catch (err) {
-      throw new AdminError('bad_request', `Invalid JSON body: ${err instanceof Error ? err.message : String(err)}`);
+      throw new AdminError('bad_request', `Invalid JSON body: ${describeThrown(err)}`);
     }
   }
 

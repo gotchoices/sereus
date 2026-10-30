@@ -4,6 +4,10 @@ export * from './types.js';
 // Canonical JSON serialization (shared signing payload format)
 export { canonicalJson } from './canonical-json.js';
 
+// Text for a caught value that may not be an Error (every package that turns one into a message
+// uses this; `yarn lint` flags the `String(err)` fallback it replaces)
+export { describeThrown } from './describe-thrown.js';
+
 // Main CadreNode class
 export { CadreNode, CADRE_INVITATION_DEFAULT_TTL_MS, OWNER_GRANT_DEFAULT_TTL_MS } from './cadre-node.js';
 

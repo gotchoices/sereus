@@ -27,6 +27,7 @@ import {
 	PeerUnreachableError,
 	decodeNodeClaimPayload,
 	type NodeClaimPayload,
+	describeThrown,
 } from '@serfab/cadre-core';
 
 /** What every node code starts with, whatever its version. The scanner latches on it. */
@@ -55,7 +56,7 @@ export function readNodeCode(text: string): NodeCodeReading {
 		return {
 			ok: false,
 			message: 'This node code is damaged or incomplete. Scan it again, or copy the whole text.',
-			detail: err instanceof Error ? err.message : String(err),
+			detail: describeThrown(err),
 		};
 	}
 }
@@ -145,7 +146,7 @@ const UNREACHABLE: Record<NodeReach, string> = {
 
 /** What to tell the user about `error`, thrown by claiming the node `payload` names. */
 export function describeClaimFailure(error: unknown, payload: NodeClaimPayload): ClaimFailureDescription {
-	const detail = error instanceof Error ? error.message : String(error);
+	const detail = describeThrown(error);
 	if (error instanceof PeerUnreachableError) {
 		return { message: UNREACHABLE[nodeReach(payload.multiaddrs)], detail, canRetrySameCode: true };
 	}

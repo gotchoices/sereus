@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
+import { describeThrown } from '@serfab/cadre-core';
 import { loadValidatedConfig } from '../config/loader.js';
 import { commandEnv } from '../config/env.js';
 import {
@@ -73,7 +74,7 @@ async function loadConfigSummary(configPath: string, json: boolean): Promise<Con
     };
   } catch (err) {
     if (!json) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = describeThrown(err);
       console.warn(`Warning: failed to read config ${configPath}: ${message} — skipping configuration summary.`);
     }
     return null;

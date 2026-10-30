@@ -2,10 +2,10 @@ import debug from 'debug';
 
 import type { Orchestrator } from '@serfab/cadre-provider';
 
+import { describeThrown } from '@serfab/cadre-core';
 import type { ManagedNodeInfo, NodeStateListener } from '../orchestrator/types.js';
 import type { HostedNodeService } from './hosted-node-service.js';
 import type { HostedNodeStore } from './hosted-node-store.js';
-import { errorMessage } from './node-status.js';
 import type { HostedNode, HostedNodeStatus } from './types.js';
 
 const log = debug('cadre:host:hosted-node-supervisor');
@@ -203,7 +203,7 @@ export class HostedNodeSupervisor {
     try {
       known = new Set(this.store.list().map((n) => n.id));
     } catch (err) {
-      log('orphan check could not list hosted nodes: %s', errorMessage(err));
+      log('orphan check could not list hosted nodes: %s', describeThrown(err));
       return;
     }
     for (const handle of this.orchestrator.listNodes()) {
@@ -222,7 +222,7 @@ export class HostedNodeSupervisor {
         if (ids.length) log('%s sweep respawned %d hosted node(s): %o', trigger, ids.length, ids);
       })
       .catch((err) => {
-        console.error(`hosted node respawn sweep failed: ${errorMessage(err)}`);
+        console.error(`hosted node respawn sweep failed: ${describeThrown(err)}`);
       });
   }
 
@@ -235,7 +235,7 @@ export class HostedNodeSupervisor {
     if (this.exitPassQueued) return;
     this.exitPassQueued = true;
     void this.reconcile()
-      .catch((err) => { console.error(`hosted node respawn sweep failed: ${errorMessage(err)}`); })
+      .catch((err) => { console.error(`hosted node respawn sweep failed: ${describeThrown(err)}`); })
       .finally(() => { this.exitPassQueued = false; });
   }
 
@@ -248,7 +248,7 @@ export class HostedNodeSupervisor {
     } catch (err) {
       // A malformed hosted-nodes.json throws on every load; log rather than let an
       // unhandled rejection escape the timer.
-      log('reconcile could not list hosted nodes: %s', errorMessage(err));
+      log('reconcile could not list hosted nodes: %s', describeThrown(err));
       return respawned;
     }
 
@@ -259,7 +259,7 @@ export class HostedNodeSupervisor {
         if (id) respawned.push(id);
       } catch (err) {
         // One bad record must never end the sweep — the others are still down.
-        log('reconcile of hosted node %s failed: %s', node.id, errorMessage(err));
+        log('reconcile of hosted node %s failed: %s', node.id, describeThrown(err));
       }
     }
     return respawned;
@@ -340,7 +340,7 @@ export class HostedNodeSupervisor {
       log('hosted node %s is healthy again — respawn budget refilled', node.id);
     } catch (err) {
       // Costs one attempt off the next crash's budget, nothing more.
-      log('failed to refill respawn budget for %s: %s', node.id, errorMessage(err));
+      log('failed to refill respawn budget for %s: %s', node.id, describeThrown(err));
     }
   }
 
@@ -376,7 +376,7 @@ export class HostedNodeSupervisor {
           return node.id;
       }
     } catch (err) {
-      const message = errorMessage(err);
+      const message = describeThrown(err);
       // `respawn` persists the incremented counter; re-read it rather than
       // recomputing, so a give-up decision is made on what is actually on disk.
       const attempts = this.store.get(node.id)?.respawn?.attempts ?? 0;
@@ -432,7 +432,7 @@ export class HostedNodeSupervisor {
         // to record writes the new one onto the record. Still guarded: a handle
         // can be lost to a host restart (state.json gone, or the child already
         // reaped), and the child is dead either way, which is why we are here.
-        log('failed to stop container %s while giving up: %s', node.dockerId, errorMessage(err));
+        log('failed to stop container %s while giving up: %s', node.dockerId, describeThrown(err));
       }
     }
   }

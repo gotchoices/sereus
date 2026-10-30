@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { finishRental, rentNode, type CadreNode } from '@serfab/cadre-core';
+import { finishRental, rentNode, type CadreNode, describeThrown } from '@serfab/cadre-core';
 import type {
   StrandInstance,
   CadreNodeEvents,
@@ -618,7 +618,7 @@ export function useCadreInternal(): UseCadreResult {
       void acquireAndRegisterDeviceToken();
       void resumeUnfinishedJoin();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = describeThrown(err);
       setError(msg);
       setStatus('error');
     }
@@ -651,7 +651,7 @@ export function useCadreInternal(): UseCadreResult {
         console.warn('[use-cadre] could not read the saved start options:', err);
         if (!unmounted) {
           setSavedStartRead('failed');
-          setError(`Could not read the saved connection settings: ${err instanceof Error ? err.message : String(err)}`);
+          setError(`Could not read the saved connection settings: ${describeThrown(err)}`);
         }
         return;
       }

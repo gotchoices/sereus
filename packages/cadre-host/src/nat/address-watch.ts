@@ -1,5 +1,6 @@
 import debug from 'debug';
 
+import { describeThrown } from '@serfab/cadre-core';
 import type { ManagedNodeInfo } from '../orchestrator/types.js';
 
 const log = debug('cadre:host:nat-address-watch');
@@ -88,5 +89,5 @@ function sameAddressSet(a: readonly string[], b: readonly string[]): boolean {
 }
 
 function logRestartFailure(nodeId: string, err: unknown): void {
-  log('address restart of node %s failed: %s', nodeId, err instanceof Error ? err.message : String(err));
+  log('address restart of node %s failed: %s', nodeId, describeThrown(err));
 }

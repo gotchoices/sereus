@@ -15,7 +15,7 @@
 
 import { useEffect, useState } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
-import { CADRE_INVITATION_PREFIX, OWNER_GRANT_PREFIX } from '@serfab/cadre-core';
+import { CADRE_INVITATION_PREFIX, OWNER_GRANT_PREFIX, describeThrown } from '@serfab/cadre-core';
 import type { SereusApp } from '@serfab/cadre-rn/app-link';
 import { useCadre } from './cadre-context';
 import { CodeScanner } from './code-scanner';
@@ -130,7 +130,7 @@ function AskOwnerApp({ showAlert }: { showAlert: ShowAlert }) {
 		} catch (err) {
 			console.warn('[settings] could not list the Sereus apps on this phone:', err);
 			setApps(null);
-			showAlert('Could not list the apps on this phone', COPY_REQUEST_LINE, err instanceof Error ? err.message : String(err));
+			showAlert('Could not list the apps on this phone', COPY_REQUEST_LINE, describeThrown(err));
 		}
 	};
 
@@ -159,7 +159,7 @@ export async function askOwnerAppOrAlert(
 		showAlert(`Could not open ${app?.name ?? 'an app that holds your cadre'}`, COPY_REQUEST_LINE);
 	} catch (err) {
 		console.warn('[settings] could not ask the app holding the cadre:', err);
-		showAlert('Could not ask the app that holds your cadre', COPY_REQUEST_LINE, err instanceof Error ? err.message : String(err));
+		showAlert('Could not ask the app that holds your cadre', COPY_REQUEST_LINE, describeThrown(err));
 	}
 }
 
@@ -282,7 +282,7 @@ function useJoinRequest(): JoinRequest {
 				if (current) setRequest({ state: 'ready', text, peerId });
 			} catch (err) {
 				console.warn('[settings] could not read this app\'s identity for its join request:', err);
-				if (current) setRequest({ state: 'failed', error: err instanceof Error ? err.message : String(err) });
+				if (current) setRequest({ state: 'failed', error: describeThrown(err) });
 			}
 		};
 		void read();

@@ -9,7 +9,7 @@
  * a visit to Home. The node it switches is the edge node's (`store.svelte.ts` → `joinCadre`,
  * `retryStrandMove`, `dissolveFormerParty`).
  */
-import { StrandMoveNotOwnerError, type StrandMoveReport } from '@serfab/cadre-core';
+import { StrandMoveNotOwnerError, type StrandMoveReport, describeThrown } from '@serfab/cadre-core';
 import {
 	FormerPartyNotEmptyError,
 	StrandMovePendingError,
@@ -25,7 +25,6 @@ import { dissolveFormerParty, joinCadre, nodeState, retryStrandMove as retryMove
 import { pushError } from './diagnostics.svelte.js';
 import { flowForProgress, JoinCancelledError, joinFailureNotice, type JoinFlow } from './join-flow.js';
 import { StoreDeleteBlockedError } from './strand-storage.js';
-import { errorMessage } from './cadre-format.js';
 
 /** This tab's join request, read off the running node; it is the same in every party. */
 export type JoinRequest =
@@ -74,7 +73,7 @@ export function refreshJoinRequest(): void {
 		state.request = { state: 'ready', text: joinRequestText(), peerId };
 	} catch (err) {
 		console.warn('[cadre] could not encode this tab’s join request:', err);
-		state.request = { state: 'failed', error: errorMessage(err) };
+		state.request = { state: 'failed', error: describeThrown(err) };
 	}
 }
 
@@ -146,7 +145,7 @@ function moveStall(move: StrandMoveOutcome | undefined): MoveStall | null {
 /** Why a retried move threw: the tab's key is still no owner of the joined party, or the adoption failed (or the node stopped meanwhile). */
 function retryStall(err: unknown): MoveStall {
 	if (err instanceof StrandMoveNotOwnerError) return { reason: 'owner-key-not-wired' };
-	return { reason: 'adoption-failed', message: errorMessage(err) };
+	return { reason: 'adoption-failed', message: describeThrown(err) };
 }
 
 /**
@@ -218,7 +217,7 @@ function flowAfterFailedDissolve(err: unknown): JoinFlow {
 	if (unfinished) return unfinishedRemovalFlow(unfinished);
 	const start = edgeNode.options;
 	if (start && start.formerPartyId === undefined) return doneFlow();
-	return { step: 'old-cadre-remains', error: errorMessage(err) };
+	return { step: 'old-cadre-remains', error: describeThrown(err) };
 }
 
 function unfinishedRemovalFlow(unfinished: UnfinishedRemoval): JoinFlow {

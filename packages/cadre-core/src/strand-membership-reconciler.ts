@@ -162,6 +162,7 @@ import {
   type StrandWriteOptions,
 } from './strand-membership-writer.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:strand-membership-reconciler');
 
@@ -275,7 +276,7 @@ export function classifyConsumeFailure(error: unknown): ConsumeFailure {
   if (isTransactionBusy(error)) return { kind: 'busy' };
   const halfCommitted = halfCommittedJoin(error);
   if (halfCommitted) return halfCommitted;
-  const message = errorMessage(error);
+  const message = describeThrown(error);
   if (SEALED_REJECTION.test(message)) return { kind: 'sealed' };
   if (DEAD_INVITE_REJECTION.test(message)) return { kind: 'dead-invite' };
   return { kind: 'retry' };
@@ -309,10 +310,6 @@ function halfCommittedJoin(error: unknown): HalfCommittedJoin | undefined {
 function isTransactionBusy(error: unknown): boolean {
   return causeChain(error).some((link) =>
     link instanceof StrandTransactionBusyError || link instanceof StrandOfflineQueueBusyError);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -730,18 +727,18 @@ export class StrandMembershipReconciler {
     switch (failure.kind) {
       case 'busy':
         log('[%s] burning the leftover invitation deferred — nothing was tried; it stays staged for the next '
-          + 'pass: %s', this.deps.label, errorMessage(error));
+          + 'pass: %s', this.deps.label, describeThrown(error));
         return;
       case 'sealed':
       case 'dead-invite':
         log('[%s] the leftover invitation is dead (already spent, cancelled, expired, or the strand sealed) — '
-          + 'dropping it: %s', this.deps.label, errorMessage(error));
+          + 'dropping it: %s', this.deps.label, describeThrown(error));
         this.deps.pendingInvite?.clear(invite);
         return;
       case 'half-committed':
       case 'retry':
         log('[%s] burning the leftover invitation was refused — it stays staged and is retried next tick '
-          + '(the cohort refusing this machine, or a transient write failure): %s', this.deps.label, errorMessage(error));
+          + '(the cohort refusing this machine, or a transient write failure): %s', this.deps.label, describeThrown(error));
         return;
     }
   }
@@ -779,7 +776,7 @@ export class StrandMembershipReconciler {
     switch (failure.kind) {
       case 'busy':
         log('[%s] redeeming the staged invitation deferred — nothing was tried; retrying next tick: %s',
-          this.deps.label, errorMessage(error));
+          this.deps.label, describeThrown(error));
         return;
       case 'half-committed':
         this.reportHalfCommittedJoin(failure, error, invite);
@@ -796,12 +793,12 @@ export class StrandMembershipReconciler {
         // re-arms flat, so the cost is one extra read per dead credential. Revisit if a
         // source of dead invitations ever repeats per pass.
         log('[%s] the staged invitation is dead (expired, cancelled, or consumed elsewhere) — dropping it; '
-          + 'a fresh formation stages a new one: %s', this.deps.label, errorMessage(error));
+          + 'a fresh formation stages a new one: %s', this.deps.label, describeThrown(error));
         this.deps.pendingInvite?.clear(invite);
         return;
       case 'retry':
         log('[%s] consumeInvite failed — retrying next tick (Invite row not yet replicated here, the cohort '
-          + 'refusing this machine, or a transient write failure): %s', this.deps.label, errorMessage(error));
+          + 'refusing this machine, or a transient write failure): %s', this.deps.label, describeThrown(error));
         return;
     }
   }
@@ -896,7 +893,7 @@ export class StrandMembershipReconciler {
     try {
       this.keyPair = strandMemberKeyPair(this.deps.partyMemberPrivateKey);
     } catch (error) {
-      this.finish(`the party membership key does not decode — nothing can be signed (${errorMessage(error)})`, true);
+      this.finish(`the party membership key does not decode — nothing can be signed (${describeThrown(error)})`, true);
       return undefined;
     }
     return this.keyPair;

@@ -147,6 +147,34 @@ const LINK_DEADLINE_GUARD = [
 ].map((selector) => ({ selector, message: LINK_DEADLINE_MESSAGE }));
 const LINK_DEADLINE_SCOPE = ['packages/cadre-core/src/**/*.{ts,tsx,mts,cts}'];
 
+// A caught value turned into text with `String()` when it is not an Error. A React Native
+// WebSocket failure rejects with its error event and libp2p sometimes rejects with a plain object;
+// `String()` reads `[object Object]` for both, which is what a phone's relay status said
+// (gotchoices/sereus#54). Flagged: a conditional whose test is `… instanceof Error` and whose
+// other arm is a `String(…)` call, whatever the Error arm reads.
+//
+// Scope is the source of the packages that depend on cadre-core (THROWN_DESCRIPTION_SCOPE). The
+// rest are left out because the advice cannot be followed there: cadre-provider, config-check and
+// quereus-plugin-sereus do not depend on cadre-core by design, and cadre-host's browser UI
+// (`cadre-host/ui`) must not load cadre-core's root entry. A new package without cadre-core is
+// flagged until it is added to the ignores below.
+//
+// NOTE: catches the idiom, not every way to lose the text — `${err}`, `'' + err` and a bare
+// `String(err)` outside a conditional pass unflagged.
+const THROWN_DESCRIPTION_GUARD = [
+	{
+		selector: "ConditionalExpression[test.operator='instanceof'][test.right.name='Error'] > CallExpression.alternate[callee.name='String']",
+		message: 'Describe a caught value with describeThrown from @serfab/cadre-core (relative ./describe-thrown.js inside cadre-core). String() reads `[object Object]` for anything that is not an Error, such as a React Native WebSocket event; describeThrown reads its fields instead, and keeps an Error\'s message unchanged.',
+	},
+];
+const THROWN_DESCRIPTION_SCOPE = ['packages/*/src/**/*.{ts,tsx,mts,cts}'];
+const THROWN_DESCRIPTION_SVELTE_SCOPE = ['packages/*/src/**/*.svelte'];
+const PACKAGES_WITHOUT_CADRE_CORE = [
+	'packages/cadre-provider/src/**',
+	'packages/config-check/src/**',
+	'packages/quereus-plugin-sereus/src/**',
+];
+
 // `packages/*/src` is the first-party source of every package, including the two browser-only
 // apps (reference-app-web, cadre-host/ui) where these APIs exist — accepted deliberately: they
 // have no uses there today, and a browser-only need is one `eslint-disable-next-line` with its
@@ -255,10 +283,10 @@ export default tseslint.config(
 	// happily while skipping the refresh — a mistake that has been made twice — so flag
 	// the SQL itself (CADRE_PEER_WRITE_GUARD, above).
 	//
-	// First-party package source additionally gets PHONE_RUNTIME_GUARD, and cadre-core's source
-	// LINK_DEADLINE_GUARD on top (both above). A later entry replaces an earlier one's options
-	// for the files it matches, so each narrower scope repeats the wider one's selectors rather
-	// than adding to them.
+	// First-party package source additionally gets PHONE_RUNTIME_GUARD, the source of packages that
+	// depend on cadre-core THROWN_DESCRIPTION_GUARD, and cadre-core's source LINK_DEADLINE_GUARD on
+	// top (all above). A later entry replaces an earlier one's options for the files it matches, so
+	// each narrower scope repeats the wider one's selectors rather than adding to them.
 	{
 		files: ['**/*.{ts,tsx,mts,cts}'],
 		rules: {
@@ -272,18 +300,32 @@ export default tseslint.config(
 		},
 	},
 	{
+		files: THROWN_DESCRIPTION_SCOPE,
+		ignores: PACKAGES_WITHOUT_CADRE_CORE,
+		rules: {
+			'no-restricted-syntax': ['error', ...CADRE_PEER_WRITE_GUARD, ...PHONE_RUNTIME_GUARD, ...THROWN_DESCRIPTION_GUARD],
+		},
+	},
+	{
+		// `.svelte` components: no other entry sets the rule for them, so this one list is all.
+		files: THROWN_DESCRIPTION_SVELTE_SCOPE,
+		rules: {
+			'no-restricted-syntax': ['error', ...THROWN_DESCRIPTION_GUARD],
+		},
+	},
+	{
 		files: LINK_DEADLINE_SCOPE,
 		rules: {
-			'no-restricted-syntax': ['error', ...CADRE_PEER_WRITE_GUARD, ...PHONE_RUNTIME_GUARD, ...LINK_DEADLINE_GUARD],
+			'no-restricted-syntax': ['error', ...CADRE_PEER_WRITE_GUARD, ...PHONE_RUNTIME_GUARD, ...THROWN_DESCRIPTION_GUARD, ...LINK_DEADLINE_GUARD],
 		},
 	},
 	{
 		// The exemptions (flat config: a later entry wins, so these must follow the rules).
 		// The destination itself — these ARE the wrapped writers. It is cadre-core source, so
-		// only the CadrePeer selectors come off; the phone-runtime and deadline ones stay.
+		// only the CadrePeer selectors come off; the phone-runtime, thrown-value and deadline ones stay.
 		files: ['packages/cadre-core/src/control-database.ts'],
 		rules: {
-			'no-restricted-syntax': ['error', ...PHONE_RUNTIME_GUARD, ...LINK_DEADLINE_GUARD],
+			'no-restricted-syntax': ['error', ...PHONE_RUNTIME_GUARD, ...THROWN_DESCRIPTION_GUARD, ...LINK_DEADLINE_GUARD],
 		},
 	},
 	{

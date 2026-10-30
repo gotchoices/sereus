@@ -11,7 +11,7 @@
  */
 
 import { Linking, Platform } from 'react-native';
-import { CADRE_JOIN_REQUEST_PREFIX, type CadreJoinReply, type CadreJoinRequest } from '@serfab/cadre-core';
+import { CADRE_JOIN_REQUEST_PREFIX, describeThrown, type CadreJoinReply, type CadreJoinRequest } from '@serfab/cadre-core';
 import {
 	CADRE_JOIN_RESPONSE_PREFIX,
 	installedSereusApps,
@@ -177,7 +177,7 @@ export function joinResponseAlert(outcome: JoinResponseOutcome): { title: string
  * `openURL` rejection names the URL.
  */
 function withoutLinkText(err: unknown, prefix: string): string {
-	const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+	const message = err instanceof Error ? `${err.name}: ${err.message}` : describeThrown(err);
 	const [head, ...afterPrefix] = message.split(prefix);
 	return [head, ...afterPrefix.map((part) => part.replace(/^[A-Za-z0-9_-]*/, '…'))].join(prefix);
 }

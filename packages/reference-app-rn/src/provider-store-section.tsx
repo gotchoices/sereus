@@ -16,6 +16,7 @@ import { Image, Linking, Modal, ScrollView, StyleSheet, Text, View } from 'react
 import * as WebBrowser from 'expo-web-browser';
 import type { BillingStatus, RentalFailed, RentNodeResult, RentNodeStep } from '@serfab/cadre-core';
 import type { Rental } from '@serfab/cadre-rn/provider';
+import { describeThrown } from '@serfab/cadre-core';
 import { useCadre } from './cadre-context';
 import { ownScheme, providerTokens } from './cadre-phone';
 import { useMachineRemoval } from './machine-removal';
@@ -24,7 +25,7 @@ import { standingLine, useOwnerStanding } from './owner-standing';
 import { openProviderSession, type ProviderSession } from './provider-session';
 import { configuredProviders, fetchPlans, planPriceText, providerRedirectUri, type ConfiguredProvider, type ProviderPlan } from './providers';
 import { billingText, describeRentalFailure, readingFromError, rentalRow, rentStepText, type ContainerReading, type RentalAction } from './rentals';
-import { Btn, ConfirmPrompt, controlStyles, errorMessage, Fact, Section, useLaterThan } from './settings-controls';
+import { Btn, ConfirmPrompt, controlStyles, Fact, Section, useLaterThan } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 import { useRentalPoll } from './use-rental-poll';
 
@@ -101,12 +102,12 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 				if (!stale) setStore((current) => (current.state === 'ready' ? { ...current, plans } : current));
 			} catch (err) {
 				console.warn('[settings] could not read the provider\'s plans:', err);
-				if (!stale) setStore((current) => (current.state === 'ready' ? { ...current, plansError: errorMessage(err) } : current));
+				if (!stale) setStore((current) => (current.state === 'ready' ? { ...current, plansError: describeThrown(err) } : current));
 			}
 		};
 		open().catch((err: unknown) => {
 			console.warn('[settings] could not read the provider:', err);
-			if (!stale) setStore({ state: 'failed', error: errorMessage(err) });
+			if (!stale) setStore({ state: 'failed', error: describeThrown(err) });
 		});
 		return () => {
 			stale = true;
@@ -243,7 +244,7 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 			await cadre.forgetRental(rental.containerId);
 		} catch (err) {
 			console.warn(`[settings] forgetting rental ${rental.containerId} failed:`, err);
-			showAlert('Could not forget the node', errorMessage(err));
+			showAlert('Could not forget the node', describeThrown(err));
 		}
 		setTick((n) => n + 1);
 		onRentalsChanged();
@@ -273,7 +274,7 @@ export function ProviderStoreSection({ provider, showAlert, onRentalsChanged }: 
 			await session.signOut();
 		} catch (err) {
 			console.warn('[settings] signing out of the provider failed:', err);
-			showAlert('Could not sign out', errorMessage(err));
+			showAlert('Could not sign out', describeThrown(err));
 		}
 	});
 

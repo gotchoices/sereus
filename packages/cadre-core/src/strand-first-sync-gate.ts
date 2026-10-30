@@ -74,6 +74,7 @@ import type { Database } from '@quereus/quereus';
 import type { StrandDatabase } from './strand-database.js';
 import { scheduleRuns, TABLE_CHANGE_COALESCE_MS, type TableChangeWatch } from './table-change-watch.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:strand-first-sync');
 
@@ -316,7 +317,7 @@ async function headerHeld(db: Database, label: string): Promise<boolean> {
     return false;
   } catch (error) {
     log('[%s] Header probe failed (treated as not yet held): %s', label,
-      error instanceof Error ? error.message : String(error));
+      describeThrown(error));
     return false;
   }
 }
@@ -335,7 +336,7 @@ async function tableReadable(db: Database, table: ProbedTable, label: string): P
     return true;
   } catch (error) {
     log('[%s] %s probe failed (treated as not yet synced): %s', label, qualifiedName(table),
-      error instanceof Error ? error.message : String(error));
+      describeThrown(error));
     return false;
   }
 }
@@ -554,7 +555,7 @@ export class StrandFirstSyncGate {
       return await strandFirstSyncComplete(this.deps.database.getDatabase(), this.deps.label, this.progress);
     } catch (error) {
       log('[%s] first-sync probe threw (treated as not yet synced): %s', this.deps.label,
-        error instanceof Error ? error.message : String(error));
+        describeThrown(error));
       return false;
     }
   }

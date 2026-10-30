@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import debug from 'debug';
 import type { CreateOwnerGrantOptions } from '@serfab/cadre-core';
+import { describeThrown } from '@serfab/cadre-core';
 import {
   adminRequest, resolveAdminConnection, describeAdminFailure, DEFAULT_ADMIN_TIMEOUT_MS,
   type AdminConnectionOptions, type AdminFetch
@@ -88,7 +89,7 @@ async function runEnrollOwnerGrant(options: EnrollOwnerGrantOptions, fetchImpl: 
     request = buildOwnerGrantRequest(options);
     resolved = resolveAdminConnection(options, process.env, fetchImpl);
   } catch (err) {
-    fail(err instanceof Error ? err.message : String(err), err);
+    fail(describeThrown(err), err);
     return;
   }
   try {

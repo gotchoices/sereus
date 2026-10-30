@@ -8,13 +8,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
-import { parseNullableStoredDatetimeMs, type CadreInviteStatus, type CadreMachine } from '@serfab/cadre-core';
+import { parseNullableStoredDatetimeMs, type CadreInviteStatus, type CadreMachine, describeThrown } from '@serfab/cadre-core';
 import type { Rental } from '@serfab/cadre-rn/provider';
 import { useCadre } from './cadre-context';
 import { SELF_LINE, useMachineRemoval } from './machine-removal';
 import { lastSeenText, machineCode, machineKind, pendingDeviceInvitations, rentedFromText } from './machines';
 import { standingLine, useOwnerStanding } from './owner-standing';
-import { Btn, controlStyles, errorMessage, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
+import { Btn, controlStyles, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 type ShowAlert = (title: string, message: string, detail?: string) => void;
@@ -61,7 +61,7 @@ export function MachinesSection({ showAlert, refreshKey, onShowOwnerKeys }: {
 			setListError(null);
 		} catch (err) {
 			console.warn('[settings] could not read this cadre\'s machines:', err);
-			if (nodeRef.current === node) setListError(errorMessage(err));
+			if (nodeRef.current === node) setListError(describeThrown(err));
 		}
 	};
 
@@ -79,7 +79,7 @@ export function MachinesSection({ showAlert, refreshKey, onShowOwnerKeys }: {
 			}
 		} catch (err) {
 			console.warn(`[settings] withdrawing cadre invitation ${key} failed:`, err);
-			showAlert('Could not withdraw the invitation', errorMessage(err));
+			showAlert('Could not withdraw the invitation', describeThrown(err));
 		}
 		await refresh();
 	};

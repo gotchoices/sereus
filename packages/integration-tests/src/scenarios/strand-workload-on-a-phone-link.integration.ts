@@ -164,7 +164,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { CadreNode, generateStrandMemberKey } from '@serfab/cadre-core';
+import { CadreNode, generateStrandMemberKey, describeThrown } from '@serfab/cadre-core';
 import type { StrandInstance } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import {
@@ -361,7 +361,7 @@ async function tearDown(steps: Teardown): Promise<void> {
 		try {
 			await step();
 		} catch (error) {
-			console.warn('[workload] teardown step failed: %s', error instanceof Error ? error.message : String(error));
+			console.warn('[workload] teardown step failed: %s', describeThrown(error));
 		}
 	}
 }

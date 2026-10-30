@@ -21,6 +21,7 @@ import {
 	type ImportedOwnerKey,
 	type OwnerGrantStatus,
 	type OwnerKeyRemovalPlan,
+	describeThrown,
 } from '@serfab/cadre-core';
 import type { RedeemedOwnerGrant } from '@serfab/cadre-rn/phone-node';
 import { useCadre } from './cadre-context';
@@ -53,7 +54,7 @@ import {
 	type ExportForm,
 } from './owner-keys';
 import { standingLine, useOwnerStanding } from './owner-standing';
-import { Btn, controlStyles, errorMessage, Fact, LabelledInput, Section, useExclusive } from './settings-controls';
+import { Btn, controlStyles, Fact, LabelledInput, Section, useExclusive } from './settings-controls';
 import { ShareCode } from './share-code';
 import { TEST_IDS } from './test-ids';
 
@@ -113,7 +114,7 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 			return listed;
 		} catch (err) {
 			console.warn('[settings] could not read this cadre\'s owner keys:', err);
-			if (nodeRef.current === node) setListError(errorMessage(err));
+			if (nodeRef.current === node) setListError(describeThrown(err));
 			return null;
 		}
 	};
@@ -128,7 +129,7 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 			setGrantsError(null);
 		} catch (err) {
 			console.warn('[settings] could not read this cadre\'s owner grants:', err);
-			if (nodeRef.current === node) setGrantsError(errorMessage(err));
+			if (nodeRef.current === node) setGrantsError(describeThrown(err));
 		}
 	};
 
@@ -243,7 +244,7 @@ export function OwnerKeysSection({ showAlert, onOwnerKeysChanged }: {
 			plan = await cadre.planOwnerKeyRemoval(ownerKey.key);
 		} catch (err) {
 			console.warn(`[settings] could not read what removing owner key ${ownerFingerprint(ownerKey.key)} would do:`, err);
-			showAlert('Could not prepare the removal', errorMessage(err));
+			showAlert('Could not prepare the removal', describeThrown(err));
 			return;
 		}
 		const machines = plan.dependents.peers.length > 0 ? await readMachinesQuietly(cadre.listMachines) : [];

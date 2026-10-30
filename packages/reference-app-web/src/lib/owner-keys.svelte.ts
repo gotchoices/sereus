@@ -36,6 +36,7 @@ import {
 	type OwnerKeyExportOptions,
 	type OwnerKeyRemovalPlan,
 	type OwnerKeyRemovalRefusal,
+	describeThrown,
 } from '@serfab/cadre-core';
 import type { RedeemedOwnerGrant } from '@serfab/cadre-core/edge-node';
 import {
@@ -51,7 +52,7 @@ import {
 } from './cadre-web.js';
 import { importOwnerKey, redeemOwnerGrant } from './store.svelte.js';
 import { pushError } from './diagnostics.svelte.js';
-import { errorMessage, ownerFingerprint, peerCode } from './cadre-format.js';
+import { ownerFingerprint, peerCode } from './cadre-format.js';
 import { machineCode, machineKind, refreshMachines } from './machines.svelte.js';
 import { describeOwnerGrantFailure, grantFileName, liveGrants, shownGrantTitle } from './owner-grants.js';
 import type { Standing } from './add-device.svelte.js';
@@ -159,7 +160,7 @@ async function readKeys(stale: () => boolean): Promise<CadreOwnerKey[] | null> {
 		return keys;
 	} catch (err) {
 		console.warn('[cadre] could not read this cadre\'s owner keys:', err);
-		if (!stale()) state.listError = errorMessage(err);
+		if (!stale()) state.listError = describeThrown(err);
 		return null;
 	}
 }
@@ -173,7 +174,7 @@ async function readGrants(stale: () => boolean): Promise<void> {
 		state.grantsError = null;
 	} catch (err) {
 		console.warn('[cadre] could not read this cadre\'s owner grants:', err);
-		if (!stale()) state.grantsError = errorMessage(err);
+		if (!stale()) state.grantsError = describeThrown(err);
 	}
 }
 
@@ -326,7 +327,7 @@ export async function askToRemove(ownerKey: CadreOwnerKey): Promise<void> {
 			plan = await planOwnerKeyRemoval(ownerKey.key);
 		} catch (err) {
 			console.warn(`[cadre] could not read what removing owner key ${ownerFingerprint(ownerKey.key)} would do:`, err);
-			state.notice = { area: 'list', title: 'Could not prepare the removal', message: errorMessage(err), failed: true };
+			state.notice = { area: 'list', title: 'Could not prepare the removal', message: describeThrown(err), failed: true };
 			return;
 		}
 		const machines = plan.dependents.peers.length > 0 ? await readMachinesQuietly(node) : [];
@@ -571,7 +572,7 @@ function describeOwnerKeyFailure(err: unknown): string {
 	if (err instanceof OwnerKeyExportError) return err.message;
 	if (err instanceof OwnerKeySlotOccupiedError) return SLOT_OCCUPIED_LINE;
 	if (err instanceof OwnerKeyRemovalRefusedError) return REMOVAL_REFUSAL_LINE[err.code];
-	return errorMessage(err);
+	return describeThrown(err);
 }
 
 /** One Keep box in the removal confirmation: a device or an owner key the removed key added. */

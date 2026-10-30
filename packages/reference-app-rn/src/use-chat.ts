@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { CadreNode, CadreNodeEvents, StrandInstance, StrandQueueState } from '@serfab/cadre-core';
+import { describeThrown } from '@serfab/cadre-core';
 import {
   discardQueuedMessage,
   insertParticipant,
@@ -190,7 +191,7 @@ export function useChat(opts: UseChatOptions): UseChatResult {
       if (settled !== null) onDraftSettledRef.current?.(settled);
     } catch (err) {
       if (strandRef.current !== s) return;
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = describeThrown(err);
       setError(msg);
     } finally {
       inFlightRef.current.delete(s);

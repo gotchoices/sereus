@@ -1,5 +1,6 @@
 import debug from 'debug';
 
+import { describeThrown } from '@serfab/cadre-core';
 import {
   NatError,
   type DdnsProviderInfo,
@@ -126,10 +127,6 @@ function portsOf(ports: { p2p: number; ws?: number }): NodePortPair {
 
 function samePorts(a: NodePortPair, b: NodePortPair): boolean {
   return a.tcp === b.tcp && a.ws === b.ws;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -270,13 +267,13 @@ export class NatService {
     try {
       this.ddnsUpdater?.stop();
     } catch (err) {
-      log('ddns stop failed: %s', errorMessage(err));
+      log('ddns stop failed: %s', describeThrown(err));
     }
     this.ddnsUpdater = null;
     try {
       await this.portMapper.stop();
     } catch (err) {
-      log('port mapper stop failed: %s', errorMessage(err));
+      log('port mapper stop failed: %s', describeThrown(err));
     }
   }
 
@@ -403,7 +400,7 @@ export class NatService {
     await this.detectIp();
     this.lastTestedAt = this.nowFn();
     if (this.ddnsUpdater) {
-      await this.ddnsUpdater.forceUpdate().catch((err) => log('ddns forceUpdate err: %s', errorMessage(err)));
+      await this.ddnsUpdater.forceUpdate().catch((err) => log('ddns forceUpdate err: %s', describeThrown(err)));
     }
     this.publish();
     return this.getStatus();
@@ -508,7 +505,7 @@ export class NatService {
 
   /** Fire-and-forget pass for the timer / event / startup triggers. */
   private sweep(trigger: string, run: () => Promise<void>): void {
-    void run().catch((err) => { log('%s pass failed: %s', trigger, errorMessage(err)); });
+    void run().catch((err) => { log('%s pass failed: %s', trigger, describeThrown(err)); });
   }
 
   /**
@@ -523,7 +520,7 @@ export class NatService {
     void this.enqueue(() => {
       this.eventPassQueued = false;
       return this.reconcileOnce({ mapMissing: true });
-    }).catch((err) => { log('event pass failed: %s', errorMessage(err)); });
+    }).catch((err) => { log('event pass failed: %s', describeThrown(err)); });
   }
 
   private async reconcileOnce(opts: { mapMissing: boolean }): Promise<void> {
@@ -536,7 +533,7 @@ export class NatService {
         await this.reconcileNode(node, opts.mapMissing);
       } catch (err) {
         // One bad node must never end the pass — the others still need their routes.
-        log('reconcile of node %s failed: %s', node.id, errorMessage(err));
+        log('reconcile of node %s failed: %s', node.id, describeThrown(err));
       }
     }
     this.publish();
@@ -664,7 +661,7 @@ export class NatService {
       };
       log('mapped %s %s port %d → external %d', entry.nodeId, kind, internalPort, result.externalPort);
     } catch (err) {
-      const message = errorMessage(err);
+      const message = describeThrown(err);
       // A failed renewal of a live mapping keeps the route: the router still
       // holds it until the lease expires, and `leaseExpired` drops it then.
       const live = previous.source === 'upnp' && !this.leaseExpired(previous);
@@ -715,7 +712,7 @@ export class NatService {
             lastError: `no UPnP gateway answered within ${GATEWAY_DISCOVERY_TIMEOUT_MS / 1000} s`,
           };
     } catch (err) {
-      this.gateway = { found: false, lanAddress: null, routerExternalIp: null, lastError: errorMessage(err) };
+      this.gateway = { found: false, lanAddress: null, routerExternalIp: null, lastError: describeThrown(err) };
     }
     if (!this.gateway.found) log('gateway discovery: %s', this.gateway.lastError);
   }
@@ -735,7 +732,7 @@ export class NatService {
       }
       this.latestIp = result;
     } catch (err) {
-      log('detectIp failed: %s', errorMessage(err));
+      log('detectIp failed: %s', describeThrown(err));
     }
   }
 
@@ -883,7 +880,7 @@ export class NatService {
       try {
         listener(snapshot);
       } catch (err) {
-        log('change listener threw: %s', errorMessage(err));
+        log('change listener threw: %s', describeThrown(err));
       }
     }
   }

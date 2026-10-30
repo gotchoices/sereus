@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, InvalidArgumentError } from 'commander';
+import { describeThrown } from '@serfab/cadre-core';
 
 /** Which service manager the unit is for. */
 export type ServiceKind = 'systemd-user' | 'systemd-system' | 'launchd';
@@ -230,7 +231,7 @@ export const serviceCommand = new Command('service')
       console.error(`To run this node as a service (stop any copy running in a terminal or tmux first), from ${path.dirname(configPath)}:`);
       for (const step of installSteps(kind, options.name, invocation)) console.error(`  ${step}`);
     } catch (err) {
-      console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`✗ ${describeThrown(err)}`);
       process.exit(1);
     }
   });

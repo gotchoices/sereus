@@ -25,7 +25,7 @@
  * and owner key in the node-local database, origin-scoped (`node-local-slots.ts`).
  */
 
-import { generateStrandMemberKey, controlStorageScope } from '@serfab/cadre-core';
+import { generateStrandMemberKey, controlStorageScope, describeThrown } from '@serfab/cadre-core';
 import type {
 	CadreNode,
 	CadreInviteStatus,
@@ -615,7 +615,7 @@ export async function attemptUnauthorizedStrandWrite(): Promise<OwnerGateProbe> 
 		// cleanup is not attempted (the row is itself a regression marker).
 		return { rejected: false, error: null };
 	} catch (err) {
-		return { rejected: true, error: err instanceof Error ? err.message : String(err) };
+		return { rejected: true, error: describeThrown(err) };
 	}
 }
 

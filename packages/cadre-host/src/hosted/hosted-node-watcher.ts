@@ -1,10 +1,10 @@
 import debug from 'debug';
 
-import { decodeCadreInvitation } from '@serfab/cadre-core';
+import { decodeCadreInvitation, describeThrown } from '@serfab/cadre-core';
 
 import type { NodeStateListener } from '../orchestrator/types.js';
 import type { HostedNodeStore } from './hosted-node-store.js';
-import { errorMessage, readWatchedNodeStatus, reportsClaim, reportsRemoval, type NodeStatus, type RemovedNodeStatus } from './node-status.js';
+import { readWatchedNodeStatus, reportsClaim, reportsRemoval, type NodeStatus, type RemovedNodeStatus } from './node-status.js';
 import type { HostedNode, HostedNodeChange, HostedNodeStatus } from './types.js';
 
 const log = debug('cadre:host:hosted-node-watcher');
@@ -100,7 +100,7 @@ export class HostedNodeWatcher {
   /** Ask for a pass now; `id` names a joined node to poll ahead of its cadence. Fire-and-forget. */
   poke(id?: string): void {
     if (id) this.due.add(id);
-    void this.poll().catch((err) => { log('status poll failed: %s', errorMessage(err)); });
+    void this.poll().catch((err) => { log('status poll failed: %s', describeThrown(err)); });
   }
 
   /** One pass over every unclaimed, joining and due joined record, serialized against the others. */
@@ -116,7 +116,7 @@ export class HostedNodeWatcher {
       records = this.store.list().filter((n) => PENDING_STATUSES.has(n.status) || n.status === 'joined');
     } catch (err) {
       // A malformed hosted-nodes.json throws on every load; log rather than let it escape the timer.
-      log('poll could not list hosted nodes: %s', errorMessage(err));
+      log('poll could not list hosted nodes: %s', describeThrown(err));
       return;
     }
     this.forgetRemoved(new Set(records.map((r) => r.id)));
@@ -143,7 +143,7 @@ export class HostedNodeWatcher {
     try {
       status = await readWatchedNodeStatus(record.statusEndpoint);
     } catch (err) {
-      log('hosted node %s did not answer /status (retried next tick): %s', record.id, errorMessage(err));
+      log('hosted node %s did not answer /status (retried next tick): %s', record.id, describeThrown(err));
       return;
     }
     this.lastPolledAt.set(record.id, this.now().getTime());
@@ -252,7 +252,7 @@ export class HostedNodeWatcher {
     try {
       await this.orchestrator.stopContainer(current.dockerId);
     } catch (err) {
-      log('failed to stop hosted node %s after %s: %s', current.id, why, errorMessage(err));
+      log('failed to stop hosted node %s after %s: %s', current.id, why, describeThrown(err));
     }
   }
 
@@ -282,7 +282,7 @@ function issuerOf(node: HostedNode): string | undefined {
   try {
     return decodeCadreInvitation(node.join.encoded).invite.issuerKey;
   } catch (err) {
-    log('hosted node %s carries an invitation that no longer decodes: %s', node.id, errorMessage(err));
+    log('hosted node %s carries an invitation that no longer decodes: %s', node.id, describeThrown(err));
     return undefined;
   }
 }

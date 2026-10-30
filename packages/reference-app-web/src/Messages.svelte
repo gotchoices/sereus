@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { describeThrown } from '@serfab/cadre-core';
 	import {
 		messagesState,
 		ensureReady,
@@ -43,7 +44,7 @@
 		} catch (err) {
 			// `msgs.offline` did not change, so nothing re-renders the box the click toggled.
 			input.checked = !offline;
-			markError = `Could not change offline mode: ${err instanceof Error ? err.message : String(err)}`;
+			markError = `Could not change offline mode: ${describeThrown(err)}`;
 		} finally {
 			modeBusy = false;
 		}
@@ -89,7 +90,7 @@
 			await sendMessage(a, c);
 			content = '';
 		} catch (err) {
-			const reason = err instanceof Error ? err.message : String(err);
+			const reason = describeThrown(err);
 			// A failed strand write does not always settle whether it landed, so say "not confirmed"
 			// rather than "failed". Repeating is safe because the id is minted per draft (see
 			// `sendMessage`), so a resend of unchanged text can only ever replace the earlier write.

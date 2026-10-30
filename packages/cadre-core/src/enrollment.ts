@@ -6,6 +6,7 @@ import type {
   MemberRegistration,
   MemberRegistrationResult
 } from './types.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:enrollment');
 
@@ -151,7 +152,7 @@ export class EnrollmentService {
       log('Member %s successfully registered in strand %s', key, strandId);
       return { success: true };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeThrown(error);
       log('Failed to register member %s: %s', key, message);
       return { success: false, reason: `Registration failed: ${message}` };
     }

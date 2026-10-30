@@ -22,6 +22,7 @@ import {
   type KeyId,
   type KeyStore,
   type OwnerSigner,
+  describeThrown,
 } from '@serfab/cadre-core';
 import { createPrivateFileDurably } from './private-file.js';
 
@@ -41,7 +42,7 @@ class OwnerKeyFileStore implements KeyStore {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       // Never "absent": a key that cannot be read must not be created over.
-      throw new KeyStoreAccessError(keyId, `Cannot read the owner key file ${this.file}: ${errorMessage(err)}`, { cause: err });
+      throw new KeyStoreAccessError(keyId, `Cannot read the owner key file ${this.file}: ${describeThrown(err)}`, { cause: err });
     }
   }
 
@@ -126,8 +127,4 @@ export async function importOwnerKeyFile(file: string, privateKeyB64: string): P
   }
   const signer = await importOwnerKey(new OwnerKeyFileStore(file), privateKeyB64);
   return { signer, changed: existing === undefined };
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

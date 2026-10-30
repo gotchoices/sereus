@@ -9,6 +9,7 @@
 // renames is a compile error here rather than a watcher that never sees a claim.
 import type { HealthStatus } from '@serfab/cadre-cli';
 
+import { describeThrown } from '@serfab/cadre-core';
 import { HostedNodeError } from './types.js';
 
 /** The party an unclaimed child's config names; the claim replaces it. */
@@ -58,7 +59,7 @@ async function fetchNodeStatus(statusEndpoint: string): Promise<HealthStatus> {
   try {
     res = await fetch(statusEndpoint);
   } catch (err) {
-    throw new HostedNodeError('node_unavailable', `Hosted node unreachable: ${errorMessage(err)}`);
+    throw new HostedNodeError('node_unavailable', `Hosted node unreachable: ${describeThrown(err)}`);
   }
   if (!res.ok) {
     throw new HostedNodeError('node_unavailable', `Hosted node /status returned ${res.status}`);
@@ -66,7 +67,7 @@ async function fetchNodeStatus(statusEndpoint: string): Promise<HealthStatus> {
   try {
     return (await res.json()) as HealthStatus;
   } catch (err) {
-    throw new HostedNodeError('node_unavailable', `Hosted node /status is not JSON: ${errorMessage(err)}`);
+    throw new HostedNodeError('node_unavailable', `Hosted node /status is not JSON: ${describeThrown(err)}`);
   }
 }
 
@@ -90,8 +91,4 @@ export function reportsClaim(status: NodeStatus): status is NodeStatus & { node:
     && status.node.claimedBy !== undefined
     && status.node.partyId !== ''
     && status.node.partyId !== PLACEHOLDER_PARTY;
-}
-
-export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

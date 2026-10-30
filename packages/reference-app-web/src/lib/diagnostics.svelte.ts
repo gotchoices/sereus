@@ -43,6 +43,7 @@ import {
 	type ConnectionPathSummary,
 	type ConnectionPathKind,
 	type ConnectionTransport,
+	describeThrown,
 } from '@serfab/cadre-core';
 
 const ERROR_BUFFER_LIMIT = 10;
@@ -257,7 +258,7 @@ export function diagnosticsState(): DiagSnapshot {
 }
 
 export function pushError(source: string, err: unknown): void {
-	const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+	const message = err instanceof Error ? (err.stack ?? err.message) : describeThrown(err);
 	const entry: ErrorEntry = { ts: Date.now(), source, message };
 	const next = [entry, ...snapshot.errors];
 	if (next.length > ERROR_BUFFER_LIMIT) next.length = ERROR_BUFFER_LIMIT;
@@ -403,7 +404,7 @@ async function collectCadre(): Promise<CadreInfo> {
 			const peers = await node.getControlDatabase()?.queryCadrePeers();
 			cadrePeerCount = peers ? peers.length : null;
 		} catch (err) {
-			cadrePeerError = err instanceof Error ? err.message : String(err);
+			cadrePeerError = describeThrown(err);
 		}
 	}
 
@@ -451,7 +452,7 @@ async function collectAuthorization(): Promise<AuthorizationInfo> {
 	} catch (err) {
 		return {
 			...emptyAuthorization(),
-			error: err instanceof Error ? err.message : String(err),
+			error: describeThrown(err),
 			relay,
 			gateProbe: lastGateProbe,
 		};
@@ -469,7 +470,7 @@ export async function runOwnerGateProbe(): Promise<void> {
 	} catch (err) {
 		// An unexpected throw (node not started, control db missing) is itself a
 		// failed probe — record it rather than letting it escape to the UI handler.
-		lastGateProbe = { rejected: false, error: err instanceof Error ? err.message : String(err) };
+		lastGateProbe = { rejected: false, error: describeThrown(err) };
 		pushError('ownerGateProbe', err);
 	}
 	snapshot.authorization = { ...snapshot.authorization, gateProbe: lastGateProbe };
@@ -702,7 +703,7 @@ async function countInto(
 			counts[name] = await db.count(name);
 		}
 	} catch (err) {
-		errors.push(err instanceof Error ? err.message : String(err));
+		errors.push(describeThrown(err));
 	}
 }
 

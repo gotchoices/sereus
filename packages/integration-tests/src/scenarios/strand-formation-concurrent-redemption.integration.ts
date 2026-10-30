@@ -54,6 +54,7 @@ import {
 	CadreNode,
 	verifyFormationConsent,
 	ed25519PublicKeyB64FromPeerId,
+	describeThrown,
 } from '@serfab/cadre-core';
 import type { ControlDatabase, OpenInvitation } from '@serfab/cadre-core';
 import {
@@ -265,7 +266,7 @@ describe('Concurrent invitation redemption across two machines', () => {
 	function rejectionMessage(outcome: PromiseSettledResult<unknown>): string {
 		if (outcome.status !== 'rejected') return '';
 		const reason: unknown = outcome.reason;
-		return reason instanceof Error ? reason.message : String(reason);
+		return describeThrown(reason);
 	}
 
 	/**

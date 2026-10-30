@@ -23,6 +23,7 @@ import {
 	type CadreInviteStatus,
 	type CadreJoinRequest,
 	type CreateCadreInvitationOptions,
+	describeThrown,
 } from '@serfab/cadre-core';
 import {
 	createCadreInvitation,
@@ -34,7 +35,6 @@ import {
 	withdrawCadreInvitation,
 } from './cadre-web.js';
 import { pushError } from './diagnostics.svelte.js';
-import { errorMessage } from './cadre-format.js';
 import { refreshMachines } from './machines.svelte.js';
 
 // Chosen on the relay status, not on which error core threw, so it states only what that
@@ -115,7 +115,7 @@ async function refreshInvitations(): Promise<void> {
 		state.listError = null;
 	} catch (err) {
 		console.warn('[cadre] could not read this cadre\'s invitations:', err);
-		state.listError = errorMessage(err);
+		state.listError = describeThrown(err);
 	}
 }
 
@@ -126,7 +126,7 @@ export async function useRequest(): Promise<void> {
 	try {
 		request = decodeCadreJoinRequest(state.requestText);
 	} catch (err) {
-		state.notice = notice('request', 'Cannot use this request', errorMessage(err));
+		state.notice = notice('request', 'Cannot use this request', describeThrown(err));
 		return;
 	}
 	if (request.peerId === getCadreNode()?.peerId?.toString()) {
@@ -143,7 +143,7 @@ export async function useRequest(): Promise<void> {
 		}
 	} catch (err) {
 		console.warn('[cadre] could not read this cadre\'s owners and machines:', err);
-		state.notice = notice('request', 'Cannot use this request right now', 'Could not read this cadre\'s owners and machines. Try again.', errorMessage(err));
+		state.notice = notice('request', 'Cannot use this request right now', 'Could not read this cadre\'s owners and machines. Try again.', describeThrown(err));
 		return;
 	}
 	state.pending = request;
@@ -210,8 +210,8 @@ async function mint(options: CreateCadreInvitationOptions, title: string, area: 
 
 /** The core error names the cause; the relay line says why this tab cannot be the address the invitation carries, when that is so. */
 function mintFailure(area: NoticeArea, err: unknown): Notice {
-	if (getRelayState().status === 'reserved') return notice(area, 'Could not make an invitation', errorMessage(err));
-	return notice(area, 'Could not make an invitation', NO_ADDRESS_LINE, errorMessage(err));
+	if (getRelayState().status === 'reserved') return notice(area, 'Could not make an invitation', describeThrown(err));
+	return notice(area, 'Could not make an invitation', NO_ADDRESS_LINE, describeThrown(err));
 }
 
 /** Withdraw an invitation by its row key (the caller has confirmed), then re-read the list. */
@@ -224,7 +224,7 @@ export async function withdrawInvitation(key: string): Promise<void> {
 		if (state.minted?.key === key) state.minted = null;
 	} catch (err) {
 		console.warn(`[cadre] withdrawing cadre invitation ${key} failed:`, err);
-		state.notice = notice('list', 'Could not withdraw the invitation', errorMessage(err));
+		state.notice = notice('list', 'Could not withdraw the invitation', describeThrown(err));
 	}
 	await refreshInvitations();
 }

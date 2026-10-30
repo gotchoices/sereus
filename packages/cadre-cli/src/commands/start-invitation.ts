@@ -18,6 +18,7 @@ import {
   type CadreInvitation,
   type CadreNode,
   type OwnerGrantBundle,
+  describeThrown,
 } from '@serfab/cadre-core';
 import { specifiedEnv } from '@serfab/config-check';
 import type { InvitationStatus } from '../server/health.js';
@@ -75,7 +76,7 @@ function decodeCredentialFor<T extends { partyId: string }>(
     decoded = kind.decode(credential.encoded);
   } catch (err) {
     throw new Error(
-      `${credential.source} does not decode as ${kind.noun}: ${err instanceof Error ? err.message : String(err)}`,
+      `${credential.source} does not decode as ${kind.noun}: ${describeThrown(err)}`,
       { cause: err }
     );
   }
@@ -175,5 +176,5 @@ export function describeRedemptionFailure(err: unknown): { error: string; retrya
   }
   if (err instanceof OwnerKeyAddRefusedError) return { error: `${err.message} (${err.code})`, retryable: true };
   if (err instanceof OwnerGrantIssuerUnknownError) return { error: `${err.message} (issuer-unknown)`, retryable: true };
-  return { error: err instanceof Error ? err.message : String(err), retryable: false };
+  return { error: describeThrown(err), retryable: false };
 }

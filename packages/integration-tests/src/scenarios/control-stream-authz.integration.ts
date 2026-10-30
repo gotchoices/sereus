@@ -61,7 +61,7 @@ import type { PeerId } from '@libp2p/interface';
 import { RepoClient } from '@optimystic/db-p2p';
 import { peerIdFromString as repoPeerIdFromString } from '@optimystic/db-core';
 import type { IPeerNetwork, IBlock } from '@optimystic/db-core';
-import { CadreNode, collectStrandAddrs, controlProtocolClasses, relayedRequestBudgetMs } from '@serfab/cadre-core';
+import { CadreNode, collectStrandAddrs, controlProtocolClasses, describeThrown, relayedRequestBudgetMs } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { controlNodeConfig, makeOwnOwner, readCohort, sleep, waitForCohortOn, waitForControlConnection, waitUntil } from '../harness/index.js';
 import type { ControlNodeOpts } from '../harness/index.js';
@@ -168,7 +168,7 @@ async function probeStream(node: Libp2p, target: PeerId, protocol: string, frame
 			}
 			return { protocol, end: 'eof', responseBytes, detail: 'stream closed cleanly' };
 		} catch (error) {
-			const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+			const detail = error instanceof Error ? `${error.name}: ${error.message}` : describeThrown(error);
 			return { protocol, end: 'reset', responseBytes, detail };
 		}
 	})();

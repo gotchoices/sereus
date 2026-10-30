@@ -28,6 +28,7 @@ import { TableWatchRegistry } from './table-change-watch.js';
 import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
 import { MembershipView } from './membership-view.js';
 import type { FormationInviteFacts } from './formation-token.js';
+import { describeThrown } from './describe-thrown.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -1217,7 +1218,7 @@ async function readSchemaFile(schemaPath: string): Promise<string> {
     return await fs.readFile(schemaPath, 'utf-8');
   } catch (error) {
     throw new Error(
-      `Failed to load schema from ${schemaPath}: ${error instanceof Error ? error.message : String(error)}`,
+      `Failed to load schema from ${schemaPath}: ${describeThrown(error)}`,
       { cause: error }
     );
   }

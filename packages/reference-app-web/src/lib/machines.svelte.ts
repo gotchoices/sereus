@@ -19,10 +19,11 @@ import {
 	type CadreNode,
 	type MachineRemovalPlan,
 	type MachineRemovalRefusal,
+	describeThrown,
 } from '@serfab/cadre-core';
 import { getCadreNode, isOwner } from './cadre-web.js';
 import { pushError } from './diagnostics.svelte.js';
-import { errorMessage, ownerFingerprint, peerCode } from './cadre-format.js';
+import { ownerFingerprint, peerCode } from './cadre-format.js';
 import type { Standing } from './add-device.svelte.js';
 
 /** Why a removal cannot go ahead: in the confirmation from the plan, and in the notice when `removeMachine` refuses. */
@@ -93,7 +94,7 @@ export async function refreshMachines(): Promise<void> {
 		state.listError = null;
 	} catch (err) {
 		console.warn('[cadre] could not read this cadre\'s machines:', err);
-		if (!stale()) state.listError = errorMessage(err);
+		if (!stale()) state.listError = describeThrown(err);
 	}
 }
 
@@ -105,7 +106,7 @@ export async function askToRemove(machine: CadreMachine): Promise<void> {
 			plan = await node.planMachineRemoval(machine.peerId);
 		} catch (err) {
 			console.warn(`[cadre] could not read what removing ${machine.peerId} would do:`, err);
-			state.notice = { title: 'Could not prepare the removal', message: errorMessage(err) };
+			state.notice = { title: 'Could not prepare the removal', message: describeThrown(err) };
 			return;
 		}
 		if (getCadreNode() !== node) return;
@@ -147,7 +148,7 @@ async function remove(node: CadreNode, { machine }: PendingRemoval): Promise<voi
 			state.notice = { title: 'Could not remove it', message: REFUSAL_LINE[err.code] };
 		} else {
 			pushError('removeMachine', err);
-			state.notice = { title: 'Could not remove it', message: errorMessage(err) };
+			state.notice = { title: 'Could not remove it', message: describeThrown(err) };
 		}
 	}
 }
@@ -163,7 +164,7 @@ export async function withdrawDeviceInvitation(key: string): Promise<void> {
 		}
 	} catch (err) {
 		console.warn(`[cadre] withdrawing cadre invitation ${key} failed:`, err);
-		state.notice = { title: 'Could not withdraw the invitation', message: errorMessage(err) };
+		state.notice = { title: 'Could not withdraw the invitation', message: describeThrown(err) };
 	}
 	await refreshMachines();
 }

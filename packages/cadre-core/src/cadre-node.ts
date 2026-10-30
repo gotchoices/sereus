@@ -231,6 +231,7 @@ import {
   type ConnectionPathSummary
 } from './diagnostics/connection-path.js';
 import { timedStep } from './timed-step.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:node');
 const timing = debug('sereus:cadre:timing');
@@ -3599,7 +3600,7 @@ export class CadreNode implements SAppIdLookup {
     console.warn(
       `[sereus] this machine has not published its own address record for ${Math.round(staleForMs / 60_000)} `
       + `minutes. The latest attempt (${reason}) failed with: `
-      + `${error instanceof Error ? error.message : String(error)}. `
+      + `${describeThrown(error)}. `
       + 'Other machines in the party discard an address record older than '
       + `${Math.round(DEFAULT_PEER_RECORD_MAX_AGE_MS / 60_000)} minutes, so any of them not already `
       + 'connected to this one can no longer reach it. Publishing keeps retrying; this is reported once.'

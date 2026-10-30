@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { Command } from 'commander';
 import QRCode from 'qrcode';
-import { encodeNodeClaimPayload, selectNodeClaimAddresses, withClaimDestination } from '@serfab/cadre-core';
+import { encodeNodeClaimPayload, selectNodeClaimAddresses, withClaimDestination, describeThrown } from '@serfab/cadre-core';
 import { primaryLanAddress } from '@serfab/cadre-core/primary-lan-address';
 import { specifiedEnv } from '@serfab/config-check';
 import { loadValidatedConfig } from '../config/loader.js';
@@ -143,7 +143,7 @@ export const codeCommand = new Command('code')
       await writeImages(text, options);
       console.log(text);
     } catch (err) {
-      console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`✗ ${describeThrown(err)}`);
       process.exit(1);
     }
   });

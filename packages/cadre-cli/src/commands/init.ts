@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { Command } from 'commander';
 import yaml from 'js-yaml';
 import { multiaddr } from '@multiformats/multiaddr';
-import { CLAIM_SECRET_BYTES, EnrollmentService } from '@serfab/cadre-core';
+import { CLAIM_SECRET_BYTES, EnrollmentService, describeThrown } from '@serfab/cadre-core';
 import type { CliConfigFile } from '../config/types.js';
 import { writePrivateFile } from './private-file.js';
 
@@ -56,7 +56,7 @@ export function publicMultiaddr(spec: string, defaultPort: number): string {
     try {
       multiaddr(trimmed);
     } catch (err) {
-      throw new Error(`--public ${trimmed} is not a valid multiaddr: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+      throw new Error(`--public ${trimmed} is not a valid multiaddr: ${describeThrown(err)}`, { cause: err });
     }
     return trimmed;
   }
@@ -147,7 +147,7 @@ function addPackageScripts(dir: string): Pick<InitResult, 'scriptsAdded' | 'pack
   try {
     pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
   } catch (err) {
-    return { scriptsAdded: [], packageJsonSkipped: err instanceof Error ? err.message : String(err) };
+    return { scriptsAdded: [], packageJsonSkipped: describeThrown(err) };
   }
   const wanted: Record<string, string> = { start: 'cadre start', code: 'cadre code --qr' };
   const scripts = { ...(pkg.scripts ?? {}) };
@@ -197,7 +197,7 @@ export const initCommand = new Command('init')
       console.log(`  3. ${inDir}cadre code --qr        in another terminal, then scan it with the Sereus app on the phone that owns the cadre`);
       console.log(`  4. ${inDir}cadre service          to run it at boot instead of in a terminal (prints the unit and how to install it)`);
     } catch (err) {
-      console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`✗ ${describeThrown(err)}`);
       process.exit(1);
     }
   });

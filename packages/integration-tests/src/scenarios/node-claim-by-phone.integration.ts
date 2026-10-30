@@ -68,7 +68,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ClaimRefusedError, MemoryBootstrapPeerStore, type CadreNode } from '@serfab/cadre-core';
+import { ClaimRefusedError, MemoryBootstrapPeerStore, type CadreNode, describeThrown } from '@serfab/cadre-core';
 import type { ClaimState, CliConfigFile, HealthStatus } from '@serfab/cadre-cli';
 
 import {
@@ -196,7 +196,7 @@ async function waitForStatus(node: ClaimableNode, want: { claim: ClaimState; par
       if (status.status === 'healthy' && status.node.claim === want.claim && status.node.partyId === want.partyId) return status;
       last = `status '${status.status}', claim '${status.node.claim}', party '${status.node.partyId}'`;
     } catch (err) {
-      last = err instanceof Error ? err.message : String(err);
+      last = describeThrown(err);
     }
     await sleep(500);
   }

@@ -28,6 +28,7 @@ import {
 	type CadreInviteStatus,
 	type CadreJoinRequest,
 	type CreateCadreInvitationOptions,
+	describeThrown,
 } from '@serfab/cadre-core';
 import type { AppRecommendation, JoinRefusal } from '@serfab/cadre-rn/app-link';
 import { useCadre } from './cadre-context';
@@ -36,7 +37,7 @@ import { CodeScanner } from './code-scanner';
 import { answerJoinRequest, isAnswerable, OWN_REQUEST_LINE, type AnswerableJoinRequest } from './join-link';
 import { isOwnerKeyText, OWNER_KEY_SCANNED_LINE } from './owner-keys';
 import { RecommendAppSection } from './recommend-app-section';
-import { Btn, controlStyles, errorMessage, Fact, LabelledInput, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
+import { Btn, controlStyles, Fact, LabelledInput, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
 import { ShareCode } from './share-code';
 import { TEST_IDS } from './test-ids';
 
@@ -142,7 +143,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 			setListError(null);
 		} catch (err) {
 			console.warn('[settings] could not read this cadre\'s invitations:', err);
-			setListError(errorMessage(err));
+			setListError(describeThrown(err));
 		}
 	};
 
@@ -164,7 +165,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 		try {
 			request = decodeCadreJoinRequest(text);
 		} catch (err) {
-			showAlert('Cannot use this request', errorMessage(err));
+			showAlert('Cannot use this request', describeThrown(err));
 			return;
 		}
 		void handleRequest(request, false);
@@ -208,7 +209,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 			// Not answered: nothing is known about this cadre to answer with. The asking app's
 			// waiting line and Cancel cover it.
 			console.warn('[settings] could not read this cadre\'s owners and machines:', err);
-			showAlert('Cannot use this request right now', 'Could not read this cadre\'s owners and machines. Try again.', errorMessage(err));
+			showAlert('Cannot use this request right now', 'Could not read this cadre\'s owners and machines. Try again.', describeThrown(err));
 			return;
 		}
 		if (answerTo && await answerRecommended(request, answerTo)) return;
@@ -276,9 +277,9 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 		// The core error names the cause; the relay line says why this phone cannot be the
 		// address the invitation carries, when that is the case.
 		if (cadre.relayStatus === 'reserved') {
-			showAlert('Could not make an invitation', errorMessage(err));
+			showAlert('Could not make an invitation', describeThrown(err));
 		} else {
-			showAlert('Could not make an invitation', NO_ADDRESS_LINE, errorMessage(err));
+			showAlert('Could not make an invitation', NO_ADDRESS_LINE, describeThrown(err));
 		}
 	};
 
@@ -352,7 +353,7 @@ export function AddDeviceSection({ showAlert, linkedRequest = null, onLinkedRequ
 			if (minted?.key === key) setMinted(null);
 		} catch (err) {
 			console.warn(`[settings] withdrawing cadre invitation ${key} failed:`, err);
-			showAlert('Could not withdraw the invitation', errorMessage(err));
+			showAlert('Could not withdraw the invitation', describeThrown(err));
 		}
 		await refreshInvitations();
 		onInvitationsChanged?.();

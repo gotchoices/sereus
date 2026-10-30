@@ -24,7 +24,8 @@ import { sign } from 'node:crypto';
 import debug from 'debug';
 import type { FcmCredentials } from './types.js';
 import type { PushMessage, PushNotifier, PushSendResult } from './push-notifier.js';
-import { MAX_REASON_LEN, b64urlJson, errText, redact } from './push-notifier-shared.js';
+import { MAX_REASON_LEN, b64urlJson, redact } from './push-notifier-shared.js';
+import { describeThrown } from './describe-thrown.js';
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
@@ -77,8 +78,8 @@ export function createFcmPushNotifier(creds: FcmCredentials, deps: FcmPushDeps =
     try {
       token = await accessToken(false);
     } catch (err) {
-      log(`oauth mint failed: ${errText(err)}`);
-      return { ok: false, unregistered: false, error: `fcm oauth mint failed: ${errText(err)}` };
+      log(`oauth mint failed: ${describeThrown(err)}`);
+      return { ok: false, unregistered: false, error: `fcm oauth mint failed: ${describeThrown(err)}` };
     }
 
     const first = await postSend(msg, token);
@@ -90,8 +91,8 @@ export function createFcmPushNotifier(creds: FcmCredentials, deps: FcmPushDeps =
     try {
       retryToken = await accessToken(true);
     } catch (err) {
-      log(`oauth re-mint failed: ${errText(err)}`);
-      return { ok: false, unregistered: false, error: `fcm oauth re-mint failed: ${errText(err)}` };
+      log(`oauth re-mint failed: ${describeThrown(err)}`);
+      return { ok: false, unregistered: false, error: `fcm oauth re-mint failed: ${describeThrown(err)}` };
     }
     return mapResult(await postSend(msg, retryToken), msg.token);
   }

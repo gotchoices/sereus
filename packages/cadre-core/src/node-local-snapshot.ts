@@ -29,6 +29,7 @@
  * (`file-durable-slot.ts`) is what stays behind the `*-store-file` subpaths.
  */
 import debug from 'debug';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:node-local-snapshot');
 
@@ -231,7 +232,7 @@ async function loadEntries<E>(
 		// slot is what knows the platform detail worth acting on (which file, which
 		// database).
 		throw new Error(
-			`failed to read the ${spec.label} for party ${partyId}: ${error instanceof Error ? error.message : String(error)}`,
+			`failed to read the ${spec.label} for party ${partyId}: ${describeThrown(error)}`,
 			{ cause: error }
 		);
 	}

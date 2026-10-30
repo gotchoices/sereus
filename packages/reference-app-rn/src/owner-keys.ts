@@ -32,6 +32,7 @@ import {
 	type OwnerKeyExportOptions,
 	type OwnerKeyRemovalPlan,
 	type OwnerKeyRemovalRefusal,
+	describeThrown,
 } from '@serfab/cadre-core';
 import type { RedeemedOwnerGrant } from '@serfab/cadre-rn/phone-node';
 import { machineCode, machineKind, shortPeerId } from './machines';
@@ -171,7 +172,7 @@ export function describeOwnerKeyFailure(err: unknown): string {
 	if (err instanceof OwnerKeyExportError) return err.message;
 	if (err instanceof OwnerKeySlotOccupiedError) return SLOT_OCCUPIED_LINE;
 	if (err instanceof OwnerKeyRemovalRefusedError) return REMOVAL_REFUSAL_LINE[err.code];
-	return err instanceof Error ? err.message : String(err);
+	return describeThrown(err);
 }
 
 /** One Keep switch in the removal prompt: a device or an owner key the removed key added. */

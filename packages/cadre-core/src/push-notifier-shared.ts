@@ -14,11 +14,6 @@ export function b64urlJson(obj: unknown): string {
   return Buffer.from(JSON.stringify(obj)).toString('base64url');
 }
 
-/** A short, secret-free string for an unknown thrown value. */
-export function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /**
  * Redact a device token to a short, non-reversible prefix for debug lines — the
  * full FCM/APNs token is a secret and must never reach a log.

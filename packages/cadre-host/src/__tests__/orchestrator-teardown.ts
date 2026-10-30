@@ -2,6 +2,7 @@
  * Shared teardown for the test files that drive a real HostProcessOrchestrator
  * against a stub child script.
  */
+import { describeThrown } from '@serfab/cadre-core';
 import type { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
 import { decodeDockerId } from '../orchestrator/types.js';
@@ -45,7 +46,7 @@ async function removeNodesOf(orch: HostProcessOrchestrator, nodes: StartedNode[]
     try {
       await orch.removeContainer(node.dockerId);
     } catch (err) {
-      errors.push(`${node.id}: ${err instanceof Error ? err.message : String(err)}`);
+      errors.push(`${node.id}: ${describeThrown(err)}`);
     }
   }
 }

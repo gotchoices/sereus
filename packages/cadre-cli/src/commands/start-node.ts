@@ -19,6 +19,7 @@ import {
   type SeedTrustPolicy,
   type StrandNetworkStateStore,
   type TrustedOwnerStore,
+  describeThrown,
 } from '@serfab/cadre-core';
 import { createPushNotifier } from '@serfab/cadre-core/push-node';
 import { nodeDefaultTransports } from '@serfab/cadre-core/node-default-transports';
@@ -227,7 +228,7 @@ function wireNodeEvents(node: CadreNode): void {
   // A BACKGROUND write — the self-address republish, the replication drains — has no
   // caller to reject to either, so without this line it is lost in silence.
   node.on('control:write-abandoned', ({ label, reason, attemptsMade, attemptsAllowed, error }) => {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail = describeThrown(error);
     console.warn(`⚠ Control write abandoned [${label ?? 'unlabelled'}] `
       + `after ${attemptsMade}/${attemptsAllowed} attempt(s) (${reason}): ${detail}`);
   });

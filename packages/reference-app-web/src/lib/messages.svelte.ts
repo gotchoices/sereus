@@ -19,6 +19,7 @@ import {
 	type StrandInstance,
 	type StrandOfflineStatus,
 	type StrandQueueState,
+	describeThrown,
 } from '@serfab/cadre-core';
 import { chatMessageExists, insertChatMessage, newChatMessageId, selectChatMessages } from './chat-dml.js';
 import { pushError } from './diagnostics.svelte.js';
@@ -155,7 +156,7 @@ export async function refresh(): Promise<void> {
 		state.error = null;
 		state.updatedMs = Date.now();
 	} catch (err) {
-		state.error = err instanceof Error ? err.message : String(err);
+		state.error = describeThrown(err);
 		pushError('messages.refresh', err);
 	} finally {
 		refreshInFlight = false;
@@ -243,7 +244,7 @@ export async function sendMessage(author: string, content: string): Promise<void
 		pendingDraft = null;
 		await refresh();
 	} catch (err) {
-		state.error = err instanceof Error ? err.message : String(err);
+		state.error = describeThrown(err);
 		pushError('messages.send', err);
 		throw err;
 	} finally {

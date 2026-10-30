@@ -13,6 +13,7 @@ import {
   CadreInviteRejectedError,
   CadreInviteReplyInvalidError,
   CadreInviteUnreachableError,
+  describeThrown,
 } from '@serfab/cadre-core';
 import { StrandsNeedOwnerJoinError } from '@serfab/cadre-rn/phone-node';
 import { chats, JoinCancelledError } from './join-flow';
@@ -45,7 +46,7 @@ export function describeJoinFailure(err: unknown): string {
     const held = err.strandCount > 0 ? `this app's ${chats(err.strandCount)}` : 'what this app\'s own cadre holds';
     return `This invitation makes the app a member, and only an owner can bring ${held} along. In the app that holds your cadre, make an owner grant under Owner keys → Add an owner key, and paste it here.`;
   }
-  return describeOwnerGrantFailure(err) ?? (err instanceof Error ? err.message : String(err));
+  return describeOwnerGrantFailure(err) ?? describeThrown(err);
 }
 
 /** The alert for a join that did not happen: the user cancelled it, or it failed. */

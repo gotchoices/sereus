@@ -50,6 +50,7 @@ import { strandRedialTimings, superviseStrandPeerRedial, type StrandPeerRedial }
 import { groupAddrsByPeerId } from './peer-addr-book.js';
 import { isCohortUnreachableRead } from './control-read-retry.js';
 import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:strand-manager');
 
@@ -698,7 +699,7 @@ export class StrandInstanceManager {
     } catch (error) {
       // Status/error first — the (now discarded) record is still what `log` reports on.
       instance.status = 'error';
-      instance.error = error instanceof Error ? error.message : String(error);
+      instance.error = describeThrown(error);
       log('Failed to start strand %s: %s', strandId, instance.error);
       // Drop the dead record so this strand id can be launched again. Keep the
       // `launchConfigs` has an entry iff `instances` does invariant — resumeStrand
@@ -1181,7 +1182,7 @@ export class StrandInstanceManager {
       await this.discardDatabaseAttempt(strandId, gate);
       log('Strand %s: no seed peer has answered yet, so this joiner cannot build its database (%s); ' +
         'its runtime stays up and the build is retried every %dms',
-        strandId, error instanceof Error ? error.message : String(error), UNREACHABLE_JOIN_RETRY_MS);
+        strandId, describeThrown(error), UNREACHABLE_JOIN_RETRY_MS);
       return 'awaiting-seed';
     }
     timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
@@ -1331,7 +1332,7 @@ export class StrandInstanceManager {
         log('Strand %s: releasing the runtime after a failed database retry also failed: %o', strandId, cleanupErr);
       });
       instance.status = 'error';
-      instance.error = error instanceof Error ? error.message : String(error);
+      instance.error = describeThrown(error);
       log('Strand %s: building the database of a joiner that was waiting for a seed peer failed: %s', strandId, instance.error);
       return;
     }
@@ -1758,7 +1759,7 @@ export class StrandInstanceManager {
       return instance;
     } catch (error) {
       instance.status = 'error';
-      instance.error = error instanceof Error ? error.message : String(error);
+      instance.error = describeThrown(error);
       log('Failed to resume strand %s: %s', strandId, instance.error);
       throw error;
     }
@@ -2183,7 +2184,7 @@ export class StrandInstanceManager {
       log('Strand %s stopped successfully', strandId);
     } catch (error) {
       instance.status = 'error';
-      instance.error = error instanceof Error ? error.message : String(error);
+      instance.error = describeThrown(error);
       log('Error stopping strand %s: %s', strandId, instance.error);
       throw error;
     }

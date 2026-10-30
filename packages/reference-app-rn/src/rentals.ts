@@ -20,6 +20,7 @@ import {
 	type RentNodeErrorCode,
 	type RentNodeJoin,
 	type RentNodeStep,
+	describeThrown,
 } from '@serfab/cadre-core';
 import type { Rental } from '@serfab/cadre-rn/provider';
 import { shortPeerId } from './machines';
@@ -180,7 +181,7 @@ export function billingText(billing: BillingStatus | undefined, formatDate: (ms:
 /** The reading a failed `getContainer` leaves: `gone` for a 404, else the error's words. */
 export function readingFromError(err: unknown): ContainerReading {
 	if (err instanceof ProviderApiError && err.status === 404) return { kind: 'gone' };
-	return { kind: 'unreadable', error: err instanceof Error ? err.message : String(err) };
+	return { kind: 'unreadable', error: describeThrown(err) };
 }
 
 /** The progress line for each `rentNode` step. */
@@ -217,7 +218,7 @@ const RENT_REFUSAL: Record<RentNodeErrorCode, (providerName: string) => string> 
 
 /** What to tell the user about `error`, thrown while renting from or finishing a rental at `providerName`. */
 export function describeRentalFailure(error: unknown, providerName: string): RentalFailureDescription {
-	const detail = error instanceof Error ? error.message : String(error);
+	const detail = describeThrown(error);
 	if (error instanceof RentNodeError) return { message: RENT_REFUSAL[error.code](providerName), detail };
 	if (error instanceof ProviderApiError) return { message: providerRefusal(error, providerName), detail };
 	if (error instanceof ProviderAuthError) return { message: signInFailure(error, providerName), detail };

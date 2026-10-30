@@ -61,6 +61,8 @@
  * `close()` too before concluding anything about the stack.
  */
 
+import { describeThrown } from '@serfab/cadre-core';
+
 /**
  * How the delay is applied. The two answer different questions and give very different
  * numbers, so a result is meaningless without saying which produced it.
@@ -324,7 +326,7 @@ function wrapGlobalWebSocket(): void {
 					// is an ordinary outcome here, not a fault to surface.
 					if (this.readyState === Native.OPEN) super.send(data);
 				} catch (err) {
-					console.warn('[ws-latency] delayed send failed - %s', err instanceof Error ? err.message : String(err));
+					console.warn('[ws-latency] delayed send failed - %s', describeThrown(err));
 				} finally {
 					this.#queued -= bytes;
 				}

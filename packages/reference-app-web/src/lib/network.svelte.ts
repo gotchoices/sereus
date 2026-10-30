@@ -11,6 +11,7 @@
  * UI state (busy flags, the encoded invitation, the join result, and errors).
  */
 
+import { describeThrown } from '@serfab/cadre-core';
 import {
 	createInvitation,
 	joinViaInvitation,
@@ -49,10 +50,6 @@ export function setJoinInput(value: string): void {
 	state.joinInput = value;
 }
 
-function message(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
-}
-
 /** Responder: mint + encode a fresh open invitation for the chat sApp. */
 export async function doCreateInvitation(): Promise<void> {
 	if (state.createBusy) return;
@@ -61,7 +58,7 @@ export async function doCreateInvitation(): Promise<void> {
 	try {
 		state.invitation = await createInvitation();
 	} catch (err) {
-		state.createError = message(err);
+		state.createError = describeThrown(err);
 		pushError('createInvitation', err);
 	} finally {
 		state.createBusy = false;
@@ -81,7 +78,7 @@ export async function doJoinViaInvitation(): Promise<void> {
 	try {
 		state.joined = await joinViaInvitation(encoded);
 	} catch (err) {
-		state.joinError = message(err);
+		state.joinError = describeThrown(err);
 		pushError('joinViaInvitation', err);
 	} finally {
 		state.joinBusy = false;

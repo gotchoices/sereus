@@ -36,6 +36,7 @@ import {
   stringValue,
   validateTree,
 } from '@serfab/config-check';
+import { describeThrown } from '@serfab/cadre-core';
 import type { CliConfig, StrandFilterConfig } from './types.js';
 import { ENV_MAPPINGS } from './env.js';
 import { parseStrandFilter } from './strand-filter.js';
@@ -90,7 +91,7 @@ const strandFilter: Checker<StrandFilterConfig> = (value, keyPath, ctx) => {
     parseStrandFilter(value);
     return value as StrandFilterConfig;
   } catch (err) {
-    return ctx.fail(keyPath, err instanceof Error ? err.message : String(err));
+    return ctx.fail(keyPath, describeThrown(err));
   }
 };
 

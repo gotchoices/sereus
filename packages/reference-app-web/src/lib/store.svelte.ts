@@ -22,6 +22,7 @@
  * store as status `removed`.
  */
 
+import { describeThrown } from '@serfab/cadre-core';
 import {
 	addChatStrand,
 	edgeNode,
@@ -49,7 +50,7 @@ import { pushError } from './diagnostics.svelte.js';
 import { followOfflineStatus, followQueueState, markDelivered } from './messages.svelte.js';
 import { resetAddDeviceCard } from './add-device.svelte.js';
 import { resetMachinesCard } from './machines.svelte.js';
-import { errorMessage, ownerFingerprint } from './cadre-format.js';
+import { ownerFingerprint } from './cadre-format.js';
 
 /**
  * The edge node's status, plus the store's own `idle` before the first start and `error` for its
@@ -349,7 +350,7 @@ function stopRefreshPoll(): void {
 }
 
 function failed(where: string, err: unknown): void {
-	state.error = errorMessage(err);
+	state.error = describeThrown(err);
 	state.status = 'error';
 	pushError(where, err);
 	console.error(`[reference-app-web] ${where} failed:`, err);
@@ -484,7 +485,7 @@ export async function joinCadre(encoded: string, options: JoinOptions = {}): Pro
 		record('join:admitted', credential.partyId);
 		return result;
 	} catch (err) {
-		record('join:failed', errorMessage(err));
+		record('join:failed', describeThrown(err));
 		throw err;
 	}
 }
@@ -502,7 +503,7 @@ export async function retryStrandMove(): Promise<StrandMoveReport | undefined> {
 		record('move:retried', report ? (report.failed.length === 0 ? 'done' : 'partial') : 'nothing waiting');
 		return report;
 	} catch (err) {
-		record('move:failed', errorMessage(err));
+		record('move:failed', describeThrown(err));
 		throw err;
 	}
 }
@@ -542,7 +543,7 @@ export async function dissolveFormerParty(discard: readonly string[] = []): Prom
 	try {
 		await midTransition(() => edgeNode.dissolveFormerParty({ discard }));
 	} catch (err) {
-		record('dissolve:stopped', errorMessage(err));
+		record('dissolve:stopped', describeThrown(err));
 		throw err;
 	}
 	record('dissolve:removed', formerPartyId);

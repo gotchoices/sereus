@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import { Command } from 'commander';
 import debug from 'debug';
-import { decodeOwnerKeyExport, encodeOwnerKeyExport, unlockOwnerKeyExport, type OwnerKeyExportContents } from '@serfab/cadre-core';
+import { decodeOwnerKeyExport, encodeOwnerKeyExport, unlockOwnerKeyExport, type OwnerKeyExportContents, describeThrown } from '@serfab/cadre-core';
 import { specifiedEnv } from '@serfab/config-check';
 import { resolveConfig } from '../config/index.js';
 import { commandEnv } from '../config/env.js';
@@ -56,7 +56,7 @@ function resolvePassphrase(passphraseFile: string | undefined, env: NodeJS.Proce
   try {
     text = fs.readFileSync(passphraseFile, 'utf-8');
   } catch (err) {
-    throw new Error(`Cannot read the passphrase from ${passphraseFile}: ${errorMessage(err)}`, { cause: err });
+    throw new Error(`Cannot read the passphrase from ${passphraseFile}: ${describeThrown(err)}`, { cause: err });
   }
   const passphrase = text.replace(/\r?\n$/, '');
   if (passphrase.length === 0) throw new Error(`${passphraseFile} holds no passphrase`);
@@ -140,13 +140,9 @@ async function importKey(textArg: string | undefined, options: OwnerKeyFileOptio
 }
 
 function fail(err: unknown): void {
-  console.error(`✗ ${errorMessage(err)}`);
+  console.error(`✗ ${describeThrown(err)}`);
   log('Error details: %o', err);
   process.exitCode = 1;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** The options every `owner-key` subcommand carries. */

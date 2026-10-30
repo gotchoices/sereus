@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { parseClaimSecret } from '@serfab/cadre-core';
+import { parseClaimSecret, describeThrown } from '@serfab/cadre-core';
 import { modeOpenToOtherAccounts } from './private-file.js';
 
 /** Where a claim secret came from, as messages name it. */
@@ -33,12 +33,12 @@ export function resolveClaimSecret(envSecret: string | undefined, secretFile: st
   try {
     text = fs.readFileSync(secretFile, 'utf-8');
   } catch (err) {
-    throw new Error(`Cannot read the claim secret from ${source}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    throw new Error(`Cannot read the claim secret from ${source}: ${describeThrown(err)}`, { cause: err });
   }
   try {
     parseClaimSecret(text);
   } catch (err) {
-    throw new Error(`${source} does not hold a valid claim secret: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    throw new Error(`${source} does not hold a valid claim secret: ${describeThrown(err)}`, { cause: err });
   }
   return { secret: text.trim(), source, warnings: permissionWarnings(secretFile) };
 }

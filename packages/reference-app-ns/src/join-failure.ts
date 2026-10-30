@@ -11,6 +11,7 @@ import {
 	CadreInviteRejectedError,
 	CadreInviteReplyInvalidError,
 	CadreInviteUnreachableError,
+	describeThrown,
 } from '@serfab/cadre-core';
 import { StrandsNeedOwnerJoinError } from '@serfab/cadre-core/edge-node';
 
@@ -41,5 +42,5 @@ export function describeJoinFailure(err: unknown): string {
 		const held = err.strandCount > 0 ? `this phone's ${err.strandCount} strand(s)` : "what this phone's own cadre holds";
 		return `This invitation makes the phone a member, and only an owner can bring ${held} along. Join with an owner grant instead, made in the owner app under Owner keys.`;
 	}
-	return err instanceof Error ? err.message : String(err);
+	return describeThrown(err);
 }

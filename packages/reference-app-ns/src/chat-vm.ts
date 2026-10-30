@@ -11,6 +11,7 @@
 
 import { Observable, ObservableArray } from '@nativescript/core';
 import type { StrandInstance } from '@serfab/cadre-core';
+import { describeThrown } from '@serfab/cadre-core';
 import {
 	insertParticipant,
 	insertMessage,
@@ -63,10 +64,6 @@ interface UndeliveredMark {
 	strandId: string;
 	transactionId: string;
 	messageId: string;
-}
-
-function errMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
 }
 
 /** Quereus stores timestamps as T-separated ISO (e.g. `YYYY-MM-DDTHH:MM:SS`); show just `HH:MM`. */
@@ -285,7 +282,7 @@ export class ChatViewModel extends Observable {
 				console.warn('[chat-vm] read of a strand no longer attached failed:', err);
 				return;
 			}
-			this.setError(errMessage(err));
+			this.setError(describeThrown(err));
 		} finally {
 			this.readsInFlight.delete(strand);
 			if (this.strand === strand) this.setLoading(false);
@@ -364,7 +361,7 @@ export class ChatViewModel extends Observable {
 			// Not "failed": the write may in fact have landed. Repeating is safe because `draft.id`
 			// survives this rejection, so a resend of unchanged text replaces rather than adds.
 			this.setSendError(
-				`Not confirmed sent (${errMessage(err)}). Press Send again — it can only be stored once.`,
+				`Not confirmed sent (${describeThrown(err)}). Press Send again — it can only be stored once.`,
 			);
 			throw err;
 		} finally {

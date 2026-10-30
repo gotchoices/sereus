@@ -1,3 +1,4 @@
+import { describeThrown } from '@serfab/cadre-core';
 import type { HealthStatus, InvitationStatus, OwnerGrantRedemptionStatus } from '../server/health.js';
 
 /**
@@ -108,7 +109,7 @@ async function attemptFetch(
     const status = (await res.json()) as HealthStatus;
     return { reachable: true, url, status };
   } catch (err) {
-    return { reachable: false, url, reason: err instanceof Error ? err.message : String(err) };
+    return { reachable: false, url, reason: describeThrown(err) };
   }
 }
 

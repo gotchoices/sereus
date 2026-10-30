@@ -30,8 +30,3 @@ export function validUntilText(expiresAtMs: number | null): string {
 	if (at.toDateString() === new Date().toDateString()) return `Valid until ${time}`;
 	return `Valid until ${at.toLocaleDateString([], { weekday: 'short' })} ${time}`;
 }
-
-/** An error's own words, for a card's notice. */
-export function errorMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
-}

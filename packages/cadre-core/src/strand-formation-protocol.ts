@@ -42,6 +42,7 @@ import {
   type FormationRejectionCode
 } from './strand-formation-rejection.js';
 import type { FormationTokenCheck, FormationTokenRead } from './formation-token.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:formation-proto');
 
@@ -1011,7 +1012,7 @@ function noMachineReached(failures: Array<{ peerId: string; error: FormationUnre
  */
 function describeAllAddressesFailed(error: unknown): unknown {
   if (!(error instanceof AggregateError)) return error;
-  const reasons = error.errors.map((reason: unknown) => reason instanceof Error ? reason.message : String(reason));
+  const reasons = error.errors.map(describeThrown);
   return new FormationUnreachableError(
     `Formation could not reach the inviter at any of the ${reasons.length} addresses tried: ${reasons.join('; ')}`,
     { cause: error }
@@ -1021,7 +1022,7 @@ function describeAllAddressesFailed(error: unknown): unknown {
 /** Report a failure that came before any answer as {@link FormationUnreachableError}, keeping its message. */
 function asUnreachable(error: unknown): FormationUnreachableError {
   if (error instanceof FormationUnreachableError) return error;
-  return new FormationUnreachableError(error instanceof Error ? error.message : String(error), { cause: error });
+  return new FormationUnreachableError(describeThrown(error), { cause: error });
 }
 
 /**

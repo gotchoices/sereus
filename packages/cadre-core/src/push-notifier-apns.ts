@@ -32,7 +32,8 @@ import { connect, type ClientHttp2Session } from 'node:http2';
 import debug from 'debug';
 import type { ApnsCredentials } from './types.js';
 import type { PushMessage, PushNotifier, PushSendResult } from './push-notifier.js';
-import { MAX_REASON_LEN, b64urlJson, errText, redact } from './push-notifier-shared.js';
+import { MAX_REASON_LEN, b64urlJson, redact } from './push-notifier-shared.js';
+import { describeThrown } from './describe-thrown.js';
 
 const APNS_PROD_HOST = 'https://api.push.apple.com';
 const APNS_SANDBOX_HOST = 'https://api.sandbox.push.apple.com';
@@ -95,8 +96,8 @@ export function createApnsPushNotifier(creds: ApnsCredentials, deps: ApnsPushDep
     try {
       jwt = providerToken(false);
     } catch (err) {
-      log(`provider-token mint failed: ${errText(err)}`);
-      return { ok: false, unregistered: false, error: `apns jwt mint failed: ${errText(err)}` };
+      log(`provider-token mint failed: ${describeThrown(err)}`);
+      return { ok: false, unregistered: false, error: `apns jwt mint failed: ${describeThrown(err)}` };
     }
 
     let res = await tryRequest(msg, jwt);
@@ -107,8 +108,8 @@ export function createApnsPushNotifier(creds: ApnsCredentials, deps: ApnsPushDep
       try {
         jwt = providerToken(true);
       } catch (err) {
-        log(`provider-token re-mint failed: ${errText(err)}`);
-        return { ok: false, unregistered: false, error: `apns jwt re-mint failed: ${errText(err)}` };
+        log(`provider-token re-mint failed: ${describeThrown(err)}`);
+        return { ok: false, unregistered: false, error: `apns jwt re-mint failed: ${describeThrown(err)}` };
       }
       res = await tryRequest(msg, jwt);
       if (!res) return { ok: false, unregistered: false, error: `apns transport failed (token=${redact(msg.token)})` };
@@ -127,11 +128,11 @@ export function createApnsPushNotifier(creds: ApnsCredentials, deps: ApnsPushDep
     try {
       return await transport.request(req);
     } catch (err1) {
-      log(`http2 request failed, re-establishing once: ${errText(err1)}`);
+      log(`http2 request failed, re-establishing once: ${describeThrown(err1)}`);
       try {
         return await transport.request(req);
       } catch (err2) {
-        log(`http2 request failed after re-establish: ${errText(err2)}`);
+        log(`http2 request failed after re-establish: ${describeThrown(err2)}`);
         return null;
       }
     }

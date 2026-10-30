@@ -11,7 +11,7 @@
  */
 
 import { Observable, type EventData } from '@nativescript/core';
-import { decodeCadreInvitation } from '@serfab/cadre-core';
+import { decodeCadreInvitation, describeThrown } from '@serfab/cadre-core';
 import type {
 	CadreInvitation,
 	CadreNode,
@@ -35,10 +35,6 @@ export interface StrandItem {
 
 /** The node's `strand:commit-held`, re-sent by {@link CadreViewModel} for the chat screen's marks. */
 export interface CommitHeldEventData extends EventData, StrandCommitHeld {}
-
-function errMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
-}
 
 export class CadreViewModel extends Observable {
 	/** Event name of {@link CommitHeldEventData}. */
@@ -315,7 +311,7 @@ export class CadreViewModel extends Observable {
 			// party-scoped records live in the same database and propagate a read fault,
 			// which fails that start before anything is saved.
 			console.warn('[cadre-vm] could not read the saved start options:', err);
-			this.setError(`Could not read the saved connection settings: ${errMessage(err)}`);
+			this.setError(`Could not read the saved connection settings: ${describeThrown(err)}`);
 			return;
 		}
 		if (!saved) return;
@@ -334,7 +330,7 @@ export class CadreViewModel extends Observable {
 			await edge.start(opts);
 		} catch (err) {
 			console.error('[cadre-vm] start failed:', err instanceof Error ? err.stack : err);
-			this.showStopped('error', errMessage(err));
+			this.showStopped('error', describeThrown(err));
 		}
 	}
 

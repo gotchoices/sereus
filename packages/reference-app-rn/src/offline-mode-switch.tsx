@@ -6,8 +6,9 @@
 
 import { useState } from 'react';
 import { Switch, Text, View } from 'react-native';
+import { describeThrown } from '@serfab/cadre-core';
 import { getStrandOfflineMode, setStrandOfflineMode } from './cadre-phone';
-import { controlStyles, errorMessage } from './settings-controls';
+import { controlStyles } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 /** Shown while the node runs; the kit applies the choice to every strand at once and saves it for the next start. */
@@ -21,7 +22,7 @@ export function OfflineModeSwitch({ showAlert }: { showAlert: (title: string, me
 			await setStrandOfflineMode(next ? 'offline' : 'online');
 			setOffline(next);
 		} catch (err) {
-			showAlert('Could not change offline mode', errorMessage(err));
+			showAlert('Could not change offline mode', describeThrown(err));
 		} finally {
 			setBusy(false);
 		}

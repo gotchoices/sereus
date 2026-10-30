@@ -12,6 +12,7 @@ import {
   type SeedTrustPolicy,
   type CadreInvitation,
   type OwnerGrantBundle,
+  describeThrown,
 } from '@serfab/cadre-core';
 import { fromString } from 'uint8arrays';
 import { specifiedEnv } from '@serfab/config-check';
@@ -61,7 +62,7 @@ export function decodeSeedFor(encoded: string, partyId: string): ControlNetworkS
     decoded = JSON.parse(new TextDecoder().decode(fromString(encoded, 'base64url')));
   } catch (err) {
     throw new Error(
-      `--seed does not decode as a control network seed: ${err instanceof Error ? err.message : String(err)}`,
+      `--seed does not decode as a control network seed: ${describeThrown(err)}`,
       { cause: err }
     );
   }

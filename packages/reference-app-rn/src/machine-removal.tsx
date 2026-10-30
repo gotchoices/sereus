@@ -13,10 +13,11 @@ import {
 	type CadreMachine,
 	type MachineRemovalPlan,
 	type MachineRemovalRefusal,
+	describeThrown,
 } from '@serfab/cadre-core';
 import { useCadre } from './cadre-context';
 import { machineCode, machineKind, machineName } from './machines';
-import { Btn, controlStyles, errorMessage, Fact, useExclusive } from './settings-controls';
+import { Btn, controlStyles, Fact, useExclusive } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 /** Under this device's own row: a device does not remove itself (`self`); leaving a cadre stops the node and deletes its data. */
@@ -74,7 +75,7 @@ export function useMachineRemoval({ showAlert, onRemoved, onShowOwnerKeys }: {
 			plan = await cadre.planMachineRemoval(machine.peerId);
 		} catch (err) {
 			console.warn(`[settings] could not read what removing ${machine.peerId} would do:`, err);
-			showAlert('Could not prepare the removal', errorMessage(err));
+			showAlert('Could not prepare the removal', describeThrown(err));
 			return;
 		}
 		if (nodeRef.current !== node) return;
@@ -98,7 +99,7 @@ export function useMachineRemoval({ showAlert, onRemoved, onShowOwnerKeys }: {
 		} catch (err) {
 			console.warn(`[settings] removing machine ${machine.peerId} failed:`, err);
 			if (err instanceof MachineRemovalRefusedError) showAlert('Could not remove it', REFUSAL_LINE[err.code]);
-			else showAlert('Could not remove it', errorMessage(err));
+			else showAlert('Could not remove it', describeThrown(err));
 		}
 	};
 

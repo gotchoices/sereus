@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
-import { CLAIM_SECRET_BYTES, decodeCadreInvitation, type CadreInvitation } from '@serfab/cadre-core';
+import { CLAIM_SECRET_BYTES, decodeCadreInvitation, type CadreInvitation, describeThrown } from '@serfab/cadre-core';
 import { primaryLanAddress } from '@serfab/cadre-core/primary-lan-address';
 import type { Orchestrator, OrchestratorCreateResult } from '@serfab/cadre-provider';
 
@@ -10,7 +10,7 @@ import type { ClaimAddressSettings } from '../installer/config.js';
 import { buildClaimDetails, claimLanAddress, type ClaimDetails, type HostedNodeAddressSource } from './claim-details.js';
 import type { HostedNodeStore } from './hosted-node-store.js';
 import { HostedNodeWatcher } from './hosted-node-watcher.js';
-import { PLACEHOLDER_PARTY, errorMessage, readNodeStatus, statusUrlFor } from './node-status.js';
+import { PLACEHOLDER_PARTY, readNodeStatus, statusUrlFor } from './node-status.js';
 import type {
   HostedNode,
   HostedNodeChange,
@@ -206,7 +206,7 @@ export class HostedNodeService {
       try {
         listener(change);
       } catch (err) {
-        log('change listener threw for %s: %s', change.id, errorMessage(err));
+        log('change listener threw for %s: %s', change.id, describeThrown(err));
       }
     }
   }
@@ -264,7 +264,7 @@ export class HostedNodeService {
     try {
       result = await this.orchestrator.createContainer(spawnRequestFor(record));
     } catch (err) {
-      const message = errorMessage(err);
+      const message = describeThrown(err);
       log('spawn of hosted node %s failed: %s', id, message);
       this.markSpawnFailed(id, message);
       throw new HostedNodeError('orchestrator_error', `Failed to start hosted node: ${message}`);
@@ -297,7 +297,7 @@ export class HostedNodeService {
     try {
       this.store.put(started);
     } catch (err) {
-      const message = errorMessage(err);
+      const message = describeThrown(err);
       log('recording hosted node %s failed: %s', id, message);
       await this.safeReclaim(result.dockerId);
       this.markSpawnFailed(id, message);
@@ -324,7 +324,7 @@ export class HostedNodeService {
       this.store.put({ ...current, status: 'error', error: message, updatedAt: this.now().toISOString() });
       this.emit({ kind: 'changed', id });
     } catch (err) {
-      log('failed to mark hosted node %s as errored: %s', id, errorMessage(err));
+      log('failed to mark hosted node %s as errored: %s', id, describeThrown(err));
     }
   }
 
@@ -366,7 +366,7 @@ export class HostedNodeService {
       if (!current || current.peerId === peerId) return;
       this.store.put({ ...current, peerId });
     } catch (err) {
-      log('failed to record peer id of hosted node %s: %s', id, errorMessage(err));
+      log('failed to record peer id of hosted node %s: %s', id, describeThrown(err));
     }
   }
 
@@ -434,7 +434,7 @@ export class HostedNodeService {
       this.watcher.poke(id);
       return { outcome: 'respawned', node: redact(respawned) };
     } catch (err) {
-      const message = errorMessage(err);
+      const message = describeThrown(err);
       log('respawn of hosted node %s failed: %s', id, message);
       // Stop — never reclaim — a child we spawned but failed to record:
       // `removeContainer` deletes the workdir, which holds the identity key and
@@ -608,7 +608,7 @@ export class HostedNodeService {
         reaped.push(node.id);
         log('reaped stuck spawning hosted node %s (age > %dms)', node.id, ttlMs);
       } catch (err) {
-        log('failed to reap stuck spawning hosted node %s: %s', node.id, errorMessage(err));
+        log('failed to reap stuck spawning hosted node %s: %s', node.id, describeThrown(err));
       }
     }
     return reaped;
@@ -668,7 +668,7 @@ export class HostedNodeService {
     try {
       await this.orchestrator.stopContainer(dockerId);
     } catch (err) {
-      log('failed to stop container %s: %s', dockerId, errorMessage(err));
+      log('failed to stop container %s: %s', dockerId, describeThrown(err));
     }
   }
 
@@ -700,7 +700,7 @@ export class HostedNodeService {
       if (!current) return;
       this.store.put({ ...current, ...(respawn ? { respawn } : {}), ...spawned });
     } catch (err) {
-      log('failed to record respawn attempt for %s: %s', id, errorMessage(err));
+      log('failed to record respawn attempt for %s: %s', id, describeThrown(err));
     }
   }
 
@@ -709,7 +709,7 @@ export class HostedNodeService {
     try {
       await this.orchestrator.removeContainer(dockerId);
     } catch (err) {
-      log('failed to reclaim container %s: %s', dockerId, errorMessage(err));
+      log('failed to reclaim container %s: %s', dockerId, describeThrown(err));
     }
   }
 
@@ -725,7 +725,7 @@ export class HostedNodeService {
         log('reclaimed orphaned workdir for hosted node %s', id);
       }
     } catch (err) {
-      log('failed to reclaim workdir for hosted node %s: %s', id, errorMessage(err));
+      log('failed to reclaim workdir for hosted node %s: %s', id, describeThrown(err));
     }
   }
 
@@ -771,7 +771,7 @@ function decodeInvitation(encoded: string): DecodedInvitation {
   try {
     return { encoded: trimmed, decoded: decodeCadreInvitation(trimmed) };
   } catch (err) {
-    throw new HostedNodeError('invalid_request', `The invitation does not decode: ${errorMessage(err)}`);
+    throw new HostedNodeError('invalid_request', `The invitation does not decode: ${describeThrown(err)}`);
   }
 }
 

@@ -5,6 +5,7 @@
 import { StrandAwaitingFirstSyncError } from '../strand-first-sync-gate.js';
 import type { CadreNode } from '../cadre-node.js';
 import type { StrandConfig, StrandInstance } from '../types.js';
+import { describeThrown } from '../describe-thrown.js';
 
 /** Default patience for {@link attachStrandWhenWritable}: generous enough that running out means something is wrong. */
 export const DEFAULT_STRAND_PATIENCE_MS = 240_000;
@@ -69,5 +70,5 @@ export async function retryAfterRestart<T>(
 }
 
 function isTransientWriteFailure(err: unknown): boolean {
-	return SUPER_MAJORITY_FAILURE.test(err instanceof Error ? err.message : String(err));
+	return SUPER_MAJORITY_FAILURE.test(describeThrown(err));
 }

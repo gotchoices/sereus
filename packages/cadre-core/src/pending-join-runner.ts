@@ -33,6 +33,7 @@ import { formationDeadlines } from './strand-formation-deadlines.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { scheduleRuns, type TableChangeWatch, type TableChangeWatchOptions } from './table-change-watch.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:pending-join');
 
@@ -236,10 +237,6 @@ function failedOutcome(code: string, reason: string, now: number): JoinOutcome {
   return { kind: 'failed', RecordedAt: now, Code: code, Reason: reason };
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /** A fraction in [0, 1) fixed by `key` (32-bit FNV-1a): the same machine staggers the same join the same way every time. */
 function stableFraction(key: string): number {
   let hash = 0x811c9dc5;
@@ -387,7 +384,7 @@ export class PendingJoinRunner {
         if (entry?.row.StampId === stampId) entry.row = written;
         log('pending join %s: re-issued the join written while alone', id);
       } catch (error) {
-        log('pending join %s: re-issuing the join written while alone failed; kept for the next connection: %s', id, errorText(error));
+        log('pending join %s: re-issuing the join written while alone failed; kept for the next connection: %s', id, describeThrown(error));
       }
     }
   }
@@ -408,7 +405,7 @@ export class PendingJoinRunner {
     try {
       await this.runPass();
     } catch (error) {
-      log('pending-join pass failed; retried in 30 s: %s', errorText(error));
+      log('pending-join pass failed; retried in 30 s: %s', describeThrown(error));
       this.retryPass();
     }
   }
@@ -436,7 +433,7 @@ export class PendingJoinRunner {
       try {
         await this.consider(join);
       } catch (error) {
-        log('pending join %s: this pass could not handle it; retried in 30 s: %s', join.Id, errorText(error));
+        log('pending join %s: this pass could not handle it; retried in 30 s: %s', join.Id, describeThrown(error));
         this.retryPass();
       }
     }
@@ -551,9 +548,9 @@ export class PendingJoinRunner {
     const run = this.attemptOnce(entry)
       .catch((error: unknown) => {
         entry.trying = false;
-        log('pending join %s: attempt failed on this machine: %s', entry.row.Id, errorText(error));
+        log('pending join %s: attempt failed on this machine: %s', entry.row.Id, describeThrown(error));
         if (entry.row.outcome === null && this.tracked.get(entry.row.Id) === entry) {
-          this.retryLater(entry, { code: 'local', reason: errorText(error) });
+          this.retryLater(entry, { code: 'local', reason: describeThrown(error) });
         }
       })
       .finally(() => {
@@ -608,8 +605,8 @@ export class PendingJoinRunner {
       this.retryLater(entry, { code: 'unreachable', reason: error.message });
     } else {
       // Retrying is safe: nothing is attempted after the request's expiry.
-      log('pending join %s: attempt threw an unexpected error; retrying: %s', entry.row.Id, errorText(error));
-      this.retryLater(entry, { code: 'local', reason: errorText(error) });
+      log('pending join %s: attempt threw an unexpected error; retrying: %s', entry.row.Id, describeThrown(error));
+      this.retryLater(entry, { code: 'local', reason: describeThrown(error) });
     }
   }
 

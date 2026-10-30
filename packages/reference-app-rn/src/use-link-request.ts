@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useState, type RefObject } from 'react';
 import type { CadreJoinResponse, JoinRefusal, OpenLinkRequest, SereusApp } from '@serfab/cadre-rn/app-link';
+import { describeThrown } from '@serfab/cadre-core';
 import { joinRequestText, linkRequests, ownScheme, UnsolicitedJoinResponseError } from './cadre-phone';
 import type { JoinFlow } from './join-flow';
 import { openOwnerApp } from './join-link';
@@ -146,7 +147,7 @@ export function useLinkRequest(
 
 /** Why `LinkRequestStore.take` refused an answer. Only the error's message is logged: a decode error's cause can quote the text. */
 function refusedAnswer(err: unknown): JoinResponseOutcome {
-	const message = err instanceof Error ? err.message : String(err);
+	const message = describeThrown(err);
 	if (err instanceof UnsolicitedJoinResponseError) {
 		console.warn(`[use-link-request] refused an answer: ${message}`);
 		return { kind: 'unsolicited' };

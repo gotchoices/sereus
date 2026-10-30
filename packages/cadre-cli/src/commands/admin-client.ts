@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import debug from 'debug';
+import { describeThrown } from '@serfab/cadre-core';
 import { commandEnv } from '../config/env.js';
 
 const log = debug('cadre:cli:admin-client');
@@ -129,7 +130,7 @@ function readTokenFile(path: string): string {
   try {
     return fs.readFileSync(path, 'utf8').replace(/\r?\n$/, '');
   } catch (err) {
-    throw new AdminOptionError(`Cannot read --token-file ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    throw new AdminOptionError(`Cannot read --token-file ${path}: ${describeThrown(err)}`);
   }
 }
 
@@ -148,7 +149,7 @@ function resolveTimeout(raw: string): number {
  */
 export function describeAdminFailure(err: unknown, port: number): string {
   if (!(err instanceof AdminRequestError)) {
-    return err instanceof Error ? err.message : String(err);
+    return describeThrown(err);
   }
   if (err.kind === 'unreachable') {
     return `No admin channel answered on ${ADMIN_HOST}:${port} (${err.message}). `

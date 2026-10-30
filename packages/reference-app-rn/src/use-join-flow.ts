@@ -7,7 +7,7 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import { decodeCadreInvitation, decodeOwnerGrant, OWNER_GRANT_PREFIX } from '@serfab/cadre-core';
+import { decodeCadreInvitation, decodeOwnerGrant, OWNER_GRANT_PREFIX, describeThrown } from '@serfab/cadre-core';
 import {
   getOwnerPublicKey,
   getRunningOptions,
@@ -116,7 +116,7 @@ function joinMoveStall(move: StrandMoveOutcome | undefined): MoveStall | null {
 function retryMoveStall(err: unknown): MoveStall {
   if (err instanceof StrandMoveNotOwnerError) return { reason: 'owner-key-not-wired' };
   console.warn('[use-join-flow] moving the strands failed:', err);
-  return { reason: 'adoption-failed', message: err instanceof Error ? err.message : String(err) };
+  return { reason: 'adoption-failed', message: describeThrown(err) };
 }
 
 /**
@@ -154,7 +154,7 @@ function flowAfterRefusedDissolve(err: unknown, moved: number): JoinFlow {
   // the start's error). If restart failures show up in practice, check the saved start's
   // `formerPartyId` here to tell the two apart.
   console.warn('[use-join-flow] removing the old cadre failed:', err);
-  return { step: 'old-cadre-remains', error: err instanceof Error ? err.message : String(err) };
+  return { step: 'old-cadre-remains', error: describeThrown(err) };
 }
 
 /** The last step. Standing is read off the kit, which reports an owner key only once it is wired. */

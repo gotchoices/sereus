@@ -10,9 +10,10 @@
 import { useEffect, useState } from 'react';
 import { Modal, ScrollView, Text, View } from 'react-native';
 import { RECOMMENDATION_TTL_MS, type AppRecommendation } from '@serfab/cadre-rn/app-link';
+import { describeThrown } from '@serfab/cadre-core';
 import { recommendations } from './cadre-phone';
 import { openRecommendedApp, recommendableApps, type RecommendableApp } from './join-link';
-import { Btn, controlStyles, errorMessage, validUntilText } from './settings-controls';
+import { Btn, controlStyles, validUntilText } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
 // The kit's RECOMMENDATION_TTL_MS in words: change the two together.
@@ -46,7 +47,7 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 		} catch (err) {
 			console.warn('[settings] could not list the Sereus apps to recommend:', err);
 			setApps(null);
-			setAppsError(errorMessage(err));
+			setAppsError(describeThrown(err));
 		}
 	};
 
@@ -57,7 +58,7 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 		} catch (err) {
 			console.warn('[settings] could not read the apps allowed to join:', err);
 			setAllowed([]);
-			setAllowedError(errorMessage(err));
+			setAllowedError(describeThrown(err));
 		}
 	};
 
@@ -73,7 +74,7 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 			await recommendations.approve({ scheme: app.scheme, appName: app.name, partyId });
 		} catch (err) {
 			console.warn(`[settings] could not save that ${app.name} may join:`, err);
-			showAlert(`Could not allow ${app.name} to join`, errorMessage(err));
+			showAlert(`Could not allow ${app.name} to join`, describeThrown(err));
 			return;
 		}
 		console.info(`[settings] allowed ${app.name} to join for ${TTL_WORDS}`);
@@ -100,7 +101,7 @@ export function RecommendAppSection({ partyId, busy, refreshKey, showAlert }: {
 			console.info(`[settings] withdrew the permission for ${entry.appName} to join`);
 		} catch (err) {
 			console.warn(`[settings] could not withdraw the permission for ${entry.appName} to join:`, err);
-			showAlert(`Could not withdraw ${entry.appName}`, errorMessage(err));
+			showAlert(`Could not withdraw ${entry.appName}`, describeThrown(err));
 		}
 		await readAllowed();
 	};

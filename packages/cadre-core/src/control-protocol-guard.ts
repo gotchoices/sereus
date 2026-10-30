@@ -86,6 +86,7 @@ import { OWNER_GRANT_PROTOCOL } from './owner-grant-protocol.js';
 import { WAKE_PROTOCOL } from './strand-wake-protocol.js';
 import { STRAND_ADDR_PROTOCOL } from './strand-addr-protocol.js';
 import { withTimeout } from './control-stream.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:control-protocol-guard');
 
@@ -337,7 +338,7 @@ class ControlProtocolGuard {
 			);
 			return member === true ? undefined : 'not an authorized member';
 		} catch (error) {
-			return `membership check failed: ${error instanceof Error ? error.message : String(error)}`;
+			return `membership check failed: ${describeThrown(error)}`;
 		}
 	}
 
@@ -348,7 +349,7 @@ class ControlProtocolGuard {
 				? undefined
 				: 'not in the authorized-member snapshot';
 		} catch (error) {
-			return `snapshot check threw: ${error instanceof Error ? error.message : String(error)}`;
+			return `snapshot check threw: ${describeThrown(error)}`;
 		}
 	}
 }

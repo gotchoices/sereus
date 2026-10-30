@@ -3,7 +3,7 @@ import debug from 'debug';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import type { PeerId } from '@libp2p/interface';
-import { withTrailingPeerId, type DroneInitResult } from '@serfab/cadre-core';
+import { withTrailingPeerId, type DroneInitResult, describeThrown } from '@serfab/cadre-core';
 import {
   adminRequest, resolveAdminConnection, describeAdminFailure, DEFAULT_ADMIN_TIMEOUT_MS,
   type AdminConnection, type AdminConnectionOptions, type AdminFetch
@@ -79,7 +79,7 @@ export function parseTargetPeerId(raw: string): string {
   try {
     parsed = peerIdFromString(raw.trim());
   } catch (err) {
-    throw new EnrollAddError(`Not a libp2p peer ID: ${raw} (${errorMessage(err)})`);
+    throw new EnrollAddError(`Not a libp2p peer ID: ${raw} (${describeThrown(err)})`);
   }
   if (parsed.type !== 'Ed25519') {
     throw new EnrollAddError(
@@ -104,7 +104,7 @@ function parseTargetAddr(raw: string, peerId: string): string {
   try {
     parsed = multiaddr(raw);
   } catch (err) {
-    throw new EnrollAddError(`--addr ${raw} is not a multiaddr (${errorMessage(err)})`);
+    throw new EnrollAddError(`--addr ${raw} is not a multiaddr (${describeThrown(err)})`);
   }
   // The owner's own rule for binding an address to a peer: without this check it would drop
   // the address silently when it came to dial.
@@ -197,16 +197,12 @@ function fail(message: string, err: unknown): void {
   process.exitCode = 1;
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 async function runEnrollAdd(rawPeerId: string, options: EnrollAddOptions, fetchImpl: AdminFetch): Promise<void> {
   let request: EnrollAddRequest;
   try {
     request = resolveRequest(rawPeerId, options, process.env, fetchImpl);
   } catch (err) {
-    fail(errorMessage(err), err);
+    fail(describeThrown(err), err);
     return;
   }
   try {

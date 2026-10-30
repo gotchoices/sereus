@@ -65,7 +65,14 @@ export interface ValidatedInvitation {
   partyId: string;
 }
 
-/** The message of a thrown parse/decode failure, whatever the thrower used. */
+/**
+ * The message of a thrown parse/decode failure, whatever the thrower used.
+ *
+ * NOTE: a thrown non-Error object reads `[object Object]` here and at this package's other
+ * `String(error)` fallbacks. cadre-core's `describeThrown` reads its fields instead, but the
+ * provider does not depend on cadre-core (see config/types.ts), so `yarn lint` leaves this
+ * package out of that guard; if the provider ever takes the dependency, switch to it.
+ */
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

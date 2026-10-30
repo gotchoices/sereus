@@ -33,6 +33,7 @@ import {
 } from './control-database.js';
 import { joinedStrandRow } from './joined-strand-store.js';
 import type { PendingJoin, StrandRow } from './types.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:strand-move');
 
@@ -323,7 +324,7 @@ async function adoptStrand(
 		report.moved.push(strandId);
 	} catch (error) {
 		log('adopt: strand %s (%s) not seated this time; adopt the same bundle again: %o', strandId, entry.kind, error);
-		report.failed.push({ kind: 'strand', id: strandId, reason: errorText(error) });
+		report.failed.push({ kind: 'strand', id: strandId, reason: describeThrown(error) });
 	}
 }
 
@@ -456,7 +457,7 @@ async function adoptFormationInvite(
 		report.invitationsMoved += 1;
 	} catch (error) {
 		log('adopt: invitation for sApp %s not seated this time; adopt the same bundle again: %o', invite.sAppId, error);
-		report.failed.push({ kind: 'invitation', id: pendingJoinId(invite.token), reason: errorText(error) });
+		report.failed.push({ kind: 'invitation', id: pendingJoinId(invite.token), reason: describeThrown(error) });
 	}
 }
 
@@ -494,7 +495,7 @@ async function adoptPendingJoin(
 		report.pendingJoinsMoved += 1;
 	} catch (error) {
 		log('adopt: pending join %s not seated this time; adopt the same bundle again: %o', join.Id, error);
-		report.failed.push({ kind: 'pending-join', id: join.Id, reason: errorText(error) });
+		report.failed.push({ kind: 'pending-join', id: join.Id, reason: describeThrown(error) });
 	}
 }
 
@@ -590,8 +591,4 @@ function requireControlDatabase(node: CadreNode, action: string): ControlDatabas
 		throw new Error(`CadreNode must be started before it can ${action}`);
 	}
 	return database;
-}
-
-function errorText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

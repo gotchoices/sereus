@@ -38,6 +38,7 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import type { Component, Multiaddr } from '@multiformats/multiaddr';
 import { withDeadline } from './control-stream.js';
 import { relayedDialBudgetMs } from './link-budget.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:peer-dial');
 
@@ -384,7 +385,7 @@ export class SelfRelayOnlyError extends Error {
  */
 export class PeerUnreachableError extends Error {
 	constructor(readonly peerId: string, cause: unknown) {
-		super(`Could not reach ${peerId}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+		super(`Could not reach ${peerId}: ${describeThrown(cause)}`, { cause });
 		this.name = 'PeerUnreachableError';
 	}
 }

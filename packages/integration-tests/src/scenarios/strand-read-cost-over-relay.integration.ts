@@ -32,7 +32,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { CadreNode, generateStrandMemberKey } from '@serfab/cadre-core';
+import { CadreNode, generateStrandMemberKey, describeThrown } from '@serfab/cadre-core';
 import type { StrandRow } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import type { Libp2p } from 'libp2p';
@@ -128,7 +128,7 @@ async function readPass(db: Database, label: string, node: Libp2p): Promise<Pass
 				try {
 					await rows(db, `select * from ${table}`);
 				} catch (error) {
-					failures.push(`${table}: ${error instanceof Error ? error.message : String(error)}`);
+					failures.push(`${table}: ${describeThrown(error)}`);
 				}
 				const took = Date.now() - t;
 				ms.push(took);

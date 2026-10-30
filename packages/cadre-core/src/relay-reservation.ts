@@ -128,6 +128,7 @@ import type { Libp2p, PeerId } from '@libp2p/interface';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { trailingPeerId } from './peer-dial.js';
 import { relayReservationBudgetMs } from './link-budget.js';
+import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:relay-reservation');
 
@@ -605,7 +606,7 @@ function firstDialError(
   let first: string | null = null;
   results.forEach((result, index) => {
     if (result.status !== 'rejected') return;
-    const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    const message = describeThrown(result.reason);
     log('Relay dial failed (%s): %s', addrs[index], message);
     first ??= message;
   });
@@ -763,7 +764,7 @@ function describeReservationFailure(err: unknown, addr: string): string {
   // {@link clearRelayFilterEntry}); a caller that re-drives WITHOUT the supervisor
   // still has to deal with the filter itself.
   const name = err instanceof Error ? err.name : '';
-  const message = err instanceof Error ? err.message : String(err);
+  const message = describeThrown(err);
   switch (name) {
     case 'HadEnoughRelaysError':
       return `relay reservation on ${addr} was not requested: this node holds no pending circuit reservation — it is not listening on the bare /p2p-circuit address`;
@@ -1085,7 +1086,7 @@ class RelayReservationLoop implements RelayReservationSupervisor {
       // rejection would leave `firstAttempt` pending FOREVER (hanging every
       // caller that awaits a reservation at startup) and schedule no further
       // attempt, which is the failure this whole supervisor exists to prevent.
-      const message = err instanceof Error ? err.message : String(err);
+      const message = describeThrown(err);
       log('Relay reservation drive threw, which it should not: %s', message);
       if (!this.stopped) {
         this.failure = message;

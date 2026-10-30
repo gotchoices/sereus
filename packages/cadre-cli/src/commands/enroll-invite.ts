@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import debug from 'debug';
 import type { CreateCadreInvitationOptions, CreateCadreInvitationResult } from '@serfab/cadre-core';
+import { describeThrown } from '@serfab/cadre-core';
 import {
   adminRequest, resolveAdminConnection, describeAdminFailure, AdminOptionError, DEFAULT_ADMIN_TIMEOUT_MS,
   type AdminConnectionOptions, type AdminFetch
@@ -117,7 +118,7 @@ async function runEnrollInvite(options: EnrollInviteOptions, fetchImpl: AdminFet
     request = buildInvitationRequest(options);
     resolved = resolveAdminConnection(options, process.env, fetchImpl);
   } catch (err) {
-    fail(err instanceof Error ? err.message : String(err), err);
+    fail(describeThrown(err), err);
     return;
   }
   try {

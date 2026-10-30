@@ -151,7 +151,7 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { resolveLinkDeadlines, type Libp2pConnectionTimeouts, type LinkDeadlines } from '@optimystic/db-p2p';
-import { DECLARED_LINK_ROUND_TRIP_MS, RELAYED_DIAL_ROUND_TRIPS, optimysticDialLimits } from '@serfab/cadre-core';
+import { DECLARED_LINK_ROUND_TRIP_MS, RELAYED_DIAL_ROUND_TRIPS, optimysticDialLimits, describeThrown } from '@serfab/cadre-core';
 import { installWsLatency, startDedicatedRelay } from '../harness/index.js';
 
 const MEASURE = process.env.RELAY_DIAL_COST === '1';
@@ -307,7 +307,7 @@ async function timed<T>(into: Record<string, unknown>, key: string, fn: () => Pr
 		into[key] = Date.now() - started;
 		return value;
 	} catch (error) {
-		into[key] = `FAILED after ${Date.now() - started} ms: ${error instanceof Error ? error.message : String(error)}`;
+		into[key] = `FAILED after ${Date.now() - started} ms: ${describeThrown(error)}`;
 		return undefined;
 	}
 }

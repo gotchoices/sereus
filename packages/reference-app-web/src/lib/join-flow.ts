@@ -13,6 +13,7 @@ import {
 	CadreInviteRejectedError,
 	CadreInviteReplyInvalidError,
 	CadreInviteUnreachableError,
+	describeThrown,
 } from '@serfab/cadre-core';
 import { StrandsNeedOwnerJoinError, type EdgeJoinProgress } from '@serfab/cadre-core/edge-node';
 import { describeOwnerGrantFailure } from './owner-grants.js';
@@ -190,7 +191,7 @@ export function describeJoinFailure(err: unknown): string {
 	if (err instanceof CadreInviteUnreachableError) return 'No member named in the invitation could be reached';
 	if (err instanceof CadreInviteReplyInvalidError) return 'A member answered, but its answer did not verify';
 	if (err instanceof StrandsNeedOwnerJoinError) return ownerJoinNeededLine(err.strandCount);
-	return describeOwnerGrantFailure(err) ?? (err instanceof Error ? err.message : String(err));
+	return describeOwnerGrantFailure(err) ?? describeThrown(err);
 }
 
 /** The edge node refused a member join that would leave the founded party's strands behind; the phone app's `join-failure.ts` says the same of "this app". */
