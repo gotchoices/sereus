@@ -1197,6 +1197,13 @@ export class CadreNode implements SAppIdLookup {
   private reissuedHeldRevocations = false;
   /** This node's own `CadrePeer` self-write committed local-only (re-touched on growth). */
   private pendingSelfPeerWrite = false;
+  /**
+   * A background self-record publish was deferred because a write then could have forked the
+   * party ({@link publishSelfRecordInBackground}); the next growth drain publishes unless the
+   * record is current. Distinct from {@link pendingSelfPeerWrite}, which re-touches a record
+   * already written, current or not.
+   */
+  private selfPeerPublishDeferred = false;
   /** This node's own `DeviceToken` self-write committed local-only (re-touched on growth). */
   private pendingSelfDeviceWrite = false;
   /**
@@ -3324,14 +3331,18 @@ export class CadreNode implements SAppIdLookup {
    * so the timer is harmless even when registration only becomes possible later.
    * A record this process already put in place that is still current (a founding owner's
    * explicit publish, a redeemed invitation's admission, a restart's first-growth re-touch) is
-   * not written again ({@link publishSelfRecordUnlessCurrent}). Whether the node is connected
-   * yet does not matter: a device that redeems within a second of starting is.
+   * not written again ({@link publishSelfRecordUnlessCurrent}); that check, not connectivity,
+   * is what spares a device that redeemed within a second of starting a second write.
+   *
+   * A background publish ({@link publishSelfRecordInBackground}): in a party with other members
+   * it waits for a reachable sibling, so two members restarted together, each alone at this
+   * moment, do not each write the `CadrePeer` collection to the same revision.
    */
   private scheduleSelfRegistration(): void {
     this.selfRegistrationTimer = setTimeout(() => {
       void (async () => {
         try {
-          await this.publishSelfRecordUnlessCurrent();
+          await this.publishSelfRecordInBackground('boot', () => this.publishSelfRecordUnlessCurrent());
         } catch (error) {
           // Background task — a failed publish must not crash the node. A publish that loses
           // its row to another writer — the owner's re-touch, or a restarted machine's own row
@@ -3349,6 +3360,26 @@ export class CadreNode implements SAppIdLookup {
     }, 1000); // Small delay to ensure node is fully started
     // Node-only: don't keep the event loop alive solely for this timer.
     (this.selfRegistrationTimer as { unref?: () => void } | null)?.unref?.();
+  }
+
+  /**
+   * Run `publish`, a self-record publish nothing waits on (the boot one-shot, the heartbeat, an
+   * address change), unless a write now could fork the party ({@link controlWriteCouldFork}).
+   * Then nothing is written: {@link selfPeerPublishDeferred} is set, and the next growth drain
+   * publishes the record as it is by then. A deferral is not a failure, so it neither stamps
+   * {@link lastSelfRecordPublishAt} (the reconcile pass's {@link publishFirstSelfRecord} keeps
+   * trying) nor escalates a stale record.
+   */
+  private async publishSelfRecordInBackground(
+    reason: string,
+    publish: () => Promise<SelfRegistrationOutcome | 'current'>
+  ): Promise<SelfRegistrationOutcome | 'current' | 'deferred'> {
+    if (await this.controlWriteCouldFork()) {
+      this.selfPeerPublishDeferred = true;
+      log('Self-record publish (%s) deferred: no sibling reachable and the party has other members; the next growth drain publishes', reason);
+      return 'deferred';
+    }
+    return await publish();
   }
 
   /**
@@ -3689,8 +3720,8 @@ export class CadreNode implements SAppIdLookup {
    * would write its row on the stale side of the fork, and then never see rows written while it
    * was down (`cadre-invite-any-member` runs that pass and fails every time without this
    * condition). A connection is not enough: until the sibling identifies, the write's cohort is
-   * this node alone. The boot-time publish and the first-growth drain already try at the
-   * node's lone and first-sibling moments; this retries on the passes after.
+   * this node alone. The boot-time publish (alone only in a party with no other members) and the
+   * first-growth drain already try; this retries on the passes after.
    *
    * A machine admitted by invitation finds its row already holding the record its redemption
    * carried, and writes nothing ({@link publishSelfRecordUnlessCurrent}).
@@ -3732,7 +3763,7 @@ export class CadreNode implements SAppIdLookup {
     }
 
     const republish = (reason: string) => {
-      void this.registerSelf().catch((error) => {
+      void this.publishSelfRecordInBackground(reason, () => this.registerSelf()).catch((error) => {
         log('Record refresh (%s) failed: %o', reason, error);
         // The only failure in this file that degrades the whole party on its own, so it is
         // the only one that escalates past `debug`. See escalateIfSelfRecordStale.
@@ -3851,6 +3882,7 @@ export class CadreNode implements SAppIdLookup {
     this.pendingPeerWrites.clear();
     this.pendingRevocations.clear();
     this.pendingSelfPeerWrite = false;
+    this.selfPeerPublishDeferred = false;
     this.pendingSelfDeviceWrite = false;
     // Self-record publication history is per-session too: a restarted node re-publishes
     // from scratch, and carrying the previous lifetime's stamp forward would either
@@ -4907,14 +4939,20 @@ export class CadreNode implements SAppIdLookup {
 
     // 2. Self rows. A self write made while alone is always re-touched: the re-touch
     //    is what carries it to the cohort. Otherwise the first growth re-touches a row
-    //    a prior process may have committed local-only, unless the row already holds a
-    //    current record this process signed (a redeemed invitation's admission).
+    //    a prior process may have committed local-only, and a background publish deferred
+    //    while alone is made now, each unless the row already holds a current record this
+    //    process signed (a redeemed invitation's admission). Both flags are taken before
+    //    the publish, so one set again while it runs (the write committed alone after all,
+    //    a heartbeat deferred meanwhile) waits for the next growth.
     //    registerSelf is idempotent + single-flight, so this never races a
     //    duplicate publish with the heartbeat republish.
-    if (firstGrowth || this.pendingSelfPeerWrite) {
-      const publish = this.pendingSelfPeerWrite ? this.registerSelf() : this.publishSelfRecordUnlessCurrent();
+    const retouchSelf = this.pendingSelfPeerWrite;
+    const publishDeferred = this.selfPeerPublishDeferred;
+    this.pendingSelfPeerWrite = false;
+    this.selfPeerPublishDeferred = false;
+    if (firstGrowth || retouchSelf || publishDeferred) {
+      const publish = retouchSelf ? this.registerSelf() : this.publishSelfRecordUnlessCurrent();
       await publish.catch((error) => log('drain: registerSelf failed: %o', error));
-      this.pendingSelfPeerWrite = false;
     }
     if (firstGrowth || this.pendingSelfDeviceWrite) {
       await this.retouchSelfDeviceToken();
@@ -4933,8 +4971,10 @@ export class CadreNode implements SAppIdLookup {
     // 4. In-session pending owner authorize writes.
     await this.drainPendingPeerWrites();
 
-    // 5. Pending joins this process wrote while alone. Their tombstones went out in step 1.
+    // 5. Pending joins this process wrote while alone (their tombstones went out in step 1),
+    //    then the background attempts it deferred while alone.
     await this.pendingJoinRunner?.reissueWritesMadeAlone();
+    this.pendingJoinRunner?.resumeDeferredWrites();
   }
 
   /**
@@ -7015,6 +7055,11 @@ export class CadreNode implements SAppIdLookup {
     // NOTE: founder-ness no longer waits for the owner signer, so a founding machine's launch
     // that runs before the embedder wires it throws here and the watcher retries on its backoff;
     // if that shows up as restart noise, skip the heal until `getOwnerSigner()` is set.
+    // NOTE: a control write the strand watcher's launch makes in the background, not deferred
+    // while a write could fork the party (`controlWriteCouldFork`): only the row's founder mints,
+    // and only for a closed row stored without its key, so two machines forking `StrandPartyKey`
+    // at once needs two such rows launching alone together. If this heal comes to run routinely
+    // at boot, defer it the same way.
     return await this.ensureStrandPartyKey(strand.Id);
   }
 
@@ -9501,8 +9546,8 @@ export class CadreNode implements SAppIdLookup {
    * `OwnerKey.Authorized`; the row stores the vouching pair). The write notifies the
    * membership hub, so the refresh it triggers has run by the time this resolves.
    *
-   * Refused while alone ({@link ownerKeyWriteAlone}): an `OwnerKey` add has no re-issue path,
-   * so one committed with no control connection would stay on this node.
+   * Refused while alone ({@link controlWriteCouldFork}): an `OwnerKey` add has no re-issue path,
+   * so one committed with no sibling reachable would stay on this node.
    *
    * @param ownerPublicKeyB64 - the new owner's ed25519 public key (base64url).
    * @param options.label - the user's name for the key ("phone", "paper backup"), bound into
@@ -9515,7 +9560,7 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     const key = requireEd25519PublicKeyB64(ownerPublicKeyB64, 'owner key');
-    if (await this.ownerKeyWriteAlone()) {
+    if (await this.controlWriteCouldFork()) {
       throw new OwnerKeyAddRefusedError(key, 'alone');
     }
     const added = await this.seedBootstrapService.addOwner(key, options.label);
@@ -9530,17 +9575,27 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Whether an `OwnerKey` add made now ({@link addOwner}, or the re-add of
-   * {@link removeOwner}'s re-vouch) is refused `alone`: this node holds no control connection
-   * while the party has other members. An `OwnerKey` row has no update to re-touch, so nothing
-   * re-issues it on cohort growth, and a row written now would fork this node's history. A
-   * party with no other members cannot fork, so a solo founder adding an owner key is not
-   * refused.
+   * Whether a control write made now could fork the party's history: no sibling is reachable
+   * ({@link committedAlone}) while the party has other members. Such a write commits on this
+   * node alone, and if another member writes the same collection meanwhile, both take it to the
+   * same revision with different content, which no re-issue heals (docs/architecture.md →
+   * "Writes made while alone"). A party with no other members cannot fork.
+   *
+   * What a caller does on `true` depends on the write. An `OwnerKey` add has no re-issue path at
+   * all, so {@link addOwner}, {@link removeOwner}'s re-vouch and a local owner grant redemption
+   * refuse it `alone`. A background write nothing waits on (the self-record publishes
+   * {@link publishSelfRecordInBackground} makes, the pending-join runner's background attempts)
+   * waits for a reachable sibling.
    *
    * Waits out an in-flight membership refresh first: until `start`'s first one lands the
    * member snapshot is empty, which would read as a party with no other members.
+   *
+   * NOTE: a snapshot that stays empty on a node that has members (a failed first membership
+   * read keeps the empty snapshot; an anchor never seeded trusts no row) also reads as "no
+   * other members", so such a node writes alone as before this check existed. If a fork is
+   * ever traced to that state, count the party from the unfiltered `CadrePeer` rows here.
    */
-  private async ownerKeyWriteAlone(): Promise<boolean> {
+  private async controlWriteCouldFork(): Promise<boolean> {
     await this.membershipGateDrain;
     return this.committedAlone() && this.authorizedControlPeers.size > 0;
   }
@@ -9583,7 +9638,7 @@ export class CadreNode implements SAppIdLookup {
    *
    * Steps: re-plan ({@link planOwnerKeyRemoval}) and throw {@link OwnerKeyRemovalRefusedError}
    * on a refusal; check `options.revouch` against the plan's dependents and throw before any
-   * write when it names anything else; refuse `alone` ({@link ownerKeyWriteAlone}) when an
+   * write when it names anything else; refuse `alone` ({@link controlWriteCouldFork}) when an
    * `OwnerKey` row is to be re-vouched, since that re-add has no re-issue path; **re-vouch
    * first**, under this node's key, the dependents the caller chose to keep and this node's own
    * row when the key vouched it (`ControlDatabase.revouchOwnerKey`, `reauthorizePeer`), so they
@@ -9608,7 +9663,7 @@ export class CadreNode implements SAppIdLookup {
       throw new OwnerKeyRemovalRefusedError(key, plan.refusal);
     }
     const revouch = revouchWithinPlan(plan, options.revouch, this.peerId?.toString() ?? null);
-    if (revouch.owners.length > 0 && await this.ownerKeyWriteAlone()) {
+    if (revouch.owners.length > 0 && await this.controlWriteCouldFork()) {
       throw new OwnerKeyRemovalRefusedError(key, 'alone');
     }
     // The plan already refused 'not-an-owner' when no enrolled signer is wired.
@@ -10537,7 +10592,8 @@ export class CadreNode implements SAppIdLookup {
   async redeemOwnerGrant(bundle: OwnerGrantBundle, signer: OwnerSigner, options: RedeemOwnerGrantOptions = {}): Promise<RedeemOwnerGrantResult> {
     const { controlDatabase } = this.requireStartedForGrant(bundle, 'redeeming an owner grant');
     // An enrolled owner machine is a party machine whether or not its own row is published yet
-    // (the first self-record lands a second after start), so it writes locally too.
+    // (its first self-record lands a second after start, or once it reaches a sibling in a party
+    // with other members), so it writes locally too.
     if (await this.isLiveMemberSelf() || await this.isOwner()) {
       return await this.redeemOwnerGrantLocally(controlDatabase, bundle, signer);
     }
@@ -10555,7 +10611,7 @@ export class CadreNode implements SAppIdLookup {
    * check and the write, as the member handler carries it (`MemberRedemptionHandler`).
    */
   private async redeemOwnerGrantLocally(controlDatabase: ControlDatabase, bundle: OwnerGrantBundle, signer: OwnerSigner): Promise<RedeemOwnerGrantResult> {
-    if (await this.ownerKeyWriteAlone()) {
+    if (await this.controlWriteCouldFork()) {
       throw new OwnerKeyAddRefusedError(signer.publicKey, 'alone');
     }
     const held = await controlDatabase.queryOwnerGrant(bundle.grant.key);
@@ -11095,6 +11151,7 @@ export class CadreNode implements SAppIdLookup {
       remove: (id) => ownerWrite(`Clean up the finished pending join ${id}`,
         (ownerKey, sign) => database().deletePendingJoin(id, ownerKey, sign)),
       isAlone: () => this.committedAlone(),
+      deferBackgroundWrites: () => this.controlWriteCouldFork(),
       sAppIdOf: (row) => this.pendingJoinSAppId(row),
       observeRows: (rows) => this.stageMembershipInvitesFromPendingJoins(rows),
       emit: (status) => this.emit('pendingJoin:changed', status),

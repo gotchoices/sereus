@@ -101,6 +101,12 @@ export interface PendingJoinRunnerDeps {
   remove(id: string): Promise<boolean>;
   /** Whether this machine reaches no sibling now (`CadreNode.hasReachableControlSibling`), so a write it commits reaches no other machine. */
   isAlone(): boolean;
+  /**
+   * Whether a write nothing waits on must wait for a reachable sibling now
+   * (`CadreNode.controlWriteCouldFork`): this machine reaches none while the party has other
+   * machines, so another owner machine writing the same tables meanwhile would fork them.
+   */
+  deferBackgroundWrites(): Promise<boolean>;
   /** The sApp the request's invitation names. */
   sAppIdOf(join: PendingJoin): string;
   /** Every pass's joins, read by an owner machine; `CadreNode` stages the membership invitations they carry. */
@@ -263,6 +269,8 @@ export class PendingJoinRunner {
   /** Every pass runs on it, one at a time; present between {@link start} and {@link stop}. */
   private watch: TableChangeWatch | null = null;
   private backgroundAttempts = 0;
+  /** A background write was deferred ({@link PendingJoinRunnerDeps.deferBackgroundWrites}); {@link resumeDeferredWrites} runs a pass for it. */
+  private deferredWrites = false;
 
   constructor(private readonly deps: PendingJoinRunnerDeps) {
     this.scheduler = deps.scheduler ?? defaultTimeoutScheduler;
@@ -308,6 +316,7 @@ export class PendingJoinRunner {
     this.tracked.clear();
     this.dueQueue.length = 0;
     this.writtenAlone.clear();
+    this.deferredWrites = false;
   }
 
   /**
@@ -319,13 +328,24 @@ export class PendingJoinRunner {
   }
 
   /**
+   * Run a pass now if a background write was deferred while one could have forked the party
+   * ({@link PendingJoinRunnerDeps.deferBackgroundWrites}), so the joins it left unscheduled are
+   * scheduled again. Called on the control cohort's growth edge, when a sibling becomes reachable.
+   */
+  resumeDeferredWrites(): void {
+    if (!this.deferredWrites) return;
+    this.deferredWrites = false;
+    this.kick();
+  }
+
+  /**
    * Try `join` on this machine at once, outside the background slots, and report the status
    * after the attempt. Joins an attempt already running for it.
    */
   async attemptNow(join: PendingJoin): Promise<PendingJoinStatus> {
     const entry = this.adopt(join);
     if (entry.row.outcome === null) {
-      await this.startAttempt(entry);
+      await this.startAttempt(entry, false);
     }
     return this.describe(entry.row, entry);
   }
@@ -459,7 +479,7 @@ export class PendingJoinRunner {
       return;
     }
     if (entry.joinedHere || this.now() >= entry.row.ExpiresAt) {
-      await this.startAttempt(entry);
+      await this.startAttempt(entry, true);
       return;
     }
     if (entry.timer === undefined && !entry.queued) {
@@ -527,15 +547,24 @@ export class PendingJoinRunner {
       entry.queued = false;
       if (entry.attempt || this.tracked.get(entry.row.Id) !== entry) continue;
       this.backgroundAttempts++;
-      void this.startAttempt(entry).finally(() => {
+      void this.startAttempt(entry, true).finally(() => {
         this.backgroundAttempts--;
         this.pump();
       });
     }
   }
 
-  /** Run one attempt for `entry`, or join the one already running. Never rejects. */
-  private startAttempt(entry: TrackedJoin): Promise<void> {
+  /**
+   * Run one attempt for `entry`, or join the one already running. A `background` attempt (one no
+   * `requestJoin` asked for) is deferred while a write could fork the party ({@link attemptOnce}).
+   * Never rejects.
+   *
+   * NOTE: a `requestJoin` that arrives while a background attempt for the same join is deciding
+   * to defer joins it and returns without attempting; the window is one membership-snapshot
+   * refresh. If users are seen asking twice to get an attempt, make an explicit call start its
+   * own attempt once a joined one deferred.
+   */
+  private startAttempt(entry: TrackedJoin, background: boolean): Promise<void> {
     if (entry.attempt) return entry.attempt;
     this.cancelTimer(entry);
     if (entry.queued) {
@@ -545,7 +574,7 @@ export class PendingJoinRunner {
     // NOTE: only a join is held for re-writing (`joinedHere`); a failed write of a final failure is
     // retried by attempting again, so a `local` failure whose write failed ends up recorded as
     // `token-spent`. If apps come to branch on that code, hold failures the same way.
-    const run = this.attemptOnce(entry)
+    const run = this.attemptOnce(entry, background)
       .catch((error: unknown) => {
         entry.trying = false;
         log('pending join %s: attempt failed on this machine: %s', entry.row.Id, describeThrown(error));
@@ -560,10 +589,20 @@ export class PendingJoinRunner {
     return run;
   }
 
-  private async attemptOnce(entry: TrackedJoin): Promise<void> {
+  /**
+   * One attempt, or the write it is due. A join this machine already made is recorded whatever
+   * else holds: kept only in memory, it would be lost with a restart, and the next start's
+   * attempt would fail the join as `token-spent`. Otherwise a background attempt, and the
+   * `expired` outcome due in its place, are deferred while a write could fork the party.
+   */
+  private async attemptOnce(entry: TrackedJoin, background: boolean): Promise<void> {
     if (entry.row.outcome !== null) return;
     if (entry.joinedHere) {
       await this.writeOutcome(entry, entry.joinedHere);
+      return;
+    }
+    if (background && await this.deps.deferBackgroundWrites()) {
+      this.deferAttempt(entry);
       return;
     }
     if (this.now() >= entry.row.ExpiresAt) {
@@ -586,6 +625,14 @@ export class PendingJoinRunner {
     log('pending join %s: approved, strand %s', entry.row.Id, result.strandId);
     entry.joinedHere = joinedOutcome(result, this.now());
     await this.writeOutcome(entry, entry.joinedHere);
+  }
+
+  /** Leave `entry` unscheduled; the pass {@link resumeDeferredWrites} runs schedules it again. */
+  private deferAttempt(entry: TrackedJoin): void {
+    entry.nextAttemptAt = undefined;
+    this.deferredWrites = true;
+    log('pending join %s: background attempt deferred until a sibling is reachable', entry.row.Id);
+    this.emitIfChanged(entry);
   }
 
   /** Read a failed attempt: retry, confirm a spent token, or fail the join. */
@@ -695,7 +742,8 @@ export class PendingJoinRunner {
   /**
    * Remove a finished join {@link MEMBERSHIP_INVITE_TTL_MS} after its outcome: the membership
    * invitation it carries is dead by then, and an app that was not running has seen the strand
-   * through `strand:discovered`. Only while connected, like every write nothing waits on.
+   * through `strand:discovered`. Deferred while a write could fork the party, like every write
+   * nothing waits on.
    *
    * NOTE: `deletePendingJoin` removes whichever incarnation is live, so a `requestJoin` of the
    * same invitation landing on another machine in the same instant can be removed with it. The
@@ -703,7 +751,11 @@ export class PendingJoinRunner {
    */
   private async ageOut(entry: TrackedJoin): Promise<void> {
     const recordedAt = entry.row.outcome?.RecordedAt;
-    if (recordedAt === undefined || this.now() < recordedAt + MEMBERSHIP_INVITE_TTL_MS || this.deps.isAlone()) return;
+    if (recordedAt === undefined || this.now() < recordedAt + MEMBERSHIP_INVITE_TTL_MS) return;
+    if (await this.deps.deferBackgroundWrites()) {
+      this.deferredWrites = true;
+      return;
+    }
     await this.deps.remove(entry.row.Id);
     log('pending join %s: removed, %d days after its outcome', entry.row.Id, MEMBERSHIP_INVITE_TTL_MS / (24 * 3600_000));
     this.forget(entry);

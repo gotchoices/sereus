@@ -3507,7 +3507,8 @@ export class ControlDatabase {
    * when a row was actually removed.
    *
    * Opted into {@link LOST_UPDATE_RETRY_POLICY}: the row's machine may publish its own record
-   * at the moment of the removal (its first publish lands about a second after it starts), and
+   * at the moment of the removal (its first publish lands about a second after it starts, or once
+   * it reaches a sibling), and
    * the removal that loses is refused as a lost update. {@link deleteGuardedRow} reads the stamp
    * and signs inside the body, and a self-publish never changes the stamp the `'remove'` digest
    * binds, so the re-run reads the published row and removes it.

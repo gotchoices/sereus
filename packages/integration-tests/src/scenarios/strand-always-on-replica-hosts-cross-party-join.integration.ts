@@ -207,8 +207,9 @@ async function startPhone(runTag: number, capture: RawStorageCapture, handles: H
 }
 
 /**
- * The always-on machine's boot timer (`CadreNode.scheduleSelfRegistration`, 1 s after start)
- * writes its own `CadrePeer` record over the row the phone vouched, and that write replicates
+ * The always-on machine's first self-record publish (`CadreNode.scheduleSelfRegistration`, 1 s
+ * after start, or its first growth drain when no sibling is reachable then) writes its own
+ * `CadrePeer` record over the row the phone vouched, and that write replicates
  * to the phone, whose gate watch starts a reconcile pass. A pass that runs during step 1
  * publishes the join the step expects to find local only, so enrollment waits until the phone
  * holds the self-signed revision (strictly greater `UpdatedAt` than the vouched row), then for

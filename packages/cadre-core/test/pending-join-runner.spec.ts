@@ -147,6 +147,7 @@ function harness(script: ScriptedAttempt[], join: PendingJoin = pendingJoin(), o
     },
     remove: async (id) => table.delete(id),
     isAlone: () => false,
+    deferBackgroundWrites: async () => false,
     sAppIdOf: () => 'sapp',
     observeRows: () => undefined,
     emit: (status) => h.emitted.push({ ...status, at: clock.now() }),
@@ -295,5 +296,21 @@ describe('PendingJoinRunner', () => {
 
     await h.runner.reissueWritesMadeAlone();
     expect(h.row()?.StampId, 'a connected re-issue clears the mark').toBe('stamp-1');
+  });
+
+  it('defers a background attempt while a write could fork the party, and makes it once a sibling is reachable', async () => {
+    let deferring = true;
+    const h = harness([() => Promise.resolve(approved('strand-later'))], pendingJoin(), {
+      deferBackgroundWrites: async () => deferring,
+    });
+    h.runner.start();
+    await h.clock.advance(60_000);
+    expect(h.attempts).toBe(0);
+
+    deferring = false;
+    h.runner.resumeDeferredWrites();
+    await h.clock.advance(60_000);
+    expect(h.attempts).toBe(1);
+    expect(h.row()?.outcome).toMatchObject({ kind: 'joined', StrandId: 'strand-later' });
   });
 });

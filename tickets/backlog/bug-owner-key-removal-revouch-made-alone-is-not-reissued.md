@@ -1,6 +1,6 @@
 description: When an owner removes an owner key while their device has no connection to the rest of the cadre, the devices they chose to keep may still be dropped by every other machine once it reconnects, because the "keep" step is not re-sent the way the removal itself is.
 architecture: docs/architecture.md#removing-an-owner-key
-files: packages/cadre-core/src/cadre-node.ts (removeOwner, revouchDependents, ownerKeyWriteAlone, noteControlWrite, reissuePendingPeerWrites), packages/cadre-core/src/owner-keys.ts (OWNER_KEY_REMOVAL_REFUSAL_REASON), packages/cadre-core/src/types.ts (OwnerKeyRemovalRefusal), docs/architecture.md (Removing an owner key, Writes made while alone)
+files: packages/cadre-core/src/cadre-node.ts (removeOwner, revouchDependents, controlWriteCouldFork, noteControlWrite, reissuePendingPeerWrites), packages/cadre-core/src/owner-keys.ts (OWNER_KEY_REMOVAL_REFUSAL_REASON), packages/cadre-core/src/types.ts (OwnerKeyRemovalRefusal), docs/architecture.md (Removing an owner key, Writes made while alone)
 repro: static
 severity: wrong-result
 likelihood: unusual
