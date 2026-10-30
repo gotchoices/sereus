@@ -197,15 +197,18 @@ function reportGrantRedeemed(
  * minted. The background heartbeat keeps it fresh, but it fires too late for the first invite or
  * seed: without this, `createSeed()` would omit this node, so a freshly-seeded node would have no
  * address for the seed's minter to dial (`applySeed` dials the seed's preferred peers) until the
- * heartbeat (about 7.5 minutes) first published the row.
+ * heartbeat (about 7.5 minutes) first published the row. In a party with other machines and none
+ * reachable yet, the write waits for one (`registerSelfUnlessCouldFork`): two owner servers
+ * restarted together would otherwise each write it alone and fork the party's records.
  */
 export async function registerOwnerNode(node: CadreNode): Promise<void> {
   console.log('✓ Owner seed-bootstrap initialized');
-  const selfReg = await node.registerSelf();
+  const selfReg = await node.registerSelfUnlessCouldFork();
   const selfRegMessage: Record<typeof selfReg, string> = {
     inserted: '✓ Owner self-registered into CadrePeer (row inserted)',
     refreshed: '✓ Owner CadrePeer record refreshed',
     skipped: '• Owner self-registration skipped (see logs for the reason; the heartbeat retries)',
+    deferred: '• Owner CadrePeer record not written yet: no other machine of the party is reachable; it is written once one is',
   };
   console.log(selfRegMessage[selfReg]);
 }

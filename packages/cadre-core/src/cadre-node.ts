@@ -3363,23 +3363,35 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Run `publish`, a self-record publish nothing waits on (the boot one-shot, the heartbeat, an
-   * address change), unless a write now could fork the party ({@link controlWriteCouldFork}).
-   * Then nothing is written: {@link selfPeerPublishDeferred} is set, and the next growth drain
-   * publishes the record as it is by then. A deferral is not a failure, so it neither stamps
-   * {@link lastSelfRecordPublishAt} (the reconcile pass's {@link publishFirstSelfRecord} keeps
-   * trying) nor escalates a stale record.
+   * Run `publish`, a self-record publish nothing needs made now (the boot one-shot, the heartbeat,
+   * an address change, {@link registerSelfUnlessCouldFork}), unless a write now could fork the
+   * party ({@link controlWriteCouldFork}). Then nothing is written: {@link selfPeerPublishDeferred}
+   * is set, and the next growth drain publishes the record as it is by then. A deferral is not a
+   * failure, so it neither stamps {@link lastSelfRecordPublishAt} (the reconcile pass's
+   * {@link publishFirstSelfRecord} keeps trying) nor escalates a stale record.
    */
-  private async publishSelfRecordInBackground(
+  private async publishSelfRecordInBackground<T extends SelfRegistrationOutcome | 'current'>(
     reason: string,
-    publish: () => Promise<SelfRegistrationOutcome | 'current'>
-  ): Promise<SelfRegistrationOutcome | 'current' | 'deferred'> {
+    publish: () => Promise<T>
+  ): Promise<T | 'deferred'> {
     if (await this.controlWriteCouldFork()) {
       this.selfPeerPublishDeferred = true;
       log('Self-record publish (%s) deferred: no sibling reachable and the party has other members; the next growth drain publishes', reason);
       return 'deferred';
     }
     return await publish();
+  }
+
+  /**
+   * {@link registerSelf} for a caller that wants the record in place but cannot wait for a
+   * sibling (`cadre start --owner`, so the first seed it mints carries its address). A party with
+   * no other members writes at once; otherwise the write waits for a reachable sibling, as the
+   * boot publish does, and this returns `'deferred'`. Two owner machines restarted together that
+   * each called {@link registerSelf} here would fork the `CadrePeer` collection
+   * ({@link controlWriteCouldFork}).
+   */
+  async registerSelfUnlessCouldFork(): Promise<SelfRegistrationOutcome | 'deferred'> {
+    return await this.publishSelfRecordInBackground('startup', () => this.registerSelf());
   }
 
   /**

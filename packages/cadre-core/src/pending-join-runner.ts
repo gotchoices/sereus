@@ -126,7 +126,7 @@ interface TrackedJoin {
   /** Due, waiting for a background attempt slot. */
   queued: boolean;
   /** Set while an attempt (or a re-run of its outcome write) is running. */
-  attempt?: Promise<void>;
+  attempt?: Promise<'deferred' | undefined>;
   trying: boolean;
   nextAttemptAt?: number;
   lastError?: AttemptError;
@@ -344,7 +344,8 @@ export class PendingJoinRunner {
    */
   async attemptNow(join: PendingJoin): Promise<PendingJoinStatus> {
     const entry = this.adopt(join);
-    if (entry.row.outcome === null) {
+    // A background attempt already running for it may defer instead of attempting.
+    if (entry.row.outcome === null && await this.startAttempt(entry, false) === 'deferred') {
       await this.startAttempt(entry, false);
     }
     return this.describe(entry.row, entry);
@@ -556,15 +557,10 @@ export class PendingJoinRunner {
 
   /**
    * Run one attempt for `entry`, or join the one already running. A `background` attempt (one no
-   * `requestJoin` asked for) is deferred while a write could fork the party ({@link attemptOnce}).
-   * Never rejects.
-   *
-   * NOTE: a `requestJoin` that arrives while a background attempt for the same join is deciding
-   * to defer joins it and returns without attempting; the window is one membership-snapshot
-   * refresh. If users are seen asking twice to get an attempt, make an explicit call start its
-   * own attempt once a joined one deferred.
+   * `requestJoin` asked for) is deferred while a write could fork the party ({@link attemptOnce}),
+   * and then resolves `'deferred'`, also for a caller that joined it. Never rejects.
    */
-  private startAttempt(entry: TrackedJoin, background: boolean): Promise<void> {
+  private startAttempt(entry: TrackedJoin, background: boolean): Promise<'deferred' | undefined> {
     if (entry.attempt) return entry.attempt;
     this.cancelTimer(entry);
     if (entry.queued) {
@@ -581,6 +577,7 @@ export class PendingJoinRunner {
         if (entry.row.outcome === null && this.tracked.get(entry.row.Id) === entry) {
           this.retryLater(entry, { code: 'local', reason: describeThrown(error) });
         }
+        return undefined;
       })
       .finally(() => {
         entry.attempt = undefined;
@@ -595,7 +592,7 @@ export class PendingJoinRunner {
    * attempt would fail the join as `token-spent`. Otherwise a background attempt, and the
    * `expired` outcome due in its place, are deferred while a write could fork the party.
    */
-  private async attemptOnce(entry: TrackedJoin, background: boolean): Promise<void> {
+  private async attemptOnce(entry: TrackedJoin, background: boolean): Promise<'deferred' | undefined> {
     if (entry.row.outcome !== null) return;
     if (entry.joinedHere) {
       await this.writeOutcome(entry, entry.joinedHere);
@@ -603,7 +600,7 @@ export class PendingJoinRunner {
     }
     if (background && await this.deps.deferBackgroundWrites()) {
       this.deferAttempt(entry);
-      return;
+      return 'deferred';
     }
     if (this.now() >= entry.row.ExpiresAt) {
       const reason = `No attempt starts after ${new Date(entry.row.ExpiresAt).toISOString()}`;

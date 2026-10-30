@@ -313,4 +313,19 @@ describe('PendingJoinRunner', () => {
     expect(h.attempts).toBe(1);
     expect(h.row()?.outcome).toMatchObject({ kind: 'joined', StrandId: 'strand-later' });
   });
+
+  it('a requestJoin that joins a background attempt which then defers still attempts', async () => {
+    let answerDeferral: (defer: boolean) => void = () => undefined;
+    const h = harness([() => Promise.resolve(approved('strand-asked'))], pendingJoin(), {
+      deferBackgroundWrites: () => new Promise<boolean>((resolve) => { answerDeferral = resolve; }),
+    });
+    h.runner.start();
+    await h.clock.advance(60_000);
+
+    const asked = h.runner.attemptNow(h.row()!);
+    answerDeferral(true);
+    await asked;
+    expect(h.attempts).toBe(1);
+    expect(h.row()?.outcome).toMatchObject({ kind: 'joined', StrandId: 'strand-asked' });
+  });
 });
