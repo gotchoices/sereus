@@ -80,7 +80,7 @@
  * for it.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import {
@@ -182,6 +182,10 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
 	const link = opts.latency === undefined ? undefined : installWsLatency(opts.latency);
 	const busy = ENV_EVENT_LOOP_BUSY || (opts.eventLoopBusy ?? 0);
 	const release = busy > 0 ? occupyEventLoop(busy) : undefined;
+	// A test that times out is abandoned before its `finally` runs, so the next arm would meet this
+	// shim still installed (`installWsLatency` refuses a second install) and an event loop it did not
+	// ask to load. Both undos are idempotent; the `finally` still runs them first on a normal finish.
+	onTestFinished(() => { release?.(); link?.restore(); });
 	let relay: DedicatedRelay | undefined;
 	let A: CadreNode | undefined;
 	let B: CadreNode | undefined;
@@ -416,6 +420,8 @@ async function hibernateFounderStrand(A: CadreNode, joiner: StrandInstance, foun
 async function runJoinerRestartDelivers(opts: RestartOptions = {}): Promise<void> {
 	let link: ReturnType<typeof installWsLatency> | undefined = installWsLatency({ delayMs: 20, mode: 'serial' });
 	let release: (() => void) | undefined = occupyEventLoop(0.7);
+	// As in `runJoinerFirstCommit`: undone when the test ends, timed out included.
+	onTestFinished(() => { release?.(); link?.restore(); });
 	let relay: DedicatedRelay | undefined;
 	let A: CadreNode | undefined;
 	let B: CadreNode | undefined;
