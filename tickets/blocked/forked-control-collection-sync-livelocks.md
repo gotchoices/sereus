@@ -273,6 +273,14 @@ Found by `seeded-node-publishes-its-address-record-late`, which made every node 
 
 **The connected-only check still writes alone in the gap before identify (added 2026-10-20).** "Connected" in `publishFirstSelfRecord`, the write-while-alone growth edge and `committedAlone()` means `getConnections().length > 0`. Optimystic admits a peer into a block's cohort only after libp2p identify lists the control protocols, so a write in the tens of milliseconds to about a second between `connection:open` and `peer:identify` commits `commit:solo-cohort` without being queued. In `cadre-invite-any-member`, the restarted owner's first-growth drain re-touch did this 23 ms after the open and forked `CadrePeer` at an equal revision (rev 6 on both sides, every later consult `local-current`): 3 of 4 runs failed once the redundant later writes were removed. `implement/reconnect-writes-wait-for-sibling-identify` closes this trigger on the sereus side; upstream equal-revision fork detection would still be the general fix.
 
+## Sixth trigger: two machines of a cadre starting together (gotchoices/sereus#53, added 2026-10-30)
+
+**How it happens.** Two cadre-cli nodes of one party restart at the same moment (a host reboot or power cut). Each commits its startup `CadrePeer` self-record refresh (the 1 s boot one-shot, `scheduleSelfRegistration`) about 90 ms before either reports `Control cohort grew`. The two updates take the same block to the same revision with different content. Each node's re-replication of its own write is then refused by the other with `content-digest-mismatch`, and so is every later `CadrePeer` write. Adding a third machine tears: `CoordinatorPartialCommitError` ("Multi-collection commit was not atomic"), with the `CadrePeer` unique index committed and the table refused. It still fails 5 minutes later.
+
+**Measured by the reporter** (cadre-core, cadre-cli, Optimystic 1.19.0; Node only): both nodes restarted at once, 4 of 4 failed, plus 1 of 1 after a 5-minute wait. One node restarted: 1 of 1 passed. Both restarted 60 s apart: 2 of 2 passed. A self-contained repro is in the issue (`control-fork-repro.mjs`).
+
+**The Sereus side** is `fix/background-control-write-forks-a-cadre-restarted-together`: background control writes stop committing alone while the party has other members, which removes this trigger. It does not heal a cadre already forked, and it does not address the torn multi-collection commit. Both still need what this ticket waits on.
+
 ## Cross-cutting obligations
 
 None triggered on the sereus side: no schema, byte format, golden fixture, or determinism
