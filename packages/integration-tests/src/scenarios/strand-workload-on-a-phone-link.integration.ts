@@ -26,7 +26,8 @@
  * instead of passing the phone arm's `it.fails`; the joiner's seat is retried, `seatJoiner`),
  * `ROUNDS` rounds, alternating sides. One side writes a row; the other reads every table, one of
  * which (`CloseRequest`) nobody writes, as an app's often are. Each round is timed and every failed
- * operation recorded. Over the rounds, and only over them, the scenario counts:
+ * operation recorded. Over the rounds, over each attempt at the joiner's seat transaction and over
+ * the wait for the seat to reach the founder (`measuredWindow`), the scenario counts:
  * - the stack's deadline events, from stderr, with `DEBUG` set (any copy of `debug` writes there,
  *   which is why stderr is hooked and not one `debug` instance), tallied by pattern and by the
  *   `debug` namespace of the line they appear in (`DEADLINE_EVENTS`);
@@ -40,6 +41,7 @@
  *   yarn workspace @serfab/integration-tests exec vitest run strand-workload-on-a-phone-link
  *   STRAND_WORKLOAD_PHONE=1 DEBUG='optimystic:*,libp2p:connection-monitor*' yarn workspace @serfab/integration-tests exec vitest run strand-workload-on-a-phone-link
  *   WS_FRAME_STATS=1 yarn workspace @serfab/integration-tests exec vitest run strand-workload-on-a-phone-link
+ *   STRAND_WORKLOAD_PHONE=1 DEBUG='optimystic:*,libp2p:connection-monitor*' yarn workspace @serfab/integration-tests exec vitest run strand-workload-on-a-phone-link -t 'seats both parties'
  *
  * The loopback arm runs by default and takes seconds. The phone arm runs only with
  * `STRAND_WORKLOAD_PHONE=1`: minutes of seating, minutes of rounds and up to 180 s of convergence
@@ -49,7 +51,9 @@
  * passes them through as well, which matching events against the rounds' start times needs. The
  * third line is the workload's own demand on a link that holds nothing back; leave
  * `STRAND_WORKLOAD_PHONE` unset there, since `WS_FRAME_STATS` installs the frame counter when the
- * module loads and the phone arm's own install would then conflict with it.
+ * module loads and the phone arm's own install would then conflict with it. The fourth line
+ * stops after the phone arm's seating, which runs in `beforeAll` and so needs a test to run for:
+ * each seat attempt is reported as it ends, failed or not.
  *
  * ── What the reporter measured (phone arm, two runs per stack) ──
  *
@@ -160,6 +164,42 @@
  * run's own loopback arm opened 17): what grew was requests that never opened in time, redials and
  * pings. Proposals filed from this: `blocked/decide-link-deadlines-from-measured-response-time`
  * and `optimystic-retries-do-not-back-off` (shipped in Optimystic 1.16.0).
+ *
+ * ── Seating, measured 2026-10-30: sereus `bb4fd02f` plus the per-attempt windows, Optimystic 1.20.1,
+ *    Node 24.2.0, one Windows machine at about 60% CPU from other work (not quiet) ──
+ *
+ * `-t 'seats both parties'`, twice; both runs were stopped by the command limit before seating ended.
+ * Run 1 passed the debug lines through (`WORKLOAD_SHOW_DEBUG=1`) to read the timeline.
+ *
+ * | | run 1 | run 2 |
+ * |---|---|---|
+ * | B writable after joining | 36.4 s | 36.3 s |
+ * | B's seat, attempt 1 | failed after 233.4 s | failed after 285.6 s |
+ * | B's seat, attempt 2 | failed after 227.3 s | still running at 360 s when stopped |
+ *
+ * Every failure was `Failed to get super-majority: 1/2 approvals`: a commit to both members. The
+ * seat was a two-member commit on 1.16.0 as well (the 2026-10-17 block's first run failed it the
+ * same way), so the reporter's 188 s seat on 1.19.0 is not the seat having stopped committing alone.
+ * First attempts measured here: 94.4 s (Optimystic 1.15.0), failed after 340.5 s (1.17.0,
+ * `blocked/decide-link-deadlines-from-measured-response-time`), 188 s (the reporter, 1.19.0), and
+ * the two above.
+ *
+ * Nothing in sereus holds the seat back: in run 1 its commit's first cluster transaction started
+ * 0.07 s after B became writable. The time goes inside the commit. In run 1's first attempt B, which
+ * coordinated, sent A 26 cluster requests (promise, commit) that it abandoned to the 10.5 s response
+ * deadline, each 10.5-42 s after sending, and retried; A abandoned 10 block fetches from B the same
+ * way. Run 2's first attempt, tallied:
+ * - deadline events: cohort silent 20 (B strand 16, A strand 4), stream reset 14, commit retried 2,
+ *   no coordinator 1, ping failure 20, FRET contact strike 96, FRET peer marked dead 0, solo commit 0;
+ * - the link: 11 747 frames, 1.6 MB; busiest socket 4 014 frames (80 s at the cap); worst observed
+ *   send wait 31.2 s;
+ * - streams opened: B cluster 53, A block-transfer 18, libp2p ping B 13 / A 12, circuit-relay hop
+ *   9 each, B sync 2, B repo 2. On loopback the same seat opens 7 cluster streams and takes 0.4 s.
+ *
+ * Two other loads share the link from the seat's first moment, and were not separated from it here:
+ * B's 16 read-repair consults to A, started before B was writable (when the only reads on B are the
+ * first-sync gate's) and all found silent, and the membership reconciler's join commit, which the
+ * database's publication starts at the same moment.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -316,10 +356,10 @@ function describeEventHits(hits: EventHits, names: NodeNames): string {
 	}).join('\n');
 }
 
-function describeFrames(frames: WsFrameWindowStats): string {
+function describeFrames(frames: WsFrameWindowStats, rounds?: number): string {
 	if (!frames.instrumented) return 'not counted (set WS_FRAME_STATS=1 to count it on loopback)';
-	return `${frames.frames} frames, ${frames.bytes} bytes; busiest socket ${frames.busiestSocketFrames} frames `
-		+ `(${Math.round(frames.busiestSocketFrames / ROUNDS)} a round); worst observed send wait ${frames.worstSendWaitMs} ms`;
+	return `${frames.frames} frames, ${frames.bytes} bytes; busiest socket ${frames.busiestSocketFrames} frames`
+		+ `${rounds ? ` (${Math.round(frames.busiestSocketFrames / rounds)} a round)` : ''}; worst observed send wait ${frames.worstSendWaitMs} ms`;
 }
 
 function describeStreams(streams: Map<string, number>): string {
@@ -343,14 +383,18 @@ interface ArmOptions {
 	eventLoopBusy?: number;
 }
 
-/** Two parties seated on one strand, ready for the rounds. */
-interface WorkloadFixture {
+/** The two strand nodes a window is measured on. */
+interface MeasuredStrands {
 	readonly label: string;
-	readonly aDb: Database;
-	readonly bDb: Database;
 	readonly aStrand: StrandInstance;
 	readonly bStrand: StrandInstance;
 	readonly names: NodeNames;
+}
+
+/** Two parties seated on one strand, ready for the rounds. */
+interface WorkloadFixture extends MeasuredStrands {
+	readonly aDb: Database;
+	readonly bDb: Database;
 }
 
 /** What setup started, undone in reverse. Filled as each piece starts, so a setup that times out still stops what it started. */
@@ -411,10 +455,6 @@ async function seatParties(label: string, opts: ArmOptions, teardown: Teardown):
 	const bStrand = await B.whenStrandWritable(strandId, { timeoutMs: FIRST_SYNC_MS });
 	console.log(`[workload ${label}] B writable ${since(tJoin)} after joining`);
 	const bDb = bStrand.database!.getDatabase();
-	await seatJoiner(label, bDb);
-	await waitUntil(async () => (await rowCount(aDb, 'select Side from App.Seat')) === 2,
-		{ timeoutMs: FIRST_SYNC_MS, intervalMs: 500, description: "B's seat reaches A" });
-	console.log(`[workload ${label}] seated ${since(tJoin)} after joining`);
 	const nodes = [
 		['A strand', founded.instance.libp2pNode?.peerId],
 		['B strand', bStrand.libp2pNode?.peerId],
@@ -424,7 +464,12 @@ async function seatParties(label: string, opts: ArmOptions, teardown: Teardown):
 	] as const;
 	// FRET's and libp2p's lines name peers in full and carry no node of their own, so a log is read against these.
 	console.log(`[workload ${label}] nodes: ${nodes.map(([name, peerId]) => `${name} ${String(peerId)}`).join(', ')}`);
-	return { label, aDb, bDb, aStrand: founded.instance, bStrand, names: nodeNames(nodes) };
+	const strands: MeasuredStrands = { label, aStrand: founded.instance, bStrand, names: nodeNames(nodes) };
+	await seatJoiner(strands, bDb);
+	await measuredWindow(strands, "wait for B's seat on A", () => waitUntil(async () => (await rowCount(aDb, 'select Side from App.Seat')) === 2,
+		{ timeoutMs: FIRST_SYNC_MS, intervalMs: 500, description: "B's seat reaches A" }));
+	console.log(`[workload ${label}] seated ${since(tJoin)} after joining`);
+	return { ...strands, aDb, bDb };
 }
 
 /** The joiner's seat rows, each with the query that finds it already written. */
@@ -440,7 +485,8 @@ const JOINER_SEAT = [
  * `Party` not), and without the seat there are no rounds to measure. Each failure is logged; the
  * last one fails setup.
  */
-async function seatJoiner(label: string, db: Database): Promise<void> {
+async function seatJoiner(strands: MeasuredStrands, db: Database): Promise<void> {
+	const label = strands.label;
 	for (let attempt = 1; ; attempt++) {
 		const started = Date.now();
 		try {
@@ -449,7 +495,7 @@ async function seatJoiner(label: string, db: Database): Promise<void> {
 				if ((await rowCount(db, row.exists)) === 0) missing.push(row.insert);
 			}
 			if (missing.length === 0) return;
-			await db.exec(missing.join('\n'), undefined, { transaction: true });
+			await measuredWindow(strands, `B's seat, attempt ${attempt}`, () => db.exec(missing.join('\n'), undefined, { transaction: true }));
 			console.log(`[workload ${label}] B's seat written on attempt ${attempt}, in ${since(started)}`);
 			return;
 		} catch (error) {
@@ -501,28 +547,28 @@ async function round(n: number, writer: Database, reader: Database): Promise<Rou
 	return { startedAt, ms: Date.now() - startedAt, failures };
 }
 
-/** A round, with a line each minute it is still running: the debug output is swallowed meanwhile, and one round has taken 169 s. */
-async function reportedRound(label: string, n: number, writer: Database, reader: Database): Promise<RoundResult> {
+/** `work`, with a line each minute it is still running: the debug output is swallowed meanwhile, and one round has taken 169 s. */
+async function withProgress<T>(label: string, what: string, work: () => Promise<T>): Promise<T> {
 	const started = Date.now();
-	const progress = setInterval(() => { console.log(`[workload ${label}] round ${n} still running, ${Math.round((Date.now() - started) / 1000)} s`); }, PROGRESS_EVERY_MS);
+	const progress = setInterval(() => { console.log(`[workload ${label}] ${what} still running, ${Math.round((Date.now() - started) / 1000)} s`); }, PROGRESS_EVERY_MS);
 	try {
-		return await round(n, writer, reader);
+		return await work();
 	} finally {
 		clearInterval(progress);
 	}
 }
 
-interface RoundsMeasured {
+interface WindowMeasured {
 	hits: EventHits;
 	frames: WsFrameWindowStats;
 	streams: Map<string, number>;
 }
 
-/** Start every count the rounds are measured by; `stop` reads them and ends counting. */
-function measureRounds(f: WorkloadFixture): { stop(): RoundsMeasured } {
+/** Start every count a window (the seating, the rounds) is measured by; `stop` reads them and ends counting. */
+function measureWindow(aStrand: StrandInstance, bStrand: StrandInstance): { stop(): WindowMeasured } {
 	// Upkeep included: the question is what share of what the link carried the retries and consults took.
 	// Started first: it is the one that can throw, and a throw after the stderr hook would leave it installed.
-	const streams = countOutboundStreams([['A', f.aStrand.libp2pNode!], ['B', f.bStrand.libp2pNode!]], { ignore: () => false });
+	const streams = countOutboundStreams([['A', aStrand.libp2pNode!], ['B', bStrand.libp2pNode!]], { ignore: () => false });
 	const frames = openWsFrameWindow();
 	const events = countDeadlineEvents();
 	return {
@@ -536,13 +582,21 @@ function measureRounds(f: WorkloadFixture): { stop(): RoundsMeasured } {
 	};
 }
 
-function reportRounds(f: WorkloadFixture, rounds: RoundResult[], measured: RoundsMeasured): void {
-	const label = f.label;
-	console.log(`[workload ${label}] ${rounds.length} rounds in ${(sum(rounds.map(r => r.ms)) / 1000).toFixed(1)} s`);
-	console.log(`[workload ${label}] deadline events during the rounds, by debug namespace${process.env.DEBUG ? '' : ' (DEBUG unset, so none counted)'}:\n`
-		+ describeEventHits(measured.hits, f.names));
-	console.log(`[workload ${label}] link during the rounds: ${describeFrames(measured.frames)}`);
-	console.log(`[workload ${label}] outbound streams the strand nodes opened during the rounds:\n${describeStreams(measured.streams)}`);
+/** `work` as one measured window, reported when it ends, also when it fails: a seat attempt that fails is the case to read. */
+async function measuredWindow<T>(strands: MeasuredStrands, window: string, work: () => Promise<T>): Promise<T> {
+	const measure = measureWindow(strands.aStrand, strands.bStrand);
+	try {
+		return await withProgress(strands.label, window, work);
+	} finally {
+		reportWindow(strands.label, window, strands.names, measure.stop());
+	}
+}
+
+function reportWindow(label: string, window: string, names: NodeNames, measured: WindowMeasured, rounds?: number): void {
+	console.log(`[workload ${label}] deadline events during the ${window}, by debug namespace${process.env.DEBUG ? '' : ' (DEBUG unset, so none counted)'}:\n`
+		+ describeEventHits(measured.hits, names));
+	console.log(`[workload ${label}] link during the ${window}: ${describeFrames(measured.frames, rounds)}`);
+	console.log(`[workload ${label}] outbound streams the strand nodes opened during the ${window}:\n${describeStreams(measured.streams)}`);
 }
 
 /** The rows of the two written tables, as one side sees them. */
@@ -585,12 +639,13 @@ interface Workload {
 }
 
 async function runWorkload(f: WorkloadFixture): Promise<Workload> {
-	const measure = measureRounds(f);
+	const measure = measureWindow(f.aStrand, f.bStrand);
 	const rounds: RoundResult[] = [];
-	let measured: RoundsMeasured;
+	let measured: WindowMeasured;
 	try {
 		for (let n = 1; n <= ROUNDS; n++) {
-			const result = n % 2 ? await reportedRound(f.label, n, f.aDb, f.bDb) : await reportedRound(f.label, n, f.bDb, f.aDb);
+			const [writer, reader] = n % 2 ? [f.aDb, f.bDb] : [f.bDb, f.aDb];
+			const result = await withProgress(f.label, `round ${n}`, () => round(n, writer, reader));
 			rounds.push(result);
 			console.log(`[workload ${f.label}] round ${n} (from ${new Date(result.startedAt).toISOString()}): ${result.ms} ms`
 				+ (result.failures.length ? `; failed: ${result.failures.join(' | ')}` : ''));
@@ -598,7 +653,8 @@ async function runWorkload(f: WorkloadFixture): Promise<Workload> {
 	} finally {
 		measured = measure.stop();
 	}
-	reportRounds(f, rounds, measured);
+	console.log(`[workload ${f.label}] ${rounds.length} rounds in ${(sum(rounds.map(r => r.ms)) / 1000).toFixed(1)} s`);
+	reportWindow(f.label, 'rounds', f.names, measured, ROUNDS);
 	const aToB = f.aStrand.libp2pNode!.getConnections(f.bStrand.libp2pNode!.peerId).length;
 	console.log(`[workload ${f.label}] after the rounds: A's strand node holds ${aToB} connection(s) to B's`);
 	// Every committed row should end up on both sides; a commit made alone shows up here as a
@@ -621,6 +677,11 @@ describe("an app's steady work on a two-party strand, on loopback", () => {
 // the tickets that change a deadline name this run as their check.
 describe.skipIf(!process.env.STRAND_WORKLOAD_PHONE)("an app's steady work on a two-party strand, on a phone-shaped link (20 ms serial frame cap, event loop 70% busy)", () => {
 	const seated = seatedWorkload('phone', { latency: PHONE_LINK, eventLoopBusy: PHONE_EVENT_LOOP_BUSY });
+
+	// The seating alone, which `beforeAll` measures: `-t 'seats both parties'` stops after it.
+	it('seats both parties', () => {
+		expect(seated().label).toBe('phone');
+	});
 
 	// Expected to fail today: with both members up and connected, requests are abandoned to fixed
 	// deadlines and operations fail. When this passes, make it a plain `it`.
