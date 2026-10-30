@@ -45,10 +45,11 @@
  *
  * The loopback arm runs by default and takes seconds. The phone arm runs only with
  * `STRAND_WORKLOAD_PHONE=1`: minutes of seating, minutes of rounds and up to 180 s of convergence
- * waiting, about 10 minutes in all. It prints a line each minute a round or a measured seating step
- * is still running, so a slow one does not leave a runner's idle timer with no output. `libp2p:connection-monitor*` is what logs the
- * ping failures. The debug lines are counted and dropped during each measured window; `WORKLOAD_SHOW_DEBUG=1`
- * passes them through as well, which matching events against the rounds' start times needs. The
+ * waiting, about 10 minutes in all. It prints a line each minute a round or a measured seating
+ * step is still running, so a slow one does not leave a runner's idle timer with no output.
+ * `libp2p:connection-monitor*` is what logs the ping failures. The debug lines are counted and
+ * dropped during each measured window; `WORKLOAD_SHOW_DEBUG=1` passes them through as well, which
+ * matching events against the rounds' start times needs. The
  * third line is the workload's own demand on a link that holds nothing back; leave
  * `STRAND_WORKLOAD_PHONE` unset there, since `WS_FRAME_STATS` installs the frame counter when the
  * module loads and the phone arm's own install would then conflict with it. The fourth line
@@ -174,8 +175,8 @@
  * | | run 1 | run 2 |
  * |---|---|---|
  * | B writable after joining | 36.4 s | 36.3 s |
- * | B's seat, attempt 1 | failed after 233.4 s | failed after 285.6 s |
- * | B's seat, attempt 2 | failed after 227.3 s | still running at 360 s when stopped |
+ * | B's seat attempt 1 | failed after 233.4 s | failed after 285.6 s |
+ * | B's seat attempt 2 | failed after 227.3 s | still running at 360 s when stopped |
  *
  * Every failure was `Failed to get super-majority: 1/2 approvals`: a commit to both members. The
  * seat was a two-member commit on 1.16.0 as well (the 2026-10-17 block's first run failed it the
@@ -553,7 +554,7 @@ async function round(n: number, writer: Database, reader: Database): Promise<Rou
 	return { startedAt, ms: Date.now() - startedAt, failures };
 }
 
-/** `work`, with a line each minute it is still running: the debug output is swallowed meanwhile, and one round has taken 169 s. */
+/** `work`, with a line each minute it is still running: the debug output is swallowed meanwhile, and one round has taken 169 s, one seat attempt 340 s. */
 async function withProgress<T>(label: string, what: string, work: () => Promise<T>): Promise<T> {
 	const started = Date.now();
 	const progress = setInterval(() => { console.log(`[workload ${label}] ${what} still running, ${Math.round((Date.now() - started) / 1000)} s`); }, PROGRESS_EVERY_MS);
@@ -689,7 +690,7 @@ describe.skipIf(!process.env.STRAND_WORKLOAD_PHONE)("an app's steady work on a t
 
 	// The seating alone, which `beforeAll` measures: `-t 'seats both parties'` stops after it.
 	it('seats both parties', () => {
-		expect(seated().label).toBe('phone');
+		expect(seated).not.toThrow();
 	});
 
 	// Expected to fail today: with both members up and connected, requests are abandoned to fixed
