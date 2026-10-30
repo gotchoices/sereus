@@ -45,9 +45,9 @@
  *
  * The loopback arm runs by default and takes seconds. The phone arm runs only with
  * `STRAND_WORKLOAD_PHONE=1`: minutes of seating, minutes of rounds and up to 180 s of convergence
- * waiting, about 10 minutes in all. It prints a line each minute a round is still running, so a
- * slow round does not leave a runner's idle timer with no output. `libp2p:connection-monitor*` is what logs the
- * ping failures. The debug lines are counted and dropped during the rounds; `WORKLOAD_SHOW_DEBUG=1`
+ * waiting, about 10 minutes in all. It prints a line each minute a round or a measured seating step
+ * is still running, so a slow one does not leave a runner's idle timer with no output. `libp2p:connection-monitor*` is what logs the
+ * ping failures. The debug lines are counted and dropped during each measured window; `WORKLOAD_SHOW_DEBUG=1`
  * passes them through as well, which matching events against the rounds' start times needs. The
  * third line is the workload's own demand on a link that holds nothing back; leave
  * `STRAND_WORKLOAD_PHONE` unset there, since `WS_FRAME_STATS` installs the frame counter when the
@@ -233,7 +233,11 @@ table CloseRequest (Id text primary key, Body text);
 `;
 const SAPP_ID = 'sapp-workload-phone-link';
 const YEAR_MS = 365 * 24 * 3600_000;
-/** Seating has taken 100-165 s on the phone arm. Bounds a hang; also the setup hook's timeout. */
+/**
+ * Seating has taken 100-220 s on the phone arm, and one failed seat attempt up to 340 s. Bounds a
+ * hang; also the setup hook's timeout, which on the slowest runs ends seating during the third or
+ * fourth of {@link SEAT_ATTEMPTS}.
+ */
 const FIRST_SYNC_MS = 900_000;
 /** Attempts at the joiner's seat; see {@link seatJoiner}. */
 const SEAT_ATTEMPTS = 4;
@@ -466,8 +470,10 @@ async function seatParties(label: string, opts: ArmOptions, teardown: Teardown):
 	console.log(`[workload ${label}] nodes: ${nodes.map(([name, peerId]) => `${name} ${String(peerId)}`).join(', ')}`);
 	const strands: MeasuredStrands = { label, aStrand: founded.instance, bStrand, names: nodeNames(nodes) };
 	await seatJoiner(strands, bDb);
-	await measuredWindow(strands, "wait for B's seat on A", () => waitUntil(async () => (await rowCount(aDb, 'select Side from App.Seat')) === 2,
-		{ timeoutMs: FIRST_SYNC_MS, intervalMs: 500, description: "B's seat reaches A" }));
+	await measuredWindow(strands, "the wait for B's seat on A", () => waitUntil(
+		async () => (await rowCount(aDb, 'select Side from App.Seat')) === 2,
+		{ timeoutMs: FIRST_SYNC_MS, intervalMs: 500, description: "B's seat reaches A" },
+	));
 	console.log(`[workload ${label}] seated ${since(tJoin)} after joining`);
 	return { ...strands, aDb, bDb };
 }
@@ -495,11 +501,11 @@ async function seatJoiner(strands: MeasuredStrands, db: Database): Promise<void>
 				if ((await rowCount(db, row.exists)) === 0) missing.push(row.insert);
 			}
 			if (missing.length === 0) return;
-			await measuredWindow(strands, `B's seat, attempt ${attempt}`, () => db.exec(missing.join('\n'), undefined, { transaction: true }));
+			await measuredWindow(strands, `B's seat attempt ${attempt}`, () => db.exec(missing.join('\n'), undefined, { transaction: true }));
 			console.log(`[workload ${label}] B's seat written on attempt ${attempt}, in ${since(started)}`);
 			return;
 		} catch (error) {
-			console.log(`[workload ${label}] B's seat, attempt ${attempt}, failed after ${since(started)}: ${(error as Error).message.slice(0, 200)}`);
+			console.log(`[workload ${label}] B's seat attempt ${attempt} failed after ${since(started)}: ${(error as Error).message.slice(0, 200)}`);
 			if (attempt >= SEAT_ATTEMPTS) throw error;
 		}
 	}
@@ -564,11 +570,11 @@ interface WindowMeasured {
 	streams: Map<string, number>;
 }
 
-/** Start every count a window (the seating, the rounds) is measured by; `stop` reads them and ends counting. */
-function measureWindow(aStrand: StrandInstance, bStrand: StrandInstance): { stop(): WindowMeasured } {
+/** Start every count a window (a seating step, the rounds) is measured by; `stop` reads them and ends counting. */
+function measureWindow(strands: MeasuredStrands): { stop(): WindowMeasured } {
 	// Upkeep included: the question is what share of what the link carried the retries and consults took.
 	// Started first: it is the one that can throw, and a throw after the stderr hook would leave it installed.
-	const streams = countOutboundStreams([['A', aStrand.libp2pNode!], ['B', bStrand.libp2pNode!]], { ignore: () => false });
+	const streams = countOutboundStreams([['A', strands.aStrand.libp2pNode!], ['B', strands.bStrand.libp2pNode!]], { ignore: () => false });
 	const frames = openWsFrameWindow();
 	const events = countDeadlineEvents();
 	return {
@@ -582,21 +588,24 @@ function measureWindow(aStrand: StrandInstance, bStrand: StrandInstance): { stop
 	};
 }
 
-/** `work` as one measured window, reported when it ends, also when it fails: a seat attempt that fails is the case to read. */
+/**
+ * `work` as one measured window, reported when it ends, also when it fails: a seat attempt that
+ * fails is the case to read. `window` names it after "during", article included.
+ */
 async function measuredWindow<T>(strands: MeasuredStrands, window: string, work: () => Promise<T>): Promise<T> {
-	const measure = measureWindow(strands.aStrand, strands.bStrand);
+	const measure = measureWindow(strands);
 	try {
 		return await withProgress(strands.label, window, work);
 	} finally {
-		reportWindow(strands.label, window, strands.names, measure.stop());
+		reportWindow(strands, window, measure.stop());
 	}
 }
 
-function reportWindow(label: string, window: string, names: NodeNames, measured: WindowMeasured, rounds?: number): void {
-	console.log(`[workload ${label}] deadline events during the ${window}, by debug namespace${process.env.DEBUG ? '' : ' (DEBUG unset, so none counted)'}:\n`
+function reportWindow({ label, names }: MeasuredStrands, window: string, measured: WindowMeasured, rounds?: number): void {
+	console.log(`[workload ${label}] deadline events during ${window}, by debug namespace${process.env.DEBUG ? '' : ' (DEBUG unset, so none counted)'}:\n`
 		+ describeEventHits(measured.hits, names));
-	console.log(`[workload ${label}] link during the ${window}: ${describeFrames(measured.frames, rounds)}`);
-	console.log(`[workload ${label}] outbound streams the strand nodes opened during the ${window}:\n${describeStreams(measured.streams)}`);
+	console.log(`[workload ${label}] link during ${window}: ${describeFrames(measured.frames, rounds)}`);
+	console.log(`[workload ${label}] outbound streams the strand nodes opened during ${window}:\n${describeStreams(measured.streams)}`);
 }
 
 /** The rows of the two written tables, as one side sees them. */
@@ -639,7 +648,7 @@ interface Workload {
 }
 
 async function runWorkload(f: WorkloadFixture): Promise<Workload> {
-	const measure = measureWindow(f.aStrand, f.bStrand);
+	const measure = measureWindow(f);
 	const rounds: RoundResult[] = [];
 	let measured: WindowMeasured;
 	try {
@@ -654,7 +663,7 @@ async function runWorkload(f: WorkloadFixture): Promise<Workload> {
 		measured = measure.stop();
 	}
 	console.log(`[workload ${f.label}] ${rounds.length} rounds in ${(sum(rounds.map(r => r.ms)) / 1000).toFixed(1)} s`);
-	reportWindow(f.label, 'rounds', f.names, measured, ROUNDS);
+	reportWindow(f, 'the rounds', measured, ROUNDS);
 	const aToB = f.aStrand.libp2pNode!.getConnections(f.bStrand.libp2pNode!.peerId).length;
 	console.log(`[workload ${f.label}] after the rounds: A's strand node holds ${aToB} connection(s) to B's`);
 	// Every committed row should end up on both sides; a commit made alone shows up here as a
