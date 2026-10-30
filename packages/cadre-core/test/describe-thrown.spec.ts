@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeThrown } from '../src/describe-thrown.js';
+import { describeThrown, toError } from '../src/describe-thrown.js';
 
 describe('describeThrown', () => {
 	it('gives an Error its message unchanged', () => {
@@ -37,5 +37,16 @@ describe('describeThrown', () => {
 		expect(describeThrown(42)).toBe('42');
 		expect(describeThrown(undefined)).toBe('undefined');
 		expect(describeThrown(null)).toBe('null');
+	});
+});
+
+describe('toError', () => {
+	it('keeps an Error, and wraps anything else in its description with the value as cause', () => {
+		const error = new Error('dial failed');
+		expect(toError(error)).toBe(error);
+		const event = { type: 'error', message: 'Failed to connect' };
+		const wrapped = toError(event);
+		expect(wrapped.message).toBe('error: Failed to connect');
+		expect(wrapped.cause).toBe(event);
 	});
 });

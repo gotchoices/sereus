@@ -42,7 +42,7 @@ import {
   type FormationRejectionCode
 } from './strand-formation-rejection.js';
 import type { FormationTokenCheck, FormationTokenRead } from './formation-token.js';
-import { describeThrown } from './describe-thrown.js';
+import { describeThrown, toError } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:formation-proto');
 
@@ -919,7 +919,7 @@ async function releaseFormationConnection(connection: Connection): Promise<void>
     await connection.close();
   } catch (error) {
     log('closing the formation connection to %s failed; aborting it: %o', connection.remotePeer.toString(), error);
-    connection.abort(error instanceof Error ? error : new Error(String(error)));
+    connection.abort(toError(error));
   }
 }
 

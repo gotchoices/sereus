@@ -151,9 +151,10 @@ const LINK_DEADLINE_SCOPE = ['packages/cadre-core/src/**/*.{ts,tsx,mts,cts}'];
 // WebSocket failure rejects with its error event and libp2p sometimes rejects with a plain object;
 // `String()` reads `[object Object]` for both, which is what a phone's relay status said
 // (gotchoices/sereus#54). Flagged: a conditional whose test is `… instanceof Error` and whose
-// other arm is a `String(…)` call, whatever the Error arm reads.
+// other arm is a `String(…)` call, whatever the Error arm reads, or `new Error(String(…))`.
 //
-// Scope is the source of the packages that depend on cadre-core (THROWN_DESCRIPTION_SCOPE). The
+// Scope is the source, and the phone apps' `app/` routes, of the packages that depend on cadre-core
+// (THROWN_DESCRIPTION_SCOPE). The
 // rest are left out because the advice cannot be followed there: cadre-provider, config-check and
 // quereus-plugin-sereus do not depend on cadre-core by design, and cadre-host's browser UI
 // (`cadre-host/ui`) must not load cadre-core's root entry. A new package without cadre-core is
@@ -166,8 +167,14 @@ const THROWN_DESCRIPTION_GUARD = [
 		selector: "ConditionalExpression[test.operator='instanceof'][test.right.name='Error'] > CallExpression.alternate[callee.name='String']",
 		message: 'Describe a caught value with describeThrown from @serfab/cadre-core (relative ./describe-thrown.js inside cadre-core). String() reads `[object Object]` for anything that is not an Error, such as a React Native WebSocket event; describeThrown reads its fields instead, and keeps an Error\'s message unchanged.',
 	},
+	{
+		selector: "ConditionalExpression[test.operator='instanceof'][test.right.name='Error'] > NewExpression.alternate[callee.name='Error'] > CallExpression[callee.name='String']",
+		message: 'Make a caught value an Error with toError (./describe-thrown.js inside cadre-core), or new Error(describeThrown(value), { cause: value }) elsewhere. String() reads `[object Object]` for anything that is not an Error, such as a React Native WebSocket event.',
+	},
 ];
-const THROWN_DESCRIPTION_SCOPE = ['packages/*/src/**/*.{ts,tsx,mts,cts}'];
+// The phone apps' expo-router / NativeScript routes, which run on the phone like their `src/`.
+const FIRST_PARTY_APP_ROUTES = 'packages/*/app/**/*.{ts,tsx,mts,cts}';
+const THROWN_DESCRIPTION_SCOPE = ['packages/*/src/**/*.{ts,tsx,mts,cts}', FIRST_PARTY_APP_ROUTES];
 const THROWN_DESCRIPTION_SVELTE_SCOPE = ['packages/*/src/**/*.svelte'];
 const PACKAGES_WITHOUT_CADRE_CORE = [
 	'packages/cadre-provider/src/**',
@@ -185,6 +192,7 @@ const PACKAGES_WITHOUT_CADRE_CORE = [
 // 2026-09-24); if one starts to, add the `.svelte` globs here.
 const PHONE_RUNTIME_SCOPE = [
 	'packages/*/src/**/*.{ts,tsx,mts,cts}',
+	FIRST_PARTY_APP_ROUTES,
 	'packages/cadre-host/ui/src/**/*.{ts,tsx,mts,cts}',
 ];
 

@@ -1,6 +1,7 @@
 import debug from 'debug';
 import { EntryNotDiscardableError, UnknownEntryError } from '@optimystic/db-core';
 import type { IKVStore } from '@optimystic/db-p2p';
+import { toError } from './describe-thrown.js';
 import type {
   AppSchemaOutcome, OfflineModeState, QueuedTransactionStatus, SereusPluginResult, StrandOfflineController,
 } from '@serfab/quereus-plugin-sereus';
@@ -234,7 +235,7 @@ export class StrandOfflineReport {
       return;
     }
     this.appSchema = 'failed';
-    this.appSchemaError = outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error));
+    this.appSchemaError = toError(outcome.error);
     log('strand %s: the deferred app schema apply failed; the database keeps the earlier schema: %O', this.strandId, outcome.error);
     if (this.wasPublished) {
       this.reportAppSchemaFailed(this.appSchemaError);

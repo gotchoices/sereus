@@ -20,7 +20,8 @@ import type { KeyStore } from '../key-store.js';
 import { bootstrapPeersKvKey, enrolledMachinesKvKey, strandNetworkKvKey, type NodeLocalKv } from './node-local.js';
 import type { RemovableSlot } from './platform.js';
 import { parseSavedStart, serializeSavedStart, type EdgeNodeOptions } from './options.js';
-import { toError, type PendingStrandMove, type StrandMoveRecords } from './strand-move.js';
+import type { PendingStrandMove, StrandMoveRecords } from './strand-move.js';
+import { toError } from '../describe-thrown.js';
 
 /** How `EdgeNode.dissolveFormerParty` runs. */
 export interface DissolveFormerPartyOptions {

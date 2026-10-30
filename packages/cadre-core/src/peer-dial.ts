@@ -38,7 +38,7 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import type { Component, Multiaddr } from '@multiformats/multiaddr';
 import { withDeadline } from './control-stream.js';
 import { relayedDialBudgetMs } from './link-budget.js';
-import { describeThrown } from './describe-thrown.js';
+import { describeThrown, toError } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:peer-dial');
 
@@ -510,7 +510,7 @@ export async function tryAddrsInTurn<T>(
 		try {
 			return await withDeadline(attemptMs, `${label} via ${addr.toString()}`, (signal) => attempt(addr, signal, attemptMs));
 		} catch (err) {
-			const error = err instanceof Error ? err : new Error(String(err));
+			const error = toError(err);
 			failures.push({ addr, error });
 			log('%s via %s failed: %o', label, addr.toString(), error);
 		}

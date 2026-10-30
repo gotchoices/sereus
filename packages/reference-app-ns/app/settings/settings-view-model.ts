@@ -7,7 +7,7 @@
  */
 
 import { Observable, type EventData, type PropertyChangeData } from '@nativescript/core';
-import type { RedeemCadreInvitationResult } from '@serfab/cadre-core';
+import { describeThrown, type RedeemCadreInvitationResult } from '@serfab/cadre-core';
 import type { EdgeNodeOptions, OwnerGenesisResult } from '@serfab/cadre-core/edge-node';
 import { getCadreVm, type CadreViewModel } from '../../src/cadre-vm';
 import { describeJoinFailure } from '../../src/join-failure';
@@ -215,7 +215,7 @@ export class SettingsViewModel extends Observable {
 			this.seedInput = '';
 			this.showAlert('Seed applied', 'Peer cache updated');
 		} catch (err) {
-			this.showAlert('Seed failed', String(err));
+			this.showAlert('Seed failed', describeThrown(err));
 		}
 	}
 
@@ -245,7 +245,7 @@ export class SettingsViewModel extends Observable {
 			this.peerAddr = '';
 			this.showAlert('Peer connected', 'Dialed successfully');
 		} catch (err) {
-			this.showAlert('Dial failed', String(err));
+			this.showAlert('Dial failed', describeThrown(err));
 		}
 	}
 
@@ -255,7 +255,7 @@ export class SettingsViewModel extends Observable {
 			await this.cadre.createStrand(id);
 			this.showAlert('Strand created', `ID: ${id.slice(0, 8)}…`);
 		} catch (err) {
-			this.showAlert('Strand creation failed', String(err));
+			this.showAlert('Strand creation failed', describeThrown(err));
 		}
 	}
 }

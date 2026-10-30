@@ -37,6 +37,7 @@ import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { orderSignalingFirst } from './peer-record.js';
 import { type ControlStream, withDeadline, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
+import { toError } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:strand-addr');
 
@@ -417,7 +418,7 @@ async function dialOneSibling(
       );
       return siblingAnswer(response);
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = toError(err);
       // Matched by name, as libp2p's own error classes are compared across package copies.
       if (error.name === 'UnsupportedProtocolError') {
         log('Strand-addr refused by %s via %s: it does not serve %s', peer.peerId, describeTarget(target), protocolId);

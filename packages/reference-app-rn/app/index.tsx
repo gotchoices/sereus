@@ -14,6 +14,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { describeThrown } from '@serfab/cadre-core';
 import { useCadre } from '../src/cadre-context';
 import { queuedMessages } from '../src/cadre-phone';
 import { useChat } from '../src/use-chat';
@@ -79,7 +80,7 @@ export default function ChatScreen() {
       // Not "failed": a strand write can fail without settling whether it landed. Repeating is
       // safe because the id belongs to the draft (`chat-send.ts`), so a resend of unchanged
       // text can only ever replace the earlier write.
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = describeThrown(err);
       setSendError(`Not confirmed sent (${reason}). Press Send again — it can only be stored once.`);
       chat.refresh().catch(() => {});
     } finally {

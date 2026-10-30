@@ -16,6 +16,11 @@ export function describeThrown(value: unknown): string {
 	return String(value);
 }
 
+/** A caught value as an `Error`, for a status, an event or a list of failures that carries one; anything else keeps it as `cause`. */
+export function toError(value: unknown): Error {
+	return value instanceof Error ? value : new Error(describeThrown(value), { cause: value });
+}
+
 function describeObject(value: object): string {
 	return describeKnownFields(value) ?? stringifyObject(value) ?? String(value);
 }

@@ -24,6 +24,7 @@
  */
 
 import debug from 'debug';
+import { toError } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:control-stream');
 
@@ -159,7 +160,7 @@ export async function exchangeFrame<T>(
     await stream.close();
     return await readResponse(stream);
   } catch (err) {
-    resetStream(err instanceof Error ? err : new Error(String(err)));
+    resetStream(toError(err));
     throw err;
   } finally {
     signal.removeEventListener('abort', onAbort);

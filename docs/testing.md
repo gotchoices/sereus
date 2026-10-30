@@ -368,7 +368,7 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   `control-revocation-reap.spec.ts`).
 - **Phone-runtime API guard:** the same rule (`PHONE_RUNTIME_GUARD` in `eslint.config.mjs`) flags
   `AbortSignal.timeout(…)`, `AbortSignal.any(…)`, `Promise.withResolvers(…)` and `new DOMException(…)` in
-  first-party source (`packages/*/src` and `cadre-host/ui/src`), because Hermes (React Native) and NativeScript's
+  first-party source (`packages/*/src`, `cadre-host/ui/src` and the phone apps' `packages/*/app` routes), because Hermes (React Native) and NativeScript's
   V8 lack or mis-implement them and the polyfills exist for dependencies, not for us to lean on. The messages
   name the replacement (an explicit `AbortController` + timer, an explicit signal relay released in a
   `finally`, a hand-built `{ promise, resolve, reject }`, a plain named `Error`). `AbortSignal.prototype.throwIfAborted()`
@@ -377,7 +377,7 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   config-level exemption, which would also switch off the `CadrePeer` selectors sharing the rule. Note that a
   later config entry setting `no-restricted-syntax` replaces the earlier one's selectors for the files it
   matches; the config composes each scope's list from shared constants for that reason.
-- **Thrown-value guard:** the same rule (`THROWN_DESCRIPTION_GUARD`) flags a conditional whose test is `… instanceof Error` and whose other arm is `String(…)`, and names `describeThrown` (cadre-core's root entry, `src/describe-thrown.ts`) as the replacement, because `String()` reads `[object Object]` for a value that is not an `Error` and a React Native WebSocket failure rejects with its error event (gotchoices/sereus#54). Scope is `packages/*/src` (`.ts` and `.svelte`) of the packages that can import cadre-core: cadre-provider, config-check and quereus-plugin-sereus are ignored because they do not depend on it by design, and `cadre-host/ui` is outside the glob because the host's browser bundle must not load cadre-core's root entry. Tests are not covered. Not caught: `${err}` and a bare `String(err)` outside a conditional.
+- **Thrown-value guard:** the same rule (`THROWN_DESCRIPTION_GUARD`) flags a conditional whose test is `… instanceof Error` and whose other arm is `String(…)` or `new Error(String(…))`, and names `describeThrown` (cadre-core's root entry, `src/describe-thrown.ts`) or, for the `Error` wrap, cadre-core's internal `toError` as the replacement, because `String()` reads `[object Object]` for a value that is not an `Error` and a React Native WebSocket failure rejects with its error event (gotchoices/sereus#54). Scope is `packages/*/src` (`.ts` and `.svelte`) and the phone apps' `packages/*/app` routes, of the packages that can import cadre-core: cadre-provider, config-check and quereus-plugin-sereus are ignored because they do not depend on it by design, and `cadre-host/ui` is outside the glob because the host's browser bundle must not load cadre-core's root entry. Tests are not covered. Not caught: `${err}` and a bare `String(err)` outside a conditional.
 - **Link-deadline guard:** the same rule (`LINK_DEADLINE_GUARD`) flags, in `packages/cadre-core/src` only, a value
   named `…TIMEOUT_MS` / `…BUDGET_MS` / `…DEADLINE_MS` (any case, so `timeoutMs` too) set to a number or to
   arithmetic over numbers only — as a const, a parameter or destructuring default, a class field, an object

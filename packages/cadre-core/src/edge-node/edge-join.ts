@@ -20,10 +20,10 @@ import {
 	adoptMovesInto,
 	deferredOutcome,
 	joinMoveRecord,
-	toError,
 	type StrandMoveOutcome,
 	type StrandMoveRecords,
 } from './strand-move.js';
+import { toError } from '../describe-thrown.js';
 
 /** The part of the edge-node runtime a join drives. Every call runs inside the join's own transition. */
 export interface JoinRuntime {

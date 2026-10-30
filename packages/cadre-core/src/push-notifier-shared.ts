@@ -6,6 +6,11 @@
  * single, hardenable source rather than drifting between the two transports.
  */
 
+// NOTE: the notifiers describe caught values with `describeThrown`, which turns a thrown non-Error
+// object into JSON; every thrower on their paths (node:crypto, fetch, node:http2) throws an Error
+// today. If one ever throws an object that can carry a key or an OAuth token, describe it here
+// without serializing it.
+
 /** Defensive cap on the free-form `reason` carried in a strand-wake payload. */
 export const MAX_REASON_LEN = 256;
 

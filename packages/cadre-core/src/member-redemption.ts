@@ -31,6 +31,7 @@ import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { dialAddr, nextMacrotask, trailingPeerId } from './peer-dial.js';
 import { chainMessages } from './control-retry.js';
 import { isRetriableControlWriteFailure } from './control-write-retry.js';
+import { toError } from './describe-thrown.js';
 import type { CadreJoinProgress } from './types.js';
 
 const log = debug('sereus:cadre:member-redemption');
@@ -424,13 +425,6 @@ function isRefusal<Accepted>(reply: Accepted | RedemptionRefusalFrame): reply is
   return (reply as { accepted?: unknown }).accepted === false;
 }
 
-function asError(error: unknown): Error {
-  if (error instanceof Error) return error;
-  // A WebSocket transport rejects a refused dial with an `ErrorEvent`, whose text is its `message`.
-  const message = (error as { message?: unknown } | null)?.message;
-  return new Error(typeof message === 'string' && message.length > 0 ? message : String(error), { cause: error });
-}
-
 /**
  * Run `op` with a signal that aborts when either `deadline` or the caller's `signal` does.
  * Relayed by hand rather than with `AbortSignal.any`, which the phone runtimes lack.
@@ -491,8 +485,8 @@ async function dialOnce<Accepted>(node: Libp2p, options: MemberRedemptionOptions
     } catch (error) {
       // The caller's abort cut this attempt short; its reason, not the cut, is the answer.
       options.signal?.throwIfAborted();
-      log('%s redemption via %s failed before an answer (%s); trying the next address', options.label, addr, asError(error).message);
-      outcomes.push({ addr, error: asError(error) });
+      log('%s redemption via %s failed before an answer (%s); trying the next address', options.label, addr, toError(error).message);
+      outcomes.push({ addr, error: toError(error) });
       continue;
     }
     if (isRefusal(reply)) {

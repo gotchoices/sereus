@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from 'react';
 import { Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
-import type { NodeClaimPayload } from '@serfab/cadre-core';
+import { describeThrown, type NodeClaimPayload } from '@serfab/cadre-core';
 import { useCadre } from './cadre-context';
 import { CodeScanner } from './code-scanner';
 import { describeClaimFailure, NODE_CODE_SCHEME, nodeReach, readNodeCode, type NodeReach } from './node-claim';
@@ -70,7 +70,7 @@ export function AddNodeSection({ showAlert, linkedCode, onLinkedCodeTaken }: {
 			}
 		} catch (err) {
 			console.warn('[settings] could not read this cadre\'s owner keys:', err);
-			showAlert('Cannot add a node right now', 'Could not check whether this device owns the cadre. Try again.', String(err));
+			showAlert('Cannot add a node right now', 'Could not check whether this device owns the cadre. Try again.', describeThrown(err));
 			return;
 		}
 		setPending(reading.payload);

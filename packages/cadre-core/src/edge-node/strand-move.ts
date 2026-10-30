@@ -15,6 +15,7 @@ import type { StrandBundle, StrandMoveReport } from '../strand-move.js';
 import type { CadreNode } from '../cadre-node.js';
 import type { KeyId, KeyStore } from '../key-store.js';
 import { isOwnerGrant, type JoinCredential } from './join-credential.js';
+import { toError } from '../describe-thrown.js';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 
 /** How a join's strand move settled: `JoinCadreResult.strandMove`. */
@@ -208,11 +209,6 @@ async function adoptOrDefer(node: CadreNode, records: StrandMoveRecords, record:
 export function deferredOutcome(err: unknown): StrandMoveOutcome {
 	if (err instanceof StrandMoveNotOwnerError) return { state: 'deferred', reason: 'owner-key-not-wired' };
 	return { state: 'deferred', reason: 'adoption-failed', error: toError(err) };
-}
-
-/** A thrown value as an `Error`, for a status or outcome that carries one. */
-export function toError(err: unknown): Error {
-	return err instanceof Error ? err : new Error(String(err));
 }
 
 export function pendingMove(record: StrandMoveRecord): PendingStrandMove {

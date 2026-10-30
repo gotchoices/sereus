@@ -220,7 +220,7 @@ async function send(
  */
 function describeTransportError(err: unknown): string {
   if (!(err instanceof Error)) {
-    return String(err);
+    return describeThrown(err);
   }
   return err.cause instanceof Error ? `${err.message}: ${err.cause.message}` : err.message;
 }

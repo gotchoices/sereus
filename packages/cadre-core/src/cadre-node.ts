@@ -231,7 +231,7 @@ import {
   type ConnectionPathSummary
 } from './diagnostics/connection-path.js';
 import { timedStep } from './timed-step.js';
-import { describeThrown } from './describe-thrown.js';
+import { describeThrown, toError } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:node');
 const timing = debug('sereus:cadre:timing');
@@ -5617,7 +5617,7 @@ export class CadreNode implements SAppIdLookup {
       log('Error starting strand %s: %o', strand.Id, error);
       this.emit('strand:error', {
         strandId: strand.Id,
-        error: error instanceof Error ? error : new Error(String(error))
+        error: toError(error)
       });
       // Rethrow after the event: the only caller is the StrandWatcher's
       // onStrandAdded callback, which uses the rejection to decide whether the
@@ -5695,7 +5695,7 @@ export class CadreNode implements SAppIdLookup {
       log('Error stopping strand %s: %o', strandId, error);
       this.emit('strand:error', {
         strandId,
-        error: error instanceof Error ? error : new Error(String(error))
+        error: toError(error)
       });
     }
   }

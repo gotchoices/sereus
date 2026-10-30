@@ -69,7 +69,8 @@ import {
 import { parseSavedStart, serializeSavedStart, startAfterRemoval, type EdgeNodeOptions, type NoiseCryptoMode, type SavedStart } from './options.js';
 import { redeemOwnerGrantText, type OwnerGrantRuntime, type RedeemedOwnerGrant } from './owner-grant.js';
 import { DEFAULT_EDGE_NODE_NAMES, type EdgeNodeNames, type EdgeNodePlatform, type RemovableSlot } from './platform.js';
-import { adoptMoveRecord, adoptMovesInto, pendingMove, StrandMoveRecords, toError, type PendingStrandMove, type StrandMoveOutcome } from './strand-move.js';
+import { adoptMoveRecord, adoptMovesInto, pendingMove, StrandMoveRecords, type PendingStrandMove, type StrandMoveOutcome } from './strand-move.js';
+import { toError } from '../describe-thrown.js';
 
 export type EdgeNodeStatus =
 	| { state: 'stopped' }

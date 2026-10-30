@@ -15,7 +15,7 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { decodeCadreJoinRequest, type CadreJoinRequest, type RelayReservationStatus } from '@serfab/cadre-core';
+import { decodeCadreJoinRequest, describeThrown, type CadreJoinRequest, type RelayReservationStatus } from '@serfab/cadre-core';
 import type { SereusApp } from '@serfab/cadre-rn/app-link';
 import type { NoiseCryptoMode } from '@serfab/cadre-rn/noise-crypto';
 import { AddDeviceSection } from '../src/add-device-section';
@@ -178,7 +178,7 @@ export default function SettingsScreen() {
     try {
       await cadre.start({ partyId: pid, bootstrapAddrs: addrs, relayAddrs, noiseCryptoMode });
     } catch (err) {
-      showAlert('Connection failed', String(err));
+      showAlert('Connection failed', describeThrown(err));
     }
   };
 
@@ -190,7 +190,7 @@ export default function SettingsScreen() {
     try {
       await cadre.returnToOwnCadre();
     } catch (err) {
-      showAlert('Could not go back to your own cadre', String(err));
+      showAlert('Could not go back to your own cadre', describeThrown(err));
     }
   };
 
@@ -207,7 +207,7 @@ export default function SettingsScreen() {
       setSeedInput('');
       showAlert('Seed applied', 'Peer cache updated');
     } catch (err) {
-      showAlert('Seed failed', String(err));
+      showAlert('Seed failed', describeThrown(err));
     }
   };
 
@@ -221,7 +221,7 @@ export default function SettingsScreen() {
       setPeerAddr('');
       showAlert('Peer connected', 'Dialed successfully');
     } catch (err) {
-      showAlert('Dial failed', String(err));
+      showAlert('Dial failed', describeThrown(err));
     }
   };
 
@@ -290,7 +290,7 @@ export default function SettingsScreen() {
       setInviteInput('');
       showAlert('Joined closed strand', 'Consent handshake completed; strand attached');
     } catch (err) {
-      showAlert('Join via invite failed', String(err));
+      showAlert('Join via invite failed', describeThrown(err));
     }
   };
 
@@ -764,7 +764,7 @@ function useLinkedJoinRequest(
     try {
       decoded = decodeCadreJoinRequest(text);
     } catch (err) {
-      showAlert('Cannot use this request', err instanceof Error ? err.message : String(err));
+      showAlert('Cannot use this request', describeThrown(err));
       return;
     }
     if (await isOwnRequest(decoded, identityPeerId)) {
