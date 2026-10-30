@@ -8,7 +8,7 @@
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
+import type { ConnectionGater, PrivateKey } from '@libp2p/interface';
 import {
 	CadreNode,
 	type CadreInvitation, type CadreJoinProgress, type RawStorageProvider,
@@ -44,6 +44,8 @@ export interface PinningMemberOptions {
 	hostUnclaimedStrands?: boolean;
 	/** The member's strand watcher backstop; meaningful only with {@link hostUnclaimedStrands}. */
 	strandWatchMs?: number;
+	/** A test connection gater, composed under the member's membership gate (`ControlNodeOpts.connectionGater`). */
+	connectionGater?: ConnectionGater;
 }
 
 /**
@@ -62,6 +64,7 @@ export async function startPinningMember(partyId: string, ownerKey: string, opti
 		...(options.storageProvider ? { storageProvider: options.storageProvider } : {}),
 		...(options.reconcileMs !== undefined ? { reconcileMs: options.reconcileMs } : {}),
 		...(options.strandWatchMs !== undefined ? { strandWatchMs: options.strandWatchMs } : {}),
+		...(options.connectionGater ? { connectionGater: options.connectionGater } : {}),
 	}));
 	await node.start();
 	if (options.ownerKey) {
