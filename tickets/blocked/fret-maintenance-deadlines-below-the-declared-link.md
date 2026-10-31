@@ -83,3 +83,9 @@ Unchanged. p2p-fret is still 1.2.1: `../Fret` has no newer tag, and its HEAD is 
 ## Rechecked at Optimystic 1.20.0 (2026-10-28, `adopt-optimystic-1-20-0`)
 
 Unchanged. p2p-fret is still 1.2.1: `../Fret` has no tag after `v1.2.1`, and its HEAD is still `439b85e`. db-p2p 1.20.0 still declares `p2p-fret` ^1.2.1. Between `v1.19.0` and `v1.20.0`, `libp2p-node-base.ts` gained only the cohort reachability gate's option (`cohortReachability.wakeDebounceMs`), so Optimystic still builds FRET without the link round trip. One thing in 1.20.0 bears on this ticket: strand offline mode (new in this Sereus release) decides when to send a queued transaction from the cohort FRET assembles (`KeyNetworkCohortReachability`). A member FRET wrongly marks `dead` leaves a self-only cohort, and the queue then waits only if the gate also lists that member as absent (`absentCohortMembers`); otherwise the transaction commits alone. Which happens was not checked.
+
+## Re-checked on Optimystic 1.22.0 (2026-10-31, `adopt-optimystic-1-22-0`)
+
+Still blocked. p2p-fret has no release after 1.2.1, and db-p2p 1.22.0 still requires ^1.2.1. No value in `docs/cadre-consistency.md` → "Deadlines Below Cadre" moved between 1.20.0 and 1.22.0 (re-stamped at `0789edac`; the cited files were diffed between the tags). The 1.21.0 and 1.22.0 changes nearest this ticket only cut idle traffic: a peer-store rewrite throttled to once a minute per peer and protocol (gotchoices/Optimystic#40) and, with strand reactivity on, fewer status messages and read requests (#48, #49). Neither changes how a deadline is sized.
+
+The proposed change is now filed upstream, in both repos' `plan/`: FRET `link-round-trip-derives-maintenance-deadlines` and Optimystic `fret-receives-the-link-round-trip` (the latter waits on a FRET release).

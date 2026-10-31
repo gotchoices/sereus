@@ -22,6 +22,11 @@
  * handed to itself in-process. The scenario wraps it to timestamp each call, so "pushed" means a
  * notification for the watched table reached that machine's subscribers and a wake followed it.
  *
+ * TAIL GROUP. Only the outsider must be woken by the push. A watcher in the tail's storage group
+ * applies the tail itself, and the watch service hears its own storage (optimystic 1.22.0,
+ * `localChanges` in `collection-watch.ts`), so it wakes before the notification arrives and the
+ * notification then wakes nothing new. Those watchers are held only to waking within the bound.
+ *
  * REGISTRATION. The table is tagged in the sApp schema, and the scenario first checks that the
  * tag opened a network watch on every machine. That watch opened while the collection was still
  * empty, so nothing registers until a renewal tick (30 s) reads a committed tail. The scenario
@@ -339,14 +344,18 @@ function assertRound(outcome: RoundOutcome): void {
 		const where = `round ${outcome.round} (${outcome.committer} commits), watcher ${watcher.label}`
 			+ (watcher.inTailGroup === false ? ' outside the tail group' : '');
 		expect(watcher.wakeMs, `${where}: woken at all within ${WAKE_BOUND_MS} ms of the commit`).toBeDefined();
-		expect(watcher.pushWakeMs, `${where}: a notification reached its subscribers and woke the watch`).toBeDefined();
+		expect(watcher.wakeMs!, `${where}: woken within ${WAKE_BOUND_MS} ms of the commit`).toBeLessThanOrEqual(WAKE_BOUND_MS);
+		// A tail-group member applies the tail itself and is woken by its own storage before the push
+		// lands; the watch service then has nothing new to wake for (see TAIL GROUP above).
+		if (watcher.inTailGroup !== false) continue;
+		expect(watcher.pushWakeMs,`${where}: a notification reached its subscribers and woke the watch`).toBeDefined();
 		// The outcome is read after the wait ends, so a late push wake can be recorded; hold it to the bound.
 		expect(watcher.pushWakeMs!, `${where}: woken by that push within ${WAKE_BOUND_MS} ms of the commit`).toBeLessThanOrEqual(WAKE_BOUND_MS);
 	}
 }
 
 describe('Strand change notifications wake watchers on other machines', () => {
-	it('wakes every watcher by push, the machine outside the tail group included', async () => {
+	it('wakes every watcher, the machine outside the tail group by push', async () => {
 		let topology: Topology | undefined;
 		const machines: StrandMachine[] = [];
 		try {
