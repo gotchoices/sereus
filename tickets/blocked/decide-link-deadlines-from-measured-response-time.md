@@ -40,7 +40,7 @@ Why: the declaration is fixed, and a send queue is not. Where a link's cost is p
 
 ## Related tickets
 
-- `blocked/fret-maintenance-deadlines-below-the-declared-link` derives FRET's maintenance deadlines from the declared link. That is the floor this proposal stretches above, and it is a defect on its own on a link inside its declaration.
+- `fret-maintenance-deadlines-below-the-declared-link` (complete; p2p-fret 1.3.0 with Optimystic 1.23.0) derives FRET's maintenance deadlines from the declared link. That is the floor this proposal stretches above, and it is a defect on its own on a link inside its declaration.
 - `complete/optimystic-retries-do-not-back-off` (Optimystic 1.16.0): RFC 6298 also doubles its timer after each timeout; that ticket applied the same idea to the re-send, and this one applies it to the deadline.
 - `complete/optimystic-ping-handler-timeout-below-the-monitor-deadline` (Optimystic 1.16.0): the pinged side's handler now waits 60 s, so on the phone-shaped link the pinging side's own 30 s deadline is the one that fires (8 of 14 connection aborts in one run of the slow-relay frame-cap arm on 2026-10-20).
 

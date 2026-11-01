@@ -50,6 +50,11 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 	private nodeLocalStore: LevelDBKVStore | null = null;
 	/** Each strand scope's offline journal, by scope: one store per handle, as {@link nodeLocalStore} is. */
 	private readonly journals = new Map<string, LevelDBKVStore>();
+	/**
+	 * Each scope's block storage, by scope. It carries its own read cache, and Optimystic refuses a
+	 * second one over the same handle while the first is open, so every caller for a scope gets this one.
+	 */
+	private readonly blockStores = new Map<string, LevelDBRawStorage>();
 
 	constructor(
 		private readonly leveldb: LevelDBNative,
@@ -61,7 +66,12 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 	}
 
 	rawStorage(scope: string): IRawStorage {
-		return new LevelDBRawStorage(this.database(this.names.storagePrefix + scope));
+		let storage = this.blockStores.get(scope);
+		if (!storage) {
+			storage = new LevelDBRawStorage(this.database(this.names.storagePrefix + scope));
+			this.blockStores.set(scope, storage);
+		}
+		return storage;
 	}
 
 	/**
@@ -82,10 +92,13 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 		const name = this.names.storagePrefix + scope;
 		const journal = this.journals.get(scope);
 		this.journals.delete(scope);
+		const blocks = this.blockStores.get(scope);
+		this.blockStores.delete(scope);
 		const db = this.databases.get(name);
 		this.databases.delete(name);
 		try {
 			await journal?.close();
+			await blocks?.close();
 		} finally {
 			await db?.close();
 		}
@@ -106,10 +119,13 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 		this.nodeLocalStore = null;
 		const journals = [...this.journals.values()];
 		this.journals.clear();
+		const blockStores = [...this.blockStores.values()];
+		this.blockStores.clear();
 		const open = [...this.databases.values()];
 		this.databases.clear();
 		if (store) await closeLogged('the node-local store', store);
 		for (const journal of journals) await closeLogged('an offline journal', journal);
+		for (const blocks of blockStores) await closeLogged('a block storage', blocks);
 		for (const db of open) await closeLogged('a database', db);
 	}
 

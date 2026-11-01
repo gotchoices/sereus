@@ -132,7 +132,7 @@
  * 10:40:04, and the rows made alone were not exchanged in the 180 s that followed
  * (`complete/optimystic-write-made-alone-owes-no-one` closed the case of a stopped member; whether
  * a member FRET marked `dead` while still connected is named as owed was not measured, see
- * `blocked/fret-maintenance-deadlines-below-the-declared-link`). Read repair did not heal them either: in
+ * `fret-maintenance-deadlines-below-the-declared-link`). Read repair did not heal them either: in
  * those 180 s every consult on both strand nodes (224) found the other silent, each block re-asked
  * about every 8 s, since a consult that finds the peer silent leaves the block unchecked.
  *
@@ -281,7 +281,7 @@ const DEADLINE_EVENTS: readonly EventPattern[] = [
 	{ label: 'no coordinator', pattern: /No coordinator available/g, fault: true },
 	// A commit with a cohort of only itself: how the sides can end holding different rows while both run.
 	{ label: 'solo commit', pattern: /commit:solo-cohort/g, fault: true },
-	// FRET's 2 s maintenance ping failed (`blocked/fret-maintenance-deadlines-below-the-declared-link`).
+	// A FRET maintenance ping failed: 2 s before p2p-fret 1.3.0, now two declared round trips (`fret-maintenance-deadlines-below-the-declared-link`).
 	{ label: 'FRET contact strike', pattern: /change: contact strike/g, fault: true },
 	// The strike that marks the peer `dead`, which takes it out of every cohort: FRET's
 	// `deadAfterFailures` default, which Optimystic leaves. Also counted under the row above.

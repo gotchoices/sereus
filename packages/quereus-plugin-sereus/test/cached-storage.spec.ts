@@ -68,6 +68,15 @@ describe('wrapStorageWithCache', () => {
 		expect(wrapStorageWithCache(inner, 'memory')).toBe(inner);
 	});
 
+	it('passes a storage with its own read cache through unwrapped', async () => {
+		// React Native's LevelDBRawStorage reports `readCached`, and CachedRawStorage over it
+		// throws `redundant read cache`; every phone start went through this wrap.
+		const inner = { readCached: true } as IRawStorage;
+
+		expect(wrapStorageWithCache(inner, 'own-cache')).toBe(inner);
+		await expect(disposeStorageCache(inner)).resolves.toBeUndefined();
+	});
+
 	it('keeps distinct instances on distinct caches', () => {
 		// Two stores are two backends; sharing a cache between them would alias
 		// name-derived header block ids across stores.

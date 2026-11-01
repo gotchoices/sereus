@@ -75,6 +75,9 @@ export class FakeWriteBatch implements RNLevelDBWriteBatchNative {
 	}
 }
 
+/** rn-leveldb's string reads decode UTF-8 in native code and keep a leading byte-order mark. */
+const utf8 = new TextDecoder('utf-8', { ignoreBOM: true });
+
 class FakeIterator implements RNLevelDBIteratorNative {
 	private index = -1;
 
@@ -115,6 +118,10 @@ class FakeIterator implements RNLevelDBIteratorNative {
 		return toArrayBuffer(this.current()[1]);
 	}
 
+	valueStr(): string {
+		return utf8.decode(this.current()[1]);
+	}
+
 	close(): void {
 		// Nothing to release: the snapshot is plain heap memory.
 	}
@@ -140,6 +147,11 @@ class FakeRNLevelDB implements RNLevelDBNative {
 		const bytes = toBytes(key);
 		const entry = this.entries[lowerBound(this.entries, bytes)];
 		return entry && compareBytes(entry[0], bytes) === 0 ? toArrayBuffer(entry[1]) : null;
+	}
+
+	getStr(key: ArrayBuffer | string): string | null {
+		const value = this.getBuf(key);
+		return value === null ? null : utf8.decode(value);
 	}
 
 	delete(key: ArrayBuffer | string): void {

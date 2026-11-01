@@ -29,7 +29,9 @@
  *   backend, which is the invariant's other half.
  *
  * `MemoryRawStorage` is returned unwrapped on upstream's own guidance: the backend
- * is already in-memory, so the cache adds bookkeeping with nothing to save.
+ * is already in-memory, so the cache adds bookkeeping with nothing to save. So is a
+ * storage that reports `readCached` with a cache of its own (React Native's
+ * `LevelDBRawStorage`), which upstream refuses to have wrapped again.
  *
  * **{@link wrapStorageWithCache} and {@link disposeStorageCache} are a matched pair
  * with a holder count between them.** Every wrap that hands back a cache this module
@@ -109,6 +111,15 @@ function addHolder(wrapped: CachedRawStorage): void {
 }
 
 /**
+ * A storage that carries its own read cache and is not one of this module's wrappers, such as
+ * the React Native `LevelDBRawStorage`. Upstream refuses a second cache over it
+ * (`redundant read cache`), and it stays its creator's to close.
+ */
+function isOwnReadCache(storage: IRawStorage): boolean {
+	return storage.readCached === true && !(storage instanceof CachedRawStorage);
+}
+
+/**
  * The cached view of `storage`, memoized per instance, with one holder claim taken for
  * this caller — release it with {@link disposeStorageCache} when this caller's scope
  * ends. `label` names the store in the shared pool's `stats()` (e.g. `control`, or the
@@ -116,7 +127,7 @@ function addHolder(wrapped: CachedRawStorage): void {
  * one backend is the failure that matters and a stale pool label is not.
  */
 export function wrapStorageWithCache(storage: IRawStorage, label: string): IRawStorage {
-	if (storage instanceof MemoryRawStorage) {
+	if (storage instanceof MemoryRawStorage || isOwnReadCache(storage)) {
 		return storage;
 	}
 	if (storage instanceof CachedRawStorage) {

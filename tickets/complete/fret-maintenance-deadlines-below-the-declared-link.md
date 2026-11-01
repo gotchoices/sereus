@@ -1,10 +1,18 @@
-description: The peer-discovery library under Sereus gives up on a liveness ping after a fixed 2 seconds, shorter than a ping takes on the slowest link Sereus supports, and then treats the other member as gone, so each side of a two-machine strand writes alone and the two can end up holding different data. Needs a change in FRET and Optimystic.
+description: FRET derived none of its ring-maintenance deadlines from the declared link, so a cohort member whose ping took over 2 s was marked `dead` though connected. Fixed upstream: p2p-fret 1.3.0 derives them from `FretConfig.linkRoundTripMs`, and Optimystic 1.23.0 passes `NodeOptions.linkRoundTripMs` through; Sereus adopted both and needed no code change.
 architecture: docs/architecture.md#dial-budgets-are-counted-in-round-trips-not-milliseconds
 files: ../Fret/packages/fret/src/service/fret-service.ts (`MAINTENANCE_RPC_TIMEOUT_MS` ~475, `MAINTENANCE_SNAPSHOT_TIMEOUT_MS` ~487, `STABILIZE_TICK_BUDGET_MS` ~506, `STABILIZE_PHASE_ONE_BUDGET_MS` ~533, `applyContactStrike` ~1007, `probeNeighborLatency` ~3283), ../Fret/packages/fret/src/rpc/protocols.ts (`RPC_TIMEOUT_MS` ~27), ../Fret/packages/fret/src/service/live-member.ts, ../Fret/packages/fret/src/index.ts (`FretConfig`), ../optimystic/packages/db-p2p/src/libp2p-node-base.ts (`fretService({...})` ~1161), ../optimystic/packages/db-p2p/src/libp2p-key-network.ts (`assembleServingCohortOnce` ~1826), packages/cadre-core/src/link-budget.ts, packages/cadre-core/src/types.ts (`DEFAULT_CONNECTION_MONITOR`, "WHAT THE LINK NEEDS OF IT"), packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts
 repro: static
 ----
+# FRET's maintenance deadlines follow the declared link
 
-# FRET's maintenance pings time out below the link Sereus declares, and a missed ping removes a member from every cohort
+## Resolution (2026-11-01, `adopt-optimystic-1-23-0`)
+
+Landed upstream as proposed below: FRET `link-round-trip-derives-maintenance-deadlines` (p2p-fret 1.3.0, `e4073ed`) and Optimystic `fret-receives-the-link-round-trip` (1.23.0, `febbc586`). FRET's derivation differs from the proposal in one place: the snapshot fetch is three round trips, not two plus the transfer. At Sereus's default declaration (3 500 ms): ping 7 000 ms, snapshot 10 500 ms, phase 1 17 500 ms, tick 24 500 ms, routed request 14 000 ms; each is floored at its old constant. `RPC_TIMEOUT_MS` (5 000 ms) still bounds FRET's other requests and `readFramed`'s default, which Optimystic's cohort-topic frame reads use.
+
+Sereus already states `NetworkConfig.linkRoundTripMs` to Optimystic on the control node and every strand node, so adopting the releases was the whole change. `docs/cadre-consistency.md` → "Deadlines Below Cadre" now lists these rows as following the declared link, and `docs/architecture.md` → "What Optimystic derives" names them.
+
+**Not measured:** the confirmation in "How to confirm" (the phone arm, or the 1 500 ms one-way rounds with no event-loop load) was not run in this pass. It takes about an hour per run. Strikes against the other strand member in that scenario, with `commit:solo-cohort` after them, would mean this is not the whole story. On the phone link, queue delay above the declaration still applies (see "What this does not fix" and `blocked/decide-link-deadlines-from-measured-response-time`).
+
 
 **Blocked on a dependency outside this repo.** FRET (`p2p-fret`) fixes its maintenance deadlines as constants, and Optimystic constructs FRET without passing it the link round trip it already receives from cadre. Unblocks when FRET accepts the option proposed below and Optimystic passes its `linkRoundTripMs` through, in released versions Sereus can adopt. Read at FRET `6c04166` (p2p-fret 1.1.0) and Optimystic `28e6e044`.
 
