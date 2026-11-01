@@ -1,7 +1,9 @@
 import debug from 'debug';
 import { TransactionActiveError, type Database } from '@quereus/quereus';
+import type { Libp2p } from '@libp2p/interface';
+import { classifyCommitFailure } from '@optimystic/db-core';
 import { QueuedEntriesBlockSchemaChangeError, QueueDisposedError } from '@optimystic/quereus-plugin-optimystic/plugin';
-import type { StrandOfflineController, AppSchemaOutcome } from './types.js';
+import type { StrandOfflineController, AppSchemaOutcome, AppSchemaWait } from './types.js';
 
 const log = debug('sereus:plugin:strand');
 
@@ -9,7 +11,7 @@ const log = debug('sereus:plugin:strand');
  * Step 7 of `composeStrand`: declare the sApp's schema as `App` and apply it — a
  * declarative diff against the catalog, so re-applying a schema that is already in place
  * emits nothing. The one site that applies an `App` schema: `composeStrand` calls it at
- * bring-up (through {@link applyAppSchemaAfterQueue}, whose deferred retry shares its
+ * bring-up (through {@link applyAppSchemaOrDefer}, whose deferred retry shares its
  * declaration), and cadre-core's `StrandDatabase.attachAppSchema` calls it on a live storage
  * replica when an app claims the strand. The database must already be composed (optimystic
  * set as the default vtab), or the tables land in memory instead of the strand.
@@ -38,22 +40,44 @@ async function declareAppSchema(db: Database, schema: string): Promise<void> {
 	assertNoSeedItems(db);
 }
 
-/** What {@link applyAppSchemaAfterQueue} reports, in the shape `SereusPluginResult` carries it. */
+/** What {@link applyAppSchemaOrDefer} reports, in the shape `SereusPluginResult` carries it. */
 export interface AppSchemaApply {
 	appSchema: Promise<AppSchemaOutcome>;
+	/** What the connect-time apply waits for. Present only when it was deferred. */
+	appSchemaWaitingFor?: AppSchemaWait;
+	/** The queued transaction ids that refused the connect-time apply. Present only when the queue refused it. */
 	appSchemaDeferredBy?: readonly string[];
 }
 
+/** The strand node's peer events, which a retry waiting for the cohort wakes on. */
+export type PeerConnectEvents = Pick<Libp2p, 'addEventListener' | 'removeEventListener'>;
+
+/** Where a deferred apply waits: the offline queue, when there is one, and the strand node, when there is one. */
+export interface AppSchemaWaits {
+	queue?: Pick<StrandOfflineController, 'whenDrained'>;
+	peers?: PeerConnectEvents;
+}
+
+/** Why an apply was refused, when it is a refusal a later retry can get past. */
+type Deferral = { wait: 'queue'; transactionIds: readonly string[] } | { wait: 'cohort' };
+
 /**
- * Step 7 of `composeStrand`: {@link applyAppSchema}, except that an apply refused by queued
- * offline transactions (`QueuedEntriesBlockSchemaChangeError` on the error's `cause` chain) does not
- * throw. Quereus unwinds the refused apply, so `db` keeps the `App` schema it had; the apply is
- * retried in the background each time `queue` drains, for as long as the queue is what refuses it,
- * and `appSchema` settles with how that ended. Any other error from the first apply is thrown.
+ * Step 7 of `composeStrand`: {@link applyAppSchema}, except that an apply refused for a reason
+ * that passes does not throw. Two such reasons:
  *
- * Waiting for the queue before returning was rejected: offline, that withholds the strand from the
- * app right after an app update, which is when offline mode matters. So was refusing the connect:
- * the queue can drain only while the composition is alive.
+ *  - queued offline transactions wrote a table the apply changes (`QueuedEntriesBlockSchemaChangeError`);
+ *    retried each time the queue drains;
+ *  - the strand's cohort could not be reached (Optimystic's `classifyCommitFailure` says
+ *    `cohort-unreachable`): an apply writes the strand's catalog, which needs the cohort, so a member
+ *    alone after an app update would otherwise not open the strand at all (gotchoices/sereus#55).
+ *    Retried when the strand node connects to a peer, and on a backoff ({@link COHORT_RETRY_MS}).
+ *
+ * Quereus unwinds a refused apply, so `db` keeps the `App` schema it had, and `appSchema` settles
+ * with how the retries ended. Any other error from the first apply is thrown.
+ *
+ * Waiting before returning was rejected: that withholds the strand from the app right after an app
+ * update, which is when a phone is most likely to be offline. So was refusing the connect: the queue
+ * can drain only while the composition is alive.
  *
  * `released` is aborted when the composition shuts down; a retry not yet landed then settles
  * `cancelled`.
@@ -63,10 +87,10 @@ export interface AppSchemaApply {
  * apply would be committed or rolled back with the app's rows, and a rollback leaves the index it
  * built holding entries for rows that are gone.
  */
-export async function applyAppSchemaAfterQueue(
+export async function applyAppSchemaOrDefer(
 	db: Database,
 	schema: string,
-	queue: Pick<StrandOfflineController, 'whenDrained'>,
+	waits: AppSchemaWaits,
 	released: AbortSignal,
 ): Promise<AppSchemaApply> {
 	try {
@@ -74,30 +98,34 @@ export async function applyAppSchemaAfterQueue(
 		log('sApp schema applied');
 		return { appSchema: Promise.resolve({ state: 'applied' }) };
 	} catch (err) {
-		const refusal = queueRefusalIn(err);
-		if (!refusal) {
+		const deferral = deferralOf(err);
+		if (!deferral) {
 			throw err;
 		}
-		log('sApp schema apply refused by queued transactions %o; retrying once they settle', refusal.transactionIds);
+		logDeferral('sApp schema apply', deferral);
 		return {
-			appSchema: retryAppSchemaAfterDrain(db, schema, queue, released),
-			appSchemaDeferredBy: refusal.transactionIds,
+			appSchema: retryDeferredAppSchema(db, schema, deferral, waits, released),
+			appSchemaWaitingFor: deferral.wait,
+			...(deferral.wait === 'queue' && { appSchemaDeferredBy: deferral.transactionIds }),
 		};
 	}
 }
 
-async function retryAppSchemaAfterDrain(
+async function retryDeferredAppSchema(
 	db: Database,
 	schema: string,
-	queue: Pick<StrandOfflineController, 'whenDrained'>,
+	first: Deferral,
+	waits: AppSchemaWaits,
 	released: AbortSignal,
 ): Promise<AppSchemaOutcome> {
-	// NOTE: this loops without a pause when `whenDrained` resolves at once while the refusal stands
-	// (a segment left sealed with nothing queued, say). Upstream counts a removal still in progress
-	// as undrained, so no such state is known; if one shows up as a busy loop, back off between tries.
+	let deferral = first;
+	let cohortRetries = 0;
 	for (;;) {
 		try {
-			await queue.whenDrained();
+			await nextChance(deferral, waits, cohortRetries, released);
+			if (deferral.wait === 'cohort') {
+				cohortRetries++;
+			}
 			if (released.aborted) {
 				return { state: 'cancelled' };
 			}
@@ -115,24 +143,87 @@ async function retryAppSchemaAfterDrain(
 				await abortableDelay(OPEN_TRANSACTION_RETRY_MS, released);
 				continue;
 			}
-			const refusal = queueRefusalIn(err);
-			if (!refusal) {
+			const again = deferralOf(err);
+			if (!again) {
 				log('Deferred sApp schema apply failed: %O', err);
 				return { state: 'failed', error: err };
 			}
-			log('sApp schema apply refused again by queued transactions %o', refusal.transactionIds);
+			logDeferral('Deferred sApp schema apply', again);
+			deferral = again;
 		}
 	}
 }
 
-/** The offline queue's refusal `err` is or wraps: Quereus rewraps it out of `apply schema`, keeping it as `cause`. */
-function queueRefusalIn(err: unknown): QueuedEntriesBlockSchemaChangeError | undefined {
+/** Waits for whatever may get the retry past `deferral`. */
+async function nextChance(deferral: Deferral, waits: AppSchemaWaits, cohortRetries: number, released: AbortSignal): Promise<void> {
+	if (deferral.wait === 'queue' && waits.queue) {
+		// NOTE: this loops without a pause when `whenDrained` resolves at once while the refusal stands
+		// (a segment left sealed with nothing queued, say). Upstream counts a removal still in progress
+		// as undrained, so no such state is known; if one shows up as a busy loop, back off between tries.
+		await waits.queue.whenDrained();
+		return;
+	}
+	await nextCohortChance(waits.peers, cohortRetryDelay(cohortRetries), released);
+}
+
+/**
+ * The refusal `err` is or wraps, when a later retry can get past it: Quereus rewraps an error out of
+ * `apply schema`, keeping it as `cause`.
+ */
+function deferralOf(err: unknown): Deferral | undefined {
 	for (let at = err; at instanceof Error; at = at.cause) {
 		if (at instanceof QueuedEntriesBlockSchemaChangeError) {
-			return at;
+			return { wait: 'queue', transactionIds: at.transactionIds };
+		}
+		if (classifyCommitFailure(at).kind === 'cohort-unreachable') {
+			return { wait: 'cohort' };
 		}
 	}
 	return undefined;
+}
+
+function logDeferral(what: string, deferral: Deferral): void {
+	if (deferral.wait === 'queue') {
+		log('%s refused by queued transactions %o; retrying once they settle', what, deferral.transactionIds);
+	} else {
+		log('%s could not reach the strand cohort; retrying when a peer connects', what);
+	}
+}
+
+/**
+ * Backoff for a retry waiting for the cohort, by how many came before it. A connect wakes the retry
+ * sooner, so the backoff only bounds how long a missed or too-early connect leaves the schema behind.
+ */
+const COHORT_RETRY_MS = [15_000, 30_000, 60_000, 120_000, 300_000] as const;
+
+function cohortRetryDelay(retriesBefore: number): number {
+	return COHORT_RETRY_MS[Math.min(retriesBefore, COHORT_RETRY_MS.length - 1)]!;
+}
+
+/**
+ * How long a retry woken by a connect waits first, so the peer is identified and in the ring before
+ * the apply asks for its cohort; a retry that still finds it missing waits for the next chance.
+ */
+const COHORT_CONNECT_SETTLE_MS = 2_000;
+
+/** Resolves {@link COHORT_CONNECT_SETTLE_MS} after the strand node's next peer connect, after `delayMs`, or when `signal` aborts. */
+async function nextCohortChance(peers: PeerConnectEvents | undefined, delayMs: number, signal: AbortSignal): Promise<void> {
+	const byConnect = await new Promise<boolean>(resolve => {
+		const done = (connected: boolean): void => {
+			clearTimeout(timer);
+			peers?.removeEventListener('peer:connect', onConnect);
+			signal.removeEventListener('abort', onAbort);
+			resolve(connected);
+		};
+		const onConnect = (): void => done(true);
+		const onAbort = (): void => done(false);
+		const timer = setTimeout(() => done(false), delayMs);
+		peers?.addEventListener('peer:connect', onConnect);
+		signal.addEventListener('abort', onAbort, { once: true });
+	});
+	if (byConnect) {
+		await abortableDelay(COHORT_CONNECT_SETTLE_MS, signal);
+	}
 }
 
 /** How long a deferred sApp schema apply waits before trying again while another caller's transaction is open. */

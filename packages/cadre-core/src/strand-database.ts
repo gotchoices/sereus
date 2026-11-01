@@ -13,7 +13,8 @@ import type { StrandCommitDurability, StrandCommitListeners } from './strand-com
 import { TableWatchRegistry } from './table-change-watch.js';
 import type { TableChangeWatch, TableChangeWatchOptions } from './table-change-watch.js';
 import { discardQueued, StrandOfflineReport } from './strand-offline.js';
-import type { StrandAppSchemaState, StrandOfflineListeners, StrandOfflineMode, StrandOfflineQueue } from './strand-offline.js';
+import type { StrandOfflineListeners, StrandOfflineMode, StrandOfflineQueue } from './strand-offline.js';
+import { StrandAppSchemaReport, type StrandAppSchemaListeners, type StrandAppSchemaState } from './strand-app-schema-report.js';
 
 const log = debug('sereus:cadre:strand-db');
 const timing = debug('sereus:cadre:timing');
@@ -72,6 +73,8 @@ export interface StrandDatabaseConfig extends StrandCommitListeners {
    * and {@link StrandDatabase.offline} is undefined.
    */
   offline?: StrandDatabaseOffline;
+  /** Where to report the `App` schema apply when it is held back (docs/strands.md → "An app schema upgrade waits for the queue or the cohort"). */
+  appSchema?: StrandAppSchemaListeners;
 }
 
 /** {@link StrandDatabaseConfig.offline}: one build's journal, the strand's mode, and where to report. */
@@ -115,6 +118,7 @@ export class StrandDatabase {
   private unsubscribeCommits: (() => void) | null = null;
   private offlineQueue: StrandOfflineController | null = null;
   private offlineReport: StrandOfflineReport | null = null;
+  private appSchemaReport: StrandAppSchemaReport | null = null;
   /** Subscriptions handed out by {@link watchTables}. */
   private readonly tableWatches = new TableWatchRegistry();
 
@@ -174,6 +178,7 @@ export class StrandDatabase {
     // Before the founder bootstrap, so its commits are reported like any other.
     this.subscribeToCommits(result);
     this.followOffline(result);
+    this.appSchemaReport = new StrandAppSchemaReport(sid, this.config.appSchema ?? {}, result);
     timing('[strandDb:%s] connectToStrand: %dms (hydrated tables=%d, indexes=%d)',
       sid, Math.round(performance.now() - t0),
       result.hydrated?.tables ?? 0, result.hydrated?.indexes ?? 0);
@@ -215,7 +220,7 @@ export class StrandDatabase {
       return;
     }
     this.offlineQueue = result.offline ?? null;
-    this.offlineReport = new StrandOfflineReport(this.config.strandId, offline, result);
+    this.offlineReport = new StrandOfflineReport(this.config.strandId, offline, result.offline);
   }
 
   /**
@@ -238,10 +243,11 @@ export class StrandDatabase {
   /**
    * The database was handed to the app (`StrandInstanceManager.publishDatabase`): report the
    * queue's state, since restored transactions' `queued` statuses were delivered before anything
-   * subscribed, and an `App` schema apply still waiting for the queue.
+   * subscribed, and an `App` schema apply still held back.
    */
   reportPublished(): void {
     this.offlineReport?.published();
+    this.appSchemaReport?.published();
   }
 
   /**
@@ -393,13 +399,13 @@ export class StrandDatabase {
   }
 
   /**
-   * Whether this database runs the `App` schema its launch was given. `'waiting-for-queue'` while
-   * queued transactions hold the apply back, so `StrandInstance.sAppInfo` names a version whose new
-   * tables or columns are not here yet; check this before relying on them.
+   * Whether this database runs the `App` schema its launch was given. `'waiting-for-queue'` or
+   * `'waiting-for-cohort'` while the apply is held back, so `StrandInstance.sAppInfo` names a version
+   * whose new tables or columns are not here yet; check this before relying on them.
    */
   appSchemaState(): StrandAppSchemaState {
     this.ensureInitialized();
-    return this.offlineReport?.appSchemaState() ?? 'applied';
+    return this.appSchemaReport?.appSchemaState() ?? 'applied';
   }
 
   /**
@@ -441,6 +447,8 @@ export class StrandDatabase {
     this.unsubscribeCommits = null;
     this.offlineReport?.release();
     this.offlineReport = null;
+    this.appSchemaReport?.release();
+    this.appSchemaReport = null;
     this.offlineQueue = null;
     this.tableWatches.disposeAll();
     if (this.shutdownStrand) {

@@ -221,6 +221,12 @@ const handlers = {
 		return { status: status === undefined ? null : statusSummary(status) };
 	},
 
+	async appSchemaState({ strandId }) {
+		const strand = node.getStrand(strandId);
+		if (!strand) throw new Error(`strand ${strandId} is not running`);
+		return { state: strand.database.appSchemaState() };
+	},
+
 	async waitSavedAddressRecord({ strandId, peerId, timeoutMs }) {
 		await pollFor(
 			() => (node.getStrandNetworkStateStore().load(strandId)?.fretTable?.entries

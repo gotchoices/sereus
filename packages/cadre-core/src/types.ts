@@ -9,7 +9,8 @@ import type { StrandMembershipReconciliationConfig } from './strand-membership-r
 import type { StrandFirstSyncConfig } from './strand-first-sync-gate.js';
 import type { StrandDatabase } from './strand-database.js';
 import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
-import type { StrandAppSchemaDeferred, StrandOfflineConfig, StrandOfflineStatus, StrandQueueState } from './strand-offline.js';
+import type { StrandOfflineConfig, StrandOfflineStatus, StrandQueueState } from './strand-offline.js';
+import type { StrandAppSchemaDeferred } from './strand-app-schema-report.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
@@ -1786,10 +1787,11 @@ export interface CadreNodeEvents {
    */
   'strand:queue-state': StrandQueueState;
   /**
-   * Emitted when a strand's database is published while queued offline transactions hold its `App`
-   * schema apply back: the database runs the earlier schema although `StrandInstance.sAppInfo` names
-   * the new version, and `StrandDatabase.appSchemaState()` reads `'waiting-for-queue'`. A retry that
-   * fails for another reason is emitted as `strand:error`; a cancelled one emits nothing.
+   * Emitted when a strand's database is published while its `App` schema apply is held back, by
+   * queued offline transactions or by a strand cohort it could not reach (`waitingFor`): the database
+   * runs the earlier schema although `StrandInstance.sAppInfo` names the new version, and
+   * `StrandDatabase.appSchemaState()` reads `'waiting-for-queue'` or `'waiting-for-cohort'`. A retry
+   * that fails for another reason is emitted as `strand:error`; a cancelled one emits nothing.
    */
   'strand:app-schema-deferred': StrandAppSchemaDeferred;
   /** Emitted when an `App` schema apply that `strand:app-schema-deferred` reported lands. */

@@ -16,7 +16,7 @@ export {
 } from './cluster-size.js';
 export { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
 export type {
-	StrandConnectionOptions, SereusPluginResult, StrandTransactor, StrandOfflineOptions, StrandOfflineController, AppSchemaOutcome,
+	StrandConnectionOptions, SereusPluginResult, StrandTransactor, StrandOfflineOptions, StrandOfflineController, AppSchemaOutcome, AppSchemaWait,
 } from './types.js';
 export type { SqlCommitDurability, CommitFullyHeld } from '@optimystic/quereus-plugin-optimystic/plugin';
 export {

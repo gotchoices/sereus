@@ -7387,7 +7387,9 @@ export class CadreNode implements SAppIdLookup {
       offline: this.config.strandOffline && {
         ...this.config.strandOffline,
         onOfflineStatus: (event) => this.handleOfflineStatus(event),
-        onQueueState: (event) => this.emit('strand:queue-state', event),
+        onQueueState: (event) => this.emit('strand:queue-state', event)
+      },
+      appSchema: {
         onAppSchemaDeferred: (event) => this.emit('strand:app-schema-deferred', event),
         onAppSchemaApplied: (event) => this.emit('strand:app-schema-applied', event),
         onAppSchemaFailed: (event) => this.emit('strand:error', event)

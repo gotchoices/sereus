@@ -100,12 +100,15 @@ export type StrandOfflineController = Pick<OfflineMode,
 /**
  * How a connection's sApp schema apply ended (see {@link SereusPluginResult.appSchema}):
  *
- *  - `applied` — the schema is in place. `deferred` when queued offline transactions refused the
- *    first apply and a later one, once they had settled, landed.
- *  - `failed` — a deferred retry failed for a reason other than the queue; the connection keeps the
- *    schema it had before.
+ *  - `applied` — the schema is in place. `deferred` when the first apply was refused (by queued
+ *    offline transactions, or because the strand's cohort could not be reached) and a later one landed.
+ *  - `failed` — a deferred retry failed for another reason; the connection keeps the schema it had
+ *    before.
  *  - `cancelled` — the connection shut down before a deferred retry landed.
  */
+/** What a deferred sApp schema apply waits for (see {@link SereusPluginResult.appSchemaWaitingFor}). */
+export type AppSchemaWait = 'queue' | 'cohort';
+
 export type AppSchemaOutcome =
 	| { state: 'applied'; deferred?: true }
 	| { state: 'failed'; error: unknown }
@@ -163,12 +166,18 @@ export interface SereusPluginResult {
 	/**
 	 * Present when {@link StrandConnectionOptions.schema} was given; never rejects. Resolves
 	 * `{ state: 'applied' }` at once when the apply succeeded at connect. When queued offline
-	 * transactions refused it, the connection comes up on the `App` schema it already had and
-	 * retries each time the queue drains; this settles when a retry lands, fails otherwise, or
-	 * {@link shutdown} runs first.
+	 * transactions refused it, or the strand's cohort could not be reached, the connection comes up
+	 * on the `App` schema it already had and retries ({@link appSchemaWaitingFor}); this settles when
+	 * a retry lands, fails otherwise, or {@link shutdown} runs first.
 	 */
 	appSchema?: Promise<AppSchemaOutcome>;
-	/** The queued transaction ids that refused the connect-time apply. Present only when it was deferred. */
+	/**
+	 * What the connect-time apply waits for: `'queue'`, queued offline transactions (retried each time
+	 * the queue drains), or `'cohort'`, the strand's members (retried when the strand node connects to
+	 * a peer, and on a backoff). Present only when it was deferred.
+	 */
+	appSchemaWaitingFor?: AppSchemaWait;
+	/** The queued transaction ids that refused the connect-time apply. Present only when the queue refused it. */
 	appSchemaDeferredBy?: readonly string[];
 	/** Shuts down the libp2p node and collection factory. Call when done. */
 	shutdown: () => Promise<void>;

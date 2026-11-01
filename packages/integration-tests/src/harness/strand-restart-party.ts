@@ -18,7 +18,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import type { SAppConfig, StrandOfflineStatus, StrandStatus } from '@serfab/cadre-core';
+import type { SAppConfig, StrandAppSchemaState, StrandOfflineStatus, StrandStatus } from '@serfab/cadre-core';
 
 const CHILD_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'strand-restart-party.mjs');
 
@@ -68,6 +68,11 @@ export interface StrandRestartOps {
 	pathKinds: {
 		args: { strandId: string; peerId: string };
 		result: { kinds: string[] };
+	};
+	/** `strand.database.appSchemaState()`. */
+	appSchemaState: {
+		args: { strandId: string };
+		result: { state: StrandAppSchemaState };
 	};
 	/** `strand.database.offline.entries()`; needs `offline`. */
 	offlineEntries: {

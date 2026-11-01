@@ -9,7 +9,7 @@ import type {
 	StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo,
 	StrandOfflineOptions, StrandOfflineController,
 } from './types.js';
-import { applyAppSchemaAfterQueue, type AppSchemaApply } from './app-schema.js';
+import { applyAppSchemaOrDefer, type AppSchemaApply, type PeerConnectEvents } from './app-schema.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
 import { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
@@ -311,6 +311,8 @@ export async function composeStrand(
 	let appSchemaApply: AppSchemaApply | undefined;
 
 	let createdNode: Libp2p | null = null;
+	// The strand node, when there is one: a deferred sApp schema apply waiting for the cohort wakes on its connects.
+	let peers: PeerConnectEvents | undefined;
 	let hydrated: { tables: number; indexes: number } | undefined;
 
 	try {
@@ -347,6 +349,7 @@ export async function composeStrand(
 				coordinatedRepo = repo;
 				log('Created libp2p node (port: %d, fretProfile: %s, storage=%s)', port, fretProfile, !!storage);
 			}
+			peers = node;
 
 			collectionFactory.registerLibp2pNode(networkName, node, coordinatedRepo);
 			log('Registered libp2p node with collection factory');
@@ -417,12 +420,13 @@ export async function composeStrand(
 		// migrated instead of restored. No schema in this repo evolves that way, so this
 		// is a note for whoever first ships a migration that does.
 		//
-		// The one exception: an apply refused by queued offline transactions does not fail the
-		// connect. The strand comes up on the `App` schema it had, and the apply is retried as the
-		// queue drains (see `applyAppSchemaAfterQueue`).
+		// The exception: an apply refused by queued offline transactions, or because the strand's
+		// cohort could not be reached, does not fail the connect. The strand comes up on the `App`
+		// schema it had, and the apply is retried as the queue drains or when a peer connects (see
+		// `applyAppSchemaOrDefer`).
 		if (schema) {
 			log('Applying sApp schema for strand %s', strandId);
-			appSchemaApply = await applyAppSchemaAfterQueue(db, schema, pluginResult.offline, released.signal);
+			appSchemaApply = await applyAppSchemaOrDefer(db, schema, { queue: pluginResult.offline, peers }, released.signal);
 		}
 	} catch (err) {
 		// Clean up resources if setup fails after partial initialization.

@@ -344,19 +344,7 @@ Every membership writer (`strand-membership-writer.ts`, through `execStrandTrans
 
 ### An app schema upgrade waits for the queue
 
-Optimystic refuses a schema change that alters how a table's rows are stored (an index, a column) while queued transactions wrote that table, with `QueuedEntriesBlockSchemaChangeError`. When the connect's `App` apply is refused that way (`applyAppSchemaAfterQueue`), the connect still succeeds: the strand comes up on the `App` schema it already had (Quereus unwinds the refused apply), and the apply is retried each time the queue drains, for as long as the queue is what refuses it. The result's `appSchemaDeferredBy` names the queued transactions the first refusal named, and `appSchema` settles `{ state: 'applied', deferred: true }` when a retry lands, `{ state: 'failed', error }` when one fails for another reason, or `{ state: 'cancelled' }` when the connection shuts down first. An apply that succeeds at connect settles `{ state: 'applied' }` at once, and any other connect-time apply error still fails the connect.
-
-A retry runs while the app is using the database, so it never runs inside a transaction someone else holds open: it waits for that transaction to end. Applied inside it, the schema change would be committed or rolled back with the app's rows, and a rollback leaves a new index holding entries for rows that are gone.
-
-Waiting for the queue to drain before the connect returns was rejected: offline, it would withhold the strand from the app right after an app update. Failing the connect was rejected because the queue can drain only while the connection is up.
-
-`StrandDatabase.attachAppSchema` (an app claiming a storage replica) is not deferred: a replica writes no app transactions, so nothing queued can have written an `App` table.
-
-On a cadre node, `StrandInstance.sAppInfo` names the new version while the database still runs the earlier schema, and `StrandDatabase.appSchemaState()` says which: `'applied'`, `'waiting-for-queue'` or `'failed'`. An app checks it before relying on new tables or columns.
-
-- **`strand:app-schema-deferred`** (`{ strandId, transactionIds }`) is emitted at publication, and **`strand:app-schema-applied`** (`{ strandId }`) when the retry lands. A retry that fails for another reason is emitted as `strand:error` and leaves `'failed'`; a cancelled one emits nothing.
-- **The events begin at publication.** A retry that lands while the database is still behind the first-sync gate is not announced, since the app never saw the earlier schema; one that fails then is announced at publication.
-- **`'waiting-for-queue'` can outlast the drain.** The retry also waits while any caller holds a transaction open on the database, for as long as that transaction stays open.
+An `App` schema apply that queued transactions refuse does not fail the connect: the strand comes up on the schema it had, and the apply is retried as the queue drains. The mechanism, shared with an apply that cannot reach the cohort, is [An app schema upgrade waits for the queue or the cohort](#an-app-schema-upgrade-waits-for-the-queue-or-the-cohort).
 
 ### Leaving a strand with unsent transactions
 
@@ -414,6 +402,33 @@ The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-nod
 - **One store per scope until the storage closes.** A store serves its unflushed writes from memory, so a second store over the handle would not see them. The edge node's stop stops the node, its strands included, before `EdgeNodeStorage.close` flushes and closes the journals; `destroyScope` closes the scope's journal before deleting the database.
 - **`EdgeNodeOptions.strandOfflineMode` is the app's default** (`'online'` or `'offline'`, default `'online'`). It becomes `strandOffline.initialMode` and is saved with the start options, so a background restart or a push wake starts every strand in it again; it carries into a joined cadre, and back to the founded one after a removal, as the Noise mode does. A start whose options name none takes the saved start's, whatever its party, so a start from a form or from options held since before a change keeps the app's choice.
 - **`EdgeNode.setStrandOfflineMode(mode)` changes that default without a restart.** Every strand the running node runs takes the mode at once, each strand it starts later takes it too (on `strand:started`, since the node applies the mode it was built with to every launch), and the saved start keeps it. It throws while no node runs and on a platform with no journal.
+
+## An app schema upgrade waits for the queue or the cohort
+
+A connect applies the app's `App` schema, and an apply that changes anything writes the strand's catalog, a strand collection like any table. Two refusals pass with time, so neither fails the connect: the strand comes up on the `App` schema it already had (Quereus unwinds the refused apply), and the apply is retried until it lands (`applyAppSchemaOrDefer` in quereus-plugin-sereus). Any other connect-time apply error still fails the connect.
+
+| refusal | how it is recognized | retried |
+| --- | --- | --- |
+| queued offline transactions wrote a table whose row storage the apply changes (an index, a column) | `QueuedEntriesBlockSchemaChangeError` | each time the queue drains, for as long as the queue is what refuses it |
+| the strand's cohort cannot be reached, as on a two-member strand whose other member is offline (gotchoices/sereus#55) | Optimystic's `classifyCommitFailure` says `cohort-unreachable` (`PromiseShortfallError`, or a read no member answered) | when the strand node connects to a peer, 2 s after the connect, and otherwise after 15 s, 30 s, 60 s, 120 s, then every 5 minutes |
+
+The cohort case happens with offline mode on or off: the catalog write is not an app transaction, so the queue does not take it. A change that alters no row, such as adding a column tag, still writes the catalog.
+
+The connection's result says what the apply waits for: `appSchemaWaitingFor` is `'queue'` or `'cohort'`, and for the queue `appSchemaDeferredBy` names the transactions the first refusal named. `appSchema` settles `{ state: 'applied', deferred: true }` when a retry lands, `{ state: 'failed', error }` when one fails for another reason, or `{ state: 'cancelled' }` when the connection shuts down first. An apply that succeeds at connect settles `{ state: 'applied' }` at once.
+
+A retry runs while the app is using the database, so it never runs inside a transaction someone else holds open: it waits for that transaction to end. Applied inside it, the schema change would be committed or rolled back with the app's rows, and a rollback leaves a new index holding entries for rows that are gone.
+
+Waiting before the connect returns was rejected: it would withhold the strand from the app right after an app update, when a phone is most likely to be offline. Failing the connect was rejected because the queue can drain only while the connection is up, and because a strand the app cannot open is the failure #55 reported.
+
+`StrandDatabase.attachAppSchema` (an app claiming a storage replica that is already running) is not deferred: a replica writes no app transactions, so nothing queued can have written an `App` table, and a claim made while the cohort is unreachable fails at the claim. The replica's next rebuild applies the schema through the connect path above.
+
+On a cadre node, `StrandInstance.sAppInfo` names the new version while the database still runs the earlier schema, and `StrandDatabase.appSchemaState()` says which: `'applied'`, `'waiting-for-queue'`, `'waiting-for-cohort'` or `'failed'`. An app checks it before relying on new tables or columns. The state names the first refusal; a retry refused for the other reason keeps it.
+
+- **`strand:app-schema-deferred`** (`{ strandId, waitingFor, transactionIds }`) is emitted at publication, and **`strand:app-schema-applied`** (`{ strandId }`) when the retry lands. `transactionIds` is empty when `waitingFor` is `'cohort'`. A retry that fails for another reason is emitted as `strand:error` and leaves `'failed'`; a cancelled one emits nothing.
+- **The events begin at publication.** A retry that lands while the database is still behind the first-sync gate is not announced, since the app never saw the earlier schema; one that fails then is announced at publication.
+- **A waiting state can outlast its cause.** The retry also waits while any caller holds a transaction open on the database, for as long as that transaction stays open.
+
+`packages/integration-tests/src/scenarios/strand-app-schema-change-while-partner-offline.integration.ts` runs the cohort case end to end, with offline mode off and on.
 
 ## Same-Named Tables in `Strand` and `App`
 

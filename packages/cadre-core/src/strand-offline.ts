@@ -1,12 +1,6 @@
-import debug from 'debug';
 import { EntryNotDiscardableError, UnknownEntryError } from '@optimystic/db-core';
 import type { IKVStore } from '@optimystic/db-p2p';
-import { toError } from './describe-thrown.js';
-import type {
-  AppSchemaOutcome, OfflineModeState, QueuedTransactionStatus, SereusPluginResult, StrandOfflineController,
-} from '@serfab/quereus-plugin-sereus';
-
-const log = debug('sereus:cadre:strand-offline');
+import type { OfflineModeState, QueuedTransactionStatus, StrandOfflineController } from '@serfab/quereus-plugin-sereus';
 
 /**
  * Which acknowledgement a strand's transactions get from the moment it is set: `'offline'`, a
@@ -39,13 +33,6 @@ export interface StrandOfflineConfig {
 export type StrandOfflineQueue = Pick<StrandOfflineController,
   'queueState' | 'entries' | 'status' | 'outcomes' | 'acknowledge' | 'discard' | 'whenDrained' | 'onStatus' | 'onQueueState'>;
 
-/**
- * `StrandDatabase.appSchemaState()`: whether the database runs the `App` schema its launch was
- * given. `'waiting-for-queue'` while queued transactions hold the apply back (the database runs the
- * earlier schema); `'failed'` when a later retry failed for another reason.
- */
-export type StrandAppSchemaState = 'applied' | 'waiting-for-queue' | 'failed';
-
 /** `strand:offline-status`: one status of one queued transaction. */
 export interface StrandOfflineStatus {
   readonly strandId: string;
@@ -58,23 +45,13 @@ export interface StrandQueueState {
   readonly state: OfflineModeState;
 }
 
-/** `strand:app-schema-deferred`: the queued transactions that held the `App` schema apply back. */
-export interface StrandAppSchemaDeferred {
-  readonly strandId: string;
-  readonly transactionIds: readonly string[];
-}
-
 /**
- * Where a strand database reports its offline queue and its app-schema apply. Retained with the
- * launch config and handed to every database built for the launch, so the reports outlive
- * hibernation and every other rebuild.
+ * Where a strand database reports its offline queue. Retained with the launch config and handed to
+ * every database built for the launch, so the reports outlive hibernation and every other rebuild.
  */
 export interface StrandOfflineListeners {
   onOfflineStatus?: (event: StrandOfflineStatus) => void;
   onQueueState?: (event: StrandQueueState) => void;
-  onAppSchemaDeferred?: (event: StrandAppSchemaDeferred) => void;
-  onAppSchemaApplied?: (event: { strandId: string }) => void;
-  onAppSchemaFailed?: (event: { strandId: string; error: Error }) => void;
 }
 
 /** Thrown by `CadreNode.setStrandOfflineMode` on a node configured without `strandOffline`. */
@@ -160,17 +137,12 @@ export function isSendingStatus(status: QueuedTransactionStatus): boolean {
 }
 
 /**
- * What one strand database reports about its offline queue and its app-schema apply. Built once
- * `connectToStrand` has returned (a restored transaction's `queued` status was delivered during its
- * `hydrate`, before this subscribes: {@link published} reports the queue's state for that reason)
- * and released first when the database closes, so nothing from a closing connection reaches the app.
- *
- * App-schema events begin at publication, when the app gets the database: a retry that landed
- * before then is not announced, and one that failed before then is announced at publication.
+ * What one strand database reports about its offline queue. Built once `connectToStrand` has
+ * returned (a restored transaction's `queued` status was delivered during its `hydrate`, before this
+ * subscribes: {@link published} reports the queue's state for that reason) and released first when
+ * the database closes, so nothing from a closing connection reaches the app.
  */
 export class StrandOfflineReport {
-  private appSchema: StrandAppSchemaState;
-  private appSchemaError: Error | undefined;
   private wasPublished = false;
   private released = false;
   private readonly unsubscribe: () => void;
@@ -178,71 +150,29 @@ export class StrandOfflineReport {
   constructor(
     private readonly strandId: string,
     private readonly listeners: StrandOfflineListeners,
-    private readonly result: Pick<SereusPluginResult, 'offline' | 'appSchema' | 'appSchemaDeferredBy'>
+    private readonly queue: StrandOfflineController | undefined
   ) {
-    // `appSchema` is absent without an `App` schema (a storage replica), which has nothing to defer.
-    this.appSchema = result.appSchemaDeferredBy ? 'waiting-for-queue' : 'applied';
-    const queue = result.offline;
     const unsubscribeStatus = queue?.onStatus((status) => listeners.onOfflineStatus?.({ strandId, status }));
     const unsubscribeState = queue?.onQueueState((state) => listeners.onQueueState?.({ strandId, state }));
     this.unsubscribe = () => {
       unsubscribeStatus?.();
       unsubscribeState?.();
     };
-    if (result.appSchemaDeferredBy) {
-      void result.appSchema?.then((outcome) => this.settleAppSchema(outcome)).catch((error: unknown) => {
-        log('strand %s: reporting the deferred app schema apply failed: %O', strandId, error);
-      });
-    }
   }
 
-  appSchemaState(): StrandAppSchemaState {
-    return this.appSchema;
-  }
-
-  /** The database was handed to the app: report the queue's state, and an apply still waiting or already failed. */
+  /** The database was handed to the app: report the queue's state. */
   published(): void {
     if (this.released || this.wasPublished) {
       return;
     }
     this.wasPublished = true;
-    const queue = this.result.offline;
-    if (queue) {
-      this.listeners.onQueueState?.({ strandId: this.strandId, state: queue.queueState() });
-    }
-    if (this.appSchema === 'waiting-for-queue') {
-      this.listeners.onAppSchemaDeferred?.({ strandId: this.strandId, transactionIds: this.result.appSchemaDeferredBy ?? [] });
-    } else if (this.appSchemaError) {
-      this.reportAppSchemaFailed(this.appSchemaError);
+    if (this.queue) {
+      this.listeners.onQueueState?.({ strandId: this.strandId, state: this.queue.queueState() });
     }
   }
 
   release(): void {
     this.released = true;
     this.unsubscribe();
-  }
-
-  /** A cancelled retry (the database closed first) reports nothing. */
-  private settleAppSchema(outcome: AppSchemaOutcome): void {
-    if (this.released || outcome.state === 'cancelled') {
-      return;
-    }
-    if (outcome.state === 'applied') {
-      this.appSchema = 'applied';
-      if (this.wasPublished) {
-        this.listeners.onAppSchemaApplied?.({ strandId: this.strandId });
-      }
-      return;
-    }
-    this.appSchema = 'failed';
-    this.appSchemaError = toError(outcome.error);
-    log('strand %s: the deferred app schema apply failed; the database keeps the earlier schema: %O', this.strandId, outcome.error);
-    if (this.wasPublished) {
-      this.reportAppSchemaFailed(this.appSchemaError);
-    }
-  }
-
-  private reportAppSchemaFailed(error: Error): void {
-    this.listeners.onAppSchemaFailed?.({ strandId: this.strandId, error });
   }
 }

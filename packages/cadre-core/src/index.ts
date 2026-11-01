@@ -231,10 +231,13 @@ export {
   type StrandOfflineQueue,
   type StrandOfflineListeners,
   type StrandOfflineStatus,
-  type StrandQueueState,
-  type StrandAppSchemaState,
-  type StrandAppSchemaDeferred
+  type StrandQueueState
 } from './strand-offline.js';
+export {
+  type StrandAppSchemaState,
+  type StrandAppSchemaDeferred,
+  type StrandAppSchemaListeners
+} from './strand-app-schema-report.js';
 // What `StrandOfflineQueue.discard` throws, so an app need not depend on Optimystic to tell them apart.
 export { EntryNotDiscardableError, UnknownEntryError } from '@optimystic/db-core';
 

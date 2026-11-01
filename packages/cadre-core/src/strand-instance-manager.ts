@@ -5,6 +5,7 @@ import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugi
 import { StrandDatabase, type StrandDatabaseOffline } from './strand-database.js';
 import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
 import type { StrandOfflineConfig, StrandOfflineListeners, StrandOfflineMode } from './strand-offline.js';
+import type { StrandAppSchemaListeners } from './strand-app-schema-report.js';
 import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import { strandNetworkStatePersistence, type StrandNetworkStateStore } from './strand-network-state.js';
 import {
@@ -309,10 +310,16 @@ export interface StartStrandConfig {
   /**
    * Offline mode for this strand (docs/strands.md → "Offline mode"), forwarded from
    * `CadreNodeConfig.strandOffline`, with where each database built for the launch reports its
-   * queue and its app-schema apply (`CadreNode` emits them as events). Absent: no database gets an
-   * offline queue. The mode itself is the manager's, per strand ({@link StrandInstanceManager.setOfflineMode}).
+   * queue (`CadreNode` emits them as events). Absent: no database gets an offline queue. The mode
+   * itself is the manager's, per strand ({@link StrandInstanceManager.setOfflineMode}).
    */
   offline?: StrandOfflineConfig & StrandOfflineListeners;
+
+  /**
+   * Where each database built for the launch reports an `App` schema apply it held back
+   * (`CadreNode` emits them as events). Retained and isolated like {@link onCommitDurability}.
+   */
+  appSchema?: StrandAppSchemaListeners;
 
   /**
    * Re-announce this strand's delegate peer id (`delegatePeerId` — the strand
@@ -1154,7 +1161,8 @@ export class StrandInstanceManager {
       bindFounderPeer: config.membershipReconciliation?.enabled !== false,
       onCommitDurability: config.onCommitDurability,
       onCommitHeld: config.onCommitHeld,
-      offline: this.offlineDatabaseConfig(strandId, config.offline)
+      offline: this.offlineDatabaseConfig(strandId, config.offline),
+      appSchema: config.appSchema
     });
     const storageRepo = node.storageRepo;
     const gate = new StrandFirstSyncGate({
