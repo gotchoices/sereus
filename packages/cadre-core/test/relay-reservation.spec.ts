@@ -491,6 +491,26 @@ describe('driveRelayReservation over a loopback relay', () => {
   });
 });
 
+describe('driveRelayReservation after a dropped dial', () => {
+  it('dials again and reserves when the relay dropped the first dial', async () => {
+    const relay = await startRelay();
+    const client = await startSearchClient();
+    const relayAddr = relay.getMultiaddrs()[0].toString();
+    const dial = client.dial.bind(client);
+    let dials = 0;
+    client.dial = ((...args: Parameters<typeof dial>) => {
+      dials++;
+      return dials === 1 ? Promise.reject(new Error('Unexpected EOF')) : dial(...args);
+    }) as typeof client.dial;
+
+    const { error } = await driveRelayReservation(client, [relayAddr], { timeoutMs: 10_000, pollMs: 100 });
+
+    expect(error).toBeNull();
+    expect(dials).toBe(2);
+    expect(circuitMultiaddrs(client).length).toBeGreaterThan(0);
+  });
+});
+
 describe('driveRelayReservation deadline', () => {
   // `timeoutMs` must bound the WHOLE drive, dials included. A browser tab awaits
   // this on its startup path, and libp2p's own per-dial timeout is far longer than

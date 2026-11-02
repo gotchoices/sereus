@@ -181,6 +181,8 @@ export interface RelayReservationState {
  */
 export const DEFAULT_RELAY_RESERVE_TIMEOUT_MS = relayReservationBudgetMs();
 export const DEFAULT_RELAY_RESERVE_POLL_MS = 250;
+/** How long {@link driveRelayReservation} waits before dialing again when no relay answered. */
+const RELAY_REDIAL_INTERVAL_MS = 1_000;
 
 export interface RelayReserveOptions {
   timeoutMs?: number;
@@ -506,7 +508,7 @@ export async function driveRelayReservation(
   const pollMs = Math.max(1, opts?.pollMs ?? DEFAULT_RELAY_RESERVE_POLL_MS);
   const deadline = Date.now() + timeoutMs;
 
-  const { connected, error: dialError } = await dialRelays(node, addrs, deadline, signal);
+  const { connected, error: dialError } = await dialUntilAnswered(node, addrs, deadline, signal);
   const attempt = await requestReservation(node, connected, deadline, signal);
   // NOTE: a REJECTED reservation still spends the rest of the deadline polling,
   // because on a node that kept libp2p's relay discovery (a hand-written bare
@@ -529,6 +531,31 @@ export async function driveRelayReservation(
     error: attempt.error ?? dialError ?? `no circuit reservation within ${timeoutMs}ms`,
     cancelled: false
   };
+}
+
+/**
+ * {@link dialRelays}, repeated until a relay answers, a reservation appears or the deadline is too
+ * close to dial again. A relay can drop one dial and take the next, and with nothing connected the
+ * rest of the drive only polls for an address no request is coming to produce. The error is the
+ * last round's.
+ */
+async function dialUntilAnswered(
+  node: Libp2p,
+  addrs: readonly string[],
+  deadline: number,
+  signal?: AbortSignal
+): Promise<{ connected: ConnectedRelay[]; error: string | null }> {
+  let round = await dialRelays(node, addrs, deadline, signal);
+  while (
+    round.connected.length === 0 &&
+    !aborted(signal) &&
+    Date.now() + RELAY_REDIAL_INTERVAL_MS < deadline &&
+    circuitMultiaddrsVia(node, addrs).length === 0
+  ) {
+    await delay(RELAY_REDIAL_INTERVAL_MS, signal);
+    round = await dialRelays(node, addrs, deadline, signal);
+  }
+  return round;
 }
 
 /**
