@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { IRawStorage } from '@optimystic/db-p2p';
+import { COST_PRESETS } from '@quereus/quereus';
 import type { Database } from '@quereus/quereus';
 import { ControlDatabase } from '../src/control-database.js';
 import { CONTROL_SCHEMA, CONTROL_SCHEMA_BASELINE_VERSION, CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_VERSION_TAG } from '../src/control-schema.js';
@@ -94,6 +95,15 @@ const ownerKeyVersionTag = (db: Database): unknown =>
 
 const hasTable = (db: Database, name: string): boolean =>
 	db.schemaManager.getTable('CadreControl', name) !== undefined;
+
+describe("the control database's read cost", () => {
+	it("prices its tables as this machine's own storage, since every member holds every block", async () => {
+		const partyId = freshPartyId('read-cost');
+		const profile = await lifetime(new MemoryRawStorage(), partyId, undefined,
+			controlDb => controlDb.getDatabase().schemaManager.getModule('optimystic')?.module.costProfile);
+		expect(profile).toEqual(COST_PRESETS.localDisk);
+	});
+});
 
 describe('a control store written under another control schema version', () => {
 	it('from the previous version: migrates on start and keeps its rows', async () => {

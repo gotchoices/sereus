@@ -515,6 +515,9 @@ async function registerStrandPlugins(
 		const storage = strand.storage;
 		pluginConfig.rawStorageFactory = () => storage;
 	}
+	// NOTE: `cost_profile` is left at upstream's default, `distributed` on the network transactor. A
+	// strand keeps each block on `DEFAULT_STRAND_CLUSTER_SIZE` machines, so in a larger party a read
+	// can leave the machine; a smaller one pays planner overhead, never a wrong result.
 	// NOTE: `networkCommitTimeoutMs` is left at upstream's default (five minutes); nothing was
 	// measured to choose another. A network-acknowledged commit made while transactions are queued
 	// (any `Strand` write, all of them tagged 'network') waits that long behind them holding

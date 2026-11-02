@@ -1339,6 +1339,10 @@ export class ControlDatabase {
       default_key_network: 'libp2p',
       default_network_name: networkName,
       enable_cache: true,
+      // Every member holds every control block (`CONTROL_REPLICATION_BREADTH`), so a control read
+      // answers from this machine's own replica. Left unset, the `network` transactor would price
+      // these tables as `distributed`.
+      cost_profile: 'localDisk',
     }) as unknown as OptimysticPluginResult;
 
     // Register vtables and functions manually since we need access to collectionFactory
