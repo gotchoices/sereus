@@ -7,9 +7,10 @@
  *   1. A founds a closed strand with schema v1, B forms it, and each writes a row the other reads.
  *   2. A exits for good. B exits and is respawned over the same directory, and claims the strand
  *      with v2: the same table with one column tag added, which changes no row.
- *   3. B's strand comes up writable on v1, its rows read back, and `appSchemaState()` reports
+ *   3. B's strand comes up, its rows read back, and `appSchemaState()` reports
  *      `waiting-for-cohort`: the apply writes the strand's catalog, which needs the absent A.
- *   4. A is respawned with v2. B's deferred apply lands: `appSchemaState()` reports `applied`.
+ *   4. A is respawned with v2, and `appSchemaState()` reports `applied`. This does not show that B's
+ *      catalog write landed (`app-schema-refused-at-catalog-commit-is-not-unwound`).
  *
  * Two arms: B without offline mode (the reporter's arm), and B with it, where the failure was the
  * same because the catalog write is not a queued app transaction.
@@ -102,22 +103,22 @@ async function runSchemaChangeWhilePartnerOffline(offline: boolean): Promise<voi
 		const bClaim = await B.request('claim', { strandId, sApp: v2, timeoutMs: RESTART_GATE.timeoutMs });
 		say('step 2: B claimed with v2 and is %s after %d ms', bClaim.status, Date.now() - claimAt);
 
-		// ── 3. B is open on v1, the apply waiting for the cohort ──
+		// ── 3. B is open, the apply waiting for the cohort ──
 		expect(bClaim.status).toBe('active');
 		const rows = (await B.request('rows', { strandId })).rows;
 		expect(rows).toContainEqual(aRow);
 		expect(rows).toContainEqual(bRow);
 		expect((await B.request('appSchemaState', { strandId })).state).toBe('waiting-for-cohort');
 
-		// ── 4. A returns; B's apply lands ──
+		// ── 4. A returns; B reports the apply settled ──
 		A = await start(aParty);
 		const aClaim = await A.request('claim', { strandId, sApp: v2, timeoutMs: RESTART_GATE.timeoutMs });
 		expect(aClaim.status).toBe('active');
 		const returnedAt = Date.now();
 		const secondB = B;
 		await waitUntil(async () => (await secondB.request('appSchemaState', { strandId })).state === 'applied',
-			{ ...RESTART_GATE, description: "B's deferred v2 apply to land once A is back" });
-		say('step 4: B applied v2 %d ms after A was active again', Date.now() - returnedAt);
+			{ ...RESTART_GATE, description: "B's deferred v2 apply to settle once A is back" });
+		say('step 4: B reported applied %d ms after A was active again', Date.now() - returnedAt);
 	} finally {
 		await Promise.allSettled([B?.exit(), A?.exit()]);
 		await relay?.stop();
@@ -126,7 +127,7 @@ async function runSchemaChangeWhilePartnerOffline(offline: boolean): Promise<voi
 }
 
 describe('an app schema change while the strand partner is offline (sereus#55)', () => {
-	it('opens the strand on its earlier schema and applies the change when the partner returns', async () => {
+	it('opens the strand and settles the apply when the partner returns', async () => {
 		await runSchemaChangeWhilePartnerOffline(false);
 	}, 600_000);
 

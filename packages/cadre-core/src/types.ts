@@ -1788,10 +1788,11 @@ export interface CadreNodeEvents {
   'strand:queue-state': StrandQueueState;
   /**
    * Emitted when a strand's database is published while its `App` schema apply is held back, by
-   * queued offline transactions or by a strand cohort it could not reach (`waitingFor`): the database
-   * runs the earlier schema although `StrandInstance.sAppInfo` names the new version, and
-   * `StrandDatabase.appSchemaState()` reads `'waiting-for-queue'` or `'waiting-for-cohort'`. A retry
-   * that fails for another reason is emitted as `strand:error`; a cancelled one emits nothing.
+   * queued offline transactions or by a strand cohort it could not reach (`waitingFor`), and
+   * `StrandDatabase.appSchemaState()` reads `'waiting-for-queue'` or `'waiting-for-cohort'`. What the
+   * database runs meanwhile is in docs/strands.md → "An app schema upgrade waits for the queue or the
+   * cohort". A retry that fails for another reason is emitted as `strand:error`; a cancelled one emits
+   * nothing.
    */
   'strand:app-schema-deferred': StrandAppSchemaDeferred;
   /** Emitted when an `App` schema apply that `strand:app-schema-deferred` reported lands. */

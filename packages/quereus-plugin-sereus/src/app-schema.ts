@@ -72,8 +72,13 @@ type Deferral = { wait: 'queue'; transactionIds: readonly string[] } | { wait: '
  *    alone after an app update would otherwise not open the strand at all (gotchoices/sereus#55).
  *    Retried when the strand node connects to a peer, and on a backoff ({@link COHORT_RETRY_MS}).
  *
- * Quereus unwinds a refused apply, so `db` keeps the `App` schema it had, and `appSchema` settles
- * with how the retries ended. Any other error from the first apply is thrown.
+ * Quereus unwinds an apply refused by one of its migration steps, so `db` keeps the `App` schema it
+ * had, and `appSchema` settles with how the retries ended. Any other error from the first apply is
+ * thrown.
+ *
+ * NOTE: a refusal at the apply's closing catalog commit, which is where `cohort-unreachable` normally
+ * lands, is not unwound: `db` keeps the new schema in memory, the next retry's diff is empty, and it
+ * settles `applied` with nothing written. Known defect, `app-schema-refused-at-catalog-commit-is-not-unwound`.
  *
  * Waiting before returning was rejected: that withholds the strand from the app right after an app
  * update, which is when a phone is most likely to be offline. So was refusing the connect: the queue
@@ -129,19 +134,13 @@ async function retryDeferredAppSchema(
 			if (released.aborted) {
 				return { state: 'cancelled' };
 			}
-			await declareAppSchema(db, schema);
-			await db.exec('apply schema App;', undefined, { transaction: true });
+			await applyOutsideOpenTransaction(db, schema, released);
 			log('Deferred sApp schema applied');
 			return { state: 'applied', deferred: true };
 		} catch (err) {
 			if (released.aborted || err instanceof QueueDisposedError) {
 				log('Deferred sApp schema apply cancelled by shutdown');
 				return { state: 'cancelled' };
-			}
-			if (err instanceof TransactionActiveError) {
-				log('Deferred sApp schema apply waiting for an open transaction to end');
-				await abortableDelay(OPEN_TRANSACTION_RETRY_MS, released);
-				continue;
 			}
 			const again = deferralOf(err);
 			if (!again) {
@@ -150,6 +149,26 @@ async function retryDeferredAppSchema(
 			}
 			logDeferral('Deferred sApp schema apply', again);
 			deferral = again;
+		}
+	}
+}
+
+/** One atomic apply, once no other caller holds a transaction open. Throws the open-transaction refusal when `released` aborts during the wait. */
+async function applyOutsideOpenTransaction(db: Database, schema: string, released: AbortSignal): Promise<void> {
+	for (;;) {
+		await declareAppSchema(db, schema);
+		try {
+			await db.exec('apply schema App;', undefined, { transaction: true });
+			return;
+		} catch (err) {
+			if (!(err instanceof TransactionActiveError)) {
+				throw err;
+			}
+			log('Deferred sApp schema apply waiting for an open transaction to end');
+			await abortableDelay(OPEN_TRANSACTION_RETRY_MS, released);
+			if (released.aborted) {
+				throw err;
+			}
 		}
 	}
 }
@@ -168,7 +187,11 @@ async function nextChance(deferral: Deferral, waits: AppSchemaWaits, cohortRetri
 
 /**
  * The refusal `err` is or wraps, when a later retry can get past it: Quereus rewraps an error out of
- * `apply schema`, keeping it as `cause`.
+ * a migration step, keeping it as `cause`.
+ *
+ * `classifyCommitFailure` refuses to walk `cause` itself, because a commit-phase shortfall nested
+ * there means the write is in doubt rather than unsent. Walking it here is safe: an apply is a
+ * declarative diff, so a retry after a write that did land changes nothing.
  */
 function deferralOf(err: unknown): Deferral | undefined {
 	for (let at = err; at instanceof Error; at = at.cause) {
@@ -206,7 +229,13 @@ function cohortRetryDelay(retriesBefore: number): number {
  */
 const COHORT_CONNECT_SETTLE_MS = 2_000;
 
-/** Resolves {@link COHORT_CONNECT_SETTLE_MS} after the strand node's next peer connect, after `delayMs`, or when `signal` aborts. */
+/**
+ * Resolves {@link COHORT_CONNECT_SETTLE_MS} after the strand node's next peer connect, after `delayMs`, or when `signal` aborts.
+ *
+ * NOTE: every connect wakes a retry, the relay's included, and a retry that reaches the cohort's
+ * refusal holds the database's statement lock while it waits for it. If that shows up as stalled app
+ * statements on a node with many connects, wake only on a connect to a strand member.
+ */
 async function nextCohortChance(peers: PeerConnectEvents | undefined, delayMs: number, signal: AbortSignal): Promise<void> {
 	const byConnect = await new Promise<boolean>(resolve => {
 		const done = (connected: boolean): void => {

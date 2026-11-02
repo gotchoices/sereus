@@ -405,7 +405,7 @@ The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-nod
 
 ## An app schema upgrade waits for the queue or the cohort
 
-A connect applies the app's `App` schema, and an apply that changes anything writes the strand's catalog, a strand collection like any table. Two refusals pass with time, so neither fails the connect: the strand comes up on the `App` schema it already had (Quereus unwinds the refused apply), and the apply is retried until it lands (`applyAppSchemaOrDefer` in quereus-plugin-sereus). Any other connect-time apply error still fails the connect.
+A connect applies the app's `App` schema, and an apply that changes anything writes the strand's catalog, a strand collection like any table. Two refusals pass with time, so neither fails the connect: the strand comes up, and the apply is retried (`applyAppSchemaOrDefer` in quereus-plugin-sereus). Any other connect-time apply error still fails the connect.
 
 | refusal | how it is recognized | retried |
 | --- | --- | --- |
@@ -413,6 +413,11 @@ A connect applies the app's `App` schema, and an apply that changes anything wri
 | the strand's cohort cannot be reached, as on a two-member strand whose other member is offline (gotchoices/sereus#55) | Optimystic's `classifyCommitFailure` says `cohort-unreachable` (`PromiseShortfallError`, or a read no member answered) | when the strand node connects to a peer, 2 s after the connect, and otherwise after 15 s, 30 s, 60 s, 120 s, then every 5 minutes |
 
 The cohort case happens with offline mode on or off: the catalog write is not an app transaction, so the queue does not take it. A change that alters no row, such as adding a column tag, still writes the catalog.
+
+What the database runs while it waits depends on where the refusal lands:
+
+- **At a migration step (the queue's refusal):** Quereus unwinds the apply, so the database runs the `App` schema it had, and a retry plans the whole change again.
+- **At the apply's closing catalog commit (the usual cohort refusal):** Quereus has nothing to unwind, so the database already runs the new schema in memory while the store holds the earlier one. The retry then finds no difference and settles `applied` with nothing written, at its first chance, even with the cohort still unreachable. A changed table's record is written by the first statement that fully initializes the table, which fails while the cohort is unreachable. A new index never lands this way, and a query routed through it throws. The next connect (a restart, a hibernation wake) plans from the store and lands the change. Known defect: `app-schema-refused-at-catalog-commit-is-not-unwound`.
 
 The connection's result says what the apply waits for: `appSchemaWaitingFor` is `'queue'` or `'cohort'`, and for the queue `appSchemaDeferredBy` names the transactions the first refusal named. `appSchema` settles `{ state: 'applied', deferred: true }` when a retry lands, `{ state: 'failed', error }` when one fails for another reason, or `{ state: 'cancelled' }` when the connection shuts down first. An apply that succeeds at connect settles `{ state: 'applied' }` at once.
 
@@ -422,13 +427,13 @@ Waiting before the connect returns was rejected: it would withhold the strand fr
 
 `StrandDatabase.attachAppSchema` (an app claiming a storage replica that is already running) is not deferred: a replica writes no app transactions, so nothing queued can have written an `App` table, and a claim made while the cohort is unreachable fails at the claim. The replica's next rebuild applies the schema through the connect path above.
 
-On a cadre node, `StrandInstance.sAppInfo` names the new version while the database still runs the earlier schema, and `StrandDatabase.appSchemaState()` says which: `'applied'`, `'waiting-for-queue'`, `'waiting-for-cohort'` or `'failed'`. An app checks it before relying on new tables or columns. The state names the first refusal; a retry refused for the other reason keeps it.
+On a cadre node, `StrandInstance.sAppInfo` names the new version while the apply waits, and `StrandDatabase.appSchemaState()` says where it stands: `'applied'`, `'waiting-for-queue'`, `'waiting-for-cohort'` or `'failed'`. An app checks it before relying on new tables or columns. The state names the first refusal; a retry refused for the other reason keeps it.
 
 - **`strand:app-schema-deferred`** (`{ strandId, waitingFor, transactionIds }`) is emitted at publication, and **`strand:app-schema-applied`** (`{ strandId }`) when the retry lands. `transactionIds` is empty when `waitingFor` is `'cohort'`. A retry that fails for another reason is emitted as `strand:error` and leaves `'failed'`; a cancelled one emits nothing.
 - **The events begin at publication.** A retry that lands while the database is still behind the first-sync gate is not announced, since the app never saw the earlier schema; one that fails then is announced at publication.
 - **A waiting state can outlast its cause.** The retry also waits while any caller holds a transaction open on the database, for as long as that transaction stays open.
 
-`packages/integration-tests/src/scenarios/strand-app-schema-change-while-partner-offline.integration.ts` runs the cohort case end to end, with offline mode off and on.
+`packages/integration-tests/src/scenarios/strand-app-schema-change-while-partner-offline.integration.ts` runs the cohort case end to end, with offline mode off and on: the strand opens and its rows read back. It does not check that the catalog landed.
 
 ## Same-Named Tables in `Strand` and `App`
 

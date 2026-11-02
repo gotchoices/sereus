@@ -1389,7 +1389,7 @@ flowchart LR
 
 An operator can build chosen strand nodes with Optimystic's change notifications, so a watched table on another machine is woken by a commit instead of polling; see [strands.md → Change notifications (reactivity)](strands.md#change-notifications-reactivity).
 
-An app can switch a strand into offline mode, where a commit resolves once the transaction is queued on this machine. `CadreNodeConfig.strandOffline` supplies the queue's journal; `CadreNode.setStrandOfflineMode` and `getStrandOfflineMode` set and read the mode per strand, which outlives every rebuild; `StrandDatabase.offline` and `appSchemaState()` expose the queue and the `App` schema it may be holding back; and the events `strand:offline-status`, `strand:queue-state`, `strand:app-schema-deferred` and `strand:app-schema-applied` follow them across rebuilds. See [strands.md → Offline mode](strands.md#offline-mode).
+An app can switch a strand into offline mode, where a commit resolves once the transaction is queued on this machine. `CadreNodeConfig.strandOffline` supplies the queue's journal; `CadreNode.setStrandOfflineMode` and `getStrandOfflineMode` set and read the mode per strand, which outlives every rebuild; `StrandDatabase.offline` exposes the queue; and the events `strand:offline-status` and `strand:queue-state` follow it across rebuilds. See [strands.md → Offline mode](strands.md#offline-mode). `StrandDatabase.appSchemaState()` and the events `strand:app-schema-deferred` and `strand:app-schema-applied` report an `App` schema apply held back by the queue or an unreachable cohort, on every node: [strands.md → An app schema upgrade waits for the queue or the cohort](strands.md#an-app-schema-upgrade-waits-for-the-queue-or-the-cohort).
 
 ### One Transactor Per Strand
 

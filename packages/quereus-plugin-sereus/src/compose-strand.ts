@@ -421,9 +421,8 @@ export async function composeStrand(
 		// is a note for whoever first ships a migration that does.
 		//
 		// The exception: an apply refused by queued offline transactions, or because the strand's
-		// cohort could not be reached, does not fail the connect. The strand comes up on the `App`
-		// schema it had, and the apply is retried as the queue drains or when a peer connects (see
-		// `applyAppSchemaOrDefer`).
+		// cohort could not be reached, does not fail the connect, and is retried as the queue drains
+		// or when a peer connects. See `applyAppSchemaOrDefer`, including what `db` holds meanwhile.
 		if (schema) {
 			log('Applying sApp schema for strand %s', strandId);
 			appSchemaApply = await applyAppSchemaOrDefer(db, schema, { queue: pluginResult.offline, peers }, released.signal);

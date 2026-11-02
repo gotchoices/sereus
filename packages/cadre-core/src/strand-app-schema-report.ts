@@ -6,9 +6,10 @@ const log = debug('sereus:cadre:strand-app-schema');
 
 /**
  * `StrandDatabase.appSchemaState()`: whether the database runs the `App` schema its launch was
- * given. While the apply is held back the database runs the earlier schema: `'waiting-for-queue'`
- * while queued offline transactions refuse it, `'waiting-for-cohort'` while the strand's members
- * cannot be reached. `'failed'` when a later retry failed for another reason.
+ * given. `'waiting-for-queue'` while queued offline transactions refuse the apply (the database runs
+ * the earlier schema); `'waiting-for-cohort'` while the strand's members cannot be reached; `'failed'`
+ * when a later retry failed for another reason. docs/strands.md → "An app schema upgrade waits for the
+ * queue or the cohort" says what the database runs in the cohort case, and when `'applied'` is not yet true.
  */
 export type StrandAppSchemaState = 'applied' | 'waiting-for-queue' | 'waiting-for-cohort' | 'failed';
 
@@ -75,11 +76,8 @@ export class StrandAppSchemaReport {
     this.wasPublished = true;
     const waitingFor = this.result.appSchemaWaitingFor;
     if (waitingFor && this.state === WAITING_STATE[waitingFor]) {
-      this.listeners.onAppSchemaDeferred?.({
-        strandId: this.strandId,
-        waitingFor,
-        transactionIds: this.result.appSchemaDeferredBy ?? []
-      });
+      const event = { strandId: this.strandId, waitingFor, transactionIds: this.result.appSchemaDeferredBy ?? [] };
+      this.forward('deferred', () => this.listeners.onAppSchemaDeferred?.(event));
     } else if (this.error) {
       this.reportFailed(this.error);
     }
@@ -97,7 +95,7 @@ export class StrandAppSchemaReport {
     if (outcome.state === 'applied') {
       this.state = 'applied';
       if (this.wasPublished) {
-        this.listeners.onAppSchemaApplied?.({ strandId: this.strandId });
+        this.forward('applied', () => this.listeners.onAppSchemaApplied?.({ strandId: this.strandId }));
       }
       return;
     }
@@ -110,6 +108,15 @@ export class StrandAppSchemaReport {
   }
 
   private reportFailed(error: Error): void {
-    this.listeners.onAppSchemaFailed?.({ strandId: this.strandId, error });
+    this.forward('failed', () => this.listeners.onAppSchemaFailed?.({ strandId: this.strandId, error }));
+  }
+
+  /** A listener's throw is logged, so it cannot stop {@link published}'s caller from finishing publication. */
+  private forward(what: string, deliver: () => void): void {
+    try {
+      deliver();
+    } catch (error) {
+      log('strand %s: an app schema %s listener threw: %O', this.strandId, what, error);
+    }
   }
 }

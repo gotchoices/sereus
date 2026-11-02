@@ -97,6 +97,9 @@ export type StrandOfflineController = Pick<OfflineMode,
 	'enter' | 'exit' | 'isEntered' | 'whenDrained' | 'onStatus' | 'onQueueState' | 'queueState'
 	| 'entries' | 'status' | 'discard' | 'outcomes' | 'acknowledge'>;
 
+/** What a deferred sApp schema apply waits for (see {@link SereusPluginResult.appSchemaWaitingFor}). */
+export type AppSchemaWait = 'queue' | 'cohort';
+
 /**
  * How a connection's sApp schema apply ended (see {@link SereusPluginResult.appSchema}):
  *
@@ -106,9 +109,6 @@ export type StrandOfflineController = Pick<OfflineMode,
  *    before.
  *  - `cancelled` — the connection shut down before a deferred retry landed.
  */
-/** What a deferred sApp schema apply waits for (see {@link SereusPluginResult.appSchemaWaitingFor}). */
-export type AppSchemaWait = 'queue' | 'cohort';
-
 export type AppSchemaOutcome =
 	| { state: 'applied'; deferred?: true }
 	| { state: 'failed'; error: unknown }
@@ -167,8 +167,8 @@ export interface SereusPluginResult {
 	 * Present when {@link StrandConnectionOptions.schema} was given; never rejects. Resolves
 	 * `{ state: 'applied' }` at once when the apply succeeded at connect. When queued offline
 	 * transactions refused it, or the strand's cohort could not be reached, the connection comes up
-	 * on the `App` schema it already had and retries ({@link appSchemaWaitingFor}); this settles when
-	 * a retry lands, fails otherwise, or {@link shutdown} runs first.
+	 * anyway and retries ({@link appSchemaWaitingFor}); this settles when a retry lands, fails
+	 * otherwise, or {@link shutdown} runs first.
 	 */
 	appSchema?: Promise<AppSchemaOutcome>;
 	/**

@@ -401,7 +401,7 @@ export class StrandDatabase {
   /**
    * Whether this database runs the `App` schema its launch was given. `'waiting-for-queue'` or
    * `'waiting-for-cohort'` while the apply is held back, so `StrandInstance.sAppInfo` names a version
-   * whose new tables or columns are not here yet; check this before relying on them.
+   * whose new tables or columns may not be usable yet; check this before relying on them.
    */
   appSchemaState(): StrandAppSchemaState {
     this.ensureInitialized();
