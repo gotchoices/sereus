@@ -27,3 +27,7 @@ The cadre-host user's data is readable by that user alone, whatever the umask an
 The invariant that covers every file at once, rather than a mode per file: the data folder is created 0700 and narrowed to 0700 on every `cadre-host start` (an existing install keeps its folder), so nothing below it is reachable by another account however it was written. The per-file 0600 writes can stay as defence in depth. Windows has no mode bits; `%LocalAppData%` is already per-user, and a custom `--data-dir` there is the admin's responsibility, which the docs should say.
 
 When this lands, drop the sentence in [cadre-host.md → Where the credentials go](../../docs/cadre-host.md#where-the-credentials-go) that points here.
+
+## Triage (2026-11-03)
+
+Pulled from backlog: a pending claim secret lets another local account take the node into their own cadre, and the invariant above is already settled. The `tradeoffs` line limits who is exposed, not how bad it is for them. Apply the invariant at both the installer and `cadre-host start`, so an existing install is narrowed too. A multi-user Linux host is not needed to pin it: a spec on the folder's mode after each path is enough, on platforms that have mode bits.

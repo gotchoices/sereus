@@ -26,3 +26,7 @@ An integration scenario: A, B and C in one cadre, C's row vouched by B's owner k
 ## Expected
 
 A device the user chose to keep stays a member on every machine, whether or not the remover was connected when it removed the key. Either the re-vouch is re-issued on growth like the tombstone, or `removeOwner` refuses `alone` for any re-vouch (peer rows and the remover's own row included), as it already does for owner re-vouches, so the user retries once connected.
+
+## Triage (2026-11-03)
+
+Pulled from backlog: a device the user explicitly chose to keep can silently lose its membership on every other machine. Recommended shape, for the fix stage to confirm against the reproduction: extend the existing refusal in `removeOwner` (`revouch.owners.length > 0 && await this.controlWriteCouldFork()`) to any re-vouch, peer rows and the remover's own row included. Callers already handle `alone`, and `controlWriteCouldFork` is false on a party with no other members, so that should also ease the unit-spec cost named under `tradeoffs`. A re-issue path for re-vouches looks unnecessary, since the user can retry once connected.
