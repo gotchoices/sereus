@@ -994,7 +994,7 @@ The list is read when the section appears, when a join replaces the node, after 
 
 - **What happens**: it is removed from this cadre, and the invitations it could join again with are withdrawn, counted. Owner keys stay, including one the machine held.
 - **A lost or stolen phone**: "If this was a lost or stolen phone that held an owner key, remove that key too in Owner keys; otherwise whoever has the phone can still act as an owner.", with **Go to Owner keys**, which closes the prompt and scrolls Settings to [Owner Keys](#owner-keys). Rent an always-on node's removal of a node its provider stopped shows neither, since a rented node never holds an owner key.
-- **What removal does not do**: the machine keeps whatever it already copied, including the cadre's shared data, and removing it stops it syncing with this cadre's machines. It also keeps the strands' member keys (`tickets/blocked/decide-removed-machine-strand-access.md`), which is why the prompt says "this cadre's machines" and not more.
+- **What removal does not do**: the machine keeps whatever it already copied, including the cadre's shared data, and removing it stops it syncing with this cadre's machines. It also keeps the strands' member keys (ticket `machine-removal-rotates-party-member-key`), which is why the prompt says "this cadre's machines" and not more.
 
 **Remove** runs `removeMachine` and the list refreshes; **Cancel**, or the system back button, does nothing. A machine another owner removed meanwhile shows "Already removed", whether the plan or the removal finds it gone, and the list refreshes. Any other failure shows its error in an alert.
 

@@ -1,11 +1,11 @@
-description: Sereus sizes its network time limits as fixed multiples of a declared link speed, so on a phone link whose send queue grows with traffic, requests are given up on while their answers are only queued, and each one re-sent makes the queue longer. Proposes that each limit also stretch to the response time actually measured from that peer, the way TCP sizes its retransmit timer; needs a human to accept the design rule.
+description: Sereus sizes its network time limits as fixed multiples of a declared link speed, so on a phone link whose send queue grows with traffic, requests are given up on while their answers are only queued, and each one re-sent makes the queue longer. Proposes that each limit also stretch to the response time actually measured from that peer, the way TCP sizes its retransmit timer. The maintainer accepted this rule; the time limits belong to two other projects, Optimystic and FRET, so it now waits on their releases.
 architecture: docs/architecture.md#dial-budgets-are-counted-in-round-trips-not-milliseconds
 files: docs/architecture.md ("The declared value" ~2066, "What Optimystic derives" ~2074), docs/cadre-consistency.md ("Deadlines Below Cadre"), packages/cadre-core/src/link-budget.ts (`cohortReadDeadlineMs`), packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts (its doc comment holds the measurement), ../optimystic/packages/db-p2p/src/rpc-deadline.ts (`resolveLinkDeadlines`, read only), ../Fret/packages/fret/src/rpc/outcome.ts (`rttMs`, read only), ../Fret/packages/fret/src/service/fret-service.ts (`applySuccess`, read only)
 ----
 
 # Size link deadlines from measured response time, with the declared link as the floor
 
-**Blocked: a change to a stated design principle.** `docs/architecture.md` → "Dial budgets are counted in round trips, not milliseconds" makes every link deadline a count of the *declared* round trip (`NetworkConfig.linkRoundTripMs`, 3 500 ms by default). Unblocks when a human accepts or edits the principle text below. The mechanisms then go upstream as proposals to Optimystic and FRET, which own the deadlines that fire.
+**Blocked: a dependency outside this repo.** The maintainer accepted the principle below on 2026-11-03, and its text is now in `docs/architecture.md` → "Dial budgets are counted in round trips, not milliseconds", marked as not yet followed. Unblocks when Optimystic and FRET, which own the deadlines that fire, release per-peer estimators. Passed to Optimystic's session the same day. Sereus's remaining work is then "Sereus's side once accepted" below, without the paragraph, and the phone arm under "How to confirm".
 
 GitHub gotchoices/sereus#48.
 
@@ -20,7 +20,7 @@ From the phone arm of `strand-workload-on-a-phone-link.integration.ts` (every ou
 
 The decision rule this was filed under (`strand-workload-count-driven-fixes`): when one clean round already occupies the socket for at least half the 7 s read deadline (here 9.5 s against 3.5 s), the work alone builds a queue that crowds a deadline counted in declared round trips, and cutting retries cannot be enough. Cutting them still helps: retries were 48% of the requests beyond the clean workload with FRET's and libp2p's pings excluded, 28% with them (`complete/optimystic-retries-do-not-back-off`, shipped in Optimystic 1.16.0).
 
-## Proposed text (the recommended default)
+## Accepted text
 
 A new paragraph in `docs/architecture.md`, after "**The declared value.**":
 

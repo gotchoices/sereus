@@ -9809,7 +9809,7 @@ export class CadreNode implements SAppIdLookup {
    * ({@link removeOwner}) is the step that locks it out.
    *
    * Not undone by this call: the machine keeps every row and strand block it already synced
-   * and the party's strand member keys (`tickets/blocked/decide-removed-machine-strand-access`).
+   * and the party's strand member keys (ticket `machine-removal-rotates-party-member-key`).
    * A fresh invitation re-admits it later under fresh stamps.
    *
    * @returns what was written ({@link MachineRemovalResult}); all false when no live row names
