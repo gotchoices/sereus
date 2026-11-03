@@ -9596,8 +9596,10 @@ export class CadreNode implements SAppIdLookup {
    * "Writes made while alone"). A party with no other members cannot fork.
    *
    * What a caller does on `true` depends on the write. An `OwnerKey` add has no re-issue path at
-   * all, so {@link addOwner}, {@link removeOwner}'s re-vouch and a local owner grant redemption
-   * refuse it `alone`. A background write nothing waits on (the self-record publishes
+   * all, so {@link addOwner} and a local owner grant redemption refuse it `alone`.
+   * {@link removeOwner} refuses any re-vouch `alone`: an owner row's re-add has no re-issue path,
+   * and a peer row's new voucher is lost to the fork above while the removal's tombstone, in
+   * another collection, still arrives. A background write nothing waits on (the self-record publishes
    * {@link publishSelfRecordInBackground} makes, the pending-join runner's background attempts)
    * waits for a reachable sibling.
    *
@@ -9652,8 +9654,9 @@ export class CadreNode implements SAppIdLookup {
    *
    * Steps: re-plan ({@link planOwnerKeyRemoval}) and throw {@link OwnerKeyRemovalRefusedError}
    * on a refusal; check `options.revouch` against the plan's dependents and throw before any
-   * write when it names anything else; refuse `alone` ({@link controlWriteCouldFork}) when an
-   * `OwnerKey` row is to be re-vouched, since that re-add has no re-issue path; **re-vouch
+   * write when it names anything else; refuse `alone` ({@link controlWriteCouldFork}) when any
+   * row is to be re-vouched, this node's own included, since the new voucher might never reach
+   * the other machines; **re-vouch
    * first**, under this node's key, the dependents the caller chose to keep and this node's own
    * row when the key vouched it (`ControlDatabase.revouchOwnerKey`, `reauthorizePeer`), so they
    * are never untrusted in between, and stop before the removal if one fails (re-vouches
@@ -9677,7 +9680,7 @@ export class CadreNode implements SAppIdLookup {
       throw new OwnerKeyRemovalRefusedError(key, plan.refusal);
     }
     const revouch = revouchWithinPlan(plan, options.revouch, this.peerId?.toString() ?? null);
-    if (revouch.owners.length > 0 && await this.controlWriteCouldFork()) {
+    if ((revouch.owners.length > 0 || revouch.peers.length > 0) && await this.controlWriteCouldFork()) {
       throw new OwnerKeyRemovalRefusedError(key, 'alone');
     }
     // The plan already refused 'not-an-owner' when no enrolled signer is wired.
@@ -9727,13 +9730,9 @@ export class CadreNode implements SAppIdLookup {
    * skipped.
    *
    * A failure rethrows and stops the call before the removal; re-vouches already made stay
-   * (the row is only re-signed by a current owner) and the caller retries. An owner re-vouch
-   * is refused alone before this runs; one whose last connection drops while it runs is logged,
+   * (the row is only re-signed by a current owner) and the caller retries. Any re-vouch is
+   * refused alone before this runs; one whose last connection drops while it runs is logged,
    * as {@link addOwner}'s add is.
-   *
-   * NOTE: a peer re-touch committed alone is not queued, and the drain skips self-published
-   * rows anyway, so the other machines may get the removal's tombstone without the new voucher
-   * (`tickets/backlog/bug-owner-key-removal-revouch-made-alone-is-not-reissued`).
    */
   private async revouchDependents(
     service: SeedBootstrapService,
@@ -9749,6 +9748,10 @@ export class CadreNode implements SAppIdLookup {
     }
     for (const dependent of revouch.peers) {
       await service.reauthorizePeer(dependent, 'revouch', sign);
+      if (this.committedAlone()) {
+        log('removeOwner: re-vouch of machine %s committed while ALONE (the last control connection dropped during the call): ' +
+          'another member\'s write to the collection meanwhile forks it, and the other machines then drop this row.', dependent);
+      }
     }
   }
 

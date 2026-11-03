@@ -155,6 +155,12 @@ describe('CadreNode signs every owner write through the one signer it was given'
 		const deviceRow = { peerId: devicePeerId, publicKey: device.publicKey, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null };
 		expect(await db.insertCadrePeer(deviceRow, second.publicKey, (message) => signAs(second, message))).toBe(true);
 
+		// A re-vouch is refused while alone, so the device serves as the reachable sibling. The
+		// reachability flag is set too, so no growth drain starts: its approvals would join the count.
+		const reachability = node as unknown as { identifiedControlPeers: Set<string>; controlSiblingReachable: boolean };
+		reachability.identifiedControlPeers.add(devicePeerId);
+		reachability.controlSiblingReachable = true;
+
 		resetCounts();
 		const result = await node.removeOwner(second.publicKey, { revouch: { peers: [devicePeerId] } });
 		expect(result).toEqual({ removed: true, revouched: { owners: [], peers: [devicePeerId] } });

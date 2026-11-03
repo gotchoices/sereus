@@ -16,7 +16,7 @@ import { mintContactJoiner, type TestContactJoiner } from './formation-consent-h
  * owner key (seated through an owner grant; never the machine's identity key) vouched one
  * device, is removed in one transaction: its row, token and invitation go, and the owner key,
  * with the device it vouched, stays. An owner key that vouched a device, another owner key and this node's own row is
- * removed with the device kept by re-vouch and this node's row re-vouched unasked; a re-vouch naming a row the key never vouched, or re-vouching an owner row
+ * removed with the device kept by re-vouch and this node's row re-vouched unasked; a re-vouch naming a row the key never vouched, or any re-vouch
  * while the node is alone, is refused before anything is written. The refusals by name run
  * first, while the founding key is the only owner.
  *
@@ -181,7 +181,7 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     expect((await node.listMachines()).map((entry) => entry.peerId)).not.toContain(machine.partyId);
   }, 60_000);
 
-  it('removes an owner key, re-vouching the device it vouched first; an owner re-vouch while alone and a row it did not vouch are refused before any write', async () => {
+  it('removes an owner key, re-vouching the device it vouched first; any re-vouch while alone and a row it did not vouch are refused before any write', async () => {
     const removed = freshKeyPair();
     await vouchOwner(owner, removed);
     const ownerDependent = freshKeyPair();
@@ -195,7 +195,6 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     // lost phone's invitation does: it is not offered as a dependent, and is re-vouched unasked.
     expect(await node.registerSelf()).not.toBe('skipped');
     const selfPeerId = node.peerId!.toString();
-    const ownRow = (await db.queryCadrePeers()).find((row) => row.peerId === selfPeerId)!;
     expect(await db.reauthorizeCadrePeer(selfPeerId, 'revouch', removed.publicKey, (message) => signAs(removed, message))).toBe('retouched');
 
     const plan = await node.planOwnerKeyRemoval(removed.publicKey);
@@ -210,15 +209,31 @@ describe('CadreNode.removeMachine and removeOwner', () => {
 
     await expect(node.removeOwner(removed.publicKey, { revouch: { peers: [bystander.partyId] } }))
       .rejects.toThrow(/re-vouch names rows the removed owner key did not vouch/);
-    // Authorized siblings and no control connection: the re-added owner row would stay on this node.
+    // Authorized siblings and no control connection: a re-added owner row would stay on this node
+    // and a re-vouched peer row could fork its collection. With no `revouch`, this node's own row
+    // is still re-vouched, so that call is refused too.
     expect(node.getControlConnectionCount()).toBe(0);
-    await expect(node.removeOwner(removed.publicKey, { revouch: { owners: [ownerDependent.publicKey] } }))
-      .rejects.toMatchObject({ name: 'OwnerKeyRemovalRefusedError', code: 'alone' });
+    const aloneCalls = [{ revouch: { owners: [ownerDependent.publicKey] } }, { revouch: { peers: [device.partyId] } }, undefined];
+    for (const options of aloneCalls) {
+      await expect(node.removeOwner(removed.publicKey, options))
+        .rejects.toMatchObject({ name: 'OwnerKeyRemovalRefusedError', code: 'alone' });
+    }
     expect((await db.getOwnerKeys()).has(removed.publicKey)).toBe(true);
     expect(await tombstonedKeys()).not.toContain(removed.publicKey);
     expect(await tombstonedKeys()).not.toContain(ownerDependent.publicKey);
+    const rowsWhileAlone = await db.queryCadrePeers();
+    for (const peerId of [device.partyId, selfPeerId]) {
+      expect(rowsWhileAlone.find((row) => row.peerId === peerId)).toMatchObject({ vouchOwner: removed.publicKey });
+    }
 
+    // A member is reachable. The reachability flag is set too, so no growth drain starts: it would
+    // re-sign the device's row and republish this node's, which the assertions below compare.
+    const reachability = node as unknown as { identifiedControlPeers: Set<string>; controlSiblingReachable: boolean };
+    reachability.identifiedControlPeers.add(bystander.partyId);
+    reachability.controlSiblingReachable = true;
+    const ownRow = rowsWhileAlone.find((row) => row.peerId === selfPeerId)!;
     const result = await node.removeOwner(removed.publicKey, { revouch: { peers: [device.partyId] } });
+    reachability.identifiedControlPeers.delete(bystander.partyId);
     expect(result).toEqual({ removed: true, revouched: { owners: [], peers: [selfPeerId, device.partyId] } });
 
     expect(await rawRow('select Key from CadreControl.OwnerKey where Key = ?', removed.publicKey)).toBeUndefined();
@@ -230,5 +245,10 @@ describe('CadreNode.removeMachine and removeOwner', () => {
       .toMatchObject({ vouchOwner: owner.publicKey, vouchUsage: null, stampId: deviceStamp, updatedAt: devicePublishedAt });
     expect(rows.find((row) => row.peerId === selfPeerId)).toMatchObject({ vouchOwner: owner.publicKey, sig: ownRow.sig, updatedAt: ownRow.updatedAt });
     expect((await node.listAuthorizedMembers()).map((row) => row.peerId)).toContain(device.partyId);
+
+    // Alone again, a removal with nothing to re-vouch still commits: its tombstone is re-issued on cohort growth.
+    const unused = freshKeyPair();
+    await vouchOwner(owner, unused);
+    expect(await node.removeOwner(unused.publicKey)).toEqual({ removed: true, revouched: { owners: [], peers: [] } });
   }, 60_000);
 });

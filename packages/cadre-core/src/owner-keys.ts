@@ -60,7 +60,7 @@ const OWNER_KEY_REMOVAL_REFUSAL_REASON: Record<OwnerKeyRemovalRefusal, string> =
 	'unknown': 'it is not a live owner key here',
 	'last-owner': 'it is the only live owner key',
 	'self': 'it is the owner key of this node, and an owner key cannot sign its own removal; ask another owner key',
-	'alone': 'this node has no connection to the rest of the cadre, and an owner key re-vouched now would reach no other machine; try again once connected',
+	'alone': 'this node has no connection to the rest of the cadre, and a device or owner key re-vouched now might not reach the other machines; try again once connected',
 };
 
 /** An owner key as an approval prompt names it: `"label" (key)`, or the key alone when it has no label. */

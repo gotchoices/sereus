@@ -53,7 +53,7 @@ export const REMOVAL_REFUSAL_LINE: Record<OwnerKeyRemovalRefusal, string> = {
 	unknown: 'This key is no longer an owner of this cadre.',
 	'last-owner': 'It cannot be removed: it is the only owner key of this cadre.',
 	self: OWN_KEY_LINE,
-	alone: 'Connect to your cadre first; the owner keys you keep would not reach your other machines.',
+	alone: 'Connect to your cadre first; the devices and owner keys you keep would not reach your other machines.',
 };
 
 const SLOT_OCCUPIED_LINE = 'This phone already holds a different owner key, and a phone holds one. This key was not imported.';

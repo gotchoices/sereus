@@ -2234,7 +2234,7 @@ export type OwnerKeyRemovalRefusal =
   | 'last-owner'
   /** The key is this node's own owner key: an owner cannot sign its own row's removal (`A.Key <> old.Key`), so ask another owner key. */
   | 'self'
-  /** A re-vouch of an `OwnerKey` row was asked for while this node reaches no sibling and the party has other members: the re-added row has no re-issue path. Decided at call time, so never planned. */
+  /** The removal would re-vouch a row, this node's own included, while this node reaches no sibling and the party has other members: a re-added `OwnerKey` row has no re-issue path, and a re-vouched `CadrePeer` row can fork its collection. Decided at call time, so never planned. */
   | 'alone';
 
 /** The rows sharing the owner keys' voucher column that a removed owner key strands unless re-vouched first. */
