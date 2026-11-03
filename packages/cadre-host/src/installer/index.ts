@@ -22,6 +22,7 @@ import {
   configPath,
   defaultHostJs,
   defaultServiceDir,
+  ensurePrivateDataDir,
   logsDir,
 } from './paths.js';
 import {
@@ -120,8 +121,8 @@ export class Installer {
     // 1. Resolve answers — wizard for interactive, defaults+overrides otherwise.
     const answers = await this.resolveAnswers(opts);
 
-    // 2. Make sure the data dir exists.
-    mkdirSync(answers.dataDir, { recursive: true });
+    // 2. Make sure the data dir exists and is private to this user.
+    ensurePrivateDataDir(answers.dataDir);
     mkdirSync(logsDir(answers.dataDir), { recursive: true });
 
     // 3. Config.

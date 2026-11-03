@@ -49,7 +49,7 @@ Run `cadre-host install --non-interactive --data-dir <path>` for unattended prov
 
 ### Root requirements
 
-The installer never writes outside your home directory. On Linux the unit goes to `$XDG_CONFIG_HOME/systemd/user/cadre-host.service` (default `~/.config/systemd/user/cadre-host.service`); the data dir defaults to `$XDG_DATA_HOME/cadre-host` (default `~/.local/share/cadre-host`) or wherever you point `--data-dir`. Registering a `systemctl --user` unit does **not** require root — any user can do it.
+The installer never writes outside your home directory. On Linux the unit goes to `$XDG_CONFIG_HOME/systemd/user/cadre-host.service` (default `~/.config/systemd/user/cadre-host.service`); the data dir defaults to `$XDG_DATA_HOME/cadre-host` (default `~/.local/share/cadre-host`) or wherever you point `--data-dir`. The data dir is set to 0700 and must be a folder dedicated to cadre-host ([Security posture](../../docs/cadre-host.md#security-posture)). Registering a `systemctl --user` unit does **not** require root — any user can do it.
 
 There is **one optional** root command:
 

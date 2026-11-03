@@ -126,8 +126,6 @@ Anyone who scans the code claims the node: the secret is the only check, so show
 
 The claim secret is in four places: the record in `hosted-nodes.json`, which every respawn replays; the child's environment (`CADRE_CLAIM_SECRET`, set by the orchestrator, never passed as an argument and never written to the orchestrator's `state.json`); the claim route's payload; and the `cadre-host join` output that prints that payload. An invitation is a credential too (it carries the invitation's private key): it is in the record, which a `joining` respawn replays, and in the child's environment (`CADRE_INVITATION`), and nowhere the host sends it. The record on the wire (`HostedNodeView`: `id`, `join: { kind: 'claim' | 'invitation' }`, `partyId`, `profile`, `status`, `dockerId?`, `statusEndpoint?`, `peerId?`, `ownerKey?`, `memberPeerId?`, `connected?`, `respawn?`, `createdAt`, `updatedAt`, `error?`, `retryable?`, `removedByOwner?`) carries neither, so `GET /api/hosted-nodes`, the node list and the event stream can be shown freely. The node checks a presented secret against the one it was started with, and the owner's device signs nothing on the host.
 
-`hosted-nodes.json` is written with the process's default file mode, like everything in the data directory except the identity keys and the secrets fallback file, so another local account that can read the data directory can read a pending claim secret or an invitation (`bug-cadre-host-data-dir-readable-by-other-accounts`).
-
 ### Reachability from outside
 
 The claim details carry the NAT layer's verdict for the node (`reachability`: its `NodeReachability` entry, or `null` before the NAT layer has one; see [Reachability verdict](#reachability-verdict)), and the CLI and the Join page warn when it reads `unreachable`.
@@ -228,11 +226,15 @@ This is a rule of the whole hosted-node surface. Spawning a child takes seconds,
 
 ## Security posture
 
-`cadre-host` is a household system, not a zero-trust one. Two consequences:
+`cadre-host` is a household system, not a zero-trust one. Three consequences:
 
 1. **Anyone with shell access to the host machine fully controls cadre-host.** This is the same threat model as any desktop application — Spotify, the Steam client, your password manager's desktop app. We do not defend against the household admin's own user account, and we do not pretend to. Disk encryption, OS user accounts, and physical security are the user's responsibility.
 
 2. **Admission to a cadre is checked by the cadre's nodes, never by the host.** Each device has a libp2p peer identity inherited from cadre-core. A phone claims a hosted node by proving it holds the node's claim secret, which the node checks; a hosted node joins by invitation by presenting an owner-signed invitation, which a member of the cadre checks. No passwords. No API keys. No central account. The host authenticates no one itself; its management surface is same-machine admin access.
+
+3. **Other local accounts are outside the trust boundary.** The data directory holds claim secrets, invitations, push private keys and each node's copy of its cadre's data, so on POSIX `install` and `start` set it to 0700 and refuse to continue if they cannot.
+
+   The directory must be dedicated to cadre-host: a `--data-dir` pointing at a shared folder has that folder narrowed to 0700. On Windows there are no mode bits; the protection is `%LocalAppData%` being per-user, and a custom `--data-dir` is the admin's responsibility.
 
 ## NAT and DDNS
 

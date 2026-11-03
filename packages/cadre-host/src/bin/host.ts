@@ -31,6 +31,7 @@ import {
   defaultDataDir,
   defaultHostJs,
   defaultServiceDir,
+  ensurePrivateDataDir,
 } from '../installer/paths.js';
 import { detectPlatform } from '../installer/platform.js';
 import { createServiceHost } from '../installer/service-host/index.js';
@@ -236,6 +237,8 @@ program
         return;
       }
       const cfg = readHostConfig(cfgPath);
+      // Before any store is built, so nothing is written into a folder other accounts can read.
+      ensurePrivateDataDir(cfg.dataDir);
       console.log(`cadre-host starting (dataDir=${cfg.dataDir}, uiPort=${cfg.uiPort})`);
 
       // Update flow: notify-by-default; auto-apply opt-in via host.config.json.

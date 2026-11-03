@@ -11,6 +11,7 @@
  * root is what the service-host unit's `ExecStart` line points at.
  */
 
+import { chmodSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { posix, win32, join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +53,18 @@ export function defaultDataDir(
       }
       return joinFor(platform, base, 'CadreHost');
     }
+  }
+}
+
+/**
+ * Creates the data dir if needed and keeps other local accounts out of everything below it.
+ * A mode given to `mkdirSync` would not narrow a folder that already exists, hence `chmodSync`.
+ * Checks `process.platform`, not a target platform: the mode belongs to the real filesystem.
+ */
+export function ensurePrivateDataDir(dataDir: string): void {
+  mkdirSync(dataDir, { recursive: true });
+  if (process.platform !== 'win32') {
+    chmodSync(dataDir, 0o700);
   }
 }
 

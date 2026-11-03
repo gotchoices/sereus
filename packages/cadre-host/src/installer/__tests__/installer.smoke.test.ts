@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -87,6 +87,14 @@ describe('Installer smoke', () => {
     expect(result.uiUrl).toBe('http://127.0.0.1:19995/');
     expect(existsSync(join(tmp, 'host.config.json'))).toBe(true);
     expect(existsSync(join(tmp, 'nat.json'))).toBe(true);
+  });
+
+  it.runIf(process.platform !== 'win32')('install narrows an existing data dir to 0700 on POSIX', async () => {
+    chmodSync(tmp, 0o755);
+    const installer = new Installer({ platform: 'linux', installerVersion: 'test-1.0.0' });
+    await installer.install({ nonInteractive: true, dataDir: tmp, uiPort: 19994, noService: true });
+
+    expect(statSync(tmp).mode & 0o777).toBe(0o700);
   });
 
   it('uninstall removes data only when --remove-data is set', async () => {
