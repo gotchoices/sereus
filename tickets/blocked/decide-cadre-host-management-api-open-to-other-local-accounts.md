@@ -40,7 +40,7 @@ Why this one: it extends the boundary that the data folder already draws. Whoeve
 
 ## Alternatives rejected
 
-- **Declare shared machines unsupported** (edit Security posture to say other local accounts are trusted, and keep no login). This is the cheapest option and a defensible one for the household machines the product targets, and it needs only documentation. Rejected as the default because the fix just shipped treats those accounts as a threat, and a VPS or a family machine with several accounts is a setup the docs already describe. If this is chosen, the 0700 mode remains useful as protection for files, and the docs must say plainly that the API is open.
+- **Declare shared machines unsupported** (edit Security posture to say other local accounts are trusted, and keep no login). This is the cheapest option and a defensible one for the household machines the product targets, and it needs only documentation. Rejected as the default because the fix just shipped treats those accounts as a threat, and the docs describe running on a VPS, where several accounts are common; they say nothing either way about a family machine with several accounts. If this is chosen, the 0700 mode remains useful as protection for files, and the docs must say plainly that the API is open.
 - **Unix socket in the data folder.** The filesystem would do the access check, but browsers and SSH port forwards of the local UI cannot use it as they use a TCP port, and it has no Windows equivalent with the same behaviour.
 - **Ask the operating system which account owns the connection.** Node exposes no peer-credential call for TCP sockets, and it would need code for each platform.
 

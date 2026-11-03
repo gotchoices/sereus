@@ -232,7 +232,7 @@ This is a rule of the whole hosted-node surface. Spawning a child takes seconds,
 
 2. **Admission to a cadre is checked by the cadre's nodes, never by the host.** Each device has a libp2p peer identity inherited from cadre-core. A phone claims a hosted node by proving it holds the node's claim secret, which the node checks; a hosted node joins by invitation by presenting an owner-signed invitation, which a member of the cadre checks. No passwords. No API keys. No central account. The host authenticates no one itself; its management surface is same-machine admin access.
 
-3. **Other local accounts cannot read the data directory.** It holds claim secrets, invitations, push private keys and each node's copy of its cadre's data, so on POSIX `install` and `start` set it to 0700 and refuse to continue if they cannot.
+3. **Other local accounts cannot read the data directory.** It holds claim secrets, invitations, each node's copy of its cadre's data and, where no OS keychain is available, the secrets fallback file, so on POSIX `install` and `start` set it to 0700 and refuse to continue if they cannot.
 
    The directory must be dedicated to cadre-host: a `--data-dir` pointing at a shared folder has that folder narrowed to 0700. On Windows there are no mode bits; the protection is `%LocalAppData%` being per-user, and a custom `--data-dir` is the admin's responsibility.
 
