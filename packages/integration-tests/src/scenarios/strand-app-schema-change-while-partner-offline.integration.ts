@@ -6,11 +6,15 @@
  *
  *   1. A founds a closed strand with schema v1, B forms it, and each writes a row the other reads.
  *   2. A exits for good. B exits and is respawned over the same directory, and claims the strand
- *      with v2: the same table with one column tag added, which changes no row.
+ *      with v2: the same table with one column tag and an index added, plus a new table.
  *   3. B's strand comes up, its rows read back, and `appSchemaState()` reports
- *      `waiting-for-cohort`: the apply writes the strand's catalog, which needs the absent A.
- *   4. A is respawned with v2, and `appSchemaState()` reports `applied`. This does not show that B's
- *      catalog write landed (`app-schema-refused-at-catalog-commit-is-not-unwound`).
+ *      `waiting-for-cohort`: the apply writes the strand's catalog, which needs the absent A. A query
+ *      that would use the new index still works, because B keeps running v1.
+ *   4. A retry lands with A still offline: by then a run of failed contacts has marked A dead, so B
+ *      commits without it (docs/strands.md), and `appSchemaState()` reports `applied`.
+ *   5. B restarts with A still offline and finds nothing to send: the change is in its store, so
+ *      `applied` was true. It serves a query through the index and takes a write.
+ *   6. A is respawned with v2 and reads that write through the index.
  *
  * Two arms: B without offline mode (the reporter's arm), and B with it, where the failure was the
  * same because the catalog write is not a queued app transaction.
@@ -44,11 +48,15 @@ table Data (
 );
 `;
 
-/** v1 with one column tag added: a catalog change, no row change (the tag #55 reported). */
+/** v1 with one column tag added (the change #55 reported), an index and a table. */
 const schemaV2 = `
 table Data (
     Key text primary key with tags ("optimystic.fresh" = true),
     Val text
+);
+index DataByVal on Data (Val);
+table Later (
+    Id integer primary key
 );
 `;
 
@@ -109,16 +117,33 @@ async function runSchemaChangeWhilePartnerOffline(offline: boolean): Promise<voi
 		expect(rows).toContainEqual(aRow);
 		expect(rows).toContainEqual(bRow);
 		expect((await B.request('appSchemaState', { strandId })).state).toBe('waiting-for-cohort');
+		expect((await B.request('keysByVal', { strandId, val: aRow.val })).keys).toEqual([aRow.key]);
 
-		// ── 4. A returns; B reports the apply settled ──
+		// ── 4. A retry lands with A still offline, once B has marked A dead ──
+		const claimedB = B;
+		await waitUntil(async () => (await claimedB.request('appSchemaState', { strandId })).state === 'applied',
+			{ ...RESTART_GATE, description: "B's deferred v2 apply to land with A offline" });
+		say('step 4: B reported applied %d ms after the claim, with A offline', Date.now() - claimAt);
+
+		// ── 5. The change is in B's store: a restart with A still offline finds nothing to send ──
+		await B.exit();
+		B = undefined;
+		B = await start(bParty);
+		const reclaim = await B.request('claim', { strandId, sApp: v2, timeoutMs: RESTART_GATE.timeoutMs });
+		expect(reclaim.status).toBe('active');
+		expect((await B.request('appSchemaState', { strandId })).state).toBe('applied');
+		expect((await B.request('keysByVal', { strandId, val: aRow.val })).keys).toEqual([aRow.key]);
+		const laterRow = { key: 'from-b-on-v2', val: 'written-on-B-with-A-offline' };
+		await B.request('write', { strandId, ...laterRow });
+		say('step 5: B restarted on v2 from its store');
+
+		// ── 6. A returns and converges ──
 		A = await start(aParty);
 		const aClaim = await A.request('claim', { strandId, sApp: v2, timeoutMs: RESTART_GATE.timeoutMs });
 		expect(aClaim.status).toBe('active');
-		const returnedAt = Date.now();
-		const secondB = B;
-		await waitUntil(async () => (await secondB.request('appSchemaState', { strandId })).state === 'applied',
-			{ ...RESTART_GATE, description: "B's deferred v2 apply to settle once A is back" });
-		say('step 4: B reported applied %d ms after A was active again', Date.now() - returnedAt);
+		await A.request('waitRow', { strandId, ...laterRow, timeoutMs: RESTART_GATE.timeoutMs });
+		expect((await A.request('keysByVal', { strandId, val: laterRow.val })).keys).toEqual([laterRow.key]);
+		say('step 6: A is on v2 and holds the row B wrote while it was away');
 	} finally {
 		await Promise.allSettled([B?.exit(), A?.exit()]);
 		await relay?.stop();

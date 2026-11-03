@@ -1523,15 +1523,20 @@ export class ControlDatabase {
     // `catalog-only` kinds, from Optimystic 1.16.0): the plugin's `alterTable` arms (add column,
     // drop column, add and drop CHECK) and the tag change write the table's catalog record under
     // the batch's per-statement checkpoint, so a step that throws withdraws its own write, and a
-    // batch whose commit fails is discarded whole and the tables it wrote re-persist on their next
-    // touch. A change the record already holds — another machine migrated first — is adopted with
-    // nothing written, and an undo of an adopted change touches this machine's catalog only. The
-    // one arm Quereus marks irreversible is `drop column`: once it has run, a later failure
-    // unwinds nothing (the apply reports the schema as partially migrated), the plugin's
-    // `endSchemaBatch` commits the steps that landed — or, when that commit fails, marks their
-    // tables to re-persist on next touch — and the retry's diff runs only the steps still
-    // missing. No row is lost either way: rows keep a dropped column's field until they are
-    // rewritten, and nothing reads it.
+    // batch whose commit fails is discarded whole and undone in a second batch (Quereus 4.25.0), so
+    // the retry plans the whole change again. A change the record already holds — another machine
+    // migrated first — is adopted with nothing written, and an undo of an adopted change touches
+    // this machine's catalog only. The one arm Quereus marks irreversible is `drop column`: once it
+    // has run, a later failure unwinds nothing (the apply reports the schema as partially
+    // migrated), the plugin's `endSchemaBatch` commits the steps that landed — or, when that commit
+    // fails, marks their tables to re-persist on next touch — and the retry's diff runs only the
+    // steps still missing. No row is lost either way: rows keep a dropped column's field until they
+    // are rewritten, and nothing reads it.
+    //
+    // NOTE: a cohort that keeps refusing the commit now ends the retries with a thrown error, so a
+    // machine migrating while its siblings are offline fails its start. No release has migrated
+    // yet (`CONTROL_SCHEMA_VERSION` is the baseline). The first version that does should decide
+    // whether that start waits, as the `App` apply does (`applyAppSchemaOrDefer`).
     //
     // Only the "cohort did not answer, nothing committed" class is retried; the classifier
     // vetoes indeterminate commits and does not match `Missing block`, which is a durable

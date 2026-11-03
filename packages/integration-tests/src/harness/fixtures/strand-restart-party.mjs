@@ -204,6 +204,14 @@ const handlers = {
 		return { rows: await readDataRows(strandId) };
 	},
 
+	async keysByVal({ strandId, val }) {
+		const keys = [];
+		for await (const row of strandOf(strandId).database.getDatabase().eval('select Key from App.Data where Val = ?', [val])) {
+			keys.push(row.Key);
+		}
+		return { keys };
+	},
+
 	async waitRow({ strandId, key, val, timeoutMs }) {
 		await pollFor(async () => ((await readDataRows(strandId)).some((row) => row.key === key && row.val === val) ? true : undefined),
 			timeoutMs, `row ${key} = ${val}`);

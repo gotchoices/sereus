@@ -54,6 +54,11 @@ export interface StrandRestartOps {
 		args: { strandId: string };
 		result: { rows: DataRow[] };
 	};
+	/** Keys of the App.Data rows holding `val`; a schema with an index on `Val` routes this through it. */
+	keysByVal: {
+		args: { strandId: string; val: string };
+		result: { keys: string[] };
+	};
 	/** Poll until App.Data holds `key` = `val`. */
 	waitRow: {
 		args: { strandId: string; key: string; val: string; timeoutMs: number };

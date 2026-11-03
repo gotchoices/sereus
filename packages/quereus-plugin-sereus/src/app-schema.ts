@@ -72,13 +72,10 @@ type Deferral = { wait: 'queue'; transactionIds: readonly string[] } | { wait: '
  *    alone after an app update would otherwise not open the strand at all (gotchoices/sereus#55).
  *    Retried when the strand node connects to a peer, and on a backoff ({@link COHORT_RETRY_MS}).
  *
- * Quereus unwinds an apply refused by one of its migration steps, so `db` keeps the `App` schema it
- * had, and `appSchema` settles with how the retries ended. Any other error from the first apply is
- * thrown.
- *
- * NOTE: a refusal at the apply's closing catalog commit, which is where `cohort-unreachable` normally
- * lands, is not unwound: `db` keeps the new schema in memory, the next retry's diff is empty, and it
- * settles `applied` with nothing written. Known defect, `app-schema-refused-at-catalog-commit-is-not-unwound`.
+ * Quereus unwinds a refused apply, whether a migration step or the closing catalog commit refused it,
+ * so `db` keeps the `App` schema it had, and `appSchema` settles with how the retries ended. Any other
+ * error from the first apply is thrown, and so is a refusal Quereus could not unwind that leaves a
+ * retry nothing to send ({@link retryableRefusalOf}).
  *
  * Waiting before returning was rejected: that withholds the strand from the app right after an app
  * update, which is when a phone is most likely to be offline. So was refusing the connect: the queue
@@ -103,7 +100,7 @@ export async function applyAppSchemaOrDefer(
 		log('sApp schema applied');
 		return { appSchema: Promise.resolve({ state: 'applied' }) };
 	} catch (err) {
-		const deferral = deferralOf(err);
+		const deferral = await retryableRefusalOf(db, err);
 		if (!deferral) {
 			throw err;
 		}
@@ -142,7 +139,7 @@ async function retryDeferredAppSchema(
 				log('Deferred sApp schema apply cancelled by shutdown');
 				return { state: 'cancelled' };
 			}
-			const again = deferralOf(err);
+			const again = await retryableRefusalOf(db, err);
 			if (!again) {
 				log('Deferred sApp schema apply failed: %O', err);
 				return { state: 'failed', error: err };
@@ -183,6 +180,35 @@ async function nextChance(deferral: Deferral, waits: AppSchemaWaits, cohortRetri
 		return;
 	}
 	await nextCohortChance(waits.peers, cohortRetryDelay(cohortRetries), released);
+}
+
+/**
+ * The refusal `err` is or wraps, when retrying it would send something. An apply refused after a
+ * `drop table` or `drop column` cannot be unwound, so `db` can already hold the whole new schema while
+ * the store holds the old one. A retry would then diff clean and settle `applied` with nothing written,
+ * so that refusal counts as a failure: a restart plans the change again from the store.
+ */
+async function retryableRefusalOf(db: Database, err: unknown): Promise<Deferral | undefined> {
+	const deferral = deferralOf(err);
+	if (!deferral) {
+		return undefined;
+	}
+	try {
+		if (await appSchemaHasPendingChanges(db)) {
+			return deferral;
+		}
+		log('sApp schema apply was refused, and the database already holds the new schema: %O', err);
+	} catch (diffError) {
+		log('Could not check what a refused sApp schema apply left to send: %O', diffError);
+	}
+	return undefined;
+}
+
+async function appSchemaHasPendingChanges(db: Database): Promise<boolean> {
+	for await (const _change of db.eval('diff schema App')) {
+		return true;
+	}
+	return false;
 }
 
 /**

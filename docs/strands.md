@@ -414,10 +414,11 @@ A connect applies the app's `App` schema, and an apply that changes anything wri
 
 The cohort case happens with offline mode on or off: the catalog write is not an app transaction, so the queue does not take it. A change that alters no row, such as adding a column tag, still writes the catalog.
 
-What the database runs while it waits depends on where the refusal lands:
+While it waits, the database runs the `App` schema it had. Quereus unwinds a refused apply, whether a migration step (the queue's refusal) or the closing catalog commit (the usual cohort refusal) refused it, so a retry plans the whole change again.
 
-- **At a migration step (the queue's refusal):** Quereus unwinds the apply, so the database runs the `App` schema it had, and a retry plans the whole change again.
-- **At the apply's closing catalog commit (the usual cohort refusal):** Quereus has nothing to unwind, so the database already runs the new schema in memory while the store holds the earlier one. The retry then finds no difference and settles `applied` with nothing written, at its first chance, even with the cohort still unreachable. A changed table's record is written by the first statement that fully initializes the table, which fails while the cohort is unreachable. A new index never lands this way, and a query routed through it throws. The next connect (a restart, a hibernation wake) plans from the store and lands the change. Known defect: `app-schema-refused-at-catalog-commit-is-not-unwound`.
+**A retry can land with the other member still offline.** Once a run of failed contacts marks that member dead, the remaining member commits without it, so `applied` then means the change is in this machine's store, not that the other member has it. On a two-member strand the first retry, about 15 s after the refusal, was enough in every run of `strand-app-schema-change-while-partner-offline`. The other member takes the change when it returns.
+
+**An apply that dropped a table or column is the exception.** Quereus cannot undo that step, so the database can already hold the new schema while the store holds the old one, and a retry would find no difference and report `applied` with nothing written. When `diff schema App` is empty after a refusal, the refusal counts as a failure: the connect fails, or a retry settles `{ state: 'failed', error }`. The next connect plans the change from the store. Such an upgrade therefore cannot open the strand until the cohort is reachable.
 
 The connection's result says what the apply waits for: `appSchemaWaitingFor` is `'queue'` or `'cohort'`, and for the queue `appSchemaDeferredBy` names the transactions the first refusal named. `appSchema` settles `{ state: 'applied', deferred: true }` when a retry lands, `{ state: 'failed', error }` when one fails for another reason, or `{ state: 'cancelled' }` when the connection shuts down first. An apply that succeeds at connect settles `{ state: 'applied' }` at once.
 
