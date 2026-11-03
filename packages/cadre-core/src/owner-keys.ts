@@ -169,6 +169,7 @@ export function revouchWithinPlan(plan: OwnerKeyRemovalPlan, revouch: RemoveOwne
 	const peers = [...new Set(revouch?.peers ?? [])];
 	const strayOwners = owners.filter((key) => !plan.dependents.owners.includes(key));
 	const strayPeers = peers.filter((peerId) => !plan.dependents.peers.includes(peerId));
+	// NOTE: a row that moved off the key between the app's plan and this check (another owner's re-vouch, or the first-growth sweep re-signing a row with no `Sig` once the node reconnects) throws this plain error, and the apps' next Remove re-reads the plan. If users report the wording, give it a refusal code.
 	if (strayOwners.length > 0 || strayPeers.length > 0) {
 		throw new Error(
 			`removeOwner: re-vouch names rows the removed owner key did not vouch: ${[...strayOwners, ...strayPeers].join(', ')}`,

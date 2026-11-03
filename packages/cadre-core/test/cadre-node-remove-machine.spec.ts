@@ -250,5 +250,15 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     const unused = freshKeyPair();
     await vouchOwner(owner, unused);
     expect(await node.removeOwner(unused.publicKey)).toEqual({ removed: true, revouched: { owners: [], peers: [] } });
+
+    // A lost phone as the only other machine: once its machine is removed no member is left to
+    // fork with, so the own row's re-vouch goes ahead alone.
+    for (const member of await node.listAuthorizedMembers()) {
+      await node.removeMachine(member.peerId);
+    }
+    const lostPhone = freshKeyPair();
+    await vouchOwner(owner, lostPhone);
+    expect(await db.reauthorizeCadrePeer(selfPeerId, 'revouch', lostPhone.publicKey, (message) => signAs(lostPhone, message))).toBe('retouched');
+    expect(await node.removeOwner(lostPhone.publicKey)).toEqual({ removed: true, revouched: { owners: [], peers: [selfPeerId] } });
   }, 60_000);
 });

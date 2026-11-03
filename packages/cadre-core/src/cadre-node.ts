@@ -9656,8 +9656,7 @@ export class CadreNode implements SAppIdLookup {
    * on a refusal; check `options.revouch` against the plan's dependents and throw before any
    * write when it names anything else; refuse `alone` ({@link controlWriteCouldFork}) when any
    * row is to be re-vouched, this node's own included, since the new voucher might never reach
-   * the other machines; **re-vouch
-   * first**, under this node's key, the dependents the caller chose to keep and this node's own
+   * the other machines; **re-vouch first**, under this node's key, the dependents the caller chose to keep and this node's own
    * row when the key vouched it (`ControlDatabase.revouchOwnerKey`, `reauthorizePeer`), so they
    * are never untrusted in between, and stop before the removal if one fails (re-vouches
    * already made stay, harmlessly); then the removal. The re-vouches and the removal are one owner approval. The

@@ -468,7 +468,10 @@ a tab has no scanner (`lib/owner-keys.svelte.ts`, `lib/owner-grants.ts`, `OwnerK
   key added (checked by default; a device named as Devices and nodes names it), the line about
   this tab's own key when the removed key added it (`ownDependency`), and the `last-owner`
   refusal ("It cannot be removed: it is the only owner key of this cadre.") with only *Close*.
-  *Remove* runs `removeOwner(key, { revouch })` with the kept rows, then both cards re-read.
+  *Remove* runs `removeOwner(key, { revouch })` with the kept rows, then both cards re-read. A
+  removal that keeps anything while no other machine is reachable, this tab's own machine row
+  included, is refused (`alone`) with a line asking to connect first, or to remove a lost only
+  other machine under Devices and nodes.
 
 **Uses.** A lost or stolen phone that held an owner key: remove its machine under Devices and
 nodes, then its key here. A backup to keep offline: make a backup, then download or print the QR

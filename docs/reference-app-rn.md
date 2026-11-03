@@ -1096,7 +1096,7 @@ On an owner device every row has **Remove** except this device's own key, under 
 - **This device's own key**, when the removed key added it (`ownDependency`): a line says it stays an owner on the machines that already trust it, and that another owner key can vouch for it again later. This device's own machine row, when the removed key added it, is re-vouched without asking (`revouchesOwnRow`).
 - **Refusals**: "It cannot be removed: it is the only owner key of this cadre." (`last-owner`), and the own-key line for `self`, with only **Close**.
 
-**Remove** runs `removeOwner(key, { revouch })` with the kept rows, and this list and Devices and nodes refresh; **Cancel**, or the system back button, does nothing. A key another owner removed meanwhile shows "Already removed". A removal that keeps anything while alone is refused (`alone`), this device's own machine row included, which is re-vouched without asking: "Connect to your cadre first; the devices and owner keys you keep would not reach your other machines." Any other failure shows its error in an alert.
+**Remove** runs `removeOwner(key, { revouch })` with the kept rows, and this list and Devices and nodes refresh; **Cancel**, or the system back button, does nothing. A key another owner removed meanwhile shows "Already removed". A removal that keeps anything while alone is refused (`alone`), this device's own machine row included, which is re-vouched without asking: "Connect to your cadre first; the devices and owner keys you keep would not reach your other machines. If the only other machine is lost, remove it under Devices and nodes, then try again." Any other failure shows its error in an alert.
 
 **Uses.**
 
