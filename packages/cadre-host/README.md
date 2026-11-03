@@ -96,7 +96,7 @@ Look for `Active: active (running)`. If it's not active, `journalctl --user -u c
 The UI listens on `http://127.0.0.1:<uiPort>/` (default port 8765) on the host machine itself.
 
 - **On the host:** open the URL in a browser, or run `cadre-host ui` to print + open it.
-- **From a different machine on your LAN** (most basement PCs are headless): the UI is bound to loopback only and has no authentication — that's intentional, the trust boundary is "same machine, same user as cadre-host." Use SSH port-forwarding from the client side:
+- **From a different machine on your LAN** (most basement PCs are headless): the UI is bound to loopback only and has no authentication — that's intentional, and any account on the machine can reach it ([Security posture](../../docs/cadre-host.md#security-posture)). Use SSH port-forwarding from the client side:
 
   ```bash
   # from your laptop:

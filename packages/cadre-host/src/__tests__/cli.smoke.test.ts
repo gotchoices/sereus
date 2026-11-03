@@ -1,6 +1,6 @@
 /**
- * Smoke test: invokes the compiled CLI with --help and asserts the expected
- * subcommands are listed. Relies on `yarn build` having produced dist/bin/host.js.
+ * Smoke tests of the compiled CLI: its help and version output, and what `start`
+ * does to an existing data dir. Relies on `yarn build` having produced dist/bin/host.js.
  */
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
