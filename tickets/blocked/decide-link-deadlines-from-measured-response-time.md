@@ -5,7 +5,10 @@ files: docs/architecture.md ("The declared value" ~2066, "What Optimystic derive
 
 # Size link deadlines from measured response time, with the declared link as the floor
 
-**Blocked: a dependency outside this repo.** The maintainer accepted the principle below on 2026-11-03, and its text is now in `docs/architecture.md` → "Dial budgets are counted in round trips, not milliseconds", marked as not yet followed. Unblocks when Optimystic and FRET, which own the deadlines that fire, release per-peer estimators. Passed to Optimystic's session the same day. Sereus's remaining work is then "Sereus's side once accepted" below, without the paragraph, and the phone arm under "How to confirm".
+**Blocked: a dependency outside this repo.** The maintainer accepted the principle below on 2026-11-03, and its text is now in `docs/architecture.md` → "Dial budgets are counted in round trips, not milliseconds", marked as not yet followed. Unblocks when Optimystic and FRET, which own the deadlines that fire, release per-peer estimators. Passed to Optimystic's session the same day: its backlog holds `feat-link-deadlines-stretch-to-measured-response-time`, and FRET has no ticket yet.
+
+**Open question, raised by Optimystic's session from reading `ProtocolClient.exchange` (not from a run).** The exchange aborts the stream when the deadline fires, so a late answer gives no sample. When every request to a peer is abandoned, as with all 53 read-repair consults in the measurement below, an estimate fed only by answers stays at the floor and nothing stretches. RFC 6298 doubles its timer on expiry, and the accepted text does not say what an expiry does. If the estimators need that, the accepted text gains a sentence, which the maintainer should see. FRET's ping is not checked for the same behaviour.
+ Sereus's remaining work is then "Sereus's side once accepted" below, without the paragraph, and the phone arm under "How to confirm".
 
 GitHub gotchoices/sereus#48.
 
