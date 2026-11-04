@@ -76,3 +76,7 @@ is over-broad but closes the hole with the schema we already have.
 
 The open decision (is re-admission a bug or accepted behaviour pending this ticket?) is
 `blocked/what-does-removing-a-member-guarantee`.
+
+## Evidence arm: a re-admission invitation for a key replacement (2026-11-04)
+
+`plan/party-key-rotation-across-parties` settled that a cadre replaces its membership key in a strand another party manages by redeeming a fresh formation invitation from the host under the new key (`implement/party-key-rotation-redeems-an-invitation-under-the-pending-key`). The invitation is handed from the host owner to the cadre owner out of band, and the strand-side `Strand.Invite` it yields seats whatever key the redeemer names. A removed machine that obtains that invitation seats a key of its own and survives the rotation, and only the host manager can revoke it. Binding the invitation to the key it is for would close this; until then the out-of-band handoff is the only guard, as for every invitation.
