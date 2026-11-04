@@ -840,7 +840,7 @@ export class StrandMembershipReconciler {
         memberKey: keyPair.publicKeyB64,
       }, OWN_TRANSACTION);
     } catch (error) {
-      this.handleConsumeFailure(error, invite);
+      this.handleConsumeFailure(error, invite, 'own-key');
       return false;
     }
     this.deps.pendingInvite?.clear(invite);
@@ -1093,6 +1093,11 @@ export class StrandMembershipReconciler {
    */
   private latchDone(siblingsSettled: boolean, rotationPending: boolean): void {
     if (rotationPending) {
+      // NOTE: a rotation the host never finishes (no re-invitation, no by-hand admission) keeps
+      // this loop polling flat for good: one control read plus the strand reads of steps 2 to 5
+      // per poll interval, per such strand. Fine at party scale; if a party ever carries many
+      // strands with rotations pending indefinitely, re-arm on the strand's `Member` table
+      // changing instead of polling for the seat.
       if (!this.pendingRotationLogged) {
         this.pendingRotationLogged = true;
         log('[%s] a party key rotation is pending — the loop stays live until the party\'s key is swapped', this.deps.label);
@@ -1123,7 +1128,7 @@ export class StrandMembershipReconciler {
    * under its current key, whose bindings this loop keeps whole, and the rotation stays pending
    * for the life of the row); dead invitation → drop; anything else → retry.
    */
-  private handleConsumeFailure(error: unknown, invite: StrandMembershipInvite, under: 'own-key' | 'pending-key' = 'own-key'): void {
+  private handleConsumeFailure(error: unknown, invite: StrandMembershipInvite, under: 'own-key' | 'pending-key'): void {
     const failure = classifyConsumeFailure(error);
     switch (failure.kind) {
       case 'busy':
