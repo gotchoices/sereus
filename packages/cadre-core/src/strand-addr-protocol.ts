@@ -175,8 +175,8 @@ export class StrandAddrService {
    * (over {@link maxConcurrent}, reply without looking up any address), a read
    * timeout (a peer that never half-closes is aborted inside {@link readFrame}/
    * `readStreamToEnd`), and the existing malformed/oversized-frame guard. A
-   * lookup that throws is `unavailable` too, never an empty `ok` the asker would
-   * wait ten minutes on.
+   * lookup that throws is `unavailable` too, never an empty `ok`, whose retries
+   * climb all the way to the asker's refresh interval.
    */
   private async handleStream(stream: ControlStream, remotePeerId: string): Promise<void> {
     log('Incoming strand-addr request from: %s', remotePeerId);
@@ -293,7 +293,9 @@ export interface CollectStrandAddrsOptions {
  *
  * - `answered` — status `ok` with at least one address.
  * - `empty` — status `ok` with no address: the sibling does not run the strand
- *   right now, a normal steady state.
+ *   right now. It cannot tell "not yet" from "never": a normal steady state looks the
+ *   same as a node still starting, which answers this until its strand row arrives and
+ *   the strand launches.
  * - `unavailable` — the sibling replied that it could not answer.
  * - `unsupported` — the peer was reached and its protocol negotiation refused
  *   strand-addr: it registers no handler for it (a dedicated relay, an older
@@ -326,9 +328,9 @@ interface SiblingAnswer {
  * Best-effort per peer: a failed/timed-out/empty sibling contributes no address
  * and never fails the collection — an empty union (no sibling online or running
  * the strand) is an acceptable seed that self-heals on the next resume/reconcile
- * pass. `outcomes` is what lets a caller retry the siblings that could not answer
- * sooner than the ones that answered with nothing. The local node (`node.peerId`)
- * is excluded so we never RPC ourselves or seed with our own strand address.
+ * pass. `outcomes` is what lets a caller schedule each sibling's next ask from how
+ * this one ended. The local node (`node.peerId`) is excluded so we never RPC ourselves
+ * or seed with our own strand address.
  *
  * Dials run concurrently but the union preserves candidate order, so the result
  * is deterministic regardless of which sibling answers first.

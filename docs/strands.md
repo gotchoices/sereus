@@ -178,8 +178,10 @@ new strand node's libp2p **address book** (its peerStore), and every running str
 re-resolves its siblings' strand addresses over the control mesh, re-merging each answer
 under the sibling's *strand* transport peerId (`CadreNode.refreshStrandPeerAddrs`, riding
 the control-cohort reconcile pass). Each connected sibling is asked on its own schedule: at
-once when it first connects, again ~10 minutes after it answers, or one minute after it
-fails to answer or refuses (the phone-joins-late case: its membership row may not have
+once when it first connects, again ~10 minutes after it answers with addresses, and within
+seconds after an ask that produced none, on a wait that climbs from 1 s to the refresh interval
+after an empty answer (a node still starting has no strand to report yet) and to one minute
+after a failure or refusal (the phone-joins-late case: its membership row may not have
 replicated to the sibling yet). Both matter
 because everything below cadre-core dials a strand peer by **bare peer id** — Optimystic's
 cluster and repo clients, FRET ping/announce — and a bootstrap address list alone does not

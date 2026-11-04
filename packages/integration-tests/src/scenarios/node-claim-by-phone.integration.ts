@@ -25,8 +25,10 @@
  *      (`claim.json`, without the secret) and restarts in-process into the claimant's party,
  *      `/status` then names that party and the claimant as `claimedBy`, the claimant DIALS IN
  *      (outbound on its side, a WebSocket control connection on the node's), the node's
- *      signed record reaches the claimant, and the claimant's row is in the node's
- *      authorized set
+ *      signed record reaches the claimant, the claimant's row is in the node's authorized
+ *      set, and the strand the claimant was already running connects to the node's within
+ *      seconds, though the node restarts and then has no strand to report when first asked
+ *      (`docs/architecture.md` → Strand-Address Resolution)
  *   4. an owner of another cadre presenting the same secret is refused as `already-claimed`
  *   5. the first owner claiming again is accepted, leaving one row and one dial target
  *   6. the node restarted on the same workdir and environment reads `claimed` with no
@@ -54,8 +56,9 @@
  * those finds it every time; without the reconcile-pass publish the record can wait for the
  * 7.5-minute heartbeat.
  *
- * Out of scope: reachability beyond loopback (`cadre-host-node-reachability`), strand
- * replication onto the claimed node, and a claimant behind a relay.
+ * Out of scope: reachability beyond loopback (`cadre-host-node-reachability`), a claimant
+ * behind a relay, and strand replication onto the claimed node: step 3 pins that the two
+ * strands connect, not what crosses.
  *
  * Runs the real `cadre-cli` bin from `dist`, so `@serfab/cadre-core` and `@serfab/cadre-cli`
  * must be built. Two child starts plus two in-process nodes; budgets are generous on purpose.
@@ -75,6 +78,7 @@ import {
   allocFreePort,
   buildPhoneOwner,
   connectionsTo,
+  createSignedSAppConfig,
   hasOutboundTo,
   isChildUp,
   makeOwnOwner,
@@ -97,6 +101,8 @@ const LOG_TAIL_LINES = 40;
 const PLACEHOLDER_PARTY = 'unclaimed';
 /** Where `cadre start` records the claim, in the node-state directory (the workdir here). */
 const CLAIM_RECORD_FILE = 'claim.json';
+/** How long after the claim begins the claimant's strand may stay unconnected to the node's. */
+const STRAND_CONNECT_MS = 20_000;
 
 /** One claimable `cadre-cli` node: everything a restart reuses, plus its current process. */
 interface ClaimableNode {
@@ -278,7 +284,25 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
     expect(claimantPeerStore.all().has(node.peerId)).toBe(false);
   }, OP_MS);
 
-  it('step 3: the right secret claims the node, which restarts into the claimant\'s party, the claimant DIALS IN, and rows cross both ways', async () => {
+  it('step 3: the right secret claims the node, which restarts into the claimant\'s party, the claimant DIALS IN, rows cross both ways, and the strands connect', async () => {
+    const strandRow = await claimant!.publishStrand(`node-claim-strand-${Math.random().toString(36).slice(2)}`);
+    const strand = await claimant!.addStrand({
+      strandRow,
+      sAppConfig: createSignedSAppConfig('table Data (Key text primary key, Val text);', '1.0.0'),
+      founder: true,
+    });
+    const strandNode = strand.libp2pNode!;
+    expect(strandNode.getConnections()).toEqual([]);
+    // Polled from before the claim so the limit counts from it. The node is the claimant's
+    // only strand peer, so any connection is to it.
+    const strandConnected = waitUntil(() => strandNode.getConnections().length > 0, {
+      timeoutMs: STRAND_CONNECT_MS,
+      intervalMs: 250,
+      description: 'the claimant’s strand connects to the node’s',
+    });
+    // Awaited at the end of the step; a timeout before then must not count as an unhandled rejection.
+    void strandConnected.catch(() => undefined);
+
     await claimant!.claimNode({ peerId: node.peerId, multiaddrs: nodeAddrs, secret: claimSecret });
     // The node records the claim before it acknowledges the seed, so `claimed` needs no wait
     // and never flips back while the node restarts into the party. The party itself does
@@ -324,6 +348,7 @@ describe('a phone-shaped owner claims a cadre-cli node started with a claim secr
     expect(resolved.some((a) => a.includes('/ws'))).toBe(true);
 
     expect(claimant!.getMultiaddrs()).toEqual([]);
+    await strandConnected;
   }, 3 * STARTUP_MS + 2 * OP_MS);
 
   it('step 4: an owner of another cadre presenting the same secret is refused as already-claimed', async () => {

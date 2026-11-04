@@ -237,9 +237,10 @@ const log = debug('sereus:cadre:node');
 const timing = debug('sereus:cadre:timing');
 
 /**
- * How often a running strand re-asks each connected sibling that last ANSWERED
- * (even with nothing) for its strand-network addresses, and re-merges them into
- * its own libp2p address book ({@link CadreNode.refreshStrandPeerAddrs}).
+ * How often a running strand re-asks each connected sibling that last answered WITH
+ * addresses for its strand-network addresses, and re-merges them into its own libp2p
+ * address book ({@link CadreNode.refreshStrandPeerAddrs}); also the longest wait
+ * after an answer with none ({@link nextStrandAddrAsk}).
  * Overridable per node via `network.controlCohort.strandAddrRefreshMs`.
  *
  * Ten minutes sits comfortably inside the peerStore's one-hour address expiry
@@ -250,10 +251,17 @@ const timing = debug('sereus:cadre:timing');
 export const STRAND_PEER_ADDR_REFRESH_MS = 10 * 60 * 1000;
 
 /**
- * How soon {@link CadreNode.refreshStrandPeerAddrs} re-asks a sibling that did NOT
- * answer — unreachable, `unavailable`, or `refused`. A refusal matters most: a
- * phone asking before its `CadrePeer` row has replicated to the sibling is refused
- * and its delegate grant goes unrecorded, and waiting the full
+ * The first wait after an ask that produced no address ({@link nextStrandAddrAsk}),
+ * doubling per further such ask. One second is the step `CLAIM_RESTART_REDIAL_STEP_MS`
+ * uses for the same restart on the control connection.
+ */
+export const STRAND_PEER_ADDR_FIRST_RETRY_MS = 1_000;
+
+/**
+ * The longest wait after a sibling did NOT answer — unreachable, `unavailable`, or
+ * `unsupported` ({@link nextStrandAddrAsk}). A refusal matters most: a phone asking
+ * before its `CadrePeer` row has replicated to the sibling is refused and its
+ * delegate grant goes unrecorded, and waiting the full
  * {@link STRAND_PEER_ADDR_REFRESH_MS} for the next try is the delay this bounds.
  * A pass arms its own wake for the earliest due time it leaves behind
  * (`nextReconcileWakeMs`), so a sibling that keeps failing costs one timed-out
@@ -355,12 +363,39 @@ function addressesOfFirst(members: readonly string[], peerId: string | null): st
 }
 
 /**
- * Whether a sibling actually answered a strand-addr RPC — with addresses or
- * without — as opposed to being unreachable, unavailable, or refusing us. Decides
- * which of the refresh and retry intervals it waits before the next ask.
+ * When to ask a (sibling, strand) for addresses again, from how the ask just made ended
+ * and `priorStreak`, the consecutive asks before it that produced no address. Returns the
+ * wait and the streak to remember.
+ *
+ * An answer with addresses waits `refreshMs` and ends the streak. Anything else waits
+ * {@link STRAND_PEER_ADDR_FIRST_RETRY_MS}, doubling along the streak: a sibling that is
+ * starting up fails, then answers `empty` until its strand launches, then answers with
+ * addresses, all within seconds, so `empty` and the failures share one streak and a retry
+ * landing in the `empty` stretch is followed by another within seconds.
+ *
+ * A failure stops climbing at {@link STRAND_PEER_ADDR_RETRY_MS}. `empty` climbs to
+ * `refreshMs`, because it is also a steady state that keeps one ask per refresh interval:
+ * a phone has no listening strand addresses and always answers it, and so does a
+ * hibernating sibling. `refreshMs` caps both, so a configured refresh shorter than the
+ * retry does not leave a failing sibling waiting longer than a healthy one.
+ *
+ * NOTE: the `empty` climb is 10 asks in its first 17 minutes rather than 2 (counted from the
+ * steps, not measured), per (sibling, strand) and per new control connection, and its steps
+ * below the 2-minute backstop are 7 extra reconcile passes. If those wakes show up on a phone's
+ * battery or in pass counts, stop the `empty` steps from waking a pass and let them wait for
+ * the backstop.
  */
-function siblingAnswered(outcome: StrandAddrOutcome): boolean {
-  return outcome === 'answered' || outcome === 'empty';
+export function nextStrandAddrAsk(
+  outcome: StrandAddrOutcome,
+  priorStreak: number,
+  refreshMs: number
+): { waitMs: number; streak: number } {
+  if (outcome === 'answered') {
+    return { waitMs: refreshMs, streak: 0 };
+  }
+  const streak = priorStreak + 1;
+  const capMs = outcome === 'empty' ? refreshMs : Math.min(refreshMs, STRAND_PEER_ADDR_RETRY_MS);
+  return { waitMs: Math.min(STRAND_PEER_ADDR_FIRST_RETRY_MS * 2 ** (streak - 1), capMs), streak };
 }
 
 /**
@@ -857,14 +892,20 @@ export class CadreNode implements SAppIdLookup {
    * missing key is due. Bounds {@link refreshStrandPeerAddrs}'s fan-out per
    * (sibling, strand) rather than per strand, so a sibling that connects after a
    * pass is asked on the pass its connection starts instead of waiting out a stamp
-   * another sibling's answer set. An answer (even an empty one) makes the sibling
-   * due again in {@link STRAND_PEER_ADDR_REFRESH_MS}; no answer, in
-   * {@link STRAND_PEER_ADDR_RETRY_MS}, and each pass arms its own wake for the
-   * earliest due time it leaves behind (`nextReconcileWakeMs`). Keys whose strand
-   * stopped running or whose sibling is no longer connected are pruned every pass,
-   * so a resumed strand and a reconnected sibling are both asked at once.
+   * another sibling's answer set. {@link nextStrandAddrAsk} sets each due time from the
+   * ask's outcome, and each pass arms its own wake for the earliest due time it leaves
+   * behind (`nextReconcileWakeMs`). Keys whose strand stopped running or whose sibling
+   * is no longer connected are pruned every pass, so a resumed strand and a reconnected
+   * sibling are both asked at once.
    */
   private readonly strandAddrAskDueAt = new Map<string, number>();
+
+  /**
+   * Consecutive asks of each (sibling, strand) that produced no address, keyed like
+   * {@link strandAddrAskDueAt} and pruned with it: a reconnected sibling may be a new
+   * incarnation, so it starts again at {@link nextStrandAddrAsk}'s first step.
+   */
+  private readonly strandAddrAskStreak = new Map<string, number>();
 
   /**
    * The strand-network addresses a formation carried back
@@ -7792,11 +7833,11 @@ export class CadreNode implements SAppIdLookup {
    *
    * Due times are per (sibling, strand) and set from each sibling's own outcome, so
    * a sibling that connects late — a phone joining after the party's always-on
-   * machines — is asked on the pass its connection starts, and one that could not
-   * answer or refused (its view of the membership may not include us yet) is retried
-   * within {@link STRAND_PEER_ADDR_RETRY_MS} rather than
-   * {@link STRAND_PEER_ADDR_REFRESH_MS}; the pass that stamped the retry arms a wake
-   * for it ({@link armReconcileWake}).
+   * machines — is asked on the pass its connection starts, and one that gave no
+   * address (it is restarting, its strand has not launched, or its view of the
+   * membership does not include us yet) is retried within seconds, on the climbing
+   * wait of {@link nextStrandAddrAsk}; the pass that stamped the retry arms a wake for
+   * it ({@link armReconcileWake}).
    *
    * Distinct from {@link refreshDelegateGrants}, deliberately: that pass covers
    * RELAYS on a `DELEGATE_GRANT_TTL_MS / 2` throttle to keep circuit-relay
@@ -7823,6 +7864,7 @@ export class CadreNode implements SAppIdLookup {
     }
     if (running.size === 0) {
       this.strandAddrAskDueAt.clear();
+      this.strandAddrAskStreak.clear();
       return;
     }
     const targets = await this.strandAddrRefreshTargets();
@@ -7836,7 +7878,9 @@ export class CadreNode implements SAppIdLookup {
     // phone restart, a new relay reservation) must be asked on its next connected
     // tick. An enumeration failure prunes everything, which costs one extra round of
     // asks, never a missed one.
-    prunePeerStrandKeys(this.strandAddrAskDueAt, running, new Set(targets.map((t) => t.peerId)));
+    const connected = new Set(targets.map((t) => t.peerId));
+    prunePeerStrandKeys(this.strandAddrAskDueAt, running, connected);
+    prunePeerStrandKeys(this.strandAddrAskStreak, running, connected);
     await Promise.all([...running].map((strandId) => this.refreshOneStrandPeerAddrs(strandId, targets, now)));
   }
 
@@ -7998,11 +8042,11 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * RPC `due` siblings for `strandId` and set each one's next due time from its own
-   * outcome: an answer, even an empty one, waits the full refresh interval; anything
-   * else retries in {@link STRAND_PEER_ADDR_RETRY_MS} (or the refresh interval, if
-   * configured shorter). Stamped before the caller
-   * re-checks that the strand is still running, so a strand torn down mid-pass still
-   * records who was asked.
+   * outcome ({@link nextStrandAddrAsk}). Stamped before the caller re-checks that the
+   * strand is still running, so a strand torn down mid-pass still records who was asked.
+   * Stamped from the pass's `now`, taken before the ask, so an ask that outlasted its wait
+   * is due at once; that cannot spin, because the next ask has to outlast a wait at least as
+   * long.
    */
   private async askSiblingsForStrandAddrs(
     controlNode: Libp2p,
@@ -8013,12 +8057,11 @@ export class CadreNode implements SAppIdLookup {
   ): Promise<string[]> {
     const { addrs, outcomes } = await this.collectSiblingStrandAddrs(controlNode, [...due], strandId, delegatePeerId);
     const refreshMs = this.config.network?.controlCohort?.strandAddrRefreshMs ?? STRAND_PEER_ADDR_REFRESH_MS;
-    // A configured refresh shorter than the retry must not leave a failing sibling
-    // waiting longer than a healthy one.
-    const retryMs = Math.min(refreshMs, STRAND_PEER_ADDR_RETRY_MS);
     for (const [peerId, outcome] of outcomes) {
-      const waitMs = siblingAnswered(outcome) ? refreshMs : retryMs;
-      this.strandAddrAskDueAt.set(peerStrandKey(peerId, strandId), now + waitMs);
+      const key = peerStrandKey(peerId, strandId);
+      const { waitMs, streak } = nextStrandAddrAsk(outcome, this.strandAddrAskStreak.get(key) ?? 0, refreshMs);
+      this.strandAddrAskStreak.set(key, streak);
+      this.strandAddrAskDueAt.set(key, now + waitMs);
     }
     return addrs;
   }

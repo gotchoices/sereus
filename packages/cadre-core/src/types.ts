@@ -624,12 +624,13 @@ export interface NetworkConfig {
     perAddressDialTimeoutMs?: number;
     /**
      * How long a running strand waits, after a sibling answers its strand-addr
-     * RPC, before asking that sibling again for its strand-network addresses — a
-     * step of the reconcile pass, scheduled per (sibling, strand). A sibling that
-     * did not answer is retried sooner, on `STRAND_PEER_ADDR_RETRY_MS` (or this
-     * interval, when it is set shorter). Defaults to
-     * `STRAND_PEER_ADDR_REFRESH_MS` (10 min); must stay well under the peerStore's
-     * one-hour address expiry.
+     * RPC with addresses, before asking that sibling again for its strand-network
+     * addresses — a step of the reconcile pass, scheduled per (sibling, strand). A
+     * sibling that gave no address is retried sooner, on a wait that starts at
+     * `STRAND_PEER_ADDR_FIRST_RETRY_MS` and doubles up to this interval after an
+     * empty answer, or up to `STRAND_PEER_ADDR_RETRY_MS` (or this interval, when it
+     * is set shorter) after a failure. Defaults to `STRAND_PEER_ADDR_REFRESH_MS`
+     * (10 min); must stay well under the peerStore's one-hour address expiry.
      */
     strandAddrRefreshMs?: number;
   };

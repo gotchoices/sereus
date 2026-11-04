@@ -3,10 +3,10 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p, PeerId } from '@libp2p/interface';
-import { CadreNode, STRAND_PEER_ADDR_REFRESH_MS, STRAND_PEER_ADDR_RETRY_MS } from '../src/cadre-node.js';
+import { CadreNode, STRAND_PEER_ADDR_FIRST_RETRY_MS, STRAND_PEER_ADDR_REFRESH_MS, STRAND_PEER_ADDR_RETRY_MS, nextStrandAddrAsk } from '../src/cadre-node.js';
 import { MemoryBootstrapPeerStore } from '../src/bootstrap-peer-store.js';
 import type { CadreNodeConfig, SAppConfig, StrandInstance, StrandRow } from '../src/types.js';
-import { StrandAddrService } from '../src/strand-addr-protocol.js';
+import { StrandAddrService, type StrandAddrOutcome } from '../src/strand-addr-protocol.js';
 import { peerStrandKey } from '../src/delegate-admission.js';
 import { duplexPair } from './wake-stream-helpers.js';
 import { fretEntry, fretService, type FretEntryFake } from './fret-record-helpers.js';
@@ -229,6 +229,28 @@ async function crossPartyPeer(): Promise<{ peerId: string; entry: FretEntryFake;
 
 const T0 = 1_700_000_000_000;
 
+describe('nextStrandAddrAsk', () => {
+  const FIRST = STRAND_PEER_ADDR_FIRST_RETRY_MS;
+  const RETRY = STRAND_PEER_ADDR_RETRY_MS;
+  const REFRESH = STRAND_PEER_ADDR_REFRESH_MS;
+  const cases: Array<[name: string, outcome: StrandAddrOutcome, priorStreak: number, refreshMs: number, waitMs: number, streak: number]> = [
+    ['a failure starts at the first step', 'unreachable', 0, REFRESH, FIRST, 1],
+    ['an empty answer starts at the first step', 'empty', 0, REFRESH, FIRST, 1],
+    ['a failure doubles along the streak', 'unavailable', 3, REFRESH, 8 * FIRST, 4],
+    ['an empty answer continues the streak failures began', 'empty', 2, REFRESH, 4 * FIRST, 3],
+    ['a failure stops at the retry cap', 'unsupported', 6, REFRESH, RETRY, 7],
+    ['an empty answer climbs past the retry cap', 'empty', 6, REFRESH, 64 * FIRST, 7],
+    ['an empty answer stops at the refresh interval', 'empty', 10, REFRESH, REFRESH, 11],
+    ['a refresh shorter than the retry caps a failure', 'unreachable', 5, 30_000, 30_000, 6],
+    ['a refresh shorter than the first step caps it', 'unreachable', 0, FIRST / 2, FIRST / 2, 1],
+    ['an answer with addresses waits the refresh interval and ends the streak', 'answered', 7, REFRESH, REFRESH, 0],
+  ];
+
+  it.each(cases)('%s', (_name, outcome, priorStreak, refreshMs, waitMs, streak) => {
+    expect(nextStrandAddrAsk(outcome, priorStreak, refreshMs)).toEqual({ waitMs, streak });
+  });
+});
+
 describe('CadreNode.refreshStrandPeerAddrs', () => {
   it('merges each sibling\'s strand addresses into the strand node, keyed by the STRAND transport peer id', async () => {
     const [self, sib1, sib2, sib1Strand, sib2Strand, relay, ownStrand] = await Promise.all(
@@ -355,7 +377,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     expect(afterRecords.asked).toEqual([{ peerId: sibB, strandId: 's1' }]);
   });
 
-  it('retries a sibling that could not answer within STRAND_PEER_ADDR_RETRY_MS, a healthy one only after the full interval', async () => {
+  it('retries a sibling that could not answer on the climbing wait, a healthy one only after the full interval', async () => {
     const [self, sick, healthy, healthyStrand, ownStrand] = await Promise.all(
       Array.from({ length: 5 }, () => freshPeerId())
     );
@@ -373,14 +395,79 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     const askedOf = (peerId: string): number => harness.asked.filter((a) => a.peerId === peerId).length;
 
     await refresh(harness.node, T0);
-    await refresh(harness.node, T0 + STRAND_PEER_ADDR_RETRY_MS - 1);
+    await refresh(harness.node, T0 + STRAND_PEER_ADDR_FIRST_RETRY_MS - 1);
     expect([askedOf(sick), askedOf(healthy)]).toEqual([1, 1]);
 
-    await refresh(harness.node, T0 + STRAND_PEER_ADDR_RETRY_MS);
+    const second = T0 + STRAND_PEER_ADDR_FIRST_RETRY_MS;
+    await refresh(harness.node, second);
     expect([askedOf(sick), askedOf(healthy)]).toEqual([2, 1]);
+
+    // The second failure doubled the wait.
+    await refresh(harness.node, second + 2 * STRAND_PEER_ADDR_FIRST_RETRY_MS - 1);
+    expect(askedOf(sick)).toBe(2);
+    await refresh(harness.node, second + 2 * STRAND_PEER_ADDR_FIRST_RETRY_MS);
+    expect([askedOf(sick), askedOf(healthy)]).toEqual([3, 1]);
 
     await refresh(harness.node, T0 + STRAND_PEER_ADDR_REFRESH_MS);
     expect(askedOf(healthy)).toBe(2);
+  });
+
+  it('merges the addresses of a sibling that answered empty on the next step, then returns it to the refresh interval', async () => {
+    const [self, sib, sibStrand, ownStrand] = await Promise.all(
+      Array.from({ length: 4 }, () => freshPeerId())
+    );
+    const addr = `/ip4/10.0.0.1/tcp/1/p2p/${sibStrand}`;
+    const strand = fakeStrandNode(ownStrand);
+    const replies = new Map<string, Record<string, string[]>>([[sib, { 's1': [] }]]);
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
+      connections: [sib],
+      replies,
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+
+    await refresh(harness.node, T0);
+    expect(strand.merges).toEqual([]);
+
+    // The sibling's strand launched in the meantime.
+    replies.set(sib, { 's1': [addr] });
+    const second = T0 + STRAND_PEER_ADDR_FIRST_RETRY_MS;
+    await refresh(harness.node, second);
+    expect(strand.merges).toEqual([{ peerId: sibStrand, addrs: [addr] }]);
+    expect(askDueMap(harness.node).get(peerStrandKey(sib, 's1'))).toBe(second + STRAND_PEER_ADDR_REFRESH_MS);
+  });
+
+  it('starts the climbing wait again after the sibling reconnects or the strand resumes', async () => {
+    const [self, sib, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+    const strand = fakeStrandNode(ownStrand);
+    const key = peerStrandKey(sib, 's1');
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
+      connections: [sib],
+      replies: new Map([[sib, { 's1': [] }]]),
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+    /** Two asks, which leave the sibling on the ladder's second step; returns when the second ran. */
+    const climb = async (from: number): Promise<number> => {
+      await refresh(harness.node, from);
+      const second = from + STRAND_PEER_ADDR_FIRST_RETRY_MS;
+      await refresh(harness.node, second);
+      expect(askDueMap(harness.node).get(key)).toBe(second + 2 * STRAND_PEER_ADDR_FIRST_RETRY_MS);
+      return second;
+    };
+
+    const reconnectedAt = (await climb(T0)) + 1;
+    harness.connections.splice(0);
+    await refresh(harness.node, reconnectedAt);
+    harness.connections.push(sib);
+    const resumedAt = (await climb(reconnectedAt)) + 1;
+
+    harness.instances.set('s1', strandInstance('s1', undefined));
+    await refresh(harness.node, resumedAt);
+    harness.instances.set('s1', strandInstance('s1', strand.node));
+    await climb(resumedAt);
   });
 
   it('skips a hibernating strand and prunes its due times, so a resume refreshes at once', async () => {
