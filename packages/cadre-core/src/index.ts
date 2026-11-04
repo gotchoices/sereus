@@ -318,6 +318,14 @@ export {
   type PendingMembershipInviteSource
 } from './strand-membership-reconciler.js';
 
+// The party's machines as one closed strand sees them: the control-database seam the
+// reconciler binds the party's other machines through, and its pure projection.
+export {
+  partitionPartyStrandPeers,
+  type PartyStrandPeers,
+  type PartyStrandPeerSource
+} from './strand-party-peers.js';
+
 // The timer seam the self-rescheduling loops share (membership retry ladder, the table
 // change schedule the first-sync gate probes on) — injected by tests as a hand-cranked clock.
 export { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';

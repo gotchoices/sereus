@@ -555,7 +555,9 @@ database, which Optimystic replicates to **every node the party owns**:
   at the reconciler's poll interval) until the strand's rows have replicated to
   it and never blocking bring-up — see [Joining: no writes before the first
   sync](#joining-no-writes-before-the-first-sync) for why a joiner's first pass
-  finds nothing and what re-kicks it. A machine that
+  finds nothing and what re-kicks it, and [Binding the party's
+  machines](#binding-the-partys-machines) for the records the same loop writes for the
+  party's other machines. A machine that
   finds the member row already seated (a sibling redeemed first, or a manager
   admitted the party directly) instead *burns* its unspent invitation — files the
   consumption record against the existing member — so the bearer credential can
@@ -618,6 +620,16 @@ Android reinstall), mixed-platform cadres (Node `FileKeyStore` + RN secure store
 and migrating existing plaintext rows.
 
 Cross-reference: [`docs/architecture.md` → Node Key Material & the KeyStore Seam](architecture.md#node-key-material--the-keystore-seam).
+
+### Binding the party's machines
+
+A party's membership identity admits its machines through `Strand.MemberPeer` rows, one per (member key, strand peer id), and such a row is signed by the member key, which every machine of the party holds. So any machine of the party can bind any of the party's machines, and the runtime makes them do so, through the same membership reconciler that finishes a join (`strand-membership-reconciler.ts` → "Binding the party's other machines"):
+
+- **Every machine records its strand peer id.** At every closed-strand launch and resume, once the strand's node exists, the machine writes a `CadreControl.StrandPeer` row (the strand, its control peer id, its peer id in the strand), signed by its identity key, with or without the party key: a storage replica records itself too, and an open strand gets no row (nothing to bind into). A background write that never delays or fails the launch: it waits while a write could fork the party ([architecture.md → Writes made while alone](architecture.md#writes-made-while-alone)) and is retried on cohort growth and by every membership pass, a refusal because the machine's own `CadrePeer` row has not reached the node included. Rows are never updated or deleted, so a removed machine's rows keep its bindings attributable to it.
+- **Each machine holding the party key binds every live sibling.** Each membership pass reads the strand's `StrandPeer` rows, joins them to the cadre's live machines and tombstones read fresh from storage (the membership views' lag is exactly the window a key change races), and binds under the party's current key every live sibling's id that has none. A sibling offline when the party's key changed (a machine removal replaces it: [architecture.md → Removing a machine](architecture.md#removing-a-machine)) returns already bound by the machines that were there, and a replica with no party key is bound by its siblings. Two machines binding one sibling at once collide on the row's key; the loser finds the row on its next pass.
+- **A removed machine's binding is cleared once no key rotation is pending.** A `StrandPeer` row whose machine has a `CadrePeer` tombstone and no live row names a removed machine, and its binding under the current key is cleared through the member key's own branch of `removeMemberPeer`. Not while the party is moving to another key in the strand (a `PendingStrandPartyKey` row), and not while that cannot be read: that binding is the orphan the rotation is about to leave behind, and clearing it would hand the removed machine a clean slate the deny gate admits. After the swap, the step clears what a sibling lagging on the removal wrote under the new key. A removed machine's row naming a live machine's id cannot clear it: an id a live machine recorded is never read as removed.
+- **A machine bound only under a key that has left heals through a sibling.** Every other machine denies it, so its own pass cannot write and stops on the self-revocation. A sibling binding it under the current key takes it out of the deny set; the enforcer's restore signal (`onSelfRestored`) restarts its loop, which then writes its own binding. The `strand:revoked` the app saw in between was a false alarm ([What the app has to call](#what-the-app-has-to-call-and-what-the-removed-party-is-told)).
+- **What wakes a pass.** Launch and resume, a staged invitation, a change to the control record's `StrandPeer`, `CadrePeer` or `Revocation` table (one coalesced watch, every closed strand's loop), the enforcer's restore signal, and the loop's own ladder. A loop stops once every known machine is bound and nothing is left to clear; a pass that wrote confirms on the next.
 
 ### What a joiner's node remembers
 
@@ -787,7 +799,9 @@ Membership removal is governed by the same signed-approval discipline as admissi
   in the first place — tidying them up as routine housekeeping quietly re-opens the door.
   Anything reading those device records must still check membership separately rather than
   treating a device record as proof of it. Device records are written automatically —
-  every machine registers its own at strand bring-up — and one case cleans up after
+  every machine registers its own at strand bring-up, and a party's machines register
+  each other's and clear a removed machine's ([Binding the party's
+  machines](#binding-the-partys-machines)) — and one case cleans up after
   itself: the machine that issues a party-wide `unpublishStrand` clears its own record on
   the way out (best-effort, while it can still sign). Its party's *other* machines
   cannot — the same act destroys the identity key they would sign with — so their records
@@ -877,7 +891,14 @@ no longer the case.
   set raises a `strand:revoked` event naming the strand — the thing an app hangs a "you
   were removed" screen on. It is best-effort by nature: the node only learns if the removal
   reached it before the other side stopped talking to it, which is likely if it was online
-  at the time and impossible if it was not. Nothing is stopped on the removed node's
+  at the time and impossible if it was not. It can also be a false alarm: a machine whose
+  only device record is under a party key that has just left the strand — its own party
+  replaced the key before this machine's record of its strand identity reached the machine
+  doing the replacing — is denied until a sibling records it under the new key, which the
+  runtime does by itself ([Binding the party's machines](#binding-the-partys-machines)).
+  The event has fired by then and nothing tells the app the machine is served again, so a
+  "you were removed" screen built on this event alone can show briefly on a machine that
+  was not removed. Nothing is stopped on the removed node's
   behalf; it keeps its strand running, its replicated data and its member key, and is
   simply no longer talked to. What to do about that — leave the strand, warn the person,
   keep the local copy as a read-only archive — is the app's decision, not the runtime's.

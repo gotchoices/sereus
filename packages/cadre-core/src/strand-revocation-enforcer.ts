@@ -261,6 +261,17 @@ export interface StrandRevocationEnforcerDeps {
    */
   onSelfRevoked?: () => void;
   /**
+   * Called ONCE each time this node's own peer id LEAVES the deny set after
+   * {@link onSelfRevoked} reported it there — a manager re-admitted the party, or a
+   * sibling machine bound this node under the party's current key after a key rotation
+   * left its only binding orphaned (`strand-membership-reconciler.ts` → "Binding the
+   * party's other machines"). Not fired by a first refresh that finds this node clear.
+   * `StrandInstanceManager` wires it to the strand's membership reconciler, which stopped
+   * on the revocation and restarts here. A throw is logged and swallowed, as for
+   * {@link onSelfRevoked}.
+   */
+  onSelfRestored?: () => void;
+  /**
    * Subscribe `onChange` to changes in `Strand.Member` and `Strand.MemberPeer`
    * (`StrandDatabase.watchTables`). Absent, or throwing: refreshes come from
    * start, the backstop, retries and wide-strand follow-ups only (unit tests).
@@ -574,22 +585,29 @@ export class StrandRevocationEnforcer {
    * into the revoked state: fired once on entry, and re-armed the moment this
    * node is out of the set again — a manager can re-admit a party it removed
    * (a fresh `Member` row makes the orphaned bindings live again), and a second
-   * removal has to be reported like the first.
+   * removal has to be reported like the first. Leaving the set after a report is
+   * the other edge, {@link StrandRevocationEnforcerDeps.onSelfRestored}.
    */
   private trackSelfRevoked(selfRevoked: boolean): void {
-    if (!selfRevoked) {
-      this.selfRevokedSignaled = false;
+    if (selfRevoked === this.selfRevokedSignaled) {
       return;
     }
-    if (this.selfRevokedSignaled) {
-      return;
+    this.selfRevokedSignaled = selfRevoked;
+    if (selfRevoked) {
+      log('[%s] THIS node is revoked from the strand (removed or left) — signalling', this.deps.label);
+      this.signalSelf(this.deps.onSelfRevoked, 'onSelfRevoked');
+    } else {
+      log('[%s] THIS node is no longer revoked from the strand — signalling', this.deps.label);
+      this.signalSelf(this.deps.onSelfRestored, 'onSelfRestored');
     }
-    this.selfRevokedSignaled = true;
-    log('[%s] THIS node is revoked from the strand (removed or left) — signalling', this.deps.label);
+  }
+
+  /** Fire one of the self-state handlers; a throw is logged and must not derail the sweep. */
+  private signalSelf(handler: (() => void) | undefined, name: string): void {
     try {
-      this.deps.onSelfRevoked?.();
+      handler?.();
     } catch (error) {
-      log('[%s] onSelfRevoked handler threw: %o', this.deps.label, error);
+      log('[%s] %s handler threw: %o', this.deps.label, name, error);
     }
   }
 }

@@ -536,6 +536,37 @@ describe('teardown sweep', () => {
 
       expect(onSelfRevoked).not.toHaveBeenCalled();
     });
+
+    it('signals onSelfRestored ONCE when this node leaves the set after a revocation, never on a first clean pass', async () => {
+      // A sibling binding this node under the party's current key (or a re-admission) takes
+      // it out of the set; the membership reconciler that stopped on the revocation restarts
+      // on this edge, so it must fire once per exit and not for a node that was never in.
+      const onSelfRevoked = vi.fn();
+      const onSelfRestored = vi.fn();
+      const { network } = fakeNetwork([]);
+      let source = rows(['live'], [['live', SELF]]);
+      const enforcer = new StrandRevocationEnforcer({
+        label: 'teardown',
+        readRows: async () => source,
+        getNetwork: () => network,
+        onSelfRevoked,
+        onSelfRestored
+      });
+
+      await enforcer.refresh();
+      expect(onSelfRestored).not.toHaveBeenCalled();
+
+      source = rows([], [['live', SELF]]);
+      await enforcer.refresh();
+      expect(onSelfRevoked).toHaveBeenCalledTimes(1);
+      expect(onSelfRestored).not.toHaveBeenCalled();
+
+      source = rows(['live'], [['live', SELF]]);
+      await enforcer.refresh();
+      await enforcer.refresh();
+      expect(onSelfRestored).toHaveBeenCalledTimes(1);
+      expect(onSelfRevoked).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

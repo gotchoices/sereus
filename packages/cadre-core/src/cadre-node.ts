@@ -68,7 +68,7 @@ import type {
 } from './types.js';
 import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS, DEFAULT_CONNECTION_MONITOR } from './types.js';
 import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
-import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64 } from './ed25519-key.js';
+import { ed25519KeyPairFromLibp2p, ed25519MessageSigner, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
 import {
   isSendingStatus,
@@ -108,6 +108,7 @@ import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSigner } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
 import { describeMachines, planMachineRemoval, MachineRemovalRefusedError } from './machine-removal.js';
+import { partitionPartyStrandPeers, type PartyStrandPeerSource, type PartyStrandPeers } from './strand-party-peers.js';
 import { describeOwnerKeys, namedOwnerKey, planOwnerKeyRemoval, revouchWithinPlan, OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-keys.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
@@ -1193,6 +1194,27 @@ export class CadreNode implements SAppIdLookup {
   /** This node's own `DeviceToken` self-write committed local-only (re-touched on growth). */
   private pendingSelfDeviceWrite = false;
   /**
+   * This machine's `StrandPeer` rows ({@link publishStrandPeer}) that could not be written
+   * yet, by strand id → this machine's peer id in that strand: deferred while a write could
+   * fork the party, or refused because this machine's own `CadrePeer` row has not reached
+   * this node. Re-attempted by the growth drain ({@link publishDeferredStrandPeers}) and by
+   * each membership reconciler pass of the strand. Cleared on stop with the queues above: the
+   * next start's launches publish again.
+   */
+  private readonly deferredStrandPeerWrites = new Map<string, string>();
+  /**
+   * Strands whose `StrandPeer` row for this machine this process has found present (written
+   * by it, or already stored). Rows are never updated or deleted, so once present the row
+   * stays, and a later publish for the strand costs nothing. Per session.
+   */
+  private readonly strandPeerRowsHeld = new Set<string>();
+  /**
+   * The watch that wakes every closed strand's membership reconciler when the party's
+   * machines change ({@link StrandInstanceManager.notifyPartyPeersChanged}); taken in
+   * `start()` beside the gate watch, disposed in `stop()`.
+   */
+  private strandPartyPeersWatch: TableChangeWatch | null = null;
+  /**
    * Guards the one-shot, first-cohort-growth reconstruction: an owner re-touches
    * every membership row it may have authored that could be unreplicated (covering
    * writes made before this process started, which the in-memory queue cannot know).
@@ -1514,6 +1536,22 @@ export class CadreNode implements SAppIdLookup {
       // `CadrePeer` or `OwnerKey` row refers to it, and that row is itself such a change.
       this.membershipGateWatch = this.controlDatabase.watchMembershipTables(
         () => this.onMembershipGateTablesChanged(), { label: 'membership-gate' });
+      // The party-machine watch: a `StrandPeer` row arriving, a machine's `CadrePeer` row
+      // or a tombstone, written here or replicated in, re-arms every closed strand's
+      // membership reconciler, which binds the party's other machines under its current
+      // key (`strand-membership-reconciler.ts` → "Binding the party's other machines").
+      // Coalesced by the watch; a loop with nothing to do confirms and stops again.
+      //
+      // NOTE: `CadrePeer` changes on every machine's self-record heartbeat, so each closed
+      // strand's loop runs one confirming pass per heartbeat of any party machine; the
+      // reconciler's pass NOTE says what that costs. A table this `Database` has not yet
+      // touched hears local commits only (`table-change-watch.ts`): `StrandPeer` is first
+      // read by the publish every closed-strand launch makes, so a node running a closed
+      // strand hears replicated rows from its first launch on.
+      this.strandPartyPeersWatch = this.controlDatabase.watchTables(
+        ['CadreControl.StrandPeer', 'CadreControl.CadrePeer', 'CadreControl.Revocation'],
+        async () => this.strandManager.notifyPartyPeersChanged(),
+        { label: 'strand-party-peers' });
       // Committed-delete seam → write-while-alone revocation queue. Same wiring
       // window argument as the membership listener above.
       this.controlDatabase.setGuardedDeleteListener((revocation) => this.noteGuardedDelete(revocation));
@@ -3882,6 +3920,8 @@ export class CadreNode implements SAppIdLookup {
     this.pendingSelfPeerWrite = false;
     this.selfPeerPublishDeferred = false;
     this.pendingSelfDeviceWrite = false;
+    this.deferredStrandPeerWrites.clear();
+    this.strandPeerRowsHeld.clear();
     // Self-record publication history is per-session too: a restarted node re-publishes
     // from scratch, and carrying the previous lifetime's stamp forward would either
     // suppress the stale-record warning or fire it on a node that just came up.
@@ -4956,6 +4996,9 @@ export class CadreNode implements SAppIdLookup {
       await this.retouchSelfDeviceToken();
       this.pendingSelfDeviceWrite = false;
     }
+    //    This machine's `StrandPeer` rows deferred while alone or refused: each strand's
+    //    launch made its publish, so only what that publish could not write is here.
+    await this.publishDeferredStrandPeers();
 
     // 3. First growth: an owner reconstructs membership rows it may have
     //    authored that never replicated (covers writes from before this process
@@ -5866,6 +5909,8 @@ export class CadreNode implements SAppIdLookup {
       // the listener goes, keeps a closing commit from scheduling a gate refresh.
       this.membershipGateWatch?.dispose();
       this.membershipGateWatch = null;
+      this.strandPartyPeersWatch?.dispose();
+      this.strandPartyPeersWatch = null;
       this.controlDatabase.setMembershipChangeListener(null);
       this.controlDatabase.setGuardedDeleteListener(null);
       this.controlDatabase.setControlWriteAbandonedListener(null);
@@ -7392,6 +7437,10 @@ export class CadreNode implements SAppIdLookup {
         get: () => this.pendingMembershipInvites.get(strand.Id),
         clear: (settled) => this.unstageMembershipInvite(strand.Id, settled)
       },
+      // The party's machines in this strand, for every closed strand whether or not this
+      // machine holds the party key: a replica publishes its own StrandPeer row through it
+      // and is bound by its siblings; a machine with the key also binds them.
+      ...(strand.Type === 'c' && { partyPeers: this.partyStrandPeerSource(strand.Id) }),
       // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder,
       // Retained with the launch config, so a hibernation wake rebuilds under the
@@ -9839,7 +9888,11 @@ export class CadreNode implements SAppIdLookup {
    * this node's membership predicate as the `trusted` test.
    */
   private async readMachines(controlDatabase: ControlDatabase): Promise<CadreMachine[]> {
-    const rows = await controlDatabase.queryCadrePeers();
+    return await this.describeMachineRows(controlDatabase, await controlDatabase.queryCadrePeers());
+  }
+
+  /** {@link readMachines} over `rows` already read, for a caller that read them fresh. */
+  private async describeMachineRows(controlDatabase: ControlDatabase, rows: readonly CadrePeerRow[]): Promise<CadreMachine[]> {
     const chain = await this.chainFor(rows, this.invitationChainSource(controlDatabase, true));
     const selfPeerId = this.peerId?.toString() ?? null;
     return describeMachines({
@@ -9848,6 +9901,93 @@ export class CadreNode implements SAppIdLookup {
       rows,
       trusted: (row) => row.peerId !== selfPeerId && this.hasAnchoredProof(row, chain),
     });
+  }
+
+  /**
+   * The control-database seam of one closed strand's launch for the party's machines in it
+   * (`StartStrandConfig.partyPeers`, `strand-party-peers.ts`): this machine's own `StrandPeer`
+   * row, the party's other machines' peer ids, and whether a party key rotation is pending.
+   * The reads reject rather than answer "nothing" when the control database is gone, which the
+   * reconciler treats as "unknown".
+   */
+  private partyStrandPeerSource(strandId: string): PartyStrandPeerSource {
+    return {
+      publishOwn: (strandPeerId) => this.publishStrandPeer(strandId, strandPeerId),
+      read: () => this.readPartyStrandPeers(strandId),
+      isRotationPending: async () => (await this.requireControlDatabase('read a pending strand party key').queryPendingStrandPartyKey(strandId)) !== null,
+    };
+  }
+
+  /** The control database, or a throw naming what `purpose` needed it for, for a seam whose caller contains the throw. */
+  private requireControlDatabase(purpose: string): ControlDatabase {
+    if (!this._running || !this.controlDatabase) {
+      throw new Error(`CadreNode is stopped: no control database to ${purpose}`);
+    }
+    return this.controlDatabase;
+  }
+
+  /**
+   * Publish this machine's peer id in `strandId` to the party's control database — its
+   * `StrandPeer` row, signed by the identity key as the self record is
+   * ({@link ControlDatabase.insertStrandPeer}). Insert-if-absent, and remembered once present
+   * ({@link strandPeerRowsHeld}), so the per-pass re-attempt the membership reconciler makes
+   * costs nothing after the first. A background write like the self-record publish: nothing is
+   * written while a write could fork the party ({@link controlWriteCouldFork}), and a refusal —
+   * the schema wants this machine's own `CadrePeer` row, which may not have reached this node —
+   * is logged; either leaves the row in {@link deferredStrandPeerWrites} for the growth drain
+   * and the next reconciler pass. Written regardless of whether this machine holds the party's
+   * member key: a storage replica is bound by its siblings. A node on an ephemeral identity
+   * cannot sign the row and writes nothing. Never rejects.
+   */
+  private async publishStrandPeer(strandId: string, strandPeerId: string): Promise<void> {
+    if (this.strandPeerRowsHeld.has(strandId) || !this._running || !this.controlDatabase) {
+      return;
+    }
+    if (await this.controlWriteCouldFork()) {
+      this.deferredStrandPeerWrites.set(strandId, strandPeerId);
+      log('StrandPeer row for strand %s deferred: no sibling reachable and the party has other members; the next growth drain writes it', strandId);
+      return;
+    }
+    const signingKey = this.getSelfSigningKey();
+    if (!signingKey) {
+      log('StrandPeer row for strand %s not written: this node runs on an ephemeral identity and cannot sign it', strandId);
+      return;
+    }
+    try {
+      const written = await this.controlDatabase.insertStrandPeer({ strandId, strandPeerId }, ed25519MessageSigner(signingKey.privateKeyB64));
+      this.strandPeerRowsHeld.add(strandId);
+      this.deferredStrandPeerWrites.delete(strandId);
+      log('StrandPeer row for strand %s %s (this machine is %s there)', strandId, written ? 'written' : 'already present', strandPeerId);
+    } catch (error) {
+      this.deferredStrandPeerWrites.set(strandId, strandPeerId);
+      log('StrandPeer row for strand %s refused (this machine\'s own CadrePeer row may not be here yet); retried on cohort growth and by the next membership pass: %o', strandId, error);
+    }
+  }
+
+  /** The growth drain's re-attempt of every `StrandPeer` row in {@link deferredStrandPeerWrites}; each contains its own failure. */
+  private async publishDeferredStrandPeers(): Promise<void> {
+    for (const [strandId, strandPeerId] of [...this.deferredStrandPeerWrites]) {
+      await this.publishStrandPeer(strandId, strandPeerId);
+    }
+  }
+
+  /**
+   * The party's machines' peer ids in `strandId` ({@link PartyStrandPeers}): the strand's
+   * `StrandPeer` rows joined to the party's live machines and its `CadrePeer` tombstones
+   * (`partitionPartyStrandPeers`). The membership rows are read FRESH
+   * ({@link ControlDatabase.queryMachineRowsFresh}), not from the membership views: a
+   * sibling that binds a machine under the party's new key from a view that has not heard
+   * of the machine's removal would bind the machine the rotation exists to shut out, and
+   * the views' lag is exactly that window. Rejects when any read fails; never answers
+   * "no machines" for a failed read.
+   */
+  private async readPartyStrandPeers(strandId: string): Promise<PartyStrandPeers> {
+    const controlDatabase = this.requireControlDatabase('read the party\'s strand peers');
+    const [rows, { peers, tombstones }] = await Promise.all([
+      controlDatabase.queryStrandPeers(strandId),
+      controlDatabase.queryMachineRowsFresh(),
+    ]);
+    return partitionPartyStrandPeers(rows, await this.describeMachineRows(controlDatabase, peers), tombstones);
   }
 
   /**

@@ -876,6 +876,19 @@ const REVOCATION_SELECT_SQL = 'select TableName, RowKey, StampId, ReissuedAt, Si
 const CADRE_PEER_SELECT_SQL = 'select PeerId, Multiaddr, StampId, VouchOwner, VouchSig, VouchUsage, PublicKey, UpdatedAt, Profile, Sig from CadreControl.CadrePeer';
 const OWNER_KEY_SELECT_SQL = 'select Key, Label, StampId, VouchOwner, VouchSig, VouchUsage from CadreControl.OwnerKey';
 
+/** The `CadrePeer` rows of `rows` whose stamp is not in `revoked` — the live ones, as every reader judges them. */
+function liveCadrePeerRows(rows: readonly Record<string, SqlValue>[], revoked: ReadonlySet<string>): CadrePeerRow[] {
+  const live: CadrePeerRow[] = [];
+  for (const row of rows) {
+    const peer = cadrePeerRowOf(row);
+    if (peer.stampId !== null && revoked.has(peer.stampId)) {
+      continue;
+    }
+    live.push(peer);
+  }
+  return live;
+}
+
 /** A stored `CadrePeer` row as a {@link CadrePeerRow}. */
 function cadrePeerRowOf(row: Record<string, SqlValue>): CadrePeerRow {
   return {
@@ -2079,15 +2092,26 @@ export class ControlDatabase {
   async queryCadrePeers(retry = true): Promise<CadrePeerRow[]> {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer', retry);
-    const rows: CadrePeerRow[] = [];
-    for (const row of await this.readMembershipRows(this.cadrePeerView, retry)) {
-      const peer = cadrePeerRowOf(row);
-      if (peer.stampId !== null && revoked.has(peer.stampId)) {
-        continue;
-      }
-      rows.push(peer);
-    }
-    return rows;
+    return liveCadrePeerRows(await this.readMembershipRows(this.cadrePeerView, retry), revoked);
+  }
+
+  /**
+   * The live `CadrePeer` rows as {@link queryCadrePeers} judges them, and every `Revocation`
+   * tombstone, both read through storage now rather than served from the membership views.
+   * For the one reader that races the views' lag: the membership reconciler's sibling binding
+   * (`strand-party-peers.ts`), which must not bind a machine under a key because the removal
+   * that tombstoned it reached storage with no change event, which the view would serve for
+   * up to `MEMBERSHIP_VIEW_MAX_AGE_MS`. The chain tables stay on the views: a chain row missing
+   * makes a machine untrusted, which that reader ignores rather than acts on. One read of each
+   * table; the tombstones filter the rows and are returned, so the caller joins them once.
+   */
+  async queryMachineRowsFresh(): Promise<{ peers: CadrePeerRow[]; tombstones: RevocationRow[] }> {
+    this.ensureInitialized();
+    const tombstones = (await this.readRevocationRowsOrNone(true, 'fresh'))
+      .filter((row) => row.TableName !== REVOCATION_LEDGER_MARKER.tableName)
+      .map(revocationRowOf);
+    const revoked = new Set(tombstones.filter((tombstone) => tombstone.tableName === 'CadrePeer').map((tombstone) => tombstone.stampId));
+    return { peers: liveCadrePeerRows(await this.cadrePeerView.readThrough(true), revoked), tombstones };
   }
 
   /**
@@ -2377,9 +2401,11 @@ export class ControlDatabase {
    * admission gate's 2 s deadline (`ADMISSION_DECISION_TIMEOUT_MS`), skip the retry for this
    * read when the first attempt fails `cohort-unreachable`.
    */
-  private async readRevocationRowsOrNone(retry: boolean): Promise<readonly Record<string, SqlValue>[]> {
+  private async readRevocationRowsOrNone(retry: boolean, served: 'view' | 'fresh' = 'view'): Promise<readonly Record<string, SqlValue>[]> {
     try {
-      return await this.readMembershipRows(this.revocationView, retry);
+      return served === 'fresh'
+        ? await this.revocationView.readThrough(retry)
+        : await this.readMembershipRows(this.revocationView, retry);
     } catch (error) {
       if (!isCohortUnreachableRead(error)) {
         throw error;

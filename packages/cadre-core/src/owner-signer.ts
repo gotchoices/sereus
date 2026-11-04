@@ -9,9 +9,7 @@
  * Imports only `@optimystic/quereus-plugin-crypto` and `uint8arrays`, so it loads on React
  * Native and in the browser.
  */
-import { toString as uint8ArrayToString } from 'uint8arrays';
-import { sign } from '@optimystic/quereus-plugin-crypto';
-import { ed25519PublicKeyFromPrivate, requireEd25519PrivateKeyB64 } from './ed25519-key.js';
+import { ed25519MessageSigner, ed25519PublicKeyFromPrivate, requireEd25519PrivateKeyB64 } from './ed25519-key.js';
 
 /** What a backend that asks the user shows them. */
 export interface OwnerSigningRequest {
@@ -83,8 +81,8 @@ export class OwnerSigningDeclinedError extends Error {
  */
 export function softwareOwnerSigner(privateKeyB64: string): OwnerSigner {
 	const privateKey = requireEd25519PrivateKeyB64(privateKeyB64, 'owner private key');
-	const signMessage: OwnerSign = async (message) =>
-		sign(uint8ArrayToString(message, 'base64url'), privateKey, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
+	const signBytes = ed25519MessageSigner(privateKey);
+	const signMessage: OwnerSign = async (message) => signBytes(message);
 	return {
 		publicKey: ed25519PublicKeyFromPrivate(privateKey),
 		async approve<T>(_request: OwnerSigningRequest, body: (sign: OwnerSign) => Promise<T>): Promise<T> {

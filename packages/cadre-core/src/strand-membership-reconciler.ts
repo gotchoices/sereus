@@ -1,10 +1,12 @@
 /**
  * Strand membership reconciliation: the per-instance background loop that finishes a
- * party's join at strand bring-up. Every machine of a party that runs a closed strand
- * ends up with (1) the party's `Strand.Member` row seated — redeeming the
- * formation-staged invitation if one is pending — and (2) its own durable
- * machine→party binding (`Strand.MemberPeer`) written, which is what revocation
- * enforcement and future admission control key on.
+ * party's join at strand bring-up and keeps the party's machine bindings whole. Every
+ * machine of a party that runs a closed strand ends up with (1) the party's `Strand.Member`
+ * row seated — redeeming the formation-staged invitation if one is pending — (2) its own
+ * durable machine→party binding (`Strand.MemberPeer`) written, which is what revocation
+ * enforcement and future admission control key on, and (3) every live sibling machine's
+ * binding written under the party's current key, with a removed machine's binding cleared —
+ * see "Binding the party's other machines" below.
  *
  * ## Contract
  *
@@ -26,10 +28,12 @@
  *   for someone to admit this party — nothing this machine can do faster — so it re-arms on
  *   the flat poll interval and resets the ladder. The loop stops on the done state.
  * - **Done state**: the party's member row is visible locally, this machine's own binding
- *   is in place, AND no invitation is still staged — the loop stops. A LATER revocation is
- *   the enforcer's business, not this loop's; a resume rebuilds the reconciler and
- *   re-verifies from scratch (every write is idempotent, so re-running is free), and a
- *   fresh invitation staged on a done loop re-arms it in place ({@link rearm}).
+ *   is in place, every live sibling with a `StrandPeer` row is bound under the party's key
+ *   (a pass that wrote a binding is not done; the next pass has to find nothing left), AND no
+ *   invitation is still staged — the loop stops. A LATER revocation is the enforcer's
+ *   business, not this loop's; a resume rebuilds the reconciler and re-verifies from scratch
+ *   (every write is idempotent, so re-running is free), and a fresh invitation staged on a
+ *   done loop, or a change to the party's machines, re-arms it in place ({@link rearm}).
  *
  * ## One pass
  *
@@ -50,16 +54,55 @@
  *    visible warning after {@link IDLE_PASSES_BEFORE_ESCALATION} passes, never throwing.
  * 3. **Ensure the binding.** {@link registerMemberPeer} (insert-if-absent, restart-safe)
  *    with this node's own strand transport peer id — only after step 2 sees the member
- *    row locally (its deferred `MemberExists` reads the live local table). Done only once
- *    the binding is in place AND nothing is staged; a binding written while a burn keeps
- *    being refused leaves the loop live to settle the invitation later.
+ *    row locally (its deferred `MemberExists` reads the live local table). A binding
+ *    written while a burn keeps being refused leaves the loop live to settle the
+ *    invitation later.
+ * 4. **Bind live siblings.** Every strand peer id the control database records for a live
+ *    machine of this party ({@link PartyStrandPeerSource.read}) that has no binding under the
+ *    party's key gets one, written here with the party key. See "Binding the party's other
+ *    machines".
+ * 5. **Clear removed machines.** A binding under the party's key for a machine removed from
+ *    the cadre is cleared through the self branch of {@link removeMemberPeer} — unless a party
+ *    key rotation is pending for the strand, or whether one is cannot be read.
+ * 6. **Re-attempt this machine's own `StrandPeer` row** ({@link PartyStrandPeerSource.publishOwn}),
+ *    the control-side statement step 4 on the siblings reads: a background write at bring-up
+ *    that is deferred while alone or refused until this machine's own `CadrePeer` row arrives.
+ *
+ * ## Binding the party's other machines
+ *
+ * A `MemberPeer` binding is signed by the member key, which every machine of the party holds,
+ * so any machine can bind any peer id under the party's key: the party vouching for its own
+ * machine. Which peer ids are the party's machines comes from `CadreControl.StrandPeer`, each
+ * machine's own signed statement of its peer id in the strand, joined to the party's live
+ * machines and its `CadrePeer` tombstones (`strand-party-peers.ts`). The point is a party
+ * member key that changes (a machine removal rotates it: `machine-removal-rotates-party-member-key`):
+ * a sibling offline through the change returns to find itself bound under the new key by the
+ * machines that were there, and a machine bound by a sibling that had not yet heard of its
+ * removal is cleared once the tombstone arrives.
+ *
+ * Step 5 is gated on no rotation pending. While one is, the removed machine's binding under
+ * the current key is exactly the orphan the rotation is about to leave behind, and clearing it
+ * would hand the removed machine a clean slate the deny-list gate admits. A failed pending read
+ * clears nothing for the same reason. After the swap the pending row is gone, and the step
+ * clears a binding a lagging sibling wrote under the new key.
+ *
+ * The step reads the party's bindings once per pass (`listMemberPeers`) and compares in
+ * JavaScript, the scan-not-seek idiom. Two machines binding one sibling at once collide on the
+ * `MemberPeer` primary key; the loser's write is refused and its next pass finds the row. A
+ * sibling's row that cannot be read keeps the loop live on the flat poll interval, and a write
+ * that fails is retried on the ladder.
  *
  * ## Stops, and re-arming
  *
- * Two kinds of stop. A RE-ARMABLE stop is one a fresh invitation should reopen:
+ * Two kinds of stop. A RE-ARMABLE stop is one a fresh invitation, or a change to the
+ * party's machines, should reopen:
  *
  * - **Done** (above).
- * - **Self-revoked with nothing staged** (step 1 above).
+ * - **Self-revoked with nothing staged** (step 1 above). A machine whose only binding is
+ *   orphaned — its sibling rotated the key before this machine's `StrandPeer` row reached it —
+ *   is denied by every other machine, so its own loop cannot write and stops here. The heal is
+ *   a sibling binding it (step 4 there); its enforcer then drops its peer id from the deny set
+ *   and reports `onSelfRestored`, which re-arms this loop.
  *
  * A PERMANENT stop is one a fresh invitation changes nothing about — {@link rearm} is a
  * no-op after it:
@@ -76,7 +119,10 @@
  * the instance manager, which calls {@link rearm}: a done loop reopens and runs one pass
  * at once; a running loop is merely kicked. This is what lets a party that was REMOVED
  * from the strand, and then handed a new invitation, actually attempt it — the loop
- * finished during its first join, long before the removal.
+ * finished during its first join, long before the removal. `CadreNode` also re-arms every
+ * strand's loop when `CadreControl.StrandPeer`, `CadrePeer` or `Revocation` changes
+ * (`StrandInstanceManager.notifyPartyPeersChanged`), so a sibling's row arriving binds it
+ * within the watch's coalescing window rather than at the next resume.
  *
  * On a removed party the local replica is usually stale: the cohort cut this machine off
  * at about the moment the removal was written, so `isStrandMember` still answers true and
@@ -158,9 +204,12 @@ import {
   burnInvite,
   consumeInvite,
   isStrandMember,
+  listMemberPeers,
   registerMemberPeer,
+  removeMemberPeer,
   type StrandWriteOptions,
 } from './strand-membership-writer.js';
+import type { PartyStrandPeerSource, PartyStrandPeers } from './strand-party-peers.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
 import { describeThrown } from './describe-thrown.js';
 
@@ -353,6 +402,13 @@ export interface StrandMembershipReconcilerDeps {
   /** The staged invitation seam. Absent for flows with no invitation (e.g. tests). */
   pendingInvite?: PendingMembershipInviteSource;
   /**
+   * The control-database seam for steps 4 to 6 of the pass (see "Binding the party's other
+   * machines" in the module doc): the party's machines' strand peer ids, whether a key rotation
+   * is pending, and this machine's own `StrandPeer` row. Absent (tests, an embedder with no
+   * control database) means the loop binds only this machine.
+   */
+  partyPeers?: PartyStrandPeerSource;
+  /**
    * Whether the revocation enforcer currently flags THIS node's own party as revoked.
    * When it does and nothing is staged, the loop stops rather than fight the enforcer;
    * with an invitation staged it reports the blocked re-join and keeps trying — see the
@@ -421,15 +477,16 @@ export class StrandMembershipReconciler {
   /** Whether the blocked re-join was already reported this re-arm cycle (one report, either trigger). */
   private rejoinBlockedReported = false;
   /**
-   * Whether the pass that just ran found nothing to act on — no member row and no staged
-   * invitation. That is a wait to be admitted, not an unfinished join, so it re-arms on the
-   * flat poll interval; every other unfinished outcome climbs the ladder.
+   * Whether the pass that just ran is waiting on something no faster retry can shorten — no
+   * member row and no staged invitation (a wait to be admitted, {@link noteIdlePass}), or the
+   * party's machines unreadable ({@link waitForPoll}). Such a pass re-arms on the flat poll
+   * interval; every other unfinished outcome climbs the ladder.
    *
    * NOTE: the ladder is therefore the DEFAULT for any outcome nobody classified — a new
    * early return added to {@link doPass} inherits the fast retry unless it calls
-   * {@link noteIdlePass}. Right for every outcome that exists today (each is an unfinished
-   * join this machine can make progress on). If an early return is ever added for a
-   * condition retrying cannot resolve, classify it idle.
+   * {@link noteIdlePass} or {@link waitForPoll}. Right for every outcome that exists today
+   * (each is an unfinished join this machine can make progress on). If an early return is
+   * ever added for a condition retrying cannot resolve, classify it so.
    */
   private lastPassIdle = false;
   /** Current rung of the unfinished-join retry ladder, ms; unset before the first retry. */
@@ -489,15 +546,17 @@ export class StrandMembershipReconciler {
   }
 
   /**
-   * A fresh invitation was staged: reopen a loop that stopped on a re-armable state (done,
-   * or self-revoked with nothing staged) and run one pass at once; merely kick a loop that
-   * is still running; do nothing after a permanent stop. Never rejects, and serialized
-   * like {@link reconcile}: the reopen happens when the queued pass STARTS, after any pass
-   * in flight has settled, so a `done` that pass latches cannot swallow the re-arm — and a
-   * public {@link stop} that lands first still wins, because the queued pass re-checks it.
+   * Something changed that a stopped loop should look at — `cause` names it for the log: a
+   * fresh invitation was staged, the party's machines changed, or this machine is no longer
+   * revoked. Reopen a loop that stopped on a re-armable state (done, or self-revoked with
+   * nothing staged) and run one pass at once; merely kick a loop that is still running; do
+   * nothing after a permanent stop. Never rejects, and serialized like {@link reconcile}: the
+   * reopen happens when the queued pass STARTS, after any pass in flight has settled, so a
+   * `done` that pass latches cannot swallow the re-arm — and a public {@link stop} that lands
+   * first still wins, because the queued pass re-checks it.
    */
-  rearm(): Promise<void> {
-    return this.enqueue(() => this.reopen() ? this.doPass() : Promise.resolve());
+  rearm(cause = 'a fresh invitation'): Promise<void> {
+    return this.enqueue(() => this.reopen(cause) ? this.doPass() : Promise.resolve());
   }
 
   /**
@@ -533,9 +592,9 @@ export class StrandMembershipReconciler {
    * with the idle and unfinished counters, both escalation latches and the retry ladder
    * reset — a fresh invitation is a fresh cycle.
    */
-  private reopen(): boolean {
+  private reopen(cause: string): boolean {
     if (this.permanentlyStopped) {
-      log('[%s] re-arm refused — the loop is stopped for good', this.deps.label);
+      log('[%s] re-arm (%s) refused — the loop is stopped for good', this.deps.label, cause);
       return false;
     }
     if (!this.stoppedFlag) {
@@ -543,7 +602,7 @@ export class StrandMembershipReconciler {
       // party whose loop already reported and is then re-formed AGAIN gets no second report
       // for the replacement invitation. If that second report is ever wanted, key the latch
       // on the staged invitation's key rather than on the re-arm.
-      log('[%s] fresh invitation staged on a running loop — kicking a pass', this.deps.label);
+      log('[%s] %s on a running loop — kicking a pass', this.deps.label, cause);
       return true;
     }
     this.stoppedFlag = false;
@@ -553,7 +612,7 @@ export class StrandMembershipReconciler {
     this.unfinishedPasses = 0;
     this.rejoinBlockedReported = false;
     this.retryDelayMs = undefined;
-    log('[%s] membership reconciler re-armed by a fresh invitation', this.deps.label);
+    log('[%s] membership reconciler re-armed by %s', this.deps.label, cause);
     return true;
   }
 
@@ -568,7 +627,8 @@ export class StrandMembershipReconciler {
         // stop lands with the binding missing until the next resume rebuilds the loop. A
         // missing binding only mis-credits diversity today; if it ever gates admission, make
         // this stop also require the binding to be in place.
-        this.finish('this party is revoked from the strand — re-admission arrives (if ever) via a fresh formation', false);
+        this.finish('this party is revoked from the strand — re-admission arrives (if ever) via a fresh formation, '
+          + 'or a sibling binds this machine under the party\'s current key', false);
         return;
       }
       const keyPair = this.resolveKeyPair();
@@ -584,8 +644,14 @@ export class StrandMembershipReconciler {
   }
 
   /**
-   * Steps 2 and 3 against a live database, with the outcome counted toward the probable
+   * Steps 2 to 6 against a live database, with the outcome counted toward the probable
    * blocked re-join report whether the attempt returned or threw.
+   *
+   * NOTE: steps 4 to 6 cost one `StrandPeer` read, one fresh membership read and one
+   * `MemberPeer` scan per pass, per closed strand, and `CadreNode` re-arms every strand's loop
+   * on each change to the party's machines, their records included. Fine at party scale; if a
+   * party ever runs many strands on many machines, read `StrandPeer` once per control change
+   * rather than per pass.
    */
   private async attempt(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
     try {
@@ -603,7 +669,10 @@ export class StrandMembershipReconciler {
       // saved, the invitation still live) that {@link reportHalfCommittedJoin}'s dropping of the
       // invitation gets wrong. Revisit when Optimystic offers an all-or-nothing multi-collection
       // commit, or when the enforcer can tell a not-yet-seated binding from a removed member's.
-      await this.ensureBinding(db, keyPair);
+      if (!(await this.ensureBinding(db, keyPair))) return;
+      const siblingsSettled = await this.reconcileSiblings(db, keyPair);
+      await this.publishOwnStrandPeer();
+      this.latchDone(siblingsSettled);
     } finally {
       this.noteAttemptOutcome();
     }
@@ -626,8 +695,8 @@ export class StrandMembershipReconciler {
   }
 
   /**
-   * The delay before the next pass: the flat poll interval while the loop is merely idling
-   * (no member row, no staged invitation — {@link noteIdlePass}), otherwise the next rung
+   * The delay before the next pass: the flat poll interval while the loop is merely waiting
+   * ({@link lastPassIdle}), otherwise the next rung
    * of the doubling ladder from {@link INITIAL_JOIN_RETRY_INTERVAL_MS}, capped at the poll
    * interval. A pass that lands idle resets the ladder, so a later unfinished join starts
    * over at the bottom rung.
@@ -744,26 +813,136 @@ export class StrandMembershipReconciler {
   }
 
   /**
-   * Step 3 of the pass: write this machine's own `MemberPeer` binding (insert-if-absent)
-   * and, once it is in place with nothing staged, latch the done state and stop the loop.
-   * A missing transport peer id (a quiesce racing the pass) defers to the next tick; a
-   * write failure — a busy refusal included — is contained by the pass's outer catch and
-   * retried. A binding written while an invitation is still staged (its burn keeps being
-   * refused) is not done: the loop stays live so a later pass can settle the credential.
+   * Step 3 of the pass: write this machine's own `MemberPeer` binding (insert-if-absent);
+   * `true` once it is in place. A missing transport peer id (a quiesce racing the pass)
+   * defers to the next tick; a write failure — a busy refusal included — is contained by the
+   * pass's outer catch and retried.
    */
-  private async ensureBinding(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
+  private async ensureBinding(db: Database, keyPair: Ed25519KeyPair): Promise<boolean> {
     const peerId = this.deps.getOwnPeerId();
     if (!peerId) {
       log('[%s] no live transport peer id this pass — binding deferred', this.deps.label);
-      return;
+      return false;
     }
     await registerMemberPeer(db, { memberKeyPair: keyPair, peerId }, OWN_TRANSACTION);
+    return true;
+  }
+
+  /**
+   * Steps 4 and 5 of the pass, against the party's machines as the control database records
+   * them: `true` when nothing was left to write — every live sibling was already bound and no
+   * removed machine's binding had to be cleared — so the pass may latch done. A pass that
+   * wrote is not settled: the next one re-reads and confirms. Rows that cannot be read settle
+   * nothing and move the next pass to the flat poll interval; nothing this machine can do
+   * sooner. No seam means no siblings to bind: settled.
+   */
+  private async reconcileSiblings(db: Database, keyPair: Ed25519KeyPair): Promise<boolean> {
+    const source = this.deps.partyPeers;
+    if (!source) return true;
+    let peers: PartyStrandPeers;
+    try {
+      peers = await source.read();
+    } catch (error) {
+      log('[%s] the party\'s strand peers could not be read — sibling bindings wait for the next poll: %s',
+        this.deps.label, describeThrown(error));
+      this.waitForPoll();
+      return false;
+    }
+    const bound = new Set(await listMemberPeers(db, keyPair.publicKeyB64));
+    const unbound = peers.live.filter((peerId) => !bound.has(peerId));
+    const stale = peers.removed.filter((peerId) => bound.has(peerId));
+    const siblingsBound = await this.bindSiblings(db, keyPair, unbound);
+    const removedCleared = await this.clearRemovedMachines(db, keyPair, source, stale);
+    return siblingsBound && removedCleared;
+  }
+
+  /**
+   * Step 4: bind each of `unbound` under the party's key. Each write is contained on its own,
+   * so one sibling's refusal (busy, or a collision with a sibling binding the same id) does
+   * not keep the others waiting. `true` iff there was nothing to bind.
+   */
+  private async bindSiblings(db: Database, keyPair: Ed25519KeyPair, unbound: readonly string[]): Promise<boolean> {
+    for (const peerId of unbound) {
+      try {
+        await registerMemberPeer(db, { memberKeyPair: keyPair, peerId }, OWN_TRANSACTION);
+        log('[%s] bound sibling machine %s under the party\'s key', this.deps.label, peerId);
+      } catch (error) {
+        log('[%s] binding sibling machine %s failed — retried next tick: %s', this.deps.label, peerId, describeThrown(error));
+      }
+    }
+    return unbound.length === 0;
+  }
+
+  /**
+   * Step 5: clear the binding of each of `stale` (removed machines bound under the party's
+   * key), through the self branch of {@link removeMemberPeer} — signed by the party key, which
+   * is the row's own member key, so any peer id of the party's is reachable this way. Clears
+   * nothing while a key rotation is pending for the strand, or while whether one is cannot be
+   * read (see the module doc); that is settled, since the rotation's own writes re-arm the
+   * loop. `true` iff nothing was left to clear.
+   */
+  private async clearRemovedMachines(
+    db: Database,
+    keyPair: Ed25519KeyPair,
+    source: PartyStrandPeerSource,
+    stale: readonly string[],
+  ): Promise<boolean> {
+    if (stale.length === 0) return true;
+    try {
+      if (await source.isRotationPending()) {
+        log('[%s] %d removed machine(s) stay bound: a party key rotation is pending', this.deps.label, stale.length);
+        return true;
+      }
+    } catch (error) {
+      log('[%s] %d removed machine(s) stay bound: whether a party key rotation is pending could not be read: %s',
+        this.deps.label, stale.length, describeThrown(error));
+      return true;
+    }
+    for (const peerId of stale) {
+      try {
+        await removeMemberPeer(db, { memberKeyPair: keyPair, peerId }, OWN_TRANSACTION);
+        log('[%s] cleared the binding of removed machine %s', this.deps.label, peerId);
+      } catch (error) {
+        log('[%s] clearing the binding of removed machine %s failed — retried next tick: %s',
+          this.deps.label, peerId, describeThrown(error));
+      }
+    }
+    return false;
+  }
+
+  /** Step 6: re-attempt this machine's own `StrandPeer` row; the seam contains its failures and remembers success. */
+  private async publishOwnStrandPeer(): Promise<void> {
+    const peerId = this.deps.getOwnPeerId();
+    if (!this.deps.partyPeers || !peerId) return;
+    try {
+      await this.deps.partyPeers.publishOwn(peerId);
+    } catch (error) {
+      log('[%s] publishing this machine\'s StrandPeer row threw — retried next pass: %s', this.deps.label, describeThrown(error));
+    }
+  }
+
+  /**
+   * The done decision, once the member row and the own binding are in place: not while an
+   * invitation is still staged (its burn keeps being refused; the loop stays live so a later
+   * pass can settle the credential), and not while a sibling step wrote or could not read this
+   * pass. Otherwise latch done and stop.
+   */
+  private latchDone(siblingsSettled: boolean): void {
     if (this.deps.pendingInvite?.get()) {
       log('[%s] own MemberPeer binding is in place but an invitation is still staged — not done yet', this.deps.label);
       return;
     }
+    if (!siblingsSettled) {
+      log('[%s] sibling bindings changed or could not be read this pass — confirming next pass', this.deps.label);
+      return;
+    }
     this.doneFlag = true;
-    this.finish('member row and own MemberPeer binding are both in place', false);
+    this.finish('member row, own MemberPeer binding and every known sibling binding are in place', false);
+  }
+
+  /** Re-arm the next pass on the flat poll interval, for a wait no faster retry can shorten. */
+  private waitForPoll(): void {
+    this.lastPassIdle = true;
   }
 
   /**
@@ -937,6 +1116,6 @@ export class StrandMembershipReconciler {
     this.stoppedFlag = true;
     this.clearTimer();
     log('[%s] membership reconciler stopped%s: %s%s', this.deps.label, this.doneFlag ? ' (done)' : '', reason,
-      permanent ? '' : ' — a fresh invitation re-arms it');
+      permanent ? '' : ' — a fresh invitation or a change to the party\'s machines re-arms it');
   }
 }

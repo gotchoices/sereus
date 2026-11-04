@@ -20,6 +20,7 @@ import {
   type StrandMembershipReconciliationConfig
 } from './strand-membership-reconciler.js';
 import { removeMemberPeer } from './strand-membership-writer.js';
+import type { PartyStrandPeerSource } from './strand-party-peers.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { assertSchemaSignature } from './schema-verification.js';
 import { assertStrandScopeKey } from './storage-scope.js';
@@ -248,6 +249,19 @@ export interface StartStrandConfig {
    * default `DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS`.
    */
   membershipReconciliation?: StrandMembershipReconciliationConfig;
+
+  /**
+   * The party's machines in THIS strand, as the control database records them
+   * (`strand-party-peers.ts`): `CadreNode.launchStrand` wires it for every closed strand,
+   * party key or not. Bring-up publishes this machine's own `StrandPeer` row through it in
+   * the background, once the strand's libp2p node exists (launch and hibernation resume
+   * alike, since the row is this machine's statement of a peer id that is the same across
+   * both), and the membership reconciler reads the party's other machines through it to bind
+   * them (`strand-membership-reconciler.ts` → "Binding the party's other machines"). Open
+   * strands have no `Member` table to bind into and get nothing. Retained with the launch
+   * config.
+   */
+  partyPeers?: PartyStrandPeerSource;
 
   /**
    * Called when THIS node's own peer id turns up in the strand's revoked set —
@@ -842,7 +856,11 @@ export class StrandInstanceManager {
             // therefore means "no transport right now", which the enforcer
             // treats as "nothing to tear down".
             getNetwork: () => instance.libp2pNode,
-            onSelfRevoked: () => config.onSelfRevoked?.(strandId)
+            onSelfRevoked: () => config.onSelfRevoked?.(strandId),
+            // The membership reconciler below stops on a self-revocation ("stop rather than
+            // fight"); a sibling binding this machine back in is what restarts it. Looked up
+            // at call time: the reconciler is built after the enforcer, and dropped with it.
+            onSelfRestored: () => this.rearmMembershipReconciler(strandId, 'this machine is no longer revoked')
           }, config.revocationEnforcement)
         : undefined;
     if (revocationEnforcer) {
@@ -969,6 +987,16 @@ export class StrandInstanceManager {
 
       instance.libp2pNode = node;
 
+      // This machine's statement of its peer id in the strand, for the party's control
+      // database (`StrandPeer`): a background write that never fails or delays the launch.
+      // The seam defers it while a write could fork the party and retries it on cohort
+      // growth and from every membership reconciler pass, so a refusal here is not final.
+      if (config.strandRow.Type === 'c' && config.partyPeers) {
+        void config.partyPeers.publishOwn(node.peerId.toString()).catch((error) => {
+          log('Strand %s: publishing this machine\'s StrandPeer row threw (retried later): %o', strandId, error);
+        });
+      }
+
       // One reservation supervisor PER RELAY, started now so the first attempts
       // overlap the database bring-up below (the relay is never in a strand's
       // Optimystic cohort — its protocol ids are namespaced `/optimystic/strand-<id>/…`
@@ -1022,6 +1050,7 @@ export class StrandInstanceManager {
           getDatabase: () => instance.database?.getDatabase(),
           getOwnPeerId: () => instance.libp2pNode?.peerId.toString(),
           pendingInvite: config.pendingMembershipInvite,
+          partyPeers: config.partyPeers,
           // The enforcer's CURRENT snapshot view of this node's own peer id — the
           // reconciler stops rather than fight a self-revocation. Absent when the
           // gate is disarmed (fail-open: the loop just runs).
@@ -1541,12 +1570,34 @@ export class StrandInstanceManager {
    * loop's own serialized chain and never rejects.
    */
   notifyMembershipInviteStaged(strandId: string): void {
+    if (!this.rearmMembershipReconciler(strandId, 'a fresh invitation')) {
+      log('notifyMembershipInviteStaged: strand %s has no armed membership reconciler — bring-up will find the invitation', strandId);
+    }
+  }
+
+  /**
+   * The party's machines changed in the control database — a `StrandPeer` row, a `CadrePeer`
+   * row or a tombstone arrived or was written here (`CadreNode`'s watch on those tables,
+   * coalesced). Re-arm every armed membership reconciler, so a sibling's row is bound, or a
+   * removed machine's binding cleared, within the watch's window rather than at the next
+   * resume. Table events carry no row keys, so every strand's loop is woken; a loop with
+   * nothing to do confirms and stops again. Returns at once; each pass runs on its loop's own
+   * serialized chain and never rejects.
+   */
+  notifyPartyPeersChanged(): void {
+    for (const strandId of this.membershipReconcilers.keys()) {
+      this.rearmMembershipReconciler(strandId, 'a change to the party\'s machines');
+    }
+  }
+
+  /** Re-arm `strandId`'s membership reconciler for `cause`; `false` when none is armed. */
+  private rearmMembershipReconciler(strandId: string, cause: string): boolean {
     const reconciler = this.membershipReconcilers.get(strandId);
     if (!reconciler) {
-      log('notifyMembershipInviteStaged: strand %s has no armed membership reconciler — bring-up will find the invitation', strandId);
-      return;
+      return false;
     }
-    void reconciler.rearm();
+    void reconciler.rearm(cause);
+    return true;
   }
 
   /**

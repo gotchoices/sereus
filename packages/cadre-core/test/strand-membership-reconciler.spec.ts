@@ -11,6 +11,7 @@ import {
   classifyConsumeFailure,
   type PendingMembershipInviteSource,
 } from '../src/strand-membership-reconciler.js';
+import type { PartyStrandPeerSource, PartyStrandPeers } from '../src/strand-party-peers.js';
 import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
 import {
   bootstrapFounderMembership,
@@ -21,6 +22,8 @@ import {
   revokeMember,
   sealStrand,
   isStrandMember,
+  listMemberPeers,
+  registerMemberPeer,
   StrandTransactionBusyError,
 } from '../src/strand-membership-writer.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
@@ -40,7 +43,8 @@ const DEAD_INVITE_LINE = /staged invitation is dead/;
  * (redeem the staged invitation → bind this machine's peer id → stop), the
  * already-member burn arm, the idle/no-invitation wait, the dead-invitation and
  * sealed-strand classifications, the self-revocation stop, the re-arm on a fresh
- * invitation with its blocked re-join report, and the scheduler wiring.
+ * invitation with its blocked re-join report, the binding of the party's other machines,
+ * and the scheduler wiring.
  *
  * Every DB-backed test runs against a REAL closed strand DB on the local transactor
  * (libp2p node + MemoryRawStorage) via the shared helpers — the same apply/DML/
@@ -125,6 +129,7 @@ function manualScheduler(): {
 interface ReconcilerOverrides {
   getOwnPeerId?: () => string | undefined;
   pendingInvite?: PendingMembershipInviteSource;
+  partyPeers?: PartyStrandPeerSource;
   isSelfRevoked?: () => boolean;
   onRejoinBlocked?: () => void;
   scheduler?: TimeoutScheduler;
@@ -198,10 +203,27 @@ function reconcilerOver(db: Database | undefined, partyKey: string, overrides: R
     getDatabase: overrides.getDatabase ?? (() => db),
     getOwnPeerId: overrides.getOwnPeerId ?? (() => 'this-machine-peer'),
     pendingInvite: overrides.pendingInvite,
+    partyPeers: overrides.partyPeers,
     isSelfRevoked: overrides.isSelfRevoked,
     onRejoinBlocked: overrides.onRejoinBlocked,
     scheduler: overrides.scheduler,
   }, overrides.pollIntervalMs === undefined ? undefined : { pollIntervalMs: overrides.pollIntervalMs });
+}
+
+/** A stand-in for CadreNode's party-machine seam: the lists and the pending flag are the test's to set. */
+function partyPeerSource(peers: PartyStrandPeers, state: { rotationPending: boolean }): {
+  source: PartyStrandPeerSource;
+  published: () => string[];
+} {
+  const published: string[] = [];
+  return {
+    source: {
+      publishOwn: async (strandPeerId) => { published.push(strandPeerId); },
+      read: async () => peers,
+      isRotationPending: async () => state.rotationPending,
+    },
+    published: () => [...published],
+  };
 }
 
 afterEach(() => {
@@ -587,6 +609,67 @@ describe('waiting and failure classification', () => {
  * invitation, whose loop latched `done` during its first join. `rearm()` is what
  * `StrandInstanceManager.notifyMembershipInviteStaged` calls once `CadreNode` stages it.
  */
+describe('binding the party\'s other machines', () => {
+  it('binds each live sibling, keeps a removed machine bound while a rotation is pending, and clears it once none is', async () => {
+    const strand = await openClosedStrand();
+    const partyKey = strand.founder.publicKeyB64;
+    // A sibling lagging on the removal's tombstone bound the removed machine under this key.
+    await registerMemberPeer(strand.db, { memberKeyPair: strand.founder, peerId: 'removed-machine' });
+    const state = { rotationPending: true };
+    const party = partyPeerSource({ live: ['sibling-1', 'sibling-2'], removed: ['removed-machine'] }, state);
+    const reconciler = reconcilerOver(strand.db, strand.founderPrivateKey, {
+      getOwnPeerId: () => 'founder-machine',
+      partyPeers: party.source,
+    });
+
+    await reconciler.reconcile();
+
+    // Both siblings bound under the party key; the removed machine's binding left alone.
+    expect((await listMemberPeers(strand.db, partyKey)).sort())
+      .toEqual(['founder-machine', 'removed-machine', 'sibling-1', 'sibling-2']);
+    expect(party.published()).toEqual(['founder-machine']);
+    // A pass that wrote is not done; the next one finds nothing left and is.
+    expect(reconciler.done).toBe(false);
+    await reconciler.reconcile();
+    expect(reconciler.done).toBe(true);
+    expect(await tableCount(strand.db, 'Revocation')).toBe(0);
+
+    // The rotation finished (its swap removed the pending row): the stale binding goes.
+    state.rotationPending = false;
+    await reconciler.rearm('a change to the party\'s machines');
+
+    expect((await listMemberPeers(strand.db, partyKey)).sort()).toEqual(['founder-machine', 'sibling-1', 'sibling-2']);
+    expect(await tableCount(strand.db, 'Revocation')).toBe(1);
+    expect(reconciler.done).toBe(false);
+    await reconciler.reconcile();
+    expect(reconciler.done).toBe(true);
+    expect(await tableCount(strand.db, 'MemberPeer')).toBe(3);
+  }, 30_000);
+
+  it('a loop stopped self-revoked is re-armed by the enforcer\'s restore signal and then completes the own binding', async () => {
+    const strand = await openClosedStrand();
+    let revoked = true;
+    const reconciler = reconcilerOver(strand.db, strand.founderPrivateKey, {
+      getOwnPeerId: () => 'founder-machine',
+      isSelfRevoked: () => revoked,
+    });
+
+    await reconciler.reconcile();
+    expect(reconciler.stopped).toBe(true);
+    expect(reconciler.done).toBe(false);
+    expect(await tableCount(strand.db, 'MemberPeer')).toBe(0);
+
+    // A sibling bound this machine under the party's current key; the enforcer's next
+    // refresh drops it from the deny set and reports the restore.
+    revoked = false;
+    await reconciler.rearm('this machine is no longer revoked');
+
+    expect(reconciler.done).toBe(true);
+    const binding = await strand.db.get('select MemberKey, PeerId from Strand.MemberPeer');
+    expect(binding?.PeerId).toBe('founder-machine');
+  }, 30_000);
+});
+
 describe('re-arming on a fresh invitation', () => {
   /** A joiner that has fully joined: member row seated, binding written, loop done. */
   async function joinedAndDone(): Promise<{
