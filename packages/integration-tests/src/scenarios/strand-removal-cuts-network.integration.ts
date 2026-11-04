@@ -46,7 +46,7 @@
  *     not cut anything yet" is a fact rather than a hope. Tests 1 and 3, and test 2's
  *     remaining machine, run this way.
  *   • No override (test 2's removed node) is the production schedule, which is what an
- *     app that never calls `refreshRevocationEnforcement` gets. {@link GATE} (60 s) is
+ *     app that never calls `refreshRevocationEnforcement` gets. {@link STRAND_GATE} (60 s) is
  *     far below the 5-minute backstop, so a pass means the change path worked.
  *
  * ── FIXTURE HONESTY (the most important comment in this file) ─────────────────
@@ -67,6 +67,7 @@
  * self-revocation signal (test 2) and the open-strand isolation case (test 3).
  *
  * ── WHAT IS ASSERTED, AND HOW ────────────────────────────────────────────────
+ * The machine handles, the reads and the cut claims are the harness's `strand-machine.ts`.
  * Connection claims read the strand libp2p node's own `getConnections()` — the same
  * surface the sweep hangs up through — filtered to a named remote peer id, never a bare
  * connection count, so an unrelated peer coming or going cannot move an assertion.
@@ -115,15 +116,26 @@ import {
 	revokeMember,
 	type Ed25519KeyPair,
 } from '@serfab/cadre-core';
-import type { CadreNode, StrandInstance } from '@serfab/cadre-core';
-import type { Database } from '@quereus/quereus';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import {
+	awaitBindingsVisible,
+	awaitRowVisible,
+	binding,
 	bootTopology,
-	joinStrandOn,
 	createSignedSAppConfig,
+	expectConnected,
+	expectCut,
+	expectNeverConverges,
+	insertWithRetry,
+	joinStrandOn,
+	memberKeys,
+	NO_CONVERGENCE_BUDGET_MS,
+	REMAINING_COHORT_WRITE_BUDGET_MS,
+	rowLanded,
+	STRAND_GATE,
+	strandMachine,
 	waitUntil,
-	sleep,
+	type StrandMachine,
 	type Topology,
 } from '../harness/index.js';
 
@@ -143,49 +155,6 @@ table Data (
  */
 const SUSPENDED = { revocationSuspended: true } as const;
 
-/** The budget every POSITIVE convergence gate waits on. Sibling four-machine scenarios
- *  converge well under a second; this is headroom for slow hardware, not an expectation. */
-const GATE = { timeoutMs: 60_000, intervalMs: 250 } as const;
-
-/**
- * How long a cut-off machine is given to converge before "it never did" is asserted.
- *
- * This is the one budget whose SIZE is the claim: too short and a merely-slow strand
- * reads as a cut. Ten seconds is ~10× the measured cross-machine visibility latency on
- * this topology (sub-second in the sibling scenarios), and every negative assertion is
- * paired with a positive control read on a machine that is NOT cut, taken from the same
- * write — so a strand that had simply stalled fails the control read too and the test
- * reports that instead.
- *
- * NOTE: each negative assertion spends this budget in full, and the first test runs four
- * of them SEQUENTIALLY — ~40 s of its ~52 s wall clock is this wait. Fine at four; if a
- * scenario ever adds more negative arms, run them concurrently (they are read-only polls,
- * so unlike writes they do not block each other — see the never-`Promise.all`-writes note
- * in `convergence-stress.integration.ts`) rather than shortening the budget, which is the
- * claim itself.
- */
-const NO_CONVERGENCE_BUDGET_MS = 10_000;
-
-/**
- * Budget for the post-cut write by the remaining cohort.
- *
- * MEASURED, not hypothetical: on this fixture the first write after the cut FAILS several
- * times before it commits — three or four failed attempts with `BlockUnavailableError:
- * Block default/Data is unavailable (peers-unreachable)`, committing 3.5-4.3 s in, over
- * four runs.
- * The cohort still lists the removed party's machines, which are now unreachable (and
- * this node refuses to dial them), so the write cannot proceed until the cohort downsizes
- * to the live holders (`allowDownsize: true` in `STRAND_CLUSTER_POLICY`). It recovers on
- * its own, which is why {@link insertWithRetry} exists here and why the claim this test
- * makes is "the remaining cohort still commits", not "commits immediately".
- *
- * Exceeding THIS budget is the genuine "removal broke the remaining strand" failure — and
- * if it ever fails as `cluster-fetch:no-quorum` instead of recovering, that is the
- * upstream tripwire recorded at `tearDownRevoked` in `strand-revocation-enforcer.ts`, not
- * something to work around here.
- */
-const REMAINING_COHORT_WRITE_BUDGET_MS = 90_000;
-
 /** Explicit test timeouts, per `harness/topology.ts`'s TIME BUDGET rule of thumb (~10-15 s
  *  per libp2p node): test 1 runs 8 nodes, tests 2 and 3 run 4 and 6. Never touch
  *  `vitest.config.ts`. */
@@ -197,163 +166,6 @@ function freshKeyPair(): Ed25519KeyPair {
 	const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
 	const publicKeyB64 = getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
 	return { privateKeyB64, publicKeyB64 };
-}
-
-/** One machine's strand-side handles, named so every failure message says which machine. */
-interface StrandMachine {
-	label: string;
-	node: CadreNode;
-	db: Database;
-	/** This machine's STRAND transport peer id — what a `MemberPeer` row binds, and what
-	 *  the deny set is keyed by. Distinct from its control-network peer id. */
-	peerId: string;
-	instance: StrandInstance;
-	/** The strand's own libp2p node — captured once, so no call site re-asserts it is there. */
-	libp2p: NonNullable<StrandInstance['libp2pNode']>;
-}
-
-/**
- * Pair a topology machine with its strand instance, throwing by name rather than letting
- * a launch regression surface as `Cannot read properties of undefined` several phases on.
- */
-function strandMachine(label: string, node: CadreNode, instance: StrandInstance | undefined): StrandMachine {
-	if (!instance?.database || !instance.libp2pNode) {
-		throw new Error(`${label}: joinStrandOn returned no strand database/libp2p node (status '${instance?.status}')`);
-	}
-	return {
-		label, node, instance,
-		db: instance.database.getDatabase(),
-		libp2p: instance.libp2pNode,
-		peerId: instance.libp2pNode.peerId.toString(),
-	};
-}
-
-/** Open connections `from`'s strand node holds to `to`'s strand peer id — the same
- *  surface the teardown sweep enumerates and hangs up through. */
-function strandConnectionsTo(from: StrandMachine, to: StrandMachine): number {
-	return from.libp2p.getConnections()
-		.filter((c) => c.remotePeer.toString() === to.peerId)
-		.length;
-}
-
-/** Assert `from` currently holds at least one strand connection to `to`. */
-function expectConnected(from: StrandMachine, to: StrandMachine, why: string): void {
-	expect(strandConnectionsTo(from, to), `${from.label} should hold a strand connection to ${to.label} — ${why}`)
-		.toBeGreaterThan(0);
-}
-
-/** Assert `from` currently holds NO strand connection to `to`. */
-function expectCut(from: StrandMachine, to: StrandMachine, why: string): void {
-	expect(strandConnectionsTo(from, to), `${from.label} should hold NO strand connection to ${to.label} — ${why}`)
-		.toBe(0);
-}
-
-/** Every `Strand.Member.Key` visible to one machine, via an UNFILTERED scan (header note). */
-async function memberKeys(db: Database): Promise<string[]> {
-	const keys: string[] = [];
-	for await (const row of db.eval('select Key from Strand.Member')) {
-		keys.push(row.Key as string);
-	}
-	return keys;
-}
-
-/** Every `Strand.MemberPeer.PeerId` visible to one machine, via an UNFILTERED scan. */
-async function memberPeerIds(db: Database): Promise<string[]> {
-	const peerIds: string[] = [];
-	for await (const row of db.eval('select PeerId from Strand.MemberPeer')) {
-		peerIds.push(row.PeerId as string);
-	}
-	return peerIds;
-}
-
-/** Every `App.Data` row, via an UNFILTERED scan filtered in JavaScript — `Key` is the
- *  single-column primary key, so an equality on it is the point lookup the header warns
- *  about, and a miss inside a negative assertion would pass it for the wrong reason. */
-async function dataValue(db: Database, key: string): Promise<string | undefined> {
-	for await (const row of db.eval('select Key, Val from App.Data')) {
-		if (row.Key === key) return row.Val as string;
-	}
-	return undefined;
-}
-
-/** Gate: `key` becomes visible on `machine` with the expected value. */
-async function awaitRowVisible(machine: StrandMachine, key: string, val: string): Promise<void> {
-	await waitUntil(
-		async () => (await dataValue(machine.db, key)) === val,
-		{ ...GATE, description: `App.Data '${key}' becomes visible on ${machine.label}` },
-	);
-}
-
-/**
- * Assert `machine` NEVER converges on `key` within {@link NO_CONVERGENCE_BUDGET_MS}.
- *
- * `waitUntil` rejects on expiry, so the absence is asserted as a rejection rather than by
- * sleeping and peeking — and it retries through a throwing read, so a machine whose read
- * FAILS because it can no longer reach a coordinator counts as not-converged too. Both
- * are the cut; the header says why that conflation is intended here.
- */
-async function expectNeverConverges(machine: StrandMachine, key: string, val: string): Promise<void> {
-	await expect(
-		waitUntil(
-			async () => (await dataValue(machine.db, key)) === val,
-			{
-				timeoutMs: NO_CONVERGENCE_BUDGET_MS, intervalMs: 250,
-				description: `App.Data '${key}' to reach the CUT machine ${machine.label} (it must not)`,
-			},
-		),
-		`${machine.label} is cut off and must not converge on '${key}'`,
-	).rejects.toThrow(/Timeout waiting/);
-}
-
-/**
- * Whether the row is already there despite the insert having reported failure — asked on
- * the AUTHOR's own database, so it makes no physical claim about any other machine.
- *
- * A read that ITSELF fails answers "not known to have landed" rather than propagating: it
- * runs inside {@link insertWithRetry}'s catch, where a throw would replace the insert
- * error the caller needs to see. It is LOGGED rather than swallowed silently — on this
- * fixture the author is the one machine that must still be able to read, so a read error
- * here is worth seeing next to the insert errors around it.
- */
-async function rowLanded(machine: StrandMachine, key: string, val: string): Promise<boolean> {
-	try {
-		return (await dataValue(machine.db, key)) === val;
-	} catch (readError) {
-		console.warn(`[removal-cut] ${machine.label}: read-back of '${key}' after a failed insert also failed: ${String(readError)}`);
-		return false;
-	}
-}
-
-/**
- * Insert with a bounded retry, for the post-cut write only — the same shape as the sibling
- * 2×2 scenario's helper, but here the retry is LOAD-BEARING rather than defensive: the
- * first attempts after a cut reliably fail while the cohort still lists the removed
- * party's unreachable machines (see {@link REMAINING_COHORT_WRITE_BUDGET_MS} for the
- * measurement). Exceeding `budgetMs` is the genuine "the remaining cohort can no longer
- * commit" regression; a handful of failures before a commit is the expected shape.
- */
-async function insertWithRetry(machine: StrandMachine, key: string, val: string, budgetMs: number): Promise<void> {
-	const start = Date.now();
-	for (let attempt = 1; ; attempt++) {
-		try {
-			await machine.db.exec('insert into App.Data (Key, Val) values (?, ?)', [key, val]);
-			console.log(`[removal-cut] ${machine.label}: committed '${key}' on attempt ${attempt} after ${Date.now() - start}ms`);
-			return;
-		} catch (error) {
-			if (await rowLanded(machine, key, val)) {
-				console.log(`[removal-cut] ${machine.label}: attempt ${attempt} reported failure but '${key}' landed`);
-				return;
-			}
-			if (Date.now() - start > budgetMs) {
-				throw new Error(
-					`[removal-cut] ${machine.label}: the REMAINING cohort could not commit '${key}' within ${budgetMs}ms `
-					+ `(${attempt} attempt(s)); last error: ${String(error)}`,
-					{ cause: error });
-			}
-			console.warn(`[removal-cut] ${machine.label}: attempt ${attempt} failed, retrying: ${String(error)}`);
-			await sleep(1_000);
-		}
-	}
 }
 
 /**
@@ -375,32 +187,14 @@ async function admitSecondParty(
 			}
 			return false;
 		},
-		{ ...GATE, description: `the founder-issued invite becomes visible on ${joiner.label}` },
+		{ ...STRAND_GATE, description: `the founder-issued invite becomes visible on ${joiner.label}` },
 	);
 	await consumeInvite(joiner.db, { inviteKey, invitePrivateKey, memberKey: member.publicKeyB64 });
 	await waitUntil(
 		async () => (await memberKeys(founder.db)).includes(member.publicKeyB64),
-		{ ...GATE, description: `the joining party's Member row becomes visible on ${founder.label}` },
+		{ ...STRAND_GATE, description: `the joining party's Member row becomes visible on ${founder.label}` },
 	);
 	return member;
-}
-
-/**
- * Gate every machine in `observers` on seeing all of `peerIds` as `Strand.MemberPeer`
- * rows. The deny set is derived from these rows, so a machine that cannot see a binding
- * cannot deny the machine it names — gating here is what makes a later "did not cut"
- * assertion mean "chose not to" rather than "had nothing to go on".
- */
-async function awaitBindingsVisible(observers: ReadonlyArray<StrandMachine>, peerIds: ReadonlyArray<string>): Promise<void> {
-	for (const observer of observers) {
-		await waitUntil(
-			async () => {
-				const visible = await memberPeerIds(observer.db);
-				return peerIds.every((peerId) => visible.includes(peerId));
-			},
-			{ ...GATE, description: `all ${peerIds.length} MemberPeer bindings become visible on ${observer.label}` },
-		);
-	}
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -449,7 +243,7 @@ describe('Removing a party cuts its machines off the strand', () => {
 			// is hand-driven so the fixture controls when it lands (header: FIXTURE HONESTY).
 			await waitUntil(
 				async () => (await memberKeys(b0.db)).includes(founderKeyPair.publicKeyB64),
-				{ ...GATE, description: 'the founder bootstrap rows become visible on b[0]' },
+				{ ...STRAND_GATE, description: 'the founder bootstrap rows become visible on b[0]' },
 			);
 			const memberB = await admitSecondParty(a0, founderKeyPair, b0);
 
@@ -465,7 +259,10 @@ describe('Removing a party cuts its machines off the strand', () => {
 
 			// Both remaining machines must SEE all four bindings before the removal, so a
 			// machine that then declines to cut is declining on a complete view.
-			await awaitBindingsVisible([a0, a1], [a0.peerId, a1.peerId, b0.peerId, b1.peerId]);
+			await awaitBindingsVisible([a0, a1], [
+				binding(founderKeyPair.publicKeyB64, a0), binding(founderKeyPair.publicKeyB64, a1),
+				binding(memberB.publicKeyB64, b0), binding(memberB.publicKeyB64, b1),
+			]);
 
 			// ── The connections exist BEFORE the revocation ──────────────────────────
 			// The teardown claim is about closing what is OPEN; without this the test
@@ -517,7 +314,7 @@ describe('Removing a party cuts its machines off the strand', () => {
 			// tombstone, not that a refresh call cuts regardless of what a[1] can see.
 			await waitUntil(
 				async () => !(await memberKeys(a1.db)).includes(memberB.publicKeyB64),
-				{ ...GATE, description: "the removal becomes visible in a[1]'s own database" },
+				{ ...STRAND_GATE, description: "the removal becomes visible in a[1]'s own database" },
 			);
 			await a1.node.refreshRevocationEnforcement(strandId);
 			expectCut(a1, b0, 'a[1] has now seen the removal and swept it');
@@ -533,8 +330,14 @@ describe('Removing a party cuts its machines off the strand', () => {
 
 			// The removed party can no longer pull it: both of its machines fail to
 			// converge within a budget the remaining machine met comfortably.
-			await expectNeverConverges(b0, cutKey, 'written by the remaining cohort');
-			await expectNeverConverges(b1, cutKey, 'written by the remaining cohort');
+			// NOTE: each negative assertion spends NO_CONVERGENCE_BUDGET_MS in full, and this
+			// test runs four of them SEQUENTIALLY — ~40 s of its ~52 s wall clock is this wait.
+			// Fine at four; if a scenario ever adds more negative arms, run them concurrently
+			// (they are read-only polls, so unlike writes they do not block each other — see
+			// the never-`Promise.all`-writes note in `convergence-stress.integration.ts`)
+			// rather than shortening the budget, which is the claim itself.
+			await expectNeverConverges(b0, cutKey, 'written by the remaining cohort', NO_CONVERGENCE_BUDGET_MS);
+			await expectNeverConverges(b1, cutKey, 'written by the remaining cohort', NO_CONVERGENCE_BUDGET_MS);
 
 			// ── …and cannot push anything back ───────────────────────────────────────
 			// Two outcomes are legitimate and both are the cut: the removed party's write
@@ -560,8 +363,8 @@ describe('Removing a party cuts its machines off the strand', () => {
 				+ `${pushError === undefined ? '' : `: ${String(pushError)}`}`
 				+ `; readable back on ${b0.label}: ${await rowLanded(b0, pushKey, 'from the removed party')}`,
 			);
-			await expectNeverConverges(a0, pushKey, 'from the removed party');
-			await expectNeverConverges(a1, pushKey, 'from the removed party');
+			await expectNeverConverges(a0, pushKey, 'from the removed party', NO_CONVERGENCE_BUDGET_MS);
+			await expectNeverConverges(a1, pushKey, 'from the removed party', NO_CONVERGENCE_BUDGET_MS);
 
 			// NOTE: nothing here asserts anything about b[0]↔b[1], which stay connected to
 			// each other throughout — correctly: a node never hangs ITSELF up (the
@@ -616,7 +419,7 @@ describe('Removing a party cuts its machines off the strand', () => {
 
 			await waitUntil(
 				async () => (await memberKeys(b0.db)).includes(founderKeyPair.publicKeyB64),
-				{ ...GATE, description: 'the founder bootstrap rows become visible on b[0]' },
+				{ ...STRAND_GATE, description: 'the founder bootstrap rows become visible on b[0]' },
 			);
 			const memberB = await admitSecondParty(a0, founderKeyPair, b0);
 
@@ -627,7 +430,7 @@ describe('Removing a party cuts its machines off the strand', () => {
 			// identity key here, so the test binds it at a moment it controls.
 			await registerMemberPeer(a0.db, { memberKeyPair: founderKeyPair, peerId: a0.peerId });
 			await registerMemberPeer(b0.db, { memberKeyPair: memberB, peerId: b0.peerId });
-			await awaitBindingsVisible([a0, b0], [a0.peerId, b0.peerId]);
+			await awaitBindingsVisible([a0, b0], [binding(founderKeyPair.publicKeyB64, a0), binding(memberB.publicKeyB64, b0)]);
 
 			// Subscribed BEFORE the revocation: the event fires once on entry into the
 			// revoked set and is not replayed to a late subscriber.
@@ -639,13 +442,13 @@ describe('Removing a party cuts its machines off the strand', () => {
 			await revokeMember(a0.db, { managerKeyPair: founderKeyPair, memberKey: memberB.publicKeyB64 });
 
 			// No refresh call anywhere: b[0] holds the revocation commit as a cohort member,
-			// and taking it in wakes its enforcer. GATE is far below the 5-minute backstop,
+			// and taking it in wakes its enforcer. STRAND_GATE is far below the 5-minute backstop,
 			// so only that change can pass this. Best-effort by nature — it can only fire
 			// because the tombstone replicated to b[0] while b[0] was still connected,
 			// which is the case an app can rely on least and the docs say so.
 			await waitUntil(
 				() => revokedOnB.length > 0,
-				{ ...GATE, description: 'b[0] learns from the revocation it holds that it was removed (strand:revoked)' },
+				{ ...STRAND_GATE, description: 'b[0] learns from the revocation it holds that it was removed (strand:revoked)' },
 			);
 			expect(revokedOnB[0]).toBe(strandId);
 
@@ -727,12 +530,12 @@ describe('Removing a party cuts its machines off the strand', () => {
 			// ── A removal on the CLOSED strand, in the same two processes ────────────
 			await waitUntil(
 				async () => (await memberKeys(closedB.db)).includes(founderKeyPair.publicKeyB64),
-				{ ...GATE, description: 'the founder bootstrap rows become visible on the closed strand at b[0]' },
+				{ ...STRAND_GATE, description: 'the founder bootstrap rows become visible on the closed strand at b[0]' },
 			);
 			const memberB = await admitSecondParty(closedA, founderKeyPair, closedB);
 			await registerMemberPeer(closedA.db, { memberKeyPair: founderKeyPair, peerId: closedA.peerId });
 			await registerMemberPeer(closedB.db, { memberKeyPair: memberB, peerId: closedB.peerId });
-			await awaitBindingsVisible([closedA], [closedA.peerId, closedB.peerId]);
+			await awaitBindingsVisible([closedA], [binding(founderKeyPair.publicKeyB64, closedA), binding(memberB.publicKeyB64, closedB)]);
 
 			await revokeMember(closedA.db, { managerKeyPair: founderKeyPair, memberKey: memberB.publicKeyB64 });
 			await closedA.node.refreshRevocationEnforcement(closedStrandId);

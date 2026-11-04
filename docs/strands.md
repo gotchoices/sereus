@@ -916,7 +916,10 @@ no longer the case.
   party's machines included, while the party's other machines, bound under both keys, stay
   served. A machine of the party that was offline through the replacement returns bound under
   the new key with nothing asked of it. Proved by
-  `packages/integration-tests/src/scenarios/machine-removal-rotates-party-key.integration.ts`.
+  `packages/integration-tests/src/scenarios/machine-removal-rotates-party-key.integration.ts`
+  for a strand the party manages, and by
+  `packages/integration-tests/src/scenarios/party-key-rotation-across-parties.integration.ts`
+  for one it joined, where the host's re-invitation seats the new key.
 - **A delegate grant is not a way around any of this.** A party's own relay can hold a
   short-lived admission grant for a machine of its own party (see [Relay
   willingness](#some-questions)), but such grants are only ever announced over a channel

@@ -785,6 +785,17 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   no owner signer, is served, holds the writes it missed and finishes its membership loop. A
   machine returning after a swap it missed is **uncovered** on a real network. Connections here
   are DIRECT too.
+- The same cut in a strand the party does NOT manage, on rows production wrote (party A joined
+  party B's closed strand through the real formation handshake and holds no manager seat there;
+  removing one of A's machines reports `needs-another-party`, leaves the strand's rows untouched
+  and lists the replacement as waiting on `another-party`; B's owner then publishes an ordinary
+  fresh invitation, A's owner redeems it, A's membership reconciler spends it under the pending
+  key rather than the current one, and the replacement finishes from that seat with no manager
+  promotion: the removed machine is cut by B and by A's always-on replica from the rows alone on
+  the production schedule, the replica re-keys its running strand in place with nothing asked of
+  it, and the listing is empty) — `party-key-rotation-across-parties.integration.ts`. One case;
+  the offline-replica path of the control swap is the line above's. Connections here are DIRECT
+  too.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 

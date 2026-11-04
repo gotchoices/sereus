@@ -63,6 +63,7 @@
  * for by visibility, on the machine whose view the next step depends on.
  *
  * ── WHAT IS ASSERTED, AND HOW ────────────────────────────────────────────────
+ * The machine handles, the reads and the cut claims are the harness's `strand-machine.ts`.
  * Connection claims read the strand libp2p node's own `getConnections()` — the surface the
  * teardown sweep hangs up through — filtered to a named remote peer id, never a bare
  * connection count, so an unrelated peer coming or going cannot move an assertion.
@@ -98,24 +99,40 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-	DEFAULT_STRAND_CLUSTER_SIZE,
 	MEMBERSHIP_INVITE_UNAVAILABLE_REASON,
 	addMemberByManager,
 	generateStrandMemberKey,
 	revokeMember,
 	strandMemberKeyPair,
 } from '@serfab/cadre-core';
-import type { CadreNode, FormStrandResult, OpenInvitation, StrandInstance, StrandRow } from '@serfab/cadre-core';
-import type { Database } from '@quereus/quereus';
+import type { CadreNode, FormStrandResult, OpenInvitation } from '@serfab/cadre-core';
 import {
+	awaitBindingsVisible,
+	awaitMemberSeated,
+	awaitPartyKey,
+	awaitRowVisible,
+	awaitStrandRow,
+	binding,
 	bootTopology,
-	connectStrandNodes,
+	consumedInvites,
 	createSignedSAppConfig,
-	waitForCohortOn,
-	waitUntil,
+	expectConnected,
+	expectCut,
+	expectNeverConverges,
+	insertWithRetry,
+	memberKeys,
+	memberPeerBindings,
+	meshStrandNodes,
+	NO_CONVERGENCE_BUDGET_MS,
+	publishBoundInvitation,
+	REMAINING_COHORT_WRITE_BUDGET_MS,
+	rowLanded,
 	sleep,
+	STRAND_GATE,
+	strandConnectionsTo,
+	strandMachine,
+	waitUntil,
 	type Topology,
-	type TopologyMachine,
 } from '../harness/index.js';
 
 /** The one-table key/value sApp several strand scenarios already use. No RBAC: what is
@@ -131,46 +148,11 @@ table Data (
  *  schema travels in the shared `SAppConfig` every machine attaches with. */
 const SAPP_ID = 'sapp-removal-via-formation';
 
-/** Formation invitation lifetime. Long enough that no test here can outlive one. */
-const INVITATION_TTL_MS = 365 * 24 * 3600_000;
-
 /** The membership reconciler's explicit cadence. The loop climbs a small ladder across
  *  passes (wait for the host-issued `Strand.Invite` row to replicate → redeem it →
  *  register this machine's binding), so its cadence sets how long the membership gates
- *  below take; 2 s keeps them inside {@link GATE} instead of the 30 s production default. */
+ *  below take; 2 s keeps them inside {@link STRAND_GATE} instead of the 30 s production default. */
 const RECONCILE_POLL_MS = 2_000;
-
-/** The budget every POSITIVE convergence gate waits on. Sibling four-machine scenarios
- *  converge well under a second; this is headroom for slow hardware, not an expectation. */
-const GATE = { timeoutMs: 60_000, intervalMs: 250 } as const;
-
-/** Budget for the strand mesh dials and the strand cohort barrier. */
-const MESH_TIMEOUT_MS = 30_000;
-
-/**
- * How long a cut-off machine is given to converge before "it never did" is asserted.
- *
- * The SIZE is the claim: too short and a merely-slow strand reads as a cut. Ten seconds is
- * ~10× the measured cross-machine visibility latency on this topology, and every negative
- * assertion is paired with a positive control read on a machine that is NOT cut, taken
- * from the same write — so a strand that had simply stalled fails the control read too and
- * the test reports that instead. Inherited verbatim from
- * `strand-removal-cuts-network.integration.ts`, whose measurement it rests on.
- */
-const NO_CONVERGENCE_BUDGET_MS = 10_000;
-
-/**
- * Budget for the post-cut write by the remaining cohort.
- *
- * MEASURED on the sibling removal scenario, not hypothetical: the first write after a cut
- * fails several times before it commits (three or four `BlockUnavailableError: … Block …
- * is unavailable (peers-unreachable)` attempts over 3.5-4.3 s), because the cohort still
- * lists the removed party's now-unreachable machines and has to downsize to the live
- * holders. It recovers on its own, which is why {@link insertWithRetry} exists and why the
- * claim is "the remaining cohort still commits", not "commits immediately". Exceeding THIS
- * budget is the genuine "removal broke the remaining strand" failure.
- */
-const REMAINING_COHORT_WRITE_BUDGET_MS = 90_000;
 
 /**
  * How long the removed party is given to REPORT that its re-join is blocked (test 2).
@@ -191,183 +173,6 @@ const JOURNEY_TEST_TIMEOUT_MS = 600_000;
 const REJOIN_TEST_TIMEOUT_MS = 420_000;
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Machine handles and reads
-// ═════════════════════════════════════════════════════════════════════════════
-
-/** One machine's strand-side handles, named so every failure message says which machine. */
-interface StrandMachine {
-	label: string;
-	node: CadreNode;
-	db: Database;
-	/** This machine's STRAND transport peer id — what a `MemberPeer` row binds, and what
-	 *  the deny set is keyed by. Distinct from its control-network peer id. */
-	peerId: string;
-	/** The strand's own libp2p node — captured once, so no call site re-asserts it is there. */
-	libp2p: NonNullable<StrandInstance['libp2pNode']>;
-}
-
-/**
- * Pair a machine with the strand instance it just launched, throwing by name rather than
- * letting a launch regression surface as `Cannot read properties of undefined` several
- * phases on.
- */
-function strandMachine(label: string, node: CadreNode, instance: StrandInstance): StrandMachine {
-	if (instance.status !== 'active' || !instance.database || !instance.libp2pNode) {
-		throw new Error(
-			`${label}: strand came up '${instance.status}'`
-			+ (instance.error ? ` (${instance.error})` : '')
-			+ ' with no database/libp2p node — nothing can be asserted against it');
-	}
-	return {
-		label, node,
-		db: instance.database.getDatabase(),
-		libp2p: instance.libp2pNode,
-		peerId: instance.libp2pNode.peerId.toString(),
-	};
-}
-
-/** Open connections `from`'s strand node holds to `to`'s strand peer id — the same surface
- *  the teardown sweep enumerates and hangs up through. */
-function strandConnectionsTo(from: StrandMachine, to: StrandMachine): number {
-	return from.libp2p.getConnections()
-		.filter((c) => c.remotePeer.toString() === to.peerId)
-		.length;
-}
-
-/** Assert `from` currently holds at least one strand connection to `to`. */
-function expectConnected(from: StrandMachine, to: StrandMachine, why: string): void {
-	expect(strandConnectionsTo(from, to), `${from.label} should hold a strand connection to ${to.label} — ${why}`)
-		.toBeGreaterThan(0);
-}
-
-/** Assert `from` currently holds NO strand connection to `to`. */
-function expectCut(from: StrandMachine, to: StrandMachine, why: string): void {
-	expect(strandConnectionsTo(from, to), `${from.label} should hold NO strand connection to ${to.label} — ${why}`)
-		.toBe(0);
-}
-
-/** Every `Strand.Member.Key` visible to one machine, via an UNFILTERED scan (header note). */
-async function memberKeys(db: Database): Promise<string[]> {
-	const keys: string[] = [];
-	for await (const row of db.eval('select Key from Strand.Member')) {
-		keys.push(row.Key as string);
-	}
-	return keys;
-}
-
-/** Every spent invitation visible to one machine, as `InviteKey|MemberKey` strings — which
- *  credential was spent and against which member, via an UNFILTERED scan (header note). */
-async function consumedInvites(db: Database): Promise<string[]> {
-	const spent: string[] = [];
-	for await (const row of db.eval('select InviteKey, MemberKey from Strand.ConsumedInvite')) {
-		spent.push(`${row.InviteKey as string}|${row.MemberKey as string}`);
-	}
-	return spent;
-}
-
-/** Every `Strand.MemberPeer` binding visible to one machine, as `MemberKey|PeerId` strings
- *  — the pairing is the claim (which party a machine belongs to), never the peer id alone. */
-async function memberPeerBindings(db: Database): Promise<string[]> {
-	const bindings: string[] = [];
-	for await (const row of db.eval('select MemberKey, PeerId from Strand.MemberPeer')) {
-		bindings.push(`${row.MemberKey as string}|${row.PeerId as string}`);
-	}
-	return bindings;
-}
-
-/** The `MemberKey|PeerId` string a binding of `machine` to `memberKey` would appear as. */
-function binding(memberKey: string, machine: StrandMachine): string {
-	return `${memberKey}|${machine.peerId}`;
-}
-
-/** Every `App.Data` row, scanned and filtered in JavaScript — `Key` is the single-column
- *  primary key, so an equality on it is the point lookup the header warns about, and a
- *  miss inside a negative assertion would pass it for the wrong reason. */
-async function dataValue(db: Database, key: string): Promise<string | undefined> {
-	for await (const row of db.eval('select Key, Val from App.Data')) {
-		if (row.Key === key) return row.Val as string;
-	}
-	return undefined;
-}
-
-/** Gate: `key` becomes visible on `machine` with the expected value. */
-async function awaitRowVisible(machine: StrandMachine, key: string, val: string): Promise<void> {
-	await waitUntil(
-		async () => (await dataValue(machine.db, key)) === val,
-		{ ...GATE, description: `App.Data '${key}' becomes visible on ${machine.label}` },
-	);
-}
-
-/**
- * Assert `machine` NEVER converges on `key` within {@link NO_CONVERGENCE_BUDGET_MS}.
- *
- * `waitUntil` rejects on expiry, so the absence is asserted as a rejection rather than by
- * sleeping and peeking — and it retries through a throwing read, so a machine whose read
- * FAILS because it can no longer reach a coordinator counts as not-converged too. Both are
- * the cut; the header says why that conflation is intended here.
- */
-async function expectNeverConverges(machine: StrandMachine, key: string, val: string): Promise<void> {
-	await expect(
-		waitUntil(
-			async () => (await dataValue(machine.db, key)) === val,
-			{
-				timeoutMs: NO_CONVERGENCE_BUDGET_MS, intervalMs: 250,
-				description: `App.Data '${key}' to reach the CUT machine ${machine.label} (it must not)`,
-			},
-		),
-		`${machine.label} is cut off and must not converge on '${key}'`,
-	).rejects.toThrow(/Timeout waiting/);
-}
-
-/**
- * Whether the row is already there despite the insert having reported failure — asked on
- * the AUTHOR's own database, so it makes no physical claim about any other machine. A read
- * that ITSELF fails answers "not known to have landed" rather than propagating (a throw
- * here would replace the insert error the caller needs to see), and is LOGGED rather than
- * swallowed silently.
- */
-async function rowLanded(machine: StrandMachine, key: string, val: string): Promise<boolean> {
-	try {
-		return (await dataValue(machine.db, key)) === val;
-	} catch (readError) {
-		console.warn(`[removal-formation] ${machine.label}: read-back of '${key}' after a failed insert also failed: ${String(readError)}`);
-		return false;
-	}
-}
-
-/**
- * Insert with a bounded retry, for the post-cut write only — the retry is LOAD-BEARING
- * rather than defensive here: the first attempts after a cut reliably fail while the
- * cohort still lists the removed party's unreachable machines (see
- * {@link REMAINING_COHORT_WRITE_BUDGET_MS}). Exceeding `budgetMs` is the genuine "the
- * remaining cohort can no longer commit" regression; a handful of failures before a commit
- * is the expected shape.
- */
-async function insertWithRetry(machine: StrandMachine, key: string, val: string, budgetMs: number): Promise<void> {
-	const start = Date.now();
-	for (let attempt = 1; ; attempt++) {
-		try {
-			await machine.db.exec('insert into App.Data (Key, Val) values (?, ?)', [key, val]);
-			console.log(`[removal-formation] ${machine.label}: committed '${key}' on attempt ${attempt} after ${Date.now() - start}ms`);
-			return;
-		} catch (error) {
-			if (await rowLanded(machine, key, val)) {
-				console.log(`[removal-formation] ${machine.label}: attempt ${attempt} reported failure but '${key}' landed`);
-				return;
-			}
-			if (Date.now() - start > budgetMs) {
-				throw new Error(
-					`[removal-formation] ${machine.label}: the REMAINING cohort could not commit '${key}' within ${budgetMs}ms `
-					+ `(${attempt} attempt(s)); last error: ${String(error)}`,
-					{ cause: error });
-			}
-			console.warn(`[removal-formation] ${machine.label}: attempt ${attempt} failed, retrying: ${String(error)}`);
-			await sleep(1_000);
-		}
-	}
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // Bring-up
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -377,19 +182,6 @@ const MACHINE_SPEC = {
 	revocationSuspended: true,
 	membershipReconciliation: { pollIntervalMs: RECONCILE_POLL_MS },
 } as const;
-
-/** Mint a fresh open invitation and publish it BOUND to `strandId`, the reference apps'
- *  release flow: redeeming it records consent against the existing host strand rather than
- *  minting a new one — which is what makes the responder issue a membership invitation. */
-async function publishBoundInvitation(host: CadreNode, strandId: string): Promise<OpenInvitation> {
-	const invitation = await host.createOpenInvitation(SAPP_ID, INVITATION_TTL_MS);
-	await host.publishFormationInvite(invitation.token, SAPP_ID, {
-		strandId,
-		expiresAtMs: Date.now() + INVITATION_TTL_MS,
-		totalUses: 1,
-	});
-	return invitation;
-}
 
 /**
  * Redeem `invitation`, retrying the whole handshake while the responder rejects it with
@@ -429,92 +221,6 @@ async function formStrandWithRetry(
 			await sleep(1_000);
 		}
 	}
-}
-
-/** The party's own membership identity key for this strand, once its `StrandPartyKey`
- *  control row is visible on `machine` — the row the founder's publish mints and a
- *  joiner's `formStrand` persists, and the key every machine of the party signs its
- *  membership writes with. Gated rather than read once: on a non-founding machine it
- *  arrives by control-network replication. */
-async function awaitPartyKey(machine: TopologyMachine, strandId: string, label: string): Promise<string> {
-	let key: string | null = null;
-	await waitUntil(
-		async () => {
-			key = await machine.node.getControlDatabase()!.queryStrandPartyKey(strandId);
-			return key !== null;
-		},
-		{ ...GATE, description: `${label}: the party's own StrandPartyKey row for ${strandId} becomes visible` },
-	);
-	return key!;
-}
-
-/** The published `Strand` row for `strandId` once it is visible in `machine`'s own control
- *  database — how a party's non-founding machine learns a strand it belongs to, including
- *  the shared read key it must attach with. */
-async function awaitPublishedStrandRow(machine: TopologyMachine, strandId: string, label: string): Promise<StrandRow> {
-	let row: StrandRow | null = null;
-	await waitUntil(
-		async () => {
-			row = await machine.node.getControlDatabase()!.queryStrand(strandId);
-			return row !== null;
-		},
-		{ ...GATE, description: `${label}: the published Strand row for ${strandId} reaches this machine` },
-	);
-	return row!;
-}
-
-/**
- * Wire every remaining strand pair directly and barrier each node's cohort.
- *
- * Deliberately explicit: cross-party strand DISCOVERY has exactly one automatic path (the
- * addresses formation carries back, which seed only the pair that redeemed — asserted
- * separately in test 1) and `strand-formation-cross-party-seed` is where that path is the
- * subject. Here the mesh is a precondition, so it is dialed rather than waited on.
- * Already-connected pairs are skipped, so the seeded auto-dial is not re-driven.
- */
-async function meshStrandNodes(machines: ReadonlyArray<StrandMachine>): Promise<void> {
-	for (let i = 0; i < machines.length; i++) {
-		for (let j = i + 1; j < machines.length; j++) {
-			const dialer = machines[j]!;
-			const target = machines[i]!;
-			if (strandConnectionsTo(dialer, target) > 0) continue;
-			await connectStrandNodes(dialer.libp2p, dialer.label, target.libp2p, target.label, MESH_TIMEOUT_MS);
-		}
-	}
-	// Capped at the strand breadth: a write is offered to at most
-	// DEFAULT_STRAND_CLUSTER_SIZE peers however many machines exist.
-	const want = Math.min(machines.length, DEFAULT_STRAND_CLUSTER_SIZE);
-	for (const machine of machines) {
-		await waitForCohortOn(machine.libp2p, want, {
-			timeoutMs: MESH_TIMEOUT_MS,
-			label: `strand cohort on ${machine.label}`,
-		});
-	}
-}
-
-/** Gate `observers` on seeing every binding in `expected`. The deny set is derived from
- *  these rows, so a machine that cannot see a binding cannot deny the machine it names —
- *  gating here is what makes a later cut mean "chose to" rather than "had nothing to go on". */
-async function awaitBindingsVisible(
-	observers: ReadonlyArray<StrandMachine>, expected: ReadonlyArray<string>
-): Promise<void> {
-	for (const observer of observers) {
-		await waitUntil(
-			async () => {
-				const visible = await memberPeerBindings(observer.db);
-				return expected.every((b) => visible.includes(b));
-			},
-			{ ...GATE, description: `all ${expected.length} MemberPeer bindings become visible on ${observer.label}` },
-		);
-	}
-}
-
-/** Gate `observer` on seeing `memberKey` seated as a `Strand.Member`. */
-async function awaitMemberSeated(observer: StrandMachine, memberKey: string, whose: string): Promise<void> {
-	await waitUntil(
-		async () => (await memberKeys(observer.db)).includes(memberKey),
-		{ ...GATE, description: `${whose}'s Member row becomes visible on ${observer.label}` },
-	);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -559,7 +265,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			expect(founded.founded).toBe(true);
 			const host0 = strandMachine('host[0]', hostOwner.node, founded.instance);
 
-			const hostPartyKey = await awaitPartyKey(hostOwner, strandId, 'host[0]');
+			const hostPartyKey = await awaitPartyKey(hostOwner.node, strandId, 'host[0]');
 			const founderKeyPair = strandMemberKeyPair(hostPartyKey);
 
 			// The strand's shared read key — a strand-wide secret, deliberately NOT
@@ -572,15 +278,15 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// ── The host's SECOND machine joins the strand its party published ───────
 			// The row and the party identity both reach it over the party's own control
 			// network; nothing about this machine is hand-fed.
-			await awaitPartyKey(hostSecond, strandId, 'host[1]');
-			const hostSecondRow = await awaitPublishedStrandRow(hostSecond, strandId, 'host[1]');
+			await awaitPartyKey(hostSecond.node, strandId, 'host[1]');
+			const hostSecondRow = await awaitStrandRow(hostSecond.node, strandId, 'host[1]');
 			expect(hostSecondRow.MemberPrivateKey).toBe(publishedRow.MemberPrivateKey);
 			const host1 = strandMachine(
 				'host[1]', hostSecond.node,
 				await hostSecond.node.addStrand({ strandRow: hostSecondRow, sAppConfig: sApp }));
 
 			// ── The joiner redeems a BOUND invitation over the real handshake ────────
-			const invitation = await publishBoundInvitation(hostOwner.node, strandId);
+			const invitation = await publishBoundInvitation(hostOwner.node, strandId, SAPP_ID);
 			const formResult = await joinOwner.node.formStrand(invitation, {
 				partyId: joinOwner.node.peerId!.toString(),
 				purpose: 'party removal via formation, end to end',
@@ -597,7 +303,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// The joiner's node minted and persisted its OWN party identity while
 			// adopting the invitation — distinct from the founder's, and distinct from
 			// the shared read key.
-			const joinPartyKey = await awaitPartyKey(joinOwner, strandId, 'join[0]');
+			const joinPartyKey = await awaitPartyKey(joinOwner.node, strandId, 'join[0]');
 			const joinerMemberKey = strandMemberKeyPair(joinPartyKey).publicKeyB64;
 			const founderMemberKey = founderKeyPair.publicKeyB64;
 			expect(joinerMemberKey).not.toBe(founderMemberKey);
@@ -625,12 +331,12 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// back are a working seed, so machine 0 reaches the host with no dial here.
 			await waitUntil(
 				() => strandConnectionsTo(join0, host0) > 0,
-				{ ...GATE, description: "join[0]'s strand node auto-dials host[0] from the formation seed" },
+				{ ...STRAND_GATE, description: "join[0]'s strand node auto-dials host[0] from the formation seed" },
 			);
 
 			await joinOwner.node.publishStrand(strandId, 'c', formResult.memberPrivateKey!);
-			const joinSecondRow = await awaitPublishedStrandRow(joinSecond, strandId, 'join[1]');
-			await awaitPartyKey(joinSecond, strandId, 'join[1]');
+			const joinSecondRow = await awaitStrandRow(joinSecond.node, strandId, 'join[1]');
+			await awaitPartyKey(joinSecond.node, strandId, 'join[1]');
 			const join1 = strandMachine(
 				'join[1]', joinSecond.node,
 				await joinSecond.node.addStrand({ strandRow: joinSecondRow, sAppConfig: sApp }));
@@ -648,7 +354,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 						const keys = await memberKeys(machine.db);
 						return keys.includes(founderMemberKey) && keys.includes(joinerMemberKey);
 					},
-					{ ...GATE, description: `both parties' Member rows become visible on ${machine.label}` },
+					{ ...STRAND_GATE, description: `both parties' Member rows become visible on ${machine.label}` },
 				);
 				expect(new Set(await memberKeys(machine.db)))
 					.toEqual(new Set([founderMemberKey, joinerMemberKey]));
@@ -669,7 +375,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// its disappearance is what confirms the redemption happened.
 			await waitUntil(
 				() => joinOwner.node.getPendingMembershipInvite(strandId) === undefined,
-				{ ...GATE, description: "join[0]'s staged membership invitation is cleared once redeemed" },
+				{ ...STRAND_GATE, description: "join[0]'s staged membership invitation is cleared once redeemed" },
 			);
 
 			// ── A row written before the removal, readable by everyone ──────────────
@@ -709,7 +415,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// a refresh call cuts regardless of what it can see.
 			await waitUntil(
 				async () => !(await memberKeys(host1.db)).includes(joinerMemberKey),
-				{ ...GATE, description: "the removal becomes visible in host[1]'s own database" },
+				{ ...STRAND_GATE, description: "the removal becomes visible in host[1]'s own database" },
 			);
 			await host1.node.refreshRevocationEnforcement(strandId);
 			expectCut(host1, join0, 'host[1] has now seen the removal and swept it');
@@ -722,8 +428,8 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			const cutKey = 'after-removal';
 			await insertWithRetry(host0, cutKey, 'written by the remaining party', REMAINING_COHORT_WRITE_BUDGET_MS);
 			await awaitRowVisible(host1, cutKey, 'written by the remaining party');
-			await expectNeverConverges(join0, cutKey, 'written by the remaining party');
-			await expectNeverConverges(join1, cutKey, 'written by the remaining party');
+			await expectNeverConverges(join0, cutKey, 'written by the remaining party', NO_CONVERGENCE_BUDGET_MS);
+			await expectNeverConverges(join1, cutKey, 'written by the remaining party', NO_CONVERGENCE_BUDGET_MS);
 
 			// ── …and cannot push anything back (gotchoices/sereus#4) ────────────────
 			// Two outcomes are legitimate and both are the cut: the removed party's write
@@ -743,8 +449,8 @@ describe('Removal cuts a party that joined through the real formation handshake'
 				+ `${pushError === undefined ? '' : `: ${String(pushError)}`}`
 				+ `; readable back on ${join0.label}: ${await rowLanded(join0, pushKey, 'from the removed party')}`,
 			);
-			await expectNeverConverges(host0, pushKey, 'from the removed party');
-			await expectNeverConverges(host1, pushKey, 'from the removed party');
+			await expectNeverConverges(host0, pushKey, 'from the removed party', NO_CONVERGENCE_BUDGET_MS);
+			await expectNeverConverges(host1, pushKey, 'from the removed party', NO_CONVERGENCE_BUDGET_MS);
 
 			// The sessions are still down after all of that — a re-dial by the removed
 			// party is refused by the connection gate, not merely swept once.
@@ -802,24 +508,24 @@ describe('Removal cuts a party that joined through the real formation handshake'
 				sAppConfig: sApp,
 			});
 			const host0 = strandMachine('host[0]', hostOwner.node, founded.instance);
-			const founderKeyPair = strandMemberKeyPair(await awaitPartyKey(hostOwner, strandId, 'host[0]'));
+			const founderKeyPair = strandMemberKeyPair(await awaitPartyKey(hostOwner.node, strandId, 'host[0]'));
 
-			await awaitPartyKey(hostSecond, strandId, 'host[1]');
+			await awaitPartyKey(hostSecond.node, strandId, 'host[1]');
 			const host1 = strandMachine(
 				'host[1]', hostSecond.node,
 				await hostSecond.node.addStrand({
-					strandRow: await awaitPublishedStrandRow(hostSecond, strandId, 'host[1]'),
+					strandRow: await awaitStrandRow(hostSecond.node, strandId, 'host[1]'),
 					sAppConfig: sApp,
 				}));
 
 			// ── First formation: the joiner belongs, written entirely by the runtime ──
-			const firstInvitation = await publishBoundInvitation(hostOwner.node, strandId);
+			const firstInvitation = await publishBoundInvitation(hostOwner.node, strandId, SAPP_ID);
 			const firstForm = await joinOwner.node.formStrand(firstInvitation, {
 				partyId: joinOwner.node.peerId!.toString(),
 				purpose: 'first join',
 			});
 			expect(firstForm.membershipInvite).toBeDefined();
-			const joinPartyKey = await awaitPartyKey(joinOwner, strandId, 'join[0]');
+			const joinPartyKey = await awaitPartyKey(joinOwner.node, strandId, 'join[0]');
 			const joinerMemberKey = strandMemberKeyPair(joinPartyKey).publicKeyB64;
 
 			const join0 = strandMachine(
@@ -841,7 +547,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			await host0.node.refreshRevocationEnforcement(strandId);
 			await waitUntil(
 				async () => !(await memberKeys(host1.db)).includes(joinerMemberKey),
-				{ ...GATE, description: "the removal becomes visible in host[1]'s own database" },
+				{ ...STRAND_GATE, description: "the removal becomes visible in host[1]'s own database" },
 			);
 			await host1.node.refreshRevocationEnforcement(strandId);
 			expectCut(host0, join0, 'the founder swept the removed party after refreshing');
@@ -860,7 +566,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// section of this test waits on.
 			const rejoinBlocked: string[] = [];
 			joinOwner.node.on('strand:rejoin-blocked', ({ strandId: blocked }) => { rejoinBlocked.push(blocked); });
-			const secondInvitation = await publishBoundInvitation(hostOwner.node, strandId);
+			const secondInvitation = await publishBoundInvitation(hostOwner.node, strandId, SAPP_ID);
 			const secondForm = await formStrandWithRetry(
 				joinOwner.node, secondInvitation, 're-join after removal', REMAINING_COHORT_WRITE_BUDGET_MS);
 			expect(secondForm.strandId).toBe(strandId);
@@ -929,7 +635,7 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// first run of this version of the test.
 			await waitUntil(
 				() => strandConnectionsTo(join0, host0) > 0,
-				{ ...GATE, description: "join[0]'s strand node reconnects to host[0] on its own once re-admitted" },
+				{ ...STRAND_GATE, description: "join[0]'s strand node reconnects to host[0] on its own once re-admitted" },
 			);
 			await insertWithRetry(host0, 'after-readmission', 'welcome back', REMAINING_COHORT_WRITE_BUDGET_MS);
 			await awaitRowVisible(join0, 'after-readmission', 'welcome back');
@@ -942,11 +648,11 @@ describe('Removal cuts a party that joined through the real formation handshake'
 			// report for the whole cycle: the heal is not a second dead end.
 			await waitUntil(
 				() => joinOwner.node.getPendingMembershipInvite(strandId) === undefined,
-				{ ...GATE, description: "join[0]'s re-armed membership loop settles the second invitation once re-admitted" },
+				{ ...STRAND_GATE, description: "join[0]'s re-armed membership loop settles the second invitation once re-admitted" },
 			);
 			await waitUntil(
 				async () => (await consumedInvites(host0.db)).includes(`${secondForm.membershipInvite!.inviteKey}|${joinerMemberKey}`),
-				{ ...GATE, description: "the second invitation is spent against the re-admitted party, visible on host[0]" },
+				{ ...STRAND_GATE, description: "the second invitation is spent against the re-admitted party, visible on host[0]" },
 			);
 			expect(rejoinBlocked).toEqual([strandId]);
 		} finally {

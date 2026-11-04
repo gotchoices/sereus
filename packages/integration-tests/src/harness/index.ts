@@ -22,6 +22,8 @@ export * from './control-cohort.js';
 export * from './cadre-invite.js';
 export * from './topology.js';
 export * from './strand-join.js';
+// The strand-side handles and claims the removal scenarios share: connection cuts, membership scans, convergence gates.
+export * from './strand-machine.js';
 export * from './block-store-probe.js';
 export * from './dedicated-relay.js';
 // The relay round-trip measurement's instruments (`scenarios/relay-round-trip-measure`):
