@@ -1636,22 +1636,26 @@ export class StrandInstanceManager {
    * A tracked instance with no party key before (a storage replica launched before the party's
    * row reached this node) is keyed the same way and gains its reconciler now rather than at its
    * next resume. A build in flight is waited out first, so the reconciler it arms is the one
-   * replaced here rather than a second one beside it.
+   * replaced here rather than a second one beside it; a key the retained config already names
+   * is answered before that wait, since the party key watch asks this for every tracked closed
+   * strand on every change to the key tables.
    *
    * @returns `rekeyed` when a running instance's reconciler was rebuilt; `retained` when only the
    *   config changed (a hibernating instance, or one with the loop disabled); `unchanged` when
    *   the key already matched or the strand is open; `untracked` when the strand is not here.
    */
   async rekeyParty(strandId: string, partyMemberPrivateKey: string): Promise<'rekeyed' | 'retained' | 'unchanged' | 'untracked'> {
+    const before = this.rekeyNeeded(strandId, partyMemberPrivateKey);
+    if (before !== 'needed') {
+      return before;
+    }
     await this.settleRuntimeBuilds(strandId);
-    const instance = this.instances.get(strandId);
-    const config = this.launchConfigs.get(strandId);
-    if (!instance || !config) {
-      return 'untracked';
+    const after = this.rekeyNeeded(strandId, partyMemberPrivateKey);
+    if (after !== 'needed') {
+      return after;
     }
-    if (config.strandRow.Type !== 'c' || config.partyMemberPrivateKey === partyMemberPrivateKey) {
-      return 'unchanged';
-    }
+    const instance = this.instances.get(strandId)!;
+    const config = this.launchConfigs.get(strandId)!;
     const rekeyed: StartStrandConfig = { ...config, partyMemberPrivateKey };
     this.launchConfigs.set(strandId, rekeyed);
     const reconciler = this.membershipReconcilers.get(strandId);
@@ -1668,6 +1672,15 @@ export class StrandInstanceManager {
     const armed = this.membershipReconcilers.has(strandId);
     log('rekeyParty: strand %s re-keyed (%s)', strandId, armed ? 'membership reconciler rebuilt' : 'membership reconciliation disabled');
     return armed ? 'rekeyed' : 'retained';
+  }
+
+  /** Whether {@link rekeyParty} has anything to do for `strandId`: the retained config is a closed strand's and names another key. */
+  private rekeyNeeded(strandId: string, partyMemberPrivateKey: string): 'needed' | 'unchanged' | 'untracked' {
+    const config = this.launchConfigs.get(strandId);
+    if (!config || !this.instances.has(strandId)) {
+      return 'untracked';
+    }
+    return config.strandRow.Type !== 'c' || config.partyMemberPrivateKey === partyMemberPrivateKey ? 'unchanged' : 'needed';
   }
 
   /** The ids of every tracked closed strand, running or hibernating. */

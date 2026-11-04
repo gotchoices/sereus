@@ -163,36 +163,40 @@ export class StrandPartyKeyRotationDriver {
    * step failed is `pending` with a log, and the next trigger re-runs it.
    */
   async drive(strandIds: readonly string[], cause: string): Promise<StrandKeyRotationOutcome[]> {
-    const joined = new Map<string, Promise<RotationOutcome>>();
-    const fresh: string[] = [];
-    for (const strandId of new Set(strandIds)) {
-      const running = this.inFlight.get(strandId);
-      if (running) {
-        joined.set(strandId, running);
-      } else {
-        fresh.push(strandId);
-      }
-    }
+    const ids = [...new Set(strandIds)];
+    const joined = ids.filter((strandId) => this.inFlight.has(strandId));
+    const fresh = ids.filter((strandId) => !this.inFlight.has(strandId));
     const outcomes = new Map<string, RotationOutcome>();
     if (fresh.length > 0) {
-      const run = this.run(fresh, cause);
-      for (const strandId of fresh) {
-        const own = run.then((result) => result.get(strandId) ?? 'pending');
-        this.inFlight.set(strandId, own);
-        void own.finally(() => {
-          if (this.inFlight.get(strandId) === own) {
-            this.inFlight.delete(strandId);
-          }
-        });
-      }
-      for (const [strandId, outcome] of await run) {
+      for (const [strandId, outcome] of await this.startRun(fresh, cause)) {
         outcomes.set(strandId, outcome);
       }
     }
-    for (const [strandId, running] of joined) {
-      outcomes.set(strandId, await running);
+    if (joined.length > 0) {
+      // The run in flight read its pending rows before this call was made, so a row written
+      // since (a second removal) would otherwise wait for the next trigger: the joined strands
+      // are driven again once it ends. A strand with nothing left costs one pending read.
+      await Promise.all(joined.map((strandId) => this.inFlight.get(strandId)));
+      for (const outcome of await this.drive(joined, cause)) {
+        outcomes.set(outcome.strandId, outcome.outcome);
+      }
     }
-    return [...new Set(strandIds)].map((strandId) => ({ strandId, outcome: outcomes.get(strandId) ?? 'pending' }));
+    return ids.map((strandId) => ({ strandId, outcome: outcomes.get(strandId) ?? 'pending' }));
+  }
+
+  /** Start one run and register it as the run in flight for each of its strands until it ends. `run` never rejects, so neither does the registration. */
+  private startRun(strandIds: readonly string[], cause: string): Promise<Map<string, RotationOutcome>> {
+    const run = this.run(strandIds, cause);
+    for (const strandId of strandIds) {
+      const own = run.then((result) => result.get(strandId) ?? 'pending');
+      this.inFlight.set(strandId, own);
+      void own.finally(() => {
+        if (this.inFlight.get(strandId) === own) {
+          this.inFlight.delete(strandId);
+        }
+      });
+    }
+    return run;
   }
 
   /** Steps 1 to 5 per strand, then one swap over the ready ones. */
@@ -254,10 +258,23 @@ export class StrandPartyKeyRotationDriver {
       // row that moved on; either way the strand's rows are on the new key, so it is rotated.
       outcomes.set(entry.strandId, 'rotated');
       if (swapped.includes(entry.strandId)) {
-        await this.deps.onRotated(entry.strandId, entry.newKey);
+        await this.notifyRotated(entry);
       }
     }
     return outcomes;
+  }
+
+  /**
+   * The re-key after a committed swap. A failure is logged and the strand stays `rotated`: the
+   * control row names the new key, and the party key watch re-keys the instance from it on its
+   * next run (`CadreNode.onPartyKeyTablesChanged`).
+   */
+  private async notifyRotated(entry: StrandPartyKeySwapEntry): Promise<void> {
+    try {
+      await this.deps.onRotated(entry.strandId, entry.newKey);
+    } catch (error) {
+      log('Party key rotation of strand %s: re-keying the running instance after the swap failed (the party key watch retries it): %s', entry.strandId, describeThrown(error));
+    }
   }
 
   /** Steps 1 to 5 for one strand, from the state its rows are in. */
@@ -277,8 +294,7 @@ export class StrandPartyKeyRotationDriver {
       }
       const db = this.deps.getDatabase(strandId);
       if (db === undefined) {
-        log('Party key rotation of strand %s: the strand does not run here now; left pending', strandId);
-        return { kind: 'failed', error: new Error('strand not running here') };
+        return { kind: 'failed', error: new Error('the strand does not run here now') };
       }
       const state = await readRotationState(db, current, pending.privateKey);
       await this.cleanUpSuperseded(db, state, pending.superseded);
@@ -345,7 +361,11 @@ export class StrandPartyKeyRotationDriver {
     }
     this.reportedBlocked.set(strandId, stampId);
     log('Party key rotation of strand %s blocked: this party holds no manager seat there, so another party\'s manager has to admit the new key', strandId);
-    this.deps.onBlocked(strandId, 'needs-another-party');
+    try {
+      this.deps.onBlocked(strandId, 'needs-another-party');
+    } catch (error) {
+      log('Party key rotation of strand %s: the blocked report threw: %s', strandId, describeThrown(error));
+    }
   }
 }
 

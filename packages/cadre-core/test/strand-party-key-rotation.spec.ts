@@ -51,6 +51,10 @@ interface Fixture {
   rotated: () => string[];
   /** Make the next control swap reject once. */
   failNextSwap: () => void;
+  /** Replace the pending row, as a second removal does: a fresh key, the replaced key's public half superseded. */
+  replacePending: () => Promise<string>;
+  /** The key the stubbed control record names now. */
+  currentKey: () => string;
 }
 
 /** A founded closed strand bound as described above, and a control seam that swaps in memory. */
@@ -86,9 +90,12 @@ async function rotationFixture(): Promise<Fixture> {
         throw new Error('injected swap failure');
       }
       swaps.push([...entries]);
-      // What `ControlDatabase.swapStrandPartyKeys` leaves: the row names K', the pending row is gone.
+      // What `ControlDatabase.swapStrandPartyKeys` leaves: the row names K', and the pending row
+      // is gone when it holds K' (a later replacement stays for the next run).
       currentKey = entries[0]!.newKey;
-      pending = null;
+      if (pending?.privateKey === currentKey) {
+        pending = null;
+      }
       return entries.map((entry) => entry.strandId);
     },
     onRotated: async (strandId) => { rotated.push(strandId); },
@@ -105,6 +112,16 @@ async function rotationFixture(): Promise<Fixture> {
     swaps: () => swaps,
     rotated: () => [...rotated],
     failNextSwap: () => { swapFailures += 1; },
+    replacePending: async () => {
+      const replacement = await generateStrandMemberKey();
+      pending = {
+        privateKey: replacement,
+        superseded: [...(pending?.superseded ?? []), ...(pending ? [strandMemberKeyPair(pending.privateKey).publicKeyB64] : [])],
+        stampId: 'pending-stamp-2',
+      };
+      return replacement;
+    },
+    currentKey: () => currentKey,
   };
 }
 
@@ -183,5 +200,45 @@ describe('party key rotation after a machine removal', () => {
     expect(await driver.drive([fixture.strandId], 'test')).toEqual([{ strandId: fixture.strandId, outcome: 'rotated' }]);
     expect(idle.batches()).toBe(0);
     expect(fixture.swaps()).toHaveLength(1);
+  }, 60_000);
+});
+
+describe('a call that joins a run in flight', () => {
+  it('drives the strand again after that run, so a pending key replaced meanwhile is rotated to as well', async () => {
+    const fixture = await rotationFixture();
+    // The first run is held at its sibling read, after it has read the pending row K'.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let holds = 0;
+    const deps: StrandPartyKeyRotationDeps = {
+      ...fixture.deps,
+      readSiblingPeerIds: async (strandId) => {
+        if (holds++ === 0) {
+          await held;
+        }
+        return fixture.deps.readSiblingPeerIds(strandId);
+      },
+    };
+    const driver = new StrandPartyKeyRotationDriver(deps);
+    const first = driver.drive([fixture.strandId], 'first');
+    await vi.waitFor(() => expect(holds).toBe(1));
+    // A second removal replaces the pending row with K'' while the run is in flight, and triggers a run.
+    const replacement = await fixture.replacePending();
+    const second = driver.drive([fixture.strandId], 'second');
+    release();
+
+    expect(await first).toEqual([{ strandId: fixture.strandId, outcome: 'rotated' }]);
+    expect(await second).toEqual([{ strandId: fixture.strandId, outcome: 'rotated' }]);
+    // Two swaps, K to K' and then K' to K''; the strand's rows and the control record end on K''.
+    expect(fixture.swaps().map((entries) => entries.map(({ oldKey, newKey }) => ({ oldKey, newKey })))).toEqual([
+      [{ oldKey: fixture.oldPrivateKey, newKey: fixture.newPrivateKey }],
+      [{ oldKey: fixture.newPrivateKey, newKey: replacement }],
+    ]);
+    expect(fixture.currentKey()).toBe(replacement);
+    const finalKey = strandMemberKeyPair(replacement);
+    expect(await isStrandManager(fixture.db, finalKey.publicKeyB64)).toBe(true);
+    expect((await listMemberPeers(fixture.db, finalKey.publicKeyB64)).sort()).toEqual([SELF, ...SIBLINGS].sort());
+    expect(await isStrandMember(fixture.db, fixture.newKey.publicKeyB64)).toBe(false);
+    expect(await isStrandMember(fixture.db, fixture.oldKey.publicKeyB64)).toBe(false);
   }, 60_000);
 });
