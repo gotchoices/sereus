@@ -113,7 +113,7 @@ import { deriveOwnerAnchor } from './owner-anchor-sync.js';
 import { describeMachines, planMachineRemoval, MachineRemovalRefusedError, type ClosedStrandState } from './machine-removal.js';
 import { partitionPartyStrandPeers, type PartyStrandPeerSource, type PartyStrandPeers } from './strand-party-peers.js';
 import { StrandPartyKeyRotationDriver, type OpenedPendingPartyKey, type StrandPartyKeySwapEntry } from './strand-party-key-rotation.js';
-import { openPartyKey, partyKeyRecipients, sealPartyKey, type PartyKeyRecipient } from './sealed-party-key.js';
+import { openPartyKey, partyKeyRecipients, sealPartyKey, type PartyKeyOpener, type PartyKeyRecipient } from './sealed-party-key.js';
 import { describeOwnerKeys, namedOwnerKey, planOwnerKeyRemoval, revouchWithinPlan, OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-keys.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
@@ -10072,20 +10072,20 @@ export class CadreNode implements SAppIdLookup {
         recipients.set(machine.peerId, { peerId: machine.peerId, publicKeyB64: machine.publicKey });
       }
     }
-    const self = this.selfPartyKeyRecipient();
+    const self = this.selfPartyKeyIdentity();
     if (self === null) {
       log('removeMachine: this node runs on an ephemeral identity, so the pending party keys it writes are sealed to the other machines only and cannot be driven here');
     } else {
-      recipients.set(self.peerId, self);
+      recipients.set(self.peerId, { peerId: self.peerId, publicKeyB64: self.publicKeyB64 });
     }
     return [...recipients.values()];
   }
 
-  /** This machine as a recipient of a sealed party key ({@link getSelfSigningKey}'s key under its control peer id), or null on an ephemeral identity. */
-  private selfPartyKeyRecipient(): PartyKeyRecipient | null {
+  /** This machine as a sealed party key sees it: its control peer id with the identity key behind it ({@link getSelfSigningKey}), or null on an ephemeral identity. */
+  private selfPartyKeyIdentity(): (PartyKeyRecipient & PartyKeyOpener) | null {
     const peerId = this.controlNode?.peerId.toString();
     const key = this.getSelfSigningKey();
-    return peerId !== undefined && key !== null ? { peerId, publicKeyB64: key.publicKeyB64 } : null;
+    return peerId !== undefined && key !== null ? { peerId, ...key } : null;
   }
 
   /** The `PendingStrandPartyKey` row a removal writes for one strand: a fresh key, its public half in the clear and its private half sealed to `recipients`. */
@@ -10107,12 +10107,11 @@ export class CadreNode implements SAppIdLookup {
     if (row === null) {
       return null;
     }
-    const peerId = this.controlNode?.peerId.toString();
-    const key = this.getSelfSigningKey();
-    if (peerId === undefined || key === null) {
+    const self = this.selfPartyKeyIdentity();
+    if (self === null) {
       throw new Error(`the pending party key of strand ${strandId} cannot be opened: this node runs on an ephemeral identity`);
     }
-    const privateKey = openPartyKey(row.sealedKey, strandId, { peerId, privateKeyB64: key.privateKeyB64 });
+    const privateKey = openPartyKey(row.sealedKey, strandId, self);
     if (privateKey === null) {
       throw new Error(`the pending party key of strand ${strandId} is sealed to other machines, not to this one`);
     }
