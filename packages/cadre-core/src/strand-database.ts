@@ -3,7 +3,7 @@ import { Database } from '@quereus/quereus';
 import { applyAppSchema, connectToStrand } from '@serfab/quereus-plugin-sereus';
 import type { SereusPluginResult, StrandOfflineController } from '@serfab/quereus-plugin-sereus';
 import type { Libp2p } from '@libp2p/interface';
-import type { IRepo } from '@optimystic/db-core';
+import type { ICohortReachability, IRepo } from '@optimystic/db-core';
 import type { IKVStore } from '@optimystic/db-p2p';
 import type { SAppConfig } from './types.js';
 import { bootstrapFounderMembership } from './strand-membership-writer.js';
@@ -89,6 +89,12 @@ export interface StrandDatabaseOffline extends StrandOfflineListeners {
    * {@link StrandDatabase.applyOfflineMode}, never captured, so the newest choice wins.
    */
   mode: () => StrandOfflineMode;
+  /**
+   * The gate the queue and offline live reads ask in place of the strand node's own: the node's
+   * gate closed also while the party has machines holding the strand that this node is not in a
+   * cohort with (`strand-party-machines.ts`). Absent on a node whose strand node offers no gate.
+   */
+  cohortReachability?: ICohortReachability;
 }
 
 /**
@@ -149,6 +155,7 @@ export class StrandDatabase {
       sAppConfig ? `sApp: ${sAppConfig.id} v${sAppConfig.version}` : 'storage replica');
 
     const offline = this.config.offline && { journal: await this.config.offline.journal() };
+    const cohortReachability = this.config.offline?.cohortReachability;
     this.db = new Database();
 
     // Delegate to the shared composition. The node is injected, so:
@@ -171,6 +178,7 @@ export class StrandDatabase {
       coordinatedRepo: this.config.coordinatedRepo,
       enableCache: true,
       offline,
+      ...(cohortReachability && { cohortReachability }),
     });
     this.shutdownStrand = result.shutdown;
     this.resolvedTransactor = result.transactor;

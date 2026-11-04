@@ -1,5 +1,5 @@
 import type { Libp2p } from '@libp2p/interface';
-import type { IRepo } from '@optimystic/db-core';
+import type { ICohortReachability, IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
 
@@ -79,6 +79,14 @@ export interface StrandConnectionOptions {
 	 * {@link SereusPluginResult.offline}. Programmatic only — the SQL plugin config cannot carry it.
 	 */
 	offline?: StrandOfflineOptions;
+	/**
+	 * The gate this connection's offline queue and offline live reads ask, in place of the node's
+	 * own `cohortReachability` (Optimystic's `docs/offline-sync.md` → "When to submit"). Registered
+	 * with the collection factory before any table opens, so every table takes it. cadre-core passes
+	 * a gate that also waits for the party's own machines (docs/strands.md → "Waiting for the party's
+	 * own machines"). Absent: the node's gate, or the always-open one on a transactor without a cohort.
+	 */
+	cohortReachability?: ICohortReachability;
 }
 
 /**

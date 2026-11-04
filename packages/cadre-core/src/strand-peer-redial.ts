@@ -13,7 +13,10 @@
  * cut off part-way through the handshake, from both sides, for as long as the link stays that
  * slow. And after a restart nothing else dials a strand peer: a cross-party strand's launch
  * seed is empty, and cadre-core's address passes only fill the address book. Two phones that
- * restarted then never reconnect, and a write either made alone never reaches the other.
+ * restarted then never reconnect, and a write either made alone never reaches the other. The
+ * same holds for a sibling of the party this node has never connected to (its strand port
+ * blocked when the strand launched here): its address reaches the address book through the
+ * strand-addr RPC and nothing dials it, so a port that opens later is never reached.
  *
  * What it does. One loop per strand runtime, started in `StrandInstanceManager`'s runtime
  * build and stopped with the runtime (stop, quiesce, failed build), so a hibernating strand
@@ -30,11 +33,14 @@
  *
  * Who is known: every peer the node's FRET table holds a verified signed address record for
  * (`strand-fret-addrs.ts`), plus the launch seed (sibling strand addresses and a formation's
- * carried addresses). Who counts as connected: a peer FRET labels `'member'` (it has seen it
- * speak this strand's protocols), or a seed peer. Neither ever includes a configured relay, a
- * peer FRET labels `'foreign'`, or a peer the revocation gate refuses. The relay matters most:
- * the strand node is connected to it throughout and FRET files it with a record like any
- * peer, so counting it would leave this loop idle exactly when it is needed.
+ * carried addresses), plus the party's own machines known to hold the strand
+ * ({@link StrandRedialDeps.partyMachines}, from the control database) at whatever addresses
+ * the node's address book holds for them, a machine with none skipped. Who counts as
+ * connected: a peer FRET labels `'member'` (it has seen it speak this strand's protocols), a
+ * seed peer, or a party machine. None ever includes a configured relay, a peer FRET labels
+ * `'foreign'`, or a peer the revocation gate refuses. The relay matters most: the strand node
+ * is connected to it throughout and FRET files it with a record like any peer, so counting it
+ * would leave this loop idle exactly when it is needed.
  *
  * NOTE: this compensates for FRET's 2 000 ms maintenance dial limit, which cannot open a
  * relayed connection on a slow link (upstream half:
@@ -44,6 +50,8 @@
  */
 
 import debug from 'debug';
+import type { PeerId } from '@libp2p/interface';
+import { peerIdFromString } from '@libp2p/peer-id';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import { relayedDialBudgetMs } from './link-budget.js';
 import { CONTROL_COHORT_DIAL_ADDRESS_ATTEMPTS, SelfRelayOnlyError, dialPeerAddrs, type AddrDialer, type PeerDialBudget } from './peer-dial.js';
@@ -97,6 +105,11 @@ export function strandRedialTimings(linkRoundTripMs?: number): StrandRedialTimin
 /** The slice of a strand's libp2p node the loop uses. Structurally satisfied by db-p2p's node. */
 export interface RedialNode extends AddrDialer {
   services?: FretAddrHost['services'];
+  /**
+   * The node's address book, read for the party's machines ({@link StrandRedialDeps.partyMachines});
+   * libp2p's `get` throws a `NotFoundError` for a peer it holds nothing for.
+   */
+  peerStore: { get(peerId: PeerId): Promise<{ addresses: ReadonlyArray<{ multiaddr: Multiaddr }> }> };
   getConnections(): ReadonlyArray<{ remotePeer: { toString(): string } }>;
   addEventListener(type: 'peer:disconnect', listener: () => void): void;
   removeEventListener(type: 'peer:disconnect', listener: () => void): void;
@@ -118,6 +131,14 @@ export interface StrandRedialDeps {
   excluded: ReadonlySet<string>;
   /** The revocation gate's current verdict, asked of peers and of this node itself; absent for an open strand. */
   isRevoked?: (peerId: string) => boolean;
+  /**
+   * The strand peer ids of the party's other machines known to hold the strand
+   * (`strand-party-machines.ts`), read at every look. Each is a member whether or not FRET has
+   * met it, dialed at the addresses the node's address book holds for it (cadre-core's
+   * strand-addr passes fill it) and skipped while it holds none. Absent on a node that tracks
+   * no party machines.
+   */
+  partyMachines?: () => readonly string[];
   /** Omit for real (unref'd) timers. */
   scheduler?: TimeoutScheduler;
 }
@@ -207,10 +228,11 @@ class StrandPeerRedialLoop implements StrandPeerRedial {
       return 'watch';
     }
     const membership = strandFretMembership(this.deps.node);
-    if (this.memberConnected(membership)) {
+    const partyMachines = new Set(this.deps.partyMachines?.() ?? []);
+    if (this.memberConnected(membership, partyMachines)) {
       return 'watch';
     }
-    const known = await this.knownMembers(membership);
+    const known = await this.knownMembers(membership, partyMachines);
     if (known.size === 0 || this.stopped) {
       return 'watch';
     }
@@ -255,16 +277,19 @@ class StrandPeerRedialLoop implements StrandPeerRedial {
     return peerId !== this.selfId && !this.deps.excluded.has(peerId) && this.deps.isRevoked?.(peerId) !== true;
   }
 
-  /** Whether an open connection reaches a peer FRET has seen speak this strand's protocols, or a seed peer. */
-  private memberConnected(membership: ReadonlyMap<string, FretMembership>): boolean {
+  /** Whether an open connection reaches a peer FRET has seen speak this strand's protocols, a seed peer, or a party machine. */
+  private memberConnected(membership: ReadonlyMap<string, FretMembership>, partyMachines: ReadonlySet<string>): boolean {
     return this.deps.node.getConnections().some((connection) => {
       const peerId = connection.remotePeer.toString();
-      return this.eligible(peerId) && (membership.get(peerId) === 'member' || this.seed.has(peerId));
+      return this.eligible(peerId) && (membership.get(peerId) === 'member' || this.seed.has(peerId) || partyMachines.has(peerId));
     });
   }
 
-  /** The members to dial, each with its candidate addresses: verified FRET records first, then the seed's. */
-  private async knownMembers(membership: ReadonlyMap<string, FretMembership>): Promise<Map<string, Multiaddr[]>> {
+  /**
+   * The members to dial, each with its candidate addresses: verified FRET records first, then the
+   * seed's, then the address book's for a party machine neither names.
+   */
+  private async knownMembers(membership: ReadonlyMap<string, FretMembership>, partyMachines: ReadonlySet<string>): Promise<Map<string, Multiaddr[]>> {
     const { peers } = await strandFretPeerAddrs(this.deps.node);
     const known = new Map<string, Multiaddr[]>();
     for (const [peerId, addrs] of [...peers, ...this.seed]) {
@@ -273,7 +298,29 @@ class StrandPeerRedialLoop implements StrandPeerRedial {
       }
       known.set(peerId, unionAddrs(known.get(peerId) ?? [], addrs));
     }
+    for (const peerId of partyMachines) {
+      if (known.has(peerId) || !this.eligible(peerId) || membership.get(peerId) === 'foreign') {
+        continue;
+      }
+      const addrs = await this.addressBookAddrs(peerId);
+      if (addrs.length > 0) {
+        known.set(peerId, addrs);
+      }
+    }
     return known;
+  }
+
+  /** The address book's addresses for `peerId`: none for a peer it holds nothing for, and none, logged, when it cannot be read. */
+  private async addressBookAddrs(peerId: string): Promise<Multiaddr[]> {
+    try {
+      const peer = await this.deps.node.peerStore.get(peerIdFromString(peerId));
+      return peer.addresses.map((address) => address.multiaddr);
+    } catch (error) {
+      if ((error as { name?: string }).name !== 'NotFoundError') {
+        log('strand %s: the address book could not be read for party machine %s: %o', this.deps.label, peerId, error);
+      }
+      return [];
+    }
   }
 
   /** Dial every member in `known` at once; resolves to whether any connected. */

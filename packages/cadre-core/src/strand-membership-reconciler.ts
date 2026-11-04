@@ -853,7 +853,7 @@ export class StrandMembershipReconciler {
       return false;
     }
     const bound = new Set(await listMemberPeers(db, keyPair.publicKeyB64));
-    const unbound = peers.live.filter((peerId) => !bound.has(peerId));
+    const unbound = peers.live.map((peer) => peer.strandPeerId).filter((peerId) => !bound.has(peerId));
     const stale = peers.removed.filter((peerId) => bound.has(peerId));
     const siblingsBound = await this.bindSiblings(db, keyPair, unbound);
     const removedCleared = await this.clearRemovedMachines(db, keyPair, source, stale);

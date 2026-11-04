@@ -1,7 +1,7 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2';
 import type { IRawStorage, Libp2pConnectionMonitorInit, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
-import type { CollectionChangeListener, IPeerNetwork, IRepo } from '@optimystic/db-core';
+import type { CollectionChangeListener, ICohortReachability, IKeyNetwork, IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandReactivityConfig } from './strand-reactivity.js';
 import type { StrandRevocationEnforcementConfig } from './strand-revocation-enforcer.js';
@@ -39,9 +39,18 @@ export interface Libp2pNodeWithRepo extends Libp2p {
    * `coordinatedRepo` (`libp2p-node-base.ts`). Optional deliberately: the base
    * factory always assigns it, but it is not part of the upstream node type, so
    * declaring it required would be a claim this repo cannot enforce. The strand
-   * backfill (`peer-join-backfill.ts`) logs once and stays inert when it is absent.
+   * backfill (`peer-join-backfill.ts`) logs once and stays inert when it is absent. Its
+   * `findCluster` is what the offline queue's party-machine gate (`strand-party-machines.ts`)
+   * reads a block's cohort from.
    */
-  keyNetwork?: IPeerNetwork;
+  keyNetwork?: IPeerNetwork & Pick<IKeyNetwork, 'findCluster'>;
+  /**
+   * The node's reachability gate for its offline queue (Optimystic's
+   * `OptimysticNodeAttachments.cohortReachability`). Optional for the same reason as
+   * `keyNetwork`; a node offering offline mode composes its party-machine gate over it, and
+   * builds none when it is absent.
+   */
+  cohortReachability?: ICohortReachability;
   /**
    * The node's block store, attached by the same factory (Optimystic's
    * `OptimysticNodeAttachments.storageRepo`), narrowed to the storage-wide change feed: it

@@ -38,7 +38,10 @@ describe('partitionPartyStrandPeers', () => {
       [tombstone('CadrePeer', 'removed'), tombstone('CadrePeer', 're-added'), tombstone('DeviceToken', 'unknown')],
     );
 
-    expect([...peers.live].sort()).toEqual(['re-added-strand', 'sibling-strand']);
+    expect([...peers.live].sort((a, b) => a.strandPeerId.localeCompare(b.strandPeerId))).toEqual([
+      { peerId: 're-added', strandPeerId: 're-added-strand' },
+      { peerId: 'sibling', strandPeerId: 'sibling-strand' },
+    ]);
     expect(peers.removed).toEqual(['removed-strand']);
   });
 });

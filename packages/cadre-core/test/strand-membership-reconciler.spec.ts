@@ -616,7 +616,13 @@ describe('binding the party\'s other machines', () => {
     // A sibling lagging on the removal's tombstone bound the removed machine under this key.
     await registerMemberPeer(strand.db, { memberKeyPair: strand.founder, peerId: 'removed-machine' });
     const state = { rotationPending: true };
-    const party = partyPeerSource({ live: ['sibling-1', 'sibling-2'], removed: ['removed-machine'] }, state);
+    const party = partyPeerSource({
+      live: [
+        { peerId: 'sibling-1-control', strandPeerId: 'sibling-1' },
+        { peerId: 'sibling-2-control', strandPeerId: 'sibling-2' },
+      ],
+      removed: ['removed-machine'],
+    }, state);
     const reconciler = reconcilerOver(strand.db, strand.founderPrivateKey, {
       getOwnPeerId: () => 'founder-machine',
       partyPeers: party.source,

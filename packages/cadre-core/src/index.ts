@@ -318,10 +318,12 @@ export {
   type PendingMembershipInviteSource
 } from './strand-membership-reconciler.js';
 
-// The party's machines as one closed strand sees them: the control-database seam the
-// reconciler binds the party's other machines through, and its pure projection.
+// The party's machines as one strand sees them: the control-database seam the reconciler binds
+// the party's other machines through and the offline queue waits for them through, and its
+// pure projection.
 export {
   partitionPartyStrandPeers,
+  type PartyStrandPeer,
   type PartyStrandPeers,
   type PartyStrandPeerSource
 } from './strand-party-peers.js';

@@ -1,5 +1,6 @@
 import debug from 'debug';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
+import type { ICohortReachability } from '@optimystic/db-core';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase, type StrandDatabaseOffline } from './strand-database.js';
@@ -20,7 +21,8 @@ import {
   type StrandMembershipReconciliationConfig
 } from './strand-membership-reconciler.js';
 import { removeMemberPeer } from './strand-membership-writer.js';
-import type { PartyStrandPeerSource } from './strand-party-peers.js';
+import type { PartyStrandPeer, PartyStrandPeerSource } from './strand-party-peers.js';
+import { StrandPartyMachines, cohortGateWaitingForMachines } from './strand-party-machines.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { assertSchemaSignature } from './schema-verification.js';
 import { assertStrandScopeKey } from './storage-scope.js';
@@ -252,14 +254,15 @@ export interface StartStrandConfig {
 
   /**
    * The party's machines in THIS strand, as the control database records them
-   * (`strand-party-peers.ts`): `CadreNode.launchStrand` wires it for every closed strand,
-   * party key or not. Bring-up publishes this machine's own `StrandPeer` row through it in
-   * the background, once the strand's libp2p node exists (launch and hibernation resume
+   * (`strand-party-peers.ts`): `CadreNode.launchStrand` wires it for every strand, open or
+   * closed, party key or not. Bring-up publishes this machine's own `StrandPeer` row through it
+   * in the background, once the strand's libp2p node exists (launch and hibernation resume
    * alike, since the row is this machine's statement of a peer id that is the same across
-   * both), and the membership reconciler reads the party's other machines through it to bind
-   * them (`strand-membership-reconciler.ts` → "Binding the party's other machines"). Open
-   * strands have no `Member` table to bind into and get nothing. Retained with the launch
-   * config.
+   * both). On a closed strand the membership reconciler reads the party's other machines
+   * through it to bind them (`strand-membership-reconciler.ts` → "Binding the party's other
+   * machines"); on a node offering offline mode ({@link offline}) the queue's gate reads them
+   * as the machines a queued transaction waits for (`strand-party-machines.ts`). An open
+   * strand's row serves only that wait. Retained with the launch config.
    */
   partyPeers?: PartyStrandPeerSource;
 
@@ -554,6 +557,15 @@ export class StrandInstanceManager {
    * nobody and a resume redials over the new node.
    */
   private peerRedials: Map<string, StrandPeerRedial> = new Map();
+  /**
+   * The party's other machines known to hold each strand (`strand-party-machines.ts`), keyed
+   * by strand id, on a node offering offline mode for a launch with a party-machine seam. Same
+   * lifecycle as {@link peerRedials}: built in `buildStrandRuntime` before the libp2p node (the
+   * node's redial loop and the database's offline gate read it), stopped and dropped in
+   * `releaseRuntime`, so a resume reads the control database afresh. Refreshed by
+   * {@link notifyPartyPeersChanged}.
+   */
+  private partyMachines: Map<string, StrandPartyMachines> = new Map();
   /**
    * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
    * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
@@ -891,6 +903,20 @@ export class StrandInstanceManager {
       log('strand %s: change notifications on', strandId);
     }
 
+    // The party's other machines holding this strand, for the offline queue's gate and the
+    // redial loop below (`strand-party-machines.ts`). Only a node offering offline mode pays
+    // for the control reads, which leaves out the always-on programs. Built BEFORE the libp2p
+    // node, and its first read started now, so a queue restored at launch waits on rows that
+    // were asked for before the node existed. Registered in the map at once, so the failure
+    // rollback (releaseRuntime) stops it like every other runtime component.
+    const partyMachines = config.offline && config.partyPeers
+      ? new StrandPartyMachines({ label: strandId, source: config.partyPeers })
+      : undefined;
+    if (partyMachines) {
+      this.partyMachines.set(strandId, partyMachines);
+      partyMachines.refresh();
+    }
+
     try {
       let t0 = performance.now();
       const node = await createLibp2pNode({
@@ -997,7 +1023,8 @@ export class StrandInstanceManager {
       // database (`StrandPeer`): a background write that never fails or delays the launch.
       // The seam defers it while a write could fork the party and retries it on cohort
       // growth and from every membership reconciler pass, so a refusal here is not final.
-      if (config.strandRow.Type === 'c' && config.partyPeers) {
+      // Written for open strands too: their row is what a sibling's offline queue waits for.
+      if (config.partyPeers) {
         void config.partyPeers.publishOwn(node.peerId.toString()).catch((error) => {
           log('Strand %s: publishing this machine\'s StrandPeer row threw (retried later): %o', strandId, error);
         });
@@ -1015,12 +1042,16 @@ export class StrandInstanceManager {
       // declared link gives a relayed dial — what reconnects two restarted phones on a slow
       // link, where FRET's own redial cannot (`strand-peer-redial.ts`). The relays are
       // excluded by peer id: the node is connected to them throughout, and they are no member.
+      // The party's machines holding the strand are dialed too, at the addresses the
+      // strand-addr RPC put in the address book, so a sibling's blocked port that opens is
+      // reached without a connection ever having been made to it.
       this.peerRedials.set(strandId, superviseStrandPeerRedial({
         label: strandId,
         node,
         seed: config.bootstrapNodes ?? [],
         excluded: new Set(groupAddrsByPeerId([...relayDialAddrs]).keys()),
-        ...(revocationEnforcer && { isRevoked: (peerId: string) => revocationEnforcer.isRevoked(peerId) })
+        ...(revocationEnforcer && { isRevoked: (peerId: string) => revocationEnforcer.isRevoked(peerId) }),
+        ...(partyMachines && { partyMachines: () => partyMachines.machines().map((machine) => machine.strandPeerId) })
       }, strandRedialTimings(config.network?.linkRoundTripMs)));
 
       const databaseBuild = await this.buildStrandDatabase(instance, config, node);
@@ -1172,7 +1203,7 @@ export class StrandInstanceManager {
       bindFounderPeer: config.membershipReconciliation?.enabled !== false,
       onCommitDurability: config.onCommitDurability,
       onCommitHeld: config.onCommitHeld,
-      offline: this.offlineDatabaseConfig(strandId, config.offline),
+      offline: this.offlineDatabaseConfig(strandId, config.offline, this.offlineCohortGate(strandId, node)),
       appSchema: config.appSchema
     });
     const storageRepo = node.storageRepo;
@@ -1249,10 +1280,14 @@ export class StrandInstanceManager {
 
   /**
    * One build's {@link StrandDatabaseOffline}: the strand's journal, which the database resolves as
-   * it initializes (a throw or rejection fails the build), and the strand's mode, which it reads each
-   * time it applies it.
+   * it initializes (a throw or rejection fails the build), the strand's mode, which it reads each
+   * time it applies it, and the gate its queue asks, when one could be built.
    */
-  private offlineDatabaseConfig(strandId: string, offline: StartStrandConfig['offline']): StrandDatabaseOffline | undefined {
+  private offlineDatabaseConfig(
+    strandId: string,
+    offline: StartStrandConfig['offline'],
+    cohortReachability: ICohortReachability | undefined
+  ): StrandDatabaseOffline | undefined {
     if (!offline) {
       return undefined;
     }
@@ -1260,8 +1295,47 @@ export class StrandInstanceManager {
     return {
       ...listeners,
       journal: () => journal(strandId),
-      mode: () => this.currentOfflineMode(strandId, offline)
+      mode: () => this.currentOfflineMode(strandId, offline),
+      ...(cohortReachability && { cohortReachability })
     };
+  }
+
+  /**
+   * The gate a build's offline queue asks: the node's own, closed also while the party has
+   * machines holding the strand that this node is alone in a cohort without
+   * (`cohortGateWaitingForMachines`). None when the launch tracks no party machines (no offline
+   * mode, or no party-machine seam), or when the node carries no gate or key network to compose
+   * over; the queue then asks the node's own gate, as before.
+   */
+  private offlineCohortGate(strandId: string, node: Libp2pNodeWithRepo): ICohortReachability | undefined {
+    const partyMachines = this.partyMachines.get(strandId);
+    if (!partyMachines) {
+      return undefined;
+    }
+    if (!node.cohortReachability || !node.keyNetwork) {
+      log('Strand %s: its node carries no %s, so its offline queue does not wait for the party\'s machines',
+        strandId, node.cohortReachability ? 'key network' : 'reachability gate');
+      return undefined;
+    }
+    return cohortGateWaitingForMachines(node.cohortReachability, node.keyNetwork, node.peerId.toString(), partyMachines);
+  }
+
+  /**
+   * The party's other machines known to hold `strandId` with no open connection from its strand
+   * node: what an offline queue reporting `waitingFor: 'cohort'` may be waiting for
+   * (`docs/strands.md` → "Waiting for the party's own machines"). Empty for a strand not tracked
+   * or not running here, and on a launch that tracks no party machines.
+   */
+  unreachedPartyMachines(strandId: string): readonly PartyStrandPeer[] {
+    const partyMachines = this.partyMachines.get(strandId);
+    const node = this.instances.get(strandId)?.libp2pNode;
+    if (!partyMachines || !node) {
+      return [];
+    }
+    const connected = new Set(node.getConnections()
+      .filter((connection) => connection.status === 'open')
+      .map((connection) => connection.remotePeer.toString()));
+    return partyMachines.machines().filter((machine) => !connected.has(machine.strandPeerId));
   }
 
   /**
@@ -1395,6 +1469,9 @@ export class StrandInstanceManager {
     }
     this.peerRedials.get(instance.strandId)?.stop();
     this.peerRedials.delete(instance.strandId);
+    // The party-machine tracker with the loop and gate that read it; a resume reads afresh.
+    this.partyMachines.get(instance.strandId)?.stop();
+    this.partyMachines.delete(instance.strandId);
     // Backfill next — before the database closes and the libp2p node stops — so
     // no NEW catch-up push is issued against a torn-down transport. A push already
     // in flight is not awaited; it fails into the module's own per-chunk catch.
@@ -1562,13 +1639,18 @@ export class StrandInstanceManager {
    * row or a tombstone arrived or was written here (`CadreNode`'s watch on those tables,
    * coalesced). Re-arm every armed membership reconciler, so a sibling's row is bound, or a
    * removed machine's binding cleared, within the watch's window rather than at the next
-   * resume. Table events carry no row keys, so every strand's loop is woken; a loop with
+   * resume, and read every strand's party machines again, so an offline queue waits for a
+   * machine as soon as its row arrives and stops waiting for one as soon as it is removed.
+   * Table events carry no row keys, so every strand's loop and tracker is woken; a loop with
    * nothing to do confirms and stops again. Returns at once; each pass runs on its loop's own
    * serialized chain and never rejects.
    */
   notifyPartyPeersChanged(): void {
     for (const strandId of this.membershipReconcilers.keys()) {
       this.rearmMembershipReconciler(strandId, 'a change to the party\'s machines');
+    }
+    for (const partyMachines of this.partyMachines.values()) {
+      partyMachines.refresh();
     }
   }
 

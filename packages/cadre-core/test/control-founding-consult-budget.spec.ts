@@ -276,11 +276,18 @@ const COLD: Budget = { consults: 44, blocks: 36, commits: 1, consultBudget: 48, 
  */
 const GENESIS: Budget = { consults: 26, blocks: 25, commits: 36, consultBudget: 29, blockBudget: 27, commitBudget: 37 };
 /**
- * `foundStrand`, control network side: the `Strand` row published. 1 consult over 1 block,
- * 1 commit, carrying all three `Strand` trees (3 commits, one per tree, before Optimystic
- * 1.19.0, GitHub #42). The consult is one tree block of the publish's own commit, none on a
- * table's main block, since genesis committed every control table's collection, and none for
- * its membership reads, whose views the gate watch's refresh loaded at genesis. History: 25 over 6 blocks on 2026-09-15 (×8,
+ * `foundStrand`, control network side: the `Strand` row published, and this machine's
+ * `StrandPeer` row attempted. 3 consults over 3 blocks, 1 commit, carrying all three `Strand`
+ * trees (3 commits, one per tree, before Optimystic 1.19.0, GitHub #42). One consult is a tree
+ * block of the publish's own commit, none on a table's main block, since genesis committed
+ * every control table's collection, and none for its membership reads, whose views the gate
+ * watch's refresh loaded at genesis. The other two, over two tree blocks and with no commit,
+ * are the `StrandPeer` row's insert, which every strand launch makes since open strands got a
+ * row too (`offline-queue-waits-for-party-machines-that-hold-the-strand`, 2026-11-03, at
+ * optimystic `ab342f0f`): here it is refused by its `Authorized` check, since self-registration
+ * is disarmed and this node has no `CadrePeer` row, and deferred to the party-machine watch; on
+ * a node that holds its own row the insert also commits, after `foundStrand` has returned.
+ * History: 1 over 1 before that row; 25 over 6 blocks on 2026-09-15 (×8,
  * ×6, ×4, ×4, ×2, ×1), 13 over the same 6 at optimystic `03ffadc4` (`Strand` ×4, `StampId`
  * index ×3, `MemberPrivateKey` index ×2), 7 over 5 at `8a0b48c7`: the publish's commit
  * touches all three `Strand` trees and no longer refreshes each twice before flushing, which
@@ -290,7 +297,8 @@ const GENESIS: Budget = { consults: 26, blocks: 25, commits: 36, consultBudget: 
  * the membership read beside `CadrePeer` ×1) and a tree block ×1; then 4 over 4 on 2026-10-20
  * (three causes, see {@link BASELINE_UPSTREAM}), then 1 over 1 later that day once the gate
  * watch's refresh at genesis loaded the views (`control-reconcile-woken-by-changes-reads-once`).
- * Control and strand together now sum to 30 consults and 15 commits, against 30 and 17 before
+ * Control and strand together now sum to 32 consults and 15 commits, against 30 and 15 before
+ * the `StrandPeer` row, 30 and 17 before
  * Optimystic 1.19.0, 33 and 17 before that, 34 and 18 before the founder's strand rows landed in one
  * transaction (`strand-founding-writes-batched`), 38 and 18 before genesis committed the control collections,
  * 29 and 6 before the founder committed every declared table's collection (see
@@ -298,7 +306,7 @@ const GENESIS: Budget = { consults: 26, blocks: 25, commits: 36, consultBudget: 
  * and 12 at `03ffadc4`, 50 and 12 on 2026-09-15, and 47 and 12 in the trace taken before
  * upstream removed the absence memo.
  */
-const FOUNDING_CONTROL: Budget = { consults: 1, blocks: 1, commits: 1, consultBudget: 2, blockBudget: 2, commitBudget: 2 };
+const FOUNDING_CONTROL: Budget = { consults: 3, blocks: 3, commits: 1, consultBudget: 4, blockBudget: 4, commitBudget: 2 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
  * bootstrap. 29 consults over 15 blocks, 14 commits: the strand's schema catalog ×5,

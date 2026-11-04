@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { Connection, PrivateKey } from '@libp2p/interface';
-import type { Multiaddr } from '@multiformats/multiaddr';
+import type { Connection, PeerId, PrivateKey } from '@libp2p/interface';
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { superviseStrandPeerRedial, type RedialNode, type StrandPeerRedial, type StrandRedialTimings } from '../src/strand-peer-redial.js';
 import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
 import { fretEntry, fretService, type FretEntryFake } from './fret-record-helpers.js';
@@ -41,12 +41,28 @@ function fakeScheduler(): TimeoutScheduler & { waits: number[]; fire(): void } {
   };
 }
 
-/** A strand node connected to `connected`, whose FRET table is `entries`, and whose dials `dial` answers. */
-function fakeNode(self: PrivateKey, entries: FretEntryFake[], connected: Set<string>, dial: (addr: Multiaddr) => Promise<void>) {
+/**
+ * A strand node connected to `connected`, whose FRET table is `entries`, whose dials `dial`
+ * answers, and whose address book holds `addressBook` (peer id → addresses without a trailing `/p2p/`).
+ */
+function fakeNode(
+  self: PrivateKey,
+  entries: FretEntryFake[],
+  connected: Set<string>,
+  dial: (addr: Multiaddr) => Promise<void>,
+  addressBook: ReadonlyMap<string, string[]> = new Map()
+) {
   const events = new EventTarget();
   const node = {
     peerId: peerIdFromPrivateKey(self),
     services: fretService(entries),
+    peerStore: {
+      get: async (peerId: PeerId) => {
+        const addrs = addressBook.get(peerId.toString());
+        if (addrs === undefined) throw Object.assign(new Error(`peer ${peerId.toString()} not found`), { name: 'NotFoundError' });
+        return { addresses: addrs.map((addr) => ({ multiaddr: multiaddr(addr) })) };
+      }
+    },
     getConnections: () => [...connected].map((id) => ({ remotePeer: { toString: () => id } })),
     dial: vi.fn(async (addr: Multiaddr) => { await dial(addr); return {} as Connection; }),
     addEventListener: (type: 'peer:disconnect', listener: () => void) => events.addEventListener(type, listener),
@@ -104,6 +120,27 @@ describe('superviseStrandPeerRedial', () => {
     }, TIMINGS);
     await vi.waitFor(() => expect(scheduler.waits).toEqual([TIMINGS.checkMs]));
     expect(node.dial).not.toHaveBeenCalled();
+  });
+
+  it('dials a party machine known only from the control database at the addresses its address book holds, and skips one it holds none for', async () => {
+    const [self, addressed, unaddressed] = await Promise.all([1, 2, 3].map(() => generateKeyPair('Ed25519')));
+    const connected = new Set<string>();
+    // No FRET record and an empty seed: the machine's strand port was blocked when this node launched the strand.
+    const node = fakeNode(self, [], connected, async () => { connected.add(idOf(addressed)); },
+      new Map([[idOf(addressed), ['/ip4/127.0.0.1/tcp/4001/ws']]]));
+    const scheduler = fakeScheduler();
+
+    start({
+      label: 's', node, seed: [], excluded: new Set(), scheduler,
+      partyMachines: () => [idOf(addressed), idOf(unaddressed)]
+    }, TIMINGS);
+    await vi.waitFor(() => expect(scheduler.waits).toEqual([TIMINGS.checkMs]));
+    expect(dialedPeers(node)).toEqual([idOf(addressed)]);
+
+    // Connected now, the machine counts as a member: the next look dials nobody.
+    scheduler.fire();
+    await vi.waitFor(() => expect(scheduler.waits).toHaveLength(2));
+    expect(node.dial).toHaveBeenCalledTimes(1);
   });
 
   it('dials nobody once its own party is revoked, though it still knows members', async () => {

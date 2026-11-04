@@ -24,6 +24,7 @@ import type {
   RawStorageProvider,
   SAppConfig,
   StrandNetworkStateStore,
+  StrandOfflineConfig,
   StrandReactivityConfig,
 } from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
@@ -128,6 +129,14 @@ export interface ControlNodeOpts {
   storageProvider?: RawStorageProvider;
   /** Override the control-cohort reconcile backstop (ms), which also caps the redial ladder. */
   reconcileMs?: number;
+  /**
+   * Becomes `network.controlCohort.strandAddrRefreshMs`: how often a running strand re-asks each
+   * connected sibling for its strand addresses on the reconcile pass (default 10 minutes), for a
+   * scenario whose strand node must learn a sibling's address soon after the sibling launches.
+   */
+  strandAddrRefreshMs?: number;
+  /** Becomes `strandOffline` verbatim: offers offline mode on the node's strands (`CadreNodeConfig.strandOffline`). */
+  strandOffline?: StrandOfflineConfig;
   /** Override the strand watcher backstop (ms; `CadreNode` default 300000). */
   strandWatchMs?: number;
   /**
@@ -236,6 +245,10 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
   if (opts.storageProvider !== undefined && opts.storageOpDelayMs !== undefined) {
     throw new Error('controlNodeConfig: storageProvider and storageOpDelayMs are mutually exclusive — both name the node\'s storage');
   }
+  const controlCohort = {
+    ...(opts.reconcileMs !== undefined ? { reconcileMs: opts.reconcileMs } : {}),
+    ...(opts.strandAddrRefreshMs !== undefined ? { strandAddrRefreshMs: opts.strandAddrRefreshMs } : {}),
+  };
   return {
     controlNetwork: {
       partyId: opts.partyId,
@@ -276,9 +289,10 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
       ...(opts.linkRoundTripMs !== undefined ? { linkRoundTripMs: opts.linkRoundTripMs } : {}),
       ...(opts.unauthorizedRelayReservationCap !== undefined
         ? { unauthorizedRelayReservationCap: opts.unauthorizedRelayReservationCap } : {}),
-      ...(opts.reconcileMs !== undefined ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {}),
+      ...(Object.keys(controlCohort).length > 0 ? { controlCohort } : {}),
       ...(opts.connectionGater ? { connectionGater: opts.connectionGater } : {})
     },
+    ...(opts.strandOffline ? { strandOffline: opts.strandOffline } : {}),
     ...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
     ...(opts.bootstrapPeerStore ? { bootstrapPeers: { store: opts.bootstrapPeerStore } } : {}),
     ...(opts.strandNetworkStateStore ? { strandNetworkState: { store: opts.strandNetworkStateStore } } : {}),

@@ -3,7 +3,7 @@ import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInf
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
-import type { IRepo } from '@optimystic/db-core';
+import type { ICohortReachability, IRepo } from '@optimystic/db-core';
 import type { IKVStore, IRawStorage, NodeOptions } from '@optimystic/db-p2p';
 import type {
 	StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo,
@@ -39,6 +39,11 @@ export function offlineControllerOf(db: Database): StrandOfflineController | und
  */
 interface CollectionFactory {
 	registerLibp2pNode(networkName: string, node: Libp2p, coordinatedRepo: IRepo): void;
+	/**
+	 * Register the reachability gate for the transactor under `key` (`${transactor}:${keyNetwork}`),
+	 * replacing the node's own, which the network transactor registers unless one is here first.
+	 */
+	registerCohortReachability(key: string, reachability: ICohortReachability): void;
 	/** Releases the read caches and network watches; leaves every registered node running. */
 	dispose(): Promise<void>;
 	/** {@link dispose}, after stopping every registered node. */
@@ -353,6 +358,14 @@ export async function composeStrand(
 
 			collectionFactory.registerLibp2pNode(networkName, node, coordinatedRepo);
 			log('Registered libp2p node with collection factory');
+		}
+
+		// The caller's reachability gate, under the key the factory derives from the vtab args set
+		// in step 4 (`${transactor}:${keyNetwork}`). Before hydrate, so no table opens on the node's
+		// own gate first.
+		if (options.cohortReachability) {
+			collectionFactory.registerCohortReachability(`${resolvedTransactor}:libp2p`, options.cohortReachability);
+			log('Registered the caller\'s cohort reachability gate for strand %s', strandId);
 		}
 
 		// 4. Set optimystic as default vtab so `declare schema` tables use it.

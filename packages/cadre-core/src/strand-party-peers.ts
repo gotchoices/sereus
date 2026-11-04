@@ -1,27 +1,38 @@
 /**
- * A party's machines as one closed strand sees them: which strand peer ids belong to the
- * party's live machines and which to machines removed from the cadre, projected from the
- * control database. The inputs are the strand's `CadreControl.StrandPeer` rows (each
- * machine's own signed statement of its peer id in the strand), the live `CadrePeer` rows
- * judged by this node's membership predicate, and the `CadrePeer` tombstones.
+ * A party's machines as one strand sees them: which strand peer ids belong to the party's live
+ * machines and which to machines removed from the cadre, projected from the control database.
+ * The inputs are the strand's `CadreControl.StrandPeer` rows (each machine's own signed
+ * statement of its peer id in the strand), the live `CadrePeer` rows judged by this node's
+ * membership predicate, and the `CadrePeer` tombstones.
  *
- * The closed-strand membership reconciler (`strand-membership-reconciler.ts`) binds every
- * live sibling under the party's current member key and clears a removed machine's binding,
- * so a sibling that was offline when the party's key changed is already bound when it
- * returns, and a machine wrongly bound under a key is cleared. Who binds whom is stated in
- * `docs/strands.md` → Closed-Strand Member Key Handling.
+ * Two readers. The closed-strand membership reconciler (`strand-membership-reconciler.ts`)
+ * binds every live sibling under the party's current member key and clears a removed
+ * machine's binding, so a sibling that was offline when the party's key changed is already
+ * bound when it returns, and a machine wrongly bound under a key is cleared. Who binds whom is
+ * stated in `docs/strands.md` → Closed-Strand Member Key Handling. On a node offering offline
+ * mode, `strand-party-machines.ts` reads the live machines of every strand, open or closed, as
+ * the machines a queued transaction must not be committed without (`docs/strands.md` → Waiting
+ * for the party's own machines).
  */
 
 import type { CadreMachine, RevocationRow, StrandPeerRow } from './types.js';
 
+/** One of the party's other machines in one strand, as its `StrandPeer` row states it. */
+export interface PartyStrandPeer {
+  /** The machine's control peer id (`CadrePeer.PeerId`, what `listMachines` and `removeMachine` use). */
+  readonly peerId: string;
+  /** Its peer id in this strand's network. */
+  readonly strandPeerId: string;
+}
+
 /** The party's machines' peer ids in one strand, as {@link partitionPartyStrandPeers} sorts them. */
 export interface PartyStrandPeers {
   /**
-   * Strand peer ids of the party's live machines other than this one: each has a `StrandPeer`
-   * row and a live `CadrePeer` row that passes the membership predicate (`CadreMachine.trusted`,
-   * which is false for this node itself).
+   * The party's live machines other than this one: each has a `StrandPeer` row and a live
+   * `CadrePeer` row that passes the membership predicate (`CadreMachine.trusted`, which is false
+   * for this node itself). One entry per strand peer id.
    */
-  live: readonly string[];
+  live: readonly PartyStrandPeer[];
   /**
    * Strand peer ids of machines removed from the cadre: each has a `StrandPeer` row, a
    * `CadrePeer` tombstone naming its peer id, and no live `CadrePeer` row. Never an id that is
@@ -33,10 +44,11 @@ export interface PartyStrandPeers {
 }
 
 /**
- * The control-database seam of the membership reconciler's sibling work, scoped to one strand
- * as `PendingMembershipInviteSource` is. `CadreNode` builds one per closed-strand launch
+ * The control-database seam of one strand's party machines, scoped to one strand as
+ * `PendingMembershipInviteSource` is. `CadreNode` builds one per strand launch
  * (`StartStrandConfig.partyPeers`); the instance manager publishes through it at bring-up and
- * hands it to the reconciler, which reads through it once per pass.
+ * hands it to the reconciler and to the offline-mode machine tracker, each of which reads
+ * through it.
  */
 export interface PartyStrandPeerSource {
   /**
@@ -81,20 +93,20 @@ export function partitionPartyStrandPeers(
   const removedMachines = new Set(
     tombstones.filter((tombstone) => tombstone.tableName === 'CadrePeer').map((tombstone) => tombstone.rowKey)
   );
-  const live = new Set<string>();
+  const live = new Map<string, PartyStrandPeer>();
   const removed = new Set<string>();
   for (const row of rows) {
     const machine = liveMachines.get(row.peerId);
     if (machine !== undefined) {
-      if (machine.trusted) {
-        live.add(row.strandPeerId);
+      if (machine.trusted && !live.has(row.strandPeerId)) {
+        live.set(row.strandPeerId, { peerId: row.peerId, strandPeerId: row.strandPeerId });
       }
     } else if (removedMachines.has(row.peerId)) {
       removed.add(row.strandPeerId);
     }
   }
-  for (const id of live) {
+  for (const id of live.keys()) {
     removed.delete(id);
   }
-  return { live: [...live], removed: [...removed] };
+  return { live: [...live.values()], removed: [...removed] };
 }
