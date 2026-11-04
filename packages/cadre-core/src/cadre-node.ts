@@ -1209,6 +1209,8 @@ export class CadreNode implements SAppIdLookup {
    * start's launches publish again.
    */
   private readonly deferredStrandPeerWrites = new Map<string, string>();
+  /** The latest rebuild queued per strand for a removed machine in its seed ({@link queueSeedRemovalRebuild}). */
+  private readonly seedRemovalRebuilds = new Map<string, Promise<void>>();
   /**
    * Strands whose `StrandPeer` row for this machine this process has found present (written
    * by it, or already stored). Rows are never updated or deleted, so once present the row
@@ -6157,6 +6159,52 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Run {@link rebuildWithoutRemovedMachine} after any rebuild already queued for `strandId`, so
+   * two removals give two rebuilds in turn. A later removal needs its own: the first may have
+   * resolved its seed before the second's row was written. Never rejects.
+   */
+  private queueSeedRemovalRebuild(strandId: string): void {
+    const rebuild: Promise<void> = (this.seedRemovalRebuilds.get(strandId) ?? Promise.resolve())
+      .then(() => this.rebuildWithoutRemovedMachine(strandId))
+      .catch((error: unknown) => {
+        log('Rebuilding strand %s without a removed machine failed; a later wake resolves a fresh seed: %o', strandId, error);
+      })
+      .finally(() => {
+        if (this.seedRemovalRebuilds.get(strandId) === rebuild) {
+          this.seedRemovalRebuilds.delete(strandId);
+        }
+      });
+    this.seedRemovalRebuilds.set(strandId, rebuild);
+  }
+
+  /**
+   * Replace a running strand node whose launch seed names a machine removed from the cadre with one
+   * built from a fresh seed, which a removed machine is not in, so an offline queue stops waiting
+   * for it (`docs/strands.md` → Waiting for the party's own machines). The same pair hibernation
+   * runs, so the app sees what it sees on a wake, and a queue is restored from its journal; the
+   * quiesce waits for a build in flight. A strand that went down meanwhile takes a fresh seed at its
+   * next wake, so it is left down.
+   *
+   * NOTE: accepted tradeoff — the rebuild drops the running database's in-memory followed commits.
+   * An upstream "forget this peer" call would avoid the rebuild, but needs an Optimystic change for
+   * a case a removal hits rarely. If rebuilds prove disruptive, ask for that call.
+   *
+   * NOTE: a force-hibernate landing between the quiesce and the resume is undone by the resume, and
+   * its cancelled timers leave the strand up until the next activity. If a backgrounded phone is
+   * seen holding a strand up after a removal, make the two steps one transition in the manager.
+   */
+  private async rebuildWithoutRemovedMachine(strandId: string): Promise<void> {
+    const instance = this.strandManager.getInstance(strandId);
+    if (!this._running || !instance || instance.status === 'hibernating' || this.strandManager.isQuiescing(strandId)) {
+      log('Strand %s went down before its rebuild without a removed machine; leaving it down', strandId);
+      return;
+    }
+    log('Strand %s: a machine removed from the cadre is in its launch seed; rebuilding its runtime', strandId);
+    await this.handleStrandHibernate(strandId);
+    await this.handleStrandWake(strandId);
+  }
+
+  /**
    * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort input
    * first: the discovery seed may have grown since the strand last ran. Shared by
    * the wake (`handleStrandWake`) and check-in (`handleStrandCheckIn`) paths so both
@@ -7535,6 +7583,7 @@ export class CadreNode implements SAppIdLookup {
       // closed strand, is bound by its siblings, while a machine with the key also binds them.
       // On a node offering offline mode the row is also what a sibling's queue waits for.
       partyPeers: this.partyStrandPeerSource(strand.Id),
+      onRemovedMachineInSeed: (seededStrandId) => this.queueSeedRemovalRebuild(seededStrandId),
       // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder,
       // Retained with the launch config, so a hibernation wake rebuilds under the
@@ -10044,6 +10093,11 @@ export class CadreNode implements SAppIdLookup {
    * The strand side of {@link removeMachine}: every strand the plan placed here is woken if it
    * hibernates, then driven through the rotation; a strand placed `later` is reported `pending`
    * without being touched. Never rejects: a wake that fails leaves its strand `pending`.
+   *
+   * NOTE: a strand whose offline queue holds transactions refuses the rotation's membership writes,
+   * so it reports `pending`, and nothing re-drives it when the queue drains: the next trigger is a
+   * strand resume, a party key table change or cohort growth. If a removal's rotation is seen
+   * lingering on a phone, also drive it on the queue's drain.
    */
   private async rotateAfterRemoval(plans: readonly StrandKeyRotationPlan[]): Promise<StrandKeyRotationOutcome[]> {
     const here = plans.filter((plan) => plan.rotation !== 'later').map((plan) => plan.strandId);

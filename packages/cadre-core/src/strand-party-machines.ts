@@ -19,13 +19,18 @@
  * The composed gate is registered with the strand connection's collection factory
  * (`StrandConnectionOptions.cohortReachability`), where the queue and the offline live-read
  * path both ask it. Only a node offering offline mode builds either.
+ *
+ * Removal. The same read names the machines removed from the cadre. Optimystic's own gate, which
+ * runs first, keeps waiting for a machine its strand node remembers or was seeded with, so
+ * `StrandInstanceManager` refuses a removed machine's peer id as a member, and
+ * {@link watchRemovedMachinesInSeed} asks for a rebuild when one is in the running node's seed.
  */
 
 import debug from 'debug';
 import type { BlockId, ICohortReachability, IKeyNetwork } from '@optimystic/db-core';
 import { routingKeyForBlock } from '@optimystic/db-core';
 import { describeThrown } from './describe-thrown.js';
-import type { PartyStrandPeer, PartyStrandPeerSource } from './strand-party-peers.js';
+import type { PartyStrandPeer, PartyStrandPeerSource, PartyStrandPeers } from './strand-party-peers.js';
 
 const log = debug('sereus:cadre:strand-party-machines');
 
@@ -52,6 +57,7 @@ export interface StrandPartyMachinesDeps {
  */
 export class StrandPartyMachines {
   private last: readonly PartyStrandPeer[] = [];
+  private lastRemoved: ReadonlySet<string> = new Set();
   private failed = false;
   private inFlight: Promise<void> | null = null;
   /** A refresh asked while a read was in flight: one more read follows, so no change is missed. */
@@ -98,12 +104,17 @@ export class StrandPartyMachines {
     return this.last;
   }
 
+  /** The strand peer ids of machines removed from the cadre, from the last good read; empty before one. */
+  removed(): ReadonlySet<string> {
+    return this.lastRemoved;
+  }
+
   /** Whether the most recent read failed, so the answer in {@link machines} may be stale. */
   lastReadFailed(): boolean {
     return this.failed;
   }
 
-  /** Called only when the set of machines changes. Returns an idempotent unsubscribe. */
+  /** Called only when the live machines or the removed ids change. Returns an idempotent unsubscribe. */
   onChange(listener: () => void): () => void {
     if (this.stopped) {
       return () => undefined;
@@ -125,9 +136,9 @@ export class StrandPartyMachines {
   }
 
   private async read(): Promise<void> {
-    let machines: readonly PartyStrandPeer[];
+    let peers: PartyStrandPeers;
     try {
-      machines = (await this.deps.source.read()).live;
+      peers = await this.deps.source.read();
     } catch (error) {
       this.failed = true;
       log('strand %s: the party\'s machines could not be read (keeping %d known): %s',
@@ -135,11 +146,12 @@ export class StrandPartyMachines {
       return;
     }
     this.failed = false;
-    if (this.stopped || sameMachines(this.last, machines)) {
+    if (this.stopped || (sameMachines(this.last, peers.live) && sameIds(this.lastRemoved, peers.removed))) {
       return;
     }
-    this.last = machines;
-    log('strand %s: the party has %d other machine(s) holding the strand', this.deps.label, machines.length);
+    this.last = peers.live;
+    this.lastRemoved = new Set(peers.removed);
+    log('strand %s: the party has %d other machine(s) holding the strand and %d removed', this.deps.label, peers.live.length, peers.removed.length);
     for (const { listener } of [...this.listeners]) {
       try {
         listener();
@@ -160,6 +172,49 @@ function sameMachines(a: readonly PartyStrandPeer[], b: readonly PartyStrandPeer
 
 function machineKey(machine: PartyStrandPeer): string {
   return `${machine.peerId}/${machine.strandPeerId}`;
+}
+
+function sameIds(known: ReadonlySet<string>, ids: readonly string[]): boolean {
+  return known.size === ids.length && ids.every((id) => known.has(id));
+}
+
+/**
+ * Call `onFound` when `machines` names a removed machine that is in `seedPeers`, the peers of the
+ * launch seed this runtime's node was built with, so that the node is rebuilt from a fresh seed.
+ * A rebuild is the only remedy: the node's seed is frozen, and Optimystic reads a refused seed peer
+ * that serves the network as not yet heard from for the node's whole life (`heardFromBootstrapPeer`).
+ *
+ * `announced` is the strand's memory across its runtimes of the ids a rebuild was asked for, so an
+ * id still in the rebuilt node's seed asks once and not on every build. Ids this seed does not name
+ * are forgotten, so a machine removed, re-added, seeded again and removed again asks again.
+ *
+ * NOTE: a fresh seed should never name a removed machine: its sources are the answers of live
+ * siblings and a formation's addresses, which are another party's. The exception is a removed
+ * machine still configured as this node's relay and still answering the strand-addr RPC. The hold
+ * then stays and the log says why; the remedy is to take it out of `network.relayAddrs`.
+ */
+export function watchRemovedMachinesInSeed(
+  machines: Pick<StrandPartyMachines, 'removed' | 'onChange'>,
+  seedPeers: ReadonlySet<string>,
+  announced: Set<string>,
+  onFound: () => void,
+  label: string
+): void {
+  for (const peerId of announced) {
+    if (!seedPeers.has(peerId)) {
+      announced.delete(peerId);
+    }
+  }
+  machines.onChange(() => {
+    const inSeed = [...machines.removed()].filter((peerId) => seedPeers.has(peerId));
+    const unannounced = inSeed.filter((peerId) => !announced.has(peerId));
+    if (unannounced.length > 0) {
+      unannounced.forEach((peerId) => announced.add(peerId));
+      onFound();
+    } else if (inSeed.length > 0) {
+      log('strand %s: the seed still names removed machine(s) %o after a rebuild, so the queue stays held', label, inSeed);
+    }
+  });
 }
 
 /** The slice of {@link StrandPartyMachines} the composed gate reads. */

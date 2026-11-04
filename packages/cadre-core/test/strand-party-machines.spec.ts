@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ICohortReachability } from '@optimystic/db-core';
-import { StrandPartyMachines, cohortGateWaitingForMachines } from '../src/strand-party-machines.js';
+import { StrandPartyMachines, cohortGateWaitingForMachines, watchRemovedMachinesInSeed } from '../src/strand-party-machines.js';
 import type { PartyStrandPeer, PartyStrandPeers } from '../src/strand-party-peers.js';
 
 /**
@@ -14,7 +14,7 @@ const SELF = 'self';
 const NODE: PartyStrandPeer = { peerId: 'node-control', strandPeerId: 'node-strand' };
 
 /** A `PartyStrandPeerSource.read` the test scripts one answer at a time. */
-function scriptedSource(): { read: () => Promise<PartyStrandPeers>; answer: (live: PartyStrandPeer[]) => void; fail: (error: Error) => void; reads: () => number } {
+function scriptedSource(): { read: () => Promise<PartyStrandPeers>; answer: (live: PartyStrandPeer[], removed?: string[]) => void; fail: (error: Error) => void; reads: () => number } {
   const pending: Array<{ resolve: (peers: PartyStrandPeers) => void; reject: (error: Error) => void }> = [];
   let reads = 0;
   return {
@@ -22,7 +22,7 @@ function scriptedSource(): { read: () => Promise<PartyStrandPeers>; answer: (liv
       reads++;
       pending.push({ resolve, reject });
     }),
-    answer: (live) => pending.shift()!.resolve({ live, removed: [] }),
+    answer: (live, removed = []) => pending.shift()!.resolve({ live, removed }),
     fail: (error) => pending.shift()!.reject(error),
     reads: () => reads,
   };
@@ -136,5 +136,32 @@ describe('StrandPartyMachines', () => {
     expect(tracker.machines()).toEqual([]);
     expect(tracker.lastReadFailed()).toBe(false);
     expect(changes).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('watchRemovedMachinesInSeed', () => {
+  /** How many rebuilds one runtime asks for: built on `seed` under the strand's `announced` memory, its first read naming `removed`. */
+  async function rebuildsAsked(removed: string[], seed: string[], announced: Set<string>): Promise<number> {
+    const source = scriptedSource();
+    const tracker = new StrandPartyMachines({ label: 's', source });
+    const found = vi.fn();
+    watchRemovedMachinesInSeed(tracker, new Set(seed), announced, found, 's');
+    tracker.refresh();
+    source.answer([], removed);
+    await tracker.settled();
+    return found.mock.calls.length;
+  }
+
+  it('asks for a rebuild for a removed machine in the seed, and not for one outside it', async () => {
+    expect(await rebuildsAsked(['gone'], ['gone', 'other'], new Set())).toBe(1);
+    expect(await rebuildsAsked(['gone'], ['other'], new Set())).toBe(0);
+  });
+
+  it('does not ask again while a rebuilt seed still names the machine, and asks again once a seed has left it out', async () => {
+    const announced = new Set<string>();
+    expect(await rebuildsAsked(['gone'], ['gone'], announced)).toBe(1);
+    expect(await rebuildsAsked(['gone'], ['gone'], announced)).toBe(0);
+    expect(await rebuildsAsked([], [], announced)).toBe(0);
+    expect(await rebuildsAsked(['gone'], ['gone'], announced)).toBe(1);
   });
 });

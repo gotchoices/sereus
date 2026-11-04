@@ -48,6 +48,21 @@
  * is bounded by the strand redial's backoff, which doubled from one dial budget for as long as the
  * plane was cut, so that step's wait varies with how long the hold took.
  *
+ * ── Removing the machine ──
+ *
+ * Two more flows, over the same two machines with no gater: the phone's strand node meets the
+ * node, the node takes a commit and then stops for good, a queued transaction waits, and
+ * `removeMachine(node)` releases it, committed by the phone alone. Each pins one mechanism, since
+ * Optimystic's own gate holds for two separate reasons a removal has to end:
+ *
+ *   - Met, not seeded. The strand launched before the node existed, so the node is only in the
+ *     strand node's memory of peers it saw serving (`absent-members`). Refusing the removed
+ *     machine as a member (`NodeOptions.isNetworkMember`) ends that, and the strand node stays the
+ *     same object: no rebuild ran.
+ *   - Met and seeded. A hibernate and wake while the node is up puts it in the launch seed
+ *     (`awaiting-bootstrap`), and a refused seed peer stays unheard for the life of the node. The
+ *     strand node is replaced by one built from a fresh seed.
+ *
  * ── Running it ──
  *
  *   yarn workspace @serfab/integration-tests exec vitest run strand-offline-waits-for-party-machine
@@ -59,11 +74,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
-import type { ConnectionGater, Libp2p } from '@libp2p/interface';
+import type { ConnectionGater, Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IKVStore } from '@optimystic/db-p2p';
 import { FileKVStore } from '@optimystic/db-p2p-storage-fs';
 import { CadreNode } from '@serfab/cadre-core';
-import type { StrandOfflineStatus } from '@serfab/cadre-core';
+import type { StrandInstance, StrandOfflineStatus } from '@serfab/cadre-core';
 import {
 	waitUntil,
 	sleep,
@@ -73,6 +88,7 @@ import {
 	admitMember,
 	captureRawStorage,
 	awaitBlockCoverage,
+	readCohort,
 } from '../harness/index.js';
 
 const SIMPLE_SCHEMA = `
@@ -98,6 +114,10 @@ const REDIAL_MS = 150_000;
 const LINK_MS = 100;
 /** The watcher's and the strand-addr refresh's cadence, so launches and addresses land within seconds. */
 const POLL_MS = 1_000;
+/** From the removal's write to the queued transaction committing: a control read, the queue's wake, and for the seeded flow a rebuild. */
+const RELEASE_MS = 60_000;
+
+const INSERT_RETURNING_TX = 'insert into App.Data (Key, Val) values (?, ?) returning StampId() as Tx';
 
 /**
  * A gater that cuts the strand plane. While cut it refuses every connection, in either direction,
@@ -146,7 +166,40 @@ function connectedTo(node: Libp2p, peerId: string, outbound = false): boolean {
 		connection.remotePeer.toString() === peerId && connection.status === 'open' && (!outbound || connection.direction === 'outbound'));
 }
 
-async function runOfflineWaitsForPartyMachine(): Promise<void> {
+/** The two machines' identities, drawn ahead of the party so a gater can name the other machine. */
+interface PartyKeys {
+	phoneKey: PrivateKey;
+	nodeKey: PrivateKey;
+	phonePeerId: string;
+	nodePeerId: string;
+}
+
+async function drawPartyKeys(): Promise<PartyKeys> {
+	const phoneKey = await generateKeyPair('Ed25519');
+	const nodeKey = await generateKeyPair('Ed25519');
+	return { phoneKey, nodeKey, phonePeerId: peerIdFromPrivateKey(phoneKey).toString(), nodePeerId: peerIdFromPrivateKey(nodeKey).toString() };
+}
+
+/** Step 1 of every flow done: the phone founded and published in offline mode, the node was admitted and runs a replica. */
+interface OfflineParty {
+	say(msg: string, ...args: unknown[]): void;
+	strandId: string;
+	phone: CadreNode;
+	node: CadreNode;
+	phoneStrand: StrandInstance;
+	replica: StrandInstance;
+	nodeStrandPeerId: string;
+	statuses: StrandOfflineStatus[];
+	phoneCapture: ReturnType<typeof captureRawStorage>;
+	nodeCapture: ReturnType<typeof captureRawStorage>;
+}
+
+/** Run `flow` over a fresh party, then stop both machines and remove the journals. */
+async function withOfflineParty(
+	keys: PartyKeys,
+	gaters: { phone?: ConnectionGater; node?: ConnectionGater },
+	flow: (party: OfflineParty) => Promise<void>
+): Promise<void> {
 	const startedAt = Date.now();
 	const say = (msg: string, ...args: unknown[]): void => {
 		console.log(`[OFFLINE-HOLD] ${Date.now() - startedAt} ms: ${msg}`, ...args);
@@ -159,12 +212,7 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
 		const partyId = `offline-hold-${runTag}`;
 		const strandId = `strand-offline-hold-${runTag}`;
 		const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
-		const phoneKey = await generateKeyPair('Ed25519');
-		const nodeKey = await generateKeyPair('Ed25519');
-		const phonePeerId = peerIdFromPrivateKey(phoneKey).toString();
-		const nodePeerId = peerIdFromPrivateKey(nodeKey).toString();
-		const phoneCut = strandPlaneCut(() => nodePeerId);
-		const nodeCut = strandPlaneCut(() => phonePeerId);
+		const { phoneKey, nodeKey, nodePeerId } = keys;
 		const phoneCapture = captureRawStorage();
 		const nodeCapture = captureRawStorage();
 		// One journal per strand scope, as a production journal is: every build asks again.
@@ -182,7 +230,7 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
 		phone = new CadreNode(controlNodeConfig({
 			partyId, privateKey: phoneKey, profile: 'transaction', listenAddrs: [],
 			reconcileMs: 2_000, strandAddrRefreshMs: POLL_MS, strandWatchMs: POLL_MS, linkRoundTripMs: LINK_MS,
-			storageProvider: phoneCapture.provider, connectionGater: phoneCut.gater,
+			storageProvider: phoneCapture.provider, connectionGater: gaters.phone,
 			strandOffline: { journal, initialMode: 'offline' },
 		}));
 		await phone.start();
@@ -197,13 +245,12 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
 		expect(phoneStrand.status).toBe('active');
 		expect(phone.getStrandOfflineMode(strandId)).toBe('offline');
 		await phone.publishStrand(strandId);
-		const phoneStrandNode = phoneStrand.libp2pNode!;
 		say('step 1: the phone founded and published the strand in offline mode');
 
 		node = new CadreNode(controlNodeConfig({
 			partyId, privateKey: nodeKey, profile: 'storage', pinnedOwnerKeys: [owner.publicKey], enableRelay: false,
 			strandFilter: 'all', hostUnclaimedStrands: true, strandWatchMs: POLL_MS, reconcileMs: 2_000, linkRoundTripMs: LINK_MS,
-			storageProvider: nodeCapture.provider, connectionGater: nodeCut.gater,
+			storageProvider: nodeCapture.provider, connectionGater: gaters.node,
 		}));
 		await node.start();
 		await node.enableSeedListener();
@@ -215,6 +262,23 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
 		const replica = node.getStrand(strandId)!;
 		const nodeStrandPeerId = replica.libp2pNode!.peerId.toString();
 		say('step 1: the node was admitted and runs a replica (%s)', nodeStrandPeerId);
+
+		await flow({ say, strandId, phone, node, phoneStrand, replica, nodeStrandPeerId, statuses, phoneCapture, nodeCapture });
+	} finally {
+		await Promise.allSettled([node?.stop(), phone?.stop()]);
+		// Only the journal's files, written by this process: no node_modules junctions.
+		rmSync(home, { recursive: true, force: true });
+	}
+}
+
+async function runOfflineWaitsForPartyMachine(): Promise<void> {
+	const keys = await drawPartyKeys();
+	const { phonePeerId, nodePeerId } = keys;
+	const phoneCut = strandPlaneCut(() => nodePeerId);
+	const nodeCut = strandPlaneCut(() => phonePeerId);
+	await withOfflineParty(keys, { phone: phoneCut.gater, node: nodeCut.gater }, async (party) => {
+		const { say, strandId, phone, phoneStrand, replica, nodeStrandPeerId, statuses, phoneCapture, nodeCapture } = party;
+		const phoneStrandNode = phoneStrand.libp2pNode!;
 
 		// The node's StrandPeer row reached the phone, which now names the node as unreached, and the
 		// strand-addr RPC put the node's strand address where the redial reads it. The replica cannot
@@ -290,15 +354,83 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
 		});
 		expect(database.commitDurability(aloneTx)?.awaitedMachines).toEqual([]);
 		say('RESULT the transaction waited for the node and reached it once');
-	} finally {
-		await Promise.allSettled([node?.stop(), phone?.stop()]);
-		// Only the journal's files, written by this process: no node_modules junctions.
-		rmSync(home, { recursive: true, force: true });
-	}
+	});
+}
+
+/**
+ * The removal flows (header, "Removing the machine"). `seeded` hibernates and wakes the phone's
+ * strand while the node is up, so the runtime the removal finds names the node in its launch seed.
+ */
+async function runRemovalReleasesQueue(seeded: boolean): Promise<void> {
+	const keys = await drawPartyKeys();
+	const { nodePeerId } = keys;
+	await withOfflineParty(keys, {}, async ({ say, strandId, phone, node, phoneStrand, nodeStrandPeerId, statuses }) => {
+		const reportedAs = (tx: string, kind: 'committed' | 'failed'): StrandOfflineStatus[] =>
+			statuses.filter(({ status }) => status.transactionId === tx && status.kind === kind);
+		const phoneConnected = (): boolean => connectedTo(phoneStrand.libp2pNode!, nodeStrandPeerId);
+		await waitUntil(phoneConnected, { timeoutMs: REDIAL_MS, intervalMs: 250, description: "the phone's strand node connects to the node's" });
+		if (seeded) {
+			await phone.hibernateStrand(strandId);
+			expect(phoneStrand.status, 'a strand whose latency hint never hibernates would keep its seed').toBe('hibernating');
+			await phone.wakeStrand(strandId);
+			await waitUntil(phoneConnected, { timeoutMs: REDIAL_MS, intervalMs: 250, description: "the woken strand node connects to the node's" });
+		}
+
+		// A commit the node holds, so the phone has seen the node serve the strand.
+		const met = await phoneStrand.database!.getDatabase().get(INSERT_RETURNING_TX, ['met', 'held-by-the-node']);
+		const metTx = met!.Tx as string;
+		const metDatabase = phoneStrand.database!;
+		await waitUntil(() => metDatabase.commitDurability(metTx)?.heldElsewhere === true, {
+			timeoutMs: CONVERGE_MS, intervalMs: 250, description: `${metTx} to be held by the node`,
+		});
+		say('the phone has met the node (seeded: %s), and the node holds %s', seeded, metTx);
+
+		// ── The node stops for good, and a transaction waits for it ──
+		// A background `CadrePeer` write still committing at a stop tears (docs/testing.md).
+		expect(await node.registerSelf()).not.toBe('skipped');
+		await node.stop();
+		await waitUntil(() => !phoneConnected(), { timeoutMs: CONVERGE_MS, intervalMs: 250, description: "the phone's strand node sees the node go" });
+		// `removeMachine` is a control write, and a cohort that still lists the node fails it.
+		await waitUntil(async () => !(await readCohort(phone.getControlNode()!, 'phone')).includes(nodePeerId), {
+			timeoutMs: CONVERGE_MS, intervalMs: 250, description: "the node leaves the phone's control cohort",
+		});
+		const written = await phoneStrand.database!.getDatabase().get(INSERT_RETURNING_TX, ['held', 'written-after-the-node-stopped']);
+		const tx = written!.Tx as string;
+		await sleep(HOLD_MS);
+		expect(phoneStrand.database!.offline!.status(tx), `${tx} ${HOLD_MS} ms after the write`).toMatchObject({ kind: 'queued' });
+		expect(reportedAs(tx, 'committed'), `${tx} committed with the node stopped`).toHaveLength(0);
+		expect(phone.getUnreachedStrandMachines(strandId).map((machine) => machine.strandPeerId)).toEqual([nodeStrandPeerId]);
+		say('%s waits: %o', tx, phoneStrand.database!.offline!.status(tx));
+
+		// ── The removal releases it ──
+		const strandNodeBefore = phoneStrand.libp2pNode;
+		const removedAt = Date.now();
+		expect(await phone.removeMachine(nodePeerId)).toMatchObject({ removedPeer: true });
+		await waitUntil(() => reportedAs(tx, 'committed').length > 0, {
+			timeoutMs: RELEASE_MS, intervalMs: 100, description: `${tx} to be reported committed after the removal`,
+		});
+		say('%s committed %d ms after the removal began', tx, Date.now() - removedAt);
+		expect(reportedAs(tx, 'committed'), `${tx} reported committed`).toHaveLength(1);
+		expect(reportedAs(tx, 'failed'), `${tx} reported failed`).toHaveLength(0);
+		expect(phone.getUnreachedStrandMachines(strandId)).toEqual([]);
+		if (seeded) {
+			expect(phoneStrand.libp2pNode, 'the seed names the node, so the runtime was rebuilt').not.toBe(strandNodeBefore);
+		} else {
+			expect(phoneStrand.libp2pNode, 'no seed names the node, so no rebuild ran').toBe(strandNodeBefore);
+		}
+	});
 }
 
 describe('offline mode waits for the party\'s own machines', () => {
 	it('a phone does not commit a queued transaction alone while a party machine holding the strand is unreachable, and sends it once the machine is reached', async () => {
 		await runOfflineWaitsForPartyMachine();
+	}, 300_000);
+
+	it('removing a machine this node met releases the queue without a rebuild', async () => {
+		await runRemovalReleasesQueue(false);
+	}, 300_000);
+
+	it('removing a machine in the launch seed releases the queue through one rebuild', async () => {
+		await runRemovalReleasesQueue(true);
 	}, 300_000);
 });

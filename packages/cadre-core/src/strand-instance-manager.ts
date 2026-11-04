@@ -22,7 +22,7 @@ import {
 } from './strand-membership-reconciler.js';
 import { removeMemberPeer } from './strand-membership-writer.js';
 import type { PartyStrandPeer, PartyStrandPeerSource } from './strand-party-peers.js';
-import { StrandPartyMachines, cohortGateWaitingForMachines } from './strand-party-machines.js';
+import { StrandPartyMachines, cohortGateWaitingForMachines, watchRemovedMachinesInSeed } from './strand-party-machines.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { assertSchemaSignature } from './schema-verification.js';
 import { assertStrandScopeKey } from './storage-scope.js';
@@ -265,6 +265,16 @@ export interface StartStrandConfig {
    * strand's row serves only that wait. Retained with the launch config.
    */
   partyPeers?: PartyStrandPeerSource;
+
+  /**
+   * Called when a read of the party's machines finds one removed from the cadre in
+   * {@link bootstrapNodes}, on a node tracking them ({@link offline} with {@link partyPeers}), and
+   * once per such machine ({@link watchRemovedMachinesInSeed}). The node refuses that peer but
+   * cannot drop it from its frozen seed, so its queue stays held until a new node is built from a
+   * fresh seed: `CadreNode` quiesces and resumes the runtime. May be called during a build or a
+   * rebuild, so the receiver serializes. Retained with the launch config.
+   */
+  onRemovedMachineInSeed?: (strandId: string) => void;
 
   /**
    * Called when THIS node's own peer id turns up in the strand's revoked set —
@@ -567,6 +577,12 @@ export class StrandInstanceManager {
    */
   private partyMachines: Map<string, StrandPartyMachines> = new Map();
   /**
+   * Per strand, the removed machines' peer ids a rebuild was asked for
+   * ({@link watchRemovedMachinesInSeed}). Outlives a runtime, which is its point: it is what stops
+   * a rebuilt node whose seed still names one from asking again. Dropped with the launch config.
+   */
+  private seedRemovalsAnnounced: Map<string, Set<string>> = new Map();
+  /**
    * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
    * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
    * Private for the same reason `backfills` is: runtime plumbing, not part of the
@@ -745,6 +761,7 @@ export class StrandInstanceManager {
       // reads both, and a config without an instance would strand the config.
       this.instances.delete(strandId);
       this.launchConfigs.delete(strandId);
+      this.seedRemovalsAnnounced.delete(strandId);
       // The cleanup above remembered the half-built database's queue; an untracked strand keeps none.
       this.closedQueues.delete(strandId);
       // The store this launch resolved goes with it: nothing owns it any more, and a
@@ -914,6 +931,7 @@ export class StrandInstanceManager {
       : undefined;
     if (partyMachines) {
       this.partyMachines.set(strandId, partyMachines);
+      this.watchSeedForRemovedMachines(strandId, config, partyMachines);
       partyMachines.refresh();
     }
 
@@ -923,6 +941,16 @@ export class StrandInstanceManager {
         port: 0, // Random port
         bootstrapNodes: config.bootstrapNodes ?? [],
         networkName,
+        // A machine removed from the party stops counting as a member, ahead of whatever this node
+        // remembers of it, so a queue stops waiting for it. Read live, and everyone else takes the
+        // path they would with no predicate.
+        //
+        // NOTE: a machine can state any id in its own `StrandPeer` row before its removal, and that
+        // id is then refused here, leaving that peer out of this node's cohorts. One id per
+        // (strand, machine), in a row a machine the party trusted then signed, and an id a live
+        // sibling recorded is never read as removed. If a peer is ever seen left out of cohorts
+        // this way, the row needs a proof that the id it states is the machine's own.
+        ...(partyMachines && { isNetworkMember: (peerId: string) => !partyMachines.removed().has(peerId) }),
         storage: strandStorage,
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',
         relay: relayServer.enabled,
@@ -1320,6 +1348,21 @@ export class StrandInstanceManager {
       return undefined;
     }
     return cohortGateWaitingForMachines(node.cohortReachability, node.keyNetwork, node.peerId.toString(), partyMachines);
+  }
+
+  /** Ask the launcher for a rebuild when a machine removed from the party is in this runtime's seed. */
+  private watchSeedForRemovedMachines(strandId: string, config: StartStrandConfig, machines: StrandPartyMachines): void {
+    const { onRemovedMachineInSeed } = config;
+    if (!onRemovedMachineInSeed) {
+      return;
+    }
+    let announced = this.seedRemovalsAnnounced.get(strandId);
+    if (!announced) {
+      announced = new Set();
+      this.seedRemovalsAnnounced.set(strandId, announced);
+    }
+    const seedPeers = new Set(groupAddrsByPeerId(config.bootstrapNodes ?? []).keys());
+    watchRemovedMachinesInSeed(machines, seedPeers, announced, () => onRemovedMachineInSeed(strandId), strandId);
   }
 
   /**
@@ -2413,6 +2456,7 @@ export class StrandInstanceManager {
       instance.status = 'stopped';
       this.instances.delete(strandId);
       this.launchConfigs.delete(strandId);
+      this.seedRemovalsAnnounced.delete(strandId);
       this.closedQueues.delete(strandId);
       // Storage is released only here — NOT in releaseRuntime, which a quiesce shares.
       await this.disposeStrandStorage(strandId);
