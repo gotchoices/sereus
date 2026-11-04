@@ -45,6 +45,7 @@ import type {
   CadreOwnerKey,
   MachineRemovalPlan,
   MachineRemovalResult,
+  PendingPartyKeyRotation,
   PendingStrandPartyKeyRow,
   StrandKeyRotationOutcome,
   StrandKeyRotationPlan,
@@ -90,7 +91,7 @@ import {
   isValidStrandScopeKey
 } from './storage-scope.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
-import { assertNotPreSplitStrand, isStrandManager, issueInvite, PreSplitStrandIdentityError, readStrandHeaderSAppId } from './strand-membership-writer.js';
+import { assertNotPreSplitStrand, isStrandManager, isStrandMember, isStrandSealed, issueInvite, PreSplitStrandIdentityError, readStrandHeaderSAppId } from './strand-membership-writer.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
@@ -111,7 +112,7 @@ import { addrKey, mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } fr
 import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSigner } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
-import { describeMachines, planMachineRemoval, MachineRemovalRefusedError, type ClosedStrandState } from './machine-removal.js';
+import { describeMachines, pendingRotationWaitingOn, planMachineRemoval, MachineRemovalRefusedError, type ClosedStrandState, type PendingRotationStrandState } from './machine-removal.js';
 import { partitionPartyStrandPeers, type PartyStrandPeer, type PartyStrandPeerSource, type PartyStrandPeers, type PendingPartyKeyState } from './strand-party-peers.js';
 import { StrandPartyKeyRotationDriver, type OpenedPendingPartyKey, type StrandPartyKeySwapEntry } from './strand-party-key-rotation.js';
 import { openPartyKey, partyKeyRecipients, sealPartyKey, type PartyKeyOpener, type PartyKeyRecipient } from './sealed-party-key.js';
@@ -10042,18 +10043,76 @@ export class CadreNode implements SAppIdLookup {
     return states;
   }
 
-  /** {@link readClosedStrandStates} for one strand: its runtime here, and the party's manager seat when a database is live. */
-  private async closedStrandState(strandId: string, partyKey: string): Promise<ClosedStrandState> {
+  /**
+   * {@link readClosedStrandStates} for one strand: its runtime here, and the party's manager seat
+   * when a database is live and the party's key is known. A seat that cannot be read is `unknown`;
+   * what acts on the strand finds out for itself.
+   */
+  private async closedStrandState(strandId: string, partyKey: string | null): Promise<ClosedStrandState> {
     const instance = this.strandManager.getInstance(strandId);
     const db = instance?.database?.getDatabase();
     if (db === undefined) {
       return { strandId, runtime: instance?.status === 'hibernating' ? 'hibernating' : 'none', managerSeat: 'unknown' };
     }
+    if (partyKey === null) {
+      return { strandId, runtime: 'live', managerSeat: 'unknown' };
+    }
     try {
       return { strandId, runtime: 'live', managerSeat: await isStrandManager(db, strandMemberKeyPair(partyKey).publicKeyB64) };
     } catch (error) {
-      log('planMachineRemoval: the manager seat of strand %s could not be read; the removal finds out: %o', strandId, error);
+      log('The manager seat of strand %s could not be read: %o', strandId, error);
       return { strandId, runtime: 'live', managerSeat: 'unknown' };
+    }
+  }
+
+  /**
+   * The party key replacements still waiting, for an app to list until each one finishes
+   * ({@link PendingPartyKeyRotation}): one entry per live `PendingStrandPartyKey` row whose strand
+   * the party still holds, own or joined. A row left behind by a joined strand the party has left
+   * waits for a re-formation and is not listed. Public columns only, so a row sealed to other
+   * machines lists too. Empty on a machine removed from the cadre, which cannot act on what it holds.
+   *
+   * NOTE: no event announces a change here; an app reads this on `strand:party-key-rotation-blocked`,
+   * `strand:party-key-rotated` and after its own {@link removeMachine}, so a second device of the
+   * party sees a row replicated to it on its next read. If an app ever needs a push, emit from
+   * {@link onPartyKeyTablesChanged}.
+   */
+  async listPendingPartyKeyRotations(): Promise<PendingPartyKeyRotation[]> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before listing pending party key rotations');
+    }
+    if (this.removal !== null) {
+      return [];
+    }
+    const controlDatabase = this.controlDatabase;
+    const pending = await controlDatabase.queryPendingStrandPartyKeys();
+    if (pending.size === 0) {
+      return [];
+    }
+    const held = new Set([...await controlDatabase.queryStrands(), ...await controlDatabase.queryJoinedStrands()].map((row) => row.Id));
+    const rotations: PendingPartyKeyRotation[] = [];
+    for (const [strandId, row] of pending) {
+      if (held.has(strandId)) {
+        const partyKey = await controlDatabase.queryStrandPartyKey(strandId);
+        const strand = await this.pendingRotationStrandState(strandId, partyKey, row.publicKey);
+        rotations.push({ strandId, publicKey: row.publicKey, superseded: row.superseded, waitingOn: pendingRotationWaitingOn(strand) });
+      }
+    }
+    return rotations;
+  }
+
+  /** {@link closedStrandState} plus the strand reads only a pending replacement asks about; a read that fails is `unknown`, so one strand mid-teardown leaves the rest of the listing standing. */
+  private async pendingRotationStrandState(strandId: string, partyKey: string | null, pendingPublicKey: string): Promise<PendingRotationStrandState> {
+    const closed = await this.closedStrandState(strandId, partyKey);
+    const db = this.strandManager.getInstance(strandId)?.database?.getDatabase();
+    if (db === undefined) {
+      return { ...closed, sealed: 'unknown', pendingKeySeated: 'unknown' };
+    }
+    try {
+      return { ...closed, sealed: await isStrandSealed(db), pendingKeySeated: await isStrandMember(db, pendingPublicKey) };
+    } catch (error) {
+      log('The pending party key state of strand %s could not be read: %o', strandId, error);
+      return { ...closed, sealed: 'unknown', pendingKeySeated: 'unknown' };
     }
   }
 

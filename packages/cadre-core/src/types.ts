@@ -2308,6 +2308,22 @@ export interface StrandKeyRotationOutcome {
   outcome: 'rotated' | 'pending' | 'needs-another-party';
 }
 
+/** One closed strand whose membership key replacement has not finished (docs/architecture.md → "Removing a machine"). */
+export interface PendingPartyKeyRotation {
+  strandId: string;
+  /** The key the party is moving to, public half (base64url): what another party's manager admits by hand. */
+  publicKey: string;
+  /** Earlier pending keys this one replaced, public halves. A seat one of them holds in a strand the party does not manage is for that strand's manager to revoke. */
+  superseded: string[];
+  /**
+   * Who can move the replacement forward from here, judged from this machine's view of the strand.
+   * - `another-party`: the strand runs here and the party holds no manager seat, so another party's manager has to admit `publicKey`: a fresh invitation to the strand redeemed on an owner device of this party, or the key admitted by hand.
+   * - `sealed`: the strand has no managers at all; nobody can admit the key, and the removed machine stays a member until the strand is re-formed.
+   * - `owner-machine`: an owner device of this party that runs the strand finishes it (the strand does not run here, this machine holds no owner key, or the new key is already seated and the swap is next).
+   */
+  waitingOn: 'another-party' | 'sealed' | 'owner-machine';
+}
+
 /** Why `CadreNode.removeOwner` refuses by name (`OwnerKeyRemovalRefusedError.code`). */
 export type OwnerKeyRemovalRefusal =
   /** This node holds no enrolled owner key, so it cannot sign the removal. */

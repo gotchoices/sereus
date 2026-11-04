@@ -18,6 +18,7 @@ import type {
   CadrePeerRow,
   MachineRemovalPlan,
   MachineRemovalRefusal,
+  PendingPartyKeyRotation,
   StrandKeyRotationPlan,
 } from './types.js';
 
@@ -161,6 +162,34 @@ function rotationSite(strand: ClosedStrandState): StrandKeyRotationPlan['rotatio
     case 'live':
       return strand.managerSeat === false ? 'another-party' : 'here';
   }
+}
+
+/**
+ * One closed strand with a pending party key, as `CadreNode.listPendingPartyKeyRotations` reads
+ * it, for {@link pendingRotationWaitingOn}. Both reads are `unknown` when there is no live
+ * database to read them from.
+ */
+export interface PendingRotationStrandState extends ClosedStrandState {
+  /** Whether the strand is closed with every manager gone for good (`isStrandSealed`). */
+  sealed: boolean | 'unknown';
+  /** Whether the pending key already holds a `Strand.Member` row (`isStrandMember`). */
+  pendingKeySeated: boolean | 'unknown';
+}
+
+/**
+ * Who can move one pending replacement forward ({@link PendingPartyKeyRotation.waitingOn}). A seated
+ * key comes first, sealed strand included: members can still leave a sealed strand, so the driver
+ * finishes there, and only admitting a key is what the seal rules out. What is unknown answers
+ * `owner-machine`, the one state that sends the app to nobody outside the party.
+ */
+export function pendingRotationWaitingOn(strand: PendingRotationStrandState): PendingPartyKeyRotation['waitingOn'] {
+  if (strand.runtime !== 'live' || strand.pendingKeySeated !== false) {
+    return 'owner-machine';
+  }
+  if (strand.sealed === true) {
+    return 'sealed';
+  }
+  return strand.managerSeat === false ? 'another-party' : 'owner-machine';
 }
 
 function refusalFor(input: MachineRemovalPlanInput): MachineRemovalRefusal | null {

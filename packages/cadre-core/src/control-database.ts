@@ -566,7 +566,8 @@ interface StoredPendingPartyKey extends PendingStrandPartyKeyRow {
 }
 
 /** The columns every `PendingStrandPartyKey` read takes, as {@link pendingPartyKeyOfRow} maps them. */
-const PENDING_PARTY_KEY_SELECT = 'select PublicKey, SealedKey, Superseded, StampId from CadreControl.PendingStrandPartyKey where Id = ?';
+const PENDING_PARTY_KEY_COLUMNS = 'PublicKey, SealedKey, Superseded, StampId';
+const PENDING_PARTY_KEY_SELECT = `select ${PENDING_PARTY_KEY_COLUMNS} from CadreControl.PendingStrandPartyKey where Id = ?`;
 
 function pendingPartyKeyOfRow(row: Record<string, SqlValue>): PendingStrandPartyKeyRow {
   const superseded = row.Superseded as string | null;
@@ -2317,6 +2318,20 @@ export class ControlDatabase {
       return null;
     }
     return pendingPartyKeyOfRow(row);
+  }
+
+  /** Every {@link queryPendingStrandPartyKey} row at once, by strand id, a retired stamp hidden the same way. */
+  async queryPendingStrandPartyKeys(): Promise<Map<string, PendingStrandPartyKeyRow>> {
+    this.ensureInitialized();
+    const revoked = await this.queryRevokedStamps('PendingStrandPartyKey');
+    const rows = await this.readRows(`select Id, ${PENDING_PARTY_KEY_COLUMNS} from CadreControl.PendingStrandPartyKey`, undefined, 'pending-strand-party-keys');
+    const pending = new Map<string, PendingStrandPartyKeyRow>();
+    for (const row of rows) {
+      if (!revoked.has(row.StampId as string)) {
+        pending.set(row.Id as string, pendingPartyKeyOfRow(row));
+      }
+    }
+    return pending;
   }
 
   /**

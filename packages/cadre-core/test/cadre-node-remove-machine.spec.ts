@@ -9,6 +9,7 @@ import { deviceTokenAddDigest } from '../src/peer-authorization.js';
 import { signDeviceTokenRecord } from '../src/device-token.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
+import { pendingRotationWaitingOn } from '../src/machine-removal.js';
 import { openPartyKey, partyKeyRecipients } from '../src/sealed-party-key.js';
 import { expectConstraintFailure, freshKeyPair, freshStamp, signAs, signB64, type KeyPair } from './control-constraint-helpers.js';
 import { mintContactJoiner, type TestContactJoiner } from './formation-consent-helper.js';
@@ -311,4 +312,19 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     expect((await db.queryRevocations()).filter((row) => row.tableName === 'PendingStrandPartyKey').map((row) => row.stampId)).toEqual([pending!.stampId]);
     expect(await db.queryStrandPartyKey(strandId)).toBe(partyKey);
   }, 60_000);
+});
+
+describe('pendingRotationWaitingOn', () => {
+  const live = { strandId: 's', runtime: 'live', managerSeat: false, sealed: false, pendingKeySeated: false } as const;
+
+  it.each([
+    ['a sealed strand with no seat', { ...live, sealed: true }, 'sealed'],
+    ['a sealed strand whose new key is already seated, which only has to leave', { ...live, sealed: true, pendingKeySeated: true }, 'owner-machine'],
+    ['no seat and the new key not a member', live, 'another-party'],
+    ['no seat and the new key a member', { ...live, pendingKeySeated: true }, 'owner-machine'],
+    ['a manager seat', { ...live, managerSeat: true }, 'owner-machine'],
+    ['a strand not running here', { strandId: 's', runtime: 'none', managerSeat: 'unknown', sealed: 'unknown', pendingKeySeated: 'unknown' }, 'owner-machine'],
+  ] as const)('%s', (_name, strand, waitingOn) => {
+    expect(pendingRotationWaitingOn(strand)).toBe(waitingOn);
+  });
 });
