@@ -904,8 +904,10 @@ export class StrandMembershipReconciler {
    *
    * NOTE: a non-owner machine that reads the key kicks on every pass between the seat and the
    * swap, and `CadreNode.driveRotationIfPending` logs its refusal each time; bounded by the
-   * seconds the swap takes on the owner machine. If that log ever matters, kick once per seat
-   * (remember the pending stamp kicked for).
+   * seconds the swap takes on the owner machine. The owner machine alone does the same while
+   * its swap is deferred (the only sibling offline): every pass kicks, the driver runs its
+   * reads and ends "swap deferred", for as long as that sibling stays away. If either log
+   * ever matters, kick once per seat (remember the pending stamp kicked for).
    */
   private kickRotationDriver(cause: string): void {
     try {

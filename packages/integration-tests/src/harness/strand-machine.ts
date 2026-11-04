@@ -350,7 +350,15 @@ export async function meshStrandNodes(machines: readonly StrandMachine[], timeou
 
 // ─── The instance manager's per-strand state ─────────────────────────────────
 
-/** The instance manager's per-strand state the loop reads need. No app has a use for it, so it stays private there. */
+/**
+ * The instance manager's per-strand state the loop reads need. No app has a use for it, so it
+ * stays private there.
+ *
+ * NOTE: reached by field name through a cast, so a rename of `membershipReconcilers` or
+ * `launchConfigs` in `strand-instance-manager.ts` compiles and makes these reads answer
+ * `false`/`undefined`; the gates built on them then time out (60 s) instead of failing fast.
+ * If that ever bites, have the manager expose a test-only probe and type it.
+ */
 interface StrandManagerInternals {
 	membershipReconcilers: Map<string, { done: boolean }>;
 	launchConfigs: Map<string, { partyMemberPrivateKey?: string }>;

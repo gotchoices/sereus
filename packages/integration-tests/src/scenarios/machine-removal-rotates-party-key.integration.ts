@@ -381,29 +381,9 @@ describe('Removing a machine replaces the party key in a strand shared with anot
 		await awaitBlockCoverage(bBlocks, a2Blocks, { timeoutMs: STRAND_GATE.timeoutMs, description: 'the restarted A2 holds B\'s post-removal write' });
 		await insertWithRetry(b, 'after-return', 'written after A2 returned', REMAINING_COHORT_WRITE_BUDGET_MS);
 		await awaitBlockCoverage(bBlocks, a2Blocks, { timeoutMs: STRAND_GATE.timeoutMs, description: 'the restarted A2 holds B\'s later write' });
-		// TEMP-DIAG: remove before finishing triage.
-		const diagPub = (key: string | null | undefined): string => key ? strandMemberKeyPair(key).publicKeyB64 : String(key);
-		const diagLine = async (tag: string): Promise<void> => {
-			const bindings = await memberPeerBindings(a2Again.db).catch((error: unknown) => [`bindings read failed: ${String(error)}`]);
-			console.log(`[TEMP-DIAG ${tag} ${new Date().toISOString()}] new=${newMemberKey} old=${oldMemberKey} running=${diagPub(runningPartyKey(returned, strandId))} loopDone=${membershipLoopDone(returned, strandId)} hasBinding=${bindings.includes(binding(newMemberKey, a2Again))}`);
-		};
-		await diagLine('gate-start');
-		try {
-			await waitUntil(async () => membershipLoopDone(returned, strandId) && (await memberPeerBindings(a2Again.db)).includes(binding(newMemberKey, a2Again)), {
-				...STRAND_GATE, description: 'the restarted A2\'s membership loop is done with its binding under the new key',
-			});
-			await diagLine('gate-passed');
-		} catch (error) {
-			await diagLine('gate-timeout-before-control-read');
-			const stored = await returned.getControlDatabase()!.queryStrandPartyKey(strandId);
-			const pending = await returned.getControlDatabase()!.queryPendingStrandPartyKey(strandId);
-			console.log(`[TEMP-DIAG control-read ${new Date().toISOString()}] storedOnA2=${diagPub(stored)} pendingOnA2=${pending?.publicKey ?? 'none'}`);
-			await new Promise((resolve) => setTimeout(resolve, 15_000));
-			await diagLine('15s-after-control-read');
-			const storedLater = await returned.getControlDatabase()!.queryStrandPartyKey(strandId);
-			console.log(`[TEMP-DIAG control-read-2 ${new Date().toISOString()}] storedOnA2=${diagPub(storedLater)}`);
-			throw error;
-		}
+		await waitUntil(async () => membershipLoopDone(returned, strandId) && (await memberPeerBindings(a2Again.db)).includes(binding(newMemberKey, a2Again)), {
+			...STRAND_GATE, description: 'the restarted A2\'s membership loop is done with its binding under the new key',
+		});
 
 		// ── The control record, on the machine that was offline ─────────────────
 		const a2Control = returned.getControlDatabase()!;
