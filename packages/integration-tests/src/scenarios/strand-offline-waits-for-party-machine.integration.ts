@@ -63,6 +63,9 @@
  *     (`awaiting-bootstrap`), and a refused seed peer stays unheard for the life of the node. The
  *     strand node is replaced by one built from a fresh seed.
  *
+ * A third flow is the met one on a closed strand. The removal's key replacement is refused while
+ * the queue holds the transaction, so it must run on the queue's drain.
+ *
  * ── Running it ──
  *
  *   yarn workspace @serfab/integration-tests exec vitest run strand-offline-waits-for-party-machine
@@ -77,7 +80,7 @@ import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import type { ConnectionGater, Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IKVStore } from '@optimystic/db-p2p';
 import { FileKVStore } from '@optimystic/db-p2p-storage-fs';
-import { CadreNode } from '@serfab/cadre-core';
+import { CadreNode, generateStrandMemberKey } from '@serfab/cadre-core';
 import type { StrandInstance, StrandOfflineStatus } from '@serfab/cadre-core';
 import {
 	waitUntil,
@@ -194,11 +197,12 @@ interface OfflineParty {
 	nodeCapture: ReturnType<typeof captureRawStorage>;
 }
 
-/** Run `flow` over a fresh party, then stop both machines and remove the journals. */
+/** Run `flow` over a fresh party on a strand of `strandType`, then stop both machines and remove the journals. */
 async function withOfflineParty(
 	keys: PartyKeys,
 	gaters: { phone?: ConnectionGater; node?: ConnectionGater },
-	flow: (party: OfflineParty) => Promise<void>
+	flow: (party: OfflineParty) => Promise<void>,
+	strandType: 'o' | 'c' = 'o'
 ): Promise<void> {
 	const startedAt = Date.now();
 	const say = (msg: string, ...args: unknown[]): void => {
@@ -232,25 +236,31 @@ async function withOfflineParty(
 			reconcileMs: 2_000, strandAddrRefreshMs: POLL_MS, strandWatchMs: POLL_MS, linkRoundTripMs: LINK_MS,
 			storageProvider: phoneCapture.provider, connectionGater: gaters.phone,
 			strandOffline: { journal, initialMode: 'offline' },
+			membershipReconciliation: { pollIntervalMs: 2_000 },
 		}));
 		await phone.start();
 		const owner = await makeOwnOwner(phone);
 		const statuses: StrandOfflineStatus[] = [];
 		phone.on('strand:offline-status', (event) => { statuses.push(event); });
-		const phoneStrand = await phone.addStrand({
-			strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
-			sAppConfig: sApp,
-			founder: true,
-		});
+		const phoneStrand = strandType === 'c'
+			? (await phone.foundStrand({ strandId, type: 'c', memberPrivateKey: await generateStrandMemberKey(), sAppConfig: sApp })).instance
+			: await phone.addStrand({
+				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
+				sAppConfig: sApp,
+				founder: true,
+			});
 		expect(phoneStrand.status).toBe('active');
 		expect(phone.getStrandOfflineMode(strandId)).toBe('offline');
-		await phone.publishStrand(strandId);
+		if (strandType === 'o') {
+			await phone.publishStrand(strandId);
+		}
 		say('step 1: the phone founded and published the strand in offline mode');
 
 		node = new CadreNode(controlNodeConfig({
 			partyId, privateKey: nodeKey, profile: 'storage', pinnedOwnerKeys: [owner.publicKey], enableRelay: false,
 			strandFilter: 'all', hostUnclaimedStrands: true, strandWatchMs: POLL_MS, reconcileMs: 2_000, linkRoundTripMs: LINK_MS,
 			storageProvider: nodeCapture.provider, connectionGater: gaters.node,
+			membershipReconciliation: { pollIntervalMs: 2_000 },
 		}));
 		await node.start();
 		await node.enableSeedListener();
@@ -361,7 +371,7 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
  * The removal flows (header, "Removing the machine"). `seeded` hibernates and wakes the phone's
  * strand while the node is up, so the runtime the removal finds names the node in its launch seed.
  */
-async function runRemovalReleasesQueue(seeded: boolean): Promise<void> {
+async function runRemovalReleasesQueue(seeded: boolean, strandType: 'o' | 'c' = 'o'): Promise<void> {
 	const keys = await drawPartyKeys();
 	const { nodePeerId } = keys;
 	await withOfflineParty(keys, {}, async ({ say, strandId, phone, node, phoneStrand, nodeStrandPeerId, statuses }) => {
@@ -394,6 +404,7 @@ async function runRemovalReleasesQueue(seeded: boolean): Promise<void> {
 		await waitUntil(async () => !(await readCohort(phone.getControlNode()!, 'phone')).includes(nodePeerId), {
 			timeoutMs: CONVERGE_MS, intervalMs: 250, description: "the node leaves the phone's control cohort",
 		});
+		const partyKeyBefore = await phone.getControlDatabase()!.queryStrandPartyKey(strandId);
 		const written = await phoneStrand.database!.getDatabase().get(INSERT_RETURNING_TX, ['held', 'written-after-the-node-stopped']);
 		const tx = written!.Tx as string;
 		await sleep(HOLD_MS);
@@ -410,6 +421,12 @@ async function runRemovalReleasesQueue(seeded: boolean): Promise<void> {
 			timeoutMs: RELEASE_MS, intervalMs: 100, description: `${tx} to be reported committed after the removal`,
 		});
 		say('%s committed %d ms after the removal began', tx, Date.now() - removedAt);
+		if (strandType === 'c') {
+			await waitUntil(async () => (await phone.getControlDatabase()!.queryStrandPartyKey(strandId)) !== partyKeyBefore, {
+				timeoutMs: RELEASE_MS, intervalMs: 100, description: 'the key replacement to finish once the queue drained',
+			});
+			say('the key replacement finished %d ms after the removal began', Date.now() - removedAt);
+		}
 		expect(reportedAs(tx, 'committed'), `${tx} reported committed`).toHaveLength(1);
 		expect(reportedAs(tx, 'failed'), `${tx} reported failed`).toHaveLength(0);
 		expect(phone.getUnreachedStrandMachines(strandId)).toEqual([]);
@@ -418,7 +435,7 @@ async function runRemovalReleasesQueue(seeded: boolean): Promise<void> {
 		} else {
 			expect(phoneStrand.libp2pNode, 'no seed names the node, so no rebuild ran').toBe(strandNodeBefore);
 		}
-	});
+	}, strandType);
 }
 
 describe('offline mode waits for the party\'s own machines', () => {
@@ -432,5 +449,9 @@ describe('offline mode waits for the party\'s own machines', () => {
 
 	it('removing a machine in the launch seed releases the queue through one rebuild', async () => {
 		await runRemovalReleasesQueue(true);
+	}, 300_000);
+
+	it('removing a machine from a closed strand holding a queue finishes the key replacement once the queue drains', async () => {
+		await runRemovalReleasesQueue(false, 'c');
 	}, 300_000);
 });

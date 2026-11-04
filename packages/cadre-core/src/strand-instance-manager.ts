@@ -1073,12 +1073,16 @@ export class StrandInstanceManager {
       // The party's machines holding the strand are dialed too, at the addresses the
       // strand-addr RPC put in the address book, so a sibling's blocked port that opens is
       // reached without a connection ever having been made to it.
+      // A machine removed from the party is revoked to this loop on an open strand too: neither a
+      // peer to dial nor a connection that stands in for reaching the party's other machines.
       this.peerRedials.set(strandId, superviseStrandPeerRedial({
         label: strandId,
         node,
         seed: config.bootstrapNodes ?? [],
         excluded: new Set(groupAddrsByPeerId([...relayDialAddrs]).keys()),
-        ...(revocationEnforcer && { isRevoked: (peerId: string) => revocationEnforcer.isRevoked(peerId) }),
+        ...((revocationEnforcer || partyMachines) && {
+          isRevoked: (peerId: string) => revocationEnforcer?.isRevoked(peerId) === true || partyMachines?.removed().has(peerId) === true
+        }),
         ...(partyMachines && { partyMachines: () => partyMachines.machines().map((machine) => machine.strandPeerId) })
       }, strandRedialTimings(config.network?.linkRoundTripMs)));
 

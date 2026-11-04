@@ -79,7 +79,8 @@ import {
   StrandQueueNotEmptyError,
   type StrandLeaveOptions,
   type StrandOfflineMode,
-  type StrandOfflineStatus
+  type StrandOfflineStatus,
+  type StrandQueueState
 } from './strand-offline.js';
 import {
   assertScopeKeyCharset,
@@ -1233,7 +1234,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * The party key rotation driver (`strand-party-key-rotation.ts`) over this node's control
    * database and strand manager; one run per strand at a time. Driven by {@link removeMachine},
-   * a closed strand becoming writable here, the party key watch and the growth drain.
+   * a closed strand becoming writable here, an offline queue draining, the party key watch and
+   * the growth drain.
    */
   private readonly partyKeyRotation = new StrandPartyKeyRotationDriver({
     readPending: (strandId) => this.openPendingPartyKey(strandId),
@@ -6043,6 +6045,24 @@ export class CadreNode implements SAppIdLookup {
     this.emit('strand:offline-status', event);
   }
 
+  /**
+   * The state of a strand's offline queue. An empty queue is when a party key rotation it held up
+   * can run: every membership write is refused while it lists a transaction
+   * (`StrandOfflineQueueBusyError`), which is how a machine removal made on a held queue leaves its
+   * strand `pending`.
+   *
+   * NOTE: a queue held for another reason (a second machine still unreachable) keeps the removed
+   * machine a member of a closed strand until it drains, unless another owner machine drives the
+   * rotation. If a lost phone's removal must not wait on that, let the rotation's writes past the
+   * refusal, with the bounded wait the refusal exists to avoid.
+   */
+  private handleQueueState(event: StrandQueueState): void {
+    this.emit('strand:queue-state', event);
+    if (event.state.depth === 0) {
+      void this.driveRotationIfPending(event.strandId, 'offline queue drained');
+    }
+  }
+
   // Hibernation callbacks
   private async handleStrandIdle(strandId: string): Promise<void> {
     const instance = this.strandManager.getInstance(strandId);
@@ -7559,7 +7579,7 @@ export class CadreNode implements SAppIdLookup {
       offline: this.config.strandOffline && {
         ...this.config.strandOffline,
         onOfflineStatus: (event) => this.handleOfflineStatus(event),
-        onQueueState: (event) => this.emit('strand:queue-state', event)
+        onQueueState: (event) => this.handleQueueState(event)
       },
       appSchema: {
         onAppSchemaDeferred: (event) => this.emit('strand:app-schema-deferred', event),
@@ -10092,12 +10112,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * The strand side of {@link removeMachine}: every strand the plan placed here is woken if it
    * hibernates, then driven through the rotation; a strand placed `later` is reported `pending`
-   * without being touched. Never rejects: a wake that fails leaves its strand `pending`.
-   *
-   * NOTE: a strand whose offline queue holds transactions refuses the rotation's membership writes,
-   * so it reports `pending`, and nothing re-drives it when the queue drains: the next trigger is a
-   * strand resume, a party key table change or cohort growth. If a removal's rotation is seen
-   * lingering on a phone, also drive it on the queue's drain.
+   * without being touched. Never rejects: a wake that fails leaves its strand `pending`, as does an
+   * offline queue holding transactions, whose drain drives it ({@link handleQueueState}).
    */
   private async rotateAfterRemoval(plans: readonly StrandKeyRotationPlan[]): Promise<StrandKeyRotationOutcome[]> {
     const here = plans.filter((plan) => plan.rotation !== 'later').map((plan) => plan.strandId);
@@ -10208,7 +10224,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Drive the rotation pending for `strandId`, if one is, when this is an owner machine with the
    * strand's database live (`strand-party-key-rotation.ts`) and the pending key is sealed to it.
-   * Called in the background from the strand lifecycle (launch, resume, writable); a strand with
+   * Called in the background from the strand lifecycle (launch, resume, writable, queue drained); a strand with
    * nothing pending costs one control read. Never on a machine removed from the cadre
    * ({@link removedFromCadre}): it may hold an owner key and a key an earlier removal sealed to
    * it, and it is no longer a member whatever it holds, as the owner re-issue drains already

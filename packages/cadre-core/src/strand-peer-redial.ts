@@ -129,7 +129,7 @@ export interface StrandRedialDeps {
   seed: readonly string[];
   /** Peer ids never dialed nor counted as members: the relays the node reserves on. */
   excluded: ReadonlySet<string>;
-  /** The revocation gate's current verdict, asked of peers and of this node itself; absent for an open strand. */
+  /** Whether a peer, or this node itself, is cut off: the revocation gate's verdict and the party's removed machines. Absent when neither applies. */
   isRevoked?: (peerId: string) => boolean;
   /**
    * The strand peer ids of the party's other machines known to hold the strand
