@@ -306,6 +306,65 @@ export interface CollectStrandAddrsOptions {
  */
 export type StrandAddrOutcome = 'answered' | 'empty' | 'unavailable' | 'unsupported' | 'unreachable';
 
+/**
+ * The first wait after an ask that produced no address ({@link nextStrandAddrAsk}),
+ * doubling per further such ask. One second is the step `CLAIM_RESTART_REDIAL_STEP_MS`
+ * uses for the same restart on the control connection.
+ */
+export const STRAND_PEER_ADDR_FIRST_RETRY_MS = 1_000;
+
+/**
+ * The longest wait after a sibling did NOT answer — unreachable, `unavailable`, or
+ * `unsupported` ({@link nextStrandAddrAsk}). A refusal matters most: a phone asking
+ * before its `CadrePeer` row has replicated to the sibling is refused and its
+ * delegate grant goes unrecorded, and waiting the full refresh interval for the next
+ * try is the delay this bounds. A pass arms its own wake for the earliest due time it
+ * leaves behind (`nextReconcileWakeMs`), so a sibling that keeps failing costs one
+ * timed-out RPC a minute, with no pass in between.
+ */
+export const STRAND_PEER_ADDR_RETRY_MS = 60 * 1000;
+
+/**
+ * When to ask a (sibling, strand) for addresses again, from how the ask just made ended
+ * and `priorStreak`, the step of the climbing wait the asks before it reached. Returns the
+ * wait and the streak to remember.
+ *
+ * An answer with addresses waits `refreshMs` and ends the streak. Anything else waits
+ * {@link STRAND_PEER_ADDR_FIRST_RETRY_MS}, doubling along the streak: a sibling that is
+ * starting up fails, then answers `empty` until its strand launches, then answers with
+ * addresses, all within seconds, so `empty` and the failures share one streak and a retry
+ * landing in the `empty` stretch is followed by another within seconds.
+ *
+ * A failure stops climbing at {@link STRAND_PEER_ADDR_RETRY_MS}. `empty` climbs to
+ * `refreshMs`, because it is also a steady state that keeps one ask per refresh interval:
+ * a phone has no listening strand addresses and always answers it, and so does a
+ * hibernating sibling. `refreshMs` caps both, so a configured refresh shorter than the
+ * retry does not leave a failing sibling waiting longer than a healthy one.
+ *
+ * The streak stops growing when the wait does: failures that outlast the cap would otherwise
+ * send the first `empty` after them straight to `refreshMs`, however briefly that sibling
+ * then stays empty.
+ *
+ * NOTE: the `empty` climb is 10 asks in its first 17 minutes rather than 2 (counted from the
+ * steps, not measured), per (sibling, strand) and per new control connection, and its steps
+ * below the 2-minute backstop are 7 extra reconcile passes, each of which also redials any
+ * sibling left unconnected and advances the redial wait (`nextReconcileWakeMs`). If those wakes
+ * show up on a phone's battery or in pass counts, stop the `empty` steps from waking a pass and
+ * let them wait for the backstop.
+ */
+export function nextStrandAddrAsk(
+  outcome: StrandAddrOutcome,
+  priorStreak: number,
+  refreshMs: number
+): { waitMs: number; streak: number } {
+  if (outcome === 'answered') {
+    return { waitMs: refreshMs, streak: 0 };
+  }
+  const capMs = outcome === 'empty' ? refreshMs : Math.min(refreshMs, STRAND_PEER_ADDR_RETRY_MS);
+  const stepMs = STRAND_PEER_ADDR_FIRST_RETRY_MS * 2 ** priorStreak;
+  return stepMs < capMs ? { waitMs: stepMs, streak: priorStreak + 1 } : { waitMs: capMs, streak: priorStreak };
+}
+
 /** Result of {@link collectStrandAddrs}. */
 export interface StrandAddrCollection {
   /** Deduplicated union of every answer, signaling-first. */

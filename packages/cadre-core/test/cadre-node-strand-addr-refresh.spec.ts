@@ -3,10 +3,10 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p, PeerId } from '@libp2p/interface';
-import { CadreNode, STRAND_PEER_ADDR_FIRST_RETRY_MS, STRAND_PEER_ADDR_REFRESH_MS, STRAND_PEER_ADDR_RETRY_MS, nextStrandAddrAsk } from '../src/cadre-node.js';
+import { CadreNode, STRAND_PEER_ADDR_REFRESH_MS } from '../src/cadre-node.js';
 import { MemoryBootstrapPeerStore } from '../src/bootstrap-peer-store.js';
 import type { CadreNodeConfig, SAppConfig, StrandInstance, StrandRow } from '../src/types.js';
-import { StrandAddrService, type StrandAddrOutcome } from '../src/strand-addr-protocol.js';
+import { STRAND_PEER_ADDR_FIRST_RETRY_MS, STRAND_PEER_ADDR_RETRY_MS, StrandAddrService, nextStrandAddrAsk, type StrandAddrOutcome } from '../src/strand-addr-protocol.js';
 import { peerStrandKey } from '../src/delegate-admission.js';
 import { duplexPair } from './wake-stream-helpers.js';
 import { fretEntry, fretService, type FretEntryFake } from './fret-record-helpers.js';
@@ -238,11 +238,11 @@ describe('nextStrandAddrAsk', () => {
     ['an empty answer starts at the first step', 'empty', 0, REFRESH, FIRST, 1],
     ['a failure doubles along the streak', 'unavailable', 3, REFRESH, 8 * FIRST, 4],
     ['an empty answer continues the streak failures began', 'empty', 2, REFRESH, 4 * FIRST, 3],
-    ['a failure stops at the retry cap', 'unsupported', 6, REFRESH, RETRY, 7],
+    ['a failure at the retry cap stops the streak, so an empty answer after it is not sent to the refresh interval', 'unsupported', 6, REFRESH, RETRY, 6],
     ['an empty answer climbs past the retry cap', 'empty', 6, REFRESH, 64 * FIRST, 7],
-    ['an empty answer stops at the refresh interval', 'empty', 10, REFRESH, REFRESH, 11],
-    ['a refresh shorter than the retry caps a failure', 'unreachable', 5, 30_000, 30_000, 6],
-    ['a refresh shorter than the first step caps it', 'unreachable', 0, FIRST / 2, FIRST / 2, 1],
+    ['an empty answer stops at the refresh interval', 'empty', 10, REFRESH, REFRESH, 10],
+    ['a refresh shorter than the retry caps a failure', 'unreachable', 5, 30_000, 30_000, 5],
+    ['a refresh shorter than the first step caps it', 'unreachable', 0, FIRST / 2, FIRST / 2, 0],
     ['an answer with addresses waits the refresh interval and ends the streak', 'answered', 7, REFRESH, REFRESH, 0],
   ];
 
