@@ -1,20 +1,21 @@
 /**
  * machines-section.tsx — Settings → "Devices and nodes": every machine of this cadre (apps and
- * always-on nodes) and the devices invited and not joined yet, and on an owner device, Remove
- * (`machine-removal.tsx`; docs/architecture.md → "Removing a machine"). A node this phone rented
- * from a hosting provider says so, from the app's rental record. The words for a listed machine
- * are `machines.ts`'s.
+ * always-on nodes), the devices invited and not joined yet, the key replacements a removal left
+ * waiting, and on an owner device, Remove (`machine-removal.tsx`; docs/architecture.md → "Removing a
+ * machine"). A node this phone rented from a hosting provider says so, from the app's rental record.
+ * The words for a listed machine are `machines.ts`'s.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
-import { parseNullableStoredDatetimeMs, type CadreInviteStatus, type CadreMachine, describeThrown } from '@serfab/cadre-core';
+import { parseNullableStoredDatetimeMs, type CadreInviteStatus, type CadreMachine, type PendingPartyKeyRotation, describeThrown } from '@serfab/cadre-core';
 import type { Rental } from '@serfab/cadre-rn/provider';
 import { useCadre } from './cadre-context';
 import { SELF_LINE, useMachineRemoval } from './machine-removal';
-import { lastSeenText, machineCode, machineKind, pendingDeviceInvitations, rentedFromText } from './machines';
+import { lastSeenText, machineCode, machineKind, pendingDeviceInvitations, rentedFromText, WAITING_ROTATIONS_TITLE, waitingRotationLine } from './machines';
 import { standingLine, useOwnerStanding } from './owner-standing';
 import { Btn, controlStyles, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
+import { CopyBtn } from './share-code';
 import { TEST_IDS } from './test-ids';
 
 type ShowAlert = (title: string, message: string, detail?: string) => void;
@@ -43,6 +44,7 @@ export function MachinesSection({ showAlert, refreshKey, onShowOwnerKeys }: {
 	// Refresh re-reads the standing too, so an unreadable one is not stuck until the next join.
 	const [refreshes, setRefreshes] = useState(0);
 	const standing = useOwnerStanding(`${refreshKey}/${refreshes}`);
+	const waiting = useWaitingRotations();
 	const [listing, setListing] = useState<Listing>({ machines: [], pending: [], rentals: [], readAtMs: 0 });
 	const [listError, setListError] = useState<string | null>(null);
 	const [withdrawing, setWithdrawing] = useState<CadreInviteStatus | null>(null);
@@ -52,6 +54,7 @@ export function MachinesSection({ showAlert, refreshKey, onShowOwnerKeys }: {
 
 	const refresh = async () => {
 		const node = cadre.node;
+		void waiting.refresh();
 		try {
 			const machines = await cadre.listMachines();
 			const invitations = await cadre.listCadreInvitations();
@@ -114,11 +117,49 @@ export function MachinesSection({ showAlert, refreshKey, onShowOwnerKeys }: {
 			{listing.pending.map((status) => (
 				<PendingRow key={status.invite.key} status={status} onWithdraw={owner ? () => setWithdrawing(status) : undefined} />
 			))}
+			<WaitingRotations rotations={waiting.rotations} owner={owner} />
 			<Btn label="Refresh" onPress={handleRefresh} color="#444" testID={TEST_IDS.settings.refreshMachinesBtn} />
 			{removal.prompt}
 			<WithdrawPrompt open={withdrawing !== null} onConfirm={handleConfirmWithdraw} onCancel={() => setWithdrawing(null)} />
 		</Section>
 	);
+}
+
+/**
+ * The party key replacements still waiting, read by `refresh` and again when this node reports one
+ * blocked or finished. No event announces a row replicated from another machine, so a second device
+ * sees it on its next `refresh`. A read that fails keeps the last list, so a failure never reads as
+ * nothing waiting.
+ */
+function useWaitingRotations(): { rotations: PendingPartyKeyRotation[]; refresh: () => Promise<void> } {
+	const cadre = useCadre();
+	const [rotations, setRotations] = useState<PendingPartyKeyRotation[]>([]);
+	// The events can start a read while another runs, and an earlier read can finish last.
+	const latestRead = useRef(0);
+
+	const refresh = async () => {
+		const read = ++latestRead.current;
+		try {
+			const listed = await cadre.listPendingPartyKeyRotations();
+			if (read === latestRead.current) setRotations(listed);
+		} catch (err) {
+			console.warn('[settings] could not read the key replacements waiting:', err);
+		}
+	};
+
+	useEffect(() => {
+		const node = cadre.node;
+		if (!node) return;
+		const reread = () => void refresh();
+		node.on('strand:party-key-rotation-blocked', reread);
+		node.on('strand:party-key-rotated', reread);
+		return () => {
+			node.off('strand:party-key-rotation-blocked', reread);
+			node.off('strand:party-key-rotated', reread);
+		};
+	}, [cadre.node]);
+
+	return { rotations, refresh };
 }
 
 /** The rental records, or none, logged: the "Rented from" fact must not keep the machine list from showing. */
@@ -159,6 +200,27 @@ function MachineRow({ machine, rentedFrom, nowMs, onRemove, selfLine, busy }: {
 				)}
 			</View>
 			{selfLine && <Text style={controlStyles.hint}>{SELF_LINE}</Text>}
+		</View>
+	);
+}
+
+function WaitingRotations({ rotations, owner }: { rotations: PendingPartyKeyRotation[]; owner: boolean }) {
+	if (rotations.length === 0) return null;
+	return (
+		<>
+			<Text style={controlStyles.subTitle}>{WAITING_ROTATIONS_TITLE}</Text>
+			{rotations.map((rotation) => <WaitingRotationRow key={rotation.strandId} rotation={rotation} owner={owner} />)}
+		</>
+	);
+}
+
+function WaitingRotationRow({ rotation, owner }: { rotation: PendingPartyKeyRotation; owner: boolean }) {
+	const { strandId, publicKey, waitingOn } = rotation;
+	const line = waitingRotationLine(rotation, owner);
+	return (
+		<View testID={TEST_IDS.settings.waitingRotationRow(strandId)}>
+			<Text style={controlStyles.hint} selectable>{waitingOn === 'another-party' ? `${line} ${publicKey}.` : line}</Text>
+			{waitingOn === 'another-party' && <CopyBtn text={publicKey} testID={TEST_IDS.settings.copyWaitingRotationKeyBtn(strandId)} />}
 		</View>
 	);
 }

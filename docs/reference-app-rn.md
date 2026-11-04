@@ -509,9 +509,9 @@ packages/reference-app-rn/
     owner-standing.ts         # Whether this app is an owner of its cadre, for the sections with owner-only actions
     add-node-section.tsx      # Settings → Add an always-on node: scan or paste a cadre-host code, approve, claim
     add-device-section.tsx    # Settings → Add a device or app: mint a cadre invitation for another app; list and withdraw open ones
-    machines-section.tsx      # Settings → Devices and nodes: the cadre's machines and the devices invited; an owner removes one
+    machines-section.tsx      # Settings → Devices and nodes: the cadre's machines, the devices invited, the key replacements waiting; an owner removes one
     machine-removal.tsx       # Removing a machine: the plan, the confirmation, removeMachine; shared with the provider section
-    machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, a rented node's provider
+    machines.ts               # What Devices and nodes shows: a machine's kind and last-seen time, the devices invited, a rented node's provider, a waiting key replacement's line
     owner-keys-section.tsx    # Settings → Owner keys: the cadre's owner keys; make an owner grant or a backup, redeem one, export, import, remove a key
     owner-grant-views.tsx     # Owner keys' grant parts: the grant form, the grant shown once, the outstanding grants, Redeem an owner grant
     owner-keys.ts             # What Owner keys shows: a key's name and facts, the forms' checks, an import's or a redemption's outcome, the removal's Keep switches and grant lines, the refusals' words
@@ -988,13 +988,25 @@ Below the machines, each live invitation made for one app that has not joined is
 
 The list is read when the section appears, when a join replaces the node, after each removal or withdrawal here, after Add a device or app makes or withdraws an invitation, and on **Refresh**; it is not polled. A read that finishes after the node was replaced is dropped.
 
+**Key replacements waiting.** Below the list, while `CadreNode.listPendingPartyKeyRotations` reports any, one line per private workspace, by id, for a membership key replacement that has not finished ([architecture.md → Removing a machine](architecture.md#removing-a-machine)):
+
+- **Another party's manager has to admit the key** (`another-party`): "‹id›: ask this workspace's host for a fresh invitation and join with it from this device; or have the host admit key ‹public key›.", with the key selectable and a **Copy** button. A device that is not an owner reads "from an owner device", because joining for the party takes an owner key.
+- **An owner device can finish it** (`owner-machine`): "‹id›: finishes on an owner device that runs it."
+- **Nobody can** (`sealed`): "‹id›: this workspace is sealed, so nobody can admit a new key; the removed device stays a member until the workspace is re-created."
+
+A waiting replacement in another party's workspace is finished by joining with the host's fresh invitation through **Join via Invite** under Closed Strand (Invite-Only): the party redeems it under the new key, and the replacement then completes on its own. When the host admits the key by hand instead, there is nothing to do here.
+
+The block is read with the list, and again when this node raises `strand:party-key-rotation-blocked` or `strand:party-key-rotated`. A read that fails is logged and keeps the last list. No event announces a row replicated from another machine, so a second phone of the party sees a replacement at its next read.
+
+The removal's confirmation reads the plan, which cannot tell a sealed workspace from one another party can still finish, so a sealed workspace gets the confirmation's `another-party` line and then the accurate `sealed` line here.
+
 **Who can remove.** On an owner device every row has **Remove** except this device's, under which a line says "A device does not remove itself from its cadre: to remove this device, use another owner device." A machine does not remove itself (`self`), because leaving a cadre stops the node and deletes its data; another machine removes it, and this app then learns of it and forgets the cadre ([When this app is removed](#when-this-app-is-removed)). A member sees the list with one line saying only an owner can remove machines, and no buttons.
 
 **The confirmation.** Remove reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or machine›?" with the machine's key and:
 
 - **What happens**: it is removed from this cadre, and the invitations it could join again with are withdrawn, counted. Owner keys stay, including one the machine held.
 - **A lost or stolen phone**: "If this was a lost or stolen phone that held an owner key, remove that key too in Owner keys; otherwise whoever has the phone can still act as an owner.", with **Go to Owner keys**, which closes the prompt and scrolls Settings to [Owner Keys](#owner-keys). Rent an always-on node's removal of a node its provider stopped shows neither, since a rented node never holds an owner key.
-- **Private workspaces**: removing it stops it syncing with this cadre's machines and replaces this cadre's membership key in each private workspace the cadre manages, so it stops being served there too. A workspace this removal does not finish from this device (`plan.strands`) is listed by its id under "Not finished by this removal:", as "‹id›: needs the other party's manager" (`another-party`) or "‹id›: finishes on an owner device that runs it" (`later`).
+- **Private workspaces**: removing it stops it syncing with this cadre's machines and replaces this cadre's membership key in each private workspace the cadre manages, so it stops being served there too. A workspace this removal does not finish from this device (`plan.strands`) is listed by its id under "Not finished by this removal:", as "‹id›: needs the other party's manager: ask the host for a fresh invitation, or have them admit the key shown under Key replacements waiting" (`another-party`) or "‹id›: finishes on an owner device that runs it" (`later`).
 - **What removal does not do**: the machine keeps whatever it already copied, including the cadre's shared data.
 
 **Remove** runs `removeMachine` and the list refreshes; **Cancel**, or the system back button, does nothing. A machine another owner removed meanwhile shows "Already removed", whether the plan or the removal finds it gone, and the list refreshes. Any other failure shows its error in an alert.

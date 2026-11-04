@@ -1,12 +1,15 @@
 /**
  * machines.ts — what Settings → "Devices and nodes" (`machines-section.tsx`) shows from
- * `CadreNode.listMachines`, `listCadreInvitations` and the app's rental records, and how a machine
- * is named in a prompt or an alert. No React and no native imports.
+ * `CadreNode.listMachines`, `listCadreInvitations`, `listPendingPartyKeyRotations` and the app's
+ * rental records, and how a machine is named in a prompt or an alert. No React and no native imports.
  */
 
-import type { CadreInviteStatus, CadreMachine } from '@serfab/cadre-core';
+import type { CadreInviteStatus, CadreMachine, PendingPartyKeyRotation } from '@serfab/cadre-core';
 import type { Rental } from '@serfab/cadre-rn/provider';
 import { ownerFingerprint } from './node-claim';
+
+/** The block of waiting key replacements, which the removal prompt also points to by this name. */
+export const WAITING_ROTATIONS_TITLE = 'Key replacements waiting';
 
 /** A peer id short enough for one line: its first 12 and last 6 characters. */
 export function shortPeerId(peerId: string): string {
@@ -75,4 +78,20 @@ function plural(count: number, unit: string): string {
 export function pendingDeviceInvitations(statuses: readonly CadreInviteStatus[], machines: readonly CadreMachine[]): CadreInviteStatus[] {
 	const members = new Set(machines.map((machine) => machine.peerId));
 	return statuses.filter((status) => status.live && status.invite.peerId !== null && !members.has(status.invite.peerId));
+}
+
+/**
+ * One workspace's line under {@link WAITING_ROTATIONS_TITLE}. The `another-party` line stops at
+ * "admit key" because the section puts the key after it, where it can be copied. Only an owner
+ * device can join for the party, so a non-owner's line names one rather than this device.
+ */
+export function waitingRotationLine({ strandId, waitingOn }: PendingPartyKeyRotation, owner: boolean): string {
+	switch (waitingOn) {
+		case 'another-party':
+			return `${strandId}: ask this workspace's host for a fresh invitation and join with it from ${owner ? 'this device' : 'an owner device'}; or have the host admit key`;
+		case 'owner-machine':
+			return `${strandId}: finishes on an owner device that runs it.`;
+		case 'sealed':
+			return `${strandId}: this workspace is sealed, so nobody can admit a new key; the removed device stays a member until the workspace is re-created.`;
+	}
 }

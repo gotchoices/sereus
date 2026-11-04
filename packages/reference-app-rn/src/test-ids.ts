@@ -127,7 +127,11 @@ export const TEST_IDS = {
 		machineRow: (peerId: string) => `row-machine-${peerId}`,
 		/** Per-row Remove; pass the machine's peer id. Not on this device's row, nor for a member. */
 		removeMachineBtn: (peerId: string) => `btn-remove-machine-${peerId}`,
-		/** Re-reads the machines and the devices invited. */
+		/** Devices and nodes, Key replacements waiting: one workspace's line; pass its strand id. */
+		waitingRotationRow: (strandId: string) => `row-waiting-rotation-${strandId}`,
+		/** Copies the key another party's manager admits; pass the strand id. */
+		copyWaitingRotationKeyBtn: (strandId: string) => `btn-copy-waiting-rotation-key-${strandId}`,
+		/** Re-reads the machines, the devices invited and the key replacements waiting. */
 		refreshMachinesBtn: 'btn-refresh-machines',
 		/** The removal prompt's buttons: Remove, and Cancel (Close when the removal is refused). */
 		confirmRemoveMachineBtn: 'btn-confirm-remove-machine',

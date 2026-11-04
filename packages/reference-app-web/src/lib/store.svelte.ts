@@ -49,7 +49,7 @@ import type { CadreNode, ImportedOwnerKey, StrandMoveReport, StrandStatus } from
 import { pushError } from './diagnostics.svelte.js';
 import { followOfflineStatus, followQueueState, markDelivered } from './messages.svelte.js';
 import { resetAddDeviceCard } from './add-device.svelte.js';
-import { resetMachinesCard } from './machines.svelte.js';
+import { refreshWaitingRotations, resetMachinesCard } from './machines.svelte.js';
 import { ownerFingerprint } from './cadre-format.js';
 
 /**
@@ -189,6 +189,14 @@ edgeNode.on('strand:hibernating', ({ strandId }) => record('strand:hibernating',
 edgeNode.on('strand:waking', ({ strandId }) => record('strand:waking', strandId));
 edgeNode.on('strand:revoked', ({ strandId }) => record('strand:revoked', strandId));
 edgeNode.on('strand:rejoin-blocked', ({ strandId }) => record('strand:rejoin-blocked', strandId));
+edgeNode.on('strand:party-key-rotation-blocked', ({ strandId }) => {
+	record('strand:party-key-rotation-blocked', strandId);
+	void refreshWaitingRotations();
+});
+edgeNode.on('strand:party-key-rotated', ({ strandId }) => {
+	record('strand:party-key-rotated', strandId);
+	void refreshWaitingRotations();
+});
 edgeNode.on('seed:received', ({ peerId }) => record('seed:received', peerId));
 edgeNode.on('seed:applied', ({ peersAdded }) => record('seed:applied', `${peersAdded} peers`));
 edgeNode.on('seed:error', ({ error }) => record('seed:error', error));

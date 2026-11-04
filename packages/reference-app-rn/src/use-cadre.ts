@@ -20,6 +20,7 @@ import type {
   CreateCadreInvitationResult,
   MachineRemovalPlan,
   MachineRemovalResult,
+  PendingPartyKeyRotation,
   CadreOwnerKey,
   CreateOwnerGrantOptions,
   CreateOwnerGrantResult,
@@ -58,6 +59,7 @@ import {
   listMachines as listMachinesImpl,
   planMachineRemoval as planMachineRemovalImpl,
   removeMachine as removeMachineImpl,
+  listPendingPartyKeyRotations as listPendingPartyKeyRotationsImpl,
   listOwnerKeys as listOwnerKeysImpl,
   exportOwnerKey as exportOwnerKeyImpl,
   importOwnerKey as importOwnerKeyImpl,
@@ -290,6 +292,8 @@ export interface UseCadreResult extends JoinFlowActions {
    * on a refusal; all false when it was already removed.
    */
   removeMachine: (peerId: string) => Promise<MachineRemovalResult>;
+  /** The party key replacements still waiting, which outlive the removal that started them (`CadreNode.listPendingPartyKeyRotations`). */
+  listPendingPartyKeyRotations: () => Promise<PendingPartyKeyRotation[]>;
   /** The cadre's live owner keys (`CadreNode.listOwnerKeys`). */
   listOwnerKeys: () => Promise<CadreOwnerKey[]>;
   /**
@@ -892,6 +896,11 @@ export function useCadreInternal(): UseCadreResult {
     return await removeMachineImpl(peerId);
   }, []);
 
+  const listPendingPartyKeyRotations = useCallback(async () => {
+    if (!nodeRef.current) throw new Error('Node not started');
+    return await listPendingPartyKeyRotationsImpl();
+  }, []);
+
   // ── Owner keys ─────────────────────────────────────────────────────────
 
   const listOwnerKeys = useCallback(async () => {
@@ -1016,7 +1025,7 @@ export function useCadreInternal(): UseCadreResult {
     identityPeerId, joinRequestText, ...joinFlowActions,
     createClosedStrandWithInvite, joinViaInvite, isOwnerDevice, claimHostNode,
     isMemberPeer, createCadreInvitation, listCadreInvitations, withdrawCadreInvitation,
-    listMachines, planMachineRemoval, removeMachine,
+    listMachines, planMachineRemoval, removeMachine, listPendingPartyKeyRotations,
     listOwnerKeys, exportOwnerKey, importOwnerKey, planOwnerKeyRemoval, removeOwner,
     createOwnerGrant, listOwnerGrants, withdrawOwnerGrant, redeemOwnerGrant,
     rentProviderNode, finishProviderRental, listRentals, noteRentalPeer, forgetRental,

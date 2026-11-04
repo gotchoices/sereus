@@ -37,6 +37,7 @@ import type {
   ConnectionPathSummary,
   MachineRemovalPlan,
   MachineRemovalResult,
+  PendingPartyKeyRotation,
   OpenInvitation,
   FormStrandResult,
   RelayReservationState,
@@ -456,6 +457,11 @@ export async function planMachineRemoval(peerId: string): Promise<MachineRemoval
 /** Remove a machine. Thin pass-through to {@link CadreNode.removeMachine}. */
 export async function removeMachine(peerId: string): Promise<MachineRemovalResult> {
   return running().removeMachine(peerId);
+}
+
+/** The party key replacements still waiting. Thin pass-through to {@link CadreNode.listPendingPartyKeyRotations}. */
+export async function listPendingPartyKeyRotations(): Promise<PendingPartyKeyRotation[]> {
+  return running().listPendingPartyKeyRotations();
 }
 
 // ── Owner-key helpers (Settings → Owner keys) ─────────────────────────────────

@@ -32,7 +32,7 @@ type CopyResult = 'copied' | 'failed' | null;
 
 const COPY_LABEL: Record<Exclude<CopyResult, null>, string> = {
 	copied: 'Copied',
-	failed: 'Could not copy; select the text below instead',
+	failed: 'Could not copy; select the text instead',
 };
 
 interface QrDrawing {
@@ -46,7 +46,6 @@ export function ShareCode({ title, text, testIDPrefix }: { title: string; text: 
 	const qr = useMemo(() => drawQrCode(text), [text]);
 	const { width } = useWindowDimensions();
 	const side = Math.min(width - SCREEN_PADDING, QR_MAX_SIDE);
-	const [copy, copyResult] = useCopy(text);
 
 	return (
 		<View style={styles.box}>
@@ -61,12 +60,18 @@ export function ShareCode({ title, text, testIDPrefix }: { title: string; text: 
 			) : (
 				<Text style={controlStyles.slowHint}>Too long for a QR code; use Copy instead.</Text>
 			)}
-			<Btn label={copyResult ? COPY_LABEL[copyResult] : 'Copy'} onPress={copy} testID={TEST_IDS.settings.shareCodeCopyBtn(testIDPrefix)} />
+			<CopyBtn text={text} testID={TEST_IDS.settings.shareCodeCopyBtn(testIDPrefix)} />
 			<ScrollView style={styles.textScroll} nestedScrollEnabled>
 				<Text style={styles.text} selectable testID={TEST_IDS.settings.shareCodeText(testIDPrefix)}>{text}</Text>
 			</ScrollView>
 		</View>
 	);
+}
+
+/** A Copy button for `text`, which is also on screen as selectable text; it says for a moment how the copy went. */
+export function CopyBtn({ text, testID }: { text: string; testID: string }) {
+	const [copy, copyResult] = useCopy(text);
+	return <Btn label={copyResult ? COPY_LABEL[copyResult] : 'Copy'} onPress={copy} testID={testID} />;
 }
 
 /** The QR code for `text`, or null when the text is too long for any QR code version. */

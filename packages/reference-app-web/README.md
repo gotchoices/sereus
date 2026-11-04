@@ -346,6 +346,14 @@ with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
 - **When it is read**: when the node reaches `running` and its owner step settles, after each
   removal or withdrawal here, after *Add a device or app* makes an invitation, and on
   *Refresh*; it is not polled. A read that finishes after the node was replaced is dropped.
+- **Key replacements waiting**: below the list, while `CadreNode.listPendingPartyKeyRotations`
+  reports any, the phone app's lines, by workspace id, with "this tab" for "this device" and the
+  key in `Copyable` ([reference-app-rn.md → Devices and Nodes](../../docs/reference-app-rn.md#devices-and-nodes)).
+  It is read with the list and again on `strand:party-key-rotation-blocked` and
+  `strand:party-key-rotated`; a read that fails is logged and keeps the last list. A waiting
+  replacement in another party's workspace is finished by pasting the host's fresh invitation
+  into *Form strand* on Home ([Strand formation](#strand-formation-consent--invitation-flow)):
+  the party redeems it under the new key, and the replacement then completes on its own.
 - **Who can remove.** On an owner tab every row has *Remove* except the tab's own, under which
   "A tab does not remove itself from its cadre: to remove this tab, use another owner device."
   (`self`): leaving a cadre is the tab's own flow, and another machine removes it, which the tab
@@ -355,7 +363,8 @@ with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
   machine›?" in the card, with the machine's key, what happens (it leaves the cadre, the
   invitations it could join again with are withdrawn, and this cadre's membership key in each
   private workspace the cadre manages is replaced), the workspaces this removal does not finish
-  from this tab, by id (`plan.strands`), and what removal does not do. *Remove*
+  from this tab, by id (`plan.strands`), with how another party's is finished, and what removal
+  does not do. *Remove*
   runs `removeMachine`. One another owner removed meanwhile says "Already removed". The
   confirmation stays open across a visit to another page; a join, or this tab's own removal,
   closes it.

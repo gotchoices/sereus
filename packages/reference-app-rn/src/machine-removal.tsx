@@ -16,7 +16,7 @@ import {
 	describeThrown,
 } from '@serfab/cadre-core';
 import { useCadre } from './cadre-context';
-import { machineCode, machineKind, machineName } from './machines';
+import { machineCode, machineKind, machineName, WAITING_ROTATIONS_TITLE } from './machines';
 import { Btn, controlStyles, Fact, useExclusive } from './settings-controls';
 import { TEST_IDS } from './test-ids';
 
@@ -178,12 +178,17 @@ function RemovalDetails({ plan, onShowOwnerKeys }: { plan: MachineRemovalPlan; o
 	);
 }
 
-/** One line per private workspace whose key replacement this removal does not finish from this device: "‹id›: needs the other party's manager". */
+/**
+ * One line per private workspace whose key replacement this removal does not finish from this device.
+ *
+ * NOTE: the plan cannot tell a sealed workspace from one another party can still finish, so a sealed
+ * one gets the `another-party` line here; the waiting list's own line for it is the accurate one.
+ */
 function unfinishedWorkspaces(plan: MachineRemovalPlan): string[] {
 	return plan.strands.flatMap(({ strandId, rotation }) => {
 		switch (rotation) {
 			case 'another-party':
-				return [`${strandId}: needs the other party's manager`];
+				return [`${strandId}: needs the other party's manager: ask the host for a fresh invitation, or have them admit the key shown under ${WAITING_ROTATIONS_TITLE}`];
 			case 'later':
 				return [`${strandId}: finishes on an owner device that runs it`];
 			case 'here':

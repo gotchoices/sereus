@@ -15,9 +15,12 @@
 		removalEffects,
 		unfinishedWorkspaces,
 		REFUSAL_LINE,
+		WAITING_ROTATIONS_TITLE,
+		waitingRotationLine,
 		withdrawDeviceInvitation,
 	} from './lib/machines.svelte.js';
 	import { peerCode, validUntilText } from './lib/cadre-format.js';
+	import Copyable from './lib/Copyable.svelte';
 	import { OWNER_KEYS_CARD_ID } from './lib/owner-keys.svelte.js';
 
 	const node = nodeState();
@@ -154,6 +157,20 @@
 				</li>
 			{/each}
 		</ul>
+
+		{#if list.waitingRotations.length > 0}
+			<h4>{WAITING_ROTATIONS_TITLE}</h4>
+			<ul class="hint" data-testid="waiting-rotations">
+				{#each list.waitingRotations as rotation (rotation.strandId)}
+					<li>
+						{waitingRotationLine(rotation, owner)}
+						{#if rotation.waitingOn === 'another-party'}
+							<Copyable value={rotation.publicKey} />.
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
 
 		{#if list.notice}
 			<div class="notice" data-testid="machines-notice">

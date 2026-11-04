@@ -1,9 +1,9 @@
 /**
  * machines.svelte.ts — state of the Cadre page's "Devices and nodes" card: every machine of this
- * cadre (apps and always-on nodes) and the devices invited and not joined yet, and on an owner tab,
- * Remove (`CadreNode.removeMachine`; docs/architecture.md → "Removing a machine"). The browser
- * counterpart of the phone app's `machines-section.tsx` and `machines.ts`, with the same list,
- * confirmation and wording. Owner keys are not machines and stay when one is removed; removing one
+ * cadre (apps and always-on nodes), the devices invited and not joined yet, the key replacements a
+ * removal left waiting, and on an owner tab, Remove (`CadreNode.removeMachine`; docs/architecture.md
+ * → "Removing a machine"). The browser counterpart of the phone app's `machines-section.tsx` and
+ * `machines.ts`, with the same list, confirmation and wording. Owner keys are not machines and stay when one is removed; removing one
  * is a separate step under Owner keys (`owner-keys.svelte.ts`), which the confirmation offers for a
  * lost or stolen phone.
  *
@@ -19,6 +19,7 @@ import {
 	type CadreNode,
 	type MachineRemovalPlan,
 	type MachineRemovalRefusal,
+	type PendingPartyKeyRotation,
 	describeThrown,
 } from '@serfab/cadre-core';
 import { getCadreNode, isOwner } from './cadre-web.js';
@@ -35,6 +36,9 @@ export const REFUSAL_LINE: Record<MachineRemovalRefusal, string> = {
 
 /** Removing a machine leaves its owner key live; only removing the key locks a lost phone out. */
 export const LOST_DEVICE_LINE = 'If this was a lost or stolen phone that held an owner key, remove that key too in Owner keys; otherwise whoever has the phone can still act as an owner.';
+
+/** The block of waiting key replacements, which the removal confirmation also points to by this name. */
+export const WAITING_ROTATIONS_TITLE = 'Key replacements waiting';
 
 /** Why the last action did not do what was asked; replaced by the next action's. */
 export interface MachinesNotice {
@@ -53,6 +57,8 @@ interface MachinesState {
 	machines: CadreMachine[];
 	/** Live invitations for one device that has not joined yet. */
 	pending: CadreInviteStatus[];
+	/** The party key replacements still waiting; the last read that worked. */
+	waitingRotations: PendingPartyKeyRotation[];
 	/** When the list was read, for "last seen". */
 	readAtMs: number;
 	listError: string | null;
@@ -63,7 +69,7 @@ interface MachinesState {
 }
 
 function initialState(): MachinesState {
-	return { standing: 'checking', machines: [], pending: [], readAtMs: 0, listError: null, confirming: null, busy: false, notice: null };
+	return { standing: 'checking', machines: [], pending: [], waitingRotations: [], readAtMs: 0, listError: null, confirming: null, busy: false, notice: null };
 }
 
 const state = $state<MachinesState>(initialState());
@@ -72,10 +78,11 @@ export function machinesState(): MachinesState {
 	return state;
 }
 
-/** Re-read this tab's owner standing, the cadre's machines and the devices invited, from the running node. */
+/** Re-read this tab's owner standing, the cadre's machines, the devices invited and the key replacements waiting, from the running node. */
 export async function refreshMachines(): Promise<void> {
 	const node = getCadreNode();
 	if (!node) return;
+	void refreshWaitingRotations();
 	const stale = () => getCadreNode() !== node;
 	try {
 		const owner = await isOwner();
@@ -95,6 +102,27 @@ export async function refreshMachines(): Promise<void> {
 	} catch (err) {
 		console.warn('[cadre] could not read this cadre\'s machines:', err);
 		if (!stale()) state.listError = describeThrown(err);
+	}
+}
+
+/** The last read of the waiting list begun: the node's events can start one while another runs, and an earlier read can finish last. */
+let latestRotationRead = 0;
+
+/**
+ * Re-read the party key replacements still waiting, as `refreshMachines` does and again when the node
+ * reports one blocked or finished. No event announces a row replicated from another machine, so a
+ * second device sees it on its next read. A read that fails keeps the last list, so a failure never
+ * reads as nothing waiting.
+ */
+export async function refreshWaitingRotations(): Promise<void> {
+	const node = getCadreNode();
+	if (!node) return;
+	const read = ++latestRotationRead;
+	try {
+		const rotations = await node.listPendingPartyKeyRotations();
+		if (read === latestRotationRead && getCadreNode() === node) state.waitingRotations = rotations;
+	} catch (err) {
+		console.warn('[cadre] could not read the key replacements waiting:', err);
 	}
 }
 
@@ -237,18 +265,39 @@ function machineName(machine: CadreMachine): string {
 	return `The ${machineKind(machine).toLowerCase()} ${machineCode(machine)}`;
 }
 
-/** One line per private workspace whose key replacement this removal does not finish from this tab: "‹id›: needs the other party's manager". */
+/**
+ * One line per private workspace whose key replacement this removal does not finish from this tab.
+ *
+ * NOTE: the plan cannot tell a sealed workspace from one another party can still finish, so a sealed
+ * one gets the `another-party` line here; the waiting list's own line for it is the accurate one.
+ */
 export function unfinishedWorkspaces(plan: MachineRemovalPlan): string[] {
 	return plan.strands.flatMap(({ strandId, rotation }) => {
 		switch (rotation) {
 			case 'another-party':
-				return [`${strandId}: needs the other party's manager`];
+				return [`${strandId}: needs the other party's manager: ask the host for a fresh invitation, or have them admit the key shown under ${WAITING_ROTATIONS_TITLE}`];
 			case 'later':
 				return [`${strandId}: finishes on an owner device that runs it`];
 			case 'here':
 				return [];
 		}
 	});
+}
+
+/**
+ * One workspace's line under {@link WAITING_ROTATIONS_TITLE}. The `another-party` line stops at
+ * "admit key" because the card puts the key after it, where it can be copied. Only an owner device
+ * can join for the party, so a non-owner's line names one rather than this tab.
+ */
+export function waitingRotationLine({ strandId, waitingOn }: PendingPartyKeyRotation, owner: boolean): string {
+	switch (waitingOn) {
+		case 'another-party':
+			return `${strandId}: ask this workspace's host for a fresh invitation and join with it from ${owner ? 'this tab' : 'an owner device'}; or have the host admit key`;
+		case 'owner-machine':
+			return `${strandId}: finishes on an owner device that runs it.`;
+		case 'sealed':
+			return `${strandId}: this workspace is sealed, so nobody can admit a new key; the removed device stays a member until the workspace is re-created.`;
+	}
 }
 
 /** "It is removed from this cadre. The 2 invitations it could join again with are withdrawn." */
