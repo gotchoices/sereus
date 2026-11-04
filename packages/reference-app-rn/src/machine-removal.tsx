@@ -185,7 +185,7 @@ function unfinishedWorkspaces(plan: MachineRemovalPlan): string[] {
 			case 'another-party':
 				return [`${strandId}: needs the other party's manager`];
 			case 'later':
-				return [`${strandId}: finishes on a device that runs it`];
+				return [`${strandId}: finishes on an owner device that runs it`];
 			case 'here':
 				return [];
 		}

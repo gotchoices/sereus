@@ -83,10 +83,11 @@
 				{:else}
 					<p class="text">{removalEffects(removal.plan)}</p>
 					<p class="hint">{KEEPS_LINE}</p>
-					{#if unfinishedWorkspaces(removal.plan).length > 0}
+					{@const unfinished = unfinishedWorkspaces(removal.plan)}
+					{#if unfinished.length > 0}
 						<p class="hint">{UNFINISHED_HEADING}</p>
 						<ul class="hint" data-testid="unfinished-workspaces">
-							{#each unfinishedWorkspaces(removal.plan) as line (line)}
+							{#each unfinished as line (line)}
 								<li>{line}</li>
 							{/each}
 						</ul>
