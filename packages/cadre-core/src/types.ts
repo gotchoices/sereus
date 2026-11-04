@@ -2431,12 +2431,22 @@ export interface StrandPeerRow {
 }
 
 /**
+ * The key a party moves to in one closed strand as its `CadreControl.PendingStrandPartyKey` row
+ * carries it: the public half in the clear, the private half sealed to the identity keys of the
+ * machines that remain (`sealed-party-key.ts`), because the row reaches the removed machine too.
+ */
+export interface SealedPendingPartyKey {
+  /** The key being moved to, public half (base64url): the `Strand.Member.Key` it is seated as. */
+  publicKey: string;
+  /** Its private half, encoded as `StrandPartyKey.PrivateKey`, sealed per recipient (`sealPartyKey`); `openPartyKey` reads it. */
+  sealedKey: string;
+}
+
+/**
  * The key this party's membership in one closed strand is moving to, as
  * {@link ControlDatabase.queryPendingStrandPartyKey} reads a `CadreControl.PendingStrandPartyKey` row.
  */
-export interface PendingStrandPartyKeyRow {
-  /** The key being moved to, encoded as `StrandPartyKey.PrivateKey`. */
-  privateKey: string;
+export interface PendingStrandPartyKeyRow extends SealedPendingPartyKey {
   /** Public keys (base64url) of earlier pending keys this row replaced; a seat any of them holds must be revoked. */
   superseded: string[];
   /** The row's single-use nonce, bound into its remove digest. */

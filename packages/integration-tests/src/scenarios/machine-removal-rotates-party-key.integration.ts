@@ -36,14 +36,18 @@
  * `pending` with the strand's own rows already on the new key, and A1's growth drain finishes the
  * swap when A2 returns.
  *
- * Not proved here: that the removed machine lacks the new key. It receives it over the control
- * network before it is cut off (`removed-machine-receives-new-party-key`), so the cut asserted
- * below is of a client that runs this code, which never uses a pending key without an owner signer.
+ * The removed machine receives the pending row over the control network before it is cut off, so
+ * the new key rides in it sealed to A1 and A2 (`sealed-party-key.ts`). The offline case reads A3's
+ * own copy of the row: A3 is not among its recipients, A3's identity key does not open it, and no
+ * column carries the key in the clear. Both cases assert, after the cut, that A3's `StrandPartyKey`
+ * row still names the old key: the swapped row is in the clear, and A3 could receive it only from
+ * a sibling holding the swap but not yet the tombstone (the `NOTE:` at
+ * `ControlDatabase.swapStrandPartyKeys`).
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { DEFAULT_STRAND_CLUSTER_SIZE, generateStrandMemberKey, strandMemberKeyPair } from '@serfab/cadre-core';
-import type { CadreNode, OpenInvitation, StrandInstance, StrandRow } from '@serfab/cadre-core';
+import { DEFAULT_STRAND_CLUSTER_SIZE, ed25519KeyPairFromLibp2p, generateStrandMemberKey, openPartyKey, partyKeyRecipients, strandMemberKeyPair } from '@serfab/cadre-core';
+import type { CadreNode, OpenInvitation, PartyKeyOpener, StrandInstance, StrandRow } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import {
 	admitMember,
@@ -303,6 +307,8 @@ interface SharedStrand {
 	bMemberKey: string;
 	a2MachineId: string;
 	a3MachineId: string;
+	/** A3's control peer id and identity seed: what would open a pending key sealed to it. */
+	a3Opener: PartyKeyOpener;
 	a2Blocks: StrandBlocks;
 	bBlocks: StrandBlocks;
 	/** Start A2 again on its identity and store, at `listenAddr` (read while it was up), with no owner signer. */
@@ -402,6 +408,7 @@ async function bringUpSharedStrand(): Promise<SharedStrand> {
 		owner, a1, a2, a3, b, strandId, oldMemberKey, bMemberKey, a2Blocks, bBlocks,
 		a2MachineId: a2Member.peerId,
 		a3MachineId: a3Member.peerId,
+		a3Opener: { peerId: a3Member.peerId, privateKeyB64: ed25519KeyPairFromLibp2p(a3Member.key).privateKeyB64 },
 		restartA2: (listenAddr) => startMember(party.partyId, party.ownerPublicKey, { ...a2Options, key: a2Member.key, listenAddrs: [listenAddr] }),
 	};
 }
@@ -439,12 +446,50 @@ async function expectCutFromRows({ a1, a3, b, oldMemberKey }: SharedStrand, newM
 	]);
 }
 
-/** `node`'s control record names `newPartyKey`, with no pending row left. */
-async function awaitSwapOn(node: CadreNode, strandId: string, newPartyKey: string, description: string): Promise<void> {
+/** `node`'s control record names a key whose public half is `newMemberKey`, with no pending row left. */
+async function awaitSwapOn(node: CadreNode, strandId: string, newMemberKey: string, description: string): Promise<void> {
 	const control = node.getControlDatabase()!;
-	await waitUntil(async () => (await control.queryStrandPartyKey(strandId)) === newPartyKey && (await control.queryPendingStrandPartyKey(strandId)) === null, {
-		...GATE, description,
-	});
+	await waitUntil(async () => {
+		const partyKey = await control.queryStrandPartyKey(strandId);
+		return partyKey !== null && strandMemberKeyPair(partyKey).publicKeyB64 === newMemberKey && (await control.queryPendingStrandPartyKey(strandId)) === null;
+	}, { ...GATE, description });
+}
+
+/**
+ * A3's own copy of the pending row, read from its store right after the removal (its control
+ * connections are already hung up). When the row reached it: the key is sealed to A1 and A2 and
+ * not to A3, A3's identity key does not open it, and no column carries the key in the clear.
+ */
+async function expectSealedAwayFromA3({ owner, a3, a2MachineId, a3MachineId, a3Opener, strandId }: SharedStrand, newMemberKey: string): Promise<void> {
+	const row = await a3.node.getControlDatabase()!.queryPendingStrandPartyKey(strandId);
+	if (row === null) {
+		console.warn('[machine-removal-rotation] A3 holds no pending row: the cut came before the row reached it, so nothing is there to be sealed');
+		return;
+	}
+	expect(row.publicKey).toBe(newMemberKey);
+	const recipients = partyKeyRecipients(row.sealedKey);
+	expect(recipients).toEqual(expect.arrayContaining([owner.peerId!.toString(), a2MachineId]));
+	expect(recipients).not.toContain(a3MachineId);
+	expect(openPartyKey(row.sealedKey, strandId, a3Opener), 'the removed machine cannot open the key it received').toBeNull();
+	for (const column of [row.publicKey, row.sealedKey, ...row.superseded, row.stampId]) {
+		expect(carriesPrivateKeyOf(column, newMemberKey), 'no column of the pending row holds the new key in the clear').toBe(false);
+	}
+}
+
+/** Whether `value` decodes as a `StrandPartyKey.PrivateKey` whose public half is `memberKey`. A column in any other encoding does not decode, which is the expected answer, not an error. */
+function carriesPrivateKeyOf(value: string, memberKey: string): boolean {
+	try {
+		return strandMemberKeyPair(value).publicKeyB64 === memberKey;
+	} catch {
+		return false;
+	}
+}
+
+/** A3's `StrandPartyKey` row, in its own store after the cut, still names the old key: the swapped row, in the clear, never reached it. */
+async function expectA3StaysOnOldKey({ a3, strandId, oldMemberKey }: SharedStrand): Promise<void> {
+	const partyKey = await a3.node.getControlDatabase()!.queryStrandPartyKey(strandId);
+	expect(partyKey, 'A3 keeps the StrandPartyKey row it synced before the removal').not.toBeNull();
+	expect(strandMemberKeyPair(partyKey!).publicKeyB64, 'the removed machine stays on the old key').toBe(oldMemberKey);
 }
 
 describe('Removing a machine replaces the party key in a strand shared with another party', () => {
@@ -467,13 +512,14 @@ describe('Removing a machine replaces the party key in a strand shared with anot
 		expect(newMemberKey).not.toBe(oldMemberKey);
 		await expectRowsOnNewKey(shared, newMemberKey);
 
-		await awaitSwapOn(a2.node, strandId, newPartyKey, 'A2 reads the swap A1 made');
+		await awaitSwapOn(a2.node, strandId, newMemberKey, 'A2 reads the swap A1 made');
 		await waitUntil(async () => runningPartyKey(a2.node, strandId) === newPartyKey && membershipLoopDone(a2.node, strandId) && (await memberPeerBindings(a2.db)).includes(binding(newMemberKey, a2)), {
 			...GATE, description: 'A2 runs under the new key, its rebuilt membership loop done with its binding',
 		});
 		expect(a2.node.getStrand(strandId)?.libp2pNode, 'a re-key in place keeps the running strand node').toBe(a2.libp2p);
 
 		await expectCutFromRows(shared, newMemberKey);
+		await expectA3StaysOnOldKey(shared);
 		await awaitCut(a2, a3, 'the old key\'s departure replicated to A2');
 		await awaitBlockCoverage(bBlocks, a2Blocks, { timeoutMs: GATE.timeoutMs, description: 'A2 holds B\'s post-removal write' });
 		expectConnected(a1, a2, 'A2\'s binding under the new key keeps it served');
@@ -507,13 +553,13 @@ describe('Removing a machine replaces the party key in a strand shared with anot
 		const removal = await owner.removeMachine(a3MachineId);
 		// `pending` and not `rotated`: the swap is deferred while A1 is alone (header). The strand's rows are already on the new key.
 		expect(removal).toMatchObject({ removedPeer: true, strands: [{ strandId, outcome: 'pending' }] });
-		const pending = await a1Control.queryPendingStrandPartyKey(strandId);
-		const newPartyKey = pending!.privateKey;
-		const newMemberKey = strandMemberKeyPair(newPartyKey).publicKeyB64;
+		const newMemberKey = (await a1Control.queryPendingStrandPartyKey(strandId))!.publicKey;
 		expect(newMemberKey).not.toBe(oldMemberKey);
+		await expectSealedAwayFromA3(shared, newMemberKey);
 		await expectRowsOnNewKey(shared, newMemberKey);
 
 		await expectCutFromRows(shared, newMemberKey);
+		await expectA3StaysOnOldKey(shared);
 
 		// Without a gap here the coverage gates below could pass on their first poll.
 		expect(blockCoverageIsComplete(await compareBlockCoverage(bBlocks, a2Blocks)), 'A2, offline, must lack what B wrote after it stopped').toBe(false);
@@ -521,7 +567,7 @@ describe('Removing a machine replaces the party key in a strand shared with anot
 		// ── A2 returns with no owner signer, and nothing else is asked of it ────
 		const returned = (await shared.restartA2(a2ListenAddr)).node;
 		expect(await returned.isOwner()).toBe(false);
-		await awaitSwapOn(owner, strandId, newPartyKey, 'A1 swaps the control row once A2 is reachable');
+		await awaitSwapOn(owner, strandId, newMemberKey, 'A1 swaps the control row once A2 is reachable');
 		const a2Again = await awaitReplica(returned, strandId, 'A2 (restarted)');
 		expect(a2Again.peerId, 'a strand peer id derives from the machine identity, so the binding A1 wrote still names it').toBe(a2.peerId);
 		await waitUntil(() => strandConnectionsTo(a2Again, a1) > 0, { ...GATE, description: 'A1 serves the restarted A2: its binding under the new key keeps it off the deny list' });
@@ -538,6 +584,6 @@ describe('Removing a machine replaces the party key in a strand shared with anot
 			...GATE, description: 'A3\'s CadrePeer row is gone on A2',
 		});
 		expect((await a1Control.queryCadrePeers()).some((row) => row.peerId === a3MachineId)).toBe(false);
-		await awaitSwapOn(returned, strandId, newPartyKey, 'A2 holds the new key in StrandPartyKey and no pending row');
+		await awaitSwapOn(returned, strandId, newMemberKey, 'A2 holds the new key in StrandPartyKey and no pending row');
 	}, TEST_TIMEOUT_MS);
 });

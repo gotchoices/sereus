@@ -45,6 +45,7 @@ import type {
   CadreOwnerKey,
   MachineRemovalPlan,
   MachineRemovalResult,
+  PendingStrandPartyKeyRow,
   StrandKeyRotationOutcome,
   StrandKeyRotationPlan,
   OwnerKeyDependents,
@@ -111,7 +112,8 @@ import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSign
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
 import { describeMachines, planMachineRemoval, MachineRemovalRefusedError, type ClosedStrandState } from './machine-removal.js';
 import { partitionPartyStrandPeers, type PartyStrandPeerSource, type PartyStrandPeers } from './strand-party-peers.js';
-import { StrandPartyKeyRotationDriver, type StrandPartyKeySwapEntry } from './strand-party-key-rotation.js';
+import { StrandPartyKeyRotationDriver, type OpenedPendingPartyKey, type StrandPartyKeySwapEntry } from './strand-party-key-rotation.js';
+import { openPartyKey, partyKeyRecipients, sealPartyKey, type PartyKeyRecipient } from './sealed-party-key.js';
 import { describeOwnerKeys, namedOwnerKey, planOwnerKeyRemoval, revouchWithinPlan, OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-keys.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
@@ -156,7 +158,7 @@ import {
 import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
-import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type CadrePeerRetouchOutcome, type FoundingInvite, type JoinRequestFields, type RevokedRowRef } from './control-database.js';
+import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type CadrePeerRetouchOutcome, type FoundingInvite, type JoinRequestFields, type PendingPartyKeyEntry, type RevokedRowRef } from './control-database.js';
 import {
   CadreInviteHandler,
   encodeCadreInvitation,
@@ -1232,7 +1234,7 @@ export class CadreNode implements SAppIdLookup {
    * a closed strand becoming writable here, the party key watch and the growth drain.
    */
   private readonly partyKeyRotation = new StrandPartyKeyRotationDriver({
-    readPending: (strandId) => this.requireControlDatabase('read a pending strand party key').queryPendingStrandPartyKey(strandId),
+    readPending: (strandId) => this.openPendingPartyKey(strandId),
     readCurrentKey: (strandId) => this.requireControlDatabase('read a strand party key').queryStrandPartyKey(strandId),
     readSiblingPeerIds: async (strandId) => (await this.readPartyStrandPeers(strandId)).live,
     getDatabase: (strandId) => this.strandManager.getInstance(strandId)?.database?.getDatabase(),
@@ -9891,16 +9893,20 @@ export class CadreNode implements SAppIdLookup {
     if (!this.controlDatabase) {
       throw new Error('CadreNode must be started before planning a machine removal');
     }
-    const machines = await this.readMachines(this.controlDatabase);
+    return await this.planRemovalAmong(this.controlDatabase, peerId, await this.readMachines(this.controlDatabase));
+  }
+
+  /** {@link planMachineRemoval} over `machines` already read, for {@link removeMachine}, which also seals the pending keys to them. */
+  private async planRemovalAmong(controlDatabase: ControlDatabase, peerId: string, machines: readonly CadreMachine[]): Promise<MachineRemovalPlan> {
     // NOTE: the invitation and usage lists come from the membership views, so on a node that
     // heard of a row with no storage event (outside the block's cohort) an invitation issued
     // elsewhere in the last MEMBERSHIP_VIEW_MAX_AGE_MS can be missing and left unwithdrawn. If
     // removal must close that window, read both tables fresh here.
     const [invites, usages, owners, strands] = await Promise.all([
-      this.controlDatabase.listCadreInviteStatuses(),
-      this.controlDatabase.queryCadreInviteUsages(),
-      this.controlDatabase.getOwnerKeys(),
-      this.readClosedStrandStates(this.controlDatabase),
+      controlDatabase.listCadreInviteStatuses(),
+      controlDatabase.queryCadreInviteUsages(),
+      controlDatabase.getOwnerKeys(),
+      this.readClosedStrandStates(controlDatabase),
     ]);
     return planMachineRemoval({
       peerId,
@@ -9956,7 +9962,9 @@ export class CadreNode implements SAppIdLookup {
    * `PendingStrandPartyKey` row per closed strand the party holds a key for, in ONE transaction
    * ({@link ControlDatabase.removeMachine}), with a `Revocation` tombstone per removed row so the
    * removal holds on every machine ("Deletes made while alone" in docs/architecture.md), under
-   * one owner approval. Afterwards this node forgets the machine as a dial target, and the
+   * one owner approval. The pending row reaches the removed machine in that same transaction, so
+   * the fresh key rides in it sealed to the machines that remain
+   * ({@link pendingPartyKeyRecipients}): the removed machine holds the row and cannot open it. Afterwards this node forgets the machine as a dial target, and the
    * refresh the write notifies hangs up its control connection ({@link hangUpRevokedControlPeers})
    * before this resolves.
    *
@@ -9986,7 +9994,8 @@ export class CadreNode implements SAppIdLookup {
     if (!service || !this.controlDatabase) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    const plan = await this.planMachineRemoval(peerId);
+    const machines = await this.readMachines(this.controlDatabase);
+    const plan = await this.planRemovalAmong(this.controlDatabase, peerId, machines);
     if (plan.refusal !== null) {
       throw new MachineRemovalRefusedError(peerId, plan.refusal);
     }
@@ -9994,8 +10003,8 @@ export class CadreNode implements SAppIdLookup {
       log('removeMachine(%s): no live row names it here; nothing to remove', peerId);
       return { removedPeer: false, removedDeviceToken: false, withdrawnInvitations: [], strands: [] };
     }
-    const pendingPartyKeys = await Promise.all(plan.strands.map(async (strand) =>
-      ({ strandId: strand.strandId, privateKey: await generateStrandMemberKey() })));
+    const recipients = this.pendingPartyKeyRecipients(machines, peerId);
+    const pendingPartyKeys = await Promise.all(plan.strands.map((strand) => this.mintPendingPartyKey(strand.strandId, recipients)));
     const writes = await service.removeMachine({ peerId, inviteKeys: plan.invitations, pendingPartyKeys });
     if (writes.removedPeer) {
       // Track + loudly flag a delete that committed local-only (security-relevant).
@@ -10040,17 +10049,106 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Who may open the pending keys a removal of `removedPeerId` writes: every live machine this
+   * node trusts, and this node itself, the removed machine left out, each under the identity key
+   * its peer id carries (`CadreMachine.publicKey`, derived from the id, never a stored column).
+   * Which machines hold an owner key is recorded nowhere, so every one of them is a recipient.
+   * This node is added from its own identity key, so it is a recipient before its own `CadrePeer`
+   * row has landed.
+   * NOTE: a node on an ephemeral identity (tests only; see {@link isControlNetworkMember}) seals to
+   * the others alone and cannot drive what it wrote: logged, never a refusal, since locking out a
+   * lost phone must not fail on it. If such a node ever becomes a supported deployment, it needs a
+   * key to seal to.
+   *
+   * NOTE: a machine admitted after the removal is not a recipient, so an owner machine enrolled
+   * while a rotation is pending cannot drive it; a recipient owner machine has to finish it. If a
+   * party is seen stuck that way, the remedy is the replacement a second removal already writes
+   * (`ControlDatabase.removeMachine`), minted for the machines present then.
+   */
+  private pendingPartyKeyRecipients(machines: readonly CadreMachine[], removedPeerId: string): PartyKeyRecipient[] {
+    const recipients = new Map<string, PartyKeyRecipient>();
+    for (const machine of machines) {
+      if (machine.peerId !== removedPeerId && (machine.isSelf || machine.trusted) && machine.publicKey !== null) {
+        recipients.set(machine.peerId, { peerId: machine.peerId, publicKeyB64: machine.publicKey });
+      }
+    }
+    const self = this.selfPartyKeyRecipient();
+    if (self === null) {
+      log('removeMachine: this node runs on an ephemeral identity, so the pending party keys it writes are sealed to the other machines only and cannot be driven here');
+    } else {
+      recipients.set(self.peerId, self);
+    }
+    return [...recipients.values()];
+  }
+
+  /** This machine as a recipient of a sealed party key ({@link getSelfSigningKey}'s key under its control peer id), or null on an ephemeral identity. */
+  private selfPartyKeyRecipient(): PartyKeyRecipient | null {
+    const peerId = this.controlNode?.peerId.toString();
+    const key = this.getSelfSigningKey();
+    return peerId !== undefined && key !== null ? { peerId, publicKeyB64: key.publicKeyB64 } : null;
+  }
+
+  /** The `PendingStrandPartyKey` row a removal writes for one strand: a fresh key, its public half in the clear and its private half sealed to `recipients`. */
+  private async mintPendingPartyKey(strandId: string, recipients: readonly PartyKeyRecipient[]): Promise<PendingPartyKeyEntry> {
+    const privateKey = await generateStrandMemberKey();
+    return { strandId, publicKey: strandMemberKeyPair(privateKey).publicKeyB64, sealedKey: sealPartyKey(privateKey, strandId, recipients) };
+  }
+
+  /**
+   * {@link StrandPartyKeyRotationDeps.readPending}: the strand's pending row with its key opened
+   * under this machine's identity key, or null when none is pending. Rejects when the row is not
+   * sealed to this machine, or this node runs on an ephemeral identity and can open nothing; the
+   * driver then reports the strand `pending` with a log, and a recipient owner machine finishes
+   * it. The background triggers ask {@link isPendingPartyKeyRecipient} first, so only the
+   * removal's own drive reaches that rejection.
+   */
+  private async openPendingPartyKey(strandId: string): Promise<OpenedPendingPartyKey | null> {
+    const row = await this.requireControlDatabase('read a pending strand party key').queryPendingStrandPartyKey(strandId);
+    if (row === null) {
+      return null;
+    }
+    const peerId = this.controlNode?.peerId.toString();
+    const key = this.getSelfSigningKey();
+    if (peerId === undefined || key === null) {
+      throw new Error(`the pending party key of strand ${strandId} cannot be opened: this node runs on an ephemeral identity`);
+    }
+    const privateKey = openPartyKey(row.sealedKey, strandId, { peerId, privateKeyB64: key.privateKeyB64 });
+    if (privateKey === null) {
+      throw new Error(`the pending party key of strand ${strandId} is sealed to other machines, not to this one`);
+    }
+    return { privateKey, superseded: row.superseded, stampId: row.stampId };
+  }
+
+  /**
+   * Whether `row`'s key is sealed to this machine. The background triggers ask before driving, so
+   * a machine the key was not sealed to (admitted after the removal, or on an ephemeral identity)
+   * logs one line rather than a failed run on every change of the table.
+   */
+  private isPendingPartyKeyRecipient(strandId: string, row: PendingStrandPartyKeyRow): boolean {
+    const peerId = this.controlNode?.peerId.toString();
+    if (peerId !== undefined && partyKeyRecipients(row.sealedKey).includes(peerId)) {
+      return true;
+    }
+    log('Party key rotation pending for strand %s is sealed to other machines; one of them finishes it', strandId);
+    return false;
+  }
+
+  /**
    * Drive the rotation pending for `strandId`, if one is, when this is an owner machine with the
-   * strand's database live (`strand-party-key-rotation.ts`). Called in the background from the
-   * strand lifecycle (launch, resume, writable); a strand with nothing pending costs one control
-   * read. Never rejects.
+   * strand's database live (`strand-party-key-rotation.ts`) and the pending key is sealed to it.
+   * Called in the background from the strand lifecycle (launch, resume, writable); a strand with
+   * nothing pending costs one control read. Never on a machine removed from the cadre
+   * ({@link removedFromCadre}): it may hold an owner key and a key an earlier removal sealed to
+   * it, and it is no longer a member whatever it holds, as the owner re-issue drains already
+   * stop. Never rejects.
    */
   private async driveRotationIfPending(strandId: string, cause: string): Promise<void> {
     try {
-      if (!this._running || !this.controlDatabase || !this.strandManager.getInstance(strandId)?.database) {
+      if (!this._running || !this.controlDatabase || this.removal !== null || !this.strandManager.getInstance(strandId)?.database) {
         return;
       }
-      if (await this.controlDatabase.queryPendingStrandPartyKey(strandId) === null) {
+      const pending = await this.controlDatabase.queryPendingStrandPartyKey(strandId);
+      if (pending === null || !this.isPendingPartyKeyRecipient(strandId, pending)) {
         return;
       }
       if (await this.enrolledOwnerSigner() === null) {
@@ -10065,13 +10163,17 @@ export class CadreNode implements SAppIdLookup {
 
   /** {@link driveRotationIfPending} for every closed strand running here, one run; for the watch and the growth drain. */
   private async driveTrackedPendingRotations(cause: string): Promise<void> {
-    if (!this._running || !this.controlDatabase) {
+    if (!this._running || !this.controlDatabase || this.removal !== null) {
       return;
     }
     const pending: string[] = [];
     for (const strandId of this.strandManager.trackedClosedStrandIds()) {
       try {
-        if (this.strandManager.getInstance(strandId)?.database && await this.controlDatabase.queryPendingStrandPartyKey(strandId) !== null) {
+        if (!this.strandManager.getInstance(strandId)?.database) {
+          continue;
+        }
+        const row = await this.controlDatabase.queryPendingStrandPartyKey(strandId);
+        if (row !== null && this.isPendingPartyKeyRecipient(strandId, row)) {
           pending.push(strandId);
         }
       } catch (error) {

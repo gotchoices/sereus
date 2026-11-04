@@ -9,7 +9,7 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { createEmptyCollections } from '@serfab/quereus-plugin-sereus';
 import type { CollectionRegistrySource } from '@serfab/quereus-plugin-sereus';
-import type { StrandRow, StrandPeerRow, PendingStrandPartyKeyRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalWrites } from './types.js';
+import type { StrandRow, StrandPeerRow, PendingStrandPartyKeyRow, SealedPendingPartyKey, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalWrites } from './types.js';
 import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, CONTROL_SCHEMA_NAME, controlSchemaFileDeclaration } from './control-schema.js';
 import { refuseIncompatibleControlStore } from './control-schema-version.js';
 import { canonicalDatetime } from './canonical-datetime.js';
@@ -561,18 +561,29 @@ interface RowRetirement {
 }
 
 /** A `PendingStrandPartyKey` row as stored, retired or not ({@link ControlDatabase.readStoredPendingPartyKey}). */
-interface StoredPendingPartyKey {
-  readonly privateKey: string;
-  readonly superseded: readonly string[];
-  readonly stampId: string;
+interface StoredPendingPartyKey extends PendingStrandPartyKeyRow {
   readonly retired: boolean;
 }
 
-/** The key the party moves to in one strand, for {@link ControlDatabase.removeMachine}. */
-export interface PendingPartyKeyEntry {
+/** The columns every `PendingStrandPartyKey` read takes, as {@link pendingPartyKeyOfRow} maps them. */
+const PENDING_PARTY_KEY_SELECT = 'select PublicKey, SealedKey, Superseded, StampId from CadreControl.PendingStrandPartyKey where Id = ?';
+
+function pendingPartyKeyOfRow(row: Record<string, SqlValue>): PendingStrandPartyKeyRow {
+  const superseded = row.Superseded as string | null;
+  return {
+    publicKey: row.PublicKey as string,
+    sealedKey: row.SealedKey as string,
+    superseded: superseded === null ? [] : superseded.split(','),
+    stampId: row.StampId as string,
+  };
+}
+
+/**
+ * The key the party moves to in one strand, for {@link ControlDatabase.removeMachine}: its public
+ * half in the clear, its private half sealed to the machines that remain (`sealed-party-key.ts`).
+ */
+export interface PendingPartyKeyEntry extends SealedPendingPartyKey {
   readonly strandId: string;
-  /** Encoded as `StrandPartyKey.PrivateKey` (`generateStrandMemberKey`). */
-  readonly privateKey: string;
 }
 
 /** One strand's pending-row replacement inside a removal: the stored row's retirement, if any, and the fresh insert. */
@@ -879,7 +890,7 @@ function issuedRowStillOpen(
  * tables whose `AuthorizedDelete` carries the REAP branch (see the constraint comment on
  * `CadrePeer.AuthorizedDelete` in the schema). `Strand`, `StrandPartyKey` and
  * `PendingStrandPartyKey` are deliberately absent: their rows carry `MemberPrivateKey` /
- * `PrivateKey` — party secrets stored nowhere else (tickets/backlog/debt-strand-tombstone-reap.md
+ * `PrivateKey` / `SealedKey` — party secrets stored nowhere else (tickets/backlog/debt-strand-tombstone-reap.md
  * owns any future change). `JoinedStrand` also carries a `MemberPrivateKey` but IS reapable: that
  * secret is the joined strand's shared read key, which its founding party and every member
  * hold, so a reaped row is recoverable by re-forming. `JoinRequest` is reapable for the same
@@ -2286,7 +2297,10 @@ export class ControlDatabase {
   }
 
   /**
-   * The key this party is moving to in one strand, or null when no rotation is pending there.
+   * The key this party is moving to in one strand, or null when no rotation is pending there. The
+   * key itself rides sealed (`sealedKey`); `CadreNode` opens it under this machine's identity key
+   * before driving the rotation, and a reader that only asks whether a rotation is pending never
+   * needs to.
    *
    * A row whose stamp is retired reads as absent, as {@link queryPendingJoin} treats one: the
    * table has no reap branch, so a node that received the tombstone without the delete keeps the
@@ -2297,21 +2311,12 @@ export class ControlDatabase {
   async queryPendingStrandPartyKey(strandId: string): Promise<PendingStrandPartyKeyRow | null> {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('PendingStrandPartyKey');
-    const rows = await this.readRows(
-      'select PrivateKey, Superseded, StampId from CadreControl.PendingStrandPartyKey where Id = ?',
-      [strandId],
-      'pending-strand-party-key'
-    );
+    const rows = await this.readRows(PENDING_PARTY_KEY_SELECT, [strandId], 'pending-strand-party-key');
     const row = rows[0];
     if (row === undefined || revoked.has(row.StampId as string)) {
       return null;
     }
-    const superseded = row.Superseded as string | null;
-    return {
-      privateKey: row.PrivateKey as string,
-      superseded: superseded === null ? [] : superseded.split(','),
-      stampId: row.StampId as string,
-    };
+    return pendingPartyKeyOfRow(row);
   }
 
   /**
@@ -2874,7 +2879,8 @@ export class ControlDatabase {
    * key's public half after the stored row's own list, because the replaced key may already
    * have reached the machine being removed, and a seat it holds must be revoked. A stored row
    * whose stamp is already retired (held without its delete) is replaced the same way, with
-   * no second tombstone.
+   * no second tombstone. The caller seals each fresh key to the machines that remain
+   * ({@link PendingPartyKeyEntry}); this writer never sees a pending key in the clear.
    *
    * Through {@link mutateCadrePeer}, the membership hub. Every stamp is read inside the locked
    * body, and a row whose stamp is already retired (held without its delete) is skipped rather
@@ -2980,8 +2986,14 @@ export class ControlDatabase {
   /**
    * The `PendingStrandPartyKey` writes {@link removeMachine} runs for `entries`: per strand, the
    * retirement of the row it already holds, if any, and the insert of the fresh key, whose
-   * `Superseded` extends the stored row's list with the stored key's public half. Signed inside
-   * the locked body, before the transaction.
+   * `Superseded` extends the stored row's list with the stored key's public half, read from the
+   * row in the clear, so a remover that cannot open the stored row still replaces it. Signed
+   * inside the locked body, before the transaction.
+   *
+   * NOTE: two owners removing different machines while partitioned each seal their fresh key to
+   * the machine the other removed, and the row that survives the merge names it as a recipient;
+   * the removed machine is then cut by the strand's rows alone, as before sealing. Revisit if a
+   * partitioned double removal is seen to hand a removed machine a key it uses.
    */
   private async signPendingPartyKeyReplacements(
     entries: readonly PendingPartyKeyEntry[],
@@ -2992,12 +3004,10 @@ export class ControlDatabase {
     const replacements: PendingPartyKeyReplacement[] = [];
     for (const entry of entries) {
       const stored = await this.readStoredPendingPartyKey(entry.strandId, retiredPendingStamps);
-      const superseded = stored === null
-        ? []
-        : [...new Set([...stored.superseded, strandMemberKeyPair(stored.privateKey).publicKeyB64])];
+      const superseded = stored === null ? [] : [...new Set([...stored.superseded, stored.publicKey])];
       replacements.push({
         retirement: stored === null ? null : await this.signPendingKeyRetirement(entry.strandId, stored, signMessage),
-        insert: await this.signPendingStrandPartyKeyInsert(entry.strandId, entry.privateKey, superseded, ownerKey, signMessage),
+        insert: await this.signPendingStrandPartyKeyInsert(entry.strandId, entry, superseded, ownerKey, signMessage),
       });
     }
     return replacements;
@@ -3010,24 +3020,13 @@ export class ControlDatabase {
    * to remove the physical one either way.
    */
   private async readStoredPendingPartyKey(strandId: string, retiredPendingStamps: ReadonlySet<string>): Promise<StoredPendingPartyKey | null> {
-    const rows = await this.readRows(
-      'select PrivateKey, Superseded, StampId from CadreControl.PendingStrandPartyKey where Id = ?',
-      [strandId],
-      'pending-strand-party-key-stored',
-      false
-    );
+    const rows = await this.readRows(PENDING_PARTY_KEY_SELECT, [strandId], 'pending-strand-party-key-stored', false);
     const row = rows[0];
     if (row === undefined) {
       return null;
     }
-    const superseded = row.Superseded as string | null;
-    const stampId = row.StampId as string;
-    return {
-      privateKey: row.PrivateKey as string,
-      superseded: superseded === null ? [] : superseded.split(','),
-      stampId,
-      retired: retiredPendingStamps.has(stampId),
-    };
+    const pending = pendingPartyKeyOfRow(row);
+    return { ...pending, retired: retiredPendingStamps.has(pending.stampId) };
   }
 
   /**
@@ -3337,20 +3336,21 @@ export class ControlDatabase {
    * owner signature, before the strand is touched.
    *
    * @param strandId - The strand whose party key is being replaced.
-   * @param privateKey - The new key, encoded as `StrandPartyKey.PrivateKey` (`generateStrandMemberKey`).
+   * @param key - The new key: its public half (base64url) and its private half sealed to the
+   *   machines that may drive the move (`sealPartyKey` in `sealed-party-key.ts`).
    * @param superseded - Public keys (base64url) of earlier pending keys this row replaces.
    * @param ownerKey - Public key of the authorizing owner.
    * @param signMessage - Signs the raw message bytes with that owner's private key.
    */
   async insertPendingStrandPartyKey(
     strandId: string,
-    privateKey: string,
+    key: SealedPendingPartyKey,
     superseded: readonly string[],
     ownerKey: string,
     signMessage: ControlSign
   ): Promise<void> {
     this.ensureInitialized();
-    const insert = await this.signPendingStrandPartyKeyInsert(strandId, privateKey, superseded, ownerKey, signMessage);
+    const insert = await this.signPendingStrandPartyKeyInsert(strandId, key, superseded, ownerKey, signMessage);
     await this.execWrite(insert.sql, insert.params, 'pending-strand-party-key-insert');
     log('Pending strand party key inserted for strand: %s', strandId);
   }
@@ -3358,19 +3358,21 @@ export class ControlDatabase {
   /**
    * The stamped, owner-signed `PendingStrandPartyKey` insert. Apart from
    * {@link insertPendingStrandPartyKey} so a writer can run it inside a larger transaction, as
-   * {@link signStrandPartyKeyInsert} is. Each superseded key must be a well-formed public key: the
-   * column is comma-joined, and base64url is what keeps the join reversible.
+   * {@link signStrandPartyKeyInsert} is. The public half and each superseded key must be a
+   * well-formed public key: `Superseded` is comma-joined, base64url is what keeps the join
+   * reversible, and the public half is what a later removal copies into it.
    */
   private async signPendingStrandPartyKeyInsert(
     strandId: string,
-    privateKey: string,
+    key: SealedPendingPartyKey,
     superseded: readonly string[],
     ownerKey: string,
     signMessage: ControlSign
   ): Promise<SignedInsert> {
     const fields = {
       strandId,
-      privateKey,
+      publicKey: requireEd25519PublicKeyB64(key.publicKey, 'pending party key'),
+      sealedKey: key.sealedKey,
       superseded: superseded.length === 0
         ? null
         : superseded.map((key) => requireEd25519PublicKeyB64(key, 'superseded party key')).join(','),
@@ -3379,11 +3381,11 @@ export class ControlDatabase {
     const message = buildAuthorizationMessage('CadreControl.PendingStrandPartyKey', 'add', this.config.partyId, pendingStrandPartyKeyRowFields(fields));
     return {
       sql: `
-        insert into CadreControl.PendingStrandPartyKey (Id, PrivateKey, Superseded, StampId)
+        insert into CadreControl.PendingStrandPartyKey (Id, PublicKey, SealedKey, Superseded, StampId)
           with context OwnerKey = ?, Signature = ?
-          values (?, ?, ?, ?)
+          values (?, ?, ?, ?, ?)
       `,
-      params: [ownerKey, await signMessage(message), fields.strandId, fields.privateKey, fields.superseded, fields.stampId],
+      params: [ownerKey, await signMessage(message), fields.strandId, fields.publicKey, fields.sealedKey, fields.superseded, fields.stampId],
     };
   }
 
@@ -3405,9 +3407,17 @@ export class ControlDatabase {
    * the control record, in ONE transaction: per strand, the `StrandPartyKey` row's guarded
    * removal and a fresh insert naming `newKey` ({@link revouchOwnerKey}'s delete-and-re-add
    * idiom, under the same owner approval), and the retirement of the strand's
-   * `PendingStrandPartyKey` row when it holds `newKey`. The last step of a party key rotation
-   * (`strand-party-key-rotation.ts`): the strand's rows already name `newKey` as the party's
-   * member, so a reader that sees the new control row sees a key that counts.
+   * `PendingStrandPartyKey` row when its public half is `newKey`'s. The last step of a party key
+   * rotation (`strand-party-key-rotation.ts`): the strand's rows already name `newKey` as the
+   * party's member, so a reader that sees the new control row sees a key that counts.
+   *
+   * NOTE: the swapped `StrandPartyKey` row holds `newKey` in the clear and replicates to every
+   * party machine, as it always has, since a machine admitted later has to read it; the pending
+   * row is sealed, this one is not. The removed machine could receive it only from a sibling that
+   * holds the swap but not yet the tombstone, and the swap runs strictly after the removal
+   * committed; the `machine-removal-rotates-party-key` scenario asserts the removed machine stays
+   * on the old key. Sealing this row too would mean re-sealing it at every admission. Revisit if
+   * that assertion fails or such a sibling is observed.
    *
    * Decided inside the locked body, per strand, over the rows as stored (every read
    * `retry: false`): a row already naming `newKey` was swapped by another machine's driver and
@@ -3436,6 +3446,7 @@ export class ControlDatabase {
           continue;
         }
         const pending = await this.readStoredPendingPartyKey(entry.strandId, retired('PendingStrandPartyKey'));
+        const newPublicKey = strandMemberKeyPair(entry.newKey).publicKeyB64;
         swaps.push({
           strandId: entry.strandId,
           keyRetirement: {
@@ -3443,7 +3454,7 @@ export class ControlDatabase {
             filesTombstone: !retired('StrandPartyKey').has(stored.stampId),
           },
           insert: await this.signStrandPartyKeyInsert(entry.strandId, entry.newKey, ownerKey, signMessage),
-          pendingRetirement: pending !== null && pending.privateKey === entry.newKey
+          pendingRetirement: pending !== null && pending.publicKey === newPublicKey
             ? await this.signPendingKeyRetirement(entry.strandId, pending, signMessage)
             : null,
         });

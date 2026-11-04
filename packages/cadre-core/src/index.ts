@@ -330,9 +330,19 @@ export {
 // removal, and the seams `CadreNode` hands it.
 export {
   StrandPartyKeyRotationDriver,
+  type OpenedPendingPartyKey,
   type StrandPartyKeyRotationDeps,
   type StrandPartyKeySwapEntry
 } from './strand-party-key-rotation.js';
+
+// The envelope a `PendingStrandPartyKey` row carries its key in, sealed to the machines that remain.
+export {
+  sealPartyKey,
+  openPartyKey,
+  partyKeyRecipients,
+  type PartyKeyRecipient,
+  type PartyKeyOpener
+} from './sealed-party-key.js';
 
 // The timer seam the self-rescheduling loops share (membership retry ladder, the table
 // change schedule the first-sync gate probes on) — injected by tests as a hand-cranked clock.

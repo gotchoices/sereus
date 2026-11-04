@@ -5061,6 +5061,7 @@ __metadata:
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"
     "@noble/ciphers": "npm:^2.0.1"
+    "@noble/curves": "npm:^2.0.1"
     "@noble/hashes": "npm:^2.0.0"
     "@optimystic/db-core": "npm:^1.25.0"
     "@optimystic/db-p2p": "npm:^1.25.0"

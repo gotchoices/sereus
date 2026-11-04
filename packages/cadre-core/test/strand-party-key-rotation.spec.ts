@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Database } from '@quereus/quereus';
 import {
   StrandPartyKeyRotationDriver,
+  type OpenedPendingPartyKey,
   type StrandPartyKeyRotationDeps,
   type StrandPartyKeySwapEntry,
 } from '../src/strand-party-key-rotation.js';
@@ -15,7 +16,6 @@ import {
 import { readStrandRevocationRows } from '../src/strand-revocation-enforcer.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
-import type { PendingStrandPartyKeyRow } from '../src/types.js';
 import { makeSAppConfig, openRawStrand } from './strand-spec-helpers.js';
 
 /**
@@ -73,7 +73,7 @@ async function rotationFixture(): Promise<Fixture> {
     await registerMemberPeer(raw.db, { memberKeyPair: oldKey, peerId });
   }
   const newPrivateKey = await generateStrandMemberKey();
-  let pending: PendingStrandPartyKeyRow | null = { privateKey: newPrivateKey, superseded: [], stampId: 'pending-stamp-1' };
+  let pending: OpenedPendingPartyKey | null = { privateKey: newPrivateKey, superseded: [], stampId: 'pending-stamp-1' };
   let currentKey = oldPrivateKey;
   let swapFailures = 0;
   const swaps: StrandPartyKeySwapEntry[][] = [];

@@ -4,7 +4,8 @@ import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { OptimysticNode } from '@optimystic/db-p2p';
 import { buildAuthorizationMessage, ControlDatabase } from '../src/control-database.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
-import { generateStrandMemberKey } from '../src/strand-member-key.js';
+import { sealPartyKey } from '../src/sealed-party-key.js';
+import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import { expectConstraintFailure, freshKeyPair, peerIdOf, signAs, type KeyPair } from './control-constraint-helpers.js';
 import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
 
@@ -80,7 +81,8 @@ describe('StrandPeer and PendingStrandPartyKey', () => {
 
 	it('PendingStrandPartyKey: inserts under an owner, and a tombstoned delete retires its stamp', async () => {
 		const strandId = 'strand-pending';
-		const key = await generateStrandMemberKey();
+		const privateKey = await generateStrandMemberKey();
+		const key = { publicKey: strandMemberKeyPair(privateKey).publicKeyB64, sealedKey: sealPartyKey(privateKey, strandId, []) };
 		const replaced = [freshKeyPair().publicKey, freshKeyPair().publicKey];
 
 		await expectConstraintFailure(
@@ -89,7 +91,7 @@ describe('StrandPeer and PendingStrandPartyKey', () => {
 		);
 		await db.insertPendingStrandPartyKey(strandId, key, replaced, owner.publicKey, signAsOwner);
 		const pending = await db.queryPendingStrandPartyKey(strandId);
-		expect(pending).toMatchObject({ privateKey: key, superseded: replaced });
+		expect(pending).toMatchObject({ ...key, superseded: replaced });
 		expect(await db.queryPendingStrandPartyKeyStampId(strandId)).toBe(pending!.stampId);
 
 		expect(await db.deletePendingStrandPartyKey(strandId, owner.publicKey, signAsOwner)).toBe(true);
@@ -97,13 +99,13 @@ describe('StrandPeer and PendingStrandPartyKey', () => {
 
 		// The first insert's approval, replayed verbatim.
 		const superseded = replaced.join(',');
-		const approval = signAsOwner(buildAuthorizationMessage('CadreControl.PendingStrandPartyKey', 'add', partyId, [strandId, key, superseded, pending!.stampId]));
+		const approval = signAsOwner(buildAuthorizationMessage('CadreControl.PendingStrandPartyKey', 'add', partyId, [strandId, key.publicKey, key.sealedKey, superseded, pending!.stampId]));
 		await expectConstraintFailure(
 			db.getDatabase().exec(
-				`insert into CadreControl.PendingStrandPartyKey (Id, PrivateKey, Superseded, StampId)
+				`insert into CadreControl.PendingStrandPartyKey (Id, PublicKey, SealedKey, Superseded, StampId)
 					with context OwnerKey = ?, Signature = ?
-					values (?, ?, ?, ?)`,
-				[owner.publicKey, approval, strandId, key, superseded, pending!.stampId]
+					values (?, ?, ?, ?, ?)`,
+				[owner.publicKey, approval, strandId, key.publicKey, key.sealedKey, superseded, pending!.stampId]
 			),
 			'NotRevoked'
 		);

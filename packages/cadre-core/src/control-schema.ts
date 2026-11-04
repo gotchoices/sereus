@@ -285,7 +285,11 @@ declare schema CadreControl {
     -- rotations finish loses the rows with it. If that ever matters, give this table that idiom.
     table PendingStrandPartyKey (
         Id text primary key,        -- the strand id
-        PrivateKey text,            -- the key being moved to, encoded as StrandPartyKey.PrivateKey
+        PublicKey text,             -- the key being moved to, public half (base64url): the Strand.Member.Key it is seated as.
+                                    -- In the clear so a second removal lists it in Superseded without opening the row.
+        SealedKey text,             -- its private half (StrandPartyKey.PrivateKey encoding), sealed to the identity keys of the
+                                    -- machines that remain (sealed-party-key.ts): the row is written in the removed machine's last
+                                    -- control transaction and reaches it, so what it carries must open only for the others.
         Superseded text null,       -- comma-joined public keys (base64url) of earlier pending keys this row replaced.
                                     -- A second removal replaces the row because the old key may have reached the
                                     -- machine it removes, and a seat that key already holds must then be revoked.
@@ -299,7 +303,7 @@ declare schema CadreControl {
         constraint NoUpdate check on update (false),
         -- Binding Superseded as well as the key: a captured approval cannot drop a key from the list.
         constraint AuthorizedInsert check on insert (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.PendingStrandPartyKey', 'add', party_id(), new.Id, new.PrivateKey, coalesce(new.Superseded, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.PendingStrandPartyKey', 'add', party_id(), new.Id, new.PublicKey, new.SealedKey, coalesce(new.Superseded, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedDelete check on delete (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.PendingStrandPartyKey', 'remove', party_id(), old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))

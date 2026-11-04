@@ -23,13 +23,18 @@
  *
  * The removal transaction writes a `PendingStrandPartyKey` row per closed strand the party holds
  * a key for, in the same owner approval as the machine's tombstone (`ControlDatabase.removeMachine`),
- * so the removal and the intent to rotate are exactly as durable as each other. That row is the
- * run's input; the `StrandPartyKey` row stays K until the last step.
+ * so the removal and the intent to rotate are exactly as durable as each other. That same
+ * transaction reaches the removed machine, so the row carries K' public half in the clear and its
+ * private half sealed to the identity keys of the machines that remain (`sealed-party-key.ts`);
+ * `CadreNode` opens it under this machine's identity key before handing it to the driver
+ * ({@link StrandPartyKeyRotationDeps.readPending}), and a machine the key was not sealed to
+ * cannot drive. That row is the run's input; the `StrandPartyKey` row stays K until the last step.
  *
  * ## One run
  *
- * Runs on an OWNER machine that runs the strand (an owner signer is enrolled, the instance is
- * live with a database); `CadreNode` decides that and never asks a non-owner machine to drive.
+ * Runs on an OWNER machine that runs the strand and can open the pending key (an owner signer is
+ * enrolled, the instance is live with a database, the key is sealed to this machine's identity);
+ * `CadreNode` decides that and never asks any other machine to drive.
  * Each run reads the pending row and the strand's rows and continues from wherever the state
  * says it is. Every step reads before it writes, and a duplicate-row rejection counts as done,
  * so two owner machines driving one strand converge:
@@ -85,7 +90,7 @@ import {
   revokeMember,
   type StrandWriteOptions,
 } from './strand-membership-writer.js';
-import type { PendingStrandPartyKeyRow, StrandKeyRotationOutcome } from './types.js';
+import type { StrandKeyRotationOutcome } from './types.js';
 import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:strand-party-key-rotation');
@@ -105,10 +110,27 @@ export interface StrandPartyKeySwapEntry {
   newKey: string;
 }
 
+/**
+ * The strand's pending row with its key opened for this machine
+ * ({@link StrandPartyKeyRotationDeps.readPending}): what `PendingStrandPartyKeyRow` carries sealed
+ * (`sealed-party-key.ts`), in the clear, as the driver seats and binds under it.
+ */
+export interface OpenedPendingPartyKey {
+  /** The key being moved to, encoded as `StrandPartyKey.PrivateKey`. */
+  privateKey: string;
+  /** Public keys (base64url) of earlier pending keys the row replaced; a seat any of them holds must be revoked. */
+  superseded: readonly string[];
+  /** The row's single-use nonce; `needs-another-party` is reported once per stamp. */
+  stampId: string;
+}
+
 /** The seams the driver reads and writes through; `CadreNode` builds one over its control database and strand manager. */
 export interface StrandPartyKeyRotationDeps {
-  /** The strand's pending row, or null when no rotation is pending there. Rejects when it cannot be read. */
-  readPending(strandId: string): Promise<PendingStrandPartyKeyRow | null>;
+  /**
+   * The strand's pending row opened for this machine, or null when no rotation is pending there.
+   * Rejects when it cannot be read, or cannot be opened here (sealed to other machines).
+   */
+  readPending(strandId: string): Promise<OpenedPendingPartyKey | null>;
   /** The strand's `StrandPartyKey.PrivateKey`, or null when the party holds no key there. */
   readCurrentKey(strandId: string): Promise<string | null>;
   /**

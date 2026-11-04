@@ -228,7 +228,8 @@ export function strandPeerRowFields(row: StrandPeerSignedFields): string[] {
 /** The `PendingStrandPartyKey` columns its `'add'` signature binds, in the schema's order and with the row's stored forms. */
 export interface PendingStrandPartyKeySignedFields {
   strandId: string;
-  privateKey: string;
+  publicKey: string;
+  sealedKey: string;
   superseded: string | null;
   stampId: string;
 }
@@ -236,10 +237,10 @@ export interface PendingStrandPartyKeySignedFields {
 /**
  * The row-field half of a `PendingStrandPartyKey` `'add'` digest. SQL mirror, in
  * `PendingStrandPartyKey.AuthorizedInsert`:
- * `new.Id, new.PrivateKey, coalesce(new.Superseded, ''), new.StampId`.
+ * `new.Id, new.PublicKey, new.SealedKey, coalesce(new.Superseded, ''), new.StampId`.
  */
 export function pendingStrandPartyKeyRowFields(row: PendingStrandPartyKeySignedFields): string[] {
-  return [row.strandId, row.privateKey, row.superseded ?? '', row.stampId];
+  return [row.strandId, row.publicKey, row.sealedKey, row.superseded ?? '', row.stampId];
 }
 
 /**

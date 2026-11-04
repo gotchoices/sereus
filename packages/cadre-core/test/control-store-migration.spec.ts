@@ -10,7 +10,8 @@ import { ControlDatabase } from '../src/control-database.js';
 import { CONTROL_SCHEMA, CONTROL_SCHEMA_BASELINE_VERSION, CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_VERSION_TAG } from '../src/control-schema.js';
 import { ControlStoreIncompatibleError, pendingControlSchemaChanges } from '../src/control-schema-version.js';
 import { controlStorageScope } from '../src/storage-scope.js';
-import { generateStrandMemberKey } from '../src/strand-member-key.js';
+import { sealPartyKey } from '../src/sealed-party-key.js';
+import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import {
 	atVersion,
 	controlSchemaReleases,
@@ -179,7 +180,8 @@ describe('a control store written under another control schema version', () => {
 			expect((await controlDb.queryOwnerKeyRows()).map(({ key }) => key)).toEqual([owner.publicKey]);
 			expect((await controlDb.queryRevokedStamps('StrandPartyKey')).size).toBe(1);
 
-			await controlDb.insertPendingStrandPartyKey('strand', await generateStrandMemberKey(), [], owner.publicKey, sign);
+			const pendingKey = await generateStrandMemberKey();
+			await controlDb.insertPendingStrandPartyKey('strand', { publicKey: strandMemberKeyPair(pendingKey).publicKeyB64, sealedKey: sealPartyKey(pendingKey, 'strand', []) }, [], owner.publicKey, sign);
 			expect(await controlDb.deletePendingStrandPartyKey('strand', owner.publicKey, sign)).toBe(true);
 		});
 	});

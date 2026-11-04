@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import type { PrivateKey } from '@libp2p/interface';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
@@ -7,6 +8,8 @@ import { cadreInviteConsentMessage, cadreInviteRedeemMessage, generateStampId, o
 import { deviceTokenAddDigest } from '../src/peer-authorization.js';
 import { signDeviceTokenRecord } from '../src/device-token.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
+import { openPartyKey, partyKeyRecipients } from '../src/sealed-party-key.js';
 import { expectConstraintFailure, freshKeyPair, freshStamp, signAs, signB64, type KeyPair } from './control-constraint-helpers.js';
 import { mintContactJoiner, type TestContactJoiner } from './formation-consent-helper.js';
 
@@ -30,6 +33,8 @@ describe('CadreNode.removeMachine and removeOwner', () => {
   let node: CadreNode;
   let db: ControlDatabase;
   let rawDb: Database;
+  /** The node's identity: what a pending party key written here is sealed to, beside the machines that remain. */
+  let identity: PrivateKey;
   let owner: KeyPair;
 
   const signOwner = (message: Uint8Array): string => signAs(owner, message);
@@ -38,10 +43,11 @@ describe('CadreNode.removeMachine and removeOwner', () => {
 
   beforeAll(async () => {
     owner = freshKeyPair();
+    identity = await generateKeyPair('Ed25519');
     node = new CadreNode({
       controlNetwork: { partyId: 'remove-machine-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
       profile: 'transaction',
-      privateKey: await generateKeyPair('Ed25519'),
+      privateKey: identity,
       trustedOwners: { pinnedKeys: [owner.publicKey] },
     });
     await node.start();
@@ -280,11 +286,19 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     const result = await node.removeMachine(first.partyId);
     expect(result.removedPeer).toBe(true);
     expect(result.strands).toEqual([{ strandId, outcome: 'pending' }]);
-    // The intent is recorded under a fresh key; the control record still names the key in use.
+    // The intent is recorded under a fresh key, sealed to this node and the machine that stays and
+    // not to the one removed; the control record still names the key in use.
     const pending = await db.queryPendingStrandPartyKey(strandId);
     expect(pending).not.toBeNull();
-    expect(pending!.privateKey).not.toBe(partyKey);
+    expect(pending!.publicKey).not.toBe(strandMemberKeyPair(partyKey).publicKeyB64);
     expect(pending!.superseded).toEqual([]);
+    const recipients = partyKeyRecipients(pending!.sealedKey);
+    expect(recipients).toContain(node.peerId!.toString());
+    expect(recipients).toContain(second.partyId);
+    expect(recipients).not.toContain(first.partyId);
+    const opened = openPartyKey(pending!.sealedKey, strandId, { peerId: node.peerId!.toString(), privateKeyB64: ed25519KeyPairFromLibp2p(identity).privateKeyB64 });
+    expect(opened).not.toBeNull();
+    expect(strandMemberKeyPair(opened!).publicKeyB64).toBe(pending!.publicKey);
     expect(await db.queryStrandPartyKey(strandId)).toBe(partyKey);
 
     // The second removal replaces the pending key, because the first one may already have
@@ -292,8 +306,8 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     expect((await node.removeMachine(second.partyId)).strands).toEqual([{ strandId, outcome: 'pending' }]);
     const replaced = await db.queryPendingStrandPartyKey(strandId);
     expect(replaced).not.toBeNull();
-    expect(replaced!.privateKey).not.toBe(pending!.privateKey);
-    expect(replaced!.superseded).toEqual([strandMemberKeyPair(pending!.privateKey).publicKeyB64]);
+    expect(replaced!.publicKey).not.toBe(pending!.publicKey);
+    expect(replaced!.superseded).toEqual([pending!.publicKey]);
     expect((await db.queryRevocations()).filter((row) => row.tableName === 'PendingStrandPartyKey').map((row) => row.stampId)).toEqual([pending!.stampId]);
     expect(await db.queryStrandPartyKey(strandId)).toBe(partyKey);
   }, 60_000);
