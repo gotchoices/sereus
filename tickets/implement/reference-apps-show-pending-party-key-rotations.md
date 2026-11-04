@@ -26,7 +26,7 @@ The removal confirmation's `another-party` line (`unfinishedWorkspaces` in both 
 
 - **The node is not an owner**: the list still shows (any machine of the party holds the rows), without the "from this device" wording; joining takes an owner device. By inspection.
 - **A second phone of the party** sees the list on its next refresh; no push is wired (decided in `pending-party-key-rotations-listed`).
-- **The list and the removal confirmation on screen together**: the confirmation's lines come from the plan, the list from the rows; they agree once the removal returns. By inspection.
+- **The list and the removal confirmation on screen together**: the confirmation's lines come from the plan, the list from the rows; they agree once the removal returns, except on a sealed strand, where the plan and the result say another party is needed and the list says `sealed`. Do not extend the "ask the host" line to imply a sealed strand can be finished; the list's wording is the accurate one. By inspection.
 - **An empty listing after a failed read** must not hide a waiting replacement: keep the last list on failure.
 
 ## Tests

@@ -2317,9 +2317,9 @@ export interface PendingPartyKeyRotation {
   superseded: string[];
   /**
    * Who can move the replacement forward from here, judged from this machine's view of the strand.
-   * - `another-party`: the strand runs here and the party holds no manager seat, so another party's manager has to admit `publicKey`: a fresh invitation to the strand redeemed on an owner device of this party, or the key admitted by hand.
-   * - `sealed`: the strand has no managers at all; nobody can admit the key, and the removed machine stays a member until the strand is re-formed.
-   * - `owner-machine`: an owner device of this party that runs the strand finishes it (the strand does not run here, this machine holds no owner key, or the new key is already seated and the swap is next).
+   * - `another-party`: the strand runs here, the party holds no manager seat and `publicKey` is not a member, so another party's manager has to admit it: a fresh invitation to the strand redeemed on an owner device of this party, or the key admitted by hand.
+   * - `sealed`: the strand has no managers at all and `publicKey` is not a member; nobody can admit it, and the removed machine stays a member until the strand is re-formed.
+   * - `owner-machine`: an owner device of this party that runs the strand finishes it (the strand does not run here, the party holds a manager seat, or `publicKey` is already a member), which this machine may or may not be. Also the answer when a read here fails.
    */
   waitingOn: 'another-party' | 'sealed' | 'owner-machine';
 }

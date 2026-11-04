@@ -10022,12 +10022,17 @@ export class CadreNode implements SAppIdLookup {
     });
   }
 
+  /** Every strand the party holds, own and joined. */
+  private async heldStrandRows(controlDatabase: ControlDatabase) {
+    return [...await controlDatabase.queryStrands(), ...await controlDatabase.queryJoinedStrands()];
+  }
+
   /**
    * Every closed strand the party holds a membership key for, own and joined, as this node runs
    * it ({@link ClosedStrandState}): the input to the plan's per-strand rotation site.
    */
   private async readClosedStrandStates(controlDatabase: ControlDatabase): Promise<ClosedStrandState[]> {
-    const rows = [...await controlDatabase.queryStrands(), ...await controlDatabase.queryJoinedStrands()];
+    const rows = await this.heldStrandRows(controlDatabase);
     const states: ClosedStrandState[] = [];
     const seen = new Set<string>();
     for (const row of rows) {
@@ -10076,6 +10081,12 @@ export class CadreNode implements SAppIdLookup {
    * `strand:party-key-rotated` and after its own {@link removeMachine}, so a second device of the
    * party sees a row replicated to it on its next read. If an app ever needs a push, emit from
    * {@link onPartyKeyTablesChanged}.
+   *
+   * NOTE: `waitingOn` does not look at who the key is sealed to. If the party loses every machine a
+   * row is sealed to and recovers as docs/strands.md describes (deleting its `StrandPartyKey` row,
+   * re-joining under a fresh key), the row stays listed as `owner-machine`, then `another-party`,
+   * though no machine can open it; only a later removal replaces it. If an app ever reaches this,
+   * compare `partyKeyRecipients(row.sealedKey)` with the live machines and add a state for it.
    */
   async listPendingPartyKeyRotations(): Promise<PendingPartyKeyRotation[]> {
     if (!this.controlDatabase) {
@@ -10089,7 +10100,7 @@ export class CadreNode implements SAppIdLookup {
     if (pending.size === 0) {
       return [];
     }
-    const held = new Set([...await controlDatabase.queryStrands(), ...await controlDatabase.queryJoinedStrands()].map((row) => row.Id));
+    const held = new Set((await this.heldStrandRows(controlDatabase)).map((row) => row.Id));
     const rotations: PendingPartyKeyRotation[] = [];
     for (const [strandId, row] of pending) {
       if (held.has(strandId)) {
