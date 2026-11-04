@@ -49,12 +49,14 @@ export const CONTROL_TABLES = [
   'ValidationKey',
   'Strand',
   'StrandPartyKey',
+  'PendingStrandPartyKey',
   'JoinedStrand',
   'JoinRequest',
   'JoinSuccess',
   'JoinFailure',
   'CadrePeer',
   'DeviceToken',
+  'StrandPeer',
   'FormationInvite',
   'FormationUsage',
   'CadreInvite',
@@ -88,7 +90,7 @@ export type ControlTable = typeof CONTROL_TABLES[number];
  * (`control-database.ts`) so the lightweight signers — `peer-authorization.ts`'s
  * `revocationDigest` — can type against it without pulling in the runtime.
  */
-export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' | 'JoinRequest' | 'DeviceToken' | 'CadreInvite' | 'OwnerGrant'>;
+export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'PendingStrandPartyKey' | 'JoinedStrand' | 'JoinRequest' | 'DeviceToken' | 'CadreInvite' | 'OwnerGrant'>;
 
 /**
  * What a signature authorizes, scoped to one table rule — or, for
@@ -201,6 +203,43 @@ export function ownerGrantRowFields(row: OwnerGrantSignedFields): string[] {
     row.totalUses === null ? '' : String(row.totalUses),
     row.stampId,
   ];
+}
+
+/**
+ * The `StrandPeer` columns its `'add'` signature binds, in the schema's order. Structurally
+ * satisfied by a `StrandPeerRow` (`types.ts`), which adds the signature itself.
+ */
+export interface StrandPeerSignedFields {
+  strandId: string;
+  peerId: string;
+  strandPeerId: string;
+}
+
+/**
+ * The row-field half of a `StrandPeer` `'add'` digest, shared by the signer
+ * (`ControlDatabase.insertStrandPeer`) and the verifier (`peer-authorization.ts`'s
+ * `strandPeerAddDigest`). SQL mirror, in `StrandPeer.Authorized`:
+ * `new.StrandId, new.PeerId, new.StrandPeerId`.
+ */
+export function strandPeerRowFields(row: StrandPeerSignedFields): string[] {
+  return [row.strandId, row.peerId, row.strandPeerId];
+}
+
+/** The `PendingStrandPartyKey` columns its `'add'` signature binds, in the schema's order and with the row's stored forms. */
+export interface PendingStrandPartyKeySignedFields {
+  strandId: string;
+  privateKey: string;
+  superseded: string | null;
+  stampId: string;
+}
+
+/**
+ * The row-field half of a `PendingStrandPartyKey` `'add'` digest. SQL mirror, in
+ * `PendingStrandPartyKey.AuthorizedInsert`:
+ * `new.Id, new.PrivateKey, coalesce(new.Superseded, ''), new.StampId`.
+ */
+export function pendingStrandPartyKeyRowFields(row: PendingStrandPartyKeySignedFields): string[] {
+  return [row.strandId, row.privateKey, row.superseded ?? '', row.stampId];
 }
 
 /**

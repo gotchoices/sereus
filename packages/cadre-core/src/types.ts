@@ -2345,6 +2345,34 @@ export interface OwnerGrantRedemptionResult {
 }
 
 /**
+ * One `CadreControl.StrandPeer` row: a machine's own signed statement of the peer id it uses
+ * in one strand. {@link ControlDatabase.queryStrandPeers} returns only rows whose `sig`
+ * verifies; whether `peerId` is a live or removed machine is its caller's question.
+ */
+export interface StrandPeerRow {
+  strandId: string;
+  /** The machine's control peer id (`CadrePeer.PeerId`). */
+  peerId: string;
+  /** That machine's peer id in the strand's own network (`strandTransportKey`). */
+  strandPeerId: string;
+  /** The machine's signature over the `'add'` digest (`strandPeerAddDigest`). */
+  sig: string;
+}
+
+/**
+ * The key this party's membership in one closed strand is moving to, as
+ * {@link ControlDatabase.queryPendingStrandPartyKey} reads a `CadreControl.PendingStrandPartyKey` row.
+ */
+export interface PendingStrandPartyKeyRow {
+  /** The key being moved to, encoded as `StrandPartyKey.PrivateKey`. */
+  privateKey: string;
+  /** Public keys (base64url) of earlier pending keys this row replaced; a seat any of them holds must be revoked. */
+  superseded: string[];
+  /** The row's single-use nonce, bound into its remove digest. */
+  stampId: string;
+}
+
+/**
  * One `CadreControl.Revocation` tombstone as read by
  * `ControlDatabase.queryRevocations`: the identity triple plus the `ReissuedAt`
  * counter an owner bumps (`ControlDatabase.reissueRevocations`) to re-write — and

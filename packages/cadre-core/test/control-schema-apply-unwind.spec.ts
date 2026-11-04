@@ -63,9 +63,11 @@ const CONTROL_TABLE_NAMES = [
 	'OwnerGrant',
 	'OwnerGrantUsage',
 	'OwnerKey',
+	'PendingStrandPartyKey',
 	'Revocation',
 	'Strand',
 	'StrandPartyKey',
+	'StrandPeer',
 	'ValidationKey'
 ] as const;
 
@@ -192,10 +194,10 @@ describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 			await internals.applyControlSchema();
 
 			// The WHOLE `cadrecontrol` catalog, so a table or index that went missing and one
-			// that appeared uninvited both fail here: the seventeen tables and the three indexes
+			// that appeared uninvited both fail here: the nineteen tables and the three indexes
 			// `schemas/control.qsql` declares, and nothing of the plugin's own alongside them
 			// (measured 2026-09-25; the cadre-invitation table pair and its index added 2026-10-06,
-			// the owner-grant pair and its index 2026-10-16).
+			// the owner-grant pair and its index 2026-10-16, the strand-peer pair 2026-11-03).
 			expect(await readCatalog(internals.db!)).toEqual(new Map([
 				['table', [...CONTROL_TABLE_NAMES]],
 				['index', ['CadreInviteUsageByInvite', 'FormationUsageByToken', 'OwnerGrantUsageByGrant']]

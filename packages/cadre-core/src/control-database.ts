@@ -9,14 +9,14 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { createEmptyCollections } from '@serfab/quereus-plugin-sereus';
 import type { CollectionRegistrySource } from '@serfab/quereus-plugin-sereus';
-import type { StrandRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalResult } from './types.js';
+import type { StrandRow, StrandPeerRow, PendingStrandPartyKeyRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalResult } from './types.js';
 import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, CONTROL_SCHEMA_NAME, controlSchemaFileDeclaration } from './control-schema.js';
 import { refuseIncompatibleControlStore } from './control-schema-version.js';
 import { canonicalDatetime } from './canonical-datetime.js';
-import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, CONTROL_TABLES } from './control-authorization.js';
+import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, strandPeerRowFields, pendingStrandPartyKeyRowFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields, OwnerGrantSignedFields } from './control-authorization.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
-import { verifyCadreInviteRow, verifyOwnerGrantRow } from './peer-authorization.js';
+import { verifyCadreInviteRow, verifyOwnerGrantRow, verifyStrandPeerRow } from './peer-authorization.js';
 import { OWNER_KEY_MAX_LABEL } from './owner-key-export.js';
 import { retryControlWrite, LOST_UPDATE_RETRY_POLICY, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
@@ -513,6 +513,7 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
   ValidationKey: 'Key',
   Strand: 'Id',
   StrandPartyKey: 'Id',
+  PendingStrandPartyKey: 'Id',
   JoinedStrand: 'Id',
   JoinRequest: 'Id',
   DeviceToken: 'PeerId',
@@ -834,10 +835,10 @@ function issuedRowStillOpen(
 /**
  * Guarded tables a node may reap locally once their tombstone has committed — the
  * tables whose `AuthorizedDelete` carries the REAP branch (see the constraint comment on
- * `CadrePeer.AuthorizedDelete` in the schema). `Strand` and `StrandPartyKey` are
- * deliberately absent: their rows carry `MemberPrivateKey` / `PrivateKey` — party
- * secrets stored nowhere else (tickets/backlog/debt-strand-tombstone-reap.md owns any
- * future change). `JoinedStrand` also carries a `MemberPrivateKey` but IS reapable: that
+ * `CadrePeer.AuthorizedDelete` in the schema). `Strand`, `StrandPartyKey` and
+ * `PendingStrandPartyKey` are deliberately absent: their rows carry `MemberPrivateKey` /
+ * `PrivateKey` — party secrets stored nowhere else (tickets/backlog/debt-strand-tombstone-reap.md
+ * owns any future change). `JoinedStrand` also carries a `MemberPrivateKey` but IS reapable: that
  * secret is the joined strand's shared read key, which its founding party and every member
  * hold, so a reaped row is recoverable by re-forming. `JoinRequest` is reapable for the same
  * reason: the inviting party and the user also hold its invitation. `OwnerKey` has no
@@ -851,7 +852,7 @@ export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 /**
  * Runtime membership test for {@link REAPABLE_TABLES}, narrowing a tombstone's
  * `TableName` to the subset {@link ControlDatabase.reapRevokedRow} accepts. A tombstone
- * naming an excluded table (`Strand`, `OwnerKey`, `CadreInvite`, `OwnerGrant`) is skipped silently —
+ * naming an excluded table (`Strand`, `PendingStrandPartyKey`, `OwnerKey`, `CadreInvite`, `OwnerGrant`) is skipped silently —
  * `Strand` tombstones are the common case in a party that has unpublished a strand, so a
  * log line per skip would be per-pass noise.
  */
@@ -1533,10 +1534,12 @@ export class ControlDatabase {
     // steps still missing. No row is lost either way: rows keep a dropped column's field until they
     // are rewritten, and nothing reads it.
     //
-    // NOTE: a cohort that keeps refusing the commit now ends the retries with a thrown error, so a
-    // machine migrating while its siblings are offline fails its start. No release has migrated
-    // yet (`CONTROL_SCHEMA_VERSION` is the baseline). The first version that does should decide
-    // whether that start waits, as the `App` apply does (`applyAppSchemaOrDefer`).
+    // NOTE: a cohort that keeps refusing the commit ends the retries with a thrown error and fails
+    // the start, and this start does not wait. A machine whose siblings are offline does not reach
+    // that: the bring-up quiet period holds every connection off, so the apply commits alone
+    // (measured 2026-11-03, a v3 store with one sibling at an unrouted address migrated to v4 in a
+    // 117 ms start). If a start ever fails here on a refused commit, make it wait, as the `App`
+    // apply does (`applyAppSchemaOrDefer`).
     //
     // Only the "cohort did not answer, nothing committed" class is retried; the classifier
     // vetoes indeterminate commits and does not match `Missing block`, which is a durable
@@ -1956,8 +1959,8 @@ export class ControlDatabase {
    * such collections, and nothing creates them later: the start-time schema apply runs on every
    * machine, possibly alone, where committing one would be exactly the fork genesis avoids.
    *
-   * NOTE: one `sync()` per collection, in sequence: 32 collections for today's schema (17 tables,
-   * 3 indexes, 12 `unique` columns). Measured 2026-10-20 on a lone `CadreNode` over the network
+   * NOTE: one `sync()` per collection, in sequence: 35 collections for today's schema (19 tables,
+   * 3 indexes, 13 `unique` columns), 32 when this was measured. Measured 2026-10-20 on a lone `CadreNode` over the network
    * transactor (started, then `ensureOwnerKey` alone, 3 runs each): 64–105 ms in memory and
    * 750–820 ms on `FileRawStorage`, about 25 ms per collection on disk, roughly 1/75 of the edge
    * node's 60 s `DEFAULT_OWNER_GENESIS_TIMEOUT_MS`. Under the whole cadre-core suite's load (151
@@ -2187,6 +2190,11 @@ export class ControlDatabase {
     return this.queryStampId('StrandPartyKey', strandId);
   }
 
+  /** `PendingStrandPartyKey` stamp nonce, retired or not — bound into {@link deletePendingStrandPartyKey}'s remove digest. */
+  queryPendingStrandPartyKeyStampId(strandId: string): Promise<string | null> {
+    return this.queryStampId('PendingStrandPartyKey', strandId);
+  }
+
   /** `JoinedStrand` stamp nonce — bound into {@link deleteJoinedStrand}'s remove digest. */
   queryJoinedStrandStampId(strandId: string): Promise<string | null> {
     return this.queryStampId('JoinedStrand', strandId);
@@ -2209,6 +2217,86 @@ export class ControlDatabase {
       return (row.PrivateKey as string | null) ?? null;
     }
     return null;
+  }
+
+  /**
+   * The key this party is moving to in one strand, or null when no rotation is pending there.
+   *
+   * A row whose stamp is retired reads as absent, as {@link queryPendingJoin} treats one: the
+   * table has no reap branch, so a node that received the tombstone without the delete keeps the
+   * physical row, and a replayed approval can re-seat a removed row on a node that has not seen
+   * its tombstone. Either way a key that was replaced, perhaps because a removed machine had it,
+   * must not read as the key to move to.
+   */
+  async queryPendingStrandPartyKey(strandId: string): Promise<PendingStrandPartyKeyRow | null> {
+    this.ensureInitialized();
+    const revoked = await this.queryRevokedStamps('PendingStrandPartyKey');
+    const rows = await this.readRows(
+      'select PrivateKey, Superseded, StampId from CadreControl.PendingStrandPartyKey where Id = ?',
+      [strandId],
+      'pending-strand-party-key'
+    );
+    const row = rows[0];
+    if (row === undefined || revoked.has(row.StampId as string)) {
+      return null;
+    }
+    const superseded = row.Superseded as string | null;
+    return {
+      privateKey: row.PrivateKey as string,
+      superseded: superseded === null ? [] : superseded.split(','),
+      stampId: row.StampId as string,
+    };
+  }
+
+  /**
+   * Every machine's signed statement of its peer id in one strand. A row whose signature does
+   * not verify against the key its `PeerId` derives from is dropped ({@link verifyStrandPeerRow}).
+   * Which rows are live machines and which removed ones is the caller's question.
+   *
+   * NOTE: on a party whose store migrated to this table, nothing holds its collection until a
+   * machine writes it, so a read asks the cohort to prove it empty and can fail while the other
+   * machines are offline (`backlog/feat-strand-tables-added-by-a-later-schema-get-their-collection`).
+   * A failure propagates rather than reading as "no rows": decide that with the caller that would
+   * act on an empty list.
+   */
+  async queryStrandPeers(strandId: string): Promise<StrandPeerRow[]> {
+    this.ensureInitialized();
+    const rows = await this.readStrandPeerRows(strandId, true);
+    return rows.filter((row) => {
+      const verified = verifyStrandPeerRow(this.config.partyId, row);
+      if (!verified) {
+        log('StrandPeer row dropped: signature does not verify for machine %s in strand %s', row.peerId, strandId);
+      }
+      return verified;
+    });
+  }
+
+  /**
+   * The raw `StrandPeer` rows of one strand. Filters on the leading primary-key column only and
+   * compares again here: the optimystic module serves an equality on the whole composite key
+   * with a single point lookup that can miss a row on a networked table, and declines a partial
+   * match, which then scans (`scanMemberPeers` in `strand-membership-writer.ts`).
+   * `retry: false` inside a locked write body.
+   *
+   * NOTE: because the predicate is not pushed down, this walks every strand's rows per call. Fine
+   * at party scale; if a party ever runs many strands on many machines, this wants a reliable
+   * composite-key seek rather than a secondary index, which would restore the seek dependency.
+   */
+  private async readStrandPeerRows(strandId: string, retry: boolean): Promise<StrandPeerRow[]> {
+    const rows = await this.readRows(
+      'select StrandId, PeerId, StrandPeerId, Sig from CadreControl.StrandPeer where StrandId = ?',
+      [strandId],
+      'strand-peers',
+      retry
+    );
+    return rows
+      .filter((row) => row.StrandId === strandId)
+      .map((row) => ({
+        strandId,
+        peerId: row.PeerId as string,
+        strandPeerId: row.StrandPeerId as string,
+        sig: row.Sig as string,
+      }));
   }
 
   /** `ValidationKey` stamp nonce — bound into {@link deleteValidationKey}'s remove digest. */
@@ -3047,6 +3135,106 @@ export class ControlDatabase {
   }
 
   /**
+   * Insert the key this party is moving to in one strand (`PendingStrandPartyKey` row), under an
+   * owner signature, before the strand is touched.
+   *
+   * @param strandId - The strand whose party key is being replaced.
+   * @param privateKey - The new key, encoded as `StrandPartyKey.PrivateKey` (`generateStrandMemberKey`).
+   * @param superseded - Public keys (base64url) of earlier pending keys this row replaces.
+   * @param ownerKey - Public key of the authorizing owner.
+   * @param signMessage - Signs the raw message bytes with that owner's private key.
+   */
+  async insertPendingStrandPartyKey(
+    strandId: string,
+    privateKey: string,
+    superseded: readonly string[],
+    ownerKey: string,
+    signMessage: ControlSign
+  ): Promise<void> {
+    this.ensureInitialized();
+    const insert = await this.signPendingStrandPartyKeyInsert(strandId, privateKey, superseded, ownerKey, signMessage);
+    await this.execWrite(insert.sql, insert.params, 'pending-strand-party-key-insert');
+    log('Pending strand party key inserted for strand: %s', strandId);
+  }
+
+  /**
+   * The stamped, owner-signed `PendingStrandPartyKey` insert. Apart from
+   * {@link insertPendingStrandPartyKey} so a writer can run it inside a larger transaction, as
+   * {@link signStrandPartyKeyInsert} is. Each superseded key must be a well-formed public key: the
+   * column is comma-joined, and base64url is what keeps the join reversible.
+   */
+  private async signPendingStrandPartyKeyInsert(
+    strandId: string,
+    privateKey: string,
+    superseded: readonly string[],
+    ownerKey: string,
+    signMessage: ControlSign
+  ): Promise<SignedInsert> {
+    const fields = {
+      strandId,
+      privateKey,
+      superseded: superseded.length === 0
+        ? null
+        : superseded.map((key) => requireEd25519PublicKeyB64(key, 'superseded party key')).join(','),
+      stampId: generateStampId(this.config.libp2pNode.peerId.toString()),
+    };
+    const message = buildAuthorizationMessage('CadreControl.PendingStrandPartyKey', 'add', this.config.partyId, pendingStrandPartyKeyRowFields(fields));
+    return {
+      sql: `
+        insert into CadreControl.PendingStrandPartyKey (Id, PrivateKey, Superseded, StampId)
+          with context OwnerKey = ?, Signature = ?
+          values (?, ?, ?, ?)
+      `,
+      params: [ownerKey, await signMessage(message), fields.strandId, fields.privateKey, fields.superseded, fields.stampId],
+    };
+  }
+
+  /**
+   * Owner-signed removal of one `PendingStrandPartyKey` row with its tombstone, as
+   * {@link deleteStrandPartyKey}. A no-op when the row does not exist — `false` then, `true`
+   * when a row was actually removed.
+   */
+  deletePendingStrandPartyKey(
+    strandId: string,
+    ownerKey: string,
+    signMessage: ControlSign
+  ): Promise<boolean> {
+    return this.lockedWithRetry(() => this.deleteGuardedRow('PendingStrandPartyKey', strandId, ownerKey, signMessage), {}, 'pending-strand-party-key-delete');
+  }
+
+  /**
+   * Publish this machine's peer id in one strand (`StrandPeer` row), signed by this machine's
+   * own identity key. Insert-if-absent: `true` when a row was written, `false` when this machine
+   * already has one for the strand. The schema refuses the insert while this node does not hold
+   * the machine's `CadrePeer` row, and that rejection propagates.
+   *
+   * @param row - The strand, and this machine's peer id in it (`strandTransportKey`).
+   * @param sign - Signs the raw message bytes with the identity key behind this machine's
+   *   control peer id. A callback for the reason {@link updateSelfPeerRecord} takes one: this
+   *   class holds no private key.
+   */
+  async insertStrandPeer(row: { strandId: string; strandPeerId: string }, sign: ControlSign): Promise<boolean> {
+    this.ensureInitialized();
+    const peerId = this.config.libp2pNode.peerId.toString();
+    const fields = { strandId: row.strandId, peerId, strandPeerId: row.strandPeerId };
+    return this.lockedWithRetry(async () => {
+      // retry: false — this guard runs inside the locked write body (see queryStampId's NOTE).
+      const held = (await this.readStrandPeerRows(row.strandId, false)).find((stored) => stored.peerId === peerId);
+      if (held !== undefined) {
+        log('StrandPeer row already present for strand %s (names %s); insert skipped', row.strandId, held.strandPeerId);
+        return false;
+      }
+      const sig = await sign(buildAuthorizationMessage('CadreControl.StrandPeer', 'add', this.config.partyId, strandPeerRowFields(fields)));
+      // Bare `exec`: already inside the write lock, which is NOT re-entrant.
+      await this.db!.exec(
+        'insert into CadreControl.StrandPeer (StrandId, PeerId, StrandPeerId, Sig) values (?, ?, ?, ?)',
+        [fields.strandId, fields.peerId, fields.strandPeerId, sig]
+      );
+      return true;
+    }, {}, 'strand-peer-insert');
+  }
+
+  /**
    * Record, party-wide, a strand this party joined from another party (`JoinedStrand` row),
    * using an owner signature.
    *
@@ -3784,7 +3972,7 @@ export class ControlDatabase {
    *
    * Two rows are deliberately left alone:
    *
-   * - **Tables outside {@link REAPABLE_TABLES}** (`Strand`, `StrandPartyKey`, `OwnerKey`)
+   * - **Tables outside {@link REAPABLE_TABLES}** (`Strand`, `StrandPartyKey`, `PendingStrandPartyKey`, `OwnerKey`)
    *   — no reap branch exists on their `AuthorizedDelete`, so the delete would throw
    *   rather than no-op.
    * - **This node's OWN `CadrePeer` / `DeviceToken` row** (`selfPeerId`). Reaping it would

@@ -14,7 +14,8 @@ At every closed-strand launch and resume, once the strand's libp2p node exists (
 
 - **A background control write.** Not awaited by the launch and never fails it. Skipped while `controlWriteCouldFork` (the node is alone with other party members), and re-attempted by the control-sibling growth drain (`runDrainControlReplication`, beside the self-record re-touch) and by each reconciler pass below (insert-if-absent, so repeats cost one read). A refusal because the machine's own `CadrePeer` row is absent on this node is logged and retried the same way.
 - **Regardless of party key.** A storage replica launched without a `partyMemberPrivateKey` still has a strand peer id and still gets bound by its siblings. Open strands write nothing: no `Member` table, nothing to bind.
-- **Signer.** The node's identity key, as the self record. No owner needed, so every machine kind writes its own row.
+- **Signer.** The node's identity key, as the self record. No owner needed, so every machine kind writes its own row. `ControlDatabase` holds no private key, so `insertStrandPeer(row, sign)` takes the signer as a `ControlSign` callback, as `updateSelfPeerRecord` does: build it from `getSelfSigningKey`, and skip the write when that returns null (an ephemeral identity).
+- **Reads can fail on a migrated party.** `StrandPeer` and `PendingStrandPartyKey` have no collection on a party founded before control schema version 4 until a machine writes them, so `queryStrandPeers` and `queryPendingStrandPartyKey` may fail while the other machines are offline (`backlog/feat-strand-tables-added-by-a-later-schema-get-their-collection`). Neither answers "no rows" on failure. Step 2 below must treat a failed pending read as "a rotation may be pending" and clear nothing.
 
 ## The reconciler's new work
 

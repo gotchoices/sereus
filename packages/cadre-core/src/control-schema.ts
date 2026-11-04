@@ -10,7 +10,7 @@ import { Parser } from '@quereus/quereus';
  * docs/architecture.md → "Control schema versions and migrations", enforced by
  * `control-schema-versions.spec.ts`.
  */
-export const CONTROL_SCHEMA_VERSION = 3;
+export const CONTROL_SCHEMA_VERSION = 4;
 
 /**
  * The first control schema version whose fixture is kept, and the oldest a store can be
@@ -48,9 +48,9 @@ export const CONTROL_SCHEMA_DECLARATION = `-- A Sereus party's cadre (its nodes)
 -- an owner key never accept each other's approvals. FormationUsage is the exception, its
 -- two digests scoped by the invitation token instead (FormationUsage.Authorized).
 --
--- Rows of the guarded tables (OwnerKey, ValidationKey, Strand, StrandPartyKey, JoinedStrand,
--- JoinRequest, CadrePeer, DeviceToken, CadreInvite, OwnerGrant) carry a one-off StampId bound
--- into their add and remove digests. \`unique\` holds over live rows only, so a delete retires
+-- Rows of the guarded tables (OwnerKey, ValidationKey, Strand, StrandPartyKey,
+-- PendingStrandPartyKey, JoinedStrand, JoinRequest, CadrePeer, DeviceToken, CadreInvite,
+-- OwnerGrant) carry a one-off StampId bound into their add and remove digests. \`unique\` holds over live rows only, so a delete retires
 -- the stamp into Revocation in the same transaction (RevocationRecorded) and an insert refuses
 -- a retired stamp (NotRevoked): the never-expiring add approval cannot re-seat a removed row.
 -- A legitimate re-add mints a fresh stamp and a fresh signature. CadreInvite and OwnerGrant
@@ -269,6 +269,39 @@ declare schema CadreControl {
         -- No reap branch: the key is stored nowhere else (as Strand.AuthorizedDelete).
         constraint AuthorizedDelete check on delete (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.StrandPartyKey', 'remove', party_id(), old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
+        )
+    ) with context (OwnerKey text, Signature text);
+
+    -- The key this party's membership in one closed strand is moving to, while the move is under
+    -- way. It is written before the strand is touched and swapped into StrandPartyKey only after
+    -- the strand-side work is done: seating a fresh key and crashing before the control row changes
+    -- would leave a manager seat nobody holds, and changing the control row first would delete the
+    -- only copy of the old key, which the seating needs. A table of its own because StrandPartyKey
+    -- is keyed on the strand id alone and NoUpdate. Guarded as StrandPartyKey is, with no reap
+    -- branch for the same reason: the key is stored nowhere else.
+    -- NOTE: unlike a tombstone (Revocation.ReissuedAt), a pending row committed while the remover
+    -- was alone has no re-issue path, so a remover that removes alone and is lost before its
+    -- rotations finish loses the rows with it. If that ever matters, give this table that idiom.
+    table PendingStrandPartyKey (
+        Id text primary key,        -- the strand id
+        PrivateKey text,            -- the key being moved to, encoded as StrandPartyKey.PrivateKey
+        Superseded text null,       -- comma-joined public keys (base64url) of earlier pending keys this row replaced.
+                                    -- A second removal replaces the row because the old key may have reached the
+                                    -- machine it removes, and a seat that key already holds must then be revoked.
+        StampId text unique,
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'PendingStrandPartyKey' and R.StampId = new.StampId)
+        ),
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'PendingStrandPartyKey' and R.StampId = old.StampId and R.RowKey = old.Id)
+        ),
+        constraint NoUpdate check on update (false),
+        -- Binding Superseded as well as the key: a captured approval cannot drop a key from the list.
+        constraint AuthorizedInsert check on insert (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.PendingStrandPartyKey', 'add', party_id(), new.Id, new.PrivateKey, coalesce(new.Superseded, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
+        ),
+        constraint AuthorizedDelete check on delete (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.PendingStrandPartyKey', 'remove', party_id(), old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text, Signature text);
 
@@ -558,6 +591,30 @@ declare schema CadreControl {
                     new.Sig, P.PublicKey, 'ed25519'))
         )
     ) with context (OwnerKey text null, Signature text);
+
+    -- Each machine's own signed statement of the peer id it uses in one strand. That id derives from
+    -- the machine's private identity seed (cadre-core strandTransportKey), so no other machine can
+    -- compute it, and a machine removal needs it to tell the removed machine's Strand.MemberPeer
+    -- binding from its siblings'. A row is a permanent fact: the derivation is deterministic, and a
+    -- removed machine's rows are how its orphaned bindings stay attributed to it. So no stamp, no
+    -- tombstone and no delete, and no Revocation.RowIsGone branch.
+    -- The check defers (it has a subquery), so a CadrePeer row written in the same transaction
+    -- counts. A node that does not hold the machine's CadrePeer row yet refuses the insert, and the
+    -- writer tries again later. The check runs only on the node that takes the insert, and it cannot
+    -- tell whether PublicKey is really the key behind PeerId, so a reader re-verifies Sig against the
+    -- key derived from PeerId (ControlDatabase.queryStrandPeers) and judges PeerId against the
+    -- membership views.
+    table StrandPeer (
+        StrandId text,              -- a Strand.Id or JoinedStrand.Id
+        PeerId text,                -- the machine's control peer id (CadrePeer.PeerId)
+        StrandPeerId text,          -- that machine's peer id in the strand's own network
+        Sig text,                   -- the machine's signature over the 'add' digest
+        primary key (StrandId, PeerId),
+        constraint Immutable check on update, delete (false),
+        constraint Authorized check on insert (
+            exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and verify(digest('CadreControl.StrandPeer', 'add', party_id(), new.StrandId, new.PeerId, new.StrandPeerId), new.Sig, P.PublicKey, 'ed25519'))
+        )
+    );
 
     -- An open invitation to form a strand with this party.
     table FormationInvite (
@@ -909,9 +966,10 @@ declare schema CadreControl {
     -- TableName, and queryRevocations skips it. A 'CadreInvite' or 'OwnerGrant' row withdraws
     -- an invitation or a grant whose row stays (the table comments).
     table Revocation (
-        TableName text,             -- 'OwnerKey' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' | 'JoinedStrand' |
-                                    -- 'JoinRequest' | 'CadrePeer' | 'DeviceToken' | 'CadreInvite' | 'OwnerGrant', or
-                                    -- 'Revocation' for an older party's marker
+        TableName text,             -- 'OwnerKey' | 'ValidationKey' | 'Strand' | 'StrandPartyKey' |
+                                    -- 'PendingStrandPartyKey' | 'JoinedStrand' | 'JoinRequest' | 'CadrePeer' |
+                                    -- 'DeviceToken' | 'CadreInvite' | 'OwnerGrant', or 'Revocation' for an older
+                                    -- party's marker
         RowKey text,                -- primary key of the removed row
         StampId text,               -- the retired stamp
         ReissuedAt integer default 0,   -- bumped by an owner-signed re-issue so a tombstone committed while the
@@ -950,6 +1008,7 @@ declare schema CadreControl {
                 or (new.TableName = 'ValidationKey' and not exists (select 1 from ValidationKey V where V.StampId = new.StampId))
                 or (new.TableName = 'Strand' and not exists (select 1 from Strand S where S.StampId = new.StampId))
                 or (new.TableName = 'StrandPartyKey' and not exists (select 1 from StrandPartyKey K where K.StampId = new.StampId))
+                or (new.TableName = 'PendingStrandPartyKey' and not exists (select 1 from PendingStrandPartyKey K where K.StampId = new.StampId))
                 or (new.TableName = 'JoinedStrand' and not exists (select 1 from JoinedStrand J where J.StampId = new.StampId))
                 or (new.TableName = 'JoinRequest' and not exists (select 1 from JoinRequest J where J.StampId = new.StampId))
                 or (new.TableName = 'DeviceToken' and not exists (select 1 from DeviceToken D where D.StampId = new.StampId))

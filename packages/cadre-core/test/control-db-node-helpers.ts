@@ -97,8 +97,9 @@ export function freshPartyId(tag: string): string {
  * step with `CadreNode.buildControlNodeOptions`; what such a spec tests is the schema apply over
  * optimystic storage, not how a node is configured.
  */
-export function createControlNode(partyId: string, storage: IRawStorage): Promise<OptimysticNode> {
+export function createControlNode(partyId: string, storage: IRawStorage, privateKey?: PrivateKey): Promise<OptimysticNode> {
 	return createLibp2pNode({
+		...(privateKey && { privateKey }),
 		port: 0,
 		bootstrapNodes: [],
 		networkName: `control-${partyId}`,

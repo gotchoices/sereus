@@ -1,9 +1,9 @@
 import debug from 'debug';
 import { digest, verify } from '@optimystic/quereus-plugin-crypto';
-import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields } from './control-authorization.js';
-import type { BoundControlDomain, CadreInviteSignedFields, ControlAction, OwnerGrantSignedFields, RevocableTable, UnboundControlDomain } from './control-authorization.js';
+import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, strandPeerRowFields } from './control-authorization.js';
+import type { BoundControlDomain, CadreInviteSignedFields, ControlAction, OwnerGrantSignedFields, RevocableTable, StrandPeerSignedFields, UnboundControlDomain } from './control-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
-import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields, OwnerGrantRow, OwnerGrantUsageRow, OwnerKeyRow, RevocationRow } from './types.js';
+import type { CadreInviteRow, CadreInviteUsageRow, CadrePeerVoucherFields, OwnerGrantRow, OwnerGrantUsageRow, OwnerKeyRow, RevocationRow, StrandPeerRow } from './types.js';
 
 const log = debug('sereus:cadre:peer-authorization');
 
@@ -440,6 +440,30 @@ export function verifyInvitationAdmission(
       && verifyB64(cadreInviteConsentDigest(partyId, invite.key, usage.usageStampId, usage.peerKey), usage.peerSig, usage.peerKey);
   } catch (error) {
     log('verifyInvitationAdmission failed: %o', error);
+    return false;
+  }
+}
+
+/**
+ * Canonical digest a machine signs to state its own peer id in one strand, with its own
+ * identity key rather than an owner key. SQL mirror: `StrandPeer.Authorized`.
+ */
+export function strandPeerAddDigest(partyId: string, row: StrandPeerSignedFields): string {
+  return taggedDigest('CadreControl.StrandPeer', 'add', partyId, strandPeerRowFields(row));
+}
+
+/**
+ * Was a `StrandPeer` row signed by the machine it names, in `partyId`? Verified against the key
+ * derived from `peerId`, not against `CadrePeer.PublicKey` as the schema's check does, because
+ * that column is written by whoever seated the row and a replicated row never meets the check.
+ * Whether `peerId` is a machine of this party is the caller's question. Never throws.
+ */
+export function verifyStrandPeerRow(partyId: string, row: StrandPeerRow): boolean {
+  try {
+    const publicKey = ed25519PublicKeyB64FromPeerId(row.peerId);
+    return publicKey !== null && verifyB64(strandPeerAddDigest(partyId, row), row.sig, publicKey);
+  } catch (error) {
+    log('verifyStrandPeerRow failed: %o', error);
     return false;
   }
 }

@@ -118,7 +118,7 @@ const GATE_WATCH_SETTLE_MS = 100;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-10-25';
+const MEASURED_ON = '2026-11-03';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -224,16 +224,20 @@ const MEASURED_ON = '2026-10-25';
  * one per tree. Genesis 34 → 33 (the owner key insert's 2 → 1) and `foundStrand`'s control side
  * 3 → 1; no consult count moved. `cohort-consult-counter.ts` now counts `commitMany`, which
  * `commit` delegates to; counting `commit` alone missed every multi-collection commit.
+ *
+ * Re-measured whole at `fe7069f0` on 2026-11-03 for control schema version 4, its working tree
+ * carrying one uncommitted file. Only the cold and genesis phases moved, both by the two tables
+ * that version adds; see {@link COLD} and {@link GENESIS}.
  */
-const BASELINE_UPSTREAM = 'optimystic 00fa26b0';
+const BASELINE_UPSTREAM = 'optimystic fe7069f0';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
- * watcher's first poll it leaves running. 41 consults over 33 blocks, 1 commit. Every
+ * watcher's first poll it leaves running. 44 consults over 36 blocks, 1 commit. Every
  * control table and index block is consulted once as the schema is applied (all missing),
  * the schema catalog (`optimystic/schema`) 5 times, and four never-written tables once
  * more each: `CadrePeer` and `Revocation` by the gate seed's `queryCadrePeers`, `Strand` and
- * `JoinedStrand` by the watcher's `queryStrands` / `queryJoinedStrands`. 32 + 5 + 4 = 41.
+ * `JoinedStrand` by the watcher's `queryStrands` / `queryJoinedStrands`. 35 + 5 + 4 = 44.
  * History: 24 over 18 blocks in the trace that motivated this spec (snapshotted at `start()`'s
  * return, before the seed and the poll), 30 on 2026-09-15, 25 over 18 at optimystic
  * `03ffadc4` — the catalog went 7 → 5 and each of the three never-written tables 3 → 2 — 26
@@ -246,17 +250,19 @@ const BASELINE_UPSTREAM = 'optimystic 00fa26b0';
  * then 37 over 29 with `CadreInvite` (its table and stamp index) and `CadreInviteUsage` (its
  * table and the `CadreInviteUsageByInvite` index), read by nothing at start: +4 over 4, then
  * 41 over 33 with `OwnerGrant` (its table and stamp index) and `OwnerGrantUsage` (its table
- * and the `OwnerGrantUsageByGrant` index), read by nothing at start: +4 over 4.
+ * and the `OwnerGrantUsageByGrant` index), read by nothing at start: +4 over 4, then 44 over 36
+ * with `PendingStrandPartyKey` (its table and stamp index) and `StrandPeer` (its table), read by
+ * nothing at start: +3 over 3.
  */
-const COLD: Budget = { consults: 41, blocks: 33, commits: 1, consultBudget: 45, blockBudget: 36, commitBudget: 2 };
+const COLD: Budget = { consults: 44, blocks: 36, commits: 1, consultBudget: 48, blockBudget: 39, commitBudget: 2 };
 /**
  * Genesis: `ensureOwnerKey` on the fresh party, wiring the owner signer (no read), then the
- * membership gate refresh the insert earns ({@link settleGateWatch}). 24 consults over 23
- * blocks, 34 commits: each of the 17 control tables' main block ×1, `OwnerKey`'s once more,
+ * membership gate refresh the insert earns ({@link settleGateWatch}). 26 consults over 25
+ * blocks, 36 commits: each of the 19 control tables' main block ×1, `OwnerKey`'s once more,
  * and 1 each on six tree blocks — the insert's two, two the gate refresh's view loads read
  * first, one the strand watcher's run reads, and one unattributed (see
- * {@link BASELINE_UPSTREAM}). The 33 commits are the 32 empty collections genesis commits (17
- * tables, 3 indexes, 12 unique stamp trees) and the owner key insert's 1, which carries both
+ * {@link BASELINE_UPSTREAM}). The 36 commits are the 35 empty collections genesis commits (19
+ * tables, 3 indexes, 13 unique stamp trees) and the owner key insert's 1, which carries both
  * `OwnerKey` trees. History: 14 over 3
  * blocks in the motivating trace and on 2026-09-15 (`OwnerKey` ×6, its stamp index ×6, the
  * never-written `Revocation` ×2), exactly halved to 7 (×3, ×3, ×1) at optimystic `03ffadc4`,
@@ -265,9 +271,10 @@ const COLD: Budget = { consults: 41, blocks: 33, commits: 1, consultBudget: 45, 
  * committed every control table's collection (`control-collections-created-at-cadre-founding`),
  * then 24 once the gate watch's refresh and the strand watcher's run were settled inside this
  * phase (`control-reconcile-woken-by-changes-reads-once`), then 33 commits once the insert's two
- * trees committed as one record (Optimystic 1.19.0, GitHub #42).
+ * trees committed as one record (Optimystic 1.19.0, GitHub #42), then 26 with 36 commits for control
+ * schema version 4's two tables and one stamp tree.
  */
-const GENESIS: Budget = { consults: 24, blocks: 23, commits: 33, consultBudget: 27, blockBudget: 25, commitBudget: 34 };
+const GENESIS: Budget = { consults: 26, blocks: 25, commits: 36, consultBudget: 29, blockBudget: 27, commitBudget: 37 };
 /**
  * `foundStrand`, control network side: the `Strand` row published. 1 consult over 1 block,
  * 1 commit, carrying all three `Strand` trees (3 commits, one per tree, before Optimystic

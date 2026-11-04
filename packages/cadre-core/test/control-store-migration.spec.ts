@@ -10,6 +10,7 @@ import { ControlDatabase } from '../src/control-database.js';
 import { CONTROL_SCHEMA, CONTROL_SCHEMA_BASELINE_VERSION, CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_VERSION_TAG } from '../src/control-schema.js';
 import { ControlStoreIncompatibleError, pendingControlSchemaChanges } from '../src/control-schema-version.js';
 import { controlStorageScope } from '../src/storage-scope.js';
+import { generateStrandMemberKey } from '../src/strand-member-key.js';
 import {
 	atVersion,
 	controlSchemaReleases,
@@ -153,6 +154,30 @@ describe('a control store written under another control schema version', () => {
 		const refusal = await refusalOf(lifetime(storage, partyId, previous, noRead));
 		expect({ reason: refusal.reason, storeVersion: refusal.storeVersion, buildVersion: refusal.buildVersion })
 			.toEqual({ reason: 'newer-release', storeVersion: releases.nextVersion, buildVersion: releases.baselineVersion });
+	});
+
+	it('from the baseline fixture: this build migrates it, and a table added since runs its guarded delete', async () => {
+		// The case above runs synthetic releases. This one runs this build's real statements over the
+		// optimystic module, which `control-schema-versions.spec.ts` classifies but never runs. The
+		// delete files a tombstone through `Revocation.RowIsGone`, whose body changed in version 4.
+		const partyId = freshPartyId('from-baseline');
+		const storage = new MemoryRawStorage();
+		const baseline = await writeSchemaFile(schemaDir, 'baseline', releases.baseline);
+		const owner = freshKeyPair();
+		const sign = (message: Uint8Array): string => signAs(owner, message);
+
+		await lifetime(storage, partyId, baseline, async (controlDb) => {
+			expect(await controlDb.ensureOwnerKey(owner.publicKey, 'phone')).toBe(true);
+		});
+
+		await lifetime(storage, partyId, undefined, async (controlDb) => {
+			expect(await pendingControlSchemaChanges(controlDb.getDatabase())).toEqual([]);
+			expect(ownerKeyVersionTag(controlDb.getDatabase())).toBe(CONTROL_SCHEMA_VERSION);
+			expect((await controlDb.queryOwnerKeyRows()).map(({ key }) => key)).toEqual([owner.publicKey]);
+
+			await controlDb.insertPendingStrandPartyKey('strand', await generateStrandMemberKey(), [], owner.publicKey, sign);
+			expect(await controlDb.deletePendingStrandPartyKey('strand', owner.publicKey, sign)).toBe(true);
+		});
 	});
 
 	it('migrated by a newer release: refused as newer-release, without recreate advice, even when the pending changes only add', async () => {

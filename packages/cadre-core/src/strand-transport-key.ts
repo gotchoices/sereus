@@ -10,6 +10,9 @@ import { ed25519KeyPairFromLibp2p } from './ed25519-key.js';
  * peerId churn — a strand node's transport peerId must stay stable across
  * process restarts, or any peer-store entry or `MemberPeer` row that names it
  * goes stale on every boot.
+ *
+ * NOTE: every `CadreControl.StrandPeer` row names a peer id derived under this tag, and those
+ * rows cannot be updated or deleted. If this is ever bumped to `.v2`, every row is stale at once.
  */
 const STRAND_TRANSPORT_KEY_DOMAIN = 'sereus.strand-transport-key.v1';
 
