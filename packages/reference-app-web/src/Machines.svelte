@@ -13,6 +13,7 @@
 		machinesState,
 		refreshMachines,
 		removalEffects,
+		unfinishedWorkspaces,
 		REFUSAL_LINE,
 		withdrawDeviceInvitation,
 	} from './lib/machines.svelte.js';
@@ -24,7 +25,8 @@
 
 	const NOT_OWNER_LINE = 'Only an owner of this cadre can remove machines. This tab is a member.';
 	const UNREADABLE_LINE = 'Could not check whether this tab is an owner of this cadre, so nothing can be removed from here until Refresh reads it.';
-	const KEEPS_LINE = "It keeps whatever it already copied, including the cadre's shared data. Removing it stops it syncing with this cadre's machines.";
+	const KEEPS_LINE = "It keeps whatever it already copied, including the cadre's shared data. Removing it stops it syncing with this cadre's machines and replaces this cadre's membership key in each private workspace the cadre manages, so it stops being served there too.";
+	const UNFINISHED_HEADING = 'Not finished by this removal:';
 
 	const owner = $derived(list.standing === 'owner');
 
@@ -81,6 +83,14 @@
 				{:else}
 					<p class="text">{removalEffects(removal.plan)}</p>
 					<p class="hint">{KEEPS_LINE}</p>
+					{#if unfinishedWorkspaces(removal.plan).length > 0}
+						<p class="hint">{UNFINISHED_HEADING}</p>
+						<ul class="hint" data-testid="unfinished-workspaces">
+							{#each unfinishedWorkspaces(removal.plan) as line (line)}
+								<li>{line}</li>
+							{/each}
+						</ul>
+					{/if}
 					<p class="hint warn" data-testid="lost-device-line">{LOST_DEVICE_LINE}</p>
 				{/if}
 				<div class="buttons">

@@ -22,7 +22,9 @@ import { TEST_IDS } from './test-ids';
 
 /** Under this device's own row: a device does not remove itself (`self`); leaving a cadre stops the node and deletes its data. */
 export const SELF_LINE = 'A device does not remove itself from its cadre: to remove this device, use another owner device.';
-const KEEPS_LINE = 'It keeps whatever it already copied, including the cadre\'s shared data. Removing it stops it syncing with this cadre\'s machines.';
+const KEEPS_LINE = 'It keeps whatever it already copied, including the cadre\'s shared data. Removing it stops it syncing with this cadre\'s machines and replaces this cadre\'s membership key in each private workspace the cadre manages, so it stops being served there too.';
+/** Above the private workspaces this removal does not finish from this device. */
+const UNFINISHED_HEADING = 'Not finished by this removal:';
 /** Removing a machine leaves its owner key live; only removing the key locks a lost phone out. */
 const LOST_DEVICE_LINE = 'If this was a lost or stolen phone that held an owner key, remove that key too in Owner keys; otherwise whoever has the phone can still act as an owner.';
 
@@ -155,10 +157,17 @@ function RemovePrompt({ removal, onConfirm, onCancel, onShowOwnerKeys }: {
 }
 
 function RemovalDetails({ plan, onShowOwnerKeys }: { plan: MachineRemovalPlan; onShowOwnerKeys?: () => void }) {
+	const unfinished = unfinishedWorkspaces(plan);
 	return (
 		<>
 			<Text style={controlStyles.promptText}>{removalEffects(plan)}</Text>
 			<Text style={[controlStyles.hint, { marginTop: 8 }]}>{KEEPS_LINE}</Text>
+			{unfinished.length > 0 && (
+				<>
+					<Text style={[controlStyles.hint, { marginTop: 8 }]}>{UNFINISHED_HEADING}</Text>
+					{unfinished.map((line) => <Text key={line} style={controlStyles.hint}>{line}</Text>)}
+				</>
+			)}
 			{onShowOwnerKeys && (
 				<>
 					<Text style={controlStyles.slowHint}>{LOST_DEVICE_LINE}</Text>
@@ -167,6 +176,20 @@ function RemovalDetails({ plan, onShowOwnerKeys }: { plan: MachineRemovalPlan; o
 			)}
 		</>
 	);
+}
+
+/** One line per private workspace whose key replacement this removal does not finish from this device: "‹id›: needs the other party's manager". */
+function unfinishedWorkspaces(plan: MachineRemovalPlan): string[] {
+	return plan.strands.flatMap(({ strandId, rotation }) => {
+		switch (rotation) {
+			case 'another-party':
+				return [`${strandId}: needs the other party's manager`];
+			case 'later':
+				return [`${strandId}: finishes on a device that runs it`];
+			case 'here':
+				return [];
+		}
+	});
 }
 
 /** "It is removed from this cadre. The 2 invitations it could join again with are withdrawn." */

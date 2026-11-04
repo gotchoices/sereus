@@ -46,6 +46,8 @@ export interface PinningMemberOptions {
 	strandWatchMs?: number;
 	/** A test connection gater, composed under the member's membership gate (`ControlNodeOpts.connectionGater`). */
 	connectionGater?: ConnectionGater;
+	/** The member's closed-strand membership reconciler (`ControlNodeOpts.membershipReconciliation`); meaningful once it runs a strand. */
+	membershipReconciliation?: false | { pollIntervalMs: number };
 }
 
 /**
@@ -65,6 +67,7 @@ export async function startPinningMember(partyId: string, ownerKey: string, opti
 		...(options.reconcileMs !== undefined ? { reconcileMs: options.reconcileMs } : {}),
 		...(options.strandWatchMs !== undefined ? { strandWatchMs: options.strandWatchMs } : {}),
 		...(options.connectionGater ? { connectionGater: options.connectionGater } : {}),
+		...(options.membershipReconciliation !== undefined ? { membershipReconciliation: options.membershipReconciliation } : {}),
 	}));
 	await node.start();
 	if (options.ownerKey) {

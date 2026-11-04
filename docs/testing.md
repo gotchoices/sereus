@@ -772,6 +772,15 @@ scenarios whose subject is a protocol or a service rather than a network shape a
   removed machine's own gate never sees the removal), and settles the invitation by itself
   once a remaining manager re-admits the party. Connections here are DIRECT too; the
   relay-mediated variant stays uncovered, as above.
+- A machine removed from a cadre whose party shares a closed strand with another party, on
+  rows production wrote: the party's key is replaced, the removed machine is cut by its former
+  siblings and the other party from the rows alone on the production revocation schedule, and
+  an always-on replica offline through the removal returns on the same store with no owner
+  signer, is served, holds the writes it missed and finishes its membership loop —
+  `machine-removal-rotates-party-key.integration.ts`. The remover is alone once the machine is
+  gone, so the removal reports `pending` and the swap finishes on the replica's return;
+  `removeMachine` reporting `rotated` with a sibling reachable is **uncovered** on a real
+  network. Connections here are DIRECT too.
 - **Uncovered**: medium private network — ticket `feat-scenario-medium-private-network`.
 - **Uncovered**: public open strand network — ticket `feat-scenario-public-open-strand-network`.
 

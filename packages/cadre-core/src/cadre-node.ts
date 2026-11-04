@@ -9967,8 +9967,7 @@ export class CadreNode implements SAppIdLookup {
    * revoked-peer gate denies it. The result says per strand whether that happened here
    * ({@link MachineRemovalResult.strands}): a strand not running here is finished by any owner
    * machine that runs it, and a strand the party does not manage waits for the other party's
-   * manager. The removed machine never receives the new key, because the control database no
-   * longer syncs to it.
+   * manager.
    *
    * Owner keys stay: they are the person's, not the machine's. A lost phone that held one can
    * still sign, a fresh machine invitation it could redeem included, so removing that key

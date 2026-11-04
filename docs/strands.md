@@ -884,6 +884,14 @@ no longer the case.
   An app that keeps a removed strand around as a read-only archive should expect each
   machine's archive to be whatever that machine had at the moment of removal, not a shared
   one.
+- **A machine removed from the cadre is cut the same way, while its party stays.** Its party
+  replaces its membership key in the strand ([Replacing the party's
+  key](#replacing-the-partys-key)), which leaves the machine's device record under a key that
+  is no longer a member. Every remaining machine then refuses it on the rows alone, the other
+  party's machines included, while the party's other machines, bound under both keys, stay
+  served. A machine of the party that was offline through the replacement returns bound under
+  the new key with nothing asked of it. Proved by
+  `packages/integration-tests/src/scenarios/machine-removal-rotates-party-key.integration.ts`.
 - **A delegate grant is not a way around any of this.** A party's own relay can hold a
   short-lived admission grant for a machine of its own party (see [Relay
   willingness](#some-questions)), but such grants are only ever announced over a channel

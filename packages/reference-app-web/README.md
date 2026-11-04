@@ -352,8 +352,10 @@ with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
   then learns ([When this tab is removed](#when-this-tab-is-removed)).
   A member sees the list with one line saying only an owner can remove machines.
 - **The confirmation** reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or
-  machine›?" in the card, with the machine's key, what happens (it leaves the cadre, and the
-  invitations it could join again with are withdrawn), and what removal does not do. *Remove*
+  machine›?" in the card, with the machine's key, what happens (it leaves the cadre, the
+  invitations it could join again with are withdrawn, and this cadre's membership key in each
+  private workspace the cadre manages is replaced), the workspaces this removal does not finish
+  from this tab, by id (`plan.strands`), and what removal does not do. *Remove*
   runs `removeMachine`. One another owner removed meanwhile says "Already removed". The
   confirmation stays open across a visit to another page; a join, or this tab's own removal,
   closes it.

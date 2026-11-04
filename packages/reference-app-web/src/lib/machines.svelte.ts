@@ -237,6 +237,20 @@ function machineName(machine: CadreMachine): string {
 	return `The ${machineKind(machine).toLowerCase()} ${machineCode(machine)}`;
 }
 
+/** One line per private workspace whose key replacement this removal does not finish from this tab: "‹id›: needs the other party's manager". */
+export function unfinishedWorkspaces(plan: MachineRemovalPlan): string[] {
+	return plan.strands.flatMap(({ strandId, rotation }) => {
+		switch (rotation) {
+			case 'another-party':
+				return [`${strandId}: needs the other party's manager`];
+			case 'later':
+				return [`${strandId}: finishes on a device that runs it`];
+			case 'here':
+				return [];
+		}
+	});
+}
+
 /** "It is removed from this cadre. The 2 invitations it could join again with are withdrawn." */
 export function removalEffects(plan: MachineRemovalPlan): string {
 	const count = plan.invitations.length;
