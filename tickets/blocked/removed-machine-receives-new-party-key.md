@@ -37,6 +37,10 @@ Removing a machine replaces the party's membership key K with a fresh key K' in 
 
 **Source hygiene:** `sealed-party-key.ts` is 190 lines with a module doc that says why, not what. `cadre-node.ts` is 12,004 lines (`wc -l`), already owned by `backlog/debt-cadre-node-single-file-size`; this ticket adds about 100 lines there, which is evidence for that ticket, not a new one.
 
+## Later evidence (2026-11-04)
+
+The triage of `scenario-party-key-rotation-across-parties` ran both owed commands after this review: `yarn workspace @serfab/cadre-core test` passed (2,620 passed, 1 skipped), and `machine-removal-rotates-party-key` passed with its stricter gate. Neither run was made for this ticket, and neither recorded whether `expectSealedAwayFromA3` took its null-row warning, so the sealing assertion may not have executed on A3. On resuming, run the scenario once and look for `A3 holds no pending row` in its output. `@quereus/quereus` is the sibling whose build was stale at this note.
+
 ## Verification run, and what is still owed
 
 Run and passing in the review pass:
