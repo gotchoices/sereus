@@ -160,6 +160,7 @@ describe('a control store written under another control schema version', () => {
 		// The case above runs synthetic releases. This one runs this build's real statements over the
 		// optimystic module, which `control-schema-versions.spec.ts` classifies but never runs. The
 		// delete files a tombstone through `Revocation.RowIsGone`, whose body changed in version 4.
+		// The store already holds a tombstone, as a real party's does, when that CHECK is re-added.
 		const partyId = freshPartyId('from-baseline');
 		const storage = new MemoryRawStorage();
 		const baseline = await writeSchemaFile(schemaDir, 'baseline', releases.baseline);
@@ -168,12 +169,15 @@ describe('a control store written under another control schema version', () => {
 
 		await lifetime(storage, partyId, baseline, async (controlDb) => {
 			expect(await controlDb.ensureOwnerKey(owner.publicKey, 'phone')).toBe(true);
+			await controlDb.insertStrandPartyKey('retired', await generateStrandMemberKey(), owner.publicKey, sign);
+			expect(await controlDb.deleteStrandPartyKey('retired', owner.publicKey, sign)).toBe(true);
 		});
 
 		await lifetime(storage, partyId, undefined, async (controlDb) => {
 			expect(await pendingControlSchemaChanges(controlDb.getDatabase())).toEqual([]);
 			expect(ownerKeyVersionTag(controlDb.getDatabase())).toBe(CONTROL_SCHEMA_VERSION);
 			expect((await controlDb.queryOwnerKeyRows()).map(({ key }) => key)).toEqual([owner.publicKey]);
+			expect((await controlDb.queryRevokedStamps('StrandPartyKey')).size).toBe(1);
 
 			await controlDb.insertPendingStrandPartyKey('strand', await generateStrandMemberKey(), [], owner.publicKey, sign);
 			expect(await controlDb.deletePendingStrandPartyKey('strand', owner.publicKey, sign)).toBe(true);

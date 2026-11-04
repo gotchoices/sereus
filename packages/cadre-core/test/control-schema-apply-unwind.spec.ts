@@ -48,7 +48,7 @@ import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
  * `CadreNode.buildControlNodeOptions`, naming the subset the apply depends on.
  */
 
-/** The seventeen `CadreControl` tables `schemas/control.qsql` declares, in name order. */
+/** The nineteen `CadreControl` tables `schemas/control.qsql` declares, in name order. */
 const CONTROL_TABLE_NAMES = [
 	'CadreInvite',
 	'CadreInviteUsage',

@@ -50,7 +50,8 @@ export const CONTROL_SCHEMA_DECLARATION = `-- A Sereus party's cadre (its nodes)
 --
 -- Rows of the guarded tables (OwnerKey, ValidationKey, Strand, StrandPartyKey,
 -- PendingStrandPartyKey, JoinedStrand, JoinRequest, CadrePeer, DeviceToken, CadreInvite,
--- OwnerGrant) carry a one-off StampId bound into their add and remove digests. \`unique\` holds over live rows only, so a delete retires
+-- OwnerGrant) carry a one-off StampId bound into their add and remove digests. \`unique\` holds
+-- over live rows only, so a delete retires
 -- the stamp into Revocation in the same transaction (RevocationRecorded) and an insert refuses
 -- a retired stamp (NotRevoked): the never-expiring add approval cannot re-seat a removed row.
 -- A legitimate re-add mints a fresh stamp and a fresh signature. CadreInvite and OwnerGrant
