@@ -47,8 +47,12 @@
  *    superseded key that IS the current key is skipped: another driver finished the earlier
  *    rotation and this one continues from it.
  * 2. **Seat K'.** `addMemberByManager(K, K')`. When K holds no `Manager` row and K' is not yet a
- *    member, the run stops here as `needs-another-party` (one event per pending stamp): the row
- *    stays for the cross-party flow (`plan/party-key-rotation-across-parties`).
+ *    member, the run stops here as `needs-another-party` (one event per pending stamp) and the
+ *    row stays: K' is seated from outside, by the membership reconciler redeeming the host's fresh
+ *    invitation under K' (`strand-membership-reconciler.ts` → "Redeeming under the pending key")
+ *    or by the strand's manager admitting K' by hand, and the reconciler kicks this driver when
+ *    it sees the seat (docs/strands.md → Replacing the party's key). The run then continues from
+ *    step 3; step 4 is skipped, since K is no manager, and step 5 is K's self-signed leave alone.
  * 3. **Bind under K'**: this machine's own strand peer id and every live sibling's, each
  *    `registerMemberPeer(K', id)` (insert-if-absent). Self-signed by K', so this step also runs
  *    after K has left.
@@ -342,7 +346,14 @@ export class StrandPartyKeyRotationDriver {
   /**
    * Step 1: a superseded key holding a seat is revoked by K. Skips the current key itself
    * (another driver finished the rotation it was pending for) and, when K holds no manager seat,
-   * leaves the seat with a log for the cross-party flow.
+   * leaves the seat with a log for the other party's manager.
+   *
+   * NOTE: a superseded key that holds a seat in a strand the party does not manage can only be
+   * revoked by that strand's manager: the row carries superseded PUBLIC halves only, so this
+   * driver cannot `leaveStrand` as that key. Fine now, since reaching it takes a second removal
+   * between the host's re-admission of the first pending key and the swap that follows it within
+   * seconds on the redeeming owner machine. If it is ever hit, seal the superseded private halves
+   * into the row too, so the driver can self-leave them.
    */
   private async cleanUpSuperseded(db: Database, state: RotationState, superseded: readonly string[]): Promise<void> {
     for (const key of superseded) {

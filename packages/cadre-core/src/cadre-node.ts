@@ -112,7 +112,7 @@ import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSigner } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
 import { describeMachines, planMachineRemoval, MachineRemovalRefusedError, type ClosedStrandState } from './machine-removal.js';
-import { partitionPartyStrandPeers, type PartyStrandPeer, type PartyStrandPeerSource, type PartyStrandPeers } from './strand-party-peers.js';
+import { partitionPartyStrandPeers, type PartyStrandPeer, type PartyStrandPeerSource, type PartyStrandPeers, type PendingPartyKeyState } from './strand-party-peers.js';
 import { StrandPartyKeyRotationDriver, type OpenedPendingPartyKey, type StrandPartyKeySwapEntry } from './strand-party-key-rotation.js';
 import { openPartyKey, partyKeyRecipients, sealPartyKey, type PartyKeyOpener, type PartyKeyRecipient } from './sealed-party-key.js';
 import { describeOwnerKeys, namedOwnerKey, planOwnerKeyRemoval, revouchWithinPlan, OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-keys.js';
@@ -387,6 +387,16 @@ type InvitationChainSource = () => Promise<InvitationChain>;
  * row keys), each of which calls it only when it has something to judge.
  */
 type RevocationSource = () => Promise<RevocationRow[]>;
+
+/**
+ * One strand's `PendingStrandPartyKey` row as this machine reads it (`CadreNode.readPendingPartyKey`):
+ * absent, opened under this machine's identity key, or present but closed to this machine, with
+ * the reason the driver's seam rejects with.
+ */
+type PendingPartyKeyRead =
+  | { kind: 'none' }
+  | { kind: 'opened'; key: OpenedPendingPartyKey }
+  | { kind: 'closed'; why: string };
 
 /**
  * Whether a `CadrePeer` or `OwnerKey` row's proof is a consent admission rather than an owner
@@ -7603,6 +7613,10 @@ export class CadreNode implements SAppIdLookup {
       // closed strand, is bound by its siblings, while a machine with the key also binds them.
       // On a node offering offline mode the row is also what a sibling's queue waits for.
       partyPeers: this.partyStrandPeerSource(strand.Id),
+      // The reconciler saw the party's pending key seated in the strand (it redeemed the host's
+      // invitation under it, or another party's manager admitted it): the rotation driver can
+      // now finish the move, when this is an owner machine the key is sealed to.
+      onPartyKeySeated: (seatedStrandId) => void this.driveRotationIfPending(seatedStrandId, 'the pending key is seated in the strand'),
       onRemovedMachineInSeed: (seededStrandId) => this.queueSeedRemovalRebuild(seededStrandId),
       // The RESOLVED flag, never the raw argument — see the doc comment above.
       founder: resolvedFounder,
@@ -10192,19 +10206,54 @@ export class CadreNode implements SAppIdLookup {
    * removal's own drive reaches that rejection.
    */
   private async openPendingPartyKey(strandId: string): Promise<OpenedPendingPartyKey | null> {
+    const read = await this.readPendingPartyKey(strandId);
+    switch (read.kind) {
+      case 'none':
+        return null;
+      case 'opened':
+        return read.key;
+      case 'closed':
+        throw new Error(read.why);
+    }
+  }
+
+  /**
+   * {@link PartyStrandPeerSource.pendingKey} for one strand: the same read as
+   * {@link openPendingPartyKey}, answering a null key rather than rejecting when the row does not
+   * open here, so the membership reconciler can tell "no rotation" from "a rotation this machine
+   * cannot take part in" and neither consume nor burn an invitation in the latter case.
+   */
+  private async readPendingPartyKeyState(strandId: string): Promise<PendingPartyKeyState> {
+    const read = await this.readPendingPartyKey(strandId);
+    switch (read.kind) {
+      case 'none':
+        return { pending: false };
+      case 'opened':
+        return { pending: true, key: read.key };
+      case 'closed':
+        return { pending: true, key: null };
+    }
+  }
+
+  /**
+   * One strand's `PendingStrandPartyKey` row as this machine can read it, shared by the driver's
+   * seam and the reconciler's. Rejects when the row cannot be read, or carries an envelope that
+   * does not decode or was sealed for another strand (`openPartyKey` throws on both).
+   */
+  private async readPendingPartyKey(strandId: string): Promise<PendingPartyKeyRead> {
     const row = await this.requireControlDatabase('read a pending strand party key').queryPendingStrandPartyKey(strandId);
     if (row === null) {
-      return null;
+      return { kind: 'none' };
     }
     const self = this.selfPartyKeyIdentity();
     if (self === null) {
-      throw new Error(`the pending party key of strand ${strandId} cannot be opened: this node runs on an ephemeral identity`);
+      return { kind: 'closed', why: `the pending party key of strand ${strandId} cannot be opened: this node runs on an ephemeral identity` };
     }
     const privateKey = openPartyKey(row.sealedKey, strandId, self);
     if (privateKey === null) {
-      throw new Error(`the pending party key of strand ${strandId} is sealed to other machines, not to this one`);
+      return { kind: 'closed', why: `the pending party key of strand ${strandId} is sealed to other machines, not to this one` };
     }
-    return { privateKey, superseded: row.superseded, stampId: row.stampId };
+    return { kind: 'opened', key: { privateKey, superseded: row.superseded, stampId: row.stampId } };
   }
 
   /**
@@ -10340,15 +10389,15 @@ export class CadreNode implements SAppIdLookup {
   /**
    * The control-database seam of one strand's launch for the party's machines in it
    * (`StartStrandConfig.partyPeers`, `strand-party-peers.ts`): this machine's own `StrandPeer`
-   * row, the party's other machines' peer ids, and whether a party key rotation is pending.
-   * The reads reject rather than answer "nothing" when the control database is gone, which the
-   * reconciler and the offline queue's machine tracker treat as "unknown".
+   * row, the party's other machines' peer ids, and the party's pending key in the strand as this
+   * machine can read it. The reads reject rather than answer "nothing" when the control database
+   * is gone, which the reconciler and the offline queue's machine tracker treat as "unknown".
    */
   private partyStrandPeerSource(strandId: string): PartyStrandPeerSource {
     return {
       publishOwn: (strandPeerId) => this.publishStrandPeer(strandId, strandPeerId),
       read: () => this.readPartyStrandPeers(strandId),
-      isRotationPending: async () => (await this.requireControlDatabase('read a pending strand party key').queryPendingStrandPartyKey(strandId)) !== null,
+      pendingKey: () => this.readPendingPartyKeyState(strandId),
     };
   }
 

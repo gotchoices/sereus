@@ -1862,10 +1862,11 @@ export interface CadreNodeEvents {
   'strand:party-key-rotated': { strandId: string };
   /**
    * Emitted when a party key replacement cannot be finished here: the party's current key holds
-   * no `Strand.Manager` row in the strand, so it cannot seat the new key, and another party's
-   * manager has to (`plan/party-key-rotation-across-parties`). Once per pending key; the
-   * `PendingStrandPartyKey` row stays, and `MachineRemovalResult.strands` reports the same
-   * strand as `needs-another-party`.
+   * no `Strand.Manager` row in the strand, so it cannot seat the new key, and the strand's host
+   * has to re-invite the party, or its manager admit the new key by hand (docs/strands.md →
+   * "Replacing the party's key"). Once per pending key; the `PendingStrandPartyKey` row stays,
+   * the membership reconciler redeems the host's invitation under the new key when it arrives,
+   * and `MachineRemovalResult.strands` reports the same strand as `needs-another-party`.
    */
   'strand:party-key-rotation-blocked': { strandId: string; reason: 'needs-another-party' };
   /**
@@ -2261,8 +2262,9 @@ export interface StrandKeyRotationPlan {
    *   current key holds a `Strand.Manager` row, so the removal itself replaces the key. A
    *   hibernating strand is reported `here` before its manager seat can be read; the removal
    *   wakes it, and the outcome says what it found.
-   * - `another-party`: the strand runs here, but the party holds no manager seat, so another
-   *   party's manager has to admit the new key (`plan/party-key-rotation-across-parties`).
+   * - `another-party`: the strand runs here, but the party holds no manager seat, so the strand's
+   *   host has to re-invite the party, or its manager admit the new key by hand (docs/strands.md →
+   *   "Replacing the party's key"); the replacement then finishes on an owner machine of this party.
    * - `later`: the strand does not run on this node (not launched here, excluded by its strand
    *   filter, or still syncing), so the replacement waits for an owner machine that runs it.
    */
@@ -2300,7 +2302,8 @@ export interface StrandKeyRotationOutcome {
    *   is not finished: the strand does not run here, a step failed and will be retried, or the
    *   control swap waits for a reachable sibling. Any owner machine running the strand finishes it.
    * - `needs-another-party`: the party holds no manager seat in the strand, so it cannot seat
-   *   its new key itself; the row stays pending for the cross-party flow.
+   *   its new key itself; the row stays pending until the strand's host re-invites the party, or
+   *   its manager admits the new key by hand (docs/strands.md → "Replacing the party's key").
    */
   outcome: 'rotated' | 'pending' | 'needs-another-party';
 }

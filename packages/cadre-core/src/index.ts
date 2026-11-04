@@ -325,7 +325,8 @@ export {
   partitionPartyStrandPeers,
   type PartyStrandPeer,
   type PartyStrandPeers,
-  type PartyStrandPeerSource
+  type PartyStrandPeerSource,
+  type PendingPartyKeyState
 } from './strand-party-peers.js';
 
 // The driver that moves a party onto a fresh membership key in a closed strand after a machine

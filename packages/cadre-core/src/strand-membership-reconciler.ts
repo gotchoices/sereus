@@ -42,14 +42,16 @@
  *    a fresh formation, which re-arms the loop. With an invitation staged the loop reports
  *    the dead end (below) and carries on: the redemption is attempted like any other, and a
  *    manager's re-admission lets a later pass finish it.
- * 2. **Ensure membership.** Member row visible → done with this step; if a staged
- *    invitation is still unspent, BURN it ({@link burnInvite} — the `ConsumedInvite` row
- *    alone) so the bearer credential cannot be spent by anyone else. A burn refused by the
- *    cohort keeps the invitation staged for the next pass (it is the same write gate a
- *    redemption faces, and the local member row may be stale — see "Re-arming"); a dead
- *    invitation is dropped. Member row absent + staged invitation → {@link consumeInvite}
- *    under the party's own key, retried across passes until the `Invite` row has
- *    replicated here and the write commits. Absent with no invitation (founder rows not
+ * 2. **Ensure membership.** Read first whether the party is moving to another key in this
+ *    strand ({@link PartyStrandPeerSource.pendingKey}, one control read per pass); while it
+ *    is, the step runs under that key instead — see "Redeeming under the pending key". Otherwise:
+ *    member row visible → done with this step; if a staged invitation is still unspent, BURN it
+ *    ({@link burnInvite} — the `ConsumedInvite` row alone) so the bearer credential cannot be
+ *    spent by anyone else. A burn refused by the cohort keeps the invitation staged for the next
+ *    pass (it is the same write gate a redemption faces, and the local member row may be stale —
+ *    see "Re-arming"); a dead invitation is dropped. Member row absent + staged invitation →
+ *    {@link consumeInvite} under the party's own key, retried across passes until the `Invite`
+ *    row has replicated here and the write commits. Absent with no invitation (founder rows not
  *    yet synced, or a machine whose party never joined) → keep waiting, escalating to one
  *    visible warning after {@link IDLE_PASSES_BEFORE_ESCALATION} passes, never throwing.
  * 3. **Ensure the binding.** {@link registerMemberPeer} (insert-if-absent, restart-safe)
@@ -62,8 +64,8 @@
  *    party's key gets one, written here with the party key. See "Binding the party's other
  *    machines".
  * 5. **Clear removed machines.** A binding under the party's key for a machine removed from
- *    the cadre is cleared through the self branch of {@link removeMemberPeer} — unless a party
- *    key rotation is pending for the strand, or whether one is cannot be read.
+ *    the cadre is cleared through the self branch of {@link removeMemberPeer} — unless the
+ *    pending-key read at step 2 found a party key rotation pending for the strand, or failed.
  * 6. **Re-attempt this machine's own `StrandPeer` row** ({@link PartyStrandPeerSource.publishOwn}),
  *    the control-side statement step 4 on the siblings reads: a background write at bring-up
  *    that is deferred while alone or refused until this machine's own `CadrePeer` row arrives.
@@ -80,10 +82,10 @@
  * machines that were there, and a machine bound by a sibling that had not yet heard of its
  * removal is cleared once the tombstone arrives.
  *
- * Step 5 is gated on no rotation pending. While one is, the removed machine's binding under
- * the current key is exactly the orphan the rotation is about to leave behind, and clearing it
- * would hand the removed machine a clean slate the deny-list gate admits. A failed pending read
- * clears nothing for the same reason. After the swap the pending row is gone, and the step
+ * Step 5 is gated on no rotation pending (the pending-key state step 2 read). While one is, the
+ * removed machine's binding under the current key is exactly the orphan the rotation is about to
+ * leave behind, and clearing it would hand the removed machine a clean slate the deny-list gate
+ * admits. A failed pending read clears nothing for the same reason. After the swap the pending row is gone, and the step
  * clears a binding a lagging sibling wrote under the new key. The gate holds only because a
  * removal writes the machine's tombstone and the pending row in ONE transaction
  * (`ControlDatabase.removeMachine`): a tombstone that reaches this node without
@@ -95,6 +97,45 @@
  * `MemberPeer` primary key; the loser's write is refused and its next pass finds the row. A
  * sibling's row that cannot be read keeps the loop live on the flat poll interval, and a write
  * that fails is retried on the ladder.
+ *
+ * ## Redeeming under the pending key
+ *
+ * A machine removal replaces the party's member key K in each closed strand with a fresh key K'
+ * (`strand-party-key-rotation.ts`), and in a strand the party does not manage K cannot seat K'
+ * itself: the strand's host has to re-invite the party, or its manager admit K' by hand
+ * (docs/strands.md → Replacing the party's key). The host's fresh invitation is staged here like
+ * any other and lands in step 2, which is why one rule governs that step: **while a
+ * `PendingStrandPartyKey` row exists for the strand, this loop never writes a `Strand.Member`
+ * row under K.** The removed machine holds K, and a seat written under K is a seat it keeps.
+ * Three cases, decided by what {@link PartyStrandPeerSource.pendingKey} answers at the head of
+ * the pass (a rejected read counts as pending with the key unreadable):
+ *
+ * - **No rotation pending**: the ordinary step 2 above.
+ * - **Pending, the key not readable here** (the row is sealed to other machines: this machine
+ *   was admitted after the removal, or runs on an ephemeral identity; or the read failed): the
+ *   step neither consumes nor burns. A staged invitation stays staged, with one debug line, for
+ *   a machine that can read the key to redeem; the pass is idle, and it does not count toward
+ *   the probable blocked re-join report below — it left the invitation staged on purpose.
+ * - **Pending, the key opened**: with K' already a member (admitted by hand, or seated by a
+ *   sibling's redemption), a staged invitation is burned against K' and the rotation driver is
+ *   kicked ({@link StrandMembershipReconcilerDeps.onPendingKeySeated}); with K' not yet a member
+ *   and an invitation staged, it is redeemed under K' and the driver kicked; a refused
+ *   redemption is classified as under K, except that a sealed strand is not terminal here (the
+ *   party may still be a member under K) and only drops the dead invitation. With nothing staged
+ *   the pass is idle: the driver has reported `needs-another-party`, and nothing happens until
+ *   the host acts.
+ *
+ * Step 2 still answers whether K's member row is visible, which the binding steps that follow
+ * are under: K is the party's current key until the control swap, and a binding written under K
+ * after K has left (step 5 of the rotation, before the swap replicates here) is refused by
+ * `MemberPeer.MemberExists` and polled, until the swap re-keys this loop. The loop does not
+ * latch done while a rotation is pending, whatever else is in place, so a by-hand admission or a
+ * sibling's redemption is noticed on the next pass and the driver kicked; a pass that wrote
+ * nothing is idle, so the cadence is the flat poll interval. The pending state ends with the
+ * swap: `StrandInstanceManager.rekeyParty` rebuilds this loop under K', whose next pass finds no
+ * pending row, clears the removed machine's stale binding (step 5) and latches done as before.
+ * Whoever redeems the host's invitation seats a key of its choosing, so the invitation must reach
+ * the party's owner and not the removed machine, as with every invitation today.
  *
  * ## Stops, and re-arming
  *
@@ -213,7 +254,8 @@ import {
   removeMemberPeer,
   type StrandWriteOptions,
 } from './strand-membership-writer.js';
-import type { PartyStrandPeerSource, PartyStrandPeers } from './strand-party-peers.js';
+import type { OpenedPendingPartyKey } from './strand-party-key-rotation.js';
+import type { PartyStrandPeerSource, PartyStrandPeers, PendingPartyKeyState } from './strand-party-peers.js';
 import { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
 import { describeThrown } from './describe-thrown.js';
 
@@ -406,12 +448,20 @@ export interface StrandMembershipReconcilerDeps {
   /** The staged invitation seam. Absent for flows with no invitation (e.g. tests). */
   pendingInvite?: PendingMembershipInviteSource;
   /**
-   * The control-database seam for steps 4 to 6 of the pass (see "Binding the party's other
-   * machines" in the module doc): the party's machines' strand peer ids, whether a key rotation
-   * is pending, and this machine's own `StrandPeer` row. Absent (tests, an embedder with no
-   * control database) means the loop binds only this machine.
+   * The control-database seam for steps 2 and 4 to 6 of the pass (see "Binding the party's other
+   * machines" and "Redeeming under the pending key" in the module doc): the party's pending key
+   * in this strand as this machine can read it, the party's machines' strand peer ids, and this
+   * machine's own `StrandPeer` row. Absent (tests, an embedder with no control database) means
+   * no rotation is ever pending and the loop binds only this machine.
    */
   partyPeers?: PartyStrandPeerSource;
+  /**
+   * Called when a pass finds the party's PENDING key seated as a member of the strand (see
+   * "Redeeming under the pending key"): it redeemed the staged invitation under that key, or found
+   * it seated already. On every such pass until the control swap re-keys the loop. `CadreNode`
+   * wires it to its party key rotation driver, which finishes the move on an owner machine.
+   */
+  onPendingKeySeated?: () => void;
   /**
    * Whether the revocation enforcer currently flags THIS node's own party as revoked.
    * When it does and nothing is staged, the loop stops rather than fight the enforcer;
@@ -480,6 +530,14 @@ export class StrandMembershipReconciler {
   private unfinishedPasses = 0;
   /** Whether the blocked re-join was already reported this re-arm cycle (one report, either trigger). */
   private rejoinBlockedReported = false;
+  /**
+   * Whether the pass in flight left the staged invitation alone ON PURPOSE (a rotation is pending
+   * and this machine cannot read the key), which is not an attempt that failed and so does not
+   * count toward the probable blocked re-join report. Reset at the head of every pass.
+   */
+  private inviteLeftStagedDeliberately = false;
+  /** Whether this cycle has logged that the loop stays live for a pending rotation (one line per re-arm cycle). */
+  private pendingRotationLogged = false;
   /**
    * Whether the pass that just ran is waiting on something no faster retry can shorten — no
    * member row and no staged invitation (a wait to be admitted, {@link noteIdlePass}), or the
@@ -615,6 +673,7 @@ export class StrandMembershipReconciler {
     this.idleEscalated = false;
     this.unfinishedPasses = 0;
     this.rejoinBlockedReported = false;
+    this.pendingRotationLogged = false;
     this.retryDelayMs = undefined;
     log('[%s] membership reconciler re-armed by %s', this.deps.label, cause);
     return true;
@@ -658,8 +717,10 @@ export class StrandMembershipReconciler {
    * rather than per pass.
    */
   private async attempt(db: Database, keyPair: Ed25519KeyPair): Promise<void> {
+    this.inviteLeftStagedDeliberately = false;
     try {
-      if (!(await this.ensureMembership(db, keyPair))) return;
+      const pending = await this.readPendingKeyState();
+      if (!(await this.ensureMembership(db, keyPair, pending))) return;
       // NOTE: accepted tradeoff — the redemption (`Member` + `ConsumedInvite`) and the binding
       // below stay two SEPARATE commits on purpose. Merging them would save one commit: its
       // serial latency and, since Optimystic 1.19.0 pends and commits a transaction's collections
@@ -674,11 +735,28 @@ export class StrandMembershipReconciler {
       // invitation gets wrong. Revisit when Optimystic offers an all-or-nothing multi-collection
       // commit, or when the enforcer can tell a not-yet-seated binding from a removed member's.
       if (!(await this.ensureBinding(db, keyPair))) return;
-      const siblingsSettled = await this.reconcileSiblings(db, keyPair);
+      const siblingsSettled = await this.reconcileSiblings(db, keyPair, pending.pending);
       await this.publishOwnStrandPeer();
-      this.latchDone(siblingsSettled);
+      this.latchDone(siblingsSettled, pending.pending);
     } finally {
       this.noteAttemptOutcome();
+    }
+  }
+
+  /**
+   * The party's pending key in this strand, read once per pass. No seam means no rotation is
+   * ever pending; a rejected read is "pending, key unreadable", the posture under which nothing
+   * is seated under the current key and no removed machine's binding is cleared (module doc).
+   */
+  private async readPendingKeyState(): Promise<PendingPartyKeyState> {
+    const source = this.deps.partyPeers;
+    if (!source) return { pending: false };
+    try {
+      return await source.pendingKey();
+    } catch (error) {
+      log('[%s] whether a party key rotation is pending could not be read — treated as pending with the key unreadable: %s',
+        this.deps.label, describeThrown(error));
+      return { pending: true, key: null };
     }
   }
 
@@ -725,10 +803,27 @@ export class StrandMembershipReconciler {
   }
 
   /**
-   * Step 2 of the pass: `true` iff the party's member row is visible locally by the
-   * time this returns (already present, or seated by redeeming the staged invitation).
+   * Step 2 of the pass: `true` iff the party's member row under its CURRENT key is visible
+   * locally by the time this returns (already present, or seated by redeeming the staged
+   * invitation). While a rotation is pending the staged invitation is spent under the pending
+   * key instead, or left alone ("Redeeming under the pending key" in the module doc), and the
+   * answer is only whether the current key is still a member.
    */
-  private async ensureMembership(db: Database, keyPair: Ed25519KeyPair): Promise<boolean> {
+  private async ensureMembership(db: Database, keyPair: Ed25519KeyPair, pending: PendingPartyKeyState): Promise<boolean> {
+    if (!pending.pending) {
+      return this.ensureMembershipUnderOwnKey(db, keyPair);
+    }
+    const isMember = await isStrandMember(db, keyPair.publicKeyB64);
+    if (pending.key === null) {
+      this.leaveInviteStaged();
+    } else {
+      await this.seatPendingKey(db, pending.key);
+    }
+    return isMember;
+  }
+
+  /** Step 2 with no rotation pending: the member row under the party's own key, seated from the staged invitation if need be. */
+  private async ensureMembershipUnderOwnKey(db: Database, keyPair: Ed25519KeyPair): Promise<boolean> {
     if (await isStrandMember(db, keyPair.publicKeyB64)) {
       await this.burnLeftoverInvite(db, keyPair);
       return true;
@@ -751,6 +846,74 @@ export class StrandMembershipReconciler {
     this.deps.pendingInvite?.clear(invite);
     log('[%s] redeemed the staged membership invitation — Member row seated under this party\'s key', this.deps.label);
     return true;
+  }
+
+  /**
+   * Step 2 while a rotation is pending whose key this machine cannot read: nothing is seated or
+   * burned, since the only key this machine could sign with is the one being retired. A staged
+   * invitation is left for a machine that can read the key, and the pass is idle.
+   */
+  private leaveInviteStaged(): void {
+    this.waitForPoll();
+    if (this.deps.pendingInvite?.get()) {
+      this.inviteLeftStagedDeliberately = true;
+      log('[%s] the staged invitation is left staged: the party is moving to a key this machine cannot read', this.deps.label);
+    }
+  }
+
+  /**
+   * Step 2 while a rotation is pending and this machine can read the pending key: see the
+   * pending-and-opened case of "Redeeming under the pending key" in the module doc. A pending
+   * key that does not decode throws to the pass's catch, which retries it.
+   */
+  private async seatPendingKey(db: Database, opened: OpenedPendingPartyKey): Promise<void> {
+    const newKey = strandMemberKeyPair(opened.privateKey);
+    const invite = this.deps.pendingInvite?.get();
+    if (await isStrandMember(db, newKey.publicKeyB64)) {
+      if (invite) {
+        await this.burnLeftoverInvite(db, newKey);
+      } else {
+        this.waitForPoll();
+      }
+      this.kickRotationDriver('the pending key is a member');
+      return;
+    }
+    if (!invite) {
+      this.waitForPoll();
+      return;
+    }
+    try {
+      await consumeInvite(db, {
+        inviteKey: invite.inviteKey,
+        invitePrivateKey: invite.invitePrivateKey,
+        memberKey: newKey.publicKeyB64,
+      }, OWN_TRANSACTION);
+    } catch (error) {
+      this.handleConsumeFailure(error, invite, 'pending-key');
+      return;
+    }
+    this.deps.pendingInvite?.clear(invite);
+    log('[%s] redeemed the staged membership invitation under the party\'s PENDING key — the rotation can finish', this.deps.label);
+    this.kickRotationDriver('the pending key was just seated');
+  }
+
+  /**
+   * Tell the rotation driver the pending key is seated. Once per pass that sees the seat, so a
+   * machine that cannot drive (no owner key here, or the swap deferred) hears it again on its
+   * next pass rather than never.
+   *
+   * NOTE: a non-owner machine that reads the key kicks on every pass between the seat and the
+   * swap, and `CadreNode.driveRotationIfPending` logs its refusal each time; bounded by the
+   * seconds the swap takes on the owner machine. If that log ever matters, kick once per seat
+   * (remember the pending stamp kicked for).
+   */
+  private kickRotationDriver(cause: string): void {
+    try {
+      this.deps.onPendingKeySeated?.();
+      log('[%s] rotation driver kicked: %s', this.deps.label, cause);
+    } catch (error) {
+      log('[%s] the pending-key-seated callback threw: %s', this.deps.label, describeThrown(error));
+    }
   }
 
   /**
@@ -840,7 +1003,7 @@ export class StrandMembershipReconciler {
    * nothing and move the next pass to the flat poll interval; nothing this machine can do
    * sooner. No seam means no siblings to bind: settled.
    */
-  private async reconcileSiblings(db: Database, keyPair: Ed25519KeyPair): Promise<boolean> {
+  private async reconcileSiblings(db: Database, keyPair: Ed25519KeyPair, rotationPending: boolean): Promise<boolean> {
     const source = this.deps.partyPeers;
     if (!source) return true;
     let peers: PartyStrandPeers;
@@ -856,7 +1019,7 @@ export class StrandMembershipReconciler {
     const unbound = peers.live.map((peer) => peer.strandPeerId).filter((peerId) => !bound.has(peerId));
     const stale = peers.removed.filter((peerId) => bound.has(peerId));
     const siblingsBound = await this.bindSiblings(db, keyPair, unbound);
-    const removedCleared = await this.clearRemovedMachines(db, keyPair, source, stale);
+    const removedCleared = await this.clearRemovedMachines(db, keyPair, rotationPending, stale);
     return siblingsBound && removedCleared;
   }
 
@@ -881,25 +1044,20 @@ export class StrandMembershipReconciler {
    * Step 5: clear the binding of each of `stale` (removed machines bound under the party's
    * key), through the self branch of {@link removeMemberPeer} — signed by the party key, which
    * is the row's own member key, so any peer id of the party's is reachable this way. Clears
-   * nothing while a key rotation is pending for the strand, or while whether one is cannot be
-   * read (see the module doc); that is settled, since the rotation's own writes re-arm the
-   * loop. `true` iff nothing was left to clear.
+   * nothing while a key rotation is pending for the strand, or while whether one is could not be
+   * read, both of which `rotationPending` carries (see the module doc); that is settled, since
+   * the loop stays live until the swap re-keys it. `true` iff nothing was left to clear.
    */
   private async clearRemovedMachines(
     db: Database,
     keyPair: Ed25519KeyPair,
-    source: PartyStrandPeerSource,
+    rotationPending: boolean,
     stale: readonly string[],
   ): Promise<boolean> {
     if (stale.length === 0) return true;
-    try {
-      if (await source.isRotationPending()) {
-        log('[%s] %d removed machine(s) stay bound: a party key rotation is pending', this.deps.label, stale.length);
-        return true;
-      }
-    } catch (error) {
-      log('[%s] %d removed machine(s) stay bound: whether a party key rotation is pending could not be read: %s',
-        this.deps.label, stale.length, describeThrown(error));
+    if (rotationPending) {
+      log('[%s] %d removed machine(s) stay bound: a party key rotation is pending, or whether one is could not be read',
+        this.deps.label, stale.length);
       return true;
     }
     for (const peerId of stale) {
@@ -926,12 +1084,21 @@ export class StrandMembershipReconciler {
   }
 
   /**
-   * The done decision, once the member row and the own binding are in place: not while an
-   * invitation is still staged (its burn keeps being refused; the loop stays live so a later
-   * pass can settle the credential), and not while a sibling step wrote or could not read this
-   * pass. Otherwise latch done and stop.
+   * The done decision, once the member row and the own binding are in place: not while a party
+   * key rotation is pending (the loop stays live to notice the pending key seated, and is
+   * rebuilt under that key by the swap; logged once per cycle), not while an invitation is still
+   * staged (its burn keeps being refused; the loop stays live so a later pass can settle the
+   * credential), and not while a sibling step wrote or could not read this pass. Otherwise latch
+   * done and stop.
    */
-  private latchDone(siblingsSettled: boolean): void {
+  private latchDone(siblingsSettled: boolean, rotationPending: boolean): void {
+    if (rotationPending) {
+      if (!this.pendingRotationLogged) {
+        this.pendingRotationLogged = true;
+        log('[%s] a party key rotation is pending — the loop stays live until the party\'s key is swapped', this.deps.label);
+      }
+      return;
+    }
     if (this.deps.pendingInvite?.get()) {
       log('[%s] own MemberPeer binding is in place but an invitation is still staged — not done yet', this.deps.label);
       return;
@@ -951,10 +1118,12 @@ export class StrandMembershipReconciler {
 
   /**
    * Act on a `consumeInvite` rejection as {@link classifyConsumeFailure} routes it: busy → keep
-   * the invitation and retry; half-committed → warn and drop; sealed → terminal; dead
-   * invitation → drop; anything else → retry.
+   * the invitation and retry; half-committed → warn and drop; sealed → terminal under the party's
+   * own key, but under the pending key only a dead invitation (the party may still be a member
+   * under its current key, whose bindings this loop keeps whole, and the rotation stays pending
+   * for the life of the row); dead invitation → drop; anything else → retry.
    */
-  private handleConsumeFailure(error: unknown, invite: StrandMembershipInvite): void {
+  private handleConsumeFailure(error: unknown, invite: StrandMembershipInvite, under: 'own-key' | 'pending-key' = 'own-key'): void {
     const failure = classifyConsumeFailure(error);
     switch (failure.kind) {
       case 'busy':
@@ -967,6 +1136,12 @@ export class StrandMembershipReconciler {
       case 'sealed':
         // The staged credential is dead with the seal; drop it so the cache stays honest.
         this.deps.pendingInvite?.clear(invite);
+        if (under === 'pending-key') {
+          log('[%s] the strand is sealed, so the party\'s pending key can never be admitted there — the staged '
+            + 'invitation is dead and dropped; the rotation stays pending', this.deps.label);
+          this.waitForPoll();
+          return;
+        }
         this.finish('the strand is sealed — nobody can ever be admitted, so the staged invitation is dead', true);
         return;
       case 'dead-invite':
@@ -989,10 +1164,13 @@ export class StrandMembershipReconciler {
   /**
    * Count an attempted pass that left the invitation staged (whatever stopped it — a
    * refused or busy write, or a read that threw on a cut-off machine); one that settled
-   * it, or finished, ends the streak. At {@link UNFINISHED_PASSES_BEFORE_ESCALATION}
-   * report the PROBABLE blocked re-join.
+   * it, or finished, ends the streak. A pass that left it staged on purpose (a rotation
+   * pending whose key this machine cannot read) is no attempt: it neither counts nor ends
+   * the streak. At {@link UNFINISHED_PASSES_BEFORE_ESCALATION} report the PROBABLE blocked
+   * re-join.
    */
   private noteAttemptOutcome(): void {
+    if (this.inviteLeftStagedDeliberately) return;
     if (this.doneFlag || !this.deps.pendingInvite?.get()) {
       this.unfinishedPasses = 0;
       return;

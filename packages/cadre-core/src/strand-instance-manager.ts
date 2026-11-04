@@ -267,6 +267,18 @@ export interface StartStrandConfig {
   partyPeers?: PartyStrandPeerSource;
 
   /**
+   * Called when the membership reconciler finds the party's PENDING membership key seated as a
+   * `Strand.Member` in this strand (`strand-membership-reconciler.ts` → "Redeeming under the
+   * pending key"): it redeemed the host's fresh invitation under that key, or another party's
+   * manager admitted the key by hand. `CadreNode` wires it to its party key rotation driver,
+   * which then finishes the move on an owner machine the key is sealed to
+   * (`strand-party-key-rotation.ts`). Called on every pass that sees the seat until the control
+   * record is swapped, so the receiver refuses cheaply when it cannot drive. Retained with the
+   * launch config.
+   */
+  onPartyKeySeated?: (strandId: string) => void;
+
+  /**
    * Called when a read of the party's machines finds one removed from the cadre in
    * {@link bootstrapNodes}, on a node tracking them ({@link offline} with {@link partyPeers}), and
    * once per such machine ({@link watchRemovedMachinesInSeed}). The node refuses that peer but
@@ -1747,7 +1759,8 @@ export class StrandInstanceManager {
             return ownPeerId !== undefined && revocationEnforcer.isRevoked(ownPeerId);
           }
         : undefined,
-      onRejoinBlocked: () => config.onRejoinBlocked?.(strandId)
+      onRejoinBlocked: () => config.onRejoinBlocked?.(strandId),
+      onPendingKeySeated: () => config.onPartyKeySeated?.(strandId)
     }, config.membershipReconciliation);
     this.membershipReconcilers.set(strandId, reconciler);
     reconciler.start();

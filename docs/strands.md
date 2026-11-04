@@ -653,9 +653,16 @@ A party's membership identity admits its machines through `Strand.MemberPeer` ro
 
 A machine removed from the party's cadre keeps the party's membership key for every closed strand, so the removal replaces that key in each of them (`strand-party-key-rotation.ts`; the mechanism, its triggers and its limits are in [architecture.md → Removing a machine](architecture.md#removing-a-machine)). From the strand's side it is an ordinary succession, written with the strand's own membership writers by an owner machine of the party that runs the strand: the current key admits the new one as a member, binds every remaining machine's recorded peer id under it, promotes it to manager, then resigns and leaves. The removed machine's device record is left behind under a key that is no longer a member, the shape the deny gate above already denies, and every remaining machine is bound under both keys, so none is cut. The party's control record names the new key last, in one transaction with the removal of the pending key, so a machine of the party that reads the new key finds a member behind it.
 
-- **A strand the party does not manage** stops at the first step: the party's key cannot admit anyone there, so the new key stays pending and the app hears `needs-another-party`. Admitting it is the other party's manager's act; what that flow looks like is `plan/party-key-rotation-across-parties`.
+- **A strand the party does not manage** stops at the first step: the party's key cannot admit anyone there, so the new key stays pending, the app hears `needs-another-party`, and the removed machine keeps being served there until the new key is seated from outside. How it is seated is [the host's re-invitation](#the-hosts-re-invitation-seats-the-new-key) below, or the strand's manager admitting the new key's public half by hand (`addMemberByManager`; the half the app lists for a pending replacement); either way the party's membership reconciler notices the seat on its next pass and kicks the replacement driver, which finishes as above with two steps gone: no promotion, since the party holds no manager seat, and the old key's departure is its self-signed leave alone.
+- **The old key when the party cannot leave.** If the rotating party loses every machine the pending key is sealed to before the swap, the old key stays a member and the removed machine stays served. The host's manager revokes the old key by hand (`revokeMember`), the same act as removing any party, and the party re-joins later with a fresh invitation; that seats a fresh identity only after the party deletes its own `StrandPartyKey` row, since `ensureStrandPartyKey` adopts an existing one.
 - **Every other machine of the party follows the control record.** The replicated `StrandPartyKey` row re-keys its running strand in place, its membership reconciler is rebuilt under the new key and binds under it, and a strand that hibernated through the replacement re-reads the row when it resumes. The `strand:revoked` such a machine may see in between is the false alarm described above.
 - **A superseded replacement is cleaned up first.** A second machine removal while a replacement is still pending mints another new key, because the first may already have reached the machine just removed, and the next run revokes any seat the first one holds before it seats the second.
+
+#### The host's re-invitation seats the new key
+
+The host's owner mints a formation invitation bound to the strand, as for any new party (`createOpenInvitation` and `publishFormationInvite` with the strand id, the reference apps' existing flow), and hands it to the rotating party's owner out of band. That owner redeems it (`formStrand` or `requestJoin`): the host's responder issues a single-use `Strand.Invite` under its manager key, as for every closed-strand formation; the redeeming node reuses its stored `StrandPartyKey` row (`ensureStrandPartyKey` adopts an existing row) and stages the invitation; and the membership reconciler, which would otherwise find the party's key a member and burn the invitation, redeems it under the pending key instead (`strand-membership-reconciler.ts` → "Redeeming under the pending key"). The rule behind that: while a `PendingStrandPartyKey` row exists for the strand, the reconciler never seats the party's current key, which the removed machine holds. A machine of the party that cannot read the pending key (admitted after the removal, or on an ephemeral identity) leaves a staged invitation alone for one that can, and its loop idles on the flat poll interval, not done, until the control record is swapped and rebuilds it under the new key.
+
+The host is not told that a party replaced its key: from the strand's rows it is an ordinary join (a `ConsumedInvite` naming the new key) followed by an ordinary departure (the old key's leave), and the host's responder, its invitation issuance and its approval are untouched. Two limits. Only the founding party can host a bound formation (the `NOTE:` at `CadreNode.issueStrandMembershipInvite`), so in a strand whose founder is gone and whose manager is a promoted party, the by-hand admission is the only path. And the invitation is a bearer credential like every other: whoever redeems it seats a key of its choosing, so it must reach the rotating party's owner and not the machine it removed ([What removal still does not do](#what-removal-still-does-not-do)).
 
 ### What a joiner's node remembers
 
@@ -973,7 +980,8 @@ no longer the case.
 - **It does not cut off past reads, and it does not rotate the read secret** — the
   forward-looking bullet above. A party's own membership key is rotated by one thing only:
   the party removing one of its machines from its cadre, which replaces that key in every
-  closed strand the party manages ([Replacing the party's key](#replacing-the-partys-key)); a
+  closed strand the party holds a key for, the host's re-invitation seating it where the party
+  does not manage the strand ([Replacing the party's key](#replacing-the-partys-key)); a
   removal *of* a party by a manager leaves the removed party's key as it is.
 - **It does not cancel an unspent invitation.** Nothing in the membership rules stops a
   removed party from redeeming one it still holds — cancelling is a separate manual step,
@@ -985,7 +993,10 @@ no longer the case.
   that network refusal is the *only* barrier left: an invitation the removed party holds
   will be spent the moment anything lets one of its writes through — a lapse in the
   refusal, or a manager who admits it for one reason without meaning to honour the
-  invitation. Cancel the invitation at removal time rather than rely on the refusal.
+  invitation. Cancel the invitation at removal time rather than rely on the refusal. The same
+  bearer shape is why the re-admission invitation a host mints for a party replacing its key
+  ([Replacing the party's key](#replacing-the-partys-key)) must reach that party's owner and not
+  the machine it removed: whoever redeems it seats a key of its choosing.
 
 Known gaps remain, all out of scope of the rules above:
 

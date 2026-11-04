@@ -11,7 +11,7 @@ import {
   classifyConsumeFailure,
   type PendingMembershipInviteSource,
 } from '../src/strand-membership-reconciler.js';
-import type { PartyStrandPeerSource, PartyStrandPeers } from '../src/strand-party-peers.js';
+import type { PartyStrandPeerSource, PartyStrandPeers, PendingPartyKeyState } from '../src/strand-party-peers.js';
 import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
 import {
   bootstrapFounderMembership,
@@ -44,7 +44,7 @@ const DEAD_INVITE_LINE = /staged invitation is dead/;
  * already-member burn arm, the idle/no-invitation wait, the dead-invitation and
  * sealed-strand classifications, the self-revocation stop, the re-arm on a fresh
  * invitation with its blocked re-join report, the binding of the party's other machines,
- * and the scheduler wiring.
+ * the redemption under a pending party key, and the scheduler wiring.
  *
  * Every DB-backed test runs against a REAL closed strand DB on the local transactor
  * (libp2p node + MemoryRawStorage) via the shared helpers — the same apply/DML/
@@ -132,6 +132,7 @@ interface ReconcilerOverrides {
   partyPeers?: PartyStrandPeerSource;
   isSelfRevoked?: () => boolean;
   onRejoinBlocked?: () => void;
+  onPendingKeySeated?: () => void;
   scheduler?: TimeoutScheduler;
   pollIntervalMs?: number;
   partyMemberPrivateKey?: string;
@@ -206,12 +207,13 @@ function reconcilerOver(db: Database | undefined, partyKey: string, overrides: R
     partyPeers: overrides.partyPeers,
     isSelfRevoked: overrides.isSelfRevoked,
     onRejoinBlocked: overrides.onRejoinBlocked,
+    onPendingKeySeated: overrides.onPendingKeySeated,
     scheduler: overrides.scheduler,
   }, overrides.pollIntervalMs === undefined ? undefined : { pollIntervalMs: overrides.pollIntervalMs });
 }
 
-/** A stand-in for CadreNode's party-machine seam: the lists and the pending flag are the test's to set. */
-function partyPeerSource(peers: PartyStrandPeers, state: { rotationPending: boolean }): {
+/** A stand-in for CadreNode's party-machine seam: the lists and the pending-key state are the test's to set. */
+function partyPeerSource(peers: PartyStrandPeers, state: { pendingKey: PendingPartyKeyState }): {
   source: PartyStrandPeerSource;
   published: () => string[];
 } {
@@ -220,11 +222,19 @@ function partyPeerSource(peers: PartyStrandPeers, state: { rotationPending: bool
     source: {
       publishOwn: async (strandPeerId) => { published.push(strandPeerId); },
       read: async () => peers,
-      isRotationPending: async () => state.rotationPending,
+      pendingKey: async () => state.pendingKey,
     },
     published: () => [...published],
   };
 }
+
+/** A rotation pending whose key this machine can read: the row opened under its identity key. */
+function pendingKeyOpened(privateKey: string): PendingPartyKeyState {
+  return { pending: true, key: { privateKey, superseded: [], stampId: 'pending-stamp' } };
+}
+
+/** A rotation pending whose key is sealed to other machines (admitted after the removal, or an ephemeral identity). */
+const PENDING_KEY_SEALED_ELSEWHERE: PendingPartyKeyState = { pending: true, key: null };
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -615,7 +625,7 @@ describe('binding the party\'s other machines', () => {
     const partyKey = strand.founder.publicKeyB64;
     // A sibling lagging on the removal's tombstone bound the removed machine under this key.
     await registerMemberPeer(strand.db, { memberKeyPair: strand.founder, peerId: 'removed-machine' });
-    const state = { rotationPending: true };
+    const state: { pendingKey: PendingPartyKeyState } = { pendingKey: PENDING_KEY_SEALED_ELSEWHERE };
     const party = partyPeerSource({
       live: [
         { peerId: 'sibling-1-control', strandPeerId: 'sibling-1' },
@@ -634,15 +644,17 @@ describe('binding the party\'s other machines', () => {
     expect((await listMemberPeers(strand.db, partyKey)).sort())
       .toEqual(['founder-machine', 'removed-machine', 'sibling-1', 'sibling-2']);
     expect(party.published()).toEqual(['founder-machine']);
-    // A pass that wrote is not done; the next one finds nothing left and is.
+    // A pass that wrote is not done; the next one finds nothing left to write, but does not latch
+    // done either while the rotation is pending: the swap rebuilds the loop under the new key.
     expect(reconciler.done).toBe(false);
     await reconciler.reconcile();
-    expect(reconciler.done).toBe(true);
+    expect(reconciler.done).toBe(false);
+    expect(reconciler.stopped).toBe(false);
     expect(await tableCount(strand.db, 'Revocation')).toBe(0);
 
     // The rotation finished (its swap removed the pending row): the stale binding goes.
-    state.rotationPending = false;
-    await reconciler.rearm('a change to the party\'s machines');
+    state.pendingKey = { pending: false };
+    await reconciler.reconcile();
 
     expect((await listMemberPeers(strand.db, partyKey)).sort()).toEqual(['founder-machine', 'sibling-1', 'sibling-2']);
     expect(await tableCount(strand.db, 'Revocation')).toBe(1);
@@ -673,6 +685,88 @@ describe('binding the party\'s other machines', () => {
     expect(reconciler.done).toBe(true);
     const binding = await strand.db.get('select MemberKey, PeerId from Strand.MemberPeer');
     expect(binding?.PeerId).toBe('founder-machine');
+  }, 30_000);
+});
+
+describe('redeeming under the pending key', () => {
+  it('redeems a staged invitation under the party\'s PENDING key, leaves the current key\'s seat alone, and kicks the rotation driver', async () => {
+    // The cross-party shape: the party's key K is a plain member of a strand another party
+    // manages, a machine removal left K' pending, and the host re-invited the party.
+    const strand = await openClosedStrand();
+    const party = await freshParty();
+    await addMemberByManager(strand.db, { managerKeyPair: strand.founder, memberKey: party.pair.publicKeyB64 });
+    const next = await freshParty();
+    const invite = await issueInvite(strand.db, { managerKeyPair: strand.founder });
+    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const peers = partyPeerSource({ live: [], removed: [] }, { pendingKey: pendingKeyOpened(next.privateKey) });
+    const onPendingKeySeated = vi.fn();
+    const reconciler = reconcilerOver(strand.db, party.privateKey, {
+      pendingInvite: slot.source,
+      partyPeers: peers.source,
+      onPendingKeySeated,
+      getOwnPeerId: () => 'joiner-machine',
+    });
+
+    await reconciler.reconcile();
+
+    expect(await isStrandMember(strand.db, next.pair.publicKeyB64)).toBe(true);
+    expect(await isStrandMember(strand.db, party.pair.publicKeyB64)).toBe(true);
+    expect((await strand.db.get('select MemberKey from Strand.ConsumedInvite where InviteKey = ?', [invite.inviteKey]))?.MemberKey)
+      .toBe(next.pair.publicKeyB64);
+    expect(slot.staged()).toBeUndefined();
+    expect(onPendingKeySeated).toHaveBeenCalledTimes(1);
+    // K is the party's key until the control swap: this machine's binding is still written under
+    // it, and the loop stays live for the swap to rebuild it under K'.
+    expect(await listMemberPeers(strand.db, party.pair.publicKeyB64)).toEqual(['joiner-machine']);
+    expect(reconciler.done).toBe(false);
+    expect(reconciler.stopped).toBe(false);
+
+    // Every later pass that finds K' seated kicks the driver again and writes nothing.
+    await reconciler.reconcile();
+    expect(onPendingKeySeated).toHaveBeenCalledTimes(2);
+    expect(await tableCount(strand.db, 'ConsumedInvite')).toBe(1);
+    expect(await tableCount(strand.db, 'Member')).toBe(3);
+  }, 30_000);
+
+  it('leaves a staged invitation alone while the pending key is sealed to other machines, idling without a blocked re-join report', async () => {
+    // A machine admitted after the removal: it holds K and the host's invitation, and must not
+    // seat K (which the removed machine holds) nor spend the invitation a sibling can redeem under K'.
+    const strand = await openClosedStrand();
+    const party = await freshParty();
+    const invite = await issueInvite(strand.db, { managerKeyPair: strand.founder });
+    const slot = inviteSlot({ inviteKey: invite.inviteKey, invitePrivateKey: invite.invitePrivateKey });
+    const peers = partyPeerSource({ live: [], removed: [] }, { pendingKey: PENDING_KEY_SEALED_ELSEWHERE });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onRejoinBlocked = vi.fn();
+    const onPendingKeySeated = vi.fn();
+    const clock = manualScheduler();
+    const reconciler = reconcilerOver(strand.db, party.privateKey, {
+      pendingInvite: slot.source,
+      partyPeers: peers.source,
+      onRejoinBlocked,
+      onPendingKeySeated,
+      scheduler: clock.scheduler,
+      getOwnPeerId: () => 'joiner-machine',
+    });
+
+    reconciler.start();
+    await reconciler.settle();
+    for (let i = 0; i < UNFINISHED_PASSES_BEFORE_ESCALATION; i++) {
+      clock.tick();
+      await reconciler.settle();
+    }
+
+    expect(await isStrandMember(strand.db, party.pair.publicKeyB64)).toBe(false);
+    expect(await tableCount(strand.db, 'ConsumedInvite')).toBe(0);
+    expect(await tableCount(strand.db, 'MemberPeer')).toBe(0);
+    expect(slot.staged()?.inviteKey).toBe(invite.inviteKey);
+    // Deliberately staged, not refused: no probable-blocked-re-join report, and the idle cadence.
+    expect(warn).not.toHaveBeenCalled();
+    expect(onRejoinBlocked).not.toHaveBeenCalled();
+    expect(onPendingKeySeated).not.toHaveBeenCalled();
+    expect(new Set(clock.delays())).toEqual(new Set([DEFAULT_MEMBERSHIP_RECONCILE_INTERVAL_MS]));
+    expect(reconciler.done).toBe(false);
+    expect(reconciler.stopped).toBe(false);
   }, 30_000);
 });
 

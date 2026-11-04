@@ -7,6 +7,7 @@ import {
   type StrandPartyKeySwapEntry,
 } from '../src/strand-party-key-rotation.js';
 import {
+  addMemberByManager,
   bootstrapFounderMembership,
   isStrandManager,
   isStrandMember,
@@ -55,20 +56,32 @@ interface Fixture {
   replacePending: () => Promise<string>;
   /** The key the stubbed control record names now. */
   currentKey: () => string;
+  /** The strand's manager when another party founded it ({@link rotationFixture}'s `hostedByAnotherParty`). */
+  host?: Ed25519KeyPair;
+  /** Every `needs-another-party` report, by strand id. */
+  blocked: () => string[];
 }
 
-/** A founded closed strand bound as described above, and a control seam that swaps in memory. */
-async function rotationFixture(): Promise<Fixture> {
+/**
+ * A founded closed strand bound as described above, and a control seam that swaps in memory.
+ * With `hostedByAnotherParty`, the strand is founded by another party's key, the only manager,
+ * and K is admitted as a plain member: the shape in which K cannot seat K' itself.
+ */
+async function rotationFixture(options: { hostedByAnotherParty?: boolean } = {}): Promise<Fixture> {
   const raw = await openRawStrand();
   const oldPrivateKey = await generateStrandMemberKey();
   const oldKey = strandMemberKeyPair(oldPrivateKey);
+  const host = options.hostedByAnotherParty ? strandMemberKeyPair(await generateStrandMemberKey()) : undefined;
   await bootstrapFounderMembership(raw.db, {
     strandId: raw.strandId,
     type: 'c',
     sApp: makeSAppConfig(),
-    founderKeyPair: oldKey,
+    founderKeyPair: host ?? oldKey,
     createEmptyCollections: raw.createEmptyCollections,
   });
+  if (host) {
+    await addMemberByManager(raw.db, { managerKeyPair: host, memberKey: oldKey.publicKeyB64 });
+  }
   for (const peerId of [SELF, ...SIBLINGS, REMOVED]) {
     await registerMemberPeer(raw.db, { memberKeyPair: oldKey, peerId });
   }
@@ -78,6 +91,7 @@ async function rotationFixture(): Promise<Fixture> {
   let swapFailures = 0;
   const swaps: StrandPartyKeySwapEntry[][] = [];
   const rotated: string[] = [];
+  const blocked: string[] = [];
   const deps: StrandPartyKeyRotationDeps = {
     readPending: async () => pending,
     readCurrentKey: async () => currentKey,
@@ -99,7 +113,12 @@ async function rotationFixture(): Promise<Fixture> {
       return entries.map((entry) => entry.strandId);
     },
     onRotated: async (strandId) => { rotated.push(strandId); },
-    onBlocked: () => { throw new Error('the party manages this strand; nothing should block'); },
+    onBlocked: (strandId) => {
+      if (!host) {
+        throw new Error('the party manages this strand; nothing should block');
+      }
+      blocked.push(strandId);
+    },
   };
   return {
     db: raw.db,
@@ -122,6 +141,8 @@ async function rotationFixture(): Promise<Fixture> {
       return replacement;
     },
     currentKey: () => currentKey,
+    host,
+    blocked: () => [...blocked],
   };
 }
 
@@ -200,6 +221,43 @@ describe('party key rotation after a machine removal', () => {
     expect(await driver.drive([fixture.strandId], 'test')).toEqual([{ strandId: fixture.strandId, outcome: 'rotated' }]);
     expect(idle.batches()).toBe(0);
     expect(fixture.swaps()).toHaveLength(1);
+  }, 60_000);
+});
+
+describe('a strand another party manages', () => {
+  it('stops at seating the new key until the strand\'s manager admits it, then binds under it with no promotion and the old key leaves', async () => {
+    const fixture = await rotationFixture({ hostedByAnotherParty: true });
+    const driver = new StrandPartyKeyRotationDriver(fixture.deps);
+
+    // K holds no manager seat: the run writes nothing and reports once per pending stamp.
+    const counted = failWriteBatch(fixture.db, Number.POSITIVE_INFINITY);
+    expect(await driver.drive([fixture.strandId], 'removal')).toEqual([{ strandId: fixture.strandId, outcome: 'needs-another-party' }]);
+    expect(await driver.drive([fixture.strandId], 'strand launched')).toEqual([{ strandId: fixture.strandId, outcome: 'needs-another-party' }]);
+    expect(counted.batches()).toBe(0);
+    expect(fixture.blocked()).toEqual([fixture.strandId]);
+    expect(fixture.swaps()).toEqual([]);
+    vi.restoreAllMocks();
+
+    // The strand's manager seats K': what the host's re-invitation, redeemed under K' by the
+    // membership reconciler, writes; or a by-hand admission.
+    await addMemberByManager(fixture.db, { managerKeyPair: fixture.host!, memberKey: fixture.newKey.publicKeyB64 });
+
+    // Steps 3 and 5 only: bind self and both siblings under K' (3 writes), then K leaves (1).
+    const resumed = failWriteBatch(fixture.db, Number.POSITIVE_INFINITY);
+    expect(await driver.drive([fixture.strandId], 'the pending key is seated in the strand'))
+      .toEqual([{ strandId: fixture.strandId, outcome: 'rotated' }]);
+    expect(resumed.batches()).toBe(4);
+    expect((await listMemberPeers(fixture.db, fixture.newKey.publicKeyB64)).sort()).toEqual([SELF, ...SIBLINGS].sort());
+    expect(await isStrandMember(fixture.db, fixture.newKey.publicKeyB64)).toBe(true);
+    expect(await isStrandManager(fixture.db, fixture.newKey.publicKeyB64)).toBe(false);
+    expect(await isStrandMember(fixture.db, fixture.oldKey.publicKeyB64)).toBe(false);
+    expect(await isStrandManager(fixture.db, fixture.host!.publicKeyB64)).toBe(true);
+    expect(fixture.swaps()).toEqual([[{ strandId: fixture.strandId, oldKey: fixture.oldPrivateKey, newKey: fixture.newPrivateKey }]]);
+    expect(fixture.rotated()).toEqual([fixture.strandId]);
+    // The removed machine's binding under K is the orphan the revoked-peer gate denies.
+    const rows = await readStrandRevocationRows(fixture.db);
+    expect(rows.bindings).toContainEqual({ memberKey: fixture.oldKey.publicKeyB64, peerId: REMOVED });
+    expect(rows.bindings.some((binding) => binding.peerId === REMOVED && rows.memberKeys.has(binding.memberKey))).toBe(false);
   }, 60_000);
 });
 
