@@ -84,7 +84,11 @@
  * the current key is exactly the orphan the rotation is about to leave behind, and clearing it
  * would hand the removed machine a clean slate the deny-list gate admits. A failed pending read
  * clears nothing for the same reason. After the swap the pending row is gone, and the step
- * clears a binding a lagging sibling wrote under the new key.
+ * clears a binding a lagging sibling wrote under the new key. The gate holds only because a
+ * removal writes the machine's tombstone and the pending row in ONE transaction
+ * (`machine-removal-rotates-party-member-key`): a tombstone that reaches this node without
+ * its pending row reads as "no rotation", and this step clears the binding the rotation
+ * meant to orphan, which leaves the removed machine admitted as a stranger rather than denied.
  *
  * The step reads the party's bindings once per pass (`listMemberPeers`) and compares in
  * JavaScript, the scan-not-seek idiom. Two machines binding one sibling at once collide on the

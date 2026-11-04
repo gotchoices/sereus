@@ -72,15 +72,12 @@ export function ed25519PublicKeyFromPrivate(privateKeyB64: string): string {
 /**
  * A signer over an in-memory Ed25519 seed, in the shape the control database's signing
  * callbacks take (`ControlSign`, `OwnerSign`): raw message bytes in, a base64url signature out.
- * The crypto plugin signs the bytes base64url-encoded, which is byte-for-byte the signature of
- * the raw bytes (Ed25519 is deterministic), so a row it signs verifies against any signer of
- * the same key.
+ * The crypto plugin takes the bytes as they are (its input encoding applies to a string only).
  *
  * @param privateKeyB64 - The base64url-encoded 32-byte Ed25519 seed.
  */
 export function ed25519MessageSigner(privateKeyB64: string): (message: Uint8Array) => string {
-  return (message) =>
-    sign(uint8ArrayToString(message, 'base64url'), privateKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
+  return (message) => sign(message, privateKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 }
 
 /**

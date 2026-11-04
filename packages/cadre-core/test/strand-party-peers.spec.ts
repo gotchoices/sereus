@@ -13,7 +13,7 @@ function row(peerId: string, strandPeerId: string): StrandPeerRow {
 }
 
 function machine(peerId: string, trusted: boolean): CadreMachine {
-  return { peerId, publicKey: null, isSelf: !trusted && peerId === 'self', trusted, profile: null, lastPublishedAt: null, vouchedBy: null };
+  return { peerId, publicKey: null, isSelf: peerId === 'self', trusted, profile: null, lastPublishedAt: null, vouchedBy: null };
 }
 
 function tombstone(tableName: RevocationRow['tableName'], rowKey: string): RevocationRow {

@@ -1197,9 +1197,11 @@ export class CadreNode implements SAppIdLookup {
    * This machine's `StrandPeer` rows ({@link publishStrandPeer}) that could not be written
    * yet, by strand id → this machine's peer id in that strand: deferred while a write could
    * fork the party, or refused because this machine's own `CadrePeer` row has not reached
-   * this node. Re-attempted by the growth drain ({@link publishDeferredStrandPeers}) and by
-   * each membership reconciler pass of the strand. Cleared on stop with the queues above: the
-   * next start's launches publish again.
+   * this node. Re-attempted by the growth drain ({@link publishDeferredStrandPeers}), by the
+   * party-machine watch when a `CadrePeer` row arrives (this machine's own included: a
+   * replica with no party key runs no reconciler, so that is its retry), and by each
+   * membership reconciler pass of the strand. Cleared on stop with the queues above: the next
+   * start's launches publish again.
    */
   private readonly deferredStrandPeerWrites = new Map<string, string>();
   /**
@@ -1537,20 +1539,27 @@ export class CadreNode implements SAppIdLookup {
       this.membershipGateWatch = this.controlDatabase.watchMembershipTables(
         () => this.onMembershipGateTablesChanged(), { label: 'membership-gate' });
       // The party-machine watch: a `StrandPeer` row arriving, a machine's `CadrePeer` row
-      // or a tombstone, written here or replicated in, re-arms every closed strand's
-      // membership reconciler, which binds the party's other machines under its current
-      // key (`strand-membership-reconciler.ts` → "Binding the party's other machines").
-      // Coalesced by the watch; a loop with nothing to do confirms and stops again.
+      // or a tombstone, written here or replicated in, first re-attempts this machine's own
+      // deferred `StrandPeer` rows (the arrival may be its own `CadrePeer` row, which the
+      // insert needs) and then re-arms every closed strand's membership reconciler, which
+      // binds the party's other machines under its current key
+      // (`strand-membership-reconciler.ts` → "Binding the party's other machines").
+      // Coalesced by the watch; a loop with nothing to do confirms and stops again, and a
+      // row the re-attempt writes fires the watch once more over an empty queue.
       //
       // NOTE: `CadrePeer` changes on every machine's self-record heartbeat, so each closed
       // strand's loop runs one confirming pass per heartbeat of any party machine; the
       // reconciler's pass NOTE says what that costs. A table this `Database` has not yet
       // touched hears local commits only (`table-change-watch.ts`): `StrandPeer` is first
-      // read by the publish every closed-strand launch makes, so a node running a closed
-      // strand hears replicated rows from its first launch on.
+      // read by the publish a closed-strand launch makes, or by the growth drain's re-attempt
+      // of one deferred while alone, so a node running a closed strand with a sibling
+      // reachable hears replicated rows from its first launch on.
       this.strandPartyPeersWatch = this.controlDatabase.watchTables(
         ['CadreControl.StrandPeer', 'CadreControl.CadrePeer', 'CadreControl.Revocation'],
-        async () => this.strandManager.notifyPartyPeersChanged(),
+        async () => {
+          await this.publishDeferredStrandPeers();
+          this.strandManager.notifyPartyPeersChanged();
+        },
         { label: 'strand-party-peers' });
       // Committed-delete seam → write-while-alone revocation queue. Same wiring
       // window argument as the membership listener above.
@@ -9934,8 +9943,8 @@ export class CadreNode implements SAppIdLookup {
    * costs nothing after the first. A background write like the self-record publish: nothing is
    * written while a write could fork the party ({@link controlWriteCouldFork}), and a refusal —
    * the schema wants this machine's own `CadrePeer` row, which may not have reached this node —
-   * is logged; either leaves the row in {@link deferredStrandPeerWrites} for the growth drain
-   * and the next reconciler pass. Written regardless of whether this machine holds the party's
+   * is logged; either leaves the row in {@link deferredStrandPeerWrites} for the growth drain,
+   * the party-machine watch and the next reconciler pass. Written regardless of whether this machine holds the party's
    * member key: a storage replica is bound by its siblings. A node on an ephemeral identity
    * cannot sign the row and writes nothing. Never rejects.
    */
@@ -9964,7 +9973,7 @@ export class CadreNode implements SAppIdLookup {
     }
   }
 
-  /** The growth drain's re-attempt of every `StrandPeer` row in {@link deferredStrandPeerWrites}; each contains its own failure. */
+  /** The re-attempt of every `StrandPeer` row in {@link deferredStrandPeerWrites} (growth drain, party-machine watch); each contains its own failure. */
   private async publishDeferredStrandPeers(): Promise<void> {
     for (const [strandId, strandPeerId] of [...this.deferredStrandPeerWrites]) {
       await this.publishStrandPeer(strandId, strandPeerId);
