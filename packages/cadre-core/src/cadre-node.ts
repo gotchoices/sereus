@@ -1615,10 +1615,14 @@ export class CadreNode implements SAppIdLookup {
       // The party key watch: a `StrandPartyKey` row swapped on another machine re-keys the
       // running strand here, and a `PendingStrandPartyKey` row written here or replicated in is
       // driven here when this is an owner machine running the strand (`strand-party-key-rotation.ts`).
+      // The backstop is the path for a swap this node's storage never announces, such as one
+      // committed while it was restarting: the row shows up on a later read and raises no event,
+      // and a strand left on the old key idles with no `Member` row to find. Shares the reconcile
+      // backstop because a run is one row read per closed strand and the same bound suits both.
       this.strandPartyKeyWatch = this.controlDatabase.watchTables(
         ['CadreControl.StrandPartyKey', 'CadreControl.PendingStrandPartyKey'],
         () => this.onPartyKeyTablesChanged(),
-        { label: 'strand-party-key' });
+        { label: 'strand-party-key', backstopMs: this.controlReconcileBackstopMs() });
       // Committed-delete seam → write-while-alone revocation queue. Same wiring
       // window argument as the membership listener above.
       this.controlDatabase.setGuardedDeleteListener((revocation) => this.noteGuardedDelete(revocation));

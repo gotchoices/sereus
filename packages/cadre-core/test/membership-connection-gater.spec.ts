@@ -34,7 +34,7 @@ function fakePeerId(id: string): PeerId {
   return { toString: () => id } as unknown as PeerId;
 }
 
-const MA_CONN = {} as MultiaddrConnection;
+const MA_CONN = { status: 'open' } as MultiaddrConnection;
 
 /** An open MultiaddrConnection whose close and abort are both observable — the provisional deadline's target. */
 type DroppableConn = MultiaddrConnection & { close: ReturnType<typeof vi.fn>; abort: ReturnType<typeof vi.fn> };
@@ -198,6 +198,26 @@ describe('createMembershipConnectionGater (bring-up quiet period)', () => {
 // ── provisional admission (its deadline, the re-check, and the reservation seam) ─
 
 describe('createMembershipConnectionGater (provisional admission + relay-reservation seam)', () => {
+  it('denies a connection that closed during the decision, whatever the verdict, and arms no deadline for it', async () => {
+    const verdicts: InboundAdmissionPolicy['admitInbound'][] = [
+      () => 'admit',
+      () => 'admit-provisionally',
+      () => { throw new Error('policy failed'); }
+    ];
+    for (const verdict of verdicts) {
+      const maConn = droppableConn();
+      const hangUpThenDecide = (remotePeerId: string): InboundConnectionVerdict | Promise<InboundConnectionVerdict> => {
+        (maConn as { status: string }).status = 'closed';
+        return verdict(remotePeerId);
+      };
+      const gater = createMembershipConnectionGater(policyOf(hangUpThenDecide), undefined, 2_000, 30);
+
+      expect(await gater.denyInboundEncryptedConnection!(fakePeerId('gone'), maConn)).toBe(true);
+      await delay(90);
+      expect(maConn.close).not.toHaveBeenCalled();
+    }
+  });
+
   it('admits a provisional connection, then CLOSES it when the peer is still unplaced at the deadline', async () => {
     const maConn = droppableConn();
     const gater = createMembershipConnectionGater(policyOf(() => 'admit-provisionally'), undefined, 2_000, 30);

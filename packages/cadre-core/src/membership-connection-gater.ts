@@ -384,6 +384,14 @@ export class UnauthorizedReservationBudget {
  * (connection admitted outright / reservation admitted, see module doc); the
  * base gater's verdict is still honored first.
  *
+ * Whatever the verdict, a connection whose transport closed during the decision
+ * is denied. libp2p builds the muxer right after this hook, and yamux subscribes
+ * to the stream only then, so it misses the `close` event, stays `open`, and is
+ * handed the frames the dialer sent before hanging up. Replying to one throws, its
+ * abort throws again on the GoAway, and that second throw is an uncaught exception
+ * from an event listener. Only a decision spanning a macrotask opens this window,
+ * so the strand gate, whose verdict is a synchronous snapshot read, does not.
+ *
  * An `'admit-provisionally'` verdict admits the connection and arms a
  * `provisionalDeadlineMs` timer against it. When the timer fires the policy is
  * asked again, and the underlying `MultiaddrConnection` is closed unless it now
@@ -447,7 +455,11 @@ export function createMembershipConnectionGater(
         verdict = await decideInbound(remotePeerId);
       } catch (error) {
         log('admitInbound threw for %s — admitting (fail-open; stream gates decide): %o', remotePeerId, error);
-        return false;
+        verdict = 'admit';
+      }
+      if (maConn.status !== 'open') {
+        log('%s hung up during its admission decision — refusing the closed connection', remotePeerId);
+        return true;
       }
       if (verdict === 'admit-provisionally') {
         provisional.arm(remotePeerId, maConn);

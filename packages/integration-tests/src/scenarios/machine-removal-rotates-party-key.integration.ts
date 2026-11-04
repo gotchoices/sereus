@@ -375,14 +375,15 @@ describe('Removing a machine replaces the party key in a strand shared with anot
 		const returned = (await shared.restartA2(a2ListenAddr)).node;
 		expect(await returned.isOwner()).toBe(false);
 		await awaitSwapOn(owner, strandId, newMemberKey, 'A1 swaps the control row once A2 is reachable');
+		const newPartyKey = (await a1Control.queryStrandPartyKey(strandId))!;
 		const a2Again = await awaitReplica(returned, strandId, 'A2 (restarted)');
 		expect(a2Again.peerId, 'a strand peer id derives from the machine identity, so the binding A1 wrote still names it').toBe(a2.peerId);
 		await waitUntil(() => strandConnectionsTo(a2Again, a1) > 0, { ...STRAND_GATE, description: 'A1 serves the restarted A2: its binding under the new key keeps it off the deny list' });
 		await awaitBlockCoverage(bBlocks, a2Blocks, { timeoutMs: STRAND_GATE.timeoutMs, description: 'the restarted A2 holds B\'s post-removal write' });
 		await insertWithRetry(b, 'after-return', 'written after A2 returned', REMAINING_COHORT_WRITE_BUDGET_MS);
 		await awaitBlockCoverage(bBlocks, a2Blocks, { timeoutMs: STRAND_GATE.timeoutMs, description: 'the restarted A2 holds B\'s later write' });
-		await waitUntil(async () => membershipLoopDone(returned, strandId) && (await memberPeerBindings(a2Again.db)).includes(binding(newMemberKey, a2Again)), {
-			...STRAND_GATE, description: 'the restarted A2\'s membership loop is done with its binding under the new key',
+		await waitUntil(async () => runningPartyKey(returned, strandId) === newPartyKey && membershipLoopDone(returned, strandId) && (await memberPeerBindings(a2Again.db)).includes(binding(newMemberKey, a2Again)), {
+			...STRAND_GATE, description: 'the restarted A2 runs under the new key, its membership loop done with its binding',
 		});
 
 		// ── The control record, on the machine that was offline ─────────────────
