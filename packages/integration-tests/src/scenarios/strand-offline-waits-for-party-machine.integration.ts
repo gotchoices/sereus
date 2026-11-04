@@ -26,11 +26,13 @@
  *      phone, so `getUnreachedStrandMachines` names the node; the strand-addr RPC puts the node's
  *      strand address in the phone's strand address book. The replica stays `syncing`: nothing of
  *      the strand can reach it.
- *   2. The phone inserts a row. The statement resolves at once (`queued`), and the transaction
+ *   2. Outside offline mode the phone commits a row alone: nothing is held, and the commit's
+ *      `awaitedMachines` names the node. The phone goes back to offline mode.
+ *   3. The phone inserts a row. The statement resolves at once (`queued`), and the transaction
  *      then stays `queued` with `waitingFor: 'cohort'`: `commitDurability` is undefined and nothing
  *      is reported committed. Before this hold the phone's own reachability gate knew no member,
  *      so the queue committed the transaction alone, `quorum: 'local'`.
- *   3. The strand plane opens: the phone's gater admits everything, the node's admits inbound
+ *   4. The strand plane opens: the phone's gater admits everything, the node's admits inbound
  *      connections but still refuses to dial anyone but the phone's control node, so the strand
  *      connection that forms was dialed by the phone. The phone's strand node connects from the
  *      address book alone (no FRET record, an empty launch seed: the strand launched before the
@@ -39,7 +41,8 @@
  *      node's store, and nothing left unreached. Which of the phone's dialers makes the connection
  *      is not pinned here: the strand redial loop (`strand-peer-redial.ts`) is one and libp2p's own
  *      are others, and in a traced run the connection formed about 200 ms before the loop's next
- *      round. The loop's decision to dial a party machine is `strand-peer-redial.spec.ts`'s.
+ *      round. The loop's decision to dial a party machine is `strand-peer-redial.spec.ts`'s. The
+ *      commit made alone in step 2 is then held, and its `awaitedMachines` is empty.
  *
  * `[OFFLINE-HOLD]` lines print the elapsed time of each step. The reconnect after the plane opens
  * is bounded by the strand redial's backoff, which doubled from one dial budget for as long as the
@@ -228,13 +231,24 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
 		expect(replica.database, 'the replica cannot sync while the strand plane is cut').toBeUndefined();
 		say("step 1: the phone names the node as unreached and holds its strand address");
 
-		// ── 2. The phone writes; the transaction waits for the node ──
-		const row = { key: 'held', val: 'written-while-the-node-was-unreachable' };
+		// ── 2. Outside offline mode the phone commits alone, and the commit names the node ──
 		const db = phoneStrand.database!.getDatabase();
+		phone.setStrandOfflineMode(strandId, 'online');
+		const alone = await db.get('insert into App.Data (Key, Val) values (?, ?) returning StampId() as Tx', ['alone', 'committed-without-the-node']);
+		const aloneTx = alone!.Tx as string;
+		expect(phoneStrand.database!.commitDurability(aloneTx), `${aloneTx} committed alone`).toMatchObject({
+			heldElsewhere: false,
+			awaitedMachines: [{ peerId: nodePeerId, strandPeerId: nodeStrandPeerId }],
+		});
+		phone.setStrandOfflineMode(strandId, 'offline');
+		say('step 2: %s committed alone and names the node as awaited', aloneTx);
+
+		// ── 3. The phone writes; the transaction waits for the node ──
+		const row = { key: 'held', val: 'written-while-the-node-was-unreachable' };
 		const writeAt = Date.now();
 		const written = await db.get('insert into App.Data (Key, Val) values (?, ?) returning StampId() as Tx', [row.key, row.val]);
 		const tx = written!.Tx as string;
-		say('step 2: the insert resolved in %d ms (%s)', Date.now() - writeAt, tx);
+		say('step 3: the insert resolved in %d ms (%s)', Date.now() - writeAt, tx);
 		const queue = phoneStrand.database!.offline!;
 		expect(queue.status(tx), 'the status right after the insert').toMatchObject({ kind: 'queued' });
 		// `waitingFor` is set by the first re-check, which asks the gate.
@@ -247,20 +261,20 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
 		expect(phoneStrand.database!.commitDurability(tx), `commitDurability(${tx}) while queued`).toBeUndefined();
 		expect(statuses.filter(({ status }) => status.transactionId === tx && status.kind === 'committed'), `${tx} committed while the node was unreachable`).toHaveLength(0);
 		expect(phone.getUnreachedStrandMachines(strandId).map((machine) => machine.strandPeerId)).toEqual([nodeStrandPeerId]);
-		say('step 2: %s stayed queued, waiting for its cohort', tx);
+		say('step 3: %s stayed queued, waiting for its cohort', tx);
 
-		// ── 3. The strand plane opens; the phone redials, the replica syncs, the transaction commits ──
+		// ── 4. The strand plane opens; the phone redials, the replica syncs, the transaction commits ──
 		const openedAt = Date.now();
 		nodeCut.admitInbound();
 		phoneCut.open();
 		await waitUntil(() => connectedTo(phoneStrandNode, nodeStrandPeerId, true), {
 			timeoutMs: REDIAL_MS, intervalMs: 250, description: "the phone's strand node redials the node's strand node",
 		});
-		say('step 3: the phone connected to the node\'s strand node %d ms after the plane opened', Date.now() - openedAt);
+		say('step 4: the phone connected to the node\'s strand node %d ms after the plane opened', Date.now() - openedAt);
 		await waitUntil(() => statuses.some(({ status }) => status.transactionId === tx && status.kind === 'committed'), {
 			timeoutMs: REDIAL_MS, intervalMs: 250, description: `${tx} to be reported committed`,
 		});
-		say('step 3: %s committed %d ms after the plane opened', tx, Date.now() - openedAt);
+		say('step 4: %s committed %d ms after the plane opened', tx, Date.now() - openedAt);
 		const database = phoneStrand.database!;
 		await waitUntil(() => database.commitDurability(tx)?.heldElsewhere === true, {
 			timeoutMs: CONVERGE_MS, intervalMs: 250, description: `${tx} to be held by the node`,
@@ -271,6 +285,10 @@ async function runOfflineWaitsForPartyMachine(): Promise<void> {
 		expect(statuses.filter(({ status }) => status.transactionId === tx && status.kind === 'committed'), `${tx} reported committed`).toHaveLength(1);
 		expect(statuses.filter(({ status }) => status.transactionId === tx && status.kind === 'failed'), `${tx} reported failed`).toHaveLength(0);
 		expect(phone.getUnreachedStrandMachines(strandId)).toEqual([]);
+		await waitUntil(() => database.commitDurability(aloneTx)?.heldElsewhere === true, {
+			timeoutMs: CONVERGE_MS, intervalMs: 250, description: `${aloneTx}, committed alone, to be held by the node`,
+		});
+		expect(database.commitDurability(aloneTx)?.awaitedMachines).toEqual([]);
 		say('RESULT the transaction waited for the node and reached it once');
 	} finally {
 		await Promise.allSettled([node?.stop(), phone?.stop()]);

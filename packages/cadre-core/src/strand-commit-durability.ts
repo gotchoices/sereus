@@ -26,6 +26,7 @@ export interface StrandCommitDurability {
    * The party's other machines known to hold this strand that do not hold this commit yet: those
    * not in `report.durability.overall.cohortPeerIds`, or named in its `unconfirmed`. Empty when
    * {@link heldElsewhere} is true. Absent on a node offering no offline mode, which does not track them.
+   * Empty with `heldElsewhere` false does not prove a cadre of one (docs/strands.md → "A commit's durability").
    */
   readonly awaitedMachines?: readonly PartyStrandPeer[];
   /** The plugin's report, for per-table detail. */
@@ -93,7 +94,13 @@ export class StrandCommitRecord {
   constructor(
     private readonly strandId: string,
     private readonly listeners: StrandCommitListeners,
-    /** The tracker's last good answer: {@link reportCommit} runs inside the commit and cannot wait for a read. */
+    /**
+     * The tracker's last good answer: {@link reportCommit} runs inside the commit and cannot wait for a read.
+     *
+     * NOTE: a commit does not ask the tracker to retry a failed read; the offline gate's re-check and
+     * the next control-table change do. In online mode a failed read can therefore list nobody until
+     * the next change. If an app ever shows that, call `refresh()` here when `lastReadFailed()`.
+     */
     private readonly partyMachines?: () => readonly PartyStrandPeer[]
   ) {}
 

@@ -561,7 +561,7 @@ export class StrandInstanceManager {
    * The party's other machines known to hold each strand (`strand-party-machines.ts`), keyed
    * by strand id, on a node offering offline mode for a launch with a party-machine seam. Same
    * lifecycle as {@link peerRedials}: built in `buildStrandRuntime` before the libp2p node (the
-   * node's redial loop and the database's offline gate read it), stopped and dropped in
+   * node's redial loop, the database's offline gate and its commit record read it), stopped and dropped in
    * `releaseRuntime`, so a resume reads the control database afresh. Refreshed by
    * {@link notifyPartyPeersChanged}.
    */
@@ -903,8 +903,8 @@ export class StrandInstanceManager {
       log('strand %s: change notifications on', strandId);
     }
 
-    // The party's other machines holding this strand, for the offline queue's gate and the
-    // redial loop below (`strand-party-machines.ts`). Only a node offering offline mode pays
+    // The party's other machines holding this strand, for the offline queue's gate, each commit's
+    // durability record and the redial loop below (`strand-party-machines.ts`). Only a node offering offline mode pays
     // for the control reads, which leaves out the always-on programs. Built BEFORE the libp2p
     // node, and its first read started now, so a queue restored at launch waits on rows that
     // were asked for before the node existed. Registered in the map at once, so the failure
