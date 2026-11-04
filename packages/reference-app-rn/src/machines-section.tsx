@@ -130,6 +130,9 @@ export function MachinesSection({ showAlert, refreshKey, onShowOwnerKeys }: {
  * blocked or finished. No event announces a row replicated from another machine, so a second device
  * sees it on its next `refresh`. A read that fails keeps the last list, so a failure never reads as
  * nothing waiting.
+ *
+ * NOTE: no event announces a key seated while its swap is deferred (this machine is alone), so the
+ * line keeps asking for an invitation until the next read; if owners trip on that, re-read after a join.
  */
 function useWaitingRotations(): { rotations: PendingPartyKeyRotation[]; refresh: () => Promise<void> } {
 	const cadre = useCadre();

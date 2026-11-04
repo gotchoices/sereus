@@ -3,9 +3,9 @@
  * cadre (apps and always-on nodes), the devices invited and not joined yet, the key replacements a
  * removal left waiting, and on an owner tab, Remove (`CadreNode.removeMachine`; docs/architecture.md
  * → "Removing a machine"). The browser counterpart of the phone app's `machines-section.tsx` and
- * `machines.ts`, with the same list, confirmation and wording. Owner keys are not machines and stay when one is removed; removing one
- * is a separate step under Owner keys (`owner-keys.svelte.ts`), which the confirmation offers for a
- * lost or stolen phone.
+ * `machines.ts`, with the same list, confirmation and wording. Owner keys are not machines and stay
+ * when one is removed; removing one is a separate step under Owner keys (`owner-keys.svelte.ts`),
+ * which the confirmation offers for a lost or stolen phone.
  *
  * Module state, as `add-device.svelte.ts` is: the router unmounts the page on every route change.
  * The store forgets it when the node moves to another party (`resetMachinesCard`), and a read that
@@ -113,6 +113,9 @@ let latestRotationRead = 0;
  * reports one blocked or finished. No event announces a row replicated from another machine, so a
  * second device sees it on its next read. A read that fails keeps the last list, so a failure never
  * reads as nothing waiting.
+ *
+ * NOTE: no event announces a key seated while its swap is deferred (this machine is alone), so the
+ * line keeps asking for an invitation until the next read; if owners trip on that, re-read after a join.
  */
 export async function refreshWaitingRotations(): Promise<void> {
 	const node = getCadreNode();
