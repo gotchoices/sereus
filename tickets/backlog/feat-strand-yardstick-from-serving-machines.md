@@ -97,3 +97,7 @@ Two arms found reviewing that fix, both resolving at the same site this ticket a
 ## Always-on decision settled (2026-09-28)
 
 The maintainer chose storage replicas: a storage-profile node now runs every strand its filter admits even with no sApp config (`implement/always-on-node-hosts-unclaimed-strands`). Its replica keeps the `Strand` membership schema and the membership reconciler, so on a closed strand it writes its own `MemberPeer` binding like any other serving machine — `MemberPeer` therefore counts replica hosts too, which is what this ticket needs. The serving set is still not the party (phones serve only strands their app claims), so the party count remains the wrong source. Open strands still have no census.
+
+## Arm (2026-11-03): a per-strand record now exists on the control database
+
+`offline-queue-waits-for-party-machines-that-hold-the-strand` publishes `CadreControl.StrandPeer` rows on open strands as well as closed ones, and `StrandPartyMachines` tracks them. That row set is close to the "per-strand participation record" this ticket weighs as its alternative source, is readable before the strand node exists, and covers open strands. It only grows on its own (rows are permanent; a removal is read through `CadrePeer` tombstones), and a machine that stops running a strand without leaving the cadre keeps counting, so it can over-declare in that case. Weigh that against the requirement that the declared value never exceeds the serving machines.
