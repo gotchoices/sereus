@@ -32,15 +32,18 @@
  *      so the queue committed the transaction alone, `quorum: 'local'`.
  *   3. The strand plane opens: the phone's gater admits everything, the node's admits inbound
  *      connections but still refuses to dial anyone but the phone's control node, so the strand
- *      connection that forms was dialed by the phone. The phone's strand node dials from the
+ *      connection that forms was dialed by the phone. The phone's strand node connects from the
  *      address book alone (no FRET record, an empty launch seed: the strand launched before the
  *      node existed), the replica syncs over the connection, and the transaction commits on a
  *      cohort of two: `committed` once, `heldElsewhere` true, every block the phone holds in the
- *      node's store, and nothing left unreached.
+ *      node's store, and nothing left unreached. Which of the phone's dialers makes the connection
+ *      is not pinned here: the strand redial loop (`strand-peer-redial.ts`) is one and libp2p's own
+ *      are others, and in a traced run the connection formed about 200 ms before the loop's next
+ *      round. The loop's decision to dial a party machine is `strand-peer-redial.spec.ts`'s.
  *
- * `[OFFLINE-HOLD]` lines print the elapsed time of each step. The redial after the plane opens
- * rides the strand redial's backoff (`strand-peer-redial.ts`), which doubled from one dial budget
- * for as long as the plane was cut, so that step's wait varies with how long the hold took.
+ * `[OFFLINE-HOLD]` lines print the elapsed time of each step. The reconnect after the plane opens
+ * is bounded by the strand redial's backoff, which doubled from one dial budget for as long as the
+ * plane was cut, so that step's wait varies with how long the hold took.
  *
  * ── Running it ──
  *
