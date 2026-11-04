@@ -631,6 +631,14 @@ A party's membership identity admits its machines through `Strand.MemberPeer` ro
 - **A machine bound only under a key that has left heals through a sibling.** Every other machine denies it, so its own pass cannot write and stops on the self-revocation. A sibling binding it under the current key takes it out of the deny set; the enforcer's restore signal (`onSelfRestored`) restarts its loop, which then writes its own binding. The `strand:revoked` the app saw in between was a false alarm ([What the app has to call](#what-the-app-has-to-call-and-what-the-removed-party-is-told)).
 - **What wakes a pass.** Launch and resume, a staged invitation, a change to the control record's `StrandPeer`, `CadrePeer` or `Revocation` table (one coalesced watch, every closed strand's loop), the enforcer's restore signal, and the loop's own ladder. A loop stops once every known machine is bound and nothing is left to clear; a pass that wrote confirms on the next.
 
+### Replacing the party's key
+
+A machine removed from the party's cadre keeps the party's membership key for every closed strand, so the removal replaces that key in each of them (`strand-party-key-rotation.ts`; the mechanism, its triggers and its limits are in [architecture.md → Removing a machine](architecture.md#removing-a-machine)). From the strand's side it is an ordinary succession, written with the strand's own membership writers by an owner machine of the party that runs the strand: the current key admits the new one as a member, binds every remaining machine's recorded peer id under it, promotes it to manager, then resigns and leaves. The removed machine's device record is left behind under a key that is no longer a member, the shape the deny gate above already denies, and every remaining machine is bound under both keys, so none is cut. The party's control record names the new key last, in one transaction with the removal of the pending key, so a machine of the party that reads the new key finds a member behind it.
+
+- **A strand the party does not manage** stops at the first step: the party's key cannot admit anyone there, so the new key stays pending and the app hears `needs-another-party`. Admitting it is the other party's manager's act; what that flow looks like is `plan/party-key-rotation-across-parties`.
+- **Every other machine of the party follows the control record.** The replicated `StrandPartyKey` row re-keys its running strand in place, its membership reconciler is rebuilt under the new key and binds under it, and a strand that hibernated through the replacement re-reads the row when it resumes. The `strand:revoked` such a machine may see in between is the false alarm described above.
+- **A superseded replacement is cleaned up first.** A second machine removal while a replacement is still pending mints another new key, because the first may already have reached the machine just removed, and the next run revokes any seat the first one holds before it seats the second.
+
 ### What a joiner's node remembers
 
 A strand joined from another party has no `Strand` row in the joiner's control database — that row lives in the founding party's — so the control database cannot bring it back the way it brings back the party's own strands. cadre-core keeps two records of such a join instead (`joined-strand-store.ts`):
@@ -820,6 +828,14 @@ Membership removal is governed by the same signed-approval discipline as admissi
   nodes already replicated, and it still holds the strand's member private key. Cutting
   off its *future* reads means rotating the read gate, which currently means re-forming
   the strand — see [Closed-Strand Member Key Handling](#closed-strand-member-key-handling).
+  The same holds one level down, for a machine removed from its own cadre: it keeps the
+  blocks it synced and the read secret, and what cuts it off from the strand's *future* is its
+  party replacing its membership key there, which leaves the machine's device record an orphan
+  every remaining machine denies ([Replacing the party's key](#replacing-the-partys-key)). A
+  modified client on that machine can still present a fresh, unrecorded identity and be
+  admitted as a stranger, because admission is a deny list, not an allow list
+  (`backlog/feat-strand-member-allowlist-admission`); the replacement kills the identity it
+  recorded, not one it never did.
 
 #### What removal does to the network
 
@@ -928,8 +944,11 @@ no longer the case.
   invitation and waiting achieves nothing on its own, and neither does clearing its
   leftover device records. The same scenario file proves the attempt, the report and the
   manager-authored heal.
-- **It does not cut off past reads, and it does not rotate the member key** — the
-  forward-looking bullet above.
+- **It does not cut off past reads, and it does not rotate the read secret** — the
+  forward-looking bullet above. A party's own membership key is rotated by one thing only:
+  the party removing one of its machines from its cadre, which replaces that key in every
+  closed strand the party manages ([Replacing the party's key](#replacing-the-partys-key)); a
+  removal *of* a party by a manager leaves the removed party's key as it is.
 - **It does not cancel an unspent invitation.** Nothing in the membership rules stops a
   removed party from redeeming one it still holds — cancelling is a separate manual step,
   and binding an invitation to its invitee is tracked as `feat-strand-invitee-bound-invites`

@@ -326,6 +326,14 @@ export {
   type PartyStrandPeerSource
 } from './strand-party-peers.js';
 
+// The driver that moves a party onto a fresh membership key in a closed strand after a machine
+// removal, and the seams `CadreNode` hands it.
+export {
+  StrandPartyKeyRotationDriver,
+  type StrandPartyKeyRotationDeps,
+  type StrandPartyKeySwapEntry
+} from './strand-party-key-rotation.js';
+
 // The timer seam the self-rescheduling loops share (membership retry ladder, the table
 // change schedule the first-sync gate probes on) — injected by tests as a hand-cranked clock.
 export { defaultTimeoutScheduler, type TimeoutScheduler } from './timeout-scheduler.js';
@@ -401,6 +409,7 @@ export {
   consumeInvite,
   burnInvite,
   isStrandMember,
+  isStrandManager,
   cancelInvite,
   listOutstandingInvites,
   addMemberByManager,

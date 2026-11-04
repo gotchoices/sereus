@@ -126,7 +126,8 @@ describe('E2E an owner removes a machine from the cadre', () => {
 				closed.push(event.detail.remotePeer.toString());
 			});
 			const removedAt = Date.now();
-			expect(await owner.removeMachine(bPeerId)).toEqual({ removedPeer: true, removedDeviceToken: false, withdrawnInvitations: [inviteKey] });
+			// No closed strand in this cadre, so no party key to rotate.
+			expect(await owner.removeMachine(bPeerId)).toEqual({ removedPeer: true, removedDeviceToken: false, withdrawnInvitations: [inviteKey], strands: [] });
 			// The refresh the removal notified hung B up before the call returned.
 			expect(closed).toContain(bPeerId);
 			expect(await listsAuthorized(owner, bPeerId)).toBe(false);

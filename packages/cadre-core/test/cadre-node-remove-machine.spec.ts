@@ -6,6 +6,7 @@ import type { ControlDatabase } from '../src/control-database.js';
 import { cadreInviteConsentMessage, cadreInviteRedeemMessage, generateStampId, ownerGrantConsentMessage, ownerGrantRedeemMessage } from '../src/control-database.js';
 import { deviceTokenAddDigest } from '../src/peer-authorization.js';
 import { signDeviceTokenRecord } from '../src/device-token.js';
+import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import { expectConstraintFailure, freshKeyPair, freshStamp, signAs, signB64, type KeyPair } from './control-constraint-helpers.js';
 import { mintContactJoiner, type TestContactJoiner } from './formation-consent-helper.js';
 
@@ -158,10 +159,11 @@ describe('CadreNode.removeMachine and removeOwner', () => {
       machine: expect.objectContaining({ peerId: machine.partyId, isSelf: false, trusted: true, vouchedBy: owner.publicKey }),
       refusal: null,
       invitations: [invite.publicKey],
+      strands: [],
     });
 
     const result = await node.removeMachine(machine.partyId);
-    expect(result).toEqual({ removedPeer: true, removedDeviceToken: true, withdrawnInvitations: [invite.publicKey] });
+    expect(result).toEqual({ removedPeer: true, removedDeviceToken: true, withdrawnInvitations: [invite.publicKey], strands: [] });
 
     // The machine's row and token are gone and their stamps retired; the invitation's row stays, withdrawn.
     expect(await rawRow('select PeerId from CadreControl.CadrePeer where PeerId = ?', machine.partyId)).toBeUndefined();
@@ -260,5 +262,39 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     await vouchOwner(owner, lostPhone);
     expect(await db.reauthorizeCadrePeer(selfPeerId, 'revouch', lostPhone.publicKey, (message) => signAs(lostPhone, message))).toBe('retouched');
     expect(await node.removeOwner(lostPhone.publicKey)).toEqual({ removed: true, revouched: { owners: [], peers: [selfPeerId] } });
+  }, 60_000);
+
+  it('records the party key rotation of a closed strand not running here as pending, and a second removal replaces the pending key, superseding the first', async () => {
+    // A closed strand this party founded, with its membership key, that no app on this node
+    // runs: the watcher offers it as `strand:discovered` and launches nothing.
+    const strandId = 'rotation-' + Math.random().toString(36).slice(2);
+    const partyKey = await generateStrandMemberKey();
+    await db.insertFoundingRows({ strand: { id: strandId, type: 'c', memberPrivateKey: await generateStrandMemberKey() }, partyKey }, owner.publicKey, signOwner);
+    const invite = await issueInvitation(2);
+    const first = await mintContactJoiner();
+    const second = await mintContactJoiner();
+    await redeem(invite, first);
+    await redeem(invite, second);
+
+    expect((await node.planMachineRemoval(first.partyId)).strands).toEqual([{ strandId, rotation: 'later' }]);
+    const result = await node.removeMachine(first.partyId);
+    expect(result.removedPeer).toBe(true);
+    expect(result.strands).toEqual([{ strandId, outcome: 'pending' }]);
+    // The intent is recorded under a fresh key; the control record still names the key in use.
+    const pending = await db.queryPendingStrandPartyKey(strandId);
+    expect(pending).not.toBeNull();
+    expect(pending!.privateKey).not.toBe(partyKey);
+    expect(pending!.superseded).toEqual([]);
+    expect(await db.queryStrandPartyKey(strandId)).toBe(partyKey);
+
+    // The second removal replaces the pending key, because the first one may already have
+    // reached the machine just removed, and names it as superseded so a seat it holds is revoked.
+    expect((await node.removeMachine(second.partyId)).strands).toEqual([{ strandId, outcome: 'pending' }]);
+    const replaced = await db.queryPendingStrandPartyKey(strandId);
+    expect(replaced).not.toBeNull();
+    expect(replaced!.privateKey).not.toBe(pending!.privateKey);
+    expect(replaced!.superseded).toEqual([strandMemberKeyPair(pending!.privateKey).publicKeyB64]);
+    expect((await db.queryRevocations()).filter((row) => row.tableName === 'PendingStrandPartyKey').map((row) => row.stampId)).toEqual([pending!.stampId]);
+    expect(await db.queryStrandPartyKey(strandId)).toBe(partyKey);
   }, 60_000);
 });

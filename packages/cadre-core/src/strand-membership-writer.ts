@@ -1131,6 +1131,16 @@ export async function isStrandMember(db: Database, memberKey: string): Promise<b
   return await memberStampId(db, memberKey) != null;
 }
 
+/**
+ * Whether `memberKey` holds a live `Strand.Manager` row, as seen by THIS database instance:
+ * the sibling of {@link isStrandMember} for the manager seat, which the party key rotation
+ * driver (`strand-party-key-rotation.ts`) reads to know whether the party can seat its own
+ * new key. Same unfiltered scan, same local-visibility caveat.
+ */
+export async function isStrandManager(db: Database, memberKey: string): Promise<boolean> {
+  return await managerRow(db, memberKey) !== undefined;
+}
+
 /** Parameters for {@link addMemberByManager}. */
 export interface AddMemberByManagerParams {
   /**

@@ -9,13 +9,14 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { createEmptyCollections } from '@serfab/quereus-plugin-sereus';
 import type { CollectionRegistrySource } from '@serfab/quereus-plugin-sereus';
-import type { StrandRow, StrandPeerRow, PendingStrandPartyKeyRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalResult } from './types.js';
+import type { StrandRow, StrandPeerRow, PendingStrandPartyKeyRow, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalWrites } from './types.js';
 import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, CONTROL_SCHEMA_NAME, controlSchemaFileDeclaration } from './control-schema.js';
 import { refuseIncompatibleControlStore } from './control-schema-version.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, strandPeerRowFields, pendingStrandPartyKeyRowFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields, OwnerGrantSignedFields } from './control-authorization.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
+import { strandMemberKeyPair } from './strand-member-key.js';
 import { verifyCadreInviteRow, verifyOwnerGrantRow, verifyStrandPeerRow } from './peer-authorization.js';
 import { OWNER_KEY_MAX_LABEL } from './owner-key-export.js';
 import { retryControlWrite, LOST_UPDATE_RETRY_POLICY, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
@@ -547,6 +548,47 @@ interface GuardedRemoval {
   readonly ref: RevokedRowRef & { readonly tableName: RemovableTable };
   readonly signature: string;
   readonly revocationSignature: string;
+}
+
+/**
+ * A {@link GuardedRemoval} with whether it files its tombstone: not when the row's stamp is
+ * already retired (a tombstone that arrived without its delete), since a second tombstone
+ * collides on `Revocation`'s key. Run by {@link ControlDatabase.execRowRetirement}.
+ */
+interface RowRetirement {
+  readonly removal: GuardedRemoval;
+  readonly filesTombstone: boolean;
+}
+
+/** A `PendingStrandPartyKey` row as stored, retired or not ({@link ControlDatabase.readStoredPendingPartyKey}). */
+interface StoredPendingPartyKey {
+  readonly privateKey: string;
+  readonly superseded: readonly string[];
+  readonly stampId: string;
+  readonly retired: boolean;
+}
+
+/** The key the party moves to in one strand, for {@link ControlDatabase.removeMachine}. */
+export interface PendingPartyKeyEntry {
+  readonly strandId: string;
+  /** Encoded as `StrandPartyKey.PrivateKey` (`generateStrandMemberKey`). */
+  readonly privateKey: string;
+}
+
+/** One strand's pending-row replacement inside a removal: the stored row's retirement, if any, and the fresh insert. */
+interface PendingPartyKeyReplacement {
+  readonly retirement: RowRetirement | null;
+  readonly insert: SignedInsert;
+}
+
+/**
+ * One strand's control-row swap for {@link ControlDatabase.swapStrandPartyKeys}: the
+ * `StrandPartyKey` row moves from `oldKey` to `newKey`, both encoded as its `PrivateKey`.
+ */
+export interface StrandPartyKeySwap {
+  readonly strandId: string;
+  readonly oldKey: string;
+  readonly newKey: string;
 }
 
 /**
@@ -2817,14 +2859,27 @@ export class ControlDatabase {
    * `DeviceToken` row when it has one, each with the `Revocation` tombstone retiring its stamp
    * ({@link deleteGuardedRow}'s statement pair, composed bare as {@link deleteStrandAndPartyKey}
    * composes it), plus a withdrawal tombstone for every `CadreInvite` in `target.inviteKeys`
-   * that is still live here ({@link withdrawCadreInvite}'s body). One transaction so no reader
-   * sees the machine half removed: a row gone but its push token resolvable, or an invitation
-   * it could redeem again still open. Owner keys are never touched: they are the person's, and
-   * removing one is {@link deleteOwnerKey}.
+   * that is still live here ({@link withdrawCadreInvite}'s body), plus, for every strand in
+   * `target.pendingPartyKeys`, a `PendingStrandPartyKey` row holding the key the party moves
+   * to there (`strand-party-key-rotation.ts` moves it). One transaction so no reader sees the
+   * machine half removed: a row gone but its push token resolvable, an invitation it could
+   * redeem again still open, or its tombstone without the intent to rotate, which the strand
+   * membership reconciler reads as "no rotation" and would then clear the binding the rotation
+   * means to orphan (`strand-membership-reconciler.ts` → "Binding the party's other machines").
+   * Owner keys are never touched: they are the person's, and removing one is
+   * {@link deleteOwnerKey}.
+   *
+   * A strand that already holds a pending row gets it replaced: the stored row is retired
+   * ({@link signPendingKeyRetirement}) and the fresh row's `Superseded` carries the replaced
+   * key's public half after the stored row's own list, because the replaced key may already
+   * have reached the machine being removed, and a seat it holds must be revoked. A stored row
+   * whose stamp is already retired (held without its delete) is replaced the same way, with
+   * no second tombstone.
    *
    * Through {@link mutateCadrePeer}, the membership hub. Every stamp is read inside the locked
    * body, and a row whose stamp is already retired (held without its delete) is skipped rather
-   * than tombstoned twice. Nothing to remove writes nothing and returns all false.
+   * than tombstoned twice. Nothing to remove writes nothing, pending rows included, and returns
+   * all false: the machine was removed elsewhere, and that removal wrote the rotation rows.
    *
    * Opted into {@link LOST_UPDATE_RETRY_POLICY} for the reason on {@link deleteCadrePeer}: every
    * stamp and signature is minted inside the body, and the invitation keys come from the
@@ -2833,21 +2888,23 @@ export class ControlDatabase {
    * before). A lost update after a sibling tree of the transaction already synced arrives as a
    * partial commit and stays declined.
    *
-   * The caller decides which invitations the machine could use, from its plan
-   * (`CadreNode.planMachineRemoval`).
+   * The caller decides which invitations the machine could use and which strands to rotate,
+   * from its plan (`CadreNode.planMachineRemoval`).
    */
   async removeMachine(
-    target: { peerId: string; inviteKeys: readonly string[] },
+    target: { peerId: string; inviteKeys: readonly string[]; pendingPartyKeys?: readonly PendingPartyKeyEntry[] },
     ownerKey: string,
     signMessage: ControlSign
-  ): Promise<MachineRemovalResult> {
+  ): Promise<MachineRemovalWrites> {
     return await this.mutateCadrePeer('machine-remove', async () => {
-      const removals = await this.signMachineRemovals(target.peerId, signMessage);
+      const retired = await this.retiredStampsByTable();
+      const removals = await this.signMachineRemovals(target.peerId, retired, signMessage);
       const withdrawals = await this.signWithdrawals('CadreInvite', target.inviteKeys, signMessage);
       if (removals.length === 0 && withdrawals.length === 0) {
         log('removeMachine: nothing live names %s here (already removed)', target.peerId);
         return { removedPeer: false, removedDeviceToken: false, withdrawnInvitations: [] };
       }
+      const rotations = await this.signPendingPartyKeyReplacements(target.pendingPartyKeys ?? [], retired('PendingStrandPartyKey'), ownerKey, signMessage);
       await this.inTransaction('remove machine', async () => {
         for (const removal of removals) {
           await this.execGuardedRemoval(removal, ownerKey);
@@ -2855,14 +2912,24 @@ export class ControlDatabase {
         for (const withdrawal of withdrawals) {
           await this.execTombstone(withdrawal.ref, withdrawal.signature, ownerKey);
         }
+        for (const rotation of rotations) {
+          if (rotation.retirement !== null) {
+            await this.execRowRetirement(rotation.retirement, ownerKey);
+          }
+          await this.db!.exec(rotation.insert.sql, rotation.insert.params);
+        }
       });
       const removed = new Set<RemovableTable>(removals.map((removal) => removal.ref.tableName));
-      log('Machine %s removed: %s; %d invitation(s) withdrawn', target.peerId, [...removed].join(', ') || 'no row', withdrawals.length);
+      log('Machine %s removed: %s; %d invitation(s) withdrawn; %d strand party key rotation(s) recorded',
+        target.peerId, [...removed].join(', ') || 'no row', withdrawals.length, rotations.length);
       for (const removal of removals) {
         this.notifyGuardedDelete(removal.ref);
       }
       for (const withdrawal of withdrawals) {
         this.notifyGuardedDelete(withdrawal.ref);
+      }
+      for (const rotation of rotations) {
+        this.notifyRowRetirement(rotation.retirement);
       }
       return {
         removedPeer: removed.has('CadrePeer'),
@@ -2873,19 +2940,29 @@ export class ControlDatabase {
   }
 
   /**
-   * The guarded removals {@link removeMachine} runs, signed over each row's current stamp:
-   * the `CadrePeer` row and the `DeviceToken` row, each when present. Inside the locked body
-   * (every read `retry: false`); one `Revocation` scan serves the retired-stamp check for both
-   * tables.
+   * Every retired stamp held here, by table, from ONE `Revocation` scan inside a locked body
+   * (`retry: false`), for a writer that checks several rows' stamps before one transaction.
    */
-  private async signMachineRemovals(peerId: string, signMessage: ControlSign): Promise<GuardedRemoval[]> {
+  private async retiredStampsByTable(): Promise<(table: RevocableTable) => ReadonlySet<string>> {
     const retiredByTable = new Map<RevocableTable, Set<string>>();
     for (const tombstone of await this.queryRevocations(false)) {
       const stamps = retiredByTable.get(tombstone.tableName) ?? new Set<string>();
       stamps.add(tombstone.stampId);
       retiredByTable.set(tombstone.tableName, stamps);
     }
-    const retired = (table: RevocableTable): ReadonlySet<string> => retiredByTable.get(table) ?? new Set<string>();
+    return (table) => retiredByTable.get(table) ?? new Set<string>();
+  }
+
+  /**
+   * The guarded removals {@link removeMachine} runs, signed over each row's current stamp:
+   * the `CadrePeer` row and the `DeviceToken` row, each when present. Inside the locked body
+   * (every read `retry: false`); `retired` is the body's one `Revocation` scan.
+   */
+  private async signMachineRemovals(
+    peerId: string,
+    retired: (table: RevocableTable) => ReadonlySet<string>,
+    signMessage: ControlSign
+  ): Promise<GuardedRemoval[]> {
     const liveStamp = async (table: RemovableTable, keyValue: string): Promise<string | null> => {
       const stampId = await this.queryStampId(table, keyValue, false);
       return stampId !== null && !retired(table).has(stampId) ? stampId : null;
@@ -2898,6 +2975,91 @@ export class ControlDatabase {
       }
     }
     return removals;
+  }
+
+  /**
+   * The `PendingStrandPartyKey` writes {@link removeMachine} runs for `entries`: per strand, the
+   * retirement of the row it already holds, if any, and the insert of the fresh key, whose
+   * `Superseded` extends the stored row's list with the stored key's public half. Signed inside
+   * the locked body, before the transaction.
+   */
+  private async signPendingPartyKeyReplacements(
+    entries: readonly PendingPartyKeyEntry[],
+    retiredPendingStamps: ReadonlySet<string>,
+    ownerKey: string,
+    signMessage: ControlSign
+  ): Promise<PendingPartyKeyReplacement[]> {
+    const replacements: PendingPartyKeyReplacement[] = [];
+    for (const entry of entries) {
+      const stored = await this.readStoredPendingPartyKey(entry.strandId, retiredPendingStamps);
+      const superseded = stored === null
+        ? []
+        : [...new Set([...stored.superseded, strandMemberKeyPair(stored.privateKey).publicKeyB64])];
+      replacements.push({
+        retirement: stored === null ? null : await this.signPendingKeyRetirement(entry.strandId, stored, signMessage),
+        insert: await this.signPendingStrandPartyKeyInsert(entry.strandId, entry.privateKey, superseded, ownerKey, signMessage),
+      });
+    }
+    return replacements;
+  }
+
+  /**
+   * The `PendingStrandPartyKey` row physically stored for `strandId`, retired or not, or null.
+   * For a locked write body (`retry: false`): the public reader
+   * ({@link queryPendingStrandPartyKey}) hides a retired row, and a writer replacing the row has
+   * to remove the physical one either way.
+   */
+  private async readStoredPendingPartyKey(strandId: string, retiredPendingStamps: ReadonlySet<string>): Promise<StoredPendingPartyKey | null> {
+    const rows = await this.readRows(
+      'select PrivateKey, Superseded, StampId from CadreControl.PendingStrandPartyKey where Id = ?',
+      [strandId],
+      'pending-strand-party-key-stored',
+      false
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    const superseded = row.Superseded as string | null;
+    const stampId = row.StampId as string;
+    return {
+      privateKey: row.PrivateKey as string,
+      superseded: superseded === null ? [] : superseded.split(','),
+      stampId,
+      retired: retiredPendingStamps.has(stampId),
+    };
+  }
+
+  /**
+   * The owner-signed removal of a stored `PendingStrandPartyKey` row ({@link RowRetirement}): with
+   * its tombstone when the row is live, as every guarded removal; without one when its stamp is
+   * already retired (the tombstone reached this node without the delete; the table has no reap
+   * branch, so a second tombstone would collide on `Revocation`'s key and leave the row).
+   */
+  private async signPendingKeyRetirement(strandId: string, stored: StoredPendingPartyKey, signMessage: ControlSign): Promise<RowRetirement> {
+    return {
+      removal: await signGuardedRemoval(this.config.partyId, 'PendingStrandPartyKey', strandId, stored.stampId, signMessage),
+      filesTombstone: !stored.retired,
+    };
+  }
+
+  /**
+   * Run one {@link RowRetirement} inside the caller's transaction: the guarded statement pair,
+   * or the signed delete alone when the tombstone already exists.
+   */
+  private async execRowRetirement(retirement: RowRetirement, ownerKey: string): Promise<void> {
+    if (retirement.filesTombstone) {
+      await this.execGuardedRemoval(retirement.removal, ownerKey);
+    } else {
+      await this.execSignedDelete(retirement.removal, ownerKey);
+    }
+  }
+
+  /** Fire the guarded-delete listener for a {@link RowRetirement} that filed a tombstone; a null or tombstone-less one fires nothing. */
+  private notifyRowRetirement(retirement: RowRetirement | null): void {
+    if (retirement?.filesTombstone) {
+      this.notifyGuardedDelete(retirement.removal.ref);
+    }
   }
 
   /**
@@ -3065,25 +3227,35 @@ export class ControlDatabase {
       return false;
     }
     const partyKeyStamp = await this.queryStampId('StrandPartyKey', strandId, false);
+    // A rotation still pending for the strand goes with the party key: the row holds a private
+    // key for a strand the party no longer has, nothing else removes it, and the table has no
+    // reap branch (`strand-party-key-rotation.ts`).
+    const pending = await this.readStoredPendingPartyKey(strandId, await this.queryRevokedStamps('PendingStrandPartyKey', false));
 
     const strandRemoval = await signGuardedRemoval(this.config.partyId, 'Strand', strandId, strandStamp, signMessage);
     const partyKeyRemoval = partyKeyStamp === null
       ? null
       : await signGuardedRemoval(this.config.partyId, 'StrandPartyKey', strandId, partyKeyStamp, signMessage);
+    const pendingRetirement = pending === null ? null : await this.signPendingKeyRetirement(strandId, pending, signMessage);
 
     await this.inTransaction('delete Strand', async () => {
       await this.execGuardedRemoval(strandRemoval, ownerKey);
       if (partyKeyRemoval !== null) {
         await this.execGuardedRemoval(partyKeyRemoval, ownerKey);
       }
+      if (pendingRetirement !== null) {
+        await this.execRowRetirement(pendingRetirement, ownerKey);
+      }
     });
 
-    log('Strand deleted: %s (stamp retired%s)', strandId,
-      partyKeyRemoval === null ? '' : '; party key deleted, stamp retired');
+    log('Strand deleted: %s (stamp retired%s%s)', strandId,
+      partyKeyRemoval === null ? '' : '; party key deleted, stamp retired',
+      pendingRetirement === null ? '' : '; pending party key deleted');
     this.notifyGuardedDelete(strandRemoval.ref);
     if (partyKeyRemoval !== null) {
       this.notifyGuardedDelete(partyKeyRemoval.ref);
     }
+    this.notifyRowRetirement(pendingRetirement);
     return true;
   }
 
@@ -3226,6 +3398,89 @@ export class ControlDatabase {
     signMessage: ControlSign
   ): Promise<boolean> {
     return this.lockedWithRetry(() => this.deleteGuardedRow('PendingStrandPartyKey', strandId, ownerKey, signMessage), {}, 'pending-strand-party-key-delete');
+  }
+
+  /**
+   * Move this party's membership key in each of `entries`' strands from `oldKey` to `newKey` in
+   * the control record, in ONE transaction: per strand, the `StrandPartyKey` row's guarded
+   * removal and a fresh insert naming `newKey` ({@link revouchOwnerKey}'s delete-and-re-add
+   * idiom, under the same owner approval), and the retirement of the strand's
+   * `PendingStrandPartyKey` row when it holds `newKey`. The last step of a party key rotation
+   * (`strand-party-key-rotation.ts`): the strand's rows already name `newKey` as the party's
+   * member, so a reader that sees the new control row sees a key that counts.
+   *
+   * Decided inside the locked body, per strand, over the rows as stored (every read
+   * `retry: false`): a row already naming `newKey` was swapped by another machine's driver and
+   * is skipped; a row naming neither key, or no row at all (the strand left the party), is left
+   * alone with a log, since the driver re-plans from the rows it finds; a pending row naming
+   * another key (a later removal replaced it) stays, because that key is the next rotation's,
+   * which the driver runs from `newKey`. A stale `StrandPartyKey` or pending row (stamp already
+   * retired) is removed without a second tombstone ({@link RowRetirement}).
+   *
+   * @returns The strand ids whose control row was swapped here.
+   */
+  async swapStrandPartyKeys(
+    entries: readonly StrandPartyKeySwap[],
+    ownerKey: string,
+    signMessage: ControlSign
+  ): Promise<string[]> {
+    this.ensureInitialized();
+    return await this.lockedWithRetry(async () => {
+      const retired = await this.retiredStampsByTable();
+      const swaps: { strandId: string; keyRetirement: RowRetirement; insert: SignedInsert; pendingRetirement: RowRetirement | null }[] = [];
+      for (const entry of entries) {
+        const stored = await this.readStoredPartyKey(entry.strandId);
+        if (stored === null || stored.privateKey === entry.newKey || stored.privateKey !== entry.oldKey) {
+          log('swapStrandPartyKeys: strand %s %s; nothing to swap', entry.strandId,
+            stored === null ? 'has no party key row here' : stored.privateKey === entry.newKey ? 'already names the new key' : 'names a key this swap did not start from');
+          continue;
+        }
+        const pending = await this.readStoredPendingPartyKey(entry.strandId, retired('PendingStrandPartyKey'));
+        swaps.push({
+          strandId: entry.strandId,
+          keyRetirement: {
+            removal: await signGuardedRemoval(this.config.partyId, 'StrandPartyKey', entry.strandId, stored.stampId, signMessage),
+            filesTombstone: !retired('StrandPartyKey').has(stored.stampId),
+          },
+          insert: await this.signStrandPartyKeyInsert(entry.strandId, entry.newKey, ownerKey, signMessage),
+          pendingRetirement: pending !== null && pending.privateKey === entry.newKey
+            ? await this.signPendingKeyRetirement(entry.strandId, pending, signMessage)
+            : null,
+        });
+      }
+      if (swaps.length === 0) {
+        return [];
+      }
+      // Bare `exec` for the insert: the lock is held, and `execWrite` would take it again.
+      await this.inTransaction('swap strand party keys', async () => {
+        for (const swap of swaps) {
+          await this.execRowRetirement(swap.keyRetirement, ownerKey);
+          await this.db!.exec(swap.insert.sql, swap.insert.params);
+          if (swap.pendingRetirement !== null) {
+            await this.execRowRetirement(swap.pendingRetirement, ownerKey);
+          }
+        }
+      });
+      for (const swap of swaps) {
+        log('Strand party key swapped for %s (old stamp retired%s)', swap.strandId,
+          swap.pendingRetirement === null ? '' : '; pending row deleted');
+        this.notifyRowRetirement(swap.keyRetirement);
+        this.notifyRowRetirement(swap.pendingRetirement);
+      }
+      return swaps.map((swap) => swap.strandId);
+    }, {}, 'strand-party-key-swap');
+  }
+
+  /** The `StrandPartyKey` row stored for `strandId` with its stamp, for a locked write body (`retry: false`), or null. */
+  private async readStoredPartyKey(strandId: string): Promise<{ privateKey: string; stampId: string } | null> {
+    const rows = await this.readRows(
+      'select PrivateKey, StampId from CadreControl.StrandPartyKey where Id = ?',
+      [strandId],
+      'strand-party-key-stored',
+      false
+    );
+    const row = rows[0];
+    return row === undefined ? null : { privateKey: row.PrivateKey as string, stampId: row.StampId as string };
   }
 
   /**
@@ -3833,13 +4088,23 @@ export class ControlDatabase {
    * come from closed literal unions — no caller-supplied string reaches the statement.
    */
   private async execGuardedRemoval(removal: GuardedRemoval, ownerKey: string): Promise<void> {
+    await this.execSignedDelete(removal, ownerKey);
+    await this.execTombstone(removal.ref, removal.revocationSignature, ownerKey);
+  }
+
+  /**
+   * The delete half of {@link execGuardedRemoval}, alone: for a row whose stamp a committed
+   * tombstone already retires ({@link RowRetirement} with no tombstone to file). The table's
+   * `RevocationRecorded` check is met by that tombstone, and `AuthorizedDelete` by the owner
+   * signature here, which the reap branch other tables carry does not exist for the key tables.
+   */
+  private async execSignedDelete(removal: GuardedRemoval, ownerKey: string): Promise<void> {
     const { tableName, rowKey, stampId } = removal.ref;
     await this.db!.exec(`
       delete from CadreControl.${tableName}
         with context OwnerKey = ?, Signature = ?
         where ${GUARDED_KEY_COLUMN[tableName]} = ? and StampId = ?
     `, [ownerKey, removal.signature, rowKey, stampId]);
-    await this.execTombstone(removal.ref, removal.revocationSignature, ownerKey);
   }
 
   /**

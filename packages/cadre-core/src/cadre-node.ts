@@ -45,6 +45,8 @@ import type {
   CadreOwnerKey,
   MachineRemovalPlan,
   MachineRemovalResult,
+  StrandKeyRotationOutcome,
+  StrandKeyRotationPlan,
   OwnerKeyDependents,
   OwnerKeyRemovalPlan,
   OwnerKeyRemovalResult,
@@ -86,7 +88,7 @@ import {
   isValidStrandScopeKey
 } from './storage-scope.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
-import { assertNotPreSplitStrand, issueInvite, PreSplitStrandIdentityError, readStrandHeaderSAppId } from './strand-membership-writer.js';
+import { assertNotPreSplitStrand, isStrandManager, issueInvite, PreSplitStrandIdentityError, readStrandHeaderSAppId } from './strand-membership-writer.js';
 import { MEMBERSHIP_INVITE_TTL_MS } from './strand-formation-manager.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
@@ -107,8 +109,9 @@ import { addrKey, mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } fr
 import { strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSigner } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
-import { describeMachines, planMachineRemoval, MachineRemovalRefusedError } from './machine-removal.js';
+import { describeMachines, planMachineRemoval, MachineRemovalRefusedError, type ClosedStrandState } from './machine-removal.js';
 import { partitionPartyStrandPeers, type PartyStrandPeerSource, type PartyStrandPeers } from './strand-party-peers.js';
+import { StrandPartyKeyRotationDriver, type StrandPartyKeySwapEntry } from './strand-party-key-rotation.js';
 import { describeOwnerKeys, namedOwnerKey, planOwnerKeyRemoval, revouchWithinPlan, OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-keys.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import {
@@ -1217,6 +1220,31 @@ export class CadreNode implements SAppIdLookup {
    */
   private strandPartyPeersWatch: TableChangeWatch | null = null;
   /**
+   * The watch on `StrandPartyKey` and `PendingStrandPartyKey` ({@link onPartyKeyTablesChanged}):
+   * a swapped key replicated from the machine that finished a rotation re-keys the running
+   * strand here, and a pending row drives a rotation here when this is an owner machine running
+   * the strand. Taken in `start()`, disposed in `stop()`.
+   */
+  private strandPartyKeyWatch: TableChangeWatch | null = null;
+  /**
+   * The party key rotation driver (`strand-party-key-rotation.ts`) over this node's control
+   * database and strand manager; one run per strand at a time. Driven by {@link removeMachine},
+   * a closed strand becoming writable here, the party key watch and the growth drain.
+   */
+  private readonly partyKeyRotation = new StrandPartyKeyRotationDriver({
+    readPending: (strandId) => this.requireControlDatabase('read a pending strand party key').queryPendingStrandPartyKey(strandId),
+    readCurrentKey: (strandId) => this.requireControlDatabase('read a strand party key').queryStrandPartyKey(strandId),
+    readSiblingPeerIds: async (strandId) => (await this.readPartyStrandPeers(strandId)).live,
+    getDatabase: (strandId) => this.strandManager.getInstance(strandId)?.database?.getDatabase(),
+    getOwnPeerId: (strandId) => this.strandManager.getInstance(strandId)?.libp2pNode?.peerId.toString(),
+    swapKeys: (entries) => this.swapStrandPartyKeys(entries),
+    onRotated: async (strandId, newKey) => {
+      await this.strandManager.rekeyParty(strandId, newKey);
+      this.emit('strand:party-key-rotated', { strandId });
+    },
+    onBlocked: (strandId, reason) => this.emit('strand:party-key-rotation-blocked', { strandId, reason }),
+  });
+  /**
    * Guards the one-shot, first-cohort-growth reconstruction: an owner re-touches
    * every membership row it may have authored that could be unreplicated (covering
    * writes made before this process started, which the in-memory queue cannot know).
@@ -1561,6 +1589,13 @@ export class CadreNode implements SAppIdLookup {
           this.strandManager.notifyPartyPeersChanged();
         },
         { label: 'strand-party-peers' });
+      // The party key watch: a `StrandPartyKey` row swapped on another machine re-keys the
+      // running strand here, and a `PendingStrandPartyKey` row written here or replicated in is
+      // driven here when this is an owner machine running the strand (`strand-party-key-rotation.ts`).
+      this.strandPartyKeyWatch = this.controlDatabase.watchTables(
+        ['CadreControl.StrandPartyKey', 'CadreControl.PendingStrandPartyKey'],
+        () => this.onPartyKeyTablesChanged(),
+        { label: 'strand-party-key' });
       // Committed-delete seam → write-while-alone revocation queue. Same wiring
       // window argument as the membership listener above.
       this.controlDatabase.setGuardedDeleteListener((revocation) => this.noteGuardedDelete(revocation));
@@ -5008,6 +5043,9 @@ export class CadreNode implements SAppIdLookup {
     //    This machine's `StrandPeer` rows deferred while alone or refused: each strand's
     //    launch made its publish, so only what that publish could not write is here.
     await this.publishDeferredStrandPeers();
+    //    A party key rotation whose control swap was deferred while alone, or whose pending
+    //    row this node could not act on before: re-driven for every closed strand running here.
+    await this.driveTrackedPendingRotations('cohort growth');
 
     // 3. First growth: an owner reconstructs membership rows it may have
     //    authored that never replicated (covers writes from before this process
@@ -5920,6 +5958,8 @@ export class CadreNode implements SAppIdLookup {
       this.membershipGateWatch = null;
       this.strandPartyPeersWatch?.dispose();
       this.strandPartyPeersWatch = null;
+      this.strandPartyKeyWatch?.dispose();
+      this.strandPartyKeyWatch = null;
       this.controlDatabase.setMembershipChangeListener(null);
       this.controlDatabase.setGuardedDeleteListener(null);
       this.controlDatabase.setControlWriteAbandonedListener(null);
@@ -5969,6 +6009,9 @@ export class CadreNode implements SAppIdLookup {
       this.hibernationManager.recordActivity(instance);
     }
     void this.recordReplicaSAppId(strandId);
+    // A rotation pending for a strand that was still syncing when its row was written waits
+    // for the database; this is the moment it exists.
+    void this.driveRotationIfPending(strandId, 'strand writable');
     this.emit('strand:writable', { strandId });
   }
 
@@ -6120,16 +6163,37 @@ export class CadreNode implements SAppIdLookup {
       ? peerIdFromPrivateKey(await strandTransportKey(this.identityKey, strandId)).toString()
       : undefined;
     const bootstrapNodes = await this.resolveCohortSeed(strandId, delegatePeerId);
+    // The party's membership key as the control record names it now: a party key rotation can
+    // finish while the strand hibernates, and the retained config would rebuild the reconciler
+    // under the key that left the strand. A row that cannot be read keeps the retained key.
+    const partyMemberPrivateKey = await this.storedStrandPartyKey(strandId);
     // NOTE: no `servingMachines` override — see `launchStrand` for why a strand node
     // declares no repair yardstick, and `StartStrandConfig.servingMachines` for the
     // count that would legitimately go here once one exists.
-    const instance = await this.strandManager.resumeStrand(strandId, { bootstrapNodes });
+    const instance = await this.strandManager.resumeStrand(strandId, { bootstrapNodes, ...(partyMemberPrivateKey !== undefined && { partyMemberPrivateKey }) });
     // Same reason as the launch path: `bootstrapNodes` only reaches the address
     // book through @libp2p/bootstrap discovery, so merge it directly as well.
     if (instance.libp2pNode) {
       await this.mergeStrandPeerAddrs(instance.libp2pNode, bootstrapNodes, strandId);
     }
     void this.recordReplicaSAppId(strandId);
+    void this.driveRotationIfPending(strandId, 'strand resumed');
+  }
+
+  /**
+   * The party's `StrandPartyKey.PrivateKey` for `strandId` as stored now, for a resume;
+   * `undefined` when there is none or the read fails (logged), so the caller keeps what it has.
+   */
+  private async storedStrandPartyKey(strandId: string): Promise<string | undefined> {
+    if (!this.controlDatabase) {
+      return undefined;
+    }
+    try {
+      return await this.controlDatabase.queryStrandPartyKey(strandId) ?? undefined;
+    } catch (error) {
+      log('Resume of strand %s: the party key row could not be read; resuming under the retained key: %o', strandId, error);
+      return undefined;
+    }
   }
 
   /**
@@ -7468,6 +7532,10 @@ export class CadreNode implements SAppIdLookup {
 
     this.hibernationManager.trackStrand(instance);
     this.emit('strand:started', { strandId: strand.Id });
+    // A rotation left pending for this strand (a removal made while it was not running here,
+    // or on another machine) is finished here when this is an owner machine; a launch still
+    // syncing has no database yet and is driven when it becomes writable.
+    void this.driveRotationIfPending(strand.Id, 'strand launched');
     return instance;
   }
 
@@ -9815,8 +9883,9 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * What {@link removeMachine} would do for `peerId`, read without writing, for an app's
-   * confirmation step ({@link MachineRemovalPlan}): whether this node may remove it and which
-   * invitations it could come back through (`planMachineRemoval` in `machine-removal.ts`).
+   * confirmation step ({@link MachineRemovalPlan}): whether this node may remove it, which
+   * invitations it could come back through, and where the party's key in each closed strand is
+   * replaced (`planMachineRemoval` in `machine-removal.ts`).
    */
   async planMachineRemoval(peerId: string): Promise<MachineRemovalPlan> {
     if (!this.controlDatabase) {
@@ -9827,10 +9896,11 @@ export class CadreNode implements SAppIdLookup {
     // heard of a row with no storage event (outside the block's cohort) an invitation issued
     // elsewhere in the last MEMBERSHIP_VIEW_MAX_AGE_MS can be missing and left unwithdrawn. If
     // removal must close that window, read both tables fresh here.
-    const [invites, usages, owners] = await Promise.all([
+    const [invites, usages, owners, strands] = await Promise.all([
       this.controlDatabase.listCadreInviteStatuses(),
       this.controlDatabase.queryCadreInviteUsages(),
       this.controlDatabase.getOwnerKeys(),
+      this.readClosedStrandStates(this.controlDatabase),
     ]);
     return planMachineRemoval({
       peerId,
@@ -9839,29 +9909,77 @@ export class CadreNode implements SAppIdLookup {
       canSign: this.ownerSignerEnrolledIn(owners) !== null,
       invites,
       usages,
+      strands,
     });
   }
 
   /**
+   * Every closed strand the party holds a membership key for, own and joined, as this node runs
+   * it ({@link ClosedStrandState}): the input to the plan's per-strand rotation site.
+   */
+  private async readClosedStrandStates(controlDatabase: ControlDatabase): Promise<ClosedStrandState[]> {
+    const rows = [...await controlDatabase.queryStrands(), ...await controlDatabase.queryJoinedStrands()];
+    const states: ClosedStrandState[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      if (row.Type !== 'c' || seen.has(row.Id)) {
+        continue;
+      }
+      seen.add(row.Id);
+      const partyKey = await controlDatabase.queryStrandPartyKey(row.Id);
+      if (partyKey !== null) {
+        states.push(await this.closedStrandState(row.Id, partyKey));
+      }
+    }
+    return states;
+  }
+
+  /** {@link readClosedStrandStates} for one strand: its runtime here, and the party's manager seat when a database is live. */
+  private async closedStrandState(strandId: string, partyKey: string): Promise<ClosedStrandState> {
+    const instance = this.strandManager.getInstance(strandId);
+    const db = instance?.database?.getDatabase();
+    if (db === undefined) {
+      return { strandId, runtime: instance?.status === 'hibernating' ? 'hibernating' : 'none', managerSeat: 'unknown' };
+    }
+    try {
+      return { strandId, runtime: 'live', managerSeat: await isStrandManager(db, strandMemberKeyPair(partyKey).publicKeyB64) };
+    } catch (error) {
+      log('planMachineRemoval: the manager seat of strand %s could not be read; the removal finds out: %o', strandId, error);
+      return { strandId, runtime: 'live', managerSeat: 'unknown' };
+    }
+  }
+
+  /**
    * Remove a machine from the cadre completely, signed by this node's owner key: its
-   * `CadrePeer` row, its `DeviceToken` row (a removed phone must not be push-woken) and a
-   * withdrawal of every live invitation it could redeem to come back, in ONE transaction
-   * ({@link ControlDatabase.removeMachine}), with a `Revocation` tombstone per row so the
+   * `CadrePeer` row, its `DeviceToken` row (a removed phone must not be push-woken), a
+   * withdrawal of every live invitation it could redeem to come back, and a
+   * `PendingStrandPartyKey` row per closed strand the party holds a key for, in ONE transaction
+   * ({@link ControlDatabase.removeMachine}), with a `Revocation` tombstone per removed row so the
    * removal holds on every machine ("Deletes made while alone" in docs/architecture.md), under
    * one owner approval. Afterwards this node forgets the machine as a dial target, and the
    * refresh the write notifies hangs up its control connection ({@link hangUpRevokedControlPeers})
    * before this resolves.
    *
+   * Then, for each closed strand that runs here (a hibernating one is woken first), the party
+   * moves onto the fresh key in the strand's own rows and the control record
+   * (`strand-party-key-rotation.ts`; a second owner approval for the swap), so the removed
+   * machine is left holding a key that is no longer a member there and every machine's
+   * revoked-peer gate denies it. The result says per strand whether that happened here
+   * ({@link MachineRemovalResult.strands}): a strand not running here is finished by any owner
+   * machine that runs it, and a strand the party does not manage waits for the other party's
+   * manager. The removed machine never receives the new key, because the control database no
+   * longer syncs to it.
+   *
    * Owner keys stay: they are the person's, not the machine's. A lost phone that held one can
    * still sign, a fresh machine invitation it could redeem included, so removing that key
    * ({@link removeOwner}) is the step that locks it out.
    *
-   * Not undone by this call: the machine keeps every row and strand block it already synced
-   * and the party's strand member keys (ticket `machine-removal-rotates-party-member-key`).
-   * A fresh invitation re-admits it later under fresh stamps.
+   * Not undone by this call: the machine keeps every row and strand block it already synced,
+   * and each strand's read secret, so it can still read the blocks it holds. A fresh invitation
+   * re-admits it later under fresh stamps.
    *
-   * @returns what was written ({@link MachineRemovalResult}); all false when no live row names
-   *   the machine here (already removed elsewhere).
+   * @returns what was written and rotated ({@link MachineRemovalResult}); all false and empty when
+   *   no live row names the machine here (already removed elsewhere).
    * @throws {MachineRemovalRefusedError} `'not-an-owner'` or `'self'`, before any write.
    */
   async removeMachine(peerId: string): Promise<MachineRemovalResult> {
@@ -9875,9 +9993,11 @@ export class CadreNode implements SAppIdLookup {
     }
     if (plan.machine === null) {
       log('removeMachine(%s): no live row names it here; nothing to remove', peerId);
-      return { removedPeer: false, removedDeviceToken: false, withdrawnInvitations: [] };
+      return { removedPeer: false, removedDeviceToken: false, withdrawnInvitations: [], strands: [] };
     }
-    const writes = await service.removeMachine({ peerId, inviteKeys: plan.invitations });
+    const pendingPartyKeys = await Promise.all(plan.strands.map(async (strand) =>
+      ({ strandId: strand.strandId, privateKey: await generateStrandMemberKey() })));
+    const writes = await service.removeMachine({ peerId, inviteKeys: plan.invitations, pendingPartyKeys });
     if (writes.removedPeer) {
       // Track + loudly flag a delete that committed local-only (security-relevant).
       this.noteControlWrite(peerId, 'remove');
@@ -9887,9 +10007,125 @@ export class CadreNode implements SAppIdLookup {
     void this.bootstrapPeerStore?.forget(peerId).catch((error: unknown) => {
       log('removeMachine: persisting the removal of dial target %s failed (forgotten in memory): %o', peerId, error);
     });
-    log('removeMachine(%s): peer=%s deviceToken=%s invitations=%d', peerId,
-      writes.removedPeer, writes.removedDeviceToken, writes.withdrawnInvitations.length);
-    return writes;
+    log('removeMachine(%s): peer=%s deviceToken=%s invitations=%d strands=%d', peerId,
+      writes.removedPeer, writes.removedDeviceToken, writes.withdrawnInvitations.length, plan.strands.length);
+    const strands = writes.removedPeer ? await this.rotateAfterRemoval(plan.strands) : plan.strands.map((strand) => ({ strandId: strand.strandId, outcome: 'pending' as const }));
+    return { ...writes, strands };
+  }
+
+  /**
+   * The strand side of {@link removeMachine}: every strand the plan placed here is woken if it
+   * hibernates, then driven through the rotation; a strand placed `later` is reported `pending`
+   * without being touched. Never rejects: a wake that fails leaves its strand `pending`.
+   */
+  private async rotateAfterRemoval(plans: readonly StrandKeyRotationPlan[]): Promise<StrandKeyRotationOutcome[]> {
+    const here = plans.filter((plan) => plan.rotation !== 'later').map((plan) => plan.strandId);
+    for (const strandId of here) {
+      await this.wakeForRotation(strandId);
+    }
+    const driven = new Map((await this.partyKeyRotation.drive(here, 'machine removal')).map((outcome) => [outcome.strandId, outcome.outcome]));
+    return plans.map((plan) => ({ strandId: plan.strandId, outcome: driven.get(plan.strandId) ?? 'pending' }));
+  }
+
+  /** Wake a hibernating strand so a rotation can run against its database; a failure is logged, and the strand stays pending. */
+  private async wakeForRotation(strandId: string): Promise<void> {
+    const instance = this.strandManager.getInstance(strandId);
+    if (!instance || instance.database || instance.status !== 'hibernating') {
+      return;
+    }
+    try {
+      await this.wakeStrand(strandId);
+    } catch (error) {
+      log('removeMachine: waking hibernating strand %s for its party key rotation failed (left pending): %o', strandId, error);
+    }
+  }
+
+  /**
+   * Drive the rotation pending for `strandId`, if one is, when this is an owner machine with the
+   * strand's database live (`strand-party-key-rotation.ts`). Called in the background from the
+   * strand lifecycle (launch, resume, writable); a strand with nothing pending costs one control
+   * read. Never rejects.
+   */
+  private async driveRotationIfPending(strandId: string, cause: string): Promise<void> {
+    try {
+      if (!this._running || !this.controlDatabase || !this.strandManager.getInstance(strandId)?.database) {
+        return;
+      }
+      if (await this.controlDatabase.queryPendingStrandPartyKey(strandId) === null) {
+        return;
+      }
+      if (await this.enrolledOwnerSigner() === null) {
+        log('Party key rotation pending for strand %s; this machine holds no enrolled owner key, so an owner machine running the strand finishes it', strandId);
+        return;
+      }
+      await this.partyKeyRotation.drive([strandId], cause);
+    } catch (error) {
+      log('Party key rotation of strand %s (%s) could not be driven: %o', strandId, cause, error);
+    }
+  }
+
+  /** {@link driveRotationIfPending} for every closed strand running here, one run; for the watch and the growth drain. */
+  private async driveTrackedPendingRotations(cause: string): Promise<void> {
+    if (!this._running || !this.controlDatabase) {
+      return;
+    }
+    const pending: string[] = [];
+    for (const strandId of this.strandManager.trackedClosedStrandIds()) {
+      try {
+        if (this.strandManager.getInstance(strandId)?.database && await this.controlDatabase.queryPendingStrandPartyKey(strandId) !== null) {
+          pending.push(strandId);
+        }
+      } catch (error) {
+        log('Pending party key of strand %s could not be read (%s): %o', strandId, cause, error);
+      }
+    }
+    if (pending.length === 0) {
+      return;
+    }
+    if (await this.enrolledOwnerSigner() === null) {
+      log('Party key rotation pending for %d strand(s); this machine holds no enrolled owner key, so an owner machine running them finishes it', pending.length);
+      return;
+    }
+    await this.partyKeyRotation.drive(pending, cause);
+  }
+
+  /**
+   * The party key watch's run: for every tracked closed strand, re-key the instance when the
+   * `StrandPartyKey` row names a key other than the one it runs under (a rotation finished on
+   * another machine), then drive whatever rotation is pending here.
+   */
+  private async onPartyKeyTablesChanged(): Promise<void> {
+    if (!this._running || !this.controlDatabase) {
+      return;
+    }
+    for (const strandId of this.strandManager.trackedClosedStrandIds()) {
+      try {
+        const stored = await this.controlDatabase.queryStrandPartyKey(strandId);
+        if (stored !== null && await this.strandManager.rekeyParty(strandId, stored) !== 'unchanged') {
+          log('Strand %s re-keyed to the party key the control record names', strandId);
+        }
+      } catch (error) {
+        log('Re-keying strand %s from the control record failed (retried on the next change): %o', strandId, error);
+      }
+    }
+    await this.driveTrackedPendingRotations('party key tables changed');
+  }
+
+  /**
+   * Step 6 of a party key rotation ({@link StrandPartyKeyRotationDeps.swapKeys}): the control
+   * swap for every entry under one owner approval, deferred while a control write could fork the
+   * party ({@link controlWriteCouldFork}); the growth drain re-drives it. The tombstones it files
+   * ride the committed-delete seam like every other removal's.
+   */
+  private async swapStrandPartyKeys(entries: readonly StrandPartyKeySwapEntry[]): Promise<readonly string[] | 'deferred'> {
+    const service = this.seedBootstrapService;
+    if (!service || !this._running) {
+      throw new Error('CadreNode is stopped: no owner service to swap a strand party key');
+    }
+    if (await this.controlWriteCouldFork()) {
+      return 'deferred';
+    }
+    return await service.swapStrandPartyKeys(entries);
   }
 
   /**

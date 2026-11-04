@@ -383,6 +383,12 @@ export interface ResumeStrandOverrides {
    * {@link StartStrandConfig} does — it retains the last value; see `resumeStrand`.
    */
   servingMachines?: number;
+  /**
+   * The party's membership key for a closed strand as the control record names it now
+   * (`StrandPartyKey.PrivateKey`), re-read by `CadreNode.resumeStrandRuntime` because a party
+   * key rotation can finish while the strand hibernates. Omitted, the retained key stands.
+   */
+  partyMemberPrivateKey?: string;
 }
 
 /** A {@link StrandInstanceManager.resumeStrand} or {@link StrandInstanceManager.quiesceStrand} of one strand. */
@@ -1040,31 +1046,7 @@ export class StrandInstanceManager {
       // (`bindFounderPeer`), so the first pass finds them and stops. Armed AFTER the database
       // phase above, so a gated or deferred launch always has a reconciler registered by the
       // time it can publish.
-      if (config.strandRow.Type === 'c' && config.partyMemberPrivateKey
-        && config.membershipReconciliation?.enabled !== false) {
-        const reconciler = new StrandMembershipReconciler({
-          label: strandId,
-          partyMemberPrivateKey: config.partyMemberPrivateKey,
-          // Read per pass, never captured — same lifecycle argument as the
-          // enforcer's getNetwork: quiesce drops both handles.
-          getDatabase: () => instance.database?.getDatabase(),
-          getOwnPeerId: () => instance.libp2pNode?.peerId.toString(),
-          pendingInvite: config.pendingMembershipInvite,
-          partyPeers: config.partyPeers,
-          // The enforcer's CURRENT snapshot view of this node's own peer id — the
-          // reconciler stops rather than fight a self-revocation. Absent when the
-          // gate is disarmed (fail-open: the loop just runs).
-          isSelfRevoked: revocationEnforcer
-            ? () => {
-                const ownPeerId = instance.libp2pNode?.peerId.toString();
-                return ownPeerId !== undefined && revocationEnforcer.isRevoked(ownPeerId);
-              }
-            : undefined,
-          onRejoinBlocked: () => config.onRejoinBlocked?.(strandId)
-        }, config.membershipReconciliation);
-        this.membershipReconcilers.set(strandId, reconciler);
-        reconciler.start();
-      }
+      this.armMembershipReconciler(instance, config, revocationEnforcer);
 
       // Peer-join block catch-up: push this strand's own blocks to each newly
       // connected peer, so a machine that joined after blocks were committed
@@ -1601,6 +1583,99 @@ export class StrandInstanceManager {
   }
 
   /**
+   * Build and start `instance`'s membership reconciler from `config`, for a closed strand that
+   * carries the party's own membership key with the loop enabled; nothing otherwise. Called by
+   * {@link buildStrandRuntime} after the database phase, and by {@link rekeyParty} over a
+   * running instance with the re-keyed config. Every dependency is read per pass, never
+   * captured, so the loop follows the instance through quiesce and resume.
+   */
+  private armMembershipReconciler(
+    instance: StrandInstance,
+    config: StartStrandConfig,
+    revocationEnforcer: StrandRevocationEnforcer | undefined
+  ): void {
+    if (config.strandRow.Type !== 'c' || !config.partyMemberPrivateKey || config.membershipReconciliation?.enabled === false) {
+      return;
+    }
+    const strandId = instance.strandId;
+    const reconciler = new StrandMembershipReconciler({
+      label: strandId,
+      partyMemberPrivateKey: config.partyMemberPrivateKey,
+      // Read per pass, never captured — same lifecycle argument as the
+      // enforcer's getNetwork: quiesce drops both handles.
+      getDatabase: () => instance.database?.getDatabase(),
+      getOwnPeerId: () => instance.libp2pNode?.peerId.toString(),
+      pendingInvite: config.pendingMembershipInvite,
+      partyPeers: config.partyPeers,
+      // The enforcer's CURRENT snapshot view of this node's own peer id — the
+      // reconciler stops rather than fight a self-revocation. Absent when the
+      // gate is disarmed (fail-open: the loop just runs).
+      isSelfRevoked: revocationEnforcer
+        ? () => {
+            const ownPeerId = instance.libp2pNode?.peerId.toString();
+            return ownPeerId !== undefined && revocationEnforcer.isRevoked(ownPeerId);
+          }
+        : undefined,
+      onRejoinBlocked: () => config.onRejoinBlocked?.(strandId)
+    }, config.membershipReconciliation);
+    this.membershipReconcilers.set(strandId, reconciler);
+    reconciler.start();
+  }
+
+  /**
+   * Move a tracked closed strand onto `partyMemberPrivateKey`, the party's membership key the
+   * control record now names (a party key rotation finished here or replicated from the machine
+   * that finished it: `strand-party-key-rotation.ts`). The retained launch config is replaced
+   * with a fresh object carrying the key ({@link foundExistingStrand}'s idiom: the caller's
+   * config object is not ours to rewrite), so every later resume rebuilds under it, and the
+   * founder bootstrap a resume re-runs derives from it (insert-if-absent; the strand's rows
+   * already hold the new key as member and manager, so it writes nothing). The running
+   * instance's membership reconciler, which signs with the key, is stopped and awaited, then
+   * rebuilt and started over the re-keyed config, so its next pass binds under the new key.
+   *
+   * A tracked instance with no party key before (a storage replica launched before the party's
+   * row reached this node) is keyed the same way and gains its reconciler now rather than at its
+   * next resume. A build in flight is waited out first, so the reconciler it arms is the one
+   * replaced here rather than a second one beside it.
+   *
+   * @returns `rekeyed` when a running instance's reconciler was rebuilt; `retained` when only the
+   *   config changed (a hibernating instance, or one with the loop disabled); `unchanged` when
+   *   the key already matched or the strand is open; `untracked` when the strand is not here.
+   */
+  async rekeyParty(strandId: string, partyMemberPrivateKey: string): Promise<'rekeyed' | 'retained' | 'unchanged' | 'untracked'> {
+    await this.settleRuntimeBuilds(strandId);
+    const instance = this.instances.get(strandId);
+    const config = this.launchConfigs.get(strandId);
+    if (!instance || !config) {
+      return 'untracked';
+    }
+    if (config.strandRow.Type !== 'c' || config.partyMemberPrivateKey === partyMemberPrivateKey) {
+      return 'unchanged';
+    }
+    const rekeyed: StartStrandConfig = { ...config, partyMemberPrivateKey };
+    this.launchConfigs.set(strandId, rekeyed);
+    const reconciler = this.membershipReconcilers.get(strandId);
+    if (reconciler) {
+      reconciler.stop();
+      await reconciler.settle();
+      this.membershipReconcilers.delete(strandId);
+    }
+    if (!instance.libp2pNode || this.isQuiescing(strandId)) {
+      log('rekeyParty: strand %s has no live runtime; the re-keyed config waits for its resume', strandId);
+      return 'retained';
+    }
+    this.armMembershipReconciler(instance, rekeyed, this.revocationEnforcers.get(strandId));
+    const armed = this.membershipReconcilers.has(strandId);
+    log('rekeyParty: strand %s re-keyed (%s)', strandId, armed ? 'membership reconciler rebuilt' : 'membership reconciliation disabled');
+    return armed ? 'rekeyed' : 'retained';
+  }
+
+  /** The ids of every tracked closed strand, running or hibernating. */
+  trackedClosedStrandIds(): string[] {
+    return [...this.launchConfigs].filter(([, config]) => config.strandRow.Type === 'c').map(([strandId]) => strandId);
+  }
+
+  /**
    * Best-effort removal of THIS machine's own `Strand.MemberPeer` binding — the
    * self arm of `removeMemberPeer`, signed with the retained launch config's party
    * key. Called by `CadreNode.unpublishStrand` BEFORE the local stop, while the
@@ -1617,13 +1692,16 @@ export class StrandInstanceManager {
    * and its in-flight pass awaited — FIRST, so a pass that was already past its
    * own stopped check cannot re-register the binding this is about to clear.
    *
-   * NOTE: deliberately NOT handled here (or anywhere yet): clearing the bindings
-   * of a machine removed from the CADRE at the control layer, or of a party's
-   * OTHER machines when the party unpublishes — the party still holds the key on
-   * every surviving machine and can clear from any of them, and the stale rows
-   * grant nothing while admission is deny-list only. Revisit when
-   * `feat-strand-member-allowlist-admission` lands and a stale binding starts
-   * granting admission rather than merely mis-crediting diversity.
+   * A machine removed from the CADRE at the control layer is not cleared here either: the
+   * party replaces its key in the strand instead (`strand-party-key-rotation.ts`), which
+   * leaves that machine's binding an orphan the revoked-peer gate denies, and the membership
+   * reconciler clears what a lagging sibling wrote under the new key.
+   *
+   * NOTE: deliberately NOT handled here (or anywhere yet): clearing the bindings of a party's
+   * OTHER machines when the party unpublishes — the party still holds the key on every
+   * surviving machine and can clear from any of them, and the stale rows grant nothing while
+   * admission is deny-list only. Revisit when `feat-strand-member-allowlist-admission` lands
+   * and a stale binding starts granting admission rather than merely mis-crediting diversity.
    */
   async clearOwnMemberPeerBinding(strandId: string): Promise<void> {
     const instance = this.instances.get(strandId);
@@ -1806,7 +1884,8 @@ export class StrandInstanceManager {
       // count — a strand whose member rows became unreadable — this merge must gain an explicit
       // clear rather than silently declaring a stale number over a serving set it can no longer
       // see. Same applies to `bootstrapNodes` above, where a stale seed is harmless.
-      servingMachines: overrides?.servingMachines ?? launchConfig.servingMachines
+      servingMachines: overrides?.servingMachines ?? launchConfig.servingMachines,
+      partyMemberPrivateKey: overrides?.partyMemberPrivateKey ?? launchConfig.partyMemberPrivateKey
     };
     this.launchConfigs.set(strandId, resumeConfig);
 

@@ -18,6 +18,7 @@ import type {
   CadrePeerRow,
   MachineRemovalPlan,
   MachineRemovalRefusal,
+  StrandKeyRotationPlan,
 } from './types.js';
 
 /**
@@ -92,6 +93,27 @@ export interface MachineRemovalPlanInput {
   canSign: boolean;
   invites: readonly CadreInviteStatus[];
   usages: readonly CadreInviteUsageRow[];
+  /** Every closed strand the party holds a membership key for, as this node runs it ({@link ClosedStrandState}). */
+  strands: readonly ClosedStrandState[];
+}
+
+/**
+ * One closed strand with a `StrandPartyKey` row, as `CadreNode.planMachineRemoval` reads it,
+ * for {@link planStrandKeyRotations}.
+ */
+export interface ClosedStrandState {
+  strandId: string;
+  /**
+   * `live`: a tracked instance with a database; `hibernating`: a tracked instance with its
+   * runtime released, which a removal wakes; `none`: not tracked here (never launched, excluded
+   * by the strand filter), or tracked without a database (still syncing, mid-build).
+   */
+  runtime: 'live' | 'hibernating' | 'none';
+  /**
+   * Whether the party's current key holds a `Strand.Manager` row, read from the live database;
+   * `unknown` when there is none to read.
+   */
+  managerSeat: boolean | 'unknown';
 }
 
 /**
@@ -104,13 +126,40 @@ export interface MachineRemovalPlanInput {
  * or already redeemed by it and still redeemable (a multi-use invitation, or an open
  * invitation inside its lifetime). The schema's rule: keeping a device out is removing
  * its row and withdrawing the invitation.
+ *
+ * `strands` says where the party's key in each closed strand is replaced
+ * ({@link planStrandKeyRotations}); empty when no live row names the machine, since such a
+ * removal writes nothing.
  */
 export function planMachineRemoval(input: MachineRemovalPlanInput): MachineRemovalPlan {
+  const machine = input.machines.find((candidate) => candidate.peerId === input.peerId) ?? null;
   return {
-    machine: input.machines.find((candidate) => candidate.peerId === input.peerId) ?? null,
+    machine,
     refusal: refusalFor(input),
     invitations: invitationsOpenTo(input),
+    strands: machine === null ? [] : planStrandKeyRotations(input.strands),
   };
+}
+
+/**
+ * Where each closed strand's party key is replaced ({@link StrandKeyRotationPlan.rotation}):
+ * `here` when the strand runs here with a manager seat, or hibernates here (the removal wakes it
+ * and learns the seat then); `another-party` when it runs here without one; `later` when it does
+ * not run here.
+ */
+export function planStrandKeyRotations(strands: readonly ClosedStrandState[]): StrandKeyRotationPlan[] {
+  return strands.map((strand) => ({ strandId: strand.strandId, rotation: rotationSite(strand) }));
+}
+
+function rotationSite(strand: ClosedStrandState): StrandKeyRotationPlan['rotation'] {
+  switch (strand.runtime) {
+    case 'none':
+      return 'later';
+    case 'hibernating':
+      return 'here';
+    case 'live':
+      return strand.managerSeat === false ? 'another-party' : 'here';
+  }
 }
 
 function refusalFor(input: MachineRemovalPlanInput): MachineRemovalRefusal | null {

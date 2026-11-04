@@ -32,9 +32,9 @@ import type {
   PeerAddressRecord,
   DeviceTokenRecord,
   RevocationRow,
-  MachineRemovalResult
+  MachineRemovalWrites
 } from './types.js';
-import type { CadrePeerRetouchMode, CadrePeerRetouchOutcome, ControlDatabase } from './control-database.js';
+import type { CadrePeerRetouchMode, CadrePeerRetouchOutcome, ControlDatabase, StrandPartyKeySwap } from './control-database.js';
 import { generateStampId, ownerKeyLabel } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { deviceTokenAddDigest } from './peer-authorization.js';
@@ -704,11 +704,25 @@ export class SeedBootstrapService {
    * transaction ({@link ControlDatabase.removeMachine}). What stays here is the owner-signer
    * precondition, checked before any read (see {@link removePeer}).
    */
-  async removeMachine(target: Parameters<ControlDatabase['removeMachine']>[0], sign?: OwnerSign): Promise<MachineRemovalResult> {
+  async removeMachine(target: Parameters<ControlDatabase['removeMachine']>[0], sign?: OwnerSign): Promise<MachineRemovalWrites> {
     const ownerKey = this.requireOwnerSigner().publicKey;
     const controlDatabase = this.requireControlDatabase();
     return await this.withOwnerSign(`Remove the machine ${target.peerId} from the cadre`, sign, (approved) =>
       controlDatabase.removeMachine(target, ownerKey, approved));
+  }
+
+  /**
+   * Move this party's membership key in each named strand from its old key to its new one in
+   * the control record, one transaction and one approval across all of them
+   * ({@link ControlDatabase.swapStrandPartyKeys}): the last step of a party key rotation
+   * (`strand-party-key-rotation.ts`). What stays here is the owner-signer precondition.
+   */
+  async swapStrandPartyKeys(entries: readonly StrandPartyKeySwap[], sign?: OwnerSign): Promise<string[]> {
+    const ownerKey = this.requireOwnerSigner().publicKey;
+    const controlDatabase = this.requireControlDatabase();
+    const where = entries.length === 1 ? `the strand ${entries[0]!.strandId}` : `${entries.length} strands`;
+    return await this.withOwnerSign(`Replace this cadre's membership key in ${where}`, sign, (approved) =>
+      controlDatabase.swapStrandPartyKeys(entries, ownerKey, approved));
   }
 
   /**

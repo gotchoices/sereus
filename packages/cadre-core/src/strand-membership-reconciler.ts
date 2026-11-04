@@ -75,7 +75,7 @@
  * machine. Which peer ids are the party's machines comes from `CadreControl.StrandPeer`, each
  * machine's own signed statement of its peer id in the strand, joined to the party's live
  * machines and its `CadrePeer` tombstones (`strand-party-peers.ts`). The point is a party
- * member key that changes (a machine removal rotates it: `machine-removal-rotates-party-member-key`):
+ * member key that changes (a machine removal rotates it: `strand-party-key-rotation.ts`):
  * a sibling offline through the change returns to find itself bound under the new key by the
  * machines that were there, and a machine bound by a sibling that had not yet heard of its
  * removal is cleared once the tombstone arrives.
@@ -86,7 +86,7 @@
  * clears nothing for the same reason. After the swap the pending row is gone, and the step
  * clears a binding a lagging sibling wrote under the new key. The gate holds only because a
  * removal writes the machine's tombstone and the pending row in ONE transaction
- * (`machine-removal-rotates-party-member-key`): a tombstone that reaches this node without
+ * (`ControlDatabase.removeMachine`): a tombstone that reaches this node without
  * its pending row reads as "no rotation", and this step clears the binding the rotation
  * meant to orphan, which leaves the removed machine admitted as a stranger rather than denied.
  *

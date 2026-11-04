@@ -1843,6 +1843,23 @@ export interface CadreNodeEvents {
    */
   'strand:rejoin-blocked': { strandId: string };
   /**
+   * Emitted on the machine that replaced the party's membership key in a closed strand, once
+   * the control record names the new key: a machine removed from the cadre is left holding a
+   * key that is no longer a member there, and every machine's revoked-peer gate denies it on
+   * the rows alone (docs/architecture.md → "Removing a machine"). Every other machine of the
+   * party learns the new key from the replicated `StrandPartyKey` row and re-keys its running
+   * strand without an event.
+   */
+  'strand:party-key-rotated': { strandId: string };
+  /**
+   * Emitted when a party key replacement cannot be finished here: the party's current key holds
+   * no `Strand.Manager` row in the strand, so it cannot seat the new key, and another party's
+   * manager has to (`plan/party-key-rotation-across-parties`). Once per pending key; the
+   * `PendingStrandPartyKey` row stays, and `MachineRemovalResult.strands` reports the same
+   * strand as `needs-another-party`.
+   */
+  'strand:party-key-rotation-blocked': { strandId: string; reason: 'needs-another-party' };
+  /**
    * Emitted when the control network advertises a strand this node has no
    * registered `sAppConfig` for — i.e. a strand created by another member, or
    * one this node ran in a previous session (sApp configs are in-memory only and
@@ -2215,14 +2232,68 @@ export interface MachineRemovalPlan {
   refusal: MachineRemovalRefusal | null;
   /** Live `CadreInvite` keys the machine could redeem to come back: targeted at it, or already redeemed by it with uses left. */
   invitations: string[];
+  /**
+   * One entry per closed strand the party holds a membership key for, saying where the
+   * party's key in that strand is replaced ({@link StrandKeyRotationPlan}). A closed strand
+   * with no `StrandPartyKey` row is absent: the party holds no identity there for the removed
+   * machine to keep. Empty when `machine` is null.
+   */
+  strands: StrandKeyRotationPlan[];
 }
 
-/** What `CadreNode.removeMachine` wrote. All false and empty when no live row named the machine here. */
-export interface MachineRemovalResult {
+/**
+ * Where one closed strand's party key is replaced when a machine is removed
+ * (docs/architecture.md → "Removing a machine").
+ */
+export interface StrandKeyRotationPlan {
+  strandId: string;
+  /**
+   * - `here`: the strand runs on this node (live, or hibernating and resumable) and the party's
+   *   current key holds a `Strand.Manager` row, so the removal itself replaces the key. A
+   *   hibernating strand is reported `here` before its manager seat can be read; the removal
+   *   wakes it, and the outcome says what it found.
+   * - `another-party`: the strand runs here, but the party holds no manager seat, so another
+   *   party's manager has to admit the new key (`plan/party-key-rotation-across-parties`).
+   * - `later`: the strand does not run on this node (not launched here, excluded by its strand
+   *   filter, or still syncing), so the replacement waits for an owner machine that runs it.
+   */
+  rotation: 'here' | 'later' | 'another-party';
+}
+
+/**
+ * What `ControlDatabase.removeMachine` wrote. All false and empty when no live row named the
+ * machine here. {@link MachineRemovalResult} adds what the node did about the party's strand
+ * keys afterwards.
+ */
+export interface MachineRemovalWrites {
   removedPeer: boolean;
   removedDeviceToken: boolean;
   /** `CadreInvite` keys whose withdrawal tombstone this call filed. */
   withdrawnInvitations: string[];
+}
+
+/** What `CadreNode.removeMachine` did: the control writes, and the party's key in each closed strand. */
+export interface MachineRemovalResult extends MachineRemovalWrites {
+  /** One entry per closed strand the plan listed, in the plan's order ({@link StrandKeyRotationOutcome}). */
+  strands: StrandKeyRotationOutcome[];
+}
+
+/**
+ * What became of the party's key in one closed strand after a machine removal
+ * (`strand-party-key-rotation.ts`).
+ */
+export interface StrandKeyRotationOutcome {
+  strandId: string;
+  /**
+   * - `rotated`: the party is on its new key in the strand and the control record names it;
+   *   the removed machine's binding there is an orphan every machine's gate denies.
+   * - `pending`: the intent is recorded (a `PendingStrandPartyKey` row) and the strand's side
+   *   is not finished: the strand does not run here, a step failed and will be retried, or the
+   *   control swap waits for a reachable sibling. Any owner machine running the strand finishes it.
+   * - `needs-another-party`: the party holds no manager seat in the strand, so it cannot seat
+   *   its new key itself; the row stays pending for the cross-party flow.
+   */
+  outcome: 'rotated' | 'pending' | 'needs-another-party';
 }
 
 /** Why `CadreNode.removeOwner` refuses by name (`OwnerKeyRemovalRefusedError.code`). */
