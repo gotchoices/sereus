@@ -1184,6 +1184,7 @@ export class StrandInstanceManager {
     // a partially-initialized db), and the app only ever sees `instance.database` once this
     // machine is allowed to write to the strand.
     let t0 = performance.now();
+    const partyMachines = this.partyMachines.get(strandId);
     const strandDb = new StrandDatabase({
       strandId,
       sAppConfig: config.sAppConfig,
@@ -1204,7 +1205,8 @@ export class StrandInstanceManager {
       onCommitDurability: config.onCommitDurability,
       onCommitHeld: config.onCommitHeld,
       offline: this.offlineDatabaseConfig(strandId, config.offline, this.offlineCohortGate(strandId, node)),
-      appSchema: config.appSchema
+      appSchema: config.appSchema,
+      ...(partyMachines && { partyMachines: () => partyMachines.machines() })
     });
     const storageRepo = node.storageRepo;
     const gate = new StrandFirstSyncGate({

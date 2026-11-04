@@ -6,6 +6,7 @@ import type { Libp2p } from '@libp2p/interface';
 import type { ICohortReachability, IRepo } from '@optimystic/db-core';
 import type { IKVStore } from '@optimystic/db-p2p';
 import type { SAppConfig } from './types.js';
+import type { PartyStrandPeer } from './strand-party-peers.js';
 import { bootstrapFounderMembership } from './strand-membership-writer.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { StrandCommitRecord } from './strand-commit-durability.js';
@@ -75,6 +76,12 @@ export interface StrandDatabaseConfig extends StrandCommitListeners {
   offline?: StrandDatabaseOffline;
   /** Where to report the `App` schema apply when it is held back (docs/strands.md → "An app schema upgrade waits for the queue or the cohort"). */
   appSchema?: StrandAppSchemaListeners;
+  /**
+   * The party's other machines known to hold the strand (`StrandPartyMachines.machines`), named in
+   * each commit's {@link StrandCommitDurability.awaitedMachines}. Absent on a node offering no
+   * offline mode, which does not track them.
+   */
+  partyMachines?: () => readonly PartyStrandPeer[];
 }
 
 /** {@link StrandDatabaseConfig.offline}: one build's journal, the strand's mode, and where to report. */
@@ -130,7 +137,7 @@ export class StrandDatabase {
 
   constructor(config: StrandDatabaseConfig) {
     this.config = config;
-    this.commits = new StrandCommitRecord(config.strandId, config);
+    this.commits = new StrandCommitRecord(config.strandId, config, config.partyMachines);
   }
 
   /**
