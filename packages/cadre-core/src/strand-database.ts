@@ -451,10 +451,26 @@ export class StrandDatabase {
   }
 
   /**
-   * Close the database and cleanup resources. Runs the strand-connection
-   * shutdown (collection-factory teardown; the injected node keeps running),
-   * then closes the `Database`. Safe on an instance whose {@link initialize}
-   * failed part-way.
+   * Close the database and cleanup resources. Closes the Quereus `Database` and waits for it
+   * (it stops every running statement and open iterator and resolves once nothing reads or
+   * writes), then runs the strand-connection shutdown (collection-factory teardown; the
+   * injected node keeps running), so no statement reaches released storage. Safe on an
+   * instance whose {@link initialize} failed part-way.
+   *
+   * The handle stays set across the awaits, so a second, concurrent close (a build released
+   * part-way closes its database again) awaits the same Quereus teardown rather than skipping
+   * ahead to the strand shutdown, which is latched. A rejected Quereus close is logged and the
+   * teardown goes on, because callers stop the strand's node once this resolves.
+   *
+   * NOTE: this makes `close()` wait on a statement in a network wait, bounded by Optimystic's
+   * RPC deadlines; the strand shutdown aborts no in-flight request, so closing it first never
+   * cut that wait short. Revisit (abort in-flight collection work before closing Quereus) if
+   * strand stops show up slow.
+   *
+   * NOTE: the plugin raises the commit-durability and commit-held reports from inside the
+   * committing statement, but through listeners nobody awaits, so an app handler that starts
+   * `stopStrand` does not make the statement wait for this close. If a delivery path ever
+   * awaits its listeners, a stop started from one waits for itself and never resolves.
    */
   async close(): Promise<void> {
     // First, so an event from the closing connection reaches no app handler or table watch.
@@ -466,16 +482,20 @@ export class StrandDatabase {
     this.appSchemaReport = null;
     this.offlineQueue = null;
     this.tableWatches.disposeAll();
+    if (this.db) {
+      try {
+        await this.db.close();
+      } catch (err) {
+        log('Closing the Quereus database for strand %s failed; shutting the strand connection down anyway: %O', this.config.strandId, err);
+      }
+    }
     if (this.shutdownStrand) {
       await this.shutdownStrand();
       this.shutdownStrand = null;
     }
-    // Again: a subscription taken during the await above would keep its timers past close.
+    // Again: a subscription taken during the awaits above would keep its timers past close.
     this.tableWatches.disposeAll();
-    if (this.db) {
-      void this.db.close();
-      this.db = null;
-    }
+    this.db = null;
     this.resolvedTransactor = null;
     this.initialized = false;
     log('StrandDatabase for strand %s closed', this.config.strandId);

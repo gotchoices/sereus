@@ -69,8 +69,8 @@ async function releaseOptimysticPlugin(plugin: OptimysticPluginResult, createdNo
 	await plugin.offline.dispose();
 	// NOTE: the bridge's follower re-subscribes at the start of any transaction, so a write begun on
 	// this `Database` after release (before its owner closes it) subscribes again and nothing
-	// releases it. cadre-core stops its own writers before releasing; if an app write in flight at
-	// close ever shows up as a leaked subscription, close the `Database` before releasing.
+	// releases it. cadre-core awaits `db.close()` before releasing, so no write can begin; the leak
+	// remains only for a host that releases first. If one shows it, have that host close first.
 	plugin.txnBridge.dispose();
 	const { collectionFactory } = plugin;
 	if (!createdNode) {
@@ -464,9 +464,11 @@ export async function composeStrand(
 		...appSchemaApply,
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
-			// NOTE: a deferred sApp schema apply already running is not awaited: it runs on against the
-			// released plugin, Quereus unwinds it when it fails, and `appSchema` settles `cancelled`. If
-			// that ever leaves a catalog write landing after close, await `appSchema` here first.
+			// NOTE: a deferred sApp schema apply already running is not awaited. A host that closes the
+			// `Database` first (cadre-core) has stopped it there, and `appSchema` settles `failed`; for one
+			// that does not, it runs on against the released plugin, Quereus unwinds it when it fails, and
+			// `appSchema` settles `cancelled`. If that ever leaves a catalog write landing after close,
+			// await `appSchema` here first.
 			released.abort();
 			offlineControllers.delete(db);
 			await releaseOptimysticPlugin(pluginResult, createdNode);

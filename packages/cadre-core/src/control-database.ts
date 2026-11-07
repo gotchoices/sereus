@@ -6076,13 +6076,30 @@ export class ControlDatabase {
    * null handle instead of committing. The tail never rejects (it swallows both
    * outcomes), so the bare await is safe.
    *
-   * NOTE: this makes `close()` wait on a stuck write. Acceptable today — every locked
-   * body is a bounded local `exec` — but revisit (bounded drain, or abandon after a
-   * deadline) if a write can ever hang.
+   * Then closes the Quereus `Database` and waits for it, and only then shuts the collection
+   * factory down (which stops the control node): Quereus's close stops every running
+   * statement and open iterator and resolves once nothing reads or writes, so no statement
+   * reaches stopped storage. The handle stays set across the awaits, so a second, concurrent
+   * close awaits the same teardown (Quereus returns the first call's promise) rather than
+   * skipping ahead to the storage shutdown. A rejected Quereus close is logged and the
+   * teardown goes on, because callers stop storage once this resolves.
+   *
+   * NOTE: this makes `close()` wait on a stuck write, and on a statement in a network wait
+   * (a control read the local replica could not answer), the latter bounded by Optimystic's
+   * RPC deadlines. Acceptable today — every locked body is a bounded local `exec`, and control
+   * reads answer from the local replica — but revisit (bounded drain, or abort in-flight
+   * collection work before closing Quereus) if a write can ever hang or node stops show up slow.
    */
   async close(): Promise<void> {
     this.tableWatches.disposeAll();
     await this.writeQueue;
+    if (this.db) {
+      try {
+        await this.db.close();
+      } catch (err) {
+        log('Closing the control Quereus database failed; shutting storage down anyway: %O', err);
+      }
+    }
     if (this.collectionFactory) {
       await this.collectionFactory.shutdown();
       this.collectionFactory = null;
@@ -6092,10 +6109,7 @@ export class ControlDatabase {
     this.tableWatches.disposeAll();
     // Here, not first: a read started during the awaits above must not install either.
     this.invalidateMembershipViews();
-    if (this.db) {
-      void this.db.close();
-      this.db = null;
-    }
+    this.db = null;
     this.initialized = false;
     log('ControlDatabase closed');
   }
