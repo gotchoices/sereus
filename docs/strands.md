@@ -425,7 +425,7 @@ The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-nod
 
 ## An app schema upgrade waits for the queue or the cohort
 
-A connect applies the app's `App` schema, and an apply that changes anything writes the strand's catalog, a strand collection like any table. Two refusals pass with time, so neither fails the connect: the strand comes up, and the apply is retried (`applyAppSchemaOrDefer` in quereus-plugin-sereus). Any other connect-time apply error still fails the connect.
+A connect applies the app's `App` schema, and an apply that changes anything writes the strand's catalog, a strand collection like any table. Two refusals pass with time, so neither fails the connect: the strand comes up, and the apply is retried (`applyAppSchemaOrDefer` in quereus-plugin-sereus). Any other connect-time apply error fails the connect, and one decided by the schema against this node's tables is typed so a host stops retrying it ([A schema that can never apply here is not retried](#a-schema-that-can-never-apply-here-is-not-retried)).
 
 | refusal | how it is recognized | retried |
 | --- | --- | --- |
@@ -455,6 +455,16 @@ On a cadre node, `StrandInstance.sAppInfo` names the new version while the apply
 - **A waiting state can outlast its cause.** The retry also waits while any caller holds a transaction open on the database, for as long as that transaction stays open.
 
 `packages/integration-tests/src/scenarios/strand-app-schema-change-while-partner-offline.integration.ts` runs the cohort case end to end, with offline mode off and on: the strand opens and its rows read back. It does not check that the catalog landed.
+
+### A schema that can never apply here is not retried
+
+Some refusals do not pass with time: Quereus refuses the schema itself (a syntax error), the plugin refuses it (a `seed` item, an item the parser skipped), or Quereus refuses it against the tables and rows this node holds, such as a `not null` column with no default added to a table that has rows (gotchoices/sereus#57). `applyAppSchema` throws these as `AppSchemaRefusedError`, with Quereus's error as `cause`, and a deferred retry that ends in one settles `{ state: 'failed', error }` with it. `appSchemaRefusalOf(error)` finds one through any wrapper; cadre-core re-exports both.
+
+**The test is the error's `cause` chain.** The refusal is typed when every error in the chain is a `QuereusError` whose code is one Quereus raises for such a refusal: `ERROR` (a failed migration step, with the step's own error as `cause`), `CONSTRAINT`, `MISMATCH`, `UNSUPPORTED`, `SYNTAX`, `SCHEMA` or `RANGE`. A storage or network fault anywhere in the chain is a plain `Error` or carries `BUSY` or `MISUSE`, so it leaves the error untyped and retried as before; that includes the dropped-column refusal above. It is a list of refusal codes, not of fault codes, so a code Quereus adds later keeps being retried.
+
+**On a cadre node, a strand launch refused this way is not relaunched.** Each relaunch would start the strand node and compose the database only to fail at the same statement, which takes seconds of CPU on a phone. `CadreNode` suppresses the strand in the watcher (`StrandWatcher.suppressStrand`) instead of putting it on the retry ladder, emits one `strand:error`, and rejects `addStrand`. When the app's claim and a watcher launch overlap, as on a start where the app claims at once, the call that started the launch carries the refusal and the other fails with "the launch this one waited on failed", as for any failed launch. Nothing runs for the strand on this node meanwhile.
+
+**The next `addStrand` lifts it.** A claim is the only way the registered schema changes, so a different schema launches, and the same one makes one more attempt. The refusal is not remembered across restarts: rows other members delete can let the schema apply, and a process start costs one attempt.
 
 ## Same-Named Tables in `Strand` and `App`
 

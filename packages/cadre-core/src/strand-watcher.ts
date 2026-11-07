@@ -16,8 +16,10 @@ type FilterDecision = 'pass' | 'reject' | 'defer';
 /**
  * Ceiling on the retry delay for a strand whose launch keeps failing. Attempts
  * are never abandoned — the failure this backoff exists for (a transient network
- * or storage fault) can last a long time — but a permanently-unlaunchable strand
- * must not re-attempt on every run and storm the host app with `strand:error`.
+ * or storage fault) can last a long time — but a strand that keeps failing must
+ * not re-attempt on every run and storm the host app with `strand:error`. A launch
+ * that can never succeed is not retried at all: the host suppresses it instead
+ * (see {@link StrandWatcher.suppressStrand}).
  */
 const MAX_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 
@@ -454,11 +456,14 @@ export class StrandWatcher {
   }
 
   /**
-   * Never offer this strand again this session. Two callers, both meaning "the retry
-   * ladder cannot help here": a deliberate local stop, and a launch that can never
-   * succeed — a strand whose id is unusable as a storage scope key
-   * (`CadreNode.handleStrandAdded`), which every later attempt would reject identically.
+   * Never offer this strand again this session. Callers all mean "the retry ladder
+   * cannot help here": a deliberate local stop, and a launch that can never succeed as
+   * configured — a strand whose id is unusable as a storage scope key
+   * (`CadreNode.handleStrandAdded`), or one whose app schema can never apply to the
+   * tables it holds (`AppSchemaRefusedError`, from either `CadreNode.handleStrandAdded`
+   * or `CadreNode.addStrand`), which every later attempt would reject identically.
    * A launch that merely FAILED is not one of them; that goes to {@link forgetStrand}.
+   * The caller logs its reason.
    *
    * Cleared when the strand's control row disappears, because a row that reappears is a
    * strand the party re-published and the stop said nothing about it; also cleared by
@@ -466,7 +471,7 @@ export class StrandWatcher {
    * {@link unsuppressStrand} when the caller claims the strand again.
    */
   suppressStrand(strandId: string): void {
-    log('Suppressing strand %s — deliberate local stop, will not be re-offered', strandId);
+    log('Suppressing strand %s — will not be re-offered until it is claimed again or its row is removed', strandId);
     this.suppressed.add(strandId);
   }
 

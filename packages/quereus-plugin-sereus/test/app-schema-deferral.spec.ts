@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { Database, type SqlValue } from '@quereus/quereus';
+import { Database, QuereusError, StatusCode, type SqlValue } from '@quereus/quereus';
 import { PromiseShortfallError, type ICohortReachability, type ITransactor } from '@optimystic/db-core';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { applyRegistrations } from '../src/compose-strand.js';
-import { applyAppSchema, applyAppSchemaOrDefer, type PeerConnectEvents } from '../src/app-schema.js';
+import { applyAppSchema, applyAppSchemaOrDefer, AppSchemaRefusedError, appSchemaRefusalOf, type PeerConnectEvents } from '../src/app-schema.js';
 
 /**
  * Step 7 of `composeStrand` when queued offline transactions refuse the sApp schema apply: the
@@ -66,6 +66,14 @@ async function selectAll(db: Database, sql: string): Promise<Array<Record<string
 	return rows;
 }
 
+function causeChain(err: unknown): unknown[] {
+	const chain: unknown[] = [];
+	for (let at = err; at !== undefined; at = at instanceof Error ? at.cause : undefined) {
+		chain.push(at);
+	}
+	return chain;
+}
+
 const noteIndexes = (db: Database): string[] =>
 	(db.schemaManager.findTable('Note', 'App')!.indexes ?? []).map(index => index.name);
 
@@ -125,6 +133,24 @@ describe('applyAppSchemaOrDefer', () => {
 			expect(await apply.appSchema).toEqual({ state: 'applied', deferred: true });
 			const [report] = await plugin.verifyIndexes(db, 'Note', 'App');
 			expect(report).toMatchObject({ index: 'NoteByBody', missing: [], orphaned: [] });
+		} finally {
+			db.close();
+			await plugin.dispose();
+		}
+	});
+
+	it('refuses a schema the rows in its tables can never take, typed so a host stops retrying it', async () => {
+		// gotchoices/sereus#57: a `not null` column with no default cannot be backfilled into existing rows.
+		const db = new Database();
+		const plugin = registerOnline(db);
+		try {
+			await applyAppSchema(db, 'table T (Id integer primary key)');
+			await db.exec('insert into App.T (Id) values (1)');
+
+			const failure: unknown = await applyAppSchemaOrDefer(db, 'table T (Id integer primary key, At text not null)', {}, new AbortController().signal)
+				.then(() => undefined, (err: unknown) => err);
+			expect(failure).toBeInstanceOf(AppSchemaRefusedError);
+			expect(causeChain(failure).some(at => at instanceof QuereusError && at.code === StatusCode.CONSTRAINT)).toBe(true);
 		} finally {
 			db.close();
 			await plugin.dispose();
@@ -239,8 +265,12 @@ describe('applyAppSchemaOrDefer', () => {
 			const restarted = await open(store.transactor);
 			try {
 				store.down = true;
-				await expect(applyAppSchemaOrDefer(restarted.db, SCHEMA, {}, new AbortController().signal))
-					.rejects.toThrow(/super-majority/);
+				const failure: unknown = await applyAppSchemaOrDefer(restarted.db, SCHEMA, {}, new AbortController().signal)
+					.then(() => undefined, (err: unknown) => err);
+				expect(failure).toBeInstanceOf(Error);
+				expect((failure as Error).message).toMatch(/super-majority/);
+				// A storage fault in the chain: a restart may get past it, so it is not typed as a refusal.
+				expect(appSchemaRefusalOf(failure)).toBeUndefined();
 			} finally {
 				await close(restarted);
 			}

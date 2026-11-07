@@ -4,7 +4,7 @@ import type { Connection, IdentifyResult, Libp2p, PeerId, PeerUpdate, PrivateKey
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
-import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
+import { wrapStorageWithCache, disposeStorageCache, appSchemaRefusalOf } from '@serfab/quereus-plugin-sereus';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type {
@@ -5774,6 +5774,7 @@ export class CadreNode implements SAppIdLookup {
         strandId: strand.Id,
         error: toError(error)
       });
+      this.suppressIfAppSchemaRefused(strand.Id, error);
       // Rethrow after the event: the only caller is the StrandWatcher's
       // onStrandAdded callback, which uses the rejection to decide whether the
       // strand was really added. Swallowing it here would have the watcher mark
@@ -5782,6 +5783,22 @@ export class CadreNode implements SAppIdLookup {
       // rejection.
       throw error;
     }
+  }
+
+  /**
+   * Stop the watcher relaunching a strand whose launch failed on an app schema that can never apply
+   * to its tables (`AppSchemaRefusedError`, e.g. a `not null` column with no default added to a table
+   * with rows): every relaunch would build the strand node and compose the database only to fail at the
+   * same statement (gotchoices/sereus#57). The next {@link addStrand} lifts it, since a claim is the only
+   * way the registered schema changes. Any other failure is left to the retry ladder.
+   */
+  private suppressIfAppSchemaRefused(strandId: string, error: unknown): void {
+    const refusal = appSchemaRefusalOf(error);
+    if (!refusal) {
+      return;
+    }
+    log('Strand %s: app schema refused, not relaunching until the strand is claimed again: %s', strandId, refusal.message);
+    this.strandWatcher?.suppressStrand(strandId);
   }
 
   /**
@@ -6462,6 +6479,13 @@ export class CadreNode implements SAppIdLookup {
    * strand in the watcher so this retry cannot resurrect it — a call to THIS method lifts
    * that suppression again, since an explicit claim is a deliberate reversal of the
    * deliberate stop.
+   *
+   * A launch refused on its app schema (`AppSchemaRefusedError`: the schema can never apply
+   * to the tables the strand holds, such as a `not null` column with no default added to a
+   * table with rows) is not handed to the relaunch, since every relaunch would fail the same
+   * way after a full start-up. The strand is suppressed in the watcher instead, and the next
+   * call to this method lifts that: a claim is the only way the registered schema changes,
+   * so a different schema launches, and the same one makes one more attempt.
    */
   async addStrand(config: StrandConfig): Promise<StrandInstance> {
     if (!this._running) {
@@ -6535,6 +6559,7 @@ export class CadreNode implements SAppIdLookup {
       // shared `MemberPrivateKey` is read only by the founder bootstrap. If a joiner
       // launch ever starts depending on that key, gate this hand-back on the passed row
       // matching the control one.
+      this.suppressIfAppSchemaRefused(strandRow.Id, error);
       this.strandWatcher?.forgetStrand(strandRow.Id);
       throw error;
     }

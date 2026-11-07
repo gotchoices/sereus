@@ -206,7 +206,7 @@ The main entry point for cadre participation.
 | `control:disconnected` | - | Disconnected from control network |
 | `strand:started` | `{ strandId }` | Strand instance started |
 | `strand:stopped` | `{ strandId }` | Strand instance stopped |
-| `strand:error` | `{ strandId, error }` | Error in strand instance. A failed launch re-emits this on every retry (backing off up to 5 min), so treat it as a repeating signal, not a one-shot |
+| `strand:error` | `{ strandId, error }` | Error in strand instance. A failed launch re-emits this on every retry (backing off up to 5 min), so treat it as a repeating signal, not a one-shot. The exception is an `AppSchemaRefusedError` (the app's schema can never apply to the strand's tables): that strand is not retried until the next `addStrand` |
 | `strand:commit-durability` | `StrandCommitDurability` | After every commit on a strand's database that wrote something: whether another member already holds it (`heldElsewhere`), whether `strand:commit-held` will say when one does (`followed`), and, on a node offering offline mode, which of the party's machines it did not reach (`awaitedMachines`). Also readable as `instance.database.commitDurability(tx)`; see [strands.md → A commit's durability](../../docs/strands.md#a-commits-durability) |
 | `strand:commit-held` | `{ strandId, transactionId }` | A followed commit held only below full replication is now held by every member of its cohort |
 

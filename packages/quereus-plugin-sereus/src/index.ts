@@ -1,6 +1,6 @@
 export { connectToStrand } from './connect.js';
 export { offlineControllerOf } from './compose-strand.js';
-export { applyAppSchema } from './app-schema.js';
+export { applyAppSchema, AppSchemaRefusedError, appSchemaRefusalOf } from './app-schema.js';
 export { createEmptyCollections, type CollectionRegistrySource } from './empty-collections.js';
 export {
 	MIN_CLUSTER_SIZE,

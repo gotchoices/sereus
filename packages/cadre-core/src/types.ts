@@ -1754,6 +1754,13 @@ export interface ArachnodeConfig {
 export interface CadreNodeEvents {
   'strand:started': { strandId: string };
   'strand:stopped': { strandId: string };
+  /**
+   * Emitted when a strand fails to launch, or a deferred app schema apply fails. A launch the
+   * watcher retries emits this on every failed attempt. A launch that fails with an
+   * `AppSchemaRefusedError` (found through wrapping errors by `appSchemaRefusalOf`), meaning the
+   * app's schema can never apply to the tables the strand holds, is not retried until the app
+   * claims the strand again with {@link CadreNode.addStrand}, so it emits this once.
+   */
   'strand:error': { strandId: string; error: Error };
   'strand:idle': { strandId: string };
   'strand:hibernating': { strandId: string };

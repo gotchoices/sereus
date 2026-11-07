@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { AppSchemaRefusedError } from '@serfab/quereus-plugin-sereus';
 import { CadreNode } from '../src/cadre-node.js';
 import { InvalidStrandIdError } from '../src/storage-scope.js';
 import type { CadreNodeConfig, SAppConfig, StrandRow } from '../src/types.js';
@@ -42,6 +43,18 @@ function registerSAppConfig(node: CadreNode, strandId: string): void {
   (node as unknown as { sAppConfigs: Map<string, SAppConfig> }).sAppConfigs.set(strandId, SAPP_CONFIG);
 }
 
+/** A watcher that records the calls a failed launch makes on it, in order. */
+function injectRecordingWatcher(node: CadreNode): string[] {
+  const calls: string[] = [];
+  (node as unknown as { strandWatcher: unknown }).strandWatcher = {
+    suppressStrand: (id: string) => { calls.push(`suppress ${id}`); },
+    unsuppressStrand: (id: string) => { calls.push(`unsuppress ${id}`); },
+    forgetStrand: (id: string) => { calls.push(`forget ${id}`); },
+    sAppIdLearned: () => {}
+  };
+  return calls;
+}
+
 function handleStrandAdded(node: CadreNode, strand: StrandRow): Promise<void> {
   return (node as unknown as {
     handleStrandAdded(strand: StrandRow): Promise<void>;
@@ -55,6 +68,7 @@ describe('CadreNode.handleStrandAdded failure propagation', () => {
     const failure = new Error('transient storage fault');
     injectFailingStrandManager(node, failure);
     registerSAppConfig(node, STRAND_ROW.Id);
+    const watcherCalls = injectRecordingWatcher(node);
 
     const errors: { strandId: string; error: Error }[] = [];
     node.on('strand:error', (event) => { errors.push(event); });
@@ -64,6 +78,26 @@ describe('CadreNode.handleStrandAdded failure propagation', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]!.strandId).toBe(STRAND_ROW.Id);
     expect(errors[0]!.error).toBe(failure);
+    // A fault is left to the watcher's retry ladder.
+    expect(watcherCalls).toEqual([]);
+  });
+
+  it('suppresses a strand whose app schema its tables refuse, found through a wrapping error', async () => {
+    // gotchoices/sereus#57: every relaunch would build the strand node and fail at the same DDL.
+    const node = new CadreNode(createConfig());
+    (node as unknown as { identityKey: unknown }).identityKey = await generateKeyPair('Ed25519');
+    const refusal = new AppSchemaRefusedError('sApp schema cannot be applied to the tables: NOT NULL constraint failed');
+    injectFailingStrandManager(node, new Error('launch failed', { cause: refusal }));
+    registerSAppConfig(node, STRAND_ROW.Id);
+    const watcherCalls = injectRecordingWatcher(node);
+
+    const errors: { strandId: string; error: Error }[] = [];
+    node.on('strand:error', (event) => { errors.push(event); });
+
+    await expect(handleStrandAdded(node, STRAND_ROW)).rejects.toThrow('launch failed');
+
+    expect(errors).toHaveLength(1);
+    expect(watcherCalls).toEqual([`suppress ${STRAND_ROW.Id}`]);
   });
 
   it('suppresses a strand whose id is unusable, instead of retrying it forever', async () => {
@@ -146,5 +180,35 @@ describe('CadreNode.handleStrandAdded storage replica', () => {
     expect(launches[2]!.sAppConfig).toBeUndefined();
     expect(launches[2]!.founder).toBe(false);
     expect(node.getDiscoveredStrands().has(STRAND_ROW.Id)).toBe(true);
+  });
+});
+
+describe('CadreNode.addStrand app schema refusal', () => {
+  it('suppresses the strand on a refused schema, and a claim with another schema lifts it and launches', async () => {
+    const node = new CadreNode(createConfig());
+    (node as unknown as { identityKey: unknown }).identityKey = await generateKeyPair('Ed25519');
+    (node as unknown as { _running: boolean })._running = true;
+    const launches: StartStrandConfig[] = [];
+    (node as unknown as { strandManager: unknown }).strandManager = {
+      getInstance: () => undefined,
+      isAwaitingFirstSync: () => false,
+      startStrand: async (config: StartStrandConfig) => {
+        launches.push(config);
+        if (launches.length === 1) {
+          throw new AppSchemaRefusedError('sApp schema cannot be applied to the tables: NOT NULL constraint failed');
+        }
+        return { strandId: config.strandRow.Id, status: 'active', connectedPeers: 0, lastActivity: new Date(), latencyHint: 'interactive' };
+      }
+    };
+    const watcherCalls = injectRecordingWatcher(node);
+    const refused: SAppConfig = { ...SAPP_CONFIG, version: '2.0.0', schema: 'table T (Id integer primary key, At text not null)' };
+    const fixed: SAppConfig = { ...SAPP_CONFIG, version: '3.0.0', schema: 'table T (Id integer primary key, At text null)' };
+
+    await expect(node.addStrand({ strandRow: STRAND_ROW, sAppConfig: refused })).rejects.toBeInstanceOf(AppSchemaRefusedError);
+    expect(watcherCalls).toEqual([`unsuppress ${STRAND_ROW.Id}`, `suppress ${STRAND_ROW.Id}`, `forget ${STRAND_ROW.Id}`]);
+
+    await expect(node.addStrand({ strandRow: STRAND_ROW, sAppConfig: fixed })).resolves.toMatchObject({ strandId: STRAND_ROW.Id });
+    expect(watcherCalls.slice(3)).toEqual([`unsuppress ${STRAND_ROW.Id}`]);
+    expect(launches.map(launch => launch.sAppConfig?.version)).toEqual(['2.0.0', '3.0.0']);
   });
 });

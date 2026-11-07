@@ -1,5 +1,5 @@
 import debug from 'debug';
-import { TransactionActiveError, type Database } from '@quereus/quereus';
+import { QuereusError, StatusCode, TransactionActiveError, type Database } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { classifyCommitFailure } from '@optimystic/db-core';
 import { QueuedEntriesBlockSchemaChangeError, QueueDisposedError } from '@optimystic/quereus-plugin-optimystic/plugin';
@@ -23,10 +23,17 @@ const log = debug('sereus:plugin:strand');
  * Refuses a schema holding a `seed` item: the apply runs on every node of the strand at every
  * connect, so seed inserts would put a network write on each bring-up and two nodes inserting
  * the same key at once would collide. Rows an app needs at birth are the founding app's to write.
+ *
+ * Every refusal decided by the schema itself, or by the schema against this node's tables and rows,
+ * throws {@link AppSchemaRefusedError}: retrying the same schema here fails the same way.
  */
 export async function applyAppSchema(db: Database, schema: string): Promise<void> {
-	await declareAppSchema(db, schema);
-	await db.exec('apply schema App;');
+	try {
+		await declareAppSchema(db, schema);
+		await db.exec('apply schema App;');
+	} catch (err) {
+		throw asAppSchemaRefusal(err);
+	}
 }
 
 /** Declare `schema` as `App`, refusing the items {@link applyAppSchema} refuses. Writes nothing to the strand. */
@@ -38,6 +45,32 @@ async function declareAppSchema(db: Database, schema: string): Promise<void> {
 	`);
 	assertNoIgnoredItems(db);
 	assertNoSeedItems(db);
+}
+
+/**
+ * An sApp schema refused for a reason that does not pass: the schema itself (a seed item, an item the
+ * parser skipped, a syntax error), or the schema against the tables and rows this node holds, such as a
+ * `not null` column with no default added to a table that has rows. Applying the same schema here again
+ * fails the same way, so a host should not retry it until the app supplies a different one. A storage
+ * or network fault is never this error.
+ *
+ * `cause` is the error Quereus raised, when it raised one.
+ */
+export class AppSchemaRefusedError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = 'AppSchemaRefusedError';
+	}
+}
+
+/** The {@link AppSchemaRefusedError} `err` is or wraps, walking `cause`, so a wrapper added between the apply and the catch cannot hide it. */
+export function appSchemaRefusalOf(err: unknown): AppSchemaRefusedError | undefined {
+	for (let at = err; at instanceof Error; at = at.cause) {
+		if (at instanceof AppSchemaRefusedError) {
+			return at;
+		}
+	}
+	return undefined;
 }
 
 /** What {@link applyAppSchemaOrDefer} reports, in the shape `SereusPluginResult` carries it. */
@@ -74,8 +107,9 @@ type Deferral = { wait: 'queue'; transactionIds: readonly string[] } | { wait: '
  *
  * Quereus unwinds a refused apply, whether a migration step or the closing catalog commit refused it,
  * so `db` keeps the `App` schema it had, and `appSchema` settles with how the retries ended. Any other
- * error from the first apply is thrown, and so is a refusal Quereus could not unwind that leaves a
- * retry nothing to send ({@link retryableRefusalOf}).
+ * error from the first apply is thrown ({@link AppSchemaRefusedError} when the schema can never apply
+ * to these tables), and so is a refusal Quereus could not unwind that leaves a retry nothing to send
+ * ({@link retryableRefusalOf}). A retry that ends in such a refusal settles `failed` with it, typed the same way.
  *
  * Waiting before returning was rejected: that withholds the strand from the app right after an app
  * update, which is when a phone is most likely to be offline. So was refusing the connect: the queue
@@ -142,7 +176,7 @@ async function retryDeferredAppSchema(
 			const again = await retryableRefusalOf(db, err);
 			if (!again) {
 				log('Deferred sApp schema apply failed: %O', err);
-				return { state: 'failed', error: err };
+				return { state: 'failed', error: asAppSchemaRefusal(err) };
 			}
 			logDeferral('Deferred sApp schema apply', again);
 			deferral = again;
@@ -305,7 +339,7 @@ function assertNoIgnoredItems(db: Database): void {
 	const ignored = declaredAppItems(db).filter(item => item.type === 'declareIgnored').length;
 	if (ignored > 0) {
 		// Only a count: Quereus leaves an ignored item's source text empty.
-		throw new Error(`sApp schema has ${ignored} item(s) the parser does not recognize (a \`create …\` prefix or a misspelled item keyword such as \`tabel\`); items are \`table\`, \`index\`, \`unique index\`, \`view\`, \`materialized view\` and \`assertion\``);
+		throw new AppSchemaRefusedError(`sApp schema has ${ignored} item(s) the parser does not recognize (a \`create …\` prefix or a misspelled item keyword such as \`tabel\`); items are \`table\`, \`index\`, \`unique index\`, \`view\`, \`materialized view\` and \`assertion\``);
 	}
 }
 
@@ -313,6 +347,51 @@ function assertNoSeedItems(db: Database): void {
 	// Quereus refuses a second seed for one table at declare, so these names are distinct.
 	const tables = declaredAppItems(db).flatMap(item => item.type === 'declaredSeed' ? [item.tableName] : []);
 	if (tables.length > 0) {
-		throw new Error(`sApp schema has seed item(s) for table(s) ${tables.join(', ')}; Sereus does not apply seed rows to a strand — insert the rows an app needs at birth from the app when it founds the strand`);
+		throw new AppSchemaRefusedError(`sApp schema has seed item(s) for table(s) ${tables.join(', ')}; Sereus does not apply seed rows to a strand — insert the rows an app needs at birth from the app when it founds the strand`);
 	}
+}
+
+/** `err` typed as an {@link AppSchemaRefusedError} when {@link isSchemaRefusal} holds, else `err` unchanged. */
+function asAppSchemaRefusal(err: unknown): unknown {
+	if (!isSchemaRefusal(err)) {
+		return err;
+	}
+	return new AppSchemaRefusedError(`sApp schema cannot be applied to this strand's tables: ${err.message}`, { cause: err });
+}
+
+/**
+ * Status codes Quereus raises for a refusal it decides from the schema and the catalog and rows it holds:
+ * a failed migration step is `ERROR` with the step's own error as `cause` (a backfill that breaks
+ * `not null` is `CONSTRAINT`, a key or type change it cannot make is `ERROR` or `UNSUPPORTED`).
+ * An allowlist rather than a list of fault codes, so a code Quereus adds later keeps today's retries.
+ */
+const SCHEMA_REFUSAL_CODES: ReadonlySet<number> = new Set([
+	StatusCode.ERROR,
+	StatusCode.CONSTRAINT,
+	StatusCode.MISMATCH,
+	StatusCode.UNSUPPORTED,
+	StatusCode.SYNTAX,
+	StatusCode.SCHEMA,
+	StatusCode.RANGE,
+]);
+
+/**
+ * Whether every link of `err`'s `cause` chain is a `QuereusError` with a {@link SCHEMA_REFUSAL_CODES} code.
+ * A storage or network fault anywhere in the chain is a plain `Error` (Optimystic's `PromiseShortfallError`,
+ * `BlockUnavailableError`) or carries `BUSY` or `MISUSE`, so it keeps the error untyped and retryable.
+ *
+ * NOTE: `ERROR` is broad, and one known `ERROR` with no `cause` is transient: Optimystic's "Committed read
+ * refused: storage is in a partially-committed state". An apply makes no committed reads (Quereus refuses
+ * them while a schema migrates), so it cannot reach this test. If a transient fault is ever seen typed as a
+ * refusal, have Optimystic give it a fault code or a `cause` rather than matching its message here.
+ */
+function isSchemaRefusal(err: unknown): err is QuereusError {
+	let at = err;
+	do {
+		if (!(at instanceof QuereusError) || !SCHEMA_REFUSAL_CODES.has(at.code)) {
+			return false;
+		}
+		at = at.cause;
+	} while (at !== undefined);
+	return true;
 }

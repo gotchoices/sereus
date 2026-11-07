@@ -238,6 +238,9 @@ export {
   type StrandAppSchemaDeferred,
   type StrandAppSchemaListeners
 } from './strand-app-schema-report.js';
+// What a rejected `addStrand` and `strand:error` carry when the app's schema can never apply to the
+// strand's tables, so an app need not depend on the plugin to recognise it.
+export { AppSchemaRefusedError, appSchemaRefusalOf } from '@serfab/quereus-plugin-sereus';
 // What `StrandOfflineQueue.discard` throws, so an app need not depend on Optimystic to tell them apart.
 export { EntryNotDiscardableError, UnknownEntryError } from '@optimystic/db-core';
 
