@@ -3343,15 +3343,57 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@nativescript-community/sqlite@npm:^3.5.0":
-  version: 3.5.9
-  resolution: "@nativescript-community/sqlite@npm:3.5.9"
+"@nativescript-community/sqlite-bridge@npm:^4.1.1":
+  version: 4.1.1
+  resolution: "@nativescript-community/sqlite-bridge@npm:4.1.1"
+  dependencies:
+    "@nativescript-community/sqlite-core": "npm:^4.1.1"
+  checksum: 10c0/319919d7cf9479a4bbd6a31a605dcc2ae36d5cac6b82d71d3aa8595288b96cfca67e9c5ba950f87b43b9b1250812203425ff62ae0f9cd26dd0b93be521ed51a7
+  languageName: node
+  linkType: hard
+
+"@nativescript-community/sqlite-core@npm:^4.1.1":
+  version: 4.1.1
+  resolution: "@nativescript-community/sqlite-core@npm:4.1.1"
   dependencies:
     "@nativescript/hook": "npm:~2.0.0"
   peerDependencies:
     "@nano-sql/core": ^2.3.7
     typeorm: ^0.3.17
-  checksum: 10c0/2b3da44c18cb6dc6c12ee83c2e18ed2c3bc7e629fa5214cdc276cbd3fab619349cdb994d43b5881c0d9988cdcf5e1ebf804a31249a9210659437735d6f670ff0
+  checksum: 10c0/1c06afef0e7d66b4153fb41d142a377a6b6a8d5f84ce0f67cf683db43c0ce28750f8338218670e8204c7799a25d6c60cbcadb9875e662fe661c70943bba749d6
+  languageName: node
+  linkType: hard
+
+"@nativescript-community/sqlite-default-engine@npm:^4.1.1":
+  version: 4.1.1
+  resolution: "@nativescript-community/sqlite-default-engine@npm:4.1.1"
+  peerDependencies:
+    "@nativescript-community/sqlite-core": ^4.0.0
+    "@nativescript/core": "*"
+  checksum: 10c0/51015b995c6bb7c4ea2824d46e72fd447361cf8f625446b762ef84117ad80a16223462bf48391fef4bb4c625f0edc5a15c3494c7937b8379190ad6a089f5a9e9
+  languageName: node
+  linkType: hard
+
+"@nativescript-community/sqlite-napi@npm:^4.1.1":
+  version: 4.1.1
+  resolution: "@nativescript-community/sqlite-napi@npm:4.1.1"
+  dependencies:
+    "@nativescript-community/sqlite-core": "npm:^4.1.1"
+  checksum: 10c0/1034a53eaee4bb3ce598d7a28034e1102d671f7014b52476db3ef1e61c896fa558f0e4250249a119dad1632ffe9d17a18c2e00ae1833072fdb3ab7cb1ffab3d0
+  languageName: node
+  linkType: hard
+
+"@nativescript-community/sqlite@npm:^4.1.0":
+  version: 4.1.1
+  resolution: "@nativescript-community/sqlite@npm:4.1.1"
+  dependencies:
+    "@nativescript-community/sqlite-bridge": "npm:^4.1.1"
+    "@nativescript-community/sqlite-core": "npm:^4.1.1"
+    "@nativescript-community/sqlite-default-engine": "npm:^4.1.1"
+    "@nativescript-community/sqlite-napi": "npm:^4.1.1"
+  peerDependencies:
+    "@nativescript/core": "*"
+  checksum: 10c0/7f457f6ef9552ecfb46fee6d48da14a11c052109a9220f86b89c75a5f83c6c778de98c9b161ace4ec542a985694ec5dbafec008dfc69f28688cd57384bed22be
   languageName: node
   linkType: hard
 
@@ -5021,8 +5063,8 @@ __metadata:
     "@libp2p/interface": "npm:^3.3.0"
     "@libp2p/peer-id": "npm:^6.0.15"
     "@multiformats/multiaddr": "npm:^13.0.3"
-    "@optimystic/db-p2p": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-fs": "npm:^1.25.0"
+    "@optimystic/db-p2p": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-fs": "npm:^1.26.0"
     "@serfab/cadre-core": "workspace:^"
     "@serfab/config-check": "workspace:^"
     "@types/debug": "npm:^4.1.12"
@@ -5063,12 +5105,12 @@ __metadata:
     "@noble/ciphers": "npm:^2.0.1"
     "@noble/curves": "npm:^2.0.1"
     "@noble/hashes": "npm:^2.0.0"
-    "@optimystic/db-core": "npm:^1.25.0"
-    "@optimystic/db-p2p": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-fs": "npm:^1.25.0"
-    "@optimystic/quereus-plugin-crypto": "npm:^1.25.0"
-    "@optimystic/quereus-plugin-optimystic": "npm:^1.25.0"
-    "@quereus/quereus": "npm:^4.25.0"
+    "@optimystic/db-core": "npm:^1.26.0"
+    "@optimystic/db-p2p": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-fs": "npm:^1.26.0"
+    "@optimystic/quereus-plugin-crypto": "npm:^1.26.0"
+    "@optimystic/quereus-plugin-optimystic": "npm:^1.26.0"
+    "@quereus/quereus": "npm:^5.0.0"
     "@serfab/quereus-plugin-sereus": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
@@ -5159,8 +5201,8 @@ __metadata:
     "@libp2p/circuit-relay-v2": "npm:^4.2.13"
     "@libp2p/websockets": "npm:^10.1.21"
     "@noble/hashes": "npm:^2.0.0"
-    "@optimystic/db-p2p": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-rn": "npm:^1.25.0"
+    "@optimystic/db-p2p": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-rn": "npm:^1.26.0"
     "@serfab/cadre-core": "workspace:^"
     "@types/node": "npm:^25.0.10"
     "@ungap/structured-clone": "npm:^1.3.0"
@@ -5231,12 +5273,12 @@ __metadata:
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"
     "@noble/curves": "npm:^2.0.1"
-    "@optimystic/db-core": "npm:^1.25.0"
-    "@optimystic/db-p2p": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-fs": "npm:^1.25.0"
-    "@optimystic/quereus-plugin-crypto": "npm:^1.25.0"
-    "@optimystic/quereus-plugin-optimystic": "npm:^1.25.0"
-    "@quereus/quereus": "npm:^4.25.0"
+    "@optimystic/db-core": "npm:^1.26.0"
+    "@optimystic/db-p2p": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-fs": "npm:^1.26.0"
+    "@optimystic/quereus-plugin-crypto": "npm:^1.26.0"
+    "@optimystic/quereus-plugin-optimystic": "npm:^1.26.0"
+    "@quereus/quereus": "npm:^5.0.0"
     "@serfab/cadre-cli": "workspace:*"
     "@serfab/cadre-core": "workspace:*"
     "@serfab/cadre-host": "workspace:*"
@@ -5260,13 +5302,13 @@ __metadata:
     "@libp2p/circuit-relay-v2": "npm:^4.2.13"
     "@libp2p/interface": "npm:^3.3.0"
     "@libp2p/websockets": "npm:^10.1.21"
-    "@optimystic/db-core": "npm:^1.25.0"
-    "@optimystic/db-p2p": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-fs": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-web": "npm:^1.25.0"
-    "@optimystic/quereus-plugin-crypto": "npm:^1.25.0"
-    "@optimystic/quereus-plugin-optimystic": "npm:^1.25.0"
-    "@quereus/quereus": "npm:^4.25.0"
+    "@optimystic/db-core": "npm:^1.26.0"
+    "@optimystic/db-p2p": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-fs": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-web": "npm:^1.26.0"
+    "@optimystic/quereus-plugin-crypto": "npm:^1.26.0"
+    "@optimystic/quereus-plugin-optimystic": "npm:^1.26.0"
+    "@quereus/quereus": "npm:^5.0.0"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
     "@vitest/coverage-v8": "npm:^4.0.17"
@@ -5294,7 +5336,7 @@ __metadata:
     "@libp2p/interface": "npm:^3.3.0"
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"
-    "@nativescript-community/sqlite": "npm:^3.5.0"
+    "@nativescript-community/sqlite": "npm:^4.1.0"
     "@nativescript/android": "npm:~8.9.0"
     "@nativescript/core": "npm:~8.9.0"
     "@nativescript/types": "npm:~8.9.0"
@@ -5302,10 +5344,10 @@ __metadata:
     "@noble/ciphers": "npm:^2.0.1"
     "@noble/curves": "npm:^2.0.1"
     "@noble/hashes": "npm:^2.0.0"
-    "@optimystic/db-core": "npm:^1.25.0"
-    "@optimystic/db-p2p": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-ns": "npm:^1.25.0"
-    "@quereus/quereus": "npm:^4.25.0"
+    "@optimystic/db-core": "npm:^1.26.0"
+    "@optimystic/db-p2p": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-ns": "npm:^1.26.0"
+    "@quereus/quereus": "npm:^5.0.0"
     "@serfab/cadre-core": "workspace:^"
     "@types/readable-stream": "npm:^4"
     "@ungap/structured-clone": "npm:^1.3.0"
@@ -5334,9 +5376,9 @@ __metadata:
     "@libp2p/webrtc": "npm:6.0.33"
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"
-    "@optimystic/db-p2p": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-rn": "npm:^1.25.0"
-    "@quereus/quereus": "npm:^4.25.0"
+    "@optimystic/db-p2p": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-rn": "npm:^1.26.0"
+    "@quereus/quereus": "npm:^5.0.0"
     "@serfab/cadre-core": "workspace:^"
     "@serfab/cadre-rn": "workspace:^"
     "@types/babel__core": "npm:^7"
@@ -5384,11 +5426,11 @@ __metadata:
     "@libp2p/webrtc": "npm:6.0.33"
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"
-    "@optimystic/db-core": "npm:^1.25.0"
-    "@optimystic/db-p2p": "npm:^1.25.0"
-    "@optimystic/db-p2p-storage-web": "npm:^1.25.0"
+    "@optimystic/db-core": "npm:^1.26.0"
+    "@optimystic/db-p2p": "npm:^1.26.0"
+    "@optimystic/db-p2p-storage-web": "npm:^1.26.0"
     "@playwright/test": "npm:^1.60.0"
-    "@quereus/quereus": "npm:^4.25.0"
+    "@quereus/quereus": "npm:^5.0.0"
     "@serfab/cadre-core": "workspace:^"
     "@sveltejs/vite-plugin-svelte": "npm:^5.0.0"
     "@tsconfig/svelte": "npm:^5.0.4"
