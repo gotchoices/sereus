@@ -112,6 +112,17 @@ function asBuffer(data: Uint8Array): Buffer {
 	return Buffer.from(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength);
 }
 
+/** A DER key half as bytes, whether quick-crypto returned a Buffer or an ArrayBuffer. */
+function derBytes(key: unknown): Uint8Array {
+	if (key instanceof Uint8Array) {
+		return key;
+	}
+	if (key instanceof ArrayBuffer) {
+		return new Uint8Array(key);
+	}
+	throw new Error('x25519 keypair did not come back as DER bytes');
+}
+
 /** The subset that dominates per-frame cost: one hash and one cipher per frame. */
 const symmetric = {
 	hashSHA256(data: Uint8Array | { subarray(): Uint8Array }): Uint8Array {
@@ -158,19 +169,17 @@ const symmetric = {
  */
 const asymmetric = {
 	generateX25519KeyPair(): { publicKey: Uint8Array; privateKey: Uint8Array } {
-		// DER encodings are requested below, so both halves come back as Buffers.
-		// quick-crypto types the return as a union over every encoding option, so the
-		// narrowing is ours to state — and it is checked at runtime below.
-		const { publicKey, privateKey } = generateKeyPairSync('x25519', {
+		// DER encodings are requested below. quick-crypto 1.1.7 returns them as plain
+		// ArrayBuffers where Node returns Buffers (gotchoices/sereus#58), and it types the
+		// return as a union over every encoding option, so the narrowing is ours to state
+		// and is checked at runtime by derBytes.
+		const pair = generateKeyPairSync('x25519', {
 			publicKeyEncoding: { type: 'spki', format: 'der' },
 			privateKeyEncoding: { type: 'pkcs8', format: 'der' },
-		}) as unknown as { publicKey: Buffer; privateKey: Buffer };
-		if (!(publicKey instanceof Uint8Array) || !(privateKey instanceof Uint8Array)) {
-			throw new Error('x25519 keypair did not come back as DER buffers');
-		}
+		}) as unknown as { publicKey: unknown; privateKey: unknown };
 		return {
-			publicKey: new Uint8Array(publicKey.subarray(X25519_PREFIX.length)),
-			privateKey: new Uint8Array(privateKey.subarray(PKCS8_PREFIX.length)),
+			publicKey: new Uint8Array(derBytes(pair.publicKey).subarray(X25519_PREFIX.length)),
+			privateKey: new Uint8Array(derBytes(pair.privateKey).subarray(PKCS8_PREFIX.length)),
 		};
 	},
 

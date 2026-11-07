@@ -5,6 +5,8 @@ files: ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal
 difficulty: medium
 ----
 
+**Re-checked 2026-11-07 on `@optimystic/*` 1.26.0: still blocked.** `6.52-feat-replay-mode-collections-merge-divergent-histories` and `6.53` to `6.55` are still in Optimystic's backlog; 1.26.0 does not touch fork healing. The scenario was not re-run in a series.
+
 **Re-checked 2026-11-03 on `@optimystic/*` 1.25.0: still blocked.** Optimystic `6.52-feat-replay-mode-collections-merge-divergent-histories` and `6.53` to `6.55` are still in its backlog. Sereus no longer starts this fork from a restart (`background-control-write-forks-a-cadre-restarted-together`, in 1.20.0), but a cadre already forked stays forked. The scenario was not re-run.
 
 **Re-checked 2026-11-01 on `@optimystic/*` 1.23.0 (`adopt-optimystic-1-23-0`): still blocked, narrower.** Both upstream tickets this one named landed: a multi-collection write now stops after two attempts that could not differ (`CoordinatorRevisionStalledError`, Optimystic `multi-collection-retry-stops-on-a-taken-revision`), and block repair asks a lone machine one revision ahead whether its history contains the group's version, keeping the group's when it does not (`repair-asks-a-lone-ahead-claimant-for-its-lineage`, logged `cluster-fetch:fork-declined` / `reconcile:fork-declined`). Neither heals a fork: upstream says the group's next write to the block can end in `SyncRevisionStalledError` until the forked machine writes or leaves. Merging divergent histories is Optimystic backlog `6.52-feat-replay-mode-collections-merge-divergent-histories` (with 6.53–6.55), now the unblock condition. `control-delete-while-alone-convergence` ran only in this release's one gate run.

@@ -1,14 +1,15 @@
-description: When a machine is removed from a cadre while it is online, it used to be sent the replacement key meant to lock it out of the cadre's private workspaces. The replacement key is now stored encrypted to the machines that remain, so the removed machine receives only data it cannot open. The code review is done; the database-backed test suites could not be run because the neighbouring repositories this repo links in are mid-edit.
+description: When a machine is removed from a cadre while it is online, it used to be sent the replacement key meant to lock it out of the cadre's private workspaces. The replacement key is now stored encrypted to the machines that remain, so the removed machine receives only data it cannot open. The review is done and every test it was waiting on has now run green.
 architecture: docs/architecture.md#removing-a-machine
 difficulty: medium
 repro: verified
 files: packages/cadre-core/src/sealed-party-key.ts, packages/cadre-core/test/sealed-party-key.spec.ts, packages/cadre-core/src/control-schema.ts, schemas/control.qsql, packages/cadre-core/test/fixtures/control-schema/v4.qsql, packages/cadre-core/src/control-authorization.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/types.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-party-key-rotation.ts, packages/cadre-core/src/index.ts, packages/cadre-core/package.json, yarn.lock, packages/cadre-core/test/cadre-node-remove-machine.spec.ts, packages/cadre-core/test/control-database-strand-peer.spec.ts, packages/cadre-core/test/control-store-migration.spec.ts, packages/cadre-core/test/strand-party-key-rotation.spec.ts, packages/integration-tests/src/scenarios/machine-removal-rotates-party-key.integration.ts, docs/architecture.md
 ----
-# Seal the pending party key to the machines that remain — review blocked on the sibling builds
+# Seal the pending party key to the machines that remain
 
-**Blocked category: a dependency outside this repository.** The cadre-core test suite and the integration scenario run the compiled output of `../optimystic` and `../quereus`, and both had source files edited after their last build for the whole review pass (21:11 to 21:41 on 2026-11-03; `../optimystic/packages/db-core` was rebuilt once at about 21:25 and edited again before the suite could start). The stale-build guard (`test-harness/build-freshness.ts`) refuses the run, and `tickets/rules/sibling-repos.md` forbids building a sibling from here. **What unblocks it:** the owners of those repositories build them (`yarn workspace @optimystic/db-core build` in `C:\projects\optimystic`; `yarn workspace @quereus/quereus build` in `C:\projects\quereus` if the guard names it too), then move this ticket back to `review/`. The remaining review work is only to run the two commands under "What is still owed" below; on green, write the `complete/` ticket from the findings here (the code has been reviewed in full); on red, fix.
+**Completed 2026-11-07** once the sibling builds were fresh (`../quereus` at `v5.0.0`+3, `../optimystic` at `v1.26.0`+2, both clean, no source newer than `dist`). The two owed commands ran green on this code:
 
-If we do nothing: the implementation (`ticket(implement): removed-machine-receives-new-party-key`) stays on `master` with five edited specs and one edited scenario never executed. Reversible: nothing here changes code; the one review edit is a small refactor already type-checked and linted.
+- `yarn workspace @serfab/cadre-core test`: 196 files, 2,620 passed, 1 skipped (inside the full `yarn test`, `tickets/.logs/adopt-quereus-5-optimystic-1-26.test.log`).
+- `machine-removal-rotates-party-key.integration.ts` alone: 2 of 2 passed (`tickets/.logs/removed-machine-receives-new-party-key.scenario.log`). The `A3 holds no pending row` warning did not print, so `expectSealedAwayFromA3` read the pending row on A3 and asserted it sealed away from A3. The scenario also passed inside the full integration run.
 
 ## What the implement stage changed (unchanged by the review)
 
@@ -48,7 +49,7 @@ Run and passing in the review pass:
 - `yarn lint` (clean), `yarn workspace @serfab/cadre-core typecheck`, `yarn workspace @serfab/integration-tests typecheck`, `yarn check:dep-ranges`.
 - `sealed-party-key.spec.ts`, `control-schema-drift.spec.ts`, `control-schema-versions.spec.ts`: 3 files, 7 tests, under a scratch vitest config that omitted only the stale-build guard (deleted after the run). The first two load nothing from a sibling. The third parses the schema with `@quereus/quereus`, whose source had files newer than its build at the time; the guard itself did not name quereus when it ran, only db-core.
 
-**NOT run, blocked on the sibling builds (the reviewer who resumes runs these first):**
+**Owed at review, run green on 2026-11-07 (see the top of this ticket):**
 
 ```
 yarn workspace @serfab/cadre-core test

@@ -12,6 +12,8 @@ files: docs/architecture.md ("The declared value" ~2066, "What Optimystic derive
 
 GitHub gotchoices/sereus#48.
 
+**Re-checked 2026-11-07 on `@optimystic/*` 1.26.0: still blocked.** `feat-link-deadlines-stretch-to-measured-response-time` is still in Optimystic's backlog, and 1.26.0's notes name no deadline change.
+
 ## What the phone-link measurement shows
 
 From the phone arm of `strand-workload-on-a-phone-link.integration.ts` (every outbound WebSocket frame held 20 ms behind the one before it, event loop 70% busy; two-member strand, 8 rounds of one write and a six-table read), run 2026-10-17 on sereus 1.16.0, Optimystic 1.15.0 (`28e6e044`), p2p-fret 1.1.0 (`6c04166`). The scenario's doc comment has the full counts and how each was taken.

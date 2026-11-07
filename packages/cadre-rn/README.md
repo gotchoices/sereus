@@ -521,6 +521,8 @@ Every mode starts from `noisePureJsCrypto` and overrides only its own functions,
 
 cadre-core reads `network.noiseCrypto` only when it builds the node. Changing the mode means stopping the node and starting a new one.
 
+On a `PhoneNode`, `noiseCrypto.defaultMode` fills in a start that names no mode, and the filled-in mode is saved with the start. A device that restarts from `loadSavedStart()` therefore keeps the mode of its first start after `defaultMode` changes in a new build; only a start that passes `noiseCryptoMode` moves it, as the reference app's Settings screen does.
+
 The reference app (`packages/reference-app-rn`) is the worked example: it takes the mode as a start option, defaults it from a build-time `EXPO_PUBLIC_NOISE_CRYPTO`, offers the three modes in its Settings screen, and shows the running node's mode on the Node card. [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#phone-rn-app-configuration) walks through it.
 
 ### Native hashing comes with it
