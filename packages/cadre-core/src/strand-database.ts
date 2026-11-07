@@ -459,7 +459,8 @@ export class StrandDatabase {
    *
    * The handle stays set across the awaits, so a second, concurrent close (a build released
    * part-way closes its database again) awaits the same Quereus teardown rather than skipping
-   * ahead to the strand shutdown, which is latched. A rejected Quereus close is logged and the
+   * ahead to the strand shutdown, which is safe to run twice (each release it makes is
+   * idempotent, and the storage-cache release is latched). A rejected Quereus close is logged and the
    * teardown goes on, because callers stop the strand's node once this resolves.
    *
    * NOTE: this makes `close()` wait on a statement in a network wait, bounded by Optimystic's
