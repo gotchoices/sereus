@@ -5774,7 +5774,7 @@ export class CadreNode implements SAppIdLookup {
         strandId: strand.Id,
         error: toError(error)
       });
-      this.suppressIfAppSchemaRefused(strand.Id, error);
+      this.suppressIfAppSchemaRefused(strand.Id, sAppConfig, error);
       // Rethrow after the event: the only caller is the StrandWatcher's
       // onStrandAdded callback, which uses the rejection to decide whether the
       // strand was really added. Swallowing it here would have the watcher mark
@@ -5791,14 +5791,20 @@ export class CadreNode implements SAppIdLookup {
    * with rows): every relaunch would build the strand node and compose the database only to fail at the
    * same statement (gotchoices/sereus#57). The next {@link addStrand} lifts it, since a claim is the only
    * way the registered schema changes. Any other failure is left to the retry ladder.
+   *
+   * Not suppressed when a claim registered another config while this launch ran (`launchedWith` is
+   * no longer the registered one): that claim already lifted any suppression, and its own call only
+   * waited on this launch, so its schema has not been tried yet and the ladder must try it.
+   * Returns whether it suppressed.
    */
-  private suppressIfAppSchemaRefused(strandId: string, error: unknown): void {
+  private suppressIfAppSchemaRefused(strandId: string, launchedWith: SAppConfig | undefined, error: unknown): boolean {
     const refusal = appSchemaRefusalOf(error);
-    if (!refusal) {
-      return;
+    if (!refusal || this.sAppConfigs.get(strandId) !== launchedWith) {
+      return false;
     }
     log('Strand %s: app schema refused, not relaunching until the strand is claimed again: %s', strandId, refusal.message);
     this.strandWatcher?.suppressStrand(strandId);
+    return true;
   }
 
   /**
@@ -6485,7 +6491,9 @@ export class CadreNode implements SAppIdLookup {
    * table with rows) is not handed to the relaunch, since every relaunch would fail the same
    * way after a full start-up. The strand is suppressed in the watcher instead, and the next
    * call to this method lifts that: a claim is the only way the registered schema changes,
-   * so a different schema launches, and the same one makes one more attempt.
+   * so a different schema launches, and the same one makes one more attempt. A storage
+   * replica this claim tried to give the schema in place keeps running and stays known to
+   * the watcher.
    */
   async addStrand(config: StrandConfig): Promise<StrandInstance> {
     if (!this._running) {
@@ -6559,7 +6567,11 @@ export class CadreNode implements SAppIdLookup {
       // shared `MemberPrivateKey` is read only by the founder bootstrap. If a joiner
       // launch ever starts depending on that key, gate this hand-back on the passed row
       // matching the control one.
-      this.suppressIfAppSchemaRefused(strandRow.Id, error);
+      if (this.suppressIfAppSchemaRefused(strandRow.Id, sAppConfig, error) && this.strandManager.getInstance(strandRow.Id)) {
+        // A storage replica this claim tried to give the schema in place keeps running, so the
+        // watcher keeps it known: its removed-strand loop must still detach it on a party-wide removal.
+        throw error;
+      }
       this.strandWatcher?.forgetStrand(strandRow.Id);
       throw error;
     }

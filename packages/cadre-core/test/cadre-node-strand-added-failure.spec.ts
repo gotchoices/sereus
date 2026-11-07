@@ -100,6 +100,26 @@ describe('CadreNode.handleStrandAdded failure propagation', () => {
     expect(watcherCalls).toEqual([`suppress ${STRAND_ROW.Id}`]);
   });
 
+  it('leaves a refused strand on the retry ladder when a claim registered another schema during the launch', async () => {
+    // That claim's call only waited on this launch, so its schema was never tried.
+    const node = new CadreNode(createConfig());
+    (node as unknown as { identityKey: unknown }).identityKey = await generateKeyPair('Ed25519');
+    const sAppConfigs = (node as unknown as { sAppConfigs: Map<string, SAppConfig> }).sAppConfigs;
+    (node as unknown as { strandManager: unknown }).strandManager = {
+      getInstance: () => undefined,
+      startStrand: async () => {
+        sAppConfigs.set(STRAND_ROW.Id, { ...SAPP_CONFIG, version: '3.0.0' });
+        throw new AppSchemaRefusedError('sApp schema cannot be applied to the tables: NOT NULL constraint failed');
+      }
+    };
+    registerSAppConfig(node, STRAND_ROW.Id);
+    const watcherCalls = injectRecordingWatcher(node);
+
+    await expect(handleStrandAdded(node, STRAND_ROW)).rejects.toBeInstanceOf(AppSchemaRefusedError);
+
+    expect(watcherCalls).toEqual([]);
+  });
+
   it('suppresses a strand whose id is unusable, instead of retrying it forever', async () => {
     // An invalid id is a property of the control row, so the watcher's backoff ladder
     // can never clear it: unsuppressed, it would re-attempt and re-emit `strand:error`
@@ -210,5 +230,24 @@ describe('CadreNode.addStrand app schema refusal', () => {
     await expect(node.addStrand({ strandRow: STRAND_ROW, sAppConfig: fixed })).resolves.toMatchObject({ strandId: STRAND_ROW.Id });
     expect(watcherCalls.slice(3)).toEqual([`unsuppress ${STRAND_ROW.Id}`]);
     expect(launches.map(launch => launch.sAppConfig?.version)).toEqual(['2.0.0', '3.0.0']);
+  });
+
+  it('keeps a storage replica whose in-place claim was refused known to the watcher', async () => {
+    // Forgetting it would leave the running replica outside the watcher's removed-strand loop.
+    const node = new CadreNode(createConfig());
+    (node as unknown as { identityKey: unknown }).identityKey = await generateKeyPair('Ed25519');
+    (node as unknown as { _running: boolean })._running = true;
+    const replica = { strandId: STRAND_ROW.Id, status: 'active', connectedPeers: 0, lastActivity: new Date(), latencyHint: 'interactive' };
+    (node as unknown as { strandManager: unknown }).strandManager = {
+      getInstance: () => replica,
+      whenRuntimeBuilt: async () => replica,
+      attachSApp: async () => {
+        throw new AppSchemaRefusedError('sApp schema cannot be applied to the tables: NOT NULL constraint failed');
+      }
+    };
+    const watcherCalls = injectRecordingWatcher(node);
+
+    await expect(node.addStrand({ strandRow: STRAND_ROW, sAppConfig: SAPP_CONFIG })).rejects.toBeInstanceOf(AppSchemaRefusedError);
+    expect(watcherCalls).toEqual([`unsuppress ${STRAND_ROW.Id}`, `suppress ${STRAND_ROW.Id}`]);
   });
 });
