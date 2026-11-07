@@ -75,9 +75,9 @@ export interface ControlSchemaReleases {
 	readonly previous: string;
 	/**
 	 * The next release, at `nextVersion` (`baseVersion + 1`, a version that may exist only in the
-	 * test): `ValidationKey.Note` added (nullable), `OwnerKey.LabelLength`
-	 * widened to 96 characters, the `Annotation` table added, and `previous`'s column dropped. Every
-	 * change is one the optimystic module applies to the catalog alone.
+	 * test): `ValidationKey.Note` added (nullable), `OwnerKey.LabelLength` widened to 96 characters,
+	 * the `Annotation` table added, and `previous`'s column dropped. Every change is one the
+	 * optimystic module applies to the catalog alone.
 	 */
 	readonly next: string;
 	readonly nextVersion: number;
