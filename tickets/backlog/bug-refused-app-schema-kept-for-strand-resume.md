@@ -1,4 +1,5 @@
 description: When an app claims a strand with a schema Sereus refuses, the node still remembers that schema for the strand, so every later wake of the strand fails and the node stops serving it until it restarts.
+prereq: app-schema-refusal-stops-strand-relaunch
 architecture: docs/schema-guide.md#seeds-local-quereus-databases-only
 files: packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/strand-database.ts, packages/quereus-plugin-sereus/src/compose-strand.ts
 repro: static
@@ -26,3 +27,7 @@ A schema the plugin refuses is never kept in a strand's retained launch config. 
 Read from `attachSApp` (the `this.launchConfigs.set(strandId, { ...config, sAppConfig })` line before `database.attachAppSchema`) and `resumeStrand` (which rebuilds from the retained config). Confirming it needs a cadre-core test that claims a replica with a `seed` schema, quiesces it, and resumes it.
 
 A likely shape: the plugin exports a check that parses the schema body and applies the item refusals without a database, and `attachSApp` runs it before retaining anything.
+
+## Since `app-schema-refusal-stops-strand-relaunch`
+
+The plugin types a permanent refusal as `AppSchemaRefusedError` (the seed and unparsed-item refusals, and an apply Quereus refuses on this node's catalog and rows, such as a `not null` column added to a table with rows), and `appSchemaRefusalOf(err)` finds one in a cause chain. `attachSApp` can use it to restore the previous retained config when the live apply is refused. A refusal decided by rows cannot be checked on a quiesced replica without its database, so the quiesced arm needs either the database-free check above for the declare-time refusals plus a resume that falls back to the replica config when the build fails with `AppSchemaRefusedError`, or that fallback alone.
