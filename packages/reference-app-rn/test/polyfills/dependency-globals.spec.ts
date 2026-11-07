@@ -145,6 +145,13 @@ const PROVIDED: Record<string, Provision> = {
 		by: 'allowlist',
 		why: 'appears only in a cadre-core comment explaining that randomBytes is used instead.',
 	},
+	MessageChannel: {
+		by: 'allowlist',
+		why: 'appears only in a comment in @quereus/quereus 5.0.0\'s util/event-loop.js, which yields with '
+			+ 'setTimeout and notes MessageChannel as a possible browser-only change. If Quereus makes that '
+			+ 'change, the phone needs a fallback to setTimeout where MessageChannel is absent. mortice\'s '
+			+ 'browser build also reads it, which Metro does not resolve (see BroadcastChannel).',
+	},
 };
 
 /**
@@ -163,7 +170,6 @@ const WATCHED: Record<string, string> = {
 	CompressionStream: 'a stream transform Hermes has no equivalent of',
 	DecompressionStream: 'a stream transform Hermes has no equivalent of',
 	TextDecoderStream: 'the streaming decoder — the polyfill provides only the one-shot TextDecoder',
-	MessageChannel: 'worker plumbing; mortice reaches for it in its browser build',
 	MessagePort: 'worker plumbing; mortice reaches for it in its browser build',
 	sessionStorage: 'no web storage under React Native',
 	indexedDB: 'no web storage under React Native',
