@@ -746,7 +746,11 @@ export const DEFAULT_CHECKIN_WINDOW_MS = 15 * 1000;
 export interface ControlNetworkConfig {
   partyId: string;
   bootstrapNodes: string[];
-  /** Optional path to the control schema file (defaults to bundled schema) */
+  /**
+   * Optional path to the control schema file (defaults to the bundled schema), for tests that vary
+   * the schema. The file must declare every table of this build's control schema: the node watches
+   * and writes them, and `start` fails on a watched table the catalog does not hold.
+   */
   schemaPath?: string;
 }
 

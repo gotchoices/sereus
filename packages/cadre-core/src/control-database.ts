@@ -1301,11 +1301,12 @@ export interface ControlDatabaseConfig {
    */
   partyId: string;
   /**
-   * Optional path to the control schema file.
+   * Optional path to the control schema file, for tests that vary the schema.
    * If not provided, uses the embedded schema for cross-platform compatibility.
-   * Only use this if you need to override the default schema (e.g., for testing).
    * The file has the shape of `schemas/control.qsql`: one `declare schema CadreControl`
    * followed by one plain `apply schema CadreControl` ({@link controlSchemaFileDeclaration}).
+   * Under a `CadreNode` it must declare every table of this build's control schema, because the
+   * node watches and writes them.
    */
   schemaPath?: string;
   /** Libp2p node for the control network (injected) */

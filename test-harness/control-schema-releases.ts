@@ -1,6 +1,6 @@
 /**
- * Two "releases" of the control schema, built from the baseline fixture
- * `packages/cadre-core/test/fixtures/control-schema/v<baseline>.qsql`, for the suites that start a
+ * Two "releases" of the control schema, built from one version fixture
+ * `packages/cadre-core/test/fixtures/control-schema/v<base>.qsql`, for the suites that start a
  * control store under one release and restart it under another:
  *
  *   - `packages/cadre-core/test/control-store-migration.spec.ts` (one storage, one node at a time);
@@ -13,6 +13,12 @@
  * reader names: the added column sits on `ValidationKey`, whose only writer lists its columns, the
  * dropped column on `CadrePeer`, which no writer or reader names either, and the CHECK that changes
  * is `OwnerKey.LabelLength`, widened so every label a test writes still passes it.
+ *
+ * For the same reason a release that a `CadreNode` starts on must declare every table this build's
+ * code reads: `CadreNode.start` watches tables a fixture older than this build may lack, and a watch
+ * on a table the catalog does not hold throws. So a suite that starts a node builds from
+ * `CONTROL_SCHEMA_VERSION`; a suite that opens only a `ControlDatabase` may build from any fixture
+ * from `CONTROL_SCHEMA_BASELINE_VERSION` on.
  *
  * Imported by relative path (see ./package.json). The fixture is read with CRLF normalized to LF
  * so the variants' anchors hold on a CRLF checkout.
@@ -59,16 +65,17 @@ export const withLegacyTable = (schema: string): string =>
 	withItems(schema, '    table Legacy (Id text primary key);\n');
 
 export interface ControlSchemaReleases {
-	/** The baseline fixture: `schemas/control.qsql` as it was at `baselineVersion`. */
-	readonly baseline: string;
-	readonly baselineVersion: number;
+	/** The fixture the releases are built from: `schemas/control.qsql` as it was at `baseVersion`. */
+	readonly base: string;
+	readonly baseVersion: number;
 	/**
-	 * The release a store under test was written by: the baseline, at the baseline version, plus one
-	 * nullable column (`CadrePeer.Obsolete`) that `next` drops.
+	 * The release a store under test was written by: `base`, at `baseVersion`, plus one nullable
+	 * column (`CadrePeer.Obsolete`) that `next` drops.
 	 */
 	readonly previous: string;
 	/**
-	 * The next release, at `nextVersion`: `ValidationKey.Note` added (nullable), `OwnerKey.LabelLength`
+	 * The next release, at `nextVersion` (`baseVersion + 1`, a version that may exist only in the
+	 * test): `ValidationKey.Note` added (nullable), `OwnerKey.LabelLength`
 	 * widened to 96 characters, the `Annotation` table added, and `previous`'s column dropped. Every
 	 * change is one the optimystic module applies to the catalog alone.
 	 */
@@ -76,17 +83,17 @@ export interface ControlSchemaReleases {
 	readonly nextVersion: number;
 }
 
-/** The releases above, built from the fixture of `baselineVersion`. */
-export async function controlSchemaReleases(baselineVersion: number): Promise<ControlSchemaReleases> {
-	const baseline = await readControlSchemaFixture(baselineVersion);
-	const nextVersion = baselineVersion + 1;
+/** The releases above, built from the fixture of `baseVersion`. */
+export async function controlSchemaReleases(baseVersion: number): Promise<ControlSchemaReleases> {
+	const base = await readControlSchemaFixture(baseVersion);
+	const nextVersion = baseVersion + 1;
 	const previous = replaceOnce(
-		baseline,
+		base,
 		'    table CadrePeer (\n        PeerId text primary key,\n',
 		'    table CadrePeer (\n        PeerId text primary key,\n        Obsolete text null,\n'
 	);
 	const withNote = replaceOnce(
-		atVersion(baseline, baselineVersion, nextVersion),
+		atVersion(base, baseVersion, nextVersion),
 		'    table ValidationKey (\n        Key text primary key,\n        StampId text unique,\n',
 		'    table ValidationKey (\n        Key text primary key,\n        StampId text unique,\n        Note text null,\n'
 	);
@@ -98,7 +105,7 @@ export async function controlSchemaReleases(baselineVersion: number): Promise<Co
 		'        constraint LabelLength check (\n            Label is null or length(Label) between 1 and 96\n'
 	);
 	const next = withItems(withWiderLabel, '    table Annotation (Id text primary key, Body text null);\n');
-	return { baseline, baselineVersion, previous, next, nextVersion };
+	return { base, baseVersion, previous, next, nextVersion };
 }
 
 /** Write `schema` as `<dir>/<name>.qsql` and return the path, for a node's `schemaPath`. */

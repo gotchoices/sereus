@@ -2,9 +2,11 @@
  * Two machines of one party on different releases of the control schema, the way a party's
  * phones take an app update one at a time (docs/architecture.md → "Control schema versions and
  * migrations"). `controlNetwork.schemaPath` chooses each machine's "release", built by
- * `test-harness/control-schema-releases.ts` from the baseline fixture: `previous` is the release
- * the store was written by, and `next` adds a nullable column (`ValidationKey.Note`), changes a
- * CHECK body, adds a table and drops `previous`'s extra column.
+ * `test-harness/control-schema-releases.ts` from the fixture of this build's control schema
+ * version, because both releases run this build's `CadreNode`, which watches every table of this
+ * build's schema at start. `previous` is the release the store was written by, and `next` adds a
+ * nullable column (`ValidationKey.Note`), changes a CHECK body, adds a table and drops
+ * `previous`'s extra column.
  *
  * 1. A and B form a party under `previous`; each writes a row the other reads.
  * 2. A restarts under `next` and starts without error (its apply migrates its catalog) while B
@@ -39,7 +41,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
-import { CadreNode, CONTROL_SCHEMA_BASELINE_VERSION, CONTROL_SCHEMA_VERSION_TAG, buildAuthorizationMessage } from '@serfab/cadre-core';
+import { CadreNode, CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_VERSION_TAG, buildAuthorizationMessage } from '@serfab/cadre-core';
 import type { ControlDatabase } from '@serfab/cadre-core';
 import { controlSchemaReleases, writeSchemaFile } from '../../../../test-harness/control-schema-releases.js';
 import {
@@ -141,7 +143,7 @@ describe('Control schema migration with mixed releases in one party', () => {
 	it('the first machine to update migrates its catalog; the second keeps working across restarts and reads every row once it updates', async () => {
 		const partyId = `ctrl-schema-migration-${Date.now()}`;
 		const schemaDir = await mkdtemp(join(tmpdir(), 'control-schema-releases-'));
-		const releases = await controlSchemaReleases(CONTROL_SCHEMA_BASELINE_VERSION);
+		const releases = await controlSchemaReleases(CONTROL_SCHEMA_VERSION);
 		const previous = await writeSchemaFile(schemaDir, 'previous', releases.previous);
 		const next = await writeSchemaFile(schemaDir, 'next', releases.next);
 		const aKey = await generateKeyPair('Ed25519');
@@ -209,7 +211,7 @@ describe('Control schema migration with mixed releases in one party', () => {
 			B = undefined;
 			B = nodeOn(partyId, bKey, captureB, 'transaction', previous);
 			await B.start();
-			expect(storeVersionOf(B)).toBe(releases.baselineVersion);
+			expect(storeVersionOf(B)).toBe(releases.baseVersion);
 			await expectEveryRow(B, { x1, x2, x3, v1, v2, owner: owner.publicKey }, 'without the column');
 			await B.stop();
 			B = undefined;

@@ -154,7 +154,7 @@ describe('a control store written under another control schema version', () => {
 		// tag reads the build's version either way, so only a pre-apply read can tell.)
 		const refusal = await refusalOf(lifetime(storage, partyId, previous, noRead));
 		expect({ reason: refusal.reason, storeVersion: refusal.storeVersion, buildVersion: refusal.buildVersion })
-			.toEqual({ reason: 'newer-release', storeVersion: releases.nextVersion, buildVersion: releases.baselineVersion });
+			.toEqual({ reason: 'newer-release', storeVersion: releases.nextVersion, buildVersion: releases.baseVersion });
 	});
 
 	it('from the baseline fixture: this build migrates it, and a table added since runs its guarded delete', async () => {
@@ -164,7 +164,7 @@ describe('a control store written under another control schema version', () => {
 		// The store already holds a tombstone, as a real party's does, when that CHECK is re-added.
 		const partyId = freshPartyId('from-baseline');
 		const storage = new MemoryRawStorage();
-		const baseline = await writeSchemaFile(schemaDir, 'baseline', releases.baseline);
+		const baseline = await writeSchemaFile(schemaDir, 'baseline', releases.base);
 		const owner = freshKeyPair();
 		const sign = (message: Uint8Array): string => signAs(owner, message);
 
