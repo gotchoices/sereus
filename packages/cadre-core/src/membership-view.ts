@@ -30,7 +30,10 @@ export const MEMBERSHIP_VIEW_MAX_AGE_MS = 15_000;
  * Optimystic's lazy read-repair window (`clusterPolicy.readRepairWindowMs`, which cadre does
  * not set, so this is Optimystic's default): a read of a held block checked less than this
  * long ago is served from the local copy without asking the cohort. A read after it is
- * served locally too, but starts a cohort consult whose landing raises a table change.
+ * served locally too, but starts a cohort consult whose landing raises a table change, unless
+ * a cohort of two or three has stayed connected to this node since that block's last consult
+ * (Optimystic's quiet span). A sibling's new connection ends the span, so the reload below
+ * still consults.
  *
  * NOTE: a copy, since db-p2p exports no default for it. If cadre ever sets
  * `readRepairWindowMs` in its cluster policy, derive this from that value.
