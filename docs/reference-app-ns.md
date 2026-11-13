@@ -120,7 +120,7 @@ app/
   chat/             chat screen: status bar, message ListView, composer  (binds getChatVm())
   settings/         settings screen: connect/join-cadre/seed/dial-peer/create-strand/modal  (SettingsViewModel → cadre-vm)
 src/
-  polyfills/        V8/JSC-audited globals (buffer-global, hermes, intl-pluralrules, event, node-crypto, node-os, audit, registry)
+  polyfills/        V8/JSC-audited globals and Node module shims, one file each, plus the audit and its registry (see "Polyfilled on NativeScript" below)
   ns-edge-platform.ts the edge node's platform: key store, node-local store, per-scope block stores (SQLite)
   cadre-phone.ts    the phone's one edge node (@serfab/cadre-core/edge-node) + the peer dial on its running node
   cadre-vm.ts       CadreViewModel (Observable) — edge-node status/strands/join  (← RN use-cadre + cadre-context)
