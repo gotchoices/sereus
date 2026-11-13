@@ -3,7 +3,7 @@ import { signSchema } from '../src/schema-verification.js';
 import type { SAppConfig } from '../src/types.js';
 
 /** The one-table sApp schema the strand specs launch with. */
-const SCHEMA = 'table Note (Id text primary key);';
+const NOTE_SCHEMA = 'table Note (Id text primary key);';
 const VERSION = '1.0.0';
 
 /**
@@ -12,10 +12,11 @@ const VERSION = '1.0.0';
  * call mints a fresh key, so no two configs share an id.
  *
  * `latencyHint: 'realtime'` turns hibernation off, for a spec that must never see an idle
- * timer fire mid-measurement.
+ * timer fire mid-measurement. `schema` replaces the one-table default, signed the same way.
  */
-export function signedSApp(opts: Pick<SAppConfig, 'latencyHint'> = {}): SAppConfig {
+export function signedSApp(opts: Pick<SAppConfig, 'latencyHint'> & { schema?: string } = {}): SAppConfig {
+	const { schema = NOTE_SCHEMA, ...rest } = opts;
 	const priv = generatePrivateKey('ed25519', 'base64url') as string;
 	const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-	return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv), ...opts };
+	return { id: pub, version: VERSION, schema, signature: signSchema(schema, VERSION, priv), ...rest };
 }

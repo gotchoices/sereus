@@ -2,6 +2,10 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import type { StrandRow } from '../src/types.js';
 import { signedSApp } from './signed-sapp.js';
+import { AppSchemaRefusedError } from '@serfab/quereus-plugin-sereus';
+
+/** A schema the plugin refuses whatever the node holds: Sereus applies no seed rows to a strand. */
+const SEED_SCHEMA = `table Role (Name text primary key); seed Role (('admin'));`;
 
 /**
  * **What this protects: claiming a strand this node already hosts as a storage replica**
@@ -51,5 +55,29 @@ describe('claiming a hosted storage replica', () => {
     expect(await db.get('select count(1) as c from App.Note')).toEqual({ c: 1 });
     const header = await db.get('select sAppId, sAppVersion from Strand.Header');
     expect(header).toEqual({ sAppId: sApp.id, sAppVersion: sApp.version });
+  });
+
+  // A refused schema must not stay in the retained launch config: every later rebuild would
+  // apply it again and leave the replica in `'error'` with no database until a restart.
+  it.each([
+    ['live', false],
+    ['quiesced', true],
+  ])('refuses a claim with a schema that can never apply on a %s replica, and the replica still resumes', async (_state, quiesceFirst) => {
+    manager = new StrandInstanceManager();
+    const strandRow: StrandRow = { Id: `replica-refused-${String(quiesceFirst)}`, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
+    const instance = await manager.startStrand({ strandRow, profile: 'storage', defaultLatencyHint: 'interactive' });
+    if (quiesceFirst) {
+      await manager.quiesceStrand(strandRow.Id);
+    }
+
+    await expect(manager.attachSApp(strandRow.Id, signedSApp({ schema: SEED_SCHEMA }))).rejects.toBeInstanceOf(AppSchemaRefusedError);
+    expect(instance.sAppInfo).toBeUndefined();
+
+    if (!quiesceFirst) {
+      await manager.quiesceStrand(strandRow.Id);
+    }
+    await manager.resumeStrand(strandRow.Id);
+    expect(instance.status).not.toBe('error');
+    expect(instance.libp2pNode).toBeDefined();
   });
 });
