@@ -1520,6 +1520,7 @@ export class StrandInstanceManager {
    * A deferred join's database phase ({@link buildStrandDatabase}), run once more as the replica
    * when it fails on the schema of a claim that has not applied yet ({@link revertRefusedAttach}).
    * The failed attempt's database is closed first: a failure leaves it registered with its gate.
+   * `'released'` when a stop began while it closed.
    */
   private async buildJoinDatabaseOrReplica(
     instance: StrandInstance,
@@ -1538,6 +1539,11 @@ export class StrandInstanceManager {
       const failedAttempt = this.firstSyncGates.get(instance.strandId);
       if (failedAttempt) {
         await this.discardDatabaseAttempt(instance.strandId, failedAttempt);
+      }
+      if (!this.isCurrentRuntime(instance, node) || instance.status === 'stopping') {
+        // A stop that began while the failed attempt closed found no gate to release, so a
+        // database built now would outlive the stop, open and unreleased.
+        return 'released';
       }
       return await this.buildStrandDatabase(instance, replicaConfig, node);
     }
