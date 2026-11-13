@@ -12,7 +12,7 @@ import { parseNullableStoredDatetimeMs, type CadreInviteStatus, type CadreMachin
 import type { Rental } from '@serfab/cadre-rn/provider';
 import { useCadre } from './cadre-context';
 import { SELF_LINE, useMachineRemoval } from './machine-removal';
-import { lastSeenText, machineCode, machineKind, pendingDeviceInvitations, rentedFromText, WAITING_ROTATIONS_TITLE, waitingRotationLine } from './machines';
+import { lastSeenText, machineCode, machineKind, pendingDeviceInvitations, rentedFromText, WAITING_ROTATIONS_TITLE, waitingRotationLine, waitingRotationOffersKey } from './machines';
 import { standingLine, useOwnerStanding } from './owner-standing';
 import { Btn, controlStyles, Section, shortPeerId, validUntilText, WithdrawPrompt } from './settings-controls';
 import { CopyBtn } from './share-code';
@@ -117,7 +117,7 @@ export function MachinesSection({ showAlert, refreshKey, onShowOwnerKeys }: {
 			{listing.pending.map((status) => (
 				<PendingRow key={status.invite.key} status={status} onWithdraw={owner ? () => setWithdrawing(status) : undefined} />
 			))}
-			<WaitingRotations rotations={waiting.rotations} owner={owner} />
+			<WaitingRotations rotations={waiting.rotations} owner={owner} machines={listing.machines} />
 			<Btn label="Refresh" onPress={handleRefresh} color="#444" testID={TEST_IDS.settings.refreshMachinesBtn} />
 			{removal.prompt}
 			<WithdrawPrompt open={withdrawing !== null} onConfirm={handleConfirmWithdraw} onCancel={() => setWithdrawing(null)} />
@@ -207,23 +207,24 @@ function MachineRow({ machine, rentedFrom, nowMs, onRemove, selfLine, busy }: {
 	);
 }
 
-function WaitingRotations({ rotations, owner }: { rotations: PendingPartyKeyRotation[]; owner: boolean }) {
+function WaitingRotations({ rotations, owner, machines }: { rotations: PendingPartyKeyRotation[]; owner: boolean; machines: CadreMachine[] }) {
 	if (rotations.length === 0) return null;
 	return (
 		<>
 			<Text style={controlStyles.subTitle}>{WAITING_ROTATIONS_TITLE}</Text>
-			{rotations.map((rotation) => <WaitingRotationRow key={rotation.strandId} rotation={rotation} owner={owner} />)}
+			{rotations.map((rotation) => <WaitingRotationRow key={rotation.strandId} rotation={rotation} owner={owner} machines={machines} />)}
 		</>
 	);
 }
 
-function WaitingRotationRow({ rotation, owner }: { rotation: PendingPartyKeyRotation; owner: boolean }) {
-	const { strandId, publicKey, waitingOn } = rotation;
-	const line = waitingRotationLine(rotation, owner);
+function WaitingRotationRow({ rotation, owner, machines }: { rotation: PendingPartyKeyRotation; owner: boolean; machines: CadreMachine[] }) {
+	const { strandId, publicKey } = rotation;
+	const line = waitingRotationLine(rotation, owner, machines);
+	const offersKey = waitingRotationOffersKey(rotation);
 	return (
 		<View testID={TEST_IDS.settings.waitingRotationRow(strandId)}>
-			<Text style={controlStyles.hint} selectable>{waitingOn === 'another-party' ? `${line} ${publicKey}.` : line}</Text>
-			{waitingOn === 'another-party' && <CopyBtn text={publicKey} testID={TEST_IDS.settings.copyWaitingRotationKeyBtn(strandId)} />}
+			<Text style={controlStyles.hint} selectable>{offersKey ? `${line} ${publicKey}.` : line}</Text>
+			{offersKey && <CopyBtn text={publicKey} testID={TEST_IDS.settings.copyWaitingRotationKeyBtn(strandId)} />}
 		</View>
 	);
 }

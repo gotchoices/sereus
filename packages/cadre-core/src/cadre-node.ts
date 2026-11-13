@@ -10117,17 +10117,13 @@ export class CadreNode implements SAppIdLookup {
    * the party still holds, own or joined. A row left behind by a joined strand the party has left
    * waits for a re-formation and is not listed. Public columns only, so a row sealed to other
    * machines lists too. Empty on a machine removed from the cadre, which cannot act on what it holds.
+   * A recipient the party lost but has not removed stays in `sealedTo`; removing it writes a
+   * replacement sealed to the machines present (`ControlDatabase.removeMachine`).
    *
    * NOTE: no event announces a change here; an app reads this on `strand:party-key-rotation-blocked`,
    * `strand:party-key-rotated` and after its own {@link removeMachine}, so a second device of the
    * party sees a row replicated to it on its next read. If an app ever needs a push, emit from
    * {@link onPartyKeyTablesChanged}.
-   *
-   * NOTE: `waitingOn` does not look at who the key is sealed to. If the party loses every machine a
-   * row is sealed to and recovers as docs/strands.md describes (deleting its `StrandPartyKey` row,
-   * re-joining under a fresh key), the row stays listed as `owner-machine`, then `another-party`,
-   * though no machine can open it; only a later removal replaces it. If an app ever reaches this,
-   * compare `partyKeyRecipients(row.sealedKey)` with the live machines and add a state for it.
    */
   async listPendingPartyKeyRotations(): Promise<PendingPartyKeyRotation[]> {
     if (!this.controlDatabase) {
@@ -10142,15 +10138,45 @@ export class CadreNode implements SAppIdLookup {
       return [];
     }
     const held = new Set((await this.heldStrandRows(controlDatabase)).map((row) => row.Id));
+    const present = await this.presentMachinePeerIds(controlDatabase);
     const rotations: PendingPartyKeyRotation[] = [];
     for (const [strandId, row] of pending) {
       if (held.has(strandId)) {
         const partyKey = await controlDatabase.queryStrandPartyKey(strandId);
         const strand = await this.pendingRotationStrandState(strandId, partyKey, row.publicKey);
-        rotations.push({ strandId, publicKey: row.publicKey, superseded: row.superseded, waitingOn: pendingRotationWaitingOn(strand) });
+        rotations.push({
+          strandId,
+          publicKey: row.publicKey,
+          superseded: row.superseded,
+          waitingOn: pendingRotationWaitingOn(strand),
+          sealedTo: this.pendingKeyRecipientsPresent(strandId, row, present),
+        });
       }
     }
     return rotations;
+  }
+
+  /** The peer ids {@link listMachines} lists, and this node's own, which is a machine of the cadre before its `CadrePeer` row lands. */
+  private async presentMachinePeerIds(controlDatabase: ControlDatabase): Promise<Set<string>> {
+    const present = new Set((await controlDatabase.queryCadrePeers()).map((row) => row.peerId));
+    const self = this.peerId?.toString();
+    if (self !== undefined) {
+      present.add(self);
+    }
+    return present;
+  }
+
+  /**
+   * {@link PendingPartyKeyRotation.sealedTo}: the row's recipients still in the cadre. An envelope
+   * that does not decode opens for nobody, so it lists none, logged; the rest of the listing stands.
+   */
+  private pendingKeyRecipientsPresent(strandId: string, row: PendingStrandPartyKeyRow, present: ReadonlySet<string>): string[] {
+    try {
+      return partyKeyRecipients(row.sealedKey).filter((peerId) => present.has(peerId));
+    } catch (error) {
+      log('The pending party key of strand %s does not decode, so no machine can open it: %o', strandId, error);
+      return [];
+    }
   }
 
   /** {@link closedStrandState} plus the strand reads only a pending replacement asks about; a read that fails is `unknown`, so one strand mid-teardown leaves the rest of the listing standing. */
@@ -10275,9 +10301,11 @@ export class CadreNode implements SAppIdLookup {
    * key to seal to.
    *
    * NOTE: a machine admitted after the removal is not a recipient, so an owner machine enrolled
-   * while a rotation is pending cannot drive it; a recipient owner machine has to finish it. If a
-   * party is seen stuck that way, the remedy is the replacement a second removal already writes
-   * (`ControlDatabase.removeMachine`), minted for the machines present then.
+   * while a rotation is pending cannot drive it or redeem the host's invitation under the new key;
+   * a recipient owner machine has to. The app learns which machines those are from
+   * {@link PendingPartyKeyRotation.sealedTo}. If a party is seen stuck that way, the remedy is the
+   * replacement a second removal already writes (`ControlDatabase.removeMachine`), minted for the
+   * machines present then.
    */
   private pendingPartyKeyRecipients(machines: readonly CadreMachine[], removedPeerId: string): PartyKeyRecipient[] {
     const recipients = new Map<string, PartyKeyRecipient>();

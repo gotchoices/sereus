@@ -17,6 +17,7 @@
 		REFUSAL_LINE,
 		WAITING_ROTATIONS_TITLE,
 		waitingRotationLine,
+		waitingRotationOffersKey,
 		withdrawDeviceInvitation,
 	} from './lib/machines.svelte.js';
 	import { peerCode, validUntilText } from './lib/cadre-format.js';
@@ -163,8 +164,8 @@
 			<ul class="hint" data-testid="waiting-rotations">
 				{#each list.waitingRotations as rotation (rotation.strandId)}
 					<li>
-						{waitingRotationLine(rotation, owner)}
-						{#if rotation.waitingOn === 'another-party'}
+						{waitingRotationLine(rotation, owner, list.machines)}
+						{#if waitingRotationOffersKey(rotation)}
 							<Copyable value={rotation.publicKey} />.
 						{/if}
 					</li>

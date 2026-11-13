@@ -302,6 +302,13 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     expect(strandMemberKeyPair(opened!).publicKeyB64).toBe(pending!.publicKey);
     expect(await db.queryStrandPartyKey(strandId)).toBe(partyKey);
 
+    // A machine admitted after the removal cannot open the key, so the listing does not name it
+    // among the machines that can finish the replacement.
+    const third = await mintContactJoiner();
+    await redeem(await issueInvitation(1), third);
+    const sealedTo = async () => (await node.listPendingPartyKeyRotations()).find((rotation) => rotation.strandId === strandId)?.sealedTo;
+    expect((await sealedTo())?.sort()).toEqual([node.peerId!.toString(), second.partyId].sort());
+
     // The second removal replaces the pending key, because the first one may already have
     // reached the machine just removed, and names it as superseded so a seat it holds is revoked.
     expect((await node.removeMachine(second.partyId)).strands).toEqual([{ strandId, outcome: 'pending' }]);
@@ -311,6 +318,7 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     expect(replaced!.superseded).toEqual([pending!.publicKey]);
     expect((await db.queryRevocations()).filter((row) => row.tableName === 'PendingStrandPartyKey').map((row) => row.stampId)).toEqual([pending!.stampId]);
     expect(await db.queryStrandPartyKey(strandId)).toBe(partyKey);
+    expect((await sealedTo())?.sort()).toEqual([node.peerId!.toString(), third.partyId].sort());
   }, 60_000);
 });
 

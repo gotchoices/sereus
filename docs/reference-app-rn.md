@@ -990,11 +990,12 @@ The list is read when the section appears, when a join replaces the node, after 
 
 **Key replacements waiting.** Below the list, while `CadreNode.listPendingPartyKeyRotations` reports any, one line per private workspace, by id, for a membership key replacement that has not finished ([architecture.md → Removing a machine](architecture.md#removing-a-machine)):
 
-- **Another party's manager has to admit the key** (`another-party`): "‹id›: ask this workspace's host for a fresh invitation and join with it from this device; or have the host admit key ‹public key›.", with the key selectable and a **Copy** button. A device that is not an owner reads "from an owner device", because joining for the party takes an owner key.
-- **An owner device can finish it** (`owner-machine`): "‹id›: finishes on an owner device that runs it."
+- **Another party's manager has to admit the key** (`another-party`): "‹id›: ask this workspace's host for a fresh invitation and join with it from this device; or have the host admit key ‹public key›.", with the key selectable and a **Copy** button. Only an owner device the new key is sealed to (`sealedTo`) can redeem the invitation under it, so any other device reads "from an owner device among the app 1a2b3c4d, the always-on node 5e6f7a8b" instead, naming the listed machines the key is sealed to, and an owner device that is not one adds "(this device cannot: it joined after the removal)".
+- **An owner device can finish it** (`owner-machine`): "‹id›: finishes on an owner device that runs it.", with ", among ‹the listed machines the key is sealed to›" before the period unless this device is the only one.
+- **No device can open the key** (`sealedTo` empty): "‹id›: none of the devices this key was sealed to is in this cadre any more, so none can finish it; removing a device from this cadre writes a fresh replacement sealed to the devices here.", with no key to copy, because a seat admitted by hand also needs one of those devices to finish.
 - **Nobody can** (`sealed`): "‹id›: this workspace is sealed, so nobody can admit a new key; the removed device stays a member until the workspace is re-created."
 
-A waiting replacement in another party's workspace is finished by joining with the host's fresh invitation through **Join via Invite** under Closed Strand (Invite-Only): the party redeems it under the new key, and the replacement then completes on its own. When the host admits the key by hand instead, there is nothing to do here.
+A waiting replacement in another party's workspace is finished by joining with the host's fresh invitation through **Join via Invite** under Closed Strand (Invite-Only), on the device its line says: the party redeems it under the new key, and the replacement then completes on its own. When the host admits the key by hand instead, there is nothing to do here.
 
 The block is read with the list, and again when this node raises `strand:party-key-rotation-blocked` or `strand:party-key-rotated`. A read that fails is logged and keeps the last list. No event announces a row replicated from another machine, so a second phone of the party sees a replacement at its next read.
 

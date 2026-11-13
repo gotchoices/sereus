@@ -353,9 +353,9 @@ with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
   *When it is read.* With the list and again on `strand:party-key-rotation-blocked` and
   `strand:party-key-rotated`; a read that fails is logged and keeps the last list.
 
-  *Finishing another party's.* Paste the host's fresh invitation into *Form strand* on Home
-  ([Strand formation](#strand-formation-consent--invitation-flow)): the party redeems it under the
-  new key, and the replacement then completes on its own.
+  *Finishing another party's.* Paste the host's fresh invitation into *Form strand* on Home, on
+  the tab or device the line says ([Strand formation](#strand-formation-consent--invitation-flow)):
+  the party redeems it under the new key, and the replacement then completes on its own.
 - **Who can remove.** On an owner tab every row has *Remove* except the tab's own, under which
   "A tab does not remove itself from its cadre: to remove this tab, use another owner device."
   (`self`): leaving a cadre is the tab's own flow, and another machine removes it, which the tab

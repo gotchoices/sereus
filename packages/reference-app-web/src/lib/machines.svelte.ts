@@ -265,7 +265,12 @@ export function machineCode(machine: CadreMachine): string {
 
 /** "The always-on node 1a2b3c4d", for a notice. */
 function machineName(machine: CadreMachine): string {
-	return `The ${machineKind(machine).toLowerCase()} ${machineCode(machine)}`;
+	return `The ${machineNoun(machine)}`;
+}
+
+/** "always-on node 1a2b3c4d": {@link machineName} for the middle of a sentence. */
+function machineNoun(machine: CadreMachine): string {
+	return `${machineKind(machine).toLowerCase()} ${machineCode(machine)}`;
 }
 
 /**
@@ -288,19 +293,67 @@ export function unfinishedWorkspaces(plan: MachineRemovalPlan): string[] {
 }
 
 /**
- * One workspace's line under {@link WAITING_ROTATIONS_TITLE}. The `another-party` line stops at
- * "admit key" because the card puts the key after it, where it can be copied. Only an owner device
- * can join for the party, so a non-owner's line names one rather than this tab.
+ * One workspace's line under {@link WAITING_ROTATIONS_TITLE}. A line that offers the key
+ * ({@link waitingRotationOffersKey}) stops at "admit key" because the card puts the key after it,
+ * where it can be copied. Only an owner device the new key is sealed to (`sealedTo`) can join for
+ * the party or finish the replacement, so the line names those devices from `machines` when this
+ * tab is not the one; a recipient missing from `machines` is not named.
  */
-export function waitingRotationLine({ strandId, waitingOn }: PendingPartyKeyRotation, owner: boolean): string {
+export function waitingRotationLine(rotation: PendingPartyKeyRotation, owner: boolean, machines: readonly CadreMachine[]): string {
+	const { strandId, waitingOn } = rotation;
+	if (waitingOn === 'sealed') {
+		return `${strandId}: this workspace is sealed, so nobody can admit a new key; the removed device stays a member until the workspace is re-created.`;
+	}
+	if (rotation.sealedTo.length === 0) {
+		// The driver has to open the new key to finish, so a seat admitted by hand would not finish either.
+		return `${strandId}: none of the devices this key was sealed to is in this cadre any more, so none can finish it; removing a device from this cadre writes a fresh replacement sealed to the devices here.`;
+	}
+	const recipients = rotationRecipients(rotation, machines);
 	switch (waitingOn) {
 		case 'another-party':
-			return `${strandId}: ask this workspace's host for a fresh invitation and join with it from ${owner ? 'this tab' : 'an owner device'}; or have the host admit key`;
-		case 'owner-machine':
-			return `${strandId}: finishes on an owner device that runs it.`;
-		case 'sealed':
-			return `${strandId}: this workspace is sealed, so nobody can admit a new key; the removed device stays a member until the workspace is re-created.`;
+			return `${strandId}: ask this workspace's host for a fresh invitation and join with it from ${joinFrom(recipients, owner)}; or have the host admit key`;
+		case 'owner-machine': {
+			const names = finisherNames(recipients, owner);
+			return `${strandId}: finishes on an owner device that runs it${names.length === 0 ? '' : `, among ${names.join(', ')}`}.`;
+		}
 	}
+}
+
+/** Whether the line for `rotation` ends with its key for the host to admit: some device can still finish it from that seat. */
+export function waitingRotationOffersKey(rotation: PendingPartyKeyRotation): boolean {
+	return rotation.waitingOn === 'another-party' && rotation.sealedTo.length > 0;
+}
+
+/** The machines of `machines` a rotation's key is sealed to: whether this tab is one (null when the list has no row for it), and the others by name. */
+interface RotationRecipients {
+	self: boolean | null;
+	others: string[];
+}
+
+function rotationRecipients({ sealedTo }: PendingPartyKeyRotation, machines: readonly CadreMachine[]): RotationRecipients {
+	const sealed = new Set(sealedTo);
+	const self = machines.find((machine) => machine.isSelf);
+	return {
+		self: self === undefined ? null : sealed.has(self.peerId),
+		others: machines.filter((machine) => !machine.isSelf && sealed.has(machine.peerId)).map((machine) => `the ${machineNoun(machine)}`),
+	};
+}
+
+/** Where the `another-party` line sends the host's invitation. Only an owner can join for the party, so a non-owner tab is never the answer and is not told why. */
+function joinFrom({ self, others }: RotationRecipients, owner: boolean): string {
+	if (owner && self === true) {
+		return 'this tab';
+	}
+	const among = others.length === 0 ? '' : ` among ${others.join(', ')}`;
+	return `an owner device${among}${owner && self === false ? ' (this tab cannot: it joined after the removal)' : ''}`;
+}
+
+/** The `owner-machine` line's names: none when this tab is the only recipient, and this tab among them when it is an owner recipient. */
+function finisherNames({ self, others }: RotationRecipients, owner: boolean): string[] {
+	if (others.length === 0) {
+		return [];
+	}
+	return owner && self === true ? ['this tab', ...others] : others;
 }
 
 /** "It is removed from this cadre. The 2 invitations it could join again with are withdrawn." */

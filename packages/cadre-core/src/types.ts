@@ -2328,11 +2328,20 @@ export interface PendingPartyKeyRotation {
   superseded: string[];
   /**
    * Who can move the replacement forward from here, judged from this machine's view of the strand.
-   * - `another-party`: the strand runs here, the party holds no manager seat and `publicKey` is not a member, so another party's manager has to admit it: a fresh invitation to the strand redeemed on an owner device of this party, or the key admitted by hand.
+   * - `another-party`: the strand runs here, the party holds no manager seat and `publicKey` is not a member, so another party's manager has to admit it: a fresh invitation to the strand redeemed on an owner device of this party the new key is sealed to (`sealedTo`), or the key admitted by hand.
    * - `sealed`: the strand has no managers at all and `publicKey` is not a member; nobody can admit it, and the removed machine stays a member until the strand is re-formed.
-   * - `owner-machine`: an owner device of this party that runs the strand finishes it (the strand does not run here, the party holds a manager seat, or `publicKey` is already a member), which this machine may or may not be. Also the answer when a read here fails.
+   * - `owner-machine`: an owner device of this party the new key is sealed to (`sealedTo`) that runs the strand finishes it (the strand does not run here, the party holds a manager seat, or `publicKey` is already a member), which this machine may or may not be. Also the answer when a read here fails.
    */
   waitingOn: 'another-party' | 'sealed' | 'owner-machine';
+  /**
+   * The machines of this cadre the new key is sealed to: control peer ids, each a live machine
+   * (`listMachines`) or this node, in no particular order. Only these can redeem the host's
+   * invitation under the new key or finish the replacement, and only those of them that hold an
+   * owner key. A machine admitted after the removal is never one. Empty when every machine it
+   * was sealed to has left the cadre, or the row's envelope does not decode; removing a machine
+   * then writes a replacement sealed to the machines present.
+   */
+  sealedTo: string[];
 }
 
 /** Why `CadreNode.removeOwner` refuses by name (`OwnerKeyRemovalRefusedError.code`). */
