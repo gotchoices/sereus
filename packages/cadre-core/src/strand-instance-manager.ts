@@ -2,7 +2,7 @@ import debug from 'debug';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { ICohortReachability } from '@optimystic/db-core';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
-import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
+import { wrapStorageWithCache, disposeStorageCache, checkAppSchema, appSchemaRefusalOf } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase, type StrandDatabaseOffline } from './strand-database.js';
 import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
 import type { StrandOfflineConfig, StrandOfflineListeners, StrandOfflineMode } from './strand-offline.js';
@@ -79,6 +79,17 @@ export const UNREACHABLE_JOIN_RETRY_MS = 5_000;
 type StrandDatabaseBuild = 'built' | 'awaiting-seed' | 'released';
 
 const timing = debug('sereus:cadre:timing');
+
+/**
+ * An sApp claim of a storage replica ({@link StrandInstanceManager.attachSApp}) that the retained
+ * launch config carries and that has not been applied to the strand yet.
+ */
+interface UnappliedAttach {
+  /** The claiming sApp's config, as the retained launch config holds it. */
+  sAppConfig: SAppConfig;
+  /** The instance's latency hint before the claim, for a fallback to the replica to put back. */
+  latencyHint: LatencyHint;
+}
 
 /** One caller blocked in {@link StrandInstanceManager.whenWritable}. */
 interface WritableWaiter {
@@ -638,6 +649,14 @@ export class StrandInstanceManager {
    * {@link releaseRuntime}, so a stop or a quiesce cancels it.
    */
   private unreachableJoinRetries: Map<string, unknown> = new Map();
+  /**
+   * Per strand id, the sApp claim ({@link attachSApp}) whose schema the retained launch config
+   * carries but no apply has landed yet: the claim found no live database, or its live apply failed
+   * for a reason that may pass. Lets a build that refuses that schema fall back to the replica
+   * ({@link revertRefusedAttach}). Deleted when a database applies the schema, by that fallback,
+   * and when {@link stopStrand} begins.
+   */
+  private unappliedAttaches: Map<string, UnappliedAttach> = new Map();
   /**
    * The offline mode set per strand id ({@link setOfflineMode}); a strand absent here runs in its
    * launch's `initialMode`. Never cleared: the mode belongs to the strand, not to one database, so
@@ -1288,6 +1307,7 @@ export class StrandInstanceManager {
       await strandDb.close();
       return 'released';
     }
+    this.forgetAppliedAttach(strandId, config.sAppConfig, strandDb);
 
     // The first-sync write gate. A founder just wrote the Header in its bootstrap; any
     // other machine may commit only once it holds the Header — which it can only have
@@ -1461,7 +1481,8 @@ export class StrandInstanceManager {
    * runtime still attached. Skipped when the strand was stopped or released since — a quiesce
    * releases it and the resume after rebuilds the whole runtime — or already has a database.
    * A failure other than an unanswered seed releases the runtime and marks the strand
-   * `'error'`, as a failed resume does.
+   * `'error'`, as a failed resume does, unless it is a refusal of a claim's schema the replica
+   * can fall back from ({@link buildJoinDatabaseOrReplica}).
    */
   private async retryUnreachableJoin(instance: StrandInstance): Promise<void> {
     const strandId = instance.strandId;
@@ -1476,7 +1497,7 @@ export class StrandInstanceManager {
     try {
       // Tracked like any runtime build, so a wake, a quiesce or an sApp attach waits for it
       // rather than acting on a database that is still initializing.
-      build = await this.trackRuntimeBuild(strandId, this.buildStrandDatabase(instance, config, node));
+      build = await this.trackRuntimeBuild(strandId, this.buildJoinDatabaseOrReplica(instance, config, node));
     } catch (error) {
       if (!this.isCurrentRuntime(instance, node)) {
         log('Strand %s: a database retry failed after its runtime was released: %o', strandId, error);
@@ -1492,6 +1513,33 @@ export class StrandInstanceManager {
     }
     if (build === 'awaiting-seed' && this.isCurrentRuntime(instance, node) && !this.isQuiescing(strandId)) {
       this.deferUnreachableJoin(instance);
+    }
+  }
+
+  /**
+   * A deferred join's database phase ({@link buildStrandDatabase}), run once more as the replica
+   * when it fails on the schema of a claim that has not applied yet ({@link revertRefusedAttach}).
+   * The failed attempt's database is closed first: a failure leaves it registered with its gate.
+   */
+  private async buildJoinDatabaseOrReplica(
+    instance: StrandInstance,
+    config: StartStrandConfig,
+    node: Libp2pNodeWithRepo
+  ): Promise<StrandDatabaseBuild> {
+    try {
+      return await this.buildStrandDatabase(instance, config, node);
+    } catch (error) {
+      const replicaConfig = this.isCurrentRuntime(instance, node)
+        ? this.revertRefusedAttach(instance, config.sAppConfig, error)
+        : undefined;
+      if (!replicaConfig) {
+        throw error;
+      }
+      const failedAttempt = this.firstSyncGates.get(instance.strandId);
+      if (failedAttempt) {
+        await this.discardDatabaseAttempt(instance.strandId, failedAttempt);
+      }
+      return await this.buildStrandDatabase(instance, replicaConfig, node);
     }
   }
 
@@ -2048,7 +2096,7 @@ export class StrandInstanceManager {
 
     instance.status = 'starting';
     try {
-      await this.trackRuntimeBuild(strandId, this.buildStrandRuntime(instance, resumeConfig));
+      await this.trackRuntimeBuild(strandId, this.buildRuntimeOrReplica(instance, resumeConfig));
       timing('[resumeStrand:%s] total: %dms', strandId, Math.round(performance.now() - tTotal));
       log('Strand %s resumed successfully', strandId);
       return instance;
@@ -2057,6 +2105,66 @@ export class StrandInstanceManager {
       instance.error = describeThrown(error);
       log('Failed to resume strand %s: %s', strandId, instance.error);
       throw error;
+    }
+  }
+
+  /**
+   * {@link buildStrandRuntime}, run once more as the replica when it fails on the schema of a
+   * claim that has not applied yet ({@link revertRefusedAttach}). Safe to run twice: a failed
+   * build releases both handles before it rejects.
+   */
+  private async buildRuntimeOrReplica(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
+    try {
+      await this.buildStrandRuntime(instance, config);
+    } catch (error) {
+      const replicaConfig = this.revertRefusedAttach(instance, config.sAppConfig, error);
+      if (!replicaConfig) {
+        throw error;
+      }
+      await this.buildStrandRuntime(instance, replicaConfig);
+    }
+  }
+
+  /**
+   * Undo a claim of a storage replica ({@link attachSApp}) after an apply of its schema was refused
+   * (`AppSchemaRefusedError`): the retained launch config drops the sApp, so later rebuilds run the
+   * replica, and the instance gets back the replica's unset `sAppInfo` and its latency hint. Only
+   * when `error` is such a refusal, `refused` is the claim the strand has not applied yet, and the
+   * retained config still carries it, so a config rewritten since is left alone.
+   *
+   * @returns the replica's launch config, or `undefined` when nothing was undone.
+   */
+  private revertRefusedAttach(
+    instance: StrandInstance,
+    refused: SAppConfig | undefined,
+    error: unknown
+  ): StartStrandConfig | undefined {
+    const strandId = instance.strandId;
+    const unapplied = this.unappliedAttaches.get(strandId);
+    const config = this.launchConfigs.get(strandId);
+    const refusal = appSchemaRefusalOf(error);
+    if (!refusal || !unapplied || !config || this.stopping || this.instances.get(strandId) !== instance
+      || refused !== unapplied.sAppConfig || config.sAppConfig !== refused) {
+      return undefined;
+    }
+    this.unappliedAttaches.delete(strandId);
+    const { sAppConfig: _refused, ...replicaConfig } = config;
+    this.launchConfigs.set(strandId, replicaConfig);
+    instance.sAppInfo = undefined;
+    instance.latencyHint = unapplied.latencyHint;
+    log('Strand %s: the schema of sApp %s, which claimed this storage replica, was refused here; ' +
+      'the strand runs as a replica again: %s', strandId, refused.id, refusal.message);
+    return replicaConfig;
+  }
+
+  /**
+   * Forget the unapplied claim of `strandId` once `database`, given the claim's sApp config as
+   * `applied`, has applied its schema. An apply still deferred keeps it, since its retry can still be
+   * refused by the strand's rows.
+   */
+  private forgetAppliedAttach(strandId: string, applied: SAppConfig | undefined, database: StrandDatabase): void {
+    if (applied && this.unappliedAttaches.get(strandId)?.sAppConfig === applied && database.appSchemaState() === 'applied') {
+      this.unappliedAttaches.delete(strandId);
     }
   }
 
@@ -2132,19 +2240,24 @@ export class StrandInstanceManager {
    *
    * A runtime build in flight (the replica's launch, or a hibernation wake) is waited out
    * first, so the attach acts on the database that build produced. Then, in order: the
-   * schema signature is checked before anything changes; the retained launch config takes
-   * the sApp, so every later rebuild applies it through `composeStrand`; the live database —
-   * published, or still held by the first-sync gate — gets the schema; and only then does
-   * the instance record `sAppInfo` and the sApp's latency hint. An instance with no live
-   * database gets the config alone: a quiesced one applies the schema at its next resume, a
-   * launch waiting for a seed peer at its next database retry.
+   * schema signature, and the refusals the schema's text alone decides (`checkAppSchema`: a
+   * `seed` item, an item the parser skipped, a syntax error), are checked before anything
+   * changes; the retained launch config takes the sApp, so every later rebuild applies it
+   * through `composeStrand`; the live database — published, or still held by the first-sync
+   * gate — gets the schema; and only then does the instance record `sAppInfo` and the sApp's
+   * latency hint. An instance with no live database gets the config alone: a quiesced one
+   * applies the schema at its next resume, a launch waiting for a seed peer at its next
+   * database retry, and that build falls back to the replica if the strand's tables and rows
+   * refuse the schema ({@link revertRefusedAttach}).
    *
    * @returns `'already-attached'` when the instance already runs an sApp — a DIFFERENT one
    *   is logged and left as it is, as a second claim of a claimed strand always has been —
    *   else `'attached'`.
    * @throws when the strand is not tracked (a caller bug, or a launch that failed while
-   *   this waited on it); when the schema signature is refused, having changed nothing; and
-   *   whatever the live apply throws (e.g. a quiesce closed the database mid-apply) — the
+   *   this waited on it); when the schema signature or the schema's text is refused, having
+   *   changed nothing; `AppSchemaRefusedError` when the live apply refuses the schema against
+   *   the replica's tables and rows, having put the retained config back to the replica's; and
+   *   whatever else the live apply throws (e.g. a quiesce closed the database mid-apply) — the
    *   retained config then still carries the sApp and `sAppInfo` stays unset, so the next
    *   claim retries the apply.
    *
@@ -2159,26 +2272,34 @@ export class StrandInstanceManager {
     options: { requireSignedSchemas?: boolean } = {}
   ): Promise<'attached' | 'already-attached'> {
     await this.settleRuntimeBuilds(strandId);
-    const instance = this.instances.get(strandId);
-    const config = this.launchConfigs.get(strandId);
-    if (!instance || !config) {
-      throw new Error(`Cannot attach an sApp to strand ${strandId}: not tracked`);
-    }
-    if (instance.sAppInfo) {
-      if (instance.sAppInfo.id !== sAppConfig.id) {
-        log('attachSApp: strand %s already runs sApp %s — the claim for sApp %s is ignored',
-          strandId, instance.sAppInfo.id, sAppConfig.id);
-      }
+    if (this.claimTarget(strandId, sAppConfig) === 'already-attached') {
       return 'already-attached';
     }
     const sAppInfo = verifiedSAppInfo(strandId, sAppConfig, options.requireSignedSchemas);
+    await checkAppSchema(sAppConfig.schema);
+    // The check yielded, so a wake or another claim may have started meanwhile: wait out its build
+    // and read the instance and config again, or the config written below would drop what a
+    // resume just retained (its fresh `bootstrapNodes`).
+    await this.settleRuntimeBuilds(strandId);
+    const target = this.claimTarget(strandId, sAppConfig);
+    if (target === 'already-attached') {
+      return target;
+    }
+    const { instance, config } = target;
     // A fresh object rather than mutating in place: startStrand retains the CALLER'S
     // config object, which is not ours to rewrite.
     this.launchConfigs.set(strandId, { ...config, sAppConfig });
+    this.unappliedAttaches.set(strandId, { sAppConfig, latencyHint: instance.latencyHint });
     const database = instance.database ?? this.firstSyncGates.get(strandId)?.database;
     if (database) {
-      await database.attachAppSchema(sAppConfig);
+      await this.applyClaimedSchema(instance, database, sAppConfig);
     } else {
+      // NOTE: accepted gap — this claim resolves `'attached'` before any apply, so the app learns of
+      // a refusal by the strand's rows only from the log and from `sAppInfo` going back to unset when
+      // the build falls back to the replica; `CadreNode.sAppConfigs` keeps the claim, so a restart's
+      // launch with it is refused and suppressed (`suppressIfAppSchemaRefused`). Failing the claim
+      // instead would mean waking a quiesced replica to apply now, and would still not cover a
+      // launch waiting for a seed peer.
       log('attachSApp: strand %s has no live database — its next build applies the sApp schema', strandId);
     }
     instance.sAppInfo = sAppInfo;
@@ -2190,6 +2311,48 @@ export class StrandInstanceManager {
     }
     log('Strand %s upgraded from storage replica to %s', strandId, describeSApp(sAppConfig));
     return 'attached';
+  }
+
+  /**
+   * The tracked instance and retained config an {@link attachSApp} claim acts on, or
+   * `'already-attached'` when the instance already runs an sApp (a claim for a different one is
+   * logged and ignored).
+   *
+   * @throws when the strand is not tracked.
+   */
+  private claimTarget(
+    strandId: string,
+    sAppConfig: SAppConfig
+  ): { instance: StrandInstance; config: StartStrandConfig } | 'already-attached' {
+    const instance = this.instances.get(strandId);
+    const config = this.launchConfigs.get(strandId);
+    if (!instance || !config) {
+      throw new Error(`Cannot attach an sApp to strand ${strandId}: not tracked`);
+    }
+    if (!instance.sAppInfo) {
+      return { instance, config };
+    }
+    if (instance.sAppInfo.id !== sAppConfig.id) {
+      log('attachSApp: strand %s already runs sApp %s — the claim for sApp %s is ignored',
+        strandId, instance.sAppInfo.id, sAppConfig.id);
+    }
+    return 'already-attached';
+  }
+
+  /**
+   * Apply a claim's schema to the replica's live database. A refusal by the replica's tables and
+   * rows puts the retained config back to the replica's ({@link revertRefusedAttach}): the replica
+   * holds no `App` schema, so the refused apply left nothing to drop. Any other failure leaves the
+   * claim retained and unapplied, for the next claim or build to retry.
+   */
+  private async applyClaimedSchema(instance: StrandInstance, database: StrandDatabase, sAppConfig: SAppConfig): Promise<void> {
+    try {
+      await database.attachAppSchema(sAppConfig);
+    } catch (error) {
+      this.revertRefusedAttach(instance, sAppConfig, error);
+      throw error;
+    }
+    this.forgetAppliedAttach(instance.strandId, sAppConfig, database);
   }
 
   /**
@@ -2466,6 +2629,8 @@ export class StrandInstanceManager {
 
     log('Stopping strand instance: %s', strandId);
     instance.status = 'stopping';
+    // Before the release awaits, so a build failing meanwhile does not rebuild as the replica.
+    this.unappliedAttaches.delete(strandId);
     this.rejectWritableWaiters(strandId, 'was stopped');
 
     try {

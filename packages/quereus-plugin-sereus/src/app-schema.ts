@@ -1,5 +1,5 @@
 import debug from 'debug';
-import { QuereusError, StatusCode, TransactionActiveError, type Database } from '@quereus/quereus';
+import { Database, QuereusError, StatusCode, TransactionActiveError } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { classifyCommitFailure } from '@optimystic/db-core';
 import { QueuedEntriesBlockSchemaChangeError, QueueDisposedError } from '@optimystic/quereus-plugin-optimystic/plugin';
@@ -33,6 +33,23 @@ export async function applyAppSchema(db: Database, schema: string): Promise<void
 		await db.exec('apply schema App;');
 	} catch (err) {
 		throw asAppSchemaRefusal(err);
+	}
+}
+
+/**
+ * The refusals of {@link applyAppSchema} decided by the schema text alone (a seed item, an item the
+ * parser skipped, a syntax error), thrown as {@link AppSchemaRefusedError} without a strand database:
+ * `declare schema` only parses and records, so it runs on a throwaway Quereus database that writes
+ * nothing anywhere. A refusal decided against a strand's tables and rows needs that strand, so it passes here.
+ */
+export async function checkAppSchema(schema: string): Promise<void> {
+	const db = new Database();
+	try {
+		await declareAppSchema(db, schema);
+	} catch (err) {
+		throw asAppSchemaRefusal(err);
+	} finally {
+		await db.close();
 	}
 }
 

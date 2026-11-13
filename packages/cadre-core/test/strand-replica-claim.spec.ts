@@ -1,11 +1,15 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { StrandInstanceManager } from '../src/strand-instance-manager.js';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { StrandInstanceManager, type StartStrandConfig } from '../src/strand-instance-manager.js';
 import type { StrandRow } from '../src/types.js';
 import { signedSApp } from './signed-sapp.js';
 import { AppSchemaRefusedError } from '@serfab/quereus-plugin-sereus';
 
 /** A schema the plugin refuses whatever the node holds: Sereus applies no seed rows to a strand. */
 const SEED_SCHEMA = `table Role (Name text primary key); seed Role (('admin'));`;
+/** `signedSApp`'s `Note` table plus a `not null` column with no default: refused once `Note` has rows. */
+const NOT_NULL_ADDED_SCHEMA = 'table Note (Id text primary key, At text not null);';
 
 /**
  * **What this protects: claiming a strand this node already hosts as a storage replica**
@@ -79,5 +83,40 @@ describe('claiming a hosted storage replica', () => {
     await manager.resumeStrand(strandRow.Id);
     expect(instance.status).not.toBe('error');
     expect(instance.libp2pNode).toBeDefined();
+  });
+
+  // A refusal by the strand's rows passes the claim-time check, so on a quiesced replica only the
+  // next build meets it, after the claim resolved; that build must fall back to the replica.
+  it.each([
+    ['live', false],
+    ['quiesced', true],
+  ])('runs the replica again when its rows refuse a claim\'s schema on a %s replica', async (_state, quiesceFirst) => {
+    manager = new StrandInstanceManager();
+    const strandRow: StrandRow = { Id: `replica-rows-refuse-${String(quiesceFirst)}`, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
+    // One store and transport key for every launch, so the replica hydrates the founder's catalog and row.
+    const storage = new MemoryRawStorage();
+    const privateKey = await generateKeyPair('Ed25519');
+    const launch = (overrides: Partial<StartStrandConfig>): StartStrandConfig =>
+      ({ strandRow, profile: 'storage', defaultLatencyHint: 'interactive', storage: { provider: () => storage }, privateKey, ...overrides });
+
+    const founded = await manager.startStrand(launch({ sAppConfig: signedSApp(), founder: true }));
+    await founded.database!.getDatabase().exec(`insert into App.Note (Id) values ('n1')`);
+    await manager.stopStrand(strandRow.Id);
+    const instance = await manager.startStrand(launch({}));
+    if (quiesceFirst) {
+      await manager.quiesceStrand(strandRow.Id);
+    }
+
+    const claim = manager.attachSApp(strandRow.Id, signedSApp({ schema: NOT_NULL_ADDED_SCHEMA }));
+    if (quiesceFirst) {
+      await expect(claim).resolves.toBe('attached');
+    } else {
+      await expect(claim).rejects.toBeInstanceOf(AppSchemaRefusedError);
+      await manager.quiesceStrand(strandRow.Id);
+    }
+    await manager.resumeStrand(strandRow.Id);
+    expect(instance.status).not.toBe('error');
+    expect(instance.sAppInfo).toBeUndefined();
+    expect(await instance.database!.getDatabase().get('select count(1) as c from App.Note')).toEqual({ c: 1 });
   });
 });
