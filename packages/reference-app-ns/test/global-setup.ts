@@ -21,6 +21,7 @@
  */
 
 import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-freshness.js';
+import { assertUppercaseDriveLetter } from '../../../test-harness/working-directory.js';
 
 /**
  * Every package this suite runs compiled code from.
@@ -46,5 +47,6 @@ export const TARGETS: BuildTarget[] = [
 ];
 
 export default function setup(): void {
+	assertUppercaseDriveLetter();
 	assertBuildFresh(TARGETS, import.meta.url);
 }

@@ -13,11 +13,13 @@
  */
 
 import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-freshness.js';
+import { assertUppercaseDriveLetter } from '../../../test-harness/working-directory.js';
 
 export const TARGETS: BuildTarget[] = [
   { packageName: '@serfab/config-check', distEntry: 'dist/index.js', location: 'workspace' },
 ];
 
 export default function setup(): void {
+  assertUppercaseDriveLetter();
   assertBuildFresh(TARGETS, import.meta.url);
 }

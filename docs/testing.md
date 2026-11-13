@@ -178,6 +178,12 @@ git -C ../quereus status --short                                        # clean 
 Only when a sibling is both idle and clean is its tree worth building. This matters most before a
 release measurement, where the whole point is to describe code someone can install.
 
+## Windows: start from an uppercase drive letter
+
+On Windows, a Vitest run started from a working directory whose drive letter is lowercase (`c:\projects\sereus`, the form VS Code gives its terminals) loads a second copy of Vitest's runner. Every file of a run with two or more files then fails at its first `describe` with "Vitest failed to find the runner" or "Cannot read properties of undefined (reading 'config')"; a single file passes. Changing the directory inside the run (a global setup's `process.chdir`, the config's `root`) does not help, because the lowercase path is already in the main Vitest process.
+
+Every package's global setup therefore refuses such a run up front and names the uppercase path to start from (`assertUppercaseDriveLetter` in `test-harness/working-directory.ts`). In Git Bash any `cd /c/…` gives the uppercase form; PowerShell's `Set-Location` does too. Measured on Vitest 4.1.8; the `NOTE:` there says when to drop the check.
+
 ## Tests that did not run
 
 Vitest counts every test under a failed `beforeAll` as skipped. A scenario file whose shared boot throws adds one to `Test Files … failed` and nothing to `failed` on the `Tests` line; its tests go into `skipped`, together with the ones skipped on purpose. The run still exits non-zero and the hook's error is printed under `Failed Suites`.
