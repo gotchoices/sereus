@@ -1,5 +1,5 @@
 description: When an app claims a strand with a schema Sereus refuses, the node still remembers that schema for the strand, so every later wake of the strand fails and the node stops serving it until it restarts.
-prereq: app-schema-refusal-stops-strand-relaunch
+prereq:
 architecture: docs/schema-guide.md#seeds-local-quereus-databases-only
 files: packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/strand-database.ts, packages/quereus-plugin-sereus/src/compose-strand.ts
 repro: static

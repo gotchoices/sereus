@@ -5,6 +5,8 @@ files: ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal
 difficulty: medium
 ----
 
+**Re-checked 2026-11-12 on `@optimystic/*` 1.27.0: still blocked.** 1.27.0 changes query planning and read-repair cadence only; fork healing (`6.52-feat-replay-mode-collections-merge-divergent-histories`, `6.53` to `6.55`) is still in Optimystic's backlog.
+
 **Re-checked 2026-11-07 on `@optimystic/*` 1.26.0: still blocked.** `6.52-feat-replay-mode-collections-merge-divergent-histories` and `6.53` to `6.55` are still in Optimystic's backlog; 1.26.0 does not touch fork healing. The scenario was not re-run in a series.
 
 **Re-checked 2026-11-03 on `@optimystic/*` 1.25.0: still blocked.** Optimystic `6.52-feat-replay-mode-collections-merge-divergent-histories` and `6.53` to `6.55` are still in its backlog. Sereus no longer starts this fork from a restart (`background-control-write-forks-a-cadre-restarted-together`, in 1.20.0), but a cadre already forked stays forked. The scenario was not re-run.
