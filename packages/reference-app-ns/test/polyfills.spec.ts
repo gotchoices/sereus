@@ -1,18 +1,23 @@
 /**
- * Guards two NativeScript polyfills whose failures are phone-only:
+ * Guards NativeScript polyfills whose failures are phone-only:
  *
  * - `src/polyfills/websocket.ts` — `@valor/nativescript-websockets` never assigns
  *   `bufferedAmount`, and `@libp2p/websockets` stops sending when it reads
  *   `undefined`, so every outbound dial dies on the dial timeout.
  * - `src/polyfills/abort.ts` — `AbortSignal.any` must take its listeners back off
  *   long-lived inputs once the combined signal aborts.
+ * - `src/polyfills/text-decoder.ts` — the `TextDecoder` stand-in must decode
+ *   damaged UTF-8 as a real decoder does, not into wrong characters.
  *
- * Node already has `AbortSignal`, and the polyfills only install over a missing
- * global, so each test removes the global, re-evaluates the module in a fresh
- * module registry, captures what it installed, and restores Node's own.
+ * Node already has `AbortSignal`, and the websocket and abort polyfills only
+ * install over a missing global, so their tests remove the global, re-evaluate
+ * the module in a fresh module registry, capture what it installed, and restore
+ * Node's own. The decoder module installs nothing, so its test constructs it.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { decoderInputs, describeBytes } from '../../../test-harness/utf8-decoder-inputs.js';
+import { TextDecoderPolyfill } from '../src/polyfills/text-decoder';
 
 type Globals = Record<string, unknown>;
 const g = globalThis as unknown as Globals;
@@ -124,5 +129,16 @@ describe('abort polyfill — AbortSignal.any', () => {
 		expect(combined.aborted).toBe(true);
 		expect(combined.reason).toBe('done');
 		expect(add).not.toHaveBeenCalled();
+	});
+});
+
+describe('TextDecoder polyfill', () => {
+	it('decodes UTF-8 as Node\'s native TextDecoder does', () => {
+		const polyfill = new TextDecoderPolyfill();
+		const native = new TextDecoder();
+		const mismatches = decoderInputs()
+			.filter((bytes) => polyfill.decode(bytes) !== native.decode(bytes))
+			.map(describeBytes);
+		expect(mismatches).toEqual([]);
 	});
 });

@@ -90,6 +90,10 @@ if (!globalThis.crypto.subtle) {
 // Output is built a chunk of code units at a time, never a character at a time:
 // `str += …` per character is slow on Hermes, and Optimystic decodes every block,
 // transform and metadata record it reads from storage (gotchoices/sereus#51).
+//
+// packages/reference-app-ns/src/polyfills/text-decoder.ts is a TypeScript copy of this
+// decoder; both are tested on the inputs in test-harness/utf8-decoder-inputs.ts, so a
+// fix to one belongs in the other.
 if (typeof globalThis.TextDecoder === 'undefined') {
 	const CHUNK = 4096;
 	// One slot past CHUNK: the flush check runs before each byte, and a surrogate pair

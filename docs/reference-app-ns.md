@@ -209,7 +209,7 @@ natively than Hermes does**, so several Hermes polyfills become no-ops here.
 | Global | File | Source | Required by | Notes |
 |--------|------|--------|-------------|-------|
 | `crypto.subtle.digest` | `hermes.ts` | @noble/hashes (SHA-256/512) | `multiformats/hashes/sha2-browser` | NS `subtle` has `generateKey`/`sign`/`verify` but **not** `digest`; only `digest` is added, the native subtle is preserved |
-| `TextDecoder` | `hermes.ts` | hand-rolled UTF-8-only | `uint8arrays` (libp2p/multiformats/yamux, module scope) | throws `RangeError` for non-UTF-8 — kept tiny on purpose |
+| `TextDecoder` | `hermes.ts` (decoder in `text-decoder.ts`) | hand-rolled, the same decoder as `@serfab/cadre-rn`'s `polyfills/hermes.js` | `uint8arrays` (libp2p/multiformats/yamux, module scope); Optimystic decodes every block it reads from storage | UTF-8 only; throws `RangeError` for any other encoding. Invalid input decodes as the Encoding Standard says, one U+FFFD per invalid sequence. Both copies are tested against Node's decoder on the inputs in `test-harness/utf8-decoder-inputs.ts` |
 | `structuredClone` | `hermes.ts` | `@ungap/structured-clone` | `@optimystic/db-core` (transform tracker, cache-source, coordinator) | spec-compliant (Date/Map/Set/circular) |
 | `Symbol.asyncIterator` | `hermes.ts` | `Symbol.for('Symbol.asyncIterator')` | `for await…of` on custom iterables | registry symbol so independent polyfills converge |
 | `ReadableStream` / `WritableStream` / `TransformStream` | `hermes.ts` | `web-streams-polyfill` | streaming libraries | installed together when `ReadableStream` is absent |

@@ -15,6 +15,7 @@ import { sha256, sha512 } from '@noble/hashes/sha2.js';
 import structuredCloneImpl from '@ungap/structured-clone';
 import * as webStreams from 'web-streams-polyfill';
 import { markPolyfilled } from './registry';
+import { TextDecoderPolyfill } from './text-decoder';
 
 // ── crypto.subtle.digest ─────────────────────────────────────────────────────
 // NativeScript 8.8 ships crypto.subtle with generateKey/sign/verify but NOT
@@ -62,59 +63,19 @@ const digestShim: DigestFn = (algorithm, data) => {
 // Not guaranteed on NativeScript V8/JSC. `uint8arrays` (pulled in by libp2p /
 // multiformats / yamux) does `new TextDecoder('utf8')` at module scope, so
 // without this yamux's default export resolves to undefined and start fails.
-// Kept UTF-8-only; throws a clear RangeError for any other encoding.
+// The decoder itself is in ./text-decoder.
 
 if (typeof globalThis.TextDecoder === 'undefined') {
-	class TextDecoderPolyfill {
-		readonly encoding = 'utf-8';
-		readonly fatal = false;
-		readonly ignoreBOM = false;
-
-		constructor(label = 'utf-8') {
-			const enc = String(label).toLowerCase().replace('_', '-');
-			if (enc !== 'utf-8' && enc !== 'utf8') {
-				throw new RangeError(`TextDecoder polyfill only supports UTF-8 (got "${label}")`);
-			}
-		}
-
-		decode(input?: BufferSource | null): string {
-			if (input == null) return '';
-			const bytes = toBytes(input);
-			if (bytes.length === 0) return '';
-			let i = 0;
-			let str = '';
-			if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) i = 3;
-			while (i < bytes.length) {
-				const b = bytes[i++];
-				if (b < 0x80) {
-					str += String.fromCharCode(b);
-				} else if (b < 0xc0) {
-					str += '�';
-				} else if (b < 0xe0) {
-					str += String.fromCharCode(((b & 0x1f) << 6) | (bytes[i++] & 0x3f));
-				} else if (b < 0xf0) {
-					str += String.fromCharCode(
-						((b & 0x0f) << 12) | ((bytes[i++] & 0x3f) << 6) | (bytes[i++] & 0x3f),
-					);
-				} else {
-					let cp =
-						((b & 0x07) << 18) |
-						((bytes[i++] & 0x3f) << 12) |
-						((bytes[i++] & 0x3f) << 6) |
-						(bytes[i++] & 0x3f);
-					cp -= 0x10000;
-					str += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
-				}
-			}
-			return str;
-		}
-	}
 	globalThis.TextDecoder = TextDecoderPolyfill as unknown as typeof TextDecoder;
 	markPolyfilled('TextDecoder');
 }
 
 // ── structuredClone ──────────────────────────────────────────────────────────
 // Required by @optimystic/db-core (transform tracker, cache-source, coordinator).
+// NOTE: every clone goes through @ungap/structured-clone; cadre-rn's
+// polyfills/hermes.js copies plain data directly because ungap was several times
+// slower on Hermes (gotchoices/sereus#51). If a NativeScript profile shows ungap
+// taking real time, port that path.
 
 if (typeof globalThis.structuredClone !== 'function') {
 	globalThis.structuredClone = (<T>(value: T): T =>
