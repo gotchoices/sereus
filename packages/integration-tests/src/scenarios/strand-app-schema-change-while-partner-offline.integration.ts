@@ -80,7 +80,7 @@ async function runSchemaChangeWhilePartnerOffline(offline: boolean): Promise<voi
 		const runTag = Date.now();
 		const strandId = `strand-schema55-${runTag}`;
 		const v1 = createSignedSAppConfig(schemaV1, '1.0.0');
-		const v2 = createSignedSAppConfig(schemaV2, '1.1.0');
+		const v2 = createSignedSAppConfig(schemaV2, '1.1.0', 2);
 		relay = await startDedicatedRelay();
 		const aParty: PartyOptions = { label: 'A', partyId: `schema55-a-${runTag}`, stateDir: join(home, 'a'), profile: 'transaction' };
 		const bParty: PartyOptions = { label: 'B', partyId: `schema55-b-${runTag}`, stateDir: join(home, 'b'), profile: 'transaction', offline };

@@ -146,6 +146,7 @@ describe('bootstrapFounderMembership', () => {
     expect(header?.Type).toBe('c');
     expect(header?.sAppId).toBe(sApp.id);
     expect(header?.sAppVersion).toBe(sApp.version);
+    expect(header?.sAppSchemaVersion).toBe(sApp.schemaVersion);
     expect(header?.sAppSchema).toBe(sApp.schema);
     expect(header?.sAppSignature).toBe(sApp.signature);
     expect(header?.Engine).toBe(STRAND_ENGINE);

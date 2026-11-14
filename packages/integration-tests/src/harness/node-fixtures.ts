@@ -47,10 +47,9 @@ export function wsTransports(): Libp2pTransports {
  * A properly signed sApp config with a NON-realtime `latencyHint` (`'interactive'`) —
  * realtime strands never hibernate, so any wake/hibernation scenario requires this.
  */
-export function createSignedSAppConfig(schema: string, version: string): SAppConfig {
+export function createSignedSAppConfig(schema: string, version: string, schemaVersion = 1): SAppConfig {
   const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
   const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-  const schemaVersion = 1;
   const signature = signSchema({ schema, version, schemaVersion }, authorPrivateKey);
   return { id: authorPublicKey, version, schemaVersion, schema, signature, latencyHint: 'interactive' as const };
 }

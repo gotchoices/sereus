@@ -100,7 +100,8 @@ Step 4 proves nothing ran in step 3. No other new test: the equal path runs in e
 - docs/strands.md → "Until then": replace the bullets' future tense with how it works: the table, the gate table above in prose, record-before-apply and why (one sentence on the catalog batch), the refusal type, and the three limits (pre-existing strands, earlier Sereus releases, the deferred database on its hydrated catalog). Point the "not yet built" note at `app-schema-version-stops-a-running-member` for the running member.
 - docs/strands.md → "An app schema upgrade waits for the queue or the cohort": one sentence that a version record defers the same way and every retry re-checks the number.
 - docs/schema-guide.md intro: the app passes `schemaVersion` beside the schema body and raises it with every change.
-- `.release-notes.pending.md`: the gate, the new error, and the two compatibility limits.
+- `.release-notes.pending.md`: the gate, the new error, and the two compatibility limits. The entry `app-schema-version-declared-and-signed` added ends "Nothing refuses an older schema version yet; that comes next": rewrite or drop that sentence.
+- Already written ahead of this ticket, by `app-schema-version-declared-and-signed`: the `SAppConfig.schemaVersion` doc comment (cadre-core `types.ts`), the `CHAT_SCHEMA_VERSION` comments in the three reference apps' `chat-strand.ts`, and one sentence in each reference app's README all say "a strand refuses an app whose number is below the highest it has seen". Check they match what this ticket builds.
 
 ## TODO
 
