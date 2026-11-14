@@ -248,6 +248,11 @@ export class AppSchemaVersionCheck {
 	 * Stop the running check, returning the version it checked, so a caller about to apply a newer schema
 	 * is not reported superseded by its own record, and can start the old check again if its apply fails.
 	 * A connect-time apply still deferred no longer starts one when it lands.
+	 *
+	 * NOTE: a live `applyAppSchema` that fails while the connect-time apply is still deferred leaves no
+	 * check running, even once that deferred apply lands. Unreachable from cadre-core, which applies live
+	 * only to a replica composed without a schema. If a host ever applies live during a deferral, have the
+	 * failed apply hand the dropped `pending` back to {@link afterApply}.
 	 */
 	stop(): number | undefined {
 		const running = this.running;
