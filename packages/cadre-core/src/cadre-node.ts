@@ -4,7 +4,7 @@ import type { Connection, IdentifyResult, Libp2p, PeerId, PeerUpdate, PrivateKey
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
-import { wrapStorageWithCache, disposeStorageCache, appSchemaRefusalOf } from '@serfab/quereus-plugin-sereus';
+import { wrapStorageWithCache, disposeStorageCache, appSchemaRefusalOf, type AppSchemaRefusedError } from '@serfab/quereus-plugin-sereus';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type {
@@ -997,6 +997,9 @@ export class CadreNode implements SAppIdLookup {
    * is up — only a strand with no runtime at all answers retryably meanwhile.
    */
   private readonly strandLaunchRefusals = new Map<string, PreSplitStrandIdentityError>();
+
+  /** {@link stopAppSchemaRefusedStrand} runs in flight, keyed by strandId, so a second report joins the first. */
+  private readonly appSchemaStops = new Map<string, Promise<void>>();
 
   /**
    * Dial targets learned out of band, keyed by peer id, valued by the multiaddr
@@ -5808,6 +5811,66 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Stop a running strand whose `App` schema can no longer be used here: another member recorded a
+   * higher App schema version than the one its database runs (`onAppSchemaSuperseded`), so its writes
+   * would erase what the newer version added, or a rebuild after hibernation was refused the schema
+   * (`AppSchemaRefusedError`), which every later rebuild would be too. Leaves what a refused launch
+   * leaves (docs/strands.md → "A running member stops"): no instance, the sApp config registered, the
+   * strand suppressed in the watcher until the next {@link addStrand}, which launches through the
+   * connect's version gate. Storage, saved network state and control rows stay. Emits
+   * `strand:stopped`, then `strand:error` with the refusal, so an app tells its user to update on
+   * `error instanceof AppSchemaOutdatedError`.
+   *
+   * Through the manager's stop rather than {@link detachStrand}, which drops the sApp config the next
+   * claim replaces. A claim that registered another config meanwhile is not suppressed but handed to the
+   * watcher's relaunch, since its schema has not been tried ({@link suppressIfAppSchemaRefused}).
+   * A second report for the strand while one stop runs joins it. Never rejects.
+   */
+  private stopAppSchemaRefusedStrand(strandId: string, error: AppSchemaRefusedError): Promise<void> {
+    const running = this.appSchemaStops.get(strandId);
+    if (running) {
+      return running;
+    }
+    const stop = this.runAppSchemaRefusedStop(strandId, error).finally(() => this.appSchemaStops.delete(strandId));
+    this.appSchemaStops.set(strandId, stop);
+    return stop;
+  }
+
+  private async runAppSchemaRefusedStop(strandId: string, error: AppSchemaRefusedError): Promise<void> {
+    if (!this._running || !this.strandManager.hasStrand(strandId)) {
+      log('Strand %s: app schema refused, and the strand is already down: %s', strandId, error.message);
+      return;
+    }
+    log('Strand %s: stopping it, its app schema is refused: %s', strandId, error.message);
+    const launchedWith = this.strandManager.launchedSAppConfig(strandId);
+    this.hibernationManager.untrackStrand(strandId);
+    try {
+      await this.strandManager.stopStrand(strandId);
+    } catch (stopError) {
+      log('Strand %s: stopping it after its app schema was refused failed: %o', strandId, stopError);
+    }
+    if (!this.suppressIfAppSchemaRefused(strandId, launchedWith, error)) {
+      this.strandWatcher?.forgetStrand(strandId);
+    }
+    this.emit('strand:stopped', { strandId });
+    this.emit('strand:error', { strandId, error });
+  }
+
+  /**
+   * {@link stopAppSchemaRefusedStrand} for a wake or check-in whose rebuild was refused the strand's
+   * `App` schema, in place of re-hibernating it for a later wake to be refused again. Returns whether it
+   * stopped the strand.
+   */
+  private async stopIfRebuildRefusedAppSchema(instance: StrandInstance, error: unknown): Promise<boolean> {
+    const refusal = appSchemaRefusalOf(error);
+    if (!refusal || instance.status !== 'error') {
+      return false;
+    }
+    await this.stopAppSchemaRefusedStrand(instance.strandId, refusal);
+    return true;
+  }
+
+  /**
    * Offer a strand no local config claims to the hosting app as `strand:discovered`, so
    * it can decide whether to join (register a config + addStrand); the strand-agnostic
    * seam keeps this class free of any app's join policy.
@@ -6138,7 +6201,8 @@ export class CadreNode implements SAppIdLookup {
    * triggers are coalesced upstream by `HibernationManager`, so this runs once
    * per wake; a wake racing a check-in joins the check-in's rebuild in `resumeStrand`.
    *
-   * A failed rebuild re-hibernates the strand (see {@link rehibernateIfResumeFailed});
+   * A failed rebuild re-hibernates the strand (see {@link rehibernateIfResumeFailed}), except one
+   * refused the strand's `App` schema, which stops it ({@link stopIfRebuildRefusedAppSchema});
    * every failure rethrows, so the waker still sees the error.
    *
    * Records no activity itself: whoever asked for the wake did ({@link wakeStrand},
@@ -6171,7 +6235,9 @@ export class CadreNode implements SAppIdLookup {
     try {
       await this.resumeStrandRuntime(strandId);
     } catch (error) {
-      await this.rehibernateIfResumeFailed(instance, 'Wake', error);
+      if (!await this.stopIfRebuildRefusedAppSchema(instance, error)) {
+        await this.rehibernateIfResumeFailed(instance, 'Wake', error);
+      }
       throw error;
     }
     this.emit('strand:waking', { strandId });
@@ -6360,7 +6426,9 @@ export class CadreNode implements SAppIdLookup {
       // before the rebuild (the seed read) built nothing: the strand is still `hibernating`
       // (the manager escalates), or a wake that began meanwhile is building or holding it,
       // and the manager hands the chain to that wake, whose outcome restores or ends it.
-      await this.rehibernateIfResumeFailed(instance, 'Check-in', err);
+      if (!await this.stopIfRebuildRefusedAppSchema(instance, err)) {
+        await this.rehibernateIfResumeFailed(instance, 'Check-in', err);
+      }
       return;
     }
 
@@ -7636,7 +7704,8 @@ export class CadreNode implements SAppIdLookup {
       appSchema: {
         onAppSchemaDeferred: (event) => this.emit('strand:app-schema-deferred', event),
         onAppSchemaApplied: (event) => this.emit('strand:app-schema-applied', event),
-        onAppSchemaFailed: (event) => this.emit('strand:error', event)
+        onAppSchemaFailed: (event) => this.emit('strand:error', event),
+        onAppSchemaSuperseded: (event) => void this.stopAppSchemaRefusedStrand(event.strandId, event.error)
       },
       // Re-announce the delegate to ONE relay before the strand node's reservation
       // supervisor re-drives it (see announceDelegateToRelay). Retained with the

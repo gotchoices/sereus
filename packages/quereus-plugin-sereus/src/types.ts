@@ -2,6 +2,8 @@ import type { Libp2p } from '@libp2p/interface';
 import type { ICohortReachability, IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
+import type { AppSchemaOutdatedError } from './app-schema-errors.js';
+import type { VersionedAppSchema } from './app-schema.js';
 
 /**
  * Which Optimystic transactor a strand connection commits through — a choice of
@@ -206,6 +208,23 @@ export interface SereusPluginResult {
 	appSchemaWaitingFor?: AppSchemaWait;
 	/** The queued transaction ids that refused the connect-time apply. Present only when the queue refused it. */
 	appSchemaDeferredBy?: readonly string[];
+	/**
+	 * Be told once that another member has recorded a higher App schema version than the one this
+	 * connection runs, as an `AppSchemaOutdatedError` naming both. This connection's writes can then
+	 * erase what the newer version added, with no error anywhere, so the host must close the database
+	 * (cadre-core stops the strand). Reported by a check that runs from when the `App` schema is applied
+	 * until {@link shutdown} (docs/strands.md → "A running member stops"), and by a deferred
+	 * {@link appSchema} retry that finds the strand ahead. Never on a connection with no `App` schema. A
+	 * listener added after the report is called at once. Returns an idempotent unsubscribe.
+	 */
+	onAppSchemaSuperseded: (listener: (error: AppSchemaOutdatedError) => void) => () => void;
+	/**
+	 * Apply an `App` schema to this live connection, as an app claiming a strand it serves as a storage
+	 * replica does (cadre-core's `StrandDatabase.attachAppSchema`): the declaration, version gate and
+	 * refusals of the connect-time apply, not deferred. Once it lands, the version check of
+	 * {@link onAppSchemaSuperseded} runs for `app.schemaVersion`.
+	 */
+	applyAppSchema: (app: VersionedAppSchema) => Promise<void>;
 	/** Shuts down the libp2p node and collection factory. Call when done. */
 	shutdown: () => Promise<void>;
 }

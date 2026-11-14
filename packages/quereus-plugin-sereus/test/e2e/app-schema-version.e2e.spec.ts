@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { Database, type SqlValue } from '@quereus/quereus';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { connectToStrand } from '../../src/connect.js';
-import { AppSchemaOutdatedError, appSchemaRefusalOf, type VersionedAppSchema } from '../../src/app-schema.js';
+import type { VersionedAppSchema } from '../../src/app-schema.js';
+import { AppSchemaOutdatedError, appSchemaRefusalOf } from '../../src/app-schema-errors.js';
 
 /**
  * gotchoices/sereus#59: a member whose app declares an older App schema version must not open a

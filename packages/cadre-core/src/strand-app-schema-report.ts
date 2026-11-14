@@ -1,5 +1,6 @@
 import debug from 'debug';
 import { toError } from './describe-thrown.js';
+import { AppSchemaOutdatedError } from '@serfab/quereus-plugin-sereus';
 import type { AppSchemaOutcome, AppSchemaWait, SereusPluginResult } from '@serfab/quereus-plugin-sereus';
 
 const log = debug('sereus:cadre:strand-app-schema');
@@ -29,7 +30,15 @@ export interface StrandAppSchemaDeferred {
 export interface StrandAppSchemaListeners {
   onAppSchemaDeferred?: (event: StrandAppSchemaDeferred) => void;
   onAppSchemaApplied?: (event: { strandId: string }) => void;
+  /** A deferred retry failed; never for one that found the strand ahead, which is {@link onAppSchemaSuperseded}. */
   onAppSchemaFailed?: (event: { strandId: string; error: Error }) => void;
+  /**
+   * Another member recorded a higher App schema version than the one the database runs
+   * (`SereusPluginResult.onAppSchemaSuperseded`): its writes can erase what the newer version added, so
+   * the strand must stop (docs/strands.md → "A running member stops"). At most once per database, and at
+   * once, whether or not the database has been published.
+   */
+  onAppSchemaSuperseded?: (event: { strandId: string; error: AppSchemaOutdatedError }) => void;
 }
 
 const WAITING_STATE: Record<AppSchemaWait, StrandAppSchemaState> = {
@@ -48,11 +57,12 @@ export class StrandAppSchemaReport {
   private error: Error | undefined;
   private wasPublished = false;
   private released = false;
+  private readonly unsubscribeSuperseded: () => void;
 
   constructor(
     private readonly strandId: string,
     private readonly listeners: StrandAppSchemaListeners,
-    private readonly result: Pick<SereusPluginResult, 'appSchema' | 'appSchemaWaitingFor' | 'appSchemaDeferredBy'>
+    private readonly result: Pick<SereusPluginResult, 'appSchema' | 'appSchemaWaitingFor' | 'appSchemaDeferredBy' | 'onAppSchemaSuperseded'>
   ) {
     // `appSchema` is absent without an `App` schema (a storage replica), which has nothing to defer.
     const waitingFor = result.appSchemaWaitingFor;
@@ -62,6 +72,8 @@ export class StrandAppSchemaReport {
         log('strand %s: reporting the deferred app schema apply failed: %O', strandId, error);
       });
     }
+    // Last: a report the plugin already holds is delivered during this call.
+    this.unsubscribeSuperseded = result.onAppSchemaSuperseded((error) => this.superseded(error));
   }
 
   appSchemaState(): StrandAppSchemaState {
@@ -85,6 +97,7 @@ export class StrandAppSchemaReport {
 
   release(): void {
     this.released = true;
+    this.unsubscribeSuperseded();
   }
 
   /** A cancelled retry (the database closed first) reports nothing. */
@@ -100,11 +113,23 @@ export class StrandAppSchemaReport {
       return;
     }
     this.state = 'failed';
+    if (outcome.error instanceof AppSchemaOutdatedError) {
+      // The plugin reports this outcome through `onAppSchemaSuperseded` too, which stops the strand.
+      return;
+    }
     this.error = toError(outcome.error);
     log('strand %s: the deferred app schema apply failed; the database keeps the earlier schema: %O', this.strandId, outcome.error);
     if (this.wasPublished) {
       this.reportFailed(this.error);
     }
+  }
+
+  private superseded(error: AppSchemaOutdatedError): void {
+    if (this.released) {
+      return;
+    }
+    this.state = 'failed';
+    this.forward('superseded', () => this.listeners.onAppSchemaSuperseded?.({ strandId: this.strandId, error }));
   }
 
   private reportFailed(error: Error): void {

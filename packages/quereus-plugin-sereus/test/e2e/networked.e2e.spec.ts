@@ -9,6 +9,8 @@ import { createLibp2pNode } from '@optimystic/db-p2p';
 import type { Libp2p } from '@libp2p/interface';
 import { connectToStrand } from '../../src/connect.js';
 import { DEFAULT_STRAND_CLUSTER_SIZE, STRAND_CLUSTER_POLICY } from '../../src/cluster-size.js';
+import type { AppSchemaOutdatedError } from '../../src/app-schema-errors.js';
+import { APP_SCHEMA_VERSION_CHECK_MS } from '../../src/app-schema-version.js';
 import type { SereusPluginResult, Libp2pNodeWithRepo } from '../../src/types.js';
 
 /**
@@ -100,6 +102,7 @@ async function startPeer(
 	schema: string,
 	bootstrapNodes: string[],
 	storageDir: string,
+	schemaVersion = 1,
 ): Promise<PeerHandle> {
 	const storage = new FileRawStorage(storageDir);
 	const node = await createLibp2pNode({
@@ -123,7 +126,7 @@ async function startPeer(
 		libp2pNode: node,
 		coordinatedRepo,
 		schema,
-		schemaVersion: 1,
+		schemaVersion,
 		fretProfile: 'edge',
 	});
 
@@ -316,6 +319,22 @@ describe('connectToStrand (networked e2e)', () => {
 		const rows = await selectAll<{ Id: number; Body: string }>(peerA.db, 'select Id, Body from App.Msg order by Id');
 		expect(rows).toEqual([{ Id: 10, Body: 'pre-shutdown' }]);
 	});
+
+	it('tells a running member when another member records a higher App schema version', async () => {
+		const strandId = randomUUID();
+		peerA = await startPeer(strandId, TEST_SCHEMA, [], await makeDir('peerA'));
+		const superseded = new Promise<AppSchemaOutdatedError>(resolve => peerA!.result.onAppSchemaSuperseded(resolve));
+
+		const connectedAt = Date.now();
+		// Version 2 adds a nullable column, which A's writes would clear.
+		const v2 = 'table Msg (Id integer primary key, Body text not null, Note text null)';
+		peerB = await startPeer(strandId, v2, [pickLocalAddr(peerA.node)], await makeDir('peerB'), 2);
+
+		const error = await superseded;
+		expect(error).toMatchObject({ appSchemaVersion: 1, strandSchemaVersion: 2 });
+		// Woken by B's record, not by the floor of the check.
+		expect(Date.now() - connectedAt).toBeLessThan(APP_SCHEMA_VERSION_CHECK_MS);
+	}, 60_000);
 
 	// Post-shutdown writes on the surviving peer are not asserted here. The
 	// cluster floors at `minAbsoluteClusterSize: 2` (hardcoded in

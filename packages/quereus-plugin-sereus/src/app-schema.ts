@@ -1,9 +1,11 @@
 import debug from 'debug';
-import { Database, QuereusError, StatusCode, TransactionActiveError, type SqlParameters, type SqlValue } from '@quereus/quereus';
-import type { Libp2p } from '@libp2p/interface';
-import { BlockPossiblyStaleError, BlockUnavailableError, classifyCommitFailure } from '@optimystic/db-core';
-import { ConcurrentModificationError, QueuedEntriesBlockSchemaChangeError, QueueDisposedError } from '@optimystic/quereus-plugin-optimystic/plugin';
-import { offlineControllerOf } from './offline-controllers.js';
+import { Database, QuereusError, StatusCode } from '@quereus/quereus';
+import { QueueDisposedError } from '@optimystic/quereus-plugin-optimystic/plugin';
+import { AppSchemaRefusedError } from './app-schema-errors.js';
+import { AppSchemaVersionDeferredError, gateAppSchemaVersion } from './app-schema-version.js';
+import {
+	abortableDelay, COHORT_CONNECT_SETTLE_MS, deferralOf, outsideOpenTransaction, type Deferral, type PeerConnectEvents,
+} from './app-schema-waits.js';
 import type { StrandOfflineController, AppSchemaOutcome, AppSchemaWait } from './types.js';
 
 const log = debug('sereus:plugin:strand');
@@ -21,8 +23,8 @@ export interface VersionedAppSchema {
  * has recorded, and apply it — a declarative diff against the catalog, so re-applying a schema that
  * is already in place emits nothing. The one site that applies an `App` schema: `composeStrand`
  * calls it at bring-up (through {@link applyAppSchemaOrDefer}, whose deferred retry shares its
- * declaration and gate), and cadre-core's `StrandDatabase.attachAppSchema` calls it on a live storage
- * replica when an app claims the strand. The database must already be composed (optimystic set as
+ * declaration and gate), and the connection's `SereusPluginResult.applyAppSchema` calls it on a live
+ * storage replica when an app claims the strand (cadre-core's `StrandDatabase.attachAppSchema`). The database must already be composed (optimystic set as
  * the default vtab, the `Strand` schema applied), or the tables land in memory instead of the strand.
  *
  * Refuses a schema holding an item the Quereus parser skipped: it keeps any item whose leading
@@ -33,7 +35,7 @@ export interface VersionedAppSchema {
  * connect, so seed inserts would put a network write on each bring-up and two nodes inserting
  * the same key at once would collide. Rows an app needs at birth are the founding app's to write.
  *
- * Refuses a version below the one the strand records with {@link AppSchemaOutdatedError}, applying
+ * Refuses a version below the one the strand records with `AppSchemaOutdatedError`, applying
  * and writing nothing, and records a higher version before applying ({@link gateAppSchemaVersion}).
  *
  * Every refusal decided by the schema itself, or by the schema against this node's tables and rows,
@@ -85,207 +87,8 @@ function assertValidSchemaVersion(schemaVersion: number): void {
 	}
 }
 
-/**
- * The version gate of {@link applyAppSchema}: compare `declared` with the version the strand records in
- * `Strand.AppSchemaVersion`, the highest any member has applied (docs/strands.md → "Until then: every
- * member on the same schema version").
- *
- *  - none recorded, or a lower one: record `declared`, so the apply that follows may proceed;
- *  - the same: nothing to record;
- *  - a higher one: throw {@link AppSchemaOutdatedError}, having written nothing.
- *
- * Recorded before the apply, not with it: `apply schema` commits the catalog in a batch of its own, so
- * no row can share its commit. Recording first means a reader between the two sees the new number over
- * the old schema and refuses a lower member a moment early; recording after would let a lower member
- * in between pass the gate and drop what the apply just added.
- *
- * A record refused because another member recorded at the same moment reads again and decides again,
- * up to {@link RECORD_ROUNDS} times. A read or record that has to wait for the strand's members, or a
- * record that would wait behind the offline queue, throws {@link AppSchemaVersionDeferredError}.
- *
- * NOTE: this file is 636 lines with the gate in it; if `app-schema-version-stops-a-running-member` adds
- * more version logic, move the gate and its helpers to a module of their own, with `Deferral` and
- * `deferralOf` shared from one that both import.
- */
-async function gateAppSchemaVersion(db: Database, declared: number, released: AbortSignal): Promise<void> {
-	assertVersionTableDeclared(db);
-	for (let round = 1; ; round++) {
-		const recorded = await readRecordedVersion(db);
-		if (recorded !== undefined && recorded > declared) {
-			throw new AppSchemaOutdatedError(declared, recorded);
-		}
-		if (recorded === declared) {
-			return;
-		}
-		try {
-			await recordVersion(db, declared, recorded, released);
-			log('Recorded App schema version %d (was %s)', declared, recorded ?? 'unrecorded');
-			return;
-		} catch (err) {
-			if (!isRecordConflict(err)) {
-				throw err;
-			}
-			if (round >= RECORD_ROUNDS) {
-				// A plain `Error` link, so the conflict is not typed as a refusal of the schema: a later connect can get past it.
-				throw new Error(`Could not record App schema version ${declared}: other members recorded concurrently ${RECORD_ROUNDS} times`, { cause: err });
-			}
-			log('App schema version record conflicted with another member\'s; reading it again: %O', err);
-		}
-	}
-}
-
-/** How many times {@link gateAppSchemaVersion} reads and decides again after a record another member's conflicted with. */
-const RECORD_ROUNDS = 3;
-
-/** A composed strand declares the table in `STRAND_SCHEMA`; without it there is no strand to gate against. */
-function assertVersionTableDeclared(db: Database): void {
-	if (!db.schemaManager.findTable('AppSchemaVersion', 'Strand')) {
-		throw new Error('Strand.AppSchemaVersion is not declared: an sApp schema applies only to a database composed as a strand (composeStrand)');
-	}
-}
-
-/** The recorded version, by a live read, so what other members committed is pulled first. */
-async function readRecordedVersion(db: Database): Promise<number | undefined> {
-	try {
-		for await (const row of db.eval('select Version from Strand.AppSchemaVersion')) {
-			return versionValue(row.Version);
-		}
-		return undefined;
-	} catch (err) {
-		if (blockAvailabilityFailureIn(err)) {
-			throw new AppSchemaVersionDeferredError({ wait: 'cohort' }, 'read the strand\'s App schema version', err);
-		}
-		throw versionRecordFault('read the strand\'s App schema version', err);
-	}
-}
-
-function versionValue(value: SqlValue | undefined): number {
-	if (typeof value === 'number' || typeof value === 'bigint') {
-		return Number(value);
-	}
-	throw new Error(`Strand.AppSchemaVersion.Version holds ${typeof value}, not an integer`);
-}
-
-/**
- * A read that could not settle what the other members hold: `BlockUnavailableError` (not just the two
- * reasons `classifyCommitFailure` calls `cohort-unreachable`; a table another member created that this
- * machine has not fetched fails with the others) or `BlockPossiblyStaleError`. Reaching more of the
- * cohort is the remedy for each, so the read waits for the cohort.
- */
-function blockAvailabilityFailureIn(err: unknown): boolean {
-	for (let at = err; at instanceof Error; at = at.cause) {
-		if (at instanceof BlockUnavailableError || at instanceof BlockPossiblyStaleError) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/**
- * Write `declared` over `recorded` as one atomic batch outside any transaction another caller holds.
- * Refused without trying while the offline queue lists transactions: the table is network-acknowledged,
- * so the commit would wait behind them holding the database's execution lock (docs/strands.md →
- * "Membership writes are refused while transactions are queued").
- */
-async function recordVersion(db: Database, declared: number, recorded: number | undefined, released: AbortSignal): Promise<void> {
-	const queued = offlineControllerOf(db)?.entries() ?? [];
-	if (queued.length > 0) {
-		throw new AppSchemaVersionDeferredError({ wait: 'queue', transactionIds: queued.map(entry => entry.transactionId) }, 'record the App schema version');
-	}
-	const sql = recorded === undefined
-		? 'insert into Strand.AppSchemaVersion (Version) values (:version)'
-		: 'update Strand.AppSchemaVersion set Version = :version';
-	try {
-		await execOutsideOpenTransaction(db, sql, { ':version': declared }, released);
-	} catch (err) {
-		const deferral = deferralOf(err);
-		if (deferral) {
-			throw new AppSchemaVersionDeferredError(deferral, 'record the App schema version', err);
-		}
-		throw versionRecordFault('record the App schema version', err);
-	}
-}
-
-/**
- * A fault reading or writing `Strand.AppSchemaVersion`, behind a plain `Error` link: the table is the
- * strand's, so its faults are never a refusal of the app's schema, and a transient `ERROR`-coded read
- * fault must not pass {@link isSchemaRefusal} and stop a host retrying the strand.
- */
-function versionRecordFault(what: string, cause: unknown): Error {
-	return new Error(`Could not ${what}`, { cause });
-}
-
-/**
- * Another member's record landed first: the singleton key refused a second insert (`CONSTRAINT`), `Rises`
- * refused an update below it (`CONSTRAINT`), or the update lost the row it read (`ConcurrentModificationError`).
- */
-function isRecordConflict(err: unknown): boolean {
-	for (let at = err; at instanceof Error; at = at.cause) {
-		if (at instanceof ConcurrentModificationError || (at instanceof QuereusError && at.code === StatusCode.CONSTRAINT)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 /** Never aborted: {@link applyAppSchema} has no composition whose shutdown would end a wait. */
 const NEVER_RELEASED = new AbortController().signal;
-
-/** The version gate could not finish for a reason that passes; nothing was applied, so a retry has the record and the whole apply to send. */
-class AppSchemaVersionDeferredError extends Error {
-	constructor(readonly deferral: Deferral, what: string, cause?: unknown) {
-		super(deferral.wait === 'queue'
-			? `Could not ${what}: the offline queue holds transactions (${deferral.transactionIds.join(', ')}) a network-acknowledged write would wait behind`
-			: `Could not ${what}: the strand's members could not be reached`, { cause });
-		this.name = 'AppSchemaVersionDeferredError';
-	}
-}
-
-/**
- * An sApp schema refused for a reason that does not pass: the schema itself (a seed item, an item the
- * parser skipped, a syntax error, an invalid version), the schema against the tables and rows this node
- * holds, such as a `not null` column with no default added to a table that has rows, or a version below
- * the one the strand records ({@link AppSchemaOutdatedError}). Applying the same schema here again
- * fails the same way, so a host should not retry it until the app supplies a different one. A storage
- * or network fault is never this error.
- *
- * `cause` is the error Quereus raised, when it raised one.
- */
-export class AppSchemaRefusedError extends Error {
-	constructor(message: string, options?: ErrorOptions) {
-		super(message, options);
-		this.name = 'AppSchemaRefusedError';
-	}
-}
-
-/**
- * The strand records a higher App schema version than this app declares: a member has applied a newer
- * schema, and this app's would remove what it added. Not retryable: the app must update. A subclass of
- * {@link AppSchemaRefusedError}, so every host that stops retrying a refused schema stops retrying this.
- */
-export class AppSchemaOutdatedError extends AppSchemaRefusedError {
-	/** The version this app declares (`schemaVersion`). */
-	readonly appSchemaVersion: number;
-	/** The version the strand records, the highest any member has applied. */
-	readonly strandSchemaVersion: number;
-
-	constructor(appSchemaVersion: number, strandSchemaVersion: number) {
-		super(`This app's schema is version ${appSchemaVersion}, and a member of this strand has applied version ${strandSchemaVersion}: update the app to open the strand`);
-		this.name = 'AppSchemaOutdatedError';
-		this.appSchemaVersion = appSchemaVersion;
-		this.strandSchemaVersion = strandSchemaVersion;
-	}
-}
-
-/** The {@link AppSchemaRefusedError} `err` is or wraps, walking `cause`, so a wrapper added between the apply and the catch cannot hide it. */
-export function appSchemaRefusalOf(err: unknown): AppSchemaRefusedError | undefined {
-	for (let at = err; at instanceof Error; at = at.cause) {
-		if (at instanceof AppSchemaRefusedError) {
-			return at;
-		}
-	}
-	return undefined;
-}
 
 /** What {@link applyAppSchemaOrDefer} reports, in the shape `SereusPluginResult` carries it. */
 export interface AppSchemaApply {
@@ -296,17 +99,11 @@ export interface AppSchemaApply {
 	appSchemaDeferredBy?: readonly string[];
 }
 
-/** The strand node's peer events, which a retry waiting for the cohort wakes on. */
-export type PeerConnectEvents = Pick<Libp2p, 'addEventListener' | 'removeEventListener'>;
-
 /** Where a deferred apply waits: the offline queue, when there is one, and the strand node, when there is one. */
 export interface AppSchemaWaits {
 	queue?: Pick<StrandOfflineController, 'whenDrained'>;
 	peers?: PeerConnectEvents;
 }
-
-/** Why an apply was refused, when it is a refusal a later retry can get past. */
-type Deferral = { wait: 'queue'; transactionIds: readonly string[] } | { wait: 'cohort' };
 
 /**
  * Step 7 of `composeStrand`: {@link applyAppSchema}, except that an apply refused for a reason
@@ -323,11 +120,11 @@ type Deferral = { wait: 'queue'; transactionIds: readonly string[] } | { wait: '
  * Quereus unwinds a refused apply, whether a migration step or the closing catalog commit refused it,
  * so `db` keeps the `App` schema it had, and `appSchema` settles with how the retries ended. Any other
  * error from the first apply is thrown ({@link AppSchemaRefusedError} when the schema can never apply
- * to these tables, {@link AppSchemaOutdatedError} when the strand records a higher version), and so is
+ * to these tables, `AppSchemaOutdatedError` when the strand records a higher version), and so is
  * a refusal Quereus could not unwind that leaves a retry nothing to send ({@link retryableRefusalOf}).
  * A retry that ends in such a refusal settles `failed` with it, typed the same way. Every retry runs
  * the whole version gate again, so one that finds another member has recorded a higher version
- * meanwhile settles `failed` with {@link AppSchemaOutdatedError}.
+ * meanwhile settles `failed` with `AppSchemaOutdatedError`.
  *
  * Waiting before returning was rejected: that withholds the strand from the app right after an app
  * update, which is when a phone is most likely to be offline. So was refusing the connect: the queue
@@ -406,39 +203,12 @@ async function retryDeferredAppSchema(
  * A retry's declare, version gate and apply, the apply as one atomic batch. Run whole again when the
  * apply meets an open transaction. A wait the record meets re-sends the record alone, over the version
  * read before the wait; a member that recorded meanwhile makes the key or `Rises` refuse it, and the
- * gate reads again ({@link isRecordConflict}).
+ * gate reads again.
  */
 async function gateAndApplyAtomically(db: Database, app: VersionedAppSchema, released: AbortSignal): Promise<void> {
 	await declareAppSchema(db, app);
 	await gateAppSchemaVersion(db, app.schemaVersion, released);
 	await db.exec('apply schema App;', undefined, { transaction: true });
-}
-
-/** `sql` as one atomic batch, once no other caller holds a transaction open. */
-async function execOutsideOpenTransaction(db: Database, sql: string, params: SqlParameters | undefined, released: AbortSignal): Promise<void> {
-	await outsideOpenTransaction(() => db.exec(sql, params, { transaction: true }), released);
-}
-
-/**
- * Runs `attempt`, which ends in an atomic batch, until no other caller's open transaction refuses it.
- * Throws the open-transaction refusal when `released` aborts during the wait.
- */
-async function outsideOpenTransaction(attempt: () => Promise<void>, released: AbortSignal): Promise<void> {
-	for (;;) {
-		try {
-			await attempt();
-			return;
-		} catch (err) {
-			if (!(err instanceof TransactionActiveError)) {
-				throw err;
-			}
-			log('sApp schema write waiting for an open transaction to end');
-			await abortableDelay(OPEN_TRANSACTION_RETRY_MS, released);
-			if (released.aborted) {
-				throw err;
-			}
-		}
-	}
 }
 
 /** Waits for whatever may get the retry past `deferral`. */
@@ -486,27 +256,6 @@ async function appSchemaHasPendingChanges(db: Database): Promise<boolean> {
 	return false;
 }
 
-/**
- * The refusal `err` is or wraps, when a later retry can get past it: Quereus rewraps an error out of
- * a migration step, keeping it as `cause`.
- *
- * `classifyCommitFailure` refuses to walk `cause` itself, because a commit-phase shortfall nested
- * there means the write is in doubt rather than unsent. Walking it here is safe for both writes it
- * sorts: an apply is a declarative diff, so a retry after a write that did land changes nothing, and
- * a retried version record reads the version again before writing it.
- */
-function deferralOf(err: unknown): Deferral | undefined {
-	for (let at = err; at instanceof Error; at = at.cause) {
-		if (at instanceof QueuedEntriesBlockSchemaChangeError) {
-			return { wait: 'queue', transactionIds: at.transactionIds };
-		}
-		if (classifyCommitFailure(at).kind === 'cohort-unreachable') {
-			return { wait: 'cohort' };
-		}
-	}
-	return undefined;
-}
-
 function logDeferral(what: string, deferral: Deferral): void {
 	if (deferral.wait === 'queue') {
 		log('%s refused by queued transactions %o; retrying once they settle', what, deferral.transactionIds);
@@ -524,12 +273,6 @@ const COHORT_RETRY_MS = [15_000, 30_000, 60_000, 120_000, 300_000] as const;
 function cohortRetryDelay(retriesBefore: number): number {
 	return COHORT_RETRY_MS[Math.min(retriesBefore, COHORT_RETRY_MS.length - 1)]!;
 }
-
-/**
- * How long a retry woken by a connect waits first, so the peer is identified and in the ring before
- * the apply asks for its cohort; a retry that still finds it missing waits for the next chance.
- */
-const COHORT_CONNECT_SETTLE_MS = 2_000;
 
 /**
  * Resolves {@link COHORT_CONNECT_SETTLE_MS} after the strand node's next peer connect, after `delayMs`, or when `signal` aborts.
@@ -555,22 +298,6 @@ async function nextCohortChance(peers: PeerConnectEvents | undefined, delayMs: n
 	if (byConnect) {
 		await abortableDelay(COHORT_CONNECT_SETTLE_MS, signal);
 	}
-}
-
-/** How long a deferred sApp schema apply waits before trying again while another caller's transaction is open. */
-const OPEN_TRANSACTION_RETRY_MS = 250;
-
-/** Resolves after `ms`, or as soon as `signal` aborts. */
-function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-	return new Promise(resolve => {
-		const done = (): void => {
-			clearTimeout(timer);
-			signal.removeEventListener('abort', done);
-			resolve();
-		};
-		const timer = setTimeout(done, ms);
-		signal.addEventListener('abort', done, { once: true });
-	});
 }
 
 function declaredAppItems(db: Database) {
@@ -625,7 +352,7 @@ const SCHEMA_REFUSAL_CODES: ReadonlySet<number> = new Set([
  * NOTE: `ERROR` is broad, and one known `ERROR` with no `cause` is transient: Optimystic's "Committed read
  * refused: storage is in a partially-committed state". An apply makes no committed reads (Quereus refuses
  * them while a schema migrates), so it cannot reach this test, and the version gate's read, which can,
- * puts its faults behind a plain `Error` ({@link versionRecordFault}). If a transient fault is ever seen typed as a
+ * puts its faults behind a plain `Error` (`versionRecordFault` in app-schema-version.ts). If a transient fault is ever seen typed as a
  * refusal, have Optimystic give it a fault code or a `cause` rather than matching its message here.
  */
 function isSchemaRefusal(err: unknown): err is QuereusError {

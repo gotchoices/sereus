@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { Database } from '@quereus/quereus';
-import { applyAppSchema, connectToStrand } from '@serfab/quereus-plugin-sereus';
+import { connectToStrand } from '@serfab/quereus-plugin-sereus';
 import type { SereusPluginResult, StrandOfflineController } from '@serfab/quereus-plugin-sereus';
 import type { Libp2p } from '@libp2p/interface';
 import type { ICohortReachability, IRepo } from '@optimystic/db-core';
@@ -125,6 +125,7 @@ export class StrandDatabase {
   private shutdownStrand: SereusPluginResult['shutdown'] | null = null;
   private resolvedTransactor: SereusPluginResult['transactor'] | null = null;
   private createEmptyCollections: SereusPluginResult['createEmptyCollections'] | null = null;
+  private applyLiveAppSchema: SereusPluginResult['applyAppSchema'] | null = null;
   private readonly config: StrandDatabaseConfig;
   private initialized = false;
   private readonly commits: StrandCommitRecord;
@@ -192,6 +193,7 @@ export class StrandDatabase {
     this.shutdownStrand = result.shutdown;
     this.resolvedTransactor = result.transactor;
     this.createEmptyCollections = result.createEmptyCollections;
+    this.applyLiveAppSchema = result.applyAppSchema;
     // Before the founder bootstrap, so its commits are reported like any other.
     this.subscribeToCommits(result);
     this.followOffline(result);
@@ -359,15 +361,17 @@ export class StrandDatabase {
    * database — same libp2p node, same store, so the new tables read the blocks this node
    * already holds — and record the sApp, so a later {@link ensureFounderBootstrap} has it
    * for the `Header`. Idempotent: the apply is a declarative diff, so re-applying the same
-   * schema emits nothing. A failed apply records nothing.
+   * schema emits nothing. A failed apply records nothing. Once it lands, the connection checks the
+   * strand's App schema version as a connect-time apply does, reporting a higher one through
+   * {@link StrandDatabaseConfig.appSchema}'s `onAppSchemaSuperseded`.
    */
   async attachAppSchema(sAppConfig: SAppConfig): Promise<void> {
     this.ensureInitialized();
-    // NOTE: unlike the connect-time apply (`applyAppSchemaAfterQueue`), this is not deferred behind
+    // NOTE: unlike the connect-time apply (`applyAppSchemaOrDefer`), this is not deferred behind
     // the offline queue: a replica writes no app transactions, so no queued transaction wrote an
     // `App` table and `QueuedEntriesBlockSchemaChangeError` cannot refuse it. If a replica ever
     // writes app rows offline, route this through the deferral instead of throwing.
-    await applyAppSchema(this.db!, sAppConfig);
+    await this.applyLiveAppSchema!(sAppConfig);
     this.config.sAppConfig = sAppConfig;
     log('StrandDatabase for strand %s attached sApp %s v%s', this.config.strandId, sAppConfig.id, sAppConfig.version);
   }
@@ -500,6 +504,7 @@ export class StrandDatabase {
     this.tableWatches.disposeAll();
     this.db = null;
     this.resolvedTransactor = null;
+    this.applyLiveAppSchema = null;
     this.initialized = false;
     log('StrandDatabase for strand %s closed', this.config.strandId);
   }

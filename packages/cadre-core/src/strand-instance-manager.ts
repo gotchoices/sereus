@@ -366,8 +366,9 @@ export interface StartStrandConfig {
   offline?: StrandOfflineConfig & StrandOfflineListeners;
 
   /**
-   * Where each database built for the launch reports an `App` schema apply it held back
-   * (`CadreNode` emits them as events). Retained and isolated like {@link onCommitDurability}.
+   * Where each database built for the launch reports an `App` schema apply it held back, and a
+   * higher App schema version another member recorded (`CadreNode` emits the first as events and
+   * stops the strand on the second). Retained and isolated like {@link onCommitDurability}.
    */
   appSchema?: StrandAppSchemaListeners;
 
@@ -697,6 +698,11 @@ export class StrandInstanceManager {
    */
   hasStrand(strandId: string): boolean {
     return this.instances.has(strandId);
+  }
+
+  /** The sApp config the tracked strand's next build applies (its retained launch config's), or `undefined` for a replica or an untracked strand. */
+  launchedSAppConfig(strandId: string): SAppConfig | undefined {
+    return this.launchConfigs.get(strandId)?.sAppConfig;
   }
 
   /**

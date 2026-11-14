@@ -3,7 +3,9 @@ import { Database, QuereusError, StatusCode, type SqlValue } from '@quereus/quer
 import { PromiseShortfallError, type ICohortReachability, type ITransactor } from '@optimystic/db-core';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { applyRegistrations } from '../src/compose-strand.js';
-import { applyAppSchema, applyAppSchemaOrDefer, AppSchemaRefusedError, appSchemaRefusalOf, type PeerConnectEvents } from '../src/app-schema.js';
+import { applyAppSchema, applyAppSchemaOrDefer } from '../src/app-schema.js';
+import { AppSchemaRefusedError, appSchemaRefusalOf } from '../src/app-schema-errors.js';
+import type { PeerConnectEvents } from '../src/app-schema-waits.js';
 import { applyStrandSchema } from './helpers/strand-schema.js';
 
 /**

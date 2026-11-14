@@ -9,7 +9,9 @@ import type {
 	StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo,
 	StrandOfflineOptions, StrandOfflineController,
 } from './types.js';
-import { applyAppSchemaOrDefer, type AppSchemaApply, type PeerConnectEvents } from './app-schema.js';
+import { applyAppSchema, applyAppSchemaOrDefer, type AppSchemaApply, type VersionedAppSchema } from './app-schema.js';
+import { AppSchemaVersionCheck } from './app-schema-version.js';
+import type { PeerConnectEvents } from './app-schema-waits.js';
 import { offlineControllers } from './offline-controllers.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
@@ -299,7 +301,8 @@ export async function composeStrand(
 	if (offline) {
 		offlineControllers.set(db, offline);
 	}
-	// Aborted by `shutdown`, so a deferred sApp schema apply still waiting settles `cancelled`.
+	// Aborted by `shutdown`, so a deferred sApp schema apply still waiting settles `cancelled` and the
+	// running App schema version check stops.
 	const released = new AbortController();
 	let appSchemaApply: AppSchemaApply | undefined;
 
@@ -434,7 +437,8 @@ export async function composeStrand(
 		// declared in step 6): a lower version than recorded fails the connect with
 		// `AppSchemaOutdatedError`, and a higher one is recorded before the apply. The founder bootstrap's
 		// `createEmptyCollections` runs after this returns and skips that table, whose collection the
-		// record committed.
+		// record committed. Once the apply lands, the version is checked while the connection runs
+		// (`AppSchemaVersionCheck`, reported through `onAppSchemaSuperseded`).
 		if (options.schema) {
 			log('Applying sApp schema version %d for strand %s', options.schemaVersion, strandId);
 			appSchemaApply = await applyAppSchemaOrDefer(
@@ -452,6 +456,11 @@ export async function composeStrand(
 		throw err;
 	}
 
+	const versionCheck = new AppSchemaVersionCheck(db, { peers, released: released.signal });
+	if (appSchemaApply && options.schema) {
+		versionCheck.afterApply(appSchemaApply.appSchema, options.schemaVersion);
+	}
+
 	// 8. Return result with hydrate counts, the commit-durability listeners, the founder's
 	// empty-collection step + shutdown handler.
 	// `shutdown` releases the plugin and stops the node only if this composition created it.
@@ -466,6 +475,8 @@ export async function composeStrand(
 		createEmptyCollections: except => createEmptyCollections(db, pluginResult.txnBridge, FOUNDED_SCHEMAS, except),
 		...(offline && { offline }),
 		...appSchemaApply,
+		onAppSchemaSuperseded: listener => versionCheck.onSuperseded(listener),
+		applyAppSchema: app => applyToLiveConnection(db, app, versionCheck),
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
 			// NOTE: a deferred sApp schema apply already running is not awaited. A host that closes the
@@ -480,6 +491,24 @@ export async function composeStrand(
 			log('Strand connection %s shut down', strandId);
 		},
 	};
+}
+
+/**
+ * `SereusPluginResult.applyAppSchema`: {@link applyAppSchema} on the live connection, then the version
+ * check for `app.schemaVersion`. The check of the version the connection ran stops first, so this apply's
+ * own record does not report it superseded, and starts again when the apply fails.
+ */
+async function applyToLiveConnection(db: Database, app: VersionedAppSchema, versionCheck: AppSchemaVersionCheck): Promise<void> {
+	const previous = versionCheck.stop();
+	try {
+		await applyAppSchema(db, app);
+	} catch (err) {
+		if (previous !== undefined) {
+			versionCheck.start(previous);
+		}
+		throw err;
+	}
+	versionCheck.start(app.schemaVersion);
 }
 
 /**
