@@ -102,6 +102,10 @@ function assertValidSchemaVersion(schemaVersion: number): void {
  * A record refused because another member recorded at the same moment reads again and decides again,
  * up to {@link RECORD_ROUNDS} times. A read or record that has to wait for the strand's members, or a
  * record that would wait behind the offline queue, throws {@link AppSchemaVersionDeferredError}.
+ *
+ * NOTE: this file is 636 lines with the gate in it; if `app-schema-version-stops-a-running-member` adds
+ * more version logic, move the gate and its helpers to a module of their own, with `Deferral` and
+ * `deferralOf` shared from one that both import.
  */
 async function gateAppSchemaVersion(db: Database, declared: number, released: AbortSignal): Promise<void> {
 	assertVersionTableDeclared(db);
@@ -151,7 +155,7 @@ async function readRecordedVersion(db: Database): Promise<number | undefined> {
 		if (blockAvailabilityFailureIn(err)) {
 			throw new AppSchemaVersionDeferredError({ wait: 'cohort' }, 'read the strand\'s App schema version', err);
 		}
-		throw err;
+		throw versionRecordFault('read the strand\'s App schema version', err);
 	}
 }
 
@@ -198,8 +202,17 @@ async function recordVersion(db: Database, declared: number, recorded: number | 
 		if (deferral) {
 			throw new AppSchemaVersionDeferredError(deferral, 'record the App schema version', err);
 		}
-		throw err;
+		throw versionRecordFault('record the App schema version', err);
 	}
+}
+
+/**
+ * A fault reading or writing `Strand.AppSchemaVersion`, behind a plain `Error` link: the table is the
+ * strand's, so its faults are never a refusal of the app's schema, and a transient `ERROR`-coded read
+ * fault must not pass {@link isSchemaRefusal} and stop a host retrying the strand.
+ */
+function versionRecordFault(what: string, cause: unknown): Error {
+	return new Error(`Could not ${what}`, { cause });
 }
 
 /**
@@ -390,8 +403,10 @@ async function retryDeferredAppSchema(
 }
 
 /**
- * A retry's declare, version gate and apply, the apply as one atomic batch. Run whole again after a
- * wait for an open transaction, so the gate's decision is never older than that wait.
+ * A retry's declare, version gate and apply, the apply as one atomic batch. Run whole again when the
+ * apply meets an open transaction. A wait the record meets re-sends the record alone, over the version
+ * read before the wait; a member that recorded meanwhile makes the key or `Rises` refuse it, and the
+ * gate reads again ({@link isRecordConflict}).
  */
 async function gateAndApplyAtomically(db: Database, app: VersionedAppSchema, released: AbortSignal): Promise<void> {
 	await declareAppSchema(db, app);
@@ -609,7 +624,8 @@ const SCHEMA_REFUSAL_CODES: ReadonlySet<number> = new Set([
  *
  * NOTE: `ERROR` is broad, and one known `ERROR` with no `cause` is transient: Optimystic's "Committed read
  * refused: storage is in a partially-committed state". An apply makes no committed reads (Quereus refuses
- * them while a schema migrates), so it cannot reach this test. If a transient fault is ever seen typed as a
+ * them while a schema migrates), so it cannot reach this test, and the version gate's read, which can,
+ * puts its faults behind a plain `Error` ({@link versionRecordFault}). If a transient fault is ever seen typed as a
  * refusal, have Optimystic give it a fault code or a `cause` rather than matching its message here.
  */
 function isSchemaRefusal(err: unknown): err is QuereusError {

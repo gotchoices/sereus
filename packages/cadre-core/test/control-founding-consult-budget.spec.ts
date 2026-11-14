@@ -118,7 +118,7 @@ const GATE_WATCH_SETTLE_MS = 100;
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-11-03';
+const MEASURED_ON = '2026-11-13';
 /**
  * The `../optimystic` commit these figures were measured against. Quote it, not just the date,
  * when the next reader asks whether a count grew or the dependency changed underneath. Two
@@ -228,8 +228,12 @@ const MEASURED_ON = '2026-11-03';
  * Re-measured whole at `fe7069f0` on 2026-11-03 for control schema version 4, its working tree
  * carrying one uncommitted file. Only the cold and genesis phases moved, both by the two tables
  * that version adds; see {@link COLD} and {@link GENESIS}.
+ *
+ * Re-measured whole at `087bfc11` on 2026-11-13, three runs identical: only `foundStrand`'s strand
+ * side moved, from this side (`app-schema-version-gates-strand-open`, see {@link FOUNDING_STRAND});
+ * every other figure equals the `fe7069f0` measurement.
  */
-const BASELINE_UPSTREAM = 'optimystic fe7069f0';
+const BASELINE_UPSTREAM = 'optimystic 087bfc11';
 
 /**
  * Cold: `start()` against empty storage, plus the membership-gate seed and the strand
@@ -309,22 +313,26 @@ const GENESIS: Budget = { consults: 26, blocks: 25, commits: 36, consultBudget: 
 const FOUNDING_CONTROL: Budget = { consults: 3, blocks: 3, commits: 1, consultBudget: 4, blockBudget: 4, commitBudget: 2 };
 /**
  * `foundStrand`, strand side: strand node up, membership and sApp schemas applied, founder
- * bootstrap. 29 consults over 15 blocks, 14 commits: the strand's schema catalog ×5,
- * `Header` ×3, each other strand table and `App.Note` ×2 (once as its schema is applied, all
- * missing, and once as the founder commits its empty collection), each of the three unique
- * stamp indexes ×1, and 1 each on two tree blocks the bootstrap created. The 14 commits are
- * the 11 empty collections (the 7 strand tables other than `Header`, the 3 stamp indexes,
- * `App.Note`), the 2 schema applies' catalog commits, and the open strand's founding
- * transaction, whose `Header` insert creates that table's collection. All of it is local: nothing else holds the strand at founding.
+ * bootstrap. 33 consults over 17 blocks, 15 commits: the strand's schema catalog ×5,
+ * `Header` and `AppSchemaVersion` ×3 each, each other strand table and `App.Note` ×2 (once as
+ * its schema is applied, all missing, and once as the founder commits its empty collection),
+ * each of the three unique stamp indexes ×1, and 1 each on three tree blocks. The 15 commits are
+ * the 11 empty collections (the 7 strand tables other than `Header` and `AppSchemaVersion`, the
+ * 3 stamp indexes, `App.Note`), the App schema version record, whose row creates
+ * `AppSchemaVersion`'s collection, the 2 schema applies' catalog commits, and the open strand's
+ * founding transaction, whose `Header` insert creates that table's collection. All of it is local: nothing else holds the strand at founding.
  * History: 25 over 15 blocks on 2026-09-15 (catalog ×7, `Header` ×5), 21 over 15 with 3
  * commits at optimystic `03ffadc4` (only the two repeatedly-read blocks moved; the 11
  * apply-once blocks did not), then 30 over 16 with 15 commits once the founder committed every
  * declared table's collection before its Header (`strand-founder-commits-every-table-collection`):
  * +1 consult on each of the 8 tables, +1 on a tree block, +12 commits; then 29 over 15 with 14
  * commits once the founding transaction's own tables were left out of the empty commits
- * (`strand-founding-writes-batched`): `Header`'s empty commit and one tree block's consult went.
+ * (`strand-founding-writes-batched`): `Header`'s empty commit and one tree block's consult went;
+ * then 33 over 17 with 15 commits once the App schema version was recorded before the sApp schema
+ * applies (`app-schema-version-gates-strand-open`): `AppSchemaVersion` ×3 (by inference, not traced: missing as its schema
+ * is applied, then the gate's read and its insert), one tree block ×1, and the record's commit.
  */
-const FOUNDING_STRAND: Budget = { consults: 29, blocks: 15, commits: 14, consultBudget: 34, blockBudget: 18, commitBudget: 15 };
+const FOUNDING_STRAND: Budget = { consults: 33, blocks: 17, commits: 15, consultBudget: 38, blockBudget: 20, commitBudget: 16 };
 /**
  * `reconcileControlCohort`, one idle pass on the founded solo party: nothing, and nothing
  * allowed. Its membership reads are answered by the view, and the blocks behind them are held

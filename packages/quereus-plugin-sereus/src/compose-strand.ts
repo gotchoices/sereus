@@ -395,6 +395,11 @@ export async function composeStrand(
 		// change this schema has made since is a tag, which the queue does not refuse. If a
 		// later strand schema changes how a table's rows are stored (an index, a column), this apply
 		// can be refused by `QueuedEntriesBlockSchemaChangeError` the same way and needs step 7's path.
+		// NOTE: nor is it deferred for the cohort. On a strand whose catalog lacks a table or column this
+		// schema has (one founded before `AppSchemaVersion` or `Header.sAppSchemaVersion`), the apply writes
+		// the catalog, so a member alone fails its connect until a peer is reachable (docs/strands.md →
+		// "Until then"). If strands founded before such a change must open alone, give this apply step 7's
+		// cohort deferral.
 		log('Applying Strand membership schema for strand %s', strandId);
 		await db.exec(`
 			declare schema Strand {
