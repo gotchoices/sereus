@@ -470,6 +470,27 @@ Some refusals do not pass with time: Quereus refuses the schema itself (a syntax
 
 A hibernating replica, or a joiner whose database waits for a seed peer, has no database to apply to, so its claim resolves `'attached'` and its next build is the first to meet a refusal by the rows. That build drops the sApp from the retained config and builds once more as the replica, and `StrandInstance.sAppInfo` goes back to unset. The app learns of it only from the log and from `sAppInfo`; failing the claim instead would mean waking a hibernating replica at claim time, and would still not cover the joiner. The claim stays registered, so a restart's launch with it is refused and suppressed as above. A live apply that fails for a reason that may pass (the database closed mid-apply) keeps the sApp retained, and the next claim or build retries it.
 
+## App schema versions across a strand's members
+
+The members of a strand are separate parties, each upgrading its app when it chooses, so a strand routinely has members on different app versions. Every connect applies the app's `App` schema as a full declarative diff, so a version that lacks something a newer version added would try to drop it (gotchoices/sereus#59): on a two-member strand the newer member refuses the catalog write and the older member cannot open the strand, and where the older version's own machines can approve the drop, the newer version's column and its values are gone for every member.
+
+### Direction: Quereus lenses
+
+The intended mechanism is Quereus's schema lenses (Quereus `docs/lens.md`, `docs/migration.md`). The `App` schema becomes a shared basis that only grows, and each app version keeps its own logical schema and lens over it, locally, never replicated. A newer version adds to the basis and maps its new shape through its lens; an older version keeps reading and writing through its own. A member running a lens over `App` already works on a strand (shown in #59). What is not designed yet: how a basis change is proposed and agreed among members, how something is retired from the basis, how an app ships its lens, and materialized views kept for rows from other members (gotchoices/optimystic#58). That design is backlog `feat-app-schema-migration-through-lenses`.
+
+### Until then: every member on the same schema version
+
+Not yet built (`plan/app-schema-version-gates-strand-open`). An app declares the version of its `App` schema, an integer it raises with every change to the schema (`SAppConfig.schemaVersion`). The strand records the highest version applied to it:
+
+- A connect at the recorded version applies its diff, as today.
+- A connect at a higher version applies its diff and records the new version.
+- A connect at a lower version applies nothing and does not open the strand. It fails with a typed refusal that is not retried, so the app can tell its user to update.
+- A member already running when a higher version is recorded stops writing the strand's app tables, failing the same way. Otherwise its updates would rewrite rows without the new columns, clearing their values.
+
+So during an upgrade, members that have not upgraded are locked out of the strand's app data until they do, and nothing they run can remove what a newer version added.
+
+**Why not a versioned network name.** Putting the schema version into the strand's network name (`strand-<id>`, from which every strand protocol is named) would also keep versions apart, but by splitting the strand into one network per version, each of which keeps committing to the same blocks. When a member upgrades, its copy of those blocks has diverged from the newer network's, and Optimystic cannot merge divergent histories (its backlog `6.52-feat-replay-mode-collections-merge-divergent-histories`). Refusing at connect keeps one network and one history.
+
 ## Same-Named Tables in `Strand` and `App`
 
 Every strand database holds two engine schemas: `Strand`, the built-in membership tables ([`schemas/strand.qsql`](../schemas/strand.qsql), embedded at runtime as `STRAND_SCHEMA`), and `App`, the sApp's own tables. An sApp may name a table like a `Strand` table (`Member`, `Header`, `Invite`, …): the two are stored separately. Optimystic stores a table declared without an explicit `using optimystic('<uri>')` at `tree://default/<schema>/<Table>` and files its catalog record under its schema and name together, so `Strand.Member` lives at `tree://default/strand/Member` and `App.Member` at `tree://default/app/Member`. Each keeps its own rows and columns, including across a warm restart (pinned by "an sApp table named like a strand table" in `packages/quereus-plugin-sereus/test/plugin.spec.ts`).
