@@ -18,6 +18,7 @@ describe('CadreNode', () => {
 
   const testSchema = 'table Test (id text primary key);';
   const testVersion = '1.0.0';
+  const testSchemaVersion = 1;
 
   beforeEach(() => {
     authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
@@ -46,8 +47,9 @@ describe('CadreNode', () => {
     return {
       id: authorPublicKey,
       version: testVersion,
+      schemaVersion: testSchemaVersion,
       schema: testSchema,
-      signature: signSchema(testSchema, testVersion, authorPrivateKey)
+      signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
     };
   }
 
@@ -347,7 +349,7 @@ describe('CadreNode', () => {
       const instance: StrandInstance = {
         strandId: 'hib-strand',
         status: 'active',
-        sAppInfo: { id: 'app', version: '1.0.0', schema: '' },
+        sAppInfo: { id: 'app', version: '1.0.0', schemaVersion: 1, schema: '' },
         connectedPeers: 3,
         lastActivity: new Date(0),
         latencyHint: 'interactive',
@@ -460,7 +462,7 @@ describe('CadreNode', () => {
       const instance: StrandInstance = {
         strandId: 'checkin-strand',
         status: 'hibernating',
-        sAppInfo: { id: 'app', version: '1.0.0', schema: '' },
+        sAppInfo: { id: 'app', version: '1.0.0', schemaVersion: 1, schema: '' },
         connectedPeers: 0,
         lastActivity: new Date(1000),
         latencyHint: 'interactive'
@@ -589,7 +591,7 @@ describe('CadreNode', () => {
       return {
         strandId,
         status: 'active',
-        sAppInfo: { id: 'app', version: '1.0.0', schema: '' },
+        sAppInfo: { id: 'app', version: '1.0.0', schemaVersion: 1, schema: '' },
         connectedPeers: 2,
         lastActivity: new Date(0),
         latencyHint,

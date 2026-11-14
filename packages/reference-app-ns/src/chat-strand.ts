@@ -34,6 +34,8 @@ table Message (
 
 const CHAT_SAPP_ID = 'sereus-chat-simple';
 const CHAT_SAPP_VERSION = '0.1.0';
+/** Raise with every change to {@link CHAT_SCHEMA}: a strand refuses an app whose number is below the highest it has seen. */
+const CHAT_SCHEMA_VERSION = 1;
 
 /**
  * Demo chat sApp config. NOTE: this config is **unsigned** and its `id` is a
@@ -46,6 +48,7 @@ export function getChatSAppConfig(): SAppConfig {
 	return {
 		id: CHAT_SAPP_ID,
 		version: CHAT_SAPP_VERSION,
+		schemaVersion: CHAT_SCHEMA_VERSION,
 		schema: CHAT_SCHEMA,
 		latencyHint: 'interactive',
 	};

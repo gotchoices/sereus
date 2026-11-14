@@ -61,6 +61,7 @@ vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDataba
 
 const testSchema = 'table Test (id text primary key);';
 const testVersion = '1.0.0';
+const testSchemaVersion = 1;
 /** Fast gate: a 5 ms probe backstop, and a 40 ms default wait so timeouts are cheap. */
 const FAST_GATE = { backstopMs: 5, timeoutMs: 40 };
 
@@ -79,8 +80,9 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   const sAppConfig: SAppConfig = {
     id: authorPublicKey,
     version: testVersion,
+    schemaVersion: testSchemaVersion,
     schema: testSchema,
-    signature: signSchema(testSchema, testVersion, authorPrivateKey)
+    signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
   };
   return {
     strandRow,

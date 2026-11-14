@@ -42,11 +42,11 @@ table Message (
 const chatAuthorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 const chatAuthorPublicKey = getPublicKey(chatAuthorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 
+const CHAT_SIGNED = { version: '0.1.0', schemaVersion: 1, schema: CHAT_SCHEMA };
 const CHAT_SAPP_CONFIG: SAppConfig = {
 	id: chatAuthorPublicKey,
-	version: '0.1.0',
-	schema: CHAT_SCHEMA,
-	signature: signSchema(CHAT_SCHEMA, '0.1.0', chatAuthorPrivateKey),
+	...CHAT_SIGNED,
+	signature: signSchema(CHAT_SIGNED, chatAuthorPrivateKey),
 	latencyHint: 'interactive' as const,
 };
 

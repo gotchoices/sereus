@@ -4,6 +4,9 @@ import type { SAppConfig } from './types.js';
 
 const log = debug('sereus:cadre:schema-verify');
 
+/** The `SAppConfig` fields the author's signature covers. */
+export type SignedSAppFields = Pick<SAppConfig, 'schema' | 'version' | 'schemaVersion'>;
+
 /**
  * Error thrown when sApp schema signature verification fails.
  */
@@ -11,58 +14,64 @@ export class SchemaVerificationError extends Error {
   constructor(
     public readonly sAppId: string,
     public readonly version: string,
+    schemaVersion: number,
     reason: string
   ) {
-    super(`sApp schema verification failed for ${sAppId} v${version}: ${reason}`);
+    super(`sApp schema verification failed for ${sAppId} v${version} (schema version ${String(schemaVersion)}): ${reason}`);
     this.name = 'SchemaVerificationError';
   }
 }
 
 /**
- * Compute the canonical digest of a schema + version for signing/verification.
- * The payload is deterministic JSON: `{"schema":"...","version":"..."}`.
+ * Compute the canonical digest of the signed sApp fields for signing/verification.
+ * The payload is deterministic JSON, keys in this order:
+ * `{"schema":"...","schemaVersion":N,"version":"..."}`.
  */
-function schemaDigest(schema: string, version: string): string {
-  const payload = JSON.stringify({ schema, version });
+function schemaDigest({ schema, schemaVersion, version }: SignedSAppFields): string {
+  const payload = JSON.stringify({ schema, schemaVersion, version });
   return digest([payload], 'sha256', 'base64url') as string;
 }
 
 /**
- * Sign an sApp schema with the author's ed25519 private key.
- * Used by sApp authors when publishing their schema.
+ * Sign an sApp schema, its release version and its schema version with the author's ed25519
+ * private key. Used by sApp authors when publishing their schema.
  *
- * @param schema - The declarative schema DDL
- * @param version - Schema version string
+ * @param sApp - The declarative schema DDL, the release version string and the schema version
  * @param authorPrivateKey - Author's ed25519 private key (base64url)
  * @returns Signature (base64url)
  */
-export function signSchema(schema: string, version: string, authorPrivateKey: string): string {
-  const d = schemaDigest(schema, version);
-  return sign(d, authorPrivateKey, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
+export function signSchema(sApp: SignedSAppFields, authorPrivateKey: string): string {
+  return sign(schemaDigest(sApp), authorPrivateKey, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 }
 
 /**
  * Verify an sApp schema signature against the author's ed25519 public key.
  *
- * @param schema - The declarative schema DDL
- * @param version - Schema version string
+ * @param sApp - The declarative schema DDL, the release version string and the schema version
  * @param signature - Signature to verify (base64url)
  * @param authorPublicKey - Author's ed25519 public key (base64url)
  * @returns true if the signature is valid
  */
-export function verifySchema(schema: string, version: string, signature: string, authorPublicKey: string): boolean {
+export function verifySchema(sApp: SignedSAppFields, signature: string, authorPublicKey: string): boolean {
   try {
-    const d = schemaDigest(schema, version);
-    return verify(d, signature, authorPublicKey, 'ed25519', 'base64url', 'base64url', 'base64url');
+    return verify(schemaDigest(sApp), signature, authorPublicKey, 'ed25519', 'base64url', 'base64url', 'base64url');
   } catch (error) {
     log('Schema verification error: %o', error);
     return false;
   }
 }
 
+/** A schema version is a positive safe integer; anything else could not be compared against a strand's. */
+function isValidSchemaVersion(schemaVersion: unknown): boolean {
+  return Number.isSafeInteger(schemaVersion) && (schemaVersion as number) >= 1;
+}
+
 /**
  * Assert that an SAppConfig has a valid schema signature.
  * Throws SchemaVerificationError on failure.
+ *
+ * A `schemaVersion` that is not a positive safe integer is refused with reason
+ * `'invalid schemaVersion'` under either policy.
  *
  * Fail-closed by default: when `options.requireSignature` is not explicitly
  * `false`, an absent signature is rejected with reason `'missing signature'`,
@@ -72,28 +81,34 @@ export function verifySchema(schema: string, version: string, signature: string,
  *
  * @param sAppConfig - The sApp configuration to verify
  * @param options - Verification policy; `requireSignature` defaults to `true`
- * @throws SchemaVerificationError if the signature is missing (when required) or invalid
+ * @throws SchemaVerificationError if the schema version is malformed, or the signature is missing (when required) or invalid
  */
 export function assertSchemaSignature(
   sAppConfig: SAppConfig,
   options?: { requireSignature?: boolean }
 ): void {
-  const { id, version, schema, signature } = sAppConfig;
+  const { id, version, schemaVersion, signature } = sAppConfig;
   const requireSignature = options?.requireSignature ?? true;
+  const refuse = (reason: string): SchemaVerificationError =>
+    new SchemaVerificationError(id ?? '', version, schemaVersion, reason);
+
+  if (!isValidSchemaVersion(schemaVersion)) {
+    throw refuse('invalid schemaVersion');
+  }
 
   if (!signature) {
     if (requireSignature) {
-      throw new SchemaVerificationError(id ?? '', version, 'missing signature');
+      throw refuse('missing signature');
     }
     log('No signature provided for %s v%s — skipping verification (policy relaxed)', id, version);
     return;
   }
 
   if (!id) {
-    throw new SchemaVerificationError(id ?? '', version, 'missing author public key');
+    throw refuse('missing author public key');
   }
 
-  if (!verifySchema(schema, version, signature, id)) {
-    throw new SchemaVerificationError(id, version, 'invalid signature');
+  if (!verifySchema(sAppConfig, signature, id)) {
+    throw refuse('invalid signature');
   }
 }

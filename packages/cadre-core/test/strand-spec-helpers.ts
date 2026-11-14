@@ -35,6 +35,7 @@ export function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig 
   return {
     id: 'sapp-author-pubkey',
     version: '1.2.3',
+    schemaVersion: 1,
     schema: 'table Note (Id integer primary key, Body text not null)',
     signature: 'sapp-signature',
     ...overrides,

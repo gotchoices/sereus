@@ -44,6 +44,7 @@ const LIFECYCLE_MS = 60_000;
 const NOTES_SAPP: SAppConfig = {
 	id: 'cadre-rn-phone-node-spec',
 	version: '1',
+	schemaVersion: 1,
 	schema: 'table Note (Id text primary key, Body text not null);',
 };
 

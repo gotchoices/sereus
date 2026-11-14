@@ -1252,6 +1252,7 @@ export type StrandStatus =
 export interface SAppInfo {
   id: string;
   version: string;
+  schemaVersion: number;
   schema: string;
   signature?: string;
 }
@@ -1432,12 +1433,19 @@ export interface PendingJoinStatus {
 export interface SAppConfig {
   /** Public key of the sApp author */
   id: string;
-  /** Version of the sApp */
+  /** Version of the sApp: its release string, which may change without a schema change */
   version: string;
+  /**
+   * Version of `schema`: a positive integer the app raises with every change to it. A strand
+   * refuses an app whose number is below the highest it has seen (docs/strands.md → "Until then:
+   * every member on the same schema version"). The author's signature covers it, so a host cannot
+   * choose it.
+   */
+  schemaVersion: number;
   /** The declarative schema DDL */
   schema: string;
   /**
-   * Author's signature over the schema for verification. Required under the
+   * Author's signature over `schema`, `version` and `schemaVersion` for verification. Required under the
    * default `requireSignedSchemas` node policy — a config without it is rejected
    * before strand bring-up. Optional in the type because authoring/serialization
    * must represent an as-yet-unsigned config; omitting it is honored only when

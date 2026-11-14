@@ -5,6 +5,7 @@ import type { SAppConfig } from '../src/types.js';
 /** The one-table sApp schema the strand specs launch with. */
 const NOTE_SCHEMA = 'table Note (Id text primary key);';
 const VERSION = '1.0.0';
+const SCHEMA_VERSION = 1;
 
 /**
  * A self-consistent signed sApp config: a throwaway ed25519 key signs the schema and doubles
@@ -18,5 +19,6 @@ export function signedSApp(opts: Pick<SAppConfig, 'latencyHint'> & { schema?: st
 	const { schema = NOTE_SCHEMA, ...rest } = opts;
 	const priv = generatePrivateKey('ed25519', 'base64url') as string;
 	const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
-	return { id: pub, version: VERSION, schema, signature: signSchema(schema, VERSION, priv), ...rest };
+	const signed = { version: VERSION, schemaVersion: SCHEMA_VERSION, schema };
+	return { id: pub, ...signed, signature: signSchema(signed, priv), ...rest };
 }

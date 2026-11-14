@@ -43,6 +43,8 @@ browser-map.js      the named packages and their `browser` file maps (webpack.co
 nativescript.config.ts
 ```
 
+The chat schema is `CHAT_SCHEMA` in `src/chat-strand.ts`, a copy of reference-app-rn's. Raise `CHAT_SCHEMA_VERSION` (the config's `schemaVersion`) with every change to it: a strand refuses an app whose number is below the highest it has seen.
+
 ## Scripts
 
 | Script | What it does | Agent-runnable? |

@@ -60,6 +60,7 @@ vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDataba
 
 const testSchema = 'table Test (id text primary key);';
 const testVersion = '1.0.0';
+const testSchemaVersion = 1;
 
 let authorPrivateKey: string;
 let authorPublicKey: string;
@@ -78,8 +79,9 @@ function createSAppConfig(): SAppConfig {
   return {
     id: authorPublicKey,
     version: testVersion,
+    schemaVersion: testSchemaVersion,
     schema: testSchema,
-    signature: signSchema(testSchema, testVersion, authorPrivateKey)
+    signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
   };
 }
 

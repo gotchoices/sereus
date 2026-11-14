@@ -51,7 +51,7 @@ table Data (
 function createUnsignedSAppConfig(schema: string, version: string): SAppConfig {
 	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-	return { id: authorPublicKey, version, schema, latencyHint: 'interactive' as const };
+	return { id: authorPublicKey, version, schemaVersion: 1, schema, latencyHint: 'interactive' as const };
 }
 
 /**
@@ -61,8 +61,9 @@ function createUnsignedSAppConfig(schema: string, version: string): SAppConfig {
 function createTamperedSAppConfig(schema: string, version: string): SAppConfig {
 	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-	const signature = signSchema(schema, version, authorPrivateKey);
-	return { id: authorPublicKey, version, schema: schema + ' -- injected', signature, latencyHint: 'interactive' as const };
+	const schemaVersion = 1;
+	const signature = signSchema({ schema, version, schemaVersion }, authorPrivateKey);
+	return { id: authorPublicKey, version, schemaVersion, schema: schema + ' -- injected', signature, latencyHint: 'interactive' as const };
 }
 
 /**
@@ -73,8 +74,9 @@ function createWrongKeySAppConfig(schema: string, version: string): SAppConfig {
 	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 	const otherPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-	const signature = signSchema(schema, version, otherPrivateKey);
-	return { id: authorPublicKey, version, schema, signature, latencyHint: 'interactive' as const };
+	const schemaVersion = 1;
+	const signature = signSchema({ schema, version, schemaVersion }, otherPrivateKey);
+	return { id: authorPublicKey, version, schemaVersion, schema, signature, latencyHint: 'interactive' as const };
 }
 
 // Create two distinct signed sApp configs for isolation tests

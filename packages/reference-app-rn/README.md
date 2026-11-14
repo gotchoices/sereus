@@ -15,7 +15,7 @@ CadreNode (transaction profile)  ←────→ CadreNode (storage profile)
 
 The phone runs a **transaction-profile** node (lightweight, intermittent) while the drone runs a **storage-profile** node (always-on, persists data). They sync over a shared control network identified by a Party ID.
 
-**Strands** are isolated P2P databases. Each chat strand has `Participant` and `Message` tables running on Optimystic (distributed serializable transactions) with Quereus as the SQL engine.
+**Strands** are isolated P2P databases. Each chat strand has `Participant` and `Message` tables running on Optimystic (distributed serializable transactions) with Quereus as the SQL engine. Their schema is `CHAT_SCHEMA` in `src/chat-strand.ts`; raise `CHAT_SCHEMA_VERSION` (the config's `schemaVersion`) with every change to it, since a strand refuses an app whose number is below the highest it has seen.
 
 ## Prerequisites
 

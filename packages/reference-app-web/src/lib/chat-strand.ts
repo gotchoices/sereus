@@ -41,6 +41,8 @@ table Message (
 `;
 
 const CHAT_VERSION = '0.1.0';
+/** Raise with every change to {@link CHAT_SCHEMA}: a strand refuses an app whose number is below the highest it has seen. */
+const CHAT_SCHEMA_VERSION = 1;
 
 /**
  * Demo sApp author keypair (Ed25519, base64url). **Demo only** — not a real
@@ -71,11 +73,11 @@ export const CHAT_SAPP_ID = CHAT_AUTHOR_PUBLIC_KEY;
  * `CHAT_AUTHOR_PUBLIC_KEY`, so `assertSchemaSignature` passes.
  */
 export function getChatSAppConfig(): SAppConfig {
+	const signed = { version: CHAT_VERSION, schemaVersion: CHAT_SCHEMA_VERSION, schema: CHAT_SCHEMA };
 	return {
 		id: CHAT_AUTHOR_PUBLIC_KEY,
-		version: CHAT_VERSION,
-		schema: CHAT_SCHEMA,
-		signature: signSchema(CHAT_SCHEMA, CHAT_VERSION, CHAT_AUTHOR_PRIVATE_KEY),
+		...signed,
+		signature: signSchema(signed, CHAT_AUTHOR_PRIVATE_KEY),
 		latencyHint: 'interactive',
 	};
 }

@@ -480,7 +480,9 @@ The intended mechanism is Quereus's schema lenses (Quereus `docs/lens.md`, `docs
 
 ### Until then: every member on the same schema version
 
-Not yet built (`plan/app-schema-version-gates-strand-open`). An app declares the version of its `App` schema, an integer it raises with every change to the schema (`SAppConfig.schemaVersion`). The strand records the highest version applied to it:
+An app declares the version of its `App` schema, an integer it raises with every change to the schema (`SAppConfig.schemaVersion`), separate from `version`, its release string. The number is required, so a forgotten bump cannot hide behind a default. The author's signature covers it with the schema text and `version`, because a host must not choose it: a host that gave a signed schema a number higher than its author ever shipped would lock every other member out of the strand. Wherever the signature is checked, a number that is not a whole number of at least 1 is refused with `SchemaVerificationError` (`invalid schemaVersion`), whether or not the node requires signed schemas. The founder writes its number to `Strand.Header.sAppSchemaVersion`, since the stored `sAppSignature` cannot be checked without it.
+
+The rest is not yet built: the record and the refusal at connect are `implement/app-schema-version-gates-strand-open`, and stopping a member already running is `implement/app-schema-version-stops-a-running-member`. The strand records the highest version applied to it:
 
 - A connect at the recorded version applies its diff, as today.
 - A connect at a higher version applies its diff and records the new version.

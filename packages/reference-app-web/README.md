@@ -204,6 +204,8 @@ schema apply issues `ALTER TABLE`, which the optimystic table module refuses,
 and adding the chat strand fails (Home's status reads `error`). Nothing migrates it under the current
 no-backwards-compatibility policy; clear the site's data to start over.
 
+Raise `CHAT_SCHEMA_VERSION` (the config's `schemaVersion`, covered by its signature) with every change to `CHAT_SCHEMA`: a strand refuses an app whose number is below the highest it has seen.
+
 ## Strand formation (consent / invitation flow)
 
 The Home **Strand formation** panel drives the cadre-core formation API

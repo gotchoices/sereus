@@ -42,6 +42,10 @@ export const STRAND_SCHEMA = `    table Header (
         -- The version of the sApp that this strand faciliates
         sAppVersion text,
 
+        -- The founding app's schema version (SAppConfig.schemaVersion), which sAppSignature covers.
+        -- Null only on a Header written before the column existed: an added column must be nullable.
+        sAppSchemaVersion integer null,
+
         -- The schema of the sApp that this strand faciliates
         sAppSchema text,
 

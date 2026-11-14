@@ -18,7 +18,7 @@ import type { StartStrandConfig } from '../src/strand-instance-manager.js';
  */
 
 const STRAND_ROW: StrandRow = { Id: 'failing-strand', MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
-const SAPP_CONFIG: SAppConfig = { id: 'sapp-author', version: '1.0.0', schema: '' };
+const SAPP_CONFIG: SAppConfig = { id: 'sapp-author', version: '1.0.0', schemaVersion: 1, schema: '' };
 
 function createConfig(): CadreNodeConfig {
   return {

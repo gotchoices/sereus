@@ -334,7 +334,7 @@ export interface FounderBootstrapParams {
   strandId: string;
   /** Strand type: `'o'` (open, Header only) or `'c'` (closed, Header+Member+Manager). */
   type: 'o' | 'c';
-  /** The sApp config whose id/version/schema/signature populate the Header. */
+  /** The sApp config whose id/version/schemaVersion/schema/signature populate the Header. */
   sApp: SAppConfig;
   /**
    * The founder's derived strand keypair (from {@link strandMemberKeyPair}). Its
@@ -469,10 +469,11 @@ async function createDeclaredCollections(params: FounderBootstrapParams, written
 /**
  * The singleton `Strand.Header` insert.
  *
- * Every `Header` column is NOT NULL (Quereus defaults unqualified columns to NOT
- * NULL; the table declares no `null` columns), so all eight are supplied non-null.
- * A missing `sApp.signature` (dev `requireSignedSchemas:false`) coalesces to `''`
- * rather than inserting null. `Header` carries only `InsertOnly` + a singleton PK,
+ * Every `Header` column but `sAppSchemaVersion` is NOT NULL (Quereus defaults
+ * unqualified columns to NOT NULL), and all nine are supplied non-null; that one is
+ * nullable only so the column could be added to existing strands. A missing
+ * `sApp.signature` (dev `requireSignedSchemas:false`) coalesces to `''` rather than
+ * inserting null. `Header` carries only `InsertOnly` + a singleton PK,
  * so the insert needs no `with context`.
  */
 function headerRow(params: FounderBootstrapParams): FoundingRow {
@@ -480,14 +481,15 @@ function headerRow(params: FounderBootstrapParams): FoundingRow {
     table: 'Strand.Header',
     statements: {
       sql: `insert into Strand.Header
-         (Id, Type, sAppId, sAppVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
-         values (:headerId, :headerType, :headerSAppId, :headerSAppVersion, :headerSAppSchema,
-           :headerSAppSignature, :headerEngine, :headerEngineVersion);`,
+         (Id, Type, sAppId, sAppVersion, sAppSchemaVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
+         values (:headerId, :headerType, :headerSAppId, :headerSAppVersion, :headerSAppSchemaVersion,
+           :headerSAppSchema, :headerSAppSignature, :headerEngine, :headerEngineVersion);`,
       params: {
         headerId: params.strandId,
         headerType: params.type,
         headerSAppId: params.sApp.id,
         headerSAppVersion: params.sApp.version,
+        headerSAppSchemaVersion: params.sApp.schemaVersion,
         headerSAppSchema: params.sApp.schema,
         headerSAppSignature: params.sApp.signature ?? '',
         headerEngine: STRAND_ENGINE,

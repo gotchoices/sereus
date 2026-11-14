@@ -13,6 +13,8 @@ describe('schema-verification', () => {
   let authorPublicKey: string;
   const testSchema = 'table Chat (Id text primary key, Message text);';
   const testVersion = '1.0.0';
+  const testSchemaVersion = 1;
+  const signed = { schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion };
 
   beforeEach(() => {
     authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
@@ -21,48 +23,54 @@ describe('schema-verification', () => {
 
   describe('signSchema / verifySchema round-trip', () => {
     it('should produce a valid signature', () => {
-      const sig = signSchema(testSchema, testVersion, authorPrivateKey);
+      const sig = signSchema(signed, authorPrivateKey);
       expect(typeof sig).toBe('string');
       expect(sig.length).toBeGreaterThan(0);
-      expect(verifySchema(testSchema, testVersion, sig, authorPublicKey)).toBe(true);
+      expect(verifySchema(signed, sig, authorPublicKey)).toBe(true);
     });
 
     it('should reject a tampered schema', () => {
-      const sig = signSchema(testSchema, testVersion, authorPrivateKey);
+      const sig = signSchema(signed, authorPrivateKey);
       const tampered = testSchema + ' -- injected';
-      expect(verifySchema(tampered, testVersion, sig, authorPublicKey)).toBe(false);
+      expect(verifySchema({ ...signed, schema: tampered }, sig, authorPublicKey)).toBe(false);
     });
 
     it('should reject a tampered version', () => {
-      const sig = signSchema(testSchema, testVersion, authorPrivateKey);
-      expect(verifySchema(testSchema, '2.0.0', sig, authorPublicKey)).toBe(false);
+      const sig = signSchema(signed, authorPrivateKey);
+      expect(verifySchema({ ...signed, version: '2.0.0' }, sig, authorPublicKey)).toBe(false);
+    });
+
+    it('should reject a signature presented with a different schema version', () => {
+      const sig = signSchema(signed, authorPrivateKey);
+      expect(verifySchema({ ...signed, schemaVersion: 2 }, sig, authorPublicKey)).toBe(false);
     });
 
     it('should reject a signature from a different key', () => {
-      const sig = signSchema(testSchema, testVersion, authorPrivateKey);
+      const sig = signSchema(signed, authorPrivateKey);
 
       const otherPrivate = generatePrivateKey('ed25519', 'base64url') as string;
       const otherPublic = getPublicKey(otherPrivate, 'ed25519', 'base64url', 'base64url') as string;
 
-      expect(verifySchema(testSchema, testVersion, sig, otherPublic)).toBe(false);
+      expect(verifySchema(signed, sig, otherPublic)).toBe(false);
     });
 
     it('should return false for malformed signature', () => {
-      expect(verifySchema(testSchema, testVersion, 'not-a-valid-signature', authorPublicKey)).toBe(false);
+      expect(verifySchema(signed, 'not-a-valid-signature', authorPublicKey)).toBe(false);
     });
 
     it('should return false for malformed public key', () => {
-      const sig = signSchema(testSchema, testVersion, authorPrivateKey);
-      expect(verifySchema(testSchema, testVersion, sig, 'bad-key')).toBe(false);
+      const sig = signSchema(signed, authorPrivateKey);
+      expect(verifySchema(signed, sig, 'bad-key')).toBe(false);
     });
   });
 
   describe('assertSchemaSignature', () => {
     it('should not throw for valid config', () => {
-      const sig = signSchema(testSchema, testVersion, authorPrivateKey);
+      const sig = signSchema(signed, authorPrivateKey);
       const config: SAppConfig = {
         id: authorPublicKey,
         version: testVersion,
+        schemaVersion: testSchemaVersion,
         schema: testSchema,
         signature: sig
       };
@@ -73,6 +81,7 @@ describe('schema-verification', () => {
       const config: SAppConfig = {
         id: authorPublicKey,
         version: testVersion,
+        schemaVersion: testSchemaVersion,
         schema: testSchema,
         signature: 'invalid-signature'
       };
@@ -84,6 +93,7 @@ describe('schema-verification', () => {
       const config: SAppConfig = {
         id: authorPublicKey,
         version: testVersion,
+        schemaVersion: testSchemaVersion,
         schema: testSchema,
       };
       expect(() => assertSchemaSignature(config)).toThrow(SchemaVerificationError);
@@ -94,6 +104,7 @@ describe('schema-verification', () => {
       const config: SAppConfig = {
         id: authorPublicKey,
         version: testVersion,
+        schemaVersion: testSchemaVersion,
         schema: testSchema,
         signature: '',
       };
@@ -105,6 +116,7 @@ describe('schema-verification', () => {
       const config: SAppConfig = {
         id: authorPublicKey,
         version: testVersion,
+        schemaVersion: testSchemaVersion,
         schema: testSchema,
       };
       expect(() => assertSchemaSignature(config, { requireSignature: false })).not.toThrow();
@@ -114,6 +126,7 @@ describe('schema-verification', () => {
       const config: SAppConfig = {
         id: authorPublicKey,
         version: testVersion,
+        schemaVersion: testSchemaVersion,
         schema: testSchema,
         signature: 'invalid-signature',
       };
@@ -121,11 +134,23 @@ describe('schema-verification', () => {
       expect(() => assertSchemaSignature(config, { requireSignature: false })).toThrow('invalid signature');
     });
 
+    it.each([0, 1.5])('should refuse schemaVersion %s even when policy relaxed', (schemaVersion) => {
+      const config: SAppConfig = {
+        id: authorPublicKey,
+        version: testVersion,
+        schemaVersion,
+        schema: testSchema,
+      };
+      expect(() => assertSchemaSignature(config, { requireSignature: false })).toThrow(SchemaVerificationError);
+      expect(() => assertSchemaSignature(config, { requireSignature: false })).toThrow('invalid schemaVersion');
+    });
+
     it('should throw SchemaVerificationError for missing author key', () => {
-      const sig = signSchema(testSchema, testVersion, authorPrivateKey);
+      const sig = signSchema(signed, authorPrivateKey);
       const config: SAppConfig = {
         id: '',
         version: testVersion,
+        schemaVersion: testSchemaVersion,
         schema: testSchema,
         signature: sig
       };
@@ -137,6 +162,7 @@ describe('schema-verification', () => {
       const config: SAppConfig = {
         id: 'some-author-key',
         version: '3.0.0',
+        schemaVersion: testSchemaVersion,
         schema: testSchema,
         signature: 'bad'
       };

@@ -46,6 +46,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
 
   const testSchema = 'table Test (id text primary key);';
   const testVersion = '1.0.0';
+  const testSchemaVersion = 1;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -58,8 +59,9 @@ describe('StrandInstanceManager cluster size wiring', () => {
     const sAppConfig: SAppConfig = {
       id: authorPublicKey,
       version: testVersion,
+      schemaVersion: testSchemaVersion,
       schema: testSchema,
-      signature: signSchema(testSchema, testVersion, authorPrivateKey)
+      signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
     };
     return {
       strandRow,

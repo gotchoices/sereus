@@ -505,6 +505,7 @@ function verifiedSAppInfo(strandId: string, sAppConfig: SAppConfig, requireSigne
   return {
     id: sAppConfig.id,
     version: sAppConfig.version,
+    schemaVersion: sAppConfig.schemaVersion,
     schema: sAppConfig.schema,
     signature: sAppConfig.signature
   };

@@ -19,6 +19,7 @@ describe('StrandInstanceManager', () => {
 
   const testSchema = 'table Test (id text primary key);';
   const testVersion = '1.0.0';
+  const testSchemaVersion = 1;
   /**
    * Unparseable sApp DDL (no table name): StrandDatabase.initialize() throws
    * "Expected table name in declaration" while applying it. Used to drive a
@@ -45,8 +46,9 @@ describe('StrandInstanceManager', () => {
     return {
       id: pubKey,
       version: testVersion,
+      schemaVersion: testSchemaVersion,
       schema: testSchema,
-      signature: signSchema(testSchema, testVersion, authorPrivateKey)
+      signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
     };
   }
 
@@ -189,6 +191,7 @@ describe('StrandInstanceManager', () => {
         sAppConfig: {
           id: authorPublicKey,
           version: testVersion,
+          schemaVersion: testSchemaVersion,
           schema: testSchema,
           signature: 'invalid-signature'
         }
@@ -202,11 +205,12 @@ describe('StrandInstanceManager', () => {
 
     it('should reject config with tampered schema', async () => {
       const manager = new StrandInstanceManager();
-      const goodSig = signSchema(testSchema, testVersion, authorPrivateKey);
+      const goodSig = signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey);
       const config = createStartConfig('tampered-strand', {
         sAppConfig: {
           id: authorPublicKey,
           version: testVersion,
+          schemaVersion: testSchemaVersion,
           schema: testSchema + ' -- injected',
           signature: goodSig
         }
@@ -221,6 +225,7 @@ describe('StrandInstanceManager', () => {
         sAppConfig: {
           id: authorPublicKey,
           version: testVersion,
+          schemaVersion: testSchemaVersion,
           schema: testSchema
           // no signature
         }
@@ -238,6 +243,7 @@ describe('StrandInstanceManager', () => {
         sAppConfig: {
           id: authorPublicKey,
           version: testVersion,
+          schemaVersion: testSchemaVersion,
           schema: testSchema
           // no signature
         },
@@ -256,7 +262,7 @@ describe('StrandInstanceManager', () => {
       // a failure AFTER the instance has been registered - the schema-signature
       // rejections above fail before registration. Both must leave no residue.
       const config = createStartConfig('doomed-strand', {
-        sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
+        sAppConfig: { id: authorPublicKey, version: testVersion, schemaVersion: testSchemaVersion, schema: BAD_SCHEMA },
         requireSignedSchemas: false
       });
 
@@ -272,7 +278,7 @@ describe('StrandInstanceManager', () => {
       const strandId = 'retry-strand';
 
       await expect(manager.startStrand(createStartConfig(strandId, {
-        sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
+        sAppConfig: { id: authorPublicKey, version: testVersion, schemaVersion: testSchemaVersion, schema: BAD_SCHEMA },
         requireSignedSchemas: false
       }))).rejects.toThrow(BAD_SCHEMA_ERROR);
 
@@ -293,7 +299,7 @@ describe('StrandInstanceManager', () => {
       // The `launchConfigs has an entry iff instances does` invariant: a config left
       // behind would let resumeStrand rebuild a strand nothing tracks.
       await expect(manager.startStrand(createStartConfig('orphan-config-strand', {
-        sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
+        sAppConfig: { id: authorPublicKey, version: testVersion, schemaVersion: testSchemaVersion, schema: BAD_SCHEMA },
         requireSignedSchemas: false
       }))).rejects.toThrow(BAD_SCHEMA_ERROR);
 

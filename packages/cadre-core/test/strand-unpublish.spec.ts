@@ -106,13 +106,15 @@ describe('CadreNode strand unpublish', () => {
     const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
     const schema = 'table Test (id text primary key);';
     const version = '1.0.0';
+    const schemaVersion = 1;
     return {
       strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },
       sAppConfig: {
         id: authorPublicKey,
         version,
+        schemaVersion,
         schema,
-        signature: signSchema(schema, version, authorPrivateKey),
+        signature: signSchema({ schema, version, schemaVersion }, authorPrivateKey),
       },
       founder: true,
     };

@@ -735,7 +735,8 @@ export {
   signSchema,
   verifySchema,
   assertSchemaSignature,
-  SchemaVerificationError
+  SchemaVerificationError,
+  type SignedSAppFields
 } from './schema-verification.js';
 
 // Strand Formation transport (native cadre-core protocol)

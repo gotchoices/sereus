@@ -50,8 +50,9 @@ export function wsTransports(): Libp2pTransports {
 export function createSignedSAppConfig(schema: string, version: string): SAppConfig {
   const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
   const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-  const signature = signSchema(schema, version, authorPrivateKey);
-  return { id: authorPublicKey, version, schema, signature, latencyHint: 'interactive' as const };
+  const schemaVersion = 1;
+  const signature = signSchema({ schema, version, schemaVersion }, authorPrivateKey);
+  return { id: authorPublicKey, version, schemaVersion, schema, signature, latencyHint: 'interactive' as const };
 }
 
 /** The revoked-peer gate's backstop under {@link ControlNodeOpts.revocationSuspended}: longer than any test. */
