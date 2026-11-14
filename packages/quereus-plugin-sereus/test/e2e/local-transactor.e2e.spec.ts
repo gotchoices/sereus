@@ -66,6 +66,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 			transactor: 'local',
 			storage,
 			schema: TEST_SCHEMA,
+			schemaVersion: 1,
 		});
 
 		// The option landed: everything below really is the local transactor, not
@@ -108,6 +109,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 				transactor: 'local',
 				storage: storage1,
 				schema: TEST_SCHEMA,
+				schemaVersion: 1,
 			});
 			try {
 				await db1.exec(`insert into App.Msg(Id, Body) values (42, 'persisted')`);
@@ -126,6 +128,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 			transactor: 'local',
 			storage: storage2,
 			schema: TEST_SCHEMA,
+			schemaVersion: 1,
 		});
 
 		const rows: Array<{ Id: number; Body: string }> = [];
@@ -160,6 +163,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 				transactor: 'local',
 				storage: storage1,
 				schema: HYDRATE_SCHEMA,
+				schemaVersion: 1,
 			});
 			try {
 				expect(r1.hydrated).toEqual({ tables: 0, indexes: 0 });
@@ -181,6 +185,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 			transactor: 'local',
 			storage: storage2,
 			schema: HYDRATE_SCHEMA,
+			schemaVersion: 1,
 		});
 
 		// The headline regression assertion: hydration actually ran on reopen and
@@ -229,6 +234,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 				transactor: 'local',
 				storage,
 				schema: TEST_SCHEMA,
+				schemaVersion: 1,
 			});
 			try {
 				const rows: Array<{ c: number }> = [];

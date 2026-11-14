@@ -62,6 +62,17 @@ export const STRAND_SCHEMA = `    table Header (
         constraint InsertOnly check on update, delete (false),  -- One-time insert only for now - TODO: revisit for versioning
     ) with tags ("optimystic.offline" = 'network');
 
+    -- The highest App schema version (SAppConfig.schemaVersion) any member has applied to this strand.
+    -- Written by the plugin's gated apply (app-schema.ts) before the App schema it records; never lowered.
+    -- A row rather than a catalog tag: a running member reads it live, so it sees another member's record
+    -- without rebuilding its catalog.
+    table AppSchemaVersion (
+        Version integer not null check (Version >= 1),
+        primary key (/* empty - singleton */),
+        constraint Rises check on update (new.Version > old.Version),
+        constraint NoDelete check on delete (false),
+    ) with tags ("optimystic.offline" = 'network', "optimystic.network_watch" = true);
+
     -- An invitation to join a strand as a member
     table Invite (
         Key text primary key,

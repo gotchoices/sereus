@@ -178,15 +178,17 @@ export class StrandDatabase {
     // hydrate may still load `App` table definitions persisted in the replicated store into
     // the catalog — declarative metadata, nothing the app supplied runs — and the first-sync
     // probe then reads those tables once from blocks this node holds.
-    const result = await connectToStrand(this.db, {
+    const connection = {
       strandId: sid,
-      schema: sAppConfig?.schema,
       libp2pNode: this.config.libp2pNode,
       coordinatedRepo: this.config.coordinatedRepo,
       enableCache: true,
       offline,
       ...(cohortReachability && { cohortReachability }),
-    });
+    };
+    const result = await connectToStrand(this.db, sAppConfig
+      ? { ...connection, schema: sAppConfig.schema, schemaVersion: sAppConfig.schemaVersion }
+      : connection);
     this.shutdownStrand = result.shutdown;
     this.resolvedTransactor = result.transactor;
     this.createEmptyCollections = result.createEmptyCollections;
@@ -365,7 +367,7 @@ export class StrandDatabase {
     // the offline queue: a replica writes no app transactions, so no queued transaction wrote an
     // `App` table and `QueuedEntriesBlockSchemaChangeError` cannot refuse it. If a replica ever
     // writes app rows offline, route this through the deferral instead of throwing.
-    await applyAppSchema(this.db!, sAppConfig.schema);
+    await applyAppSchema(this.db!, sAppConfig);
     this.config.sAppConfig = sAppConfig;
     log('StrandDatabase for strand %s attached sApp %s v%s', this.config.strandId, sAppConfig.id, sAppConfig.version);
   }

@@ -10,6 +10,7 @@ import type {
 	StrandOfflineOptions, StrandOfflineController,
 } from './types.js';
 import { applyAppSchemaOrDefer, type AppSchemaApply, type PeerConnectEvents } from './app-schema.js';
+import { offlineControllers } from './offline-controllers.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
 import { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
@@ -20,18 +21,6 @@ const timing = debug('sereus:plugin:strand:timing');
 
 /** The schemas whose tables a strand founder gives a collection: strand membership, then the sApp's. */
 const FOUNDED_SCHEMAS = ['Strand', 'App'] as const;
-
-/** The offline controller of each live strand composition composed with `offline`, by its `Database`. */
-const offlineControllers = new WeakMap<Database, StrandOfflineController>();
-
-/**
- * The offline controller of the live strand composition over `db`, or `undefined` when it was
- * composed without `offline`, has shut down, or `db` is no strand composition. For Sereus's own
- * writers, which are handed a bare `Database` and must see whether its queue holds transactions.
- */
-export function offlineControllerOf(db: Database): StrandOfflineController | undefined {
-	return offlineControllers.get(db);
-}
 
 /**
  * Minimal interface for the CollectionFactory returned by the optimystic plugin.
@@ -232,7 +221,6 @@ export async function composeStrand(
 	const {
 		strandId,
 		bootstrapNodes = [],
-		schema,
 		port = 0,
 		enableCache = true,
 		fretProfile = 'edge',
@@ -436,9 +424,20 @@ export async function composeStrand(
 		// The exception: an apply refused by queued offline transactions, or because the strand's
 		// cohort could not be reached, does not fail the connect, and is retried as the queue drains
 		// or when a peer connects. See `applyAppSchemaOrDefer`, including what `db` holds meanwhile.
-		if (schema) {
-			log('Applying sApp schema for strand %s', strandId);
-			appSchemaApply = await applyAppSchemaOrDefer(db, schema, { queue: pluginResult.offline, peers }, released.signal);
+		//
+		// The apply is gated on the App schema version the strand records (`Strand.AppSchemaVersion`,
+		// declared in step 6): a lower version than recorded fails the connect with
+		// `AppSchemaOutdatedError`, and a higher one is recorded before the apply. The founder bootstrap's
+		// `createEmptyCollections` runs after this returns and skips that table, whose collection the
+		// record committed.
+		if (options.schema) {
+			log('Applying sApp schema version %d for strand %s', options.schemaVersion, strandId);
+			appSchemaApply = await applyAppSchemaOrDefer(
+				db,
+				{ schema: options.schema, schemaVersion: options.schemaVersion },
+				{ queue: pluginResult.offline, peers },
+				released.signal,
+			);
 		}
 	} catch (err) {
 		// Clean up resources if setup fails after partial initialization.

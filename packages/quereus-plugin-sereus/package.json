@@ -109,6 +109,12 @@
 				"type": "string"
 			},
 			{
+				"key": "schema_version",
+				"label": "sApp schema version",
+				"type": "number",
+				"help": "required with schema; raise it with every schema change"
+			},
+			{
 				"key": "sapp_id",
 				"label": "sApp ID",
 				"type": "string",

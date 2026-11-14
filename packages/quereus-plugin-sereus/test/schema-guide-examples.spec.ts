@@ -6,6 +6,7 @@ import type { TableSchema } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import { applyAppSchema } from '../src/app-schema.js';
 import { fencedBlocks } from './helpers/fenced-blocks.js';
+import { applyStrandSchema } from './helpers/strand-schema.js';
 
 /**
  * Executes the fenced SQL in `docs/schema-guide.md`, so an example the engine rejects fails
@@ -96,6 +97,7 @@ async function guideDatabase(): Promise<Database> {
 	for (const fn of APP_SUPPLIED_FUNCTIONS) {
 		db.registerFunction(fn);
 	}
+	await applyStrandSchema(db);
 	return db;
 }
 
@@ -128,7 +130,7 @@ function planSql(db: Database, sql: string): void {
 }
 
 async function checkSchemaBody(db: Database, body: string): Promise<void> {
-	await applyAppSchema(db, body);
+	await applyAppSchema(db, { schema: body, schemaVersion: 1 });
 	const app = db.schemaManager.getSchema('App');
 	if (!app) {
 		throw new Error('schema App missing after apply');
@@ -144,7 +146,7 @@ async function checkSchemaBody(db: Database, body: string): Promise<void> {
 }
 
 async function checkQueries(db: Database, schemaBody: string, queries: string): Promise<void> {
-	await applyAppSchema(db, schemaBody);
+	await applyAppSchema(db, { schema: schemaBody, schemaVersion: 1 });
 	// `App` alone, so a guide table name can never resolve against `main`.
 	db.setSchemaPath(['App']);
 	// The parsed AST carries no source text, so failures name a statement by position.

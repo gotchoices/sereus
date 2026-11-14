@@ -344,6 +344,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 			transactor: 'local',
 			storage,
 			schema,
+			schemaVersion: 1,
 		});
 		return db;
 	}

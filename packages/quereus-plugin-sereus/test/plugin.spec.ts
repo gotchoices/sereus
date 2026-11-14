@@ -100,8 +100,17 @@ describe('parseConfig', () => {
 		const result = parseConfig({
 			strand_id: 'abc',
 			schema: 'table Msg (Id integer primary key, Body text)',
+			schema_version: 3,
 		}).options;
 		expect(result.schema).toBe('table Msg (Id integer primary key, Body text)');
+		expect(result.schemaVersion).toBe(3);
+	});
+
+	it('should refuse schema and schema_version given one without the other', () => {
+		expect(() => parseConfig({ strand_id: 'abc', schema: 'table Msg (Id integer primary key)' }))
+			.toThrow(/schema_version is required with schema/);
+		expect(() => parseConfig({ strand_id: 'abc', schema_version: 1 }))
+			.toThrow(/schema_version is given without schema/);
 	});
 
 	it('should parse sapp_id and sapp_version', () => {
@@ -267,6 +276,7 @@ describe('connectToStrand', () => {
 			strandId: 'test-strand-3',
 			transactor: 'test',
 			schema: 'table Message (Id integer primary key, Content text not null)',
+			schemaVersion: 1,
 		});
 
 		// The App.Message table should exist and be queryable
@@ -358,6 +368,7 @@ describe('connectToStrand', () => {
 			strandId: 'test-strand-8',
 			transactor: 'test',
 			schema: 'table TestTable (Id integer primary key, Name text)',
+			schemaVersion: 1,
 		});
 
 		// If default vtab is set correctly, tables created via `declare schema`
@@ -625,7 +636,7 @@ describe('an sApp table named like a strand table', () => {
 		// the first persisted. A MemoryRawStorage carries no store identity, so it passes
 		// through the storage-cache wrap unwrapped and the reopen is not refused.
 		const storage = new MemoryRawStorage();
-		const options = { strandId: 'test-strand-same-name', transactor: 'local' as const, storage, schema: APP_SCHEMA };
+		const options = { strandId: 'test-strand-same-name', transactor: 'local' as const, storage, schema: APP_SCHEMA, schemaVersion: 1 };
 
 		const cold = new Database();
 		const first = await connectToStrand(cold, options);
@@ -659,10 +670,10 @@ describe('applyAppSchema', () => {
 		const db = new Database();
 		try {
 			// `create unique index` parses as an ignored `create` item followed by the index.
-			await expect(applyAppSchema(db, `
+			await expect(applyAppSchema(db, { schemaVersion: 1, schema: `
 				table users (id text primary key, handle text);
 				create unique index users_handle on users(handle);
-			`)).rejects.toThrow(/1 item\(s\) the parser does not recognize/);
+			` })).rejects.toThrow(/1 item\(s\) the parser does not recognize/);
 			expect(db.schemaManager.getSchema('App')?.getAllTables() ?? []).toEqual([]);
 		} finally {
 			await db.close();
@@ -672,10 +683,10 @@ describe('applyAppSchema', () => {
 	it('refuses a seed item, before applying any of the schema', async () => {
 		const db = new Database();
 		try {
-			await expect(applyAppSchema(db, `
+			await expect(applyAppSchema(db, { schemaVersion: 1, schema: `
 				table roles (name text primary key);
 				seed roles (('admin'), ('member'));
-			`)).rejects.toThrow(/seed item\(s\) for table\(s\) roles/);
+			` })).rejects.toThrow(/seed item\(s\) for table\(s\) roles/);
 			expect(db.schemaManager.getSchema('App')?.getAllTables() ?? []).toEqual([]);
 		} finally {
 			await db.close();

@@ -19,7 +19,7 @@ const SCHEMA = `
 
 async function connect(strandId: string, storage: MemoryRawStorage): Promise<{ db: Database; result: Awaited<ReturnType<typeof connectToStrand>> }> {
 	const db = new Database();
-	const result = await connectToStrand(db, { strandId, transactor: 'local', storage, schema: SCHEMA });
+	const result = await connectToStrand(db, { strandId, transactor: 'local', storage, schema: SCHEMA, schemaVersion: 1 });
 	return { db, result };
 }
 

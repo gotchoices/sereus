@@ -2283,7 +2283,7 @@ export class StrandInstanceManager {
       return 'already-attached';
     }
     const sAppInfo = verifiedSAppInfo(strandId, sAppConfig, options.requireSignedSchemas);
-    await checkAppSchema(sAppConfig.schema);
+    await checkAppSchema(sAppConfig);
     // The check yielded, so a wake or another claim may have started meanwhile: wait out its build
     // and read the instance and config again, or the config written below would drop what a
     // resume just retained (its fresh `bootstrapNodes`).

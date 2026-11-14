@@ -1,6 +1,8 @@
 export { connectToStrand } from './connect.js';
-export { offlineControllerOf } from './compose-strand.js';
-export { applyAppSchema, checkAppSchema, AppSchemaRefusedError, appSchemaRefusalOf } from './app-schema.js';
+export { offlineControllerOf } from './offline-controllers.js';
+export {
+	applyAppSchema, checkAppSchema, AppSchemaRefusedError, AppSchemaOutdatedError, appSchemaRefusalOf, type VersionedAppSchema,
+} from './app-schema.js';
 export { createEmptyCollections, type CollectionRegistrySource } from './empty-collections.js';
 export {
 	MIN_CLUSTER_SIZE,
@@ -16,7 +18,7 @@ export {
 } from './cluster-size.js';
 export { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
 export type {
-	StrandConnectionOptions, SereusPluginResult, StrandTransactor, StrandOfflineOptions, StrandOfflineController, AppSchemaOutcome, AppSchemaWait,
+	StrandConnectionOptions, StrandAppSchemaOptions, SereusPluginResult, StrandTransactor, StrandOfflineOptions, StrandOfflineController, AppSchemaOutcome, AppSchemaWait,
 } from './types.js';
 export type { SqlCommitDurability, CommitFullyHeld } from '@optimystic/quereus-plugin-optimystic/plugin';
 export {

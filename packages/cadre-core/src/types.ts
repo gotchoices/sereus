@@ -1767,7 +1767,9 @@ export interface CadreNodeEvents {
    * watcher retries emits this on every failed attempt. A launch that fails with an
    * `AppSchemaRefusedError` (found through wrapping errors by `appSchemaRefusalOf`), meaning the
    * app's schema can never apply to the tables the strand holds, is not retried until the app
-   * claims the strand again with {@link CadreNode.addStrand}, so it emits this once.
+   * claims the strand again with {@link CadreNode.addStrand}, so it emits this once. Its subclass
+   * `AppSchemaOutdatedError` means the strand records a higher `schemaVersion` than the app's: the
+   * app must update.
    */
   'strand:error': { strandId: string; error: Error };
   'strand:idle': { strandId: string };

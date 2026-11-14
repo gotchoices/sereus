@@ -97,7 +97,7 @@ async function makeDir(label: string): Promise<string> {
 
 async function startPeer(
 	strandId: string,
-	schema: string | undefined,
+	schema: string,
 	bootstrapNodes: string[],
 	storageDir: string,
 ): Promise<PeerHandle> {
@@ -123,6 +123,7 @@ async function startPeer(
 		libp2pNode: node,
 		coordinatedRepo,
 		schema,
+		schemaVersion: 1,
 		fretProfile: 'edge',
 	});
 

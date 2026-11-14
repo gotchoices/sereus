@@ -61,6 +61,7 @@ describe('strand transactor handover: local-transactor blocks under the network 
 			const era1 = await connectToStrand(db1, {
 				strandId,
 				schema: SCHEMA,
+				schemaVersion: 1,
 				transactor: 'local',
 				storage: new FileRawStorage(dir)
 			});
@@ -86,6 +87,7 @@ describe('strand transactor handover: local-transactor blocks under the network 
 			const era2 = await connectToStrand(db2, {
 				strandId,
 				schema: SCHEMA,
+				schemaVersion: 1,
 				storage: new FileRawStorage(dir)
 			});
 			try {

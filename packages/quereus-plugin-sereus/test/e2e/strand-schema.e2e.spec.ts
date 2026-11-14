@@ -31,13 +31,14 @@ import type { SereusPluginResult } from '../../src/types.js';
 
 /**
  * Every table the Strand schema must expose on every strand — the six membership
- * tables plus the two tombstone tables (`Revocation` for retired per-row stamps,
- * `CancelledInvite` for dead invitations). Keep in sync with `schemas/strand.qsql`:
- * a table missing here is a table whose declaration nothing proves actually applies.
+ * tables, the two tombstone tables (`Revocation` for retired per-row stamps,
+ * `CancelledInvite` for dead invitations) and the App schema version record. Keep in
+ * sync with `schemas/strand.qsql`: a table missing here is a table whose declaration
+ * nothing proves actually applies.
  */
 const STRAND_TABLES = [
 	'Header', 'Invite', 'ConsumedInvite', 'Member', 'MemberPeer', 'Manager',
-	'Revocation', 'CancelledInvite',
+	'Revocation', 'CancelledInvite', 'AppSchemaVersion',
 ] as const;
 
 async function selectCount(db: Database, sql: string): Promise<number> {
@@ -102,11 +103,12 @@ describe('Strand membership schema (apply e2e)', () => {
 			storage,
 			// An sApp schema is also supplied to prove the two schemas coexist.
 			schema: 'table Note (Id integer primary key, Body text not null)',
+			schemaVersion: 1,
 		});
 
-		// Every Strand table is queryable (empty, but no error).
+		// Every Strand table is queryable. The one row is the App schema version this connect recorded.
 		for (const table of STRAND_TABLES) {
-			expect(await selectCount(db, `select count(*) as c from Strand.${table}`)).toBe(0);
+			expect(await selectCount(db, `select count(*) as c from Strand.${table}`)).toBe(table === 'AppSchemaVersion' ? 1 : 0);
 		}
 
 		// Strand.* and App.* coexist in the same DB without name collision.

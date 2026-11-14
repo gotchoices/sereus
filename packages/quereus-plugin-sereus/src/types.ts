@@ -19,13 +19,32 @@ import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfi
  */
 export type StrandTransactor = 'local' | 'network' | 'test';
 
-export interface StrandConnectionOptions {
+/**
+ * The sApp schema a connection applies, and its version: both or neither, so a schema cannot reach the
+ * strand without the number its version gate compares (docs/strands.md → "Until then: every member on
+ * the same schema version").
+ */
+export type StrandAppSchemaOptions =
+	| {
+		/** sApp schema DDL to apply, as the body of `declare schema App { … }`. */
+		schema: string;
+		/**
+		 * Version of {@link schema}: a whole number of at least 1 the app raises with every change to it.
+		 * The connect refuses with `AppSchemaOutdatedError` when the strand records a higher one.
+		 */
+		schemaVersion: number;
+	}
+	/** No sApp schema: a storage replica, or a connection to the strand's tables alone. */
+	| { schema?: undefined; schemaVersion?: undefined };
+
+export type StrandConnectionOptions = StrandConnectionBaseOptions & StrandAppSchemaOptions;
+
+/** {@link StrandConnectionOptions} apart from the sApp schema. */
+export interface StrandConnectionBaseOptions {
 	/** UUID of the strand to connect to */
 	strandId: string;
 	/** Bootstrap multiaddrs for peer discovery */
 	bootstrapNodes?: string[];
-	/** sApp schema DDL to apply (optional - omit if schema already exists on strand) */
-	schema?: string;
 	/** sApp author public key */
 	sAppId?: string;
 	/** sApp version */

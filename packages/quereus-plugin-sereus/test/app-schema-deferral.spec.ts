@@ -4,6 +4,7 @@ import { PromiseShortfallError, type ICohortReachability, type ITransactor } fro
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { applyRegistrations } from '../src/compose-strand.js';
 import { applyAppSchema, applyAppSchemaOrDefer, AppSchemaRefusedError, appSchemaRefusalOf, type PeerConnectEvents } from '../src/app-schema.js';
+import { applyStrandSchema } from './helpers/strand-schema.js';
 
 /**
  * Step 7 of `composeStrand` when queued offline transactions refuse the sApp schema apply: the
@@ -82,7 +83,8 @@ const noteIndexes = (db: Database): string[] =>
  * the mode, so the queue it meets is what `hydrate` restored.
  */
 async function queueOneNote(db: Database, plugin: ReturnType<typeof registerOffline>) {
-	await applyAppSchema(db, SCHEMA);
+	await applyStrandSchema(db);
+	await applyAppSchema(db, { schema: SCHEMA, schemaVersion: 1 });
 	plugin.offline.enter();
 	await db.exec(`insert into App.Note (Id, Body) values (1, 'queued')`);
 	plugin.offline.exit();
@@ -99,7 +101,7 @@ describe('applyAppSchemaOrDefer', () => {
 		try {
 			const queued = await queueOneNote(db, plugin);
 
-			const apply = await applyAppSchemaOrDefer(db, UPGRADED, { queue: plugin.offline }, new AbortController().signal);
+			const apply = await applyAppSchemaOrDefer(db, { schema: UPGRADED, schemaVersion: 1 }, { queue: plugin.offline }, new AbortController().signal);
 			expect(apply.appSchemaWaitingFor).toBe('queue');
 			expect(apply.appSchemaDeferredBy).toEqual([queued.transactionId]);
 			expect(noteIndexes(db)).toEqual([]);
@@ -120,7 +122,7 @@ describe('applyAppSchemaOrDefer', () => {
 		const plugin = registerOffline(db, gate);
 		try {
 			await queueOneNote(db, plugin);
-			const apply = await applyAppSchemaOrDefer(db, UPGRADED, { queue: plugin.offline }, new AbortController().signal);
+			const apply = await applyAppSchemaOrDefer(db, { schema: UPGRADED, schemaVersion: 1 }, { queue: plugin.offline }, new AbortController().signal);
 
 			await db.beginTransaction();
 			await db.exec(`insert into App.Note (Id, Body) values (2, 'rolled back')`);
@@ -144,10 +146,11 @@ describe('applyAppSchemaOrDefer', () => {
 		const db = new Database();
 		const plugin = registerOnline(db);
 		try {
-			await applyAppSchema(db, 'table T (Id integer primary key)');
+			await applyStrandSchema(db);
+			await applyAppSchema(db, { schema: 'table T (Id integer primary key)', schemaVersion: 1 });
 			await db.exec('insert into App.T (Id) values (1)');
 
-			const failure: unknown = await applyAppSchemaOrDefer(db, 'table T (Id integer primary key, At text not null)', {}, new AbortController().signal)
+			const failure: unknown = await applyAppSchemaOrDefer(db, { schema: 'table T (Id integer primary key, At text not null)', schemaVersion: 1 }, {}, new AbortController().signal)
 				.then(() => undefined, (err: unknown) => err);
 			expect(failure).toBeInstanceOf(AppSchemaRefusedError);
 			expect(causeChain(failure).some(at => at instanceof QuereusError && at.code === StatusCode.CONSTRAINT)).toBe(true);
@@ -192,6 +195,7 @@ describe('applyAppSchemaOrDefer', () => {
 			const plugin = registerOnline(db);
 			plugin.collectionFactory.registerTransactor('local:libp2p', transactor);
 			await plugin.hydrate(db);
+			await applyStrandSchema(db);
 			return { db, plugin };
 		}
 
@@ -216,7 +220,7 @@ describe('applyAppSchemaOrDefer', () => {
 		])('keeps the earlier schema through %s, and a retry saves it once the cohort returns', async (_change, upgraded) => {
 			const store = await refusingStore();
 			const founding = await open(store.transactor);
-			await applyAppSchema(founding.db, SCHEMA);
+			await applyAppSchema(founding.db, { schema: SCHEMA, schemaVersion: 1 });
 			await founding.db.exec(`insert into App.Note (Id, Body) values (1, 'kept')`);
 			await close(founding);
 
@@ -226,7 +230,7 @@ describe('applyAppSchemaOrDefer', () => {
 			const released = new AbortController();
 			try {
 				store.down = true;
-				const apply = await applyAppSchemaOrDefer(db, upgraded, { peers }, released.signal);
+				const apply = await applyAppSchemaOrDefer(db, { schema: upgraded, schemaVersion: 1 }, { peers }, released.signal);
 				expect(apply.appSchemaWaitingFor).toBe('cohort');
 				expect(noteIndexes(db)).toEqual([]);
 				expect(db.schemaManager.findTable('Later', 'App')).toBeUndefined();
@@ -248,7 +252,7 @@ describe('applyAppSchemaOrDefer', () => {
 			store.down = true;
 			const reopened = await open(store.transactor);
 			try {
-				await applyAppSchema(reopened.db, upgraded);
+				await applyAppSchema(reopened.db, { schema: upgraded, schemaVersion: 1 });
 				expect(await selectAll(reopened.db, 'select Id, Body from App.Note')).toEqual([{ Id: 1, Body: 'kept' }]);
 				expect(await selectAll(reopened.db, `select Id from App.Note where Body = 'kept'`)).toEqual([{ Id: 1 }]);
 			} finally {
@@ -259,13 +263,13 @@ describe('applyAppSchemaOrDefer', () => {
 		it('fails a refused apply that dropped a column, instead of retrying it to a false success', async () => {
 			const store = await refusingStore();
 			const founding = await open(store.transactor);
-			await applyAppSchema(founding.db, WITH_EXTRA);
+			await applyAppSchema(founding.db, { schema: WITH_EXTRA, schemaVersion: 1 });
 			await close(founding);
 
 			const restarted = await open(store.transactor);
 			try {
 				store.down = true;
-				const failure: unknown = await applyAppSchemaOrDefer(restarted.db, SCHEMA, {}, new AbortController().signal)
+				const failure: unknown = await applyAppSchemaOrDefer(restarted.db, { schema: SCHEMA, schemaVersion: 1 }, {}, new AbortController().signal)
 					.then(() => undefined, (err: unknown) => err);
 				expect(failure).toBeInstanceOf(Error);
 				expect((failure as Error).message).toMatch(/super-majority/);

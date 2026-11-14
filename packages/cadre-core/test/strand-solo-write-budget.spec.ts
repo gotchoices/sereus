@@ -61,7 +61,7 @@ const within = scopedWithin('strand-write-budget');
  * a budget with no provenance cannot tell the next reader whether the count
  * grew or the budget was always wrong.
  */
-const MEASURED_ON = '2026-10-20';
+const MEASURED_ON = '2026-11-13';
 /**
  * The `../optimystic` commit these figures were measured against. At `03ffadc4` (2026-09-17)
  * the SELECT phase fell to zero backend operations, when that repo made a refresh of an
@@ -82,14 +82,21 @@ const MEASURED_ON = '2026-10-20';
  * Re-measured whole at `b7d70516` on 2026-10-20, three runs identical: insert and select equal
  * the `28e6e044` figures, and launch moved from this side (`strand-founding-writes-batched`,
  * explained on {@link LAUNCH}).
+ *
+ * Re-measured whole at `087bfc11` on 2026-11-13, three runs identical: insert and select equal
+ * the `b7d70516` figures, and launch moved from this side (`app-schema-version-gates-strand-open`,
+ * explained on {@link LAUNCH}).
  */
-const BASELINE_UPSTREAM = 'optimystic b7d70516';
+const BASELINE_UPSTREAM = 'optimystic 087bfc11';
 /**
  * Launch: `addStrand` on an empty store — strand libp2p node up, Strand
- * membership schema (8 tables + 1 index) + the one-table sApp schema applied,
+ * schema (9 tables + 1 index) applied, the App schema version recorded (its row creates
+ * `Strand.AppSchemaVersion`'s collection), the one-table sApp schema applied,
  * open-strand founder bootstrap: an empty collection for each of the 11 declared trees the
  * founding transaction does not write (7 strand tables, 3 unique stamp indexes, `App.Note`),
- * then the founding transaction, whose Header row creates that table's collection. 366 over
+ * then the founding transaction, whose Header row creates that table's collection. 393 over
+ * 42 blocks. The version record is 27 of those over 3 blocks: one pend on each new block, at the
+ * 9 operations per block every other pend here costs (2 reads, 7 writes). Before it, 366 over
  * 39 blocks. At 380, when the Header had an empty commit of its own before its row, the empty
  * collections were 300 of those operations over 22 of the blocks, about 25 operations per
  * collection, each a separate commit; the other 80 over 17 were the launch as it was before
@@ -114,7 +121,7 @@ const BASELINE_UPSTREAM = 'optimystic b7d70516';
  * same batched launch measured 322 uncached on 2026-09-14 (155 of them `getMetadata`), before
  * the empty collections.
  */
-const LAUNCH: Budget = { ops: 366, blocks: 39, opBudget: 380, blockBudget: 42 };
+const LAUNCH: Budget = { ops: 393, blocks: 42, opBudget: 407, blockBudget: 45 };
 /**
  * Insert: {@link ROW_COUNT} single-row autocommit inserts into `App.Note`.
  * 78 over 2 blocks — nearly all writes (the cache absorbs the transactor's
@@ -154,7 +161,7 @@ const INSERT: Budget = { ops: 78, blocks: 2, opBudget: 88, blockBudget: 4 };
  * backend operation reappearing on this path is now a failure to explain. Two things keep the
  * zero from being a blind counter. Each select asserts it saw all {@link ROW_COUNT} inserted
  * rows, so the phase provably ran and returned the data at zero backend operations. And
- * launch (366) and insert (78) are counted through the same `CountingRawStorage` instance, on
+ * launch (393) and insert (78) are counted through the same `CountingRawStorage` instance, on
  * the same node, in the same run, immediately before these selects — so those two phases,
  * which have real slack, carry the spec's anti-vacuity duty.
  */

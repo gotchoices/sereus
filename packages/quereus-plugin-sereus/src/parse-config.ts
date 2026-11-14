@@ -1,5 +1,5 @@
 import type { SqlValue } from '@quereus/quereus';
-import type { StrandConnectionOptions, StrandTransactor } from './types.js';
+import type { StrandAppSchemaOptions, StrandConnectionOptions, StrandTransactor } from './types.js';
 
 type FretProfile = NonNullable<StrandConnectionOptions['fretProfile']>;
 
@@ -19,6 +19,7 @@ interface SettingTypes {
 	strand_id: string;
 	bootstrap_nodes: string[];
 	schema: string;
+	schema_version: number;
 	sapp_id: string;
 	sapp_version: string;
 	port: number;
@@ -60,6 +61,11 @@ const PORT: Setting<number> = {
 	read: raw => (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= 65535 ? raw : undefined),
 };
 
+const SCHEMA_VERSION: Setting<number> = {
+	expected: 'a whole number of at least 1',
+	read: raw => (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 1 ? raw : undefined),
+};
+
 /** 0 and 1 are accepted because SQL has no boolean type. */
 const FLAG: Setting<boolean> = {
 	expected: 'true, false, 1 or 0',
@@ -88,6 +94,7 @@ const SETTINGS: { readonly [K in SettingKey]: Setting<SettingTypes[K]> } = {
 	strand_id: { ...TEXT, required: true },
 	bootstrap_nodes: COMMA_LIST,
 	schema: TEXT,
+	schema_version: SCHEMA_VERSION,
 	sapp_id: TEXT,
 	sapp_version: TEXT,
 	port: PORT,
@@ -116,6 +123,7 @@ export function parseConfig(config: Record<string, SqlValue>): ParsedPluginConfi
 	const problems: string[] = [];
 	const values = readSettings(config, problems);
 	problems.push(...unknownKeyProblems(config));
+	problems.push(...schemaPairProblems(values));
 	// `strand_id` is undefined only alongside its own "required" problem.
 	const strandId = values.strand_id;
 	if (problems.length > 0 || strandId === undefined) {
@@ -149,6 +157,22 @@ function readSettingInto<K extends SettingKey>(
 	values[key] = value;
 }
 
+/** `schema` and `schema_version` are given together: the version is what the strand's version gate compares. */
+function schemaPairProblems(values: Partial<SettingTypes>): string[] {
+	if (values.schema !== undefined && values.schema_version === undefined) {
+		return ['schema_version is required with schema'];
+	}
+	if (values.schema === undefined && values.schema_version !== undefined) {
+		return ['schema_version is given without schema'];
+	}
+	return [];
+}
+
+/** The schema pair, once {@link schemaPairProblems} has refused one without the other. */
+function appSchemaOptions({ schema, schema_version: schemaVersion }: Partial<SettingTypes>): StrandAppSchemaOptions {
+	return schema === undefined || schemaVersion === undefined ? {} : { schema, schemaVersion };
+}
+
 function unknownKeyProblems(config: Record<string, SqlValue>): string[] {
 	return Object.keys(config)
 		.filter(key => !Object.hasOwn(SETTINGS, key))
@@ -175,7 +199,7 @@ function toParsedConfig(strandId: string, values: Partial<SettingTypes>): Parsed
 		options: {
 			strandId,
 			bootstrapNodes: values.bootstrap_nodes ?? [],
-			schema: values.schema,
+			...appSchemaOptions(values),
 			sAppId: values.sapp_id ?? 'unknown',
 			sAppVersion: values.sapp_version ?? '1.0.0',
 			port: values.port ?? 0,
