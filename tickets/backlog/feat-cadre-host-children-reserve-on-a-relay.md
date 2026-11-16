@@ -1,4 +1,5 @@
 ---
+prereq: node-hosts-carry-webrtc
 description: A home machine running cadre-host behind carrier-grade NAT, or a router that refuses port mapping, cannot be reached from the internet, because cadre-host has no way to point the nodes it runs at a relay. The underlying node program already supports relays; cadre-host just never passes one through.
 architecture: docs/cadre-host.md#nat-and-ddns
 files: packages/cadre-host/src/orchestrator/host-process-orchestrator.ts, packages/cadre-host/src/nat/nat-service.ts, packages/cadre-host/src/nat/address-resolver.ts, packages/cadre-cli/src/config/env.ts, docs/cadre-host.md
@@ -35,3 +36,7 @@ The `cadre-host` row of `docs/architecture.md` → "Which nodes can be reached t
 ## Note from planning `cadre-host-node-reachability`
 
 `cadre-host-nat-per-node-mappings` removes `NatService.getInviteAddresses` and the invite-address push. Each hosted node instead gets its public addresses at spawn as `CADRE_APPEND_ANNOUNCE_ADDRS` (`cadre-host-nodes-announce-public-addresses`), computed by `buildPublicAddresses` in `address-resolver.ts`, and status reports a per-node verdict with a CGNAT reason that points here. So the "invite addresses include the relayed address" bullet above becomes: a node holding a reservation publishes its `/p2p-circuit` address through cadre-core's own `collectSelfAddrs` (no host involvement), and the per-node verdict in `/nat/status` counts a held reservation as reachable.
+
+## Arm: turn on WebRTC for children given a relay
+
+Added 2026-11-16. `node-hosts-carry-webrtc` adds cadre-cli's opt-in `network.webrtc` (env `CADRE_WEBRTC`). The project owner decided that cadre-host turns it on for every child it starts with a relay, so a home machine behind carrier-grade NAT can move its connections with phones and browsers from the relay to a direct WebRTC path wherever ICE connects. Pass `CADRE_WEBRTC=true` beside `CADRE_RELAY_ADDRS` in the child env block of `host-process-orchestrator.ts`, and say in `docs/cadre-host.md` that relayed children also offer WebRTC. That ticket records whether `node-datachannel` loads on the platforms cadre-host supports; a platform without it needs the flag left off there.
