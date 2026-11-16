@@ -24,8 +24,9 @@
  * replaced by the host's copy of the table while its participant table stayed forked for
  * good. Both writes had reported success. `addStrand` now resolves only once the joiner
  * has received the strand's `Strand.Header` from a peer (the first-sync write gate,
- * `docs/strands.md` → "Joining"), so the write-immediately shape converges; and a joiner
- * that can reach nobody is told so instead of being handed a database it would fork.
+ * `docs/strands/formation.md` → "Joining: no writes before the first sync"), so the
+ * write-immediately shape converges; and a joiner that can reach nobody is told so
+ * instead of being handed a database it would fork.
  *
  * ── Topology ──
  *

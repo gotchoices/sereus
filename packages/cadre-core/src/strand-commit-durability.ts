@@ -26,7 +26,7 @@ export interface StrandCommitDurability {
    * The party's other machines known to hold this strand that do not hold this commit yet: those
    * not in `report.durability.overall.cohortPeerIds`, or named in its `unconfirmed`. Empty when
    * {@link heldElsewhere} is true. Absent on a node offering no offline mode, which does not track them.
-   * Empty with `heldElsewhere` false does not prove a cadre of one (docs/strands.md → "A commit's durability").
+   * Empty with `heldElsewhere` false does not prove a cadre of one (docs/strands/writes.md → "A commit's durability").
    */
   readonly awaitedMachines?: readonly PartyStrandPeer[];
   /** The plugin's report, for per-table detail. */

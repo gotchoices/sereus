@@ -1,7 +1,7 @@
 /**
  * join-cadre.svelte.ts — state of the Cadre page's "Join my existing cadre" card: this tab
  * joins the cadre another Sereus app already holds, carrying what its own cadre held, then
- * removes the cadre it left (docs/architecture.md → "An app joins an existing cadre"). The
+ * removes the cadre it left (docs/cadre/apps.md → "An app joins an existing cadre"). The
  * browser counterpart of the phone app's `use-join-flow.ts`.
  *
  * Module state, not component state: the router unmounts the page on every route change, and

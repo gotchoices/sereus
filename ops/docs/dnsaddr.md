@@ -1,118 +1,90 @@
-## DNSADDR (recommended)
+# Publishing relay addresses with DNSADDR
 
-Goal: avoid hardcoding IPs and Peer IDs in clients by publishing **stable DNS names** that resolve to one or more concrete libp2p multiaddrs.
+A DNSADDR record lets a node be configured with a name, `/dnsaddr/relay.example.org/p2p/<PEER_ID>`, instead of a host, a port and a transport. The operator can then change a port, add a transport or move the relay to another IP address by editing DNS, without touching any node's configuration. This page is for the relay operator who creates the records.
 
-In apps/config, you can then refer to:
-- `/dnsaddr/relay.sereus.org`
+Publishing DNSADDR records is optional. A node can also be configured with a full address such as `/dns4/relay.example.org/tcp/4011/ws/p2p/<PEER_ID>`.
 
-Note: throughout this doc, `relay.sereus.org` is used as the worked example, but the **exact same DNSADDR pattern** applies to any infra hostname you publish.
+Related: [relay runbook](../docker/README.md) · [identity key and peer ID](keys.md) · [STUN](ice-servers.md)
 
-### How DNS resolution works (in this repo)
-libp2p’s DNSADDR resolver queries **TXT** records at:
-- `_dnsaddr.<hostname>` (example: `_dnsaddr.relay.sereus.org`)
+## How DNSADDR resolution works
 
-Each TXT record must contain:
-- `dnsaddr=<multiaddr>`
+To dial `/dnsaddr/<hostname>`, libp2p queries the TXT records at `_dnsaddr.<hostname>`. Each record holds `dnsaddr=<multiaddr>`, and the multiaddr must end in `/p2p/<peerId>`, so that the dialler learns which peer it should find there.
 
-The `<multiaddr>` must include `/p2p/<peerId>` so clients learn the peer identity.
+The dialler receives every record and uses the ones it has a transport for. When the dialled address itself ends in `/p2p/<PEER_ID>`, as a cadre node's relay address always does, libp2p keeps only the records for that peer ID.
 
-### Example (single relay)
-1) Point the hostname at the server (Namecheap-style)
+## Records for one relay
 
-You generally want `relay.sereus.org` to resolve to the server’s public IP:
-- If your server has **IPv4**: create an **A** record
-- If your server has **IPv6**: create an **AAAA** record
-- If you already have another hostname pointing at the same server (e.g. `relay-1.sereus.org`) and you want `relay.sereus.org` to follow it: create a **CNAME** record pointing to that hostname
+### 1. Point the host name at the server
 
-Examples:
-- **A**: `relay.sereus.org -> 203.0.113.10`
-- **AAAA**: `relay.sereus.org -> 2001:db8::10`
-- **CNAME**: `relay.sereus.org -> relay-1.sereus.org`
+Create an A record for the relay's host name, and an AAAA record if the server has IPv6. A CNAME to another name that has those records also works.
 
-Notes:
-- A CNAME points to another name; you still need an A/AAAA somewhere in the chain.
-- Many operators use A (and optional AAAA) for simplicity/stability.
-
-2) Start the service and read the Peer ID from logs:
-- look for `peerId=<PEER_ID>`
-
-3) Publish the DNSADDR TXT record(s)
-
-The libp2p DNSADDR resolver queries TXT records at:
-- `_dnsaddr.relay.sereus.org`
-
-**Publish one TXT record per transport the relay actually listens on.** A client
-resolving `/dnsaddr/relay.sereus.org` receives *all* the records and dials the one it can
-use: desktop/server peers dial `tcp`, while **React Native phones and browsers cannot dial
-raw TCP** — they can only reach the relay over WebSockets (`/ws`, or `/wss` behind TLS).
-The relay image listens on **both TCP and WebSockets** by default, so a relay that
-publishes only its `tcp` record is unreachable to phones and browsers.
-
-For the default relay, publish **two** records — same **Host/Name**, same **`<PEER_ID>`**,
-differing only by transport/port:
-
-| Host/Name | Type | Value |
+| Name | Type | Value |
 | --- | --- | --- |
-| `_dnsaddr.relay` | `TXT` | `dnsaddr=/dns4/relay.sereus.org/tcp/<HOST_PORT>/p2p/<PEER_ID>` |
-| `_dnsaddr.relay` | `TXT` | `dnsaddr=/dns4/relay.sereus.org/tcp/<HOST_WS_PORT>/ws/p2p/<PEER_ID>` |
+| `relay.example.org` | `A` | `203.0.113.10` |
+| `relay.example.org` | `AAAA` | `2001:db8::10` |
 
-(Some DNS UIs want the full `_dnsaddr.relay.sereus.org` as the Host/Name.) Clients can now
-dial `/dnsaddr/relay.sereus.org`.
+### 2. Get the peer ID
 
-> **Publish the HOST port, not the container port.** Each `<port>` above is the port
-> reachable from *outside* the container — the `HOST_*` value from `env.local` (defaults:
-> `HOST_PORT=4001` for TCP, `HOST_WS_PORT=4011` for WebSockets). The relay maps host `4011`
-> → container `4002`, so the WebSocket record uses **4011**, not 4002. Publishing the
-> container port is a common, silent mistake — the record resolves but nothing answers.
+Start the relay and read the `relay peerId=<PEER_ID>` line from its log. The peer ID stays the same for as long as the relay keeps its key; see [`keys.md`](keys.md).
 
-**Browsers on https / phones over the WAN need `wss`, not plain `ws`.** A browser on an
-https page cannot dial insecure `ws` (mixed content). To serve those, front the relay with
-your own TLS reverse proxy and publish a third record with the `/tls/ws` shape:
-- **Value**: `dnsaddr=/dns4/relay.sereus.org/tcp/<TLS_PORT>/tls/ws/p2p/<PEER_ID>`
+### 3. Publish one TXT record per transport
 
-Add the `wss` record only once the TLS front is actually running, on whatever port that
-front terminates on (it need not be 443 — the relay may co-locate with another web server).
+With the Docker stack, `./svc dns` prints the exact records. They are:
 
-### Multiple nodes behind one DNS name
-This is a **separate axis** from the per-transport records above: transports advertise the
-*same* node reached different ways, whereas the records below advertise *different* nodes.
-They combine — each node publishes one record per transport it serves, all under the same
-`_dnsaddr.<hostname>`.
+| Name | Type | Value |
+| --- | --- | --- |
+| `_dnsaddr.relay.example.org` | `TXT` | `dnsaddr=/dns4/relay.example.org/tcp/<HOST_PORT>/p2p/<PEER_ID>` |
+| `_dnsaddr.relay.example.org` | `TXT` | `dnsaddr=/dns4/relay.example.org/tcp/<HOST_WS_PORT>/ws/p2p/<PEER_ID>` |
 
-Add multiple TXT records under the same `_dnsaddr.<hostname>`:
-- `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay-1.sereus.org/tcp/<HOST_PORT_1>/p2p/<PEER_ID_1>`
-- `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay-2.sereus.org/tcp/<HOST_PORT_2>/p2p/<PEER_ID_2>`
+Both records have the same name and the same peer ID. Some DNS providers want only the part of the name inside the zone, here `_dnsaddr.relay`.
 
-Practical DNS UI guidance:
-- This is **multiple TXT records** with the **same Host/Name** (`_dnsaddr.relay`) but different Values.
-- Add one TXT record per relay node you want clients to be able to dial.
+Publish both. Servers and desktop machines dial the TCP record. Phones and browsers have no raw-TCP transport and can use only the WebSocket record, so a relay that publishes only its TCP record cannot be reached by them.
 
-This enables:
-- adding capacity by adding TXT records
-- removing compromised/dead nodes by removing TXT records
-- no app redeploy required
+### Publish the host port, not the container port
 
-### Verify DNS is working (dig)
-After you save DNS changes, it may take time to propagate (depending on TTL and Namecheap timing).
+Each port in a record is the port reachable from outside: the `HOST_PORT` and `HOST_WS_PORT` values from the stack's `env.local` (defaults `4001` and `4011`), or the `PUBLIC_TCP_PORT` and `PUBLIC_WS_PORT` values when a router forwards different ports. The stack maps host port `4011` to container port `4002`, so the WebSocket record carries `4011`. A record that names `4002` resolves and nothing answers on it.
 
-Check the host record:
+## Serving browsers over https
+
+A browser page served over https cannot open a plain `ws` connection. To serve such pages:
+
+1. Run a TLS reverse proxy in front of the relay's WebSocket port. It can listen on any port.
+2. Publish a third TXT record under the same name: `dnsaddr=/dns4/relay.example.org/tcp/<TLS_PORT>/tls/ws/p2p/<PEER_ID>`. Add it only once the proxy is running.
+3. Set `ANNOUNCE_ADDRS` on the relay so that it advertises the proxied address as well. `ANNOUNCE_ADDRS` replaces the whole advertised set, so list every address:
 
 ```bash
-dig +short relay.sereus.org A
-dig +short relay.sereus.org AAAA
+ANNOUNCE_ADDRS=/dns4/relay.example.org/tcp/4001,/dns4/relay.example.org/tcp/4011/ws,/dns4/relay.example.org/tcp/443/tls/ws
 ```
 
-Check the DNSADDR TXT record(s):
+[`libp2p-infra/README.md`](../docker/libp2p-infra/README.md#advertised-addresses) explains how the relay chooses what it advertises.
+
+## Several relays under one name
+
+Several relays can publish under one `_dnsaddr.<hostname>`. Each relay contributes one record per transport, with its own host name and its own peer ID:
+
+| Name | Type | Value |
+| --- | --- | --- |
+| `_dnsaddr.relay.example.org` | `TXT` | `dnsaddr=/dns4/relay-1.example.org/tcp/4011/ws/p2p/<PEER_ID_1>` |
+| `_dnsaddr.relay.example.org` | `TXT` | `dnsaddr=/dns4/relay-2.example.org/tcp/4011/ws/p2p/<PEER_ID_2>` |
+
+A cadre node's relay address names one relay's peer ID, so a node that should use both relays lists two addresses: `/dnsaddr/relay.example.org/p2p/<PEER_ID_1>` and `/dnsaddr/relay.example.org/p2p/<PEER_ID_2>`. DNS then decides how each relay is reached. It does not add a relay to a node that was not configured with that relay's peer ID.
+
+Apps derive the STUN server from the name in the relay address, so the shared name (`relay.example.org`) also needs an A record that points at one of the relays; see [`ice-servers.md`](ice-servers.md#how-clients-find-it).
+
+## Verifying the records
+
+DNS changes take time to propagate, depending on the record's TTL. Check the host record and the TXT records:
 
 ```bash
-dig +short _dnsaddr.relay.sereus.org TXT
+dig +short relay.example.org A
+dig +short relay.example.org AAAA
+dig +short _dnsaddr.relay.example.org TXT
 ```
 
-If you want to query specific resolvers:
+To ask a specific public resolver:
 
 ```bash
-dig @1.1.1.1 +short _dnsaddr.relay.sereus.org TXT
-dig @8.8.8.8 +short _dnsaddr.relay.sereus.org TXT
+dig @1.1.1.1 +short _dnsaddr.relay.example.org TXT
 ```
 
-
+Then dial every published record with `check-node.mjs --target /dnsaddr/relay.example.org --relay --all`; see [`../test/README.md`](../test/README.md).

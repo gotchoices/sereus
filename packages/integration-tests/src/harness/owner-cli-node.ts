@@ -8,7 +8,7 @@
  * directory), apart from its identity; `getOwnerKey` reads the key back from the admin channel.
  *
  * Spawned directly because no product code runs an owner node as a child: owner keys stay on
- * devices people hold (docs/cadre-host.md → Control-plane separation).
+ * devices people hold (docs/hosting/cadre-host.md → Control-plane separation).
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';

@@ -1,6 +1,6 @@
 /**
  * Rent a node from a hosting provider and add it to this node's cadre, by whichever of the two
- * join paths fits (`docs/architecture.md` → "Renting a node from an app"):
+ * join paths fits (`docs/hosting/provider.md` → "Renting a node from an app"):
  *
  * - **invitation**, when the cadre has a member the container can reach from the provider's
  *   network (`CadreNode.invitationReach()` reads `anywhere`): mint a single-use, non-owner

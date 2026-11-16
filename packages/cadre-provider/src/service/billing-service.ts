@@ -290,7 +290,7 @@ export class BillingService {
 
   /**
    * Write what the operator's payment processor reports about a customer's subscription: the
-   * one write its webhook makes (README → Custom Billing). Only writes fields; `lapsesAt` is
+   * one write its webhook makes (README → Billing). Only writes fields; `lapsesAt` is
    * cleared whenever the result is not `past-due`, since it means nothing otherwise.
    *
    * @throws when the customer has no billing record, or when asked to write `lapsed`.

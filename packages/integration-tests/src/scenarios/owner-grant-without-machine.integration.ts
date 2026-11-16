@@ -1,5 +1,5 @@
 /**
- * E2E: an owner grant makes a key an owner with no machine admitted (`docs/architecture.md` →
+ * E2E: an owner grant makes a key an owner with no machine admitted (`docs/cadre/owner-keys.md` →
  * "Owner grants").
  *
  * Machines:

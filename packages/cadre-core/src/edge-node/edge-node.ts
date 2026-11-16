@@ -824,7 +824,7 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 	// pass-throughs. If any of them grows further, move it to a module of its own over a narrow
 	// view of this runtime, as the join is.
 
-	/** docs/architecture.md → "Dissolving the party it left". */
+	/** docs/cadre/apps.md → "Dissolving the party it left". */
 	private async dissolve(discard: readonly string[]): Promise<void> {
 		await this.finishMarkedRemoval();
 		const { node, running, formerPartyId } = this.runningWithFormerParty();
@@ -882,7 +882,7 @@ class EdgeNodeRuntime implements EdgeNode, JoinRuntime, OwnerGrantRuntime {
 	 * node stops, which it made while running, is still answered.
 	 *
 	 * NOTE: a device removed while its app was not running never sees its own row live after the
-	 * next start, so it never reports (docs/architecture.md → "The removed machine learns it"), and
+	 * next start, so it never reports (docs/cadre/removing-machines.md → "The removed machine learns of it"), and
 	 * keeps the party's data while every other machine refuses it. If users meet this, persist
 	 * "seen live" per party so the rule survives a restart.
 	 */

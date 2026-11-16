@@ -14,7 +14,7 @@
  * is not a React Refresh boundary (any library or `dist` module) makes the phone reload,
  * logging `[reload] (no reason given)` with `performFullRefresh` as the caller, so a
  * block printed here at the same moment as a reload names the file that caused it.
- * See docs/reference-app-rn.md § Device test runs.
+ * See docs/contributing/device-testing.md § Device test runs.
  *
  * The bundle URL comes from the dev server's manifest (what the dev client itself
  * requests), so it matches the phone's graph and joins the phone's HMR group. Joining

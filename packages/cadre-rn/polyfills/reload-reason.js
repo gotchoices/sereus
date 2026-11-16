@@ -24,7 +24,7 @@
  * the Metro terminal) do not pass through JS and print nothing.
  *
  * Logged with console.warn, which logcat shows as `W ReactNativeJS`.
- * See docs/reference-app-rn.md § Device test runs.
+ * See docs/contributing/device-testing.md § Device test runs.
  */
 
 import { DevSettings } from 'react-native';

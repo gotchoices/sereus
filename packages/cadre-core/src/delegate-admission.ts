@@ -8,7 +8,7 @@
  * including a co-cadre relay — can recompute it: a sibling's relay sees an
  * unknown peerId it has no way to place as a member.
  *
- * The resolution (docs/strands.md → "Relay willingness"): a party control
+ * The resolution (docs/network/relay.md → "Who a relay is willing to serve"): a party control
  * node running a relay is party-private infrastructure — it relays for its own
  * party's nodes, including the extra transport identities its members' strand
  * nodes run as. The mechanism is a **member-announced delegate grant**: before

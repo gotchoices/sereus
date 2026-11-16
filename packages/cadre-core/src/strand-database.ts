@@ -70,11 +70,11 @@ export interface StrandDatabaseConfig extends StrandCommitListeners {
    */
   bindFounderPeer?: boolean;
   /**
-   * Turn on the connection's offline queue (docs/strands.md → "Offline mode"). Absent: no queue,
+   * Turn on the connection's offline queue (docs/strands/writes.md → "Offline mode"). Absent: no queue,
    * and {@link StrandDatabase.offline} is undefined.
    */
   offline?: StrandDatabaseOffline;
-  /** Where to report the `App` schema apply when it is held back (docs/strands.md → "An app schema upgrade waits for the queue or the cohort"). */
+  /** Where to report the `App` schema apply when it is held back (docs/strands/app-schema.md → "An app schema upgrade waits for the queue or the cohort"). */
   appSchema?: StrandAppSchemaListeners;
   /**
    * The party's other machines known to hold the strand (`StrandPartyMachines.machines`), named in
@@ -410,7 +410,7 @@ export class StrandDatabase {
   }
 
   /**
-   * The strand connection's offline queue (docs/strands.md → "Offline mode"), or `undefined` on a
+   * The strand connection's offline queue (docs/strands/writes.md → "Offline mode"), or `undefined` on a
    * node without `strandOffline`. The mode is set through `CadreNode.setStrandOfflineMode`, which
    * outlives this database; listeners taken here die with it, as {@link watchTables} subscriptions do.
    */

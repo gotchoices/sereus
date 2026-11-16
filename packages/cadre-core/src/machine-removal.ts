@@ -147,7 +147,7 @@ export function planMachineRemoval(input: MachineRemovalPlanInput): MachineRemov
  * `here` when the strand runs here with a manager seat, or hibernates here (the removal wakes it
  * and learns the seat then); `another-party` when it runs here without one, so the new key is
  * seated by the strand's host re-inviting the party, or its manager admitting the key by hand
- * (docs/strands.md → "Replacing the party's key"); `later` when it does not run here.
+ * (docs/strands/keys.md → "Replacing the party's key"); `later` when it does not run here.
  */
 export function planStrandKeyRotations(strands: readonly ClosedStrandState[]): StrandKeyRotationPlan[] {
   return strands.map((strand) => ({ strandId: strand.strandId, rotation: rotationSite(strand) }));

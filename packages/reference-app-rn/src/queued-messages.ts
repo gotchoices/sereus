@@ -5,7 +5,7 @@
  * The queue reports a transaction only by its id (`StampId()`), and after a restart nothing in
  * memory says which message an id stores, so the chat keeps this record beside the start options
  * (`PhoneNode.nodeLocalRecords()`) and rebuilds the rows' marks from it when the strand is
- * published again (docs/reference-app-rn.md → "Queued messages").
+ * published again (docs/platforms/reference-apps.md → "The queued-messages record").
  */
 
 import type { DurableSlot } from '@serfab/cadre-core';

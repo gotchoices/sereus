@@ -32,8 +32,8 @@
  * this file asserts a cohort size, and nothing should: this is the suite's broad smoke
  * test, and binding it to a three-machine cohort would bind it to the unanimity bar
  * that applies there (every machine must approve), a known fragility documented in
- * `docs/architecture.md` → "Replication cluster size". The multi-machine claim is owned by
- * `harness-party-control-cohort.integration.ts`, which waits for the ring first.
+ * `docs/cadre/control-replication.md` → "Replication cluster size". The multi-machine claim
+ * is owned by `harness-party-control-cohort.integration.ts`, which waits for the ring first.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';

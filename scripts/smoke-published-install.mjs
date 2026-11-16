@@ -78,9 +78,10 @@ const EXTRA_REPORTED = ['libp2p', '@libp2p/websockets', '@libp2p/crypto', '@libp
  * `@optimystic/db-p2p-storage-fs` is here for the warm-start cases, which restart
  * across real files rather than a shared heap object. It used to be the one
  * `@optimystic/*` package with no root `resolutions` entry; it gained one on 2026-09-08
- * (see `docs/testing.md` → "declared range"), so it is now linked like the rest *inside*
- * this repo. That changes nothing here: the scratch project lives outside the repo and
- * installs with npm, so every dependency in this list comes from the registry regardless.
+ * (see `docs/contributing/gates.md` → "Declared dependency ranges"), so it is now linked
+ * like the rest *inside* this repo. That changes nothing here: the scratch project lives
+ * outside the repo and installs with npm, so every dependency in this list comes from
+ * the registry regardless.
  *
  * `@libp2p/crypto` + `@libp2p/peer-id` mint the throwaway sibling identity whose
  * signed `CadrePeer` row puts the device in a cadre it is the last member of.

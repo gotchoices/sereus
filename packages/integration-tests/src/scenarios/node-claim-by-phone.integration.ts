@@ -1,6 +1,6 @@
 /**
  * A PHONE-SHAPED owner claims a `cadre-cli` node that was started waiting to be claimed:
- * row 8 of `docs/architecture.md` → Which Side Dials.
+ * the Claim row of `docs/cadre/membership.md` → Which side dials.
  *
  * Terms used below:
  *
@@ -28,7 +28,7 @@
  *      signed record reaches the claimant, the claimant's row is in the node's authorized
  *      set, and the strand the claimant was already running connects to the node's within
  *      seconds, though the node restarts and then has no strand to report when first asked
- *      (`docs/architecture.md` → Strand-Address Resolution)
+ *      (`docs/network/strand-addressing.md` → Strand-address resolution)
  *   4. an owner of another cadre presenting the same secret is refused as `already-claimed`
  *   5. the first owner claiming again is accepted, leaving one row and one dial target
  *   6. the node restarted on the same workdir and environment reads `claimed` with no

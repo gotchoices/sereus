@@ -1,8 +1,8 @@
 /**
  * The owner key file (`owner.keyFile`, default `<nodeStateDir>/owner.key`): the owner key a server
  * holds when the user deliberately made it an owner, kept apart from the node identity
- * (`docs/architecture.md` → Owner Keys). `cadre start --owner` and the one-shot commands sign their
- * owner writes with it; `cadre owner-key` shows, exports and imports it.
+ * (`docs/cadre/owner-keys.md` → What an owner key is). `cadre start --owner` and the one-shot
+ * commands sign their owner writes with it; `cadre owner-key` shows, exports and imports it.
  *
  * The file is one owner-key slot of cadre-core's (`owner-key-store.ts`), so the slot's rules hold
  * here unchanged: an absent file is never filled on read, nothing is created over a file that

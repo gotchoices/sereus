@@ -1,7 +1,7 @@
 /**
  * recommend-app-section.tsx — Settings → Add a device or app → "Recommend an app": the owner allows
  * another Sereus app to join this cadre before it asks, then opens that app, or its store page to
- * get it (docs/architecture.md → "Recommending another app"). When that app's join request arrives
+ * get it (docs/cadre/apps.md → "Recommending another app"). When that app's join request arrives
  * as a link within the hour, `AddDeviceSection` answers it without a prompt.
  *
  * A permission given here lets this app mint an invitation without asking: log app names only.

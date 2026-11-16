@@ -1,7 +1,7 @@
 /**
  * machine-removal.tsx — removing a machine from the cadre, as Settings → "Devices and nodes"
  * does it and as "Rent an always-on node" does for a node its provider stopped: read
- * `planMachineRemoval`, confirm, then `removeMachine` (docs/architecture.md → "Removing a
+ * `planMachineRemoval`, confirm, then `removeMachine` (docs/cadre/membership.md → "Removing a
  * machine"). Owner keys are not machines and stay; removing one is a separate step under Owner keys
  * (`owner-keys-section.tsx`), which the prompt offers for a lost or stolen phone.
  */

@@ -1,7 +1,7 @@
 /**
  * use-recommending-app.ts — Settings' part of joining the app that recommended this one: which app
  * the first-launch question names, and which the prompt offers while this app has a cadre
- * (docs/reference-app-rn.md → "Joining an Existing Cadre").
+ * (docs/platforms/reference-apps.md → "Joining an existing cadre").
  */
 
 import { useEffect, useRef, useState } from 'react';

@@ -1,6 +1,6 @@
 /**
  * Owner-key export and import: the text (or QR code) a user keeps as a backup of an owner key or
- * carries to another device (`docs/architecture.md` → Owner Keys → Exporting and importing an
+ * carries to another device (`docs/cadre/owner-keys.md` → Exporting and importing an
  * owner key). Whoever holds a plain export is an owner.
  *
  * - Plain: {@link OWNER_KEY_EXPORT_PREFIX}, then base64url of the canonical JSON

@@ -1,7 +1,7 @@
 /**
  * send-marks.ts — what the chat shows under a message this phone sent until the strand's other
  * members hold it, and the line above the list while the strand's offline queue holds anything
- * (docs/reference-app-rn.md → "Messages Not Yet Delivered").
+ * (docs/platforms/reference-apps.md → "Messages not yet delivered").
  *
  * A plain module rather than part of `use-chat.ts`, so the rules are reachable from the `node`
  * vitest project without React or react-native in the graph.

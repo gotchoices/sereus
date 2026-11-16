@@ -1,7 +1,7 @@
 /**
  * E2E: a backup owner grant brings a fresh device back into the cadre as a machine and an owner
  * while the owner that minted it is offline, and the recovered owner removes the lost phone
- * (`docs/architecture.md` → "Owner grants": Backups, Self-admission).
+ * (`docs/cadre/owner-keys.md` → "Owner grants": "Backup grants", "Joining with a grant").
  *
  * Machines:
  * - **O**, the owner: phone-shaped (`buildPhoneOwner`), its own genesis owner key. It mints a

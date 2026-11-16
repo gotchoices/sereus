@@ -189,7 +189,7 @@
 					Each one below says which ports to forward on your router, and to which address.
 				</p>
 				<p class="muted small">
-					See <a href="https://github.com/gotchoices/sereus/blob/master/docs/cadre-host.md#manual-port-forwarding" target="_blank" rel="noreferrer">docs/cadre-host.md</a> for how manual forwarding works.
+					See <a href="https://github.com/gotchoices/sereus/blob/master/docs/hosting/cadre-host.md#manual-port-forwarding" target="_blank" rel="noreferrer">docs/hosting/cadre-host.md</a> for how manual forwarding works.
 				</p>
 			</div>
 		{/if}

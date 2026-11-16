@@ -7,7 +7,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ProviderConfig } from '../config/types.js';
 
-/** Version 1 of the descriptor; `docs/architecture.md` → Provider descriptor and sign-in states each field. */
+/** Version 1 of the descriptor; README → Provider descriptor states each field. */
 export interface ProviderDescriptor {
   v: 1;
   /** `provider.id`: stable, what an app keys its rental records by. */

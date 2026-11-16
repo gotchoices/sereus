@@ -358,7 +358,7 @@ export interface StartStrandConfig {
   onCommitHeld?: (event: StrandCommitHeld) => void;
 
   /**
-   * Offline mode for this strand (docs/strands.md → "Offline mode"), forwarded from
+   * Offline mode for this strand (docs/strands/writes.md → "Offline mode"), forwarded from
    * `CadreNodeConfig.strandOffline`, with where each database built for the launch reports its
    * queue (`CadreNode` emits them as events). Absent: no database gets an offline queue. The mode
    * itself is the manager's, per strand ({@link StrandInstanceManager.setOfflineMode}).
@@ -1411,7 +1411,7 @@ export class StrandInstanceManager {
   /**
    * The party's other machines known to hold `strandId` with no open connection from its strand
    * node: what an offline queue reporting `waitingFor: 'cohort'` may be waiting for
-   * (`docs/strands.md` → "Waiting for the party's own machines"). Empty for a strand not tracked
+   * (`docs/strands/writes.md` → "Waiting for the party's own machines"). Empty for a strand not tracked
    * or not running here, and on a launch that tracks no party machines.
    */
   unreachedPartyMachines(strandId: string): readonly PartyStrandPeer[] {

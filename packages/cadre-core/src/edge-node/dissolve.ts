@@ -1,8 +1,8 @@
 /**
- * Dissolving the party this app founded and left (docs/architecture.md → "An app joins an
- * existing cadre" → "Dissolving the party it left"): the check that the running party holds
- * everything the left one holds, and the removal of the left party's local storage. The same
- * removal deletes a party whose owner removed this app ("Removed from A"), with no check.
+ * Dissolving the party this app founded and left (docs/cadre/apps.md → "Dissolving the party
+ * it left"): the check that the running party holds everything the left one holds, and the
+ * removal of the left party's local storage. The same removal deletes a party whose owner
+ * removed this app ("Removed from the cadre it joined"), with no check.
  *
  * The removal is local: it writes nothing to either party's control database. A marker in the
  * node-local database names the party from before the first deletion until after the saved

@@ -47,7 +47,7 @@ interface MessagesState {
 	 * so an event for one strand cannot change a mark on another. In memory, except that a queued
 	 * message is also recorded in `queuedMessages` until its queue settles it: a message read from
 	 * storage carries no mark otherwise, and a mark whose commit nothing follows stays until the
-	 * page reloads (docs/strands.md, "A commit's durability").
+	 * page reloads (docs/strands/writes.md, "A commit's durability").
 	 */
 	sent: SentMessage[];
 	/** Each strand's offline queue, as its last `strand:queue-state` reported it. */

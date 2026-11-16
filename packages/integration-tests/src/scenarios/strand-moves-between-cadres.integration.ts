@@ -1,9 +1,9 @@
 /**
  * An app's strands move from the one-node cadre it founded into the user's main cadre, over a
- * real network (`docs/architecture.md` → "An app joins an existing cadre" → "Moving the app's
- * strands"). `exportStrandBundle` and `adoptStrandBundle` are unit-tested in cadre-core; this is
- * the proof that a moved strand's other member, which is told nothing, keeps syncing with it, and
- * that the new cadre's always-on machine starts hosting it.
+ * real network (`docs/cadre/apps.md` → "Moving the app's strands"). `exportStrandBundle` and
+ * `adoptStrandBundle` are unit-tested in cadre-core; this is the proof that a moved strand's
+ * other member, which is told nothing, keeps syncing with it, and that the new cadre's always-on
+ * machine starts hosting it.
  *
  * Machines:
  * - **N**, the app's one node: `transaction` profile, one identity key for its whole life, one

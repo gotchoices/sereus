@@ -10,7 +10,7 @@
  * (the one thing the worktree differs by), the dirty-tree reading that decides
  * whether the run describes what the caller is looking at, the set of packages the
  * report covers, and the link removal that stands between a cleanup and the Windows
- * data loss `docs/testing.md` records.
+ * data loss `docs/contributing/testing.md` records.
  */
 
 import { test } from 'node:test';
@@ -133,9 +133,9 @@ test('nestedSiblingCopies reports only a workspace resolving away from the hoist
 });
 
 /**
- * The documented Windows hazard, in both directions: `docs/testing.md` records a
- * recursive delete that followed a checkout's junctions and emptied the sibling
- * repositories they pointed at. So the link must go and its target must not.
+ * The documented Windows hazard, in both directions: `docs/contributing/testing.md`
+ * records a recursive delete that followed a checkout's junctions and emptied the
+ * sibling repositories they pointed at. So the link must go and its target must not.
  */
 test('unlinkReparsePoints removes the link and leaves what it points at', () => {
 	withTempDir((root) => {

@@ -1,7 +1,7 @@
 /**
  * A provider container joins a cadre BY ITSELF, redeeming an owner-minted invitation at a member
- * that is already online: `docs/architecture.md` → Enrollment Flow: Phone Adds Provider Drone,
- * "By invitation", on the wire (row 4 of Which Side Dials, the invitation arm).
+ * that is already online: `docs/hosting/provider.md` → Provider flow, "By invitation", on the
+ * wire (the Cadre invitation row of `docs/cadre/membership.md` → Which side dials).
  *
  * Machines:
  *

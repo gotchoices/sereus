@@ -280,7 +280,7 @@ program
       // Wire the long-lived HTTP management server. cadre-host spawns cadre
       // nodes for cadres that live on people's phones (the hosted-node service
       // below); it holds no owner key and never founds a cadre. The manager
-      // never joins the control network (docs/cadre-host.md § Control-plane
+      // never joins the control network (docs/hosting/cadre-host.md § Control-plane
       // separation).
       // Push (FCM/APNs) credentials are resolved fresh on every node spawn so a
       // restart re-reads the secret store (rotated keys) and nothing raw is

@@ -5,7 +5,7 @@
  * `describe` with "Vitest failed to find the runner" or "Cannot read properties of undefined
  * (reading 'config')". Changing the working directory later, in a global setup or through the
  * config's `root`, does not help, so the run has to start from the uppercase form. See
- * docs/testing.md → "Windows: start from an uppercase drive letter".
+ * docs/contributing/testing.md → "Windows: start from an uppercase drive letter".
  *
  * NOTE: drop this once a Vitest release runs a lowercase-drive working directory with two files;
  * re-check on each Vitest upgrade.

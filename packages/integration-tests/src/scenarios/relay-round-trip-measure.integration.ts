@@ -78,7 +78,8 @@
  * slip past it; the proxy totals are the cross-check for that.
  * Nothing here asserts a count or a duration. A budget test would have to be re-pinned
  * on every optimystic change, which is the opposite of what this file is for;
- * `docs/testing.md` → "Where measurements live" lists the budgets that do assert.
+ * `docs/contributing/gates.md` → "Checks that run as tests" lists the budgets that do
+ * assert.
  * Operation failures — a `TornActionError` on a concurrent pair, say — are RECORDED and
  * printed, not thrown: an error rate is part of the measurement.
  */

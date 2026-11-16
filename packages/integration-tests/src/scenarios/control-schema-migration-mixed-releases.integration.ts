@@ -1,6 +1,6 @@
 /**
  * Two machines of one party on different releases of the control schema, the way a party's
- * phones take an app update one at a time (docs/architecture.md → "Control schema versions and
+ * phones take an app update one at a time (docs/cadre/control-schema.md → "Schema versions and
  * migrations"). `controlNetwork.schemaPath` chooses each machine's "release", built by
  * `test-harness/control-schema-releases.ts` from the fixture of this build's control schema
  * version, because both releases run this build's `CadreNode`, which watches every table of this
@@ -22,10 +22,10 @@
  * on the same identity key over the same storage capture, as `control-offline-read-after-restart`
  * restarts its joiner. Every machine migrates its OWN catalog lineage: the control database comes
  * up with no control connection open, so every start-time apply commits alone, and B's own cold
- * start committed the catalog collection a second time beside A's (docs/architecture.md → "Every
- * machine migrates its own catalog"). B's restarts hydrate B's lineage, so step 4 starts rather
- * than meeting the `newer-release` refusal `control-store-migration.spec.ts` pins for a lineage a
- * newer release migrated. One lineage per machine is the design
+ * start committed the catalog collection a second time beside A's (docs/cadre/control-schema.md →
+ * "Every machine migrates its own catalog"). B's restarts hydrate B's lineage, so step 4 starts
+ * rather than meeting the `newer-release` refusal `control-store-migration.spec.ts` pins for a
+ * lineage a newer release migrated. One lineage per machine is the design
  * (decide-control-catalog-lineage-per-machine).
  *
  * The row with a value in the new column is a `ValidationKey`, written by hand: both releases run
@@ -134,7 +134,7 @@ async function expectEveryRow(node: CadreNode, rows: PartyRows, column: 'with th
 	expect((await db.getOwnerKeys()).has(rows.owner)).toBe(true);
 }
 
-/** Let the node's first address-record publish land before it is stopped (docs/testing.md). */
+/** Let the node's first address-record publish land before it is stopped (docs/contributing/testing.md). */
 async function registered(node: CadreNode, label: string): Promise<void> {
 	await waitUntil(async () => (await node.registerSelf()) !== 'skipped', { timeoutMs: 30_000, intervalMs: 250, description: `${label} published its address record` });
 }

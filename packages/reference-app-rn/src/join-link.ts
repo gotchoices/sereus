@@ -1,6 +1,6 @@
 /**
  * join-link.ts — the links this app and another Sereus app on this phone open each other with
- * (docs/architecture.md → "Between apps on one phone"). As the owner app, it answers a join request
+ * (docs/cadre/apps.md → "Between apps on one phone"). As the owner app, it answers a join request
  * by opening the asking app back at the scheme the request's `reply` names, and opens an app it
  * recommends, or that app's store page. As the asking app, it opens an owner app with its own
  * request, and puts the answer that comes back into words.

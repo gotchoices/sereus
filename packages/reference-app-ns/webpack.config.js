@@ -58,10 +58,10 @@ module.exports = (env) => {
 		// and (verified) the `browser` alias field does NOT apply it to the
 		// package's internal relative imports either. For each package in
 		// BROWSER_MAP_PACKAGES (browser-map.js) the map is applied explicitly,
-		// like the RN Metro `resolveRequest` rewrite (metro.config.js / docs/reference-app-rn.md §
-		// "Why the browser rewrite matters"): an internal relative `.js` import
+		// like the RN Metro `resolveRequest` rewrite (metro.config.js / docs/platforms/react-native.md §
+		// "The three `resolveRequest` rules"): an internal relative `.js` import
 		// whose package-relative path is a map key is redirected to the mapped
-		// file. Reasons per package are in docs/reference-app-ns.md § "Named-
+		// file. Reasons per package are in docs/platforms/nativescript.md § "Named-
 		// package Node → browser rewrite". `browser` stays an alias field for
 		// packages whose map covers bare specifiers.
 		config.resolve.set('aliasFields', ['browser']);

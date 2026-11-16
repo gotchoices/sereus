@@ -1,6 +1,6 @@
 /**
  * web-join.ts — this tab's join request, and the check of pasted join text before the edge node
- * joins the cadre it names (`store.svelte.ts` → `joinCadre`; docs/architecture.md → "An app joins
+ * joins the cadre it names (`store.svelte.ts` → `joinCadre`; docs/cadre/apps.md → "An app joins
  * an existing cadre"). The text is a machine invitation or an owner grant, which makes the tab an
  * owner too. The join itself, the strand move and the dissolve of the party left are
  * `@serfab/cadre-core/edge-node`'s.

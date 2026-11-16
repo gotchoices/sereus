@@ -15,10 +15,10 @@ const log = debug('cadre:cli:enroll-invite');
  * cadre invitation, and print the encoded bundle a device redeems at any member of the cadre
  * (`cadre start --invitation`, or a reference app's "Paste cadre invitation" field). The owner
  * can be offline when the device redeems: any member holding the invitation's row admits it
- * (`docs/architecture.md` → "Enrollment Flow: Invitation Redeemed at Any Member").
+ * (`docs/cadre/membership.md` → "Cadre invitations").
  *
  * A machine invitation admits a machine and grants nothing else: the device becomes a member,
- * never an owner. Ownership is a credential of its own, an owner grant (`docs/architecture.md`
+ * never an owner. Ownership is a credential of its own, an owner grant (`docs/cadre/owner-keys.md`
  * → Owner grants), which `cadre enroll owner-grant` mints.
  *
  * It goes through the admin channel for the same reason `cadre enroll add` does: the owner is

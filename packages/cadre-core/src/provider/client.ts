@@ -1,6 +1,6 @@
 /**
- * A typed client for a hosting provider's container API (`docs/architecture.md` → "Provider
- * Integration"; the wire shapes are cadre-provider's, `packages/cadre-provider/README.md`).
+ * A typed client for a hosting provider's container API (`docs/hosting/provider.md`; the
+ * wire shapes are cadre-provider's, `packages/cadre-provider/README.md`).
  * The interface is what `rentNode` and the apps depend on; a hand-written object implementing
  * it is how tests avoid HTTP.
  *

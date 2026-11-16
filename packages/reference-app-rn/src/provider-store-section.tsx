@@ -2,8 +2,8 @@
  * provider-store-section.tsx — Settings → "Rent an always-on node": one hosting provider
  * (`providers.ts`), its plans and terms, and **Subscribe and add node**, which signs the user in on
  * the provider's own pages in the system browser, rents a container and adds it to this cadre
- * (cadre-core's `rentNode`, through `useCadre`; docs/reference-app-rn.md → "Renting a Provider
- * Node"). Below, one row per node this phone rented, re-read from the provider every few seconds
+ * (cadre-core's `rentNode`, through `useCadre`; docs/platforms/reference-apps.md → "Renting a provider
+ * node"). Below, one row per node this phone rented, re-read from the provider every few seconds
  * while Settings is in front (`use-rental-poll.ts`): its standing, its join, and what to do about a
  * node the provider stopped (`rentals.ts`). Removing such a node from the cadre is the Devices and
  * nodes confirmation (`machine-removal.tsx`).

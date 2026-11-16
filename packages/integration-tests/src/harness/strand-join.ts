@@ -52,9 +52,10 @@ export interface StrandJoinSpec {
 	 *  the `Strand.Header` — and, for a closed strand, the founding Member/Manager under
 	 *  {@link partyMemberPrivateKey}). Default TRUE, and every other member is gated on
 	 *  it: a joining machine's database is withheld until the Header reaches it from a
-	 *  peer (`docs/strands.md`, "Joining"), so a strand nobody founded leaves every
-	 *  member `'syncing'` forever. `false` is only for a scenario that asserts that
-	 *  gate itself; it then gets `'syncing'` instances back with no database. */
+	 *  peer (`docs/strands/formation.md`, "Joining: no writes before the first sync"), so
+	 *  a strand nobody founded leaves every member `'syncing'` forever. `false` is only
+	 *  for a scenario that asserts that gate itself; it then gets `'syncing'` instances
+	 *  back with no database. */
 	founder?: boolean;
 	/** `publishStrand(strandId)` on `members[0]` after its `addStrand`, making the row
 	 *  discoverable inside `members[0]`'s party. Requires `members[0]` to be its

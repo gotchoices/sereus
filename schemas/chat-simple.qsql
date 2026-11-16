@@ -19,7 +19,7 @@ table Message (
     -- "Ordering Events (There Is No Commit-Order Column)".
     -- Tagged fresh because the app generates it, so no other machine can take the
     -- same key: a message queued in offline mode then reads as sure to go through
-    -- (docs/strands.md → "Offline mode"). A false tag would make a refused insert
+    -- (docs/strands/writes.md → "Offline mode"). A false tag would make a refused insert
     -- read as assured.
     Id text primary key with tags ("optimystic.fresh" = true),
     ParticipantId text not null,

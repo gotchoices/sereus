@@ -5,7 +5,7 @@
  * calls {@link deriveOwnerAnchor}, and applies the difference to the store.
  *
  * Why not simply trust the table: an empty local copy can seat any key through the
- * schema's genesis branch and that row replicates (`docs/architecture.md` → "Node-local
+ * schema's genesis branch and that row replicates (`docs/cadre/control-security.md` → "The
  * trusted-owner anchor"). So every node grows its anchor only through rows whose stored
  * proof verifies against a key it already trusts, on every membership refresh. The terms
  * used throughout:

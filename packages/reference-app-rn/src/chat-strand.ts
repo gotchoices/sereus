@@ -26,8 +26,8 @@ import { insertParticipant, participantDisplayName, type ChatRole } from './chat
 // `Participant.Role` is an APP-LEVEL role (`owner` | `member`). Sereus's control
 // network has no first-class per-strand RBAC primitive — strand membership is
 // `MemberPrivateKey`-granular (member vs non-member). The role lives here, in
-// the chat schema, and is assigned on create/join. See the README "Trust model"
-// section for where this boundary sits.
+// the chat schema, and is assigned on create/join. See "The chat schema" in
+// docs/platforms/reference-apps.md for where this boundary sits.
 
 export const CHAT_SCHEMA = `
 table Participant (

@@ -25,9 +25,9 @@
  *
  * Deliberately NOT a gate and not wired into `yarn test`: it needs the network and
  * runs for many minutes. Run it by hand as a release step — `yarn check:published` —
- * beside `yarn smoke:published`. See docs/testing.md. Chaining it into `yarn test`,
- * `yarn typecheck`, `yarn lint`, `yarn build` or `yarn check` would also make it
- * recursive, since the worktree runs the first four of those.
+ * beside `yarn smoke:published`. See docs/contributing/releasing.md. Chaining it
+ * into `yarn test`, `yarn typecheck`, `yarn lint`, `yarn build` or `yarn check`
+ * would also make it recursive, since the worktree runs the first four of those.
  *
  * The worktree is built from `HEAD`, so a dirty working tree is refused: the run
  * would otherwise describe a commit rather than what the caller is looking at.
@@ -157,11 +157,11 @@ function reportResolved(worktreeDir, workspaces, names) {
 /**
  * Delete the worktree, links first.
  *
- * `docs/testing.md` records a Windows `git worktree remove --force` that followed the
- * `link:` junctions and emptied the sibling checkouts they pointed at. This worktree
- * has no `resolutions` and so no sibling junctions, but it is full of the ones yarn
- * writes for the workspaces themselves; unlinking first keeps every delete below
- * confined to the worktree whatever it does with reparse points.
+ * `docs/contributing/testing.md` records a Windows `git worktree remove --force` that
+ * followed the `link:` junctions and emptied the sibling checkouts they pointed at.
+ * This worktree has no `resolutions` and so no sibling junctions, but it is full of
+ * the ones yarn writes for the workspaces themselves; unlinking first keeps every
+ * delete below confined to the worktree whatever it does with reparse points.
  */
 function removeWorktree(worktreeDir, scratchDir) {
 	const links = unlinkReparsePoints(worktreeDir);

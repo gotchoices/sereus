@@ -159,8 +159,8 @@ export interface CliConfig {
 
   /**
    * The owner key this server holds, when the user deliberately made it an owner
-   * (`docs/architecture.md` → Owner Keys): `cadre start --owner` signs with it, and the one-shot
-   * commands sign their owner writes with it. Never the node identity.
+   * (`docs/cadre/owner-keys.md` → What an owner key is): `cadre start --owner` signs with it, and
+   * the one-shot commands sign their owner writes with it. Never the node identity.
    */
   owner?: {
     /**

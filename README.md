@@ -1,111 +1,95 @@
-## Sereus Fabric
+# Sereus
 
-Sereus is a Web3 programming fabric built on consent-based strands where users control identity, data, and connections. Instead of global identities and central brokers, Sereus forms small, private subnets by invitation only. Each strand is a shared SQL database with role-based permissions, distributed across participants' devices for resilience.
+Sereus is a way for people and organisations to share SQL databases without a server that holds them. Parties connect by invitation, each shared database (a strand) lives on the participants' own devices, and those devices replicate the data to each other and enforce its rules. An app developer writes a schema in SQL and reads and writes the strand with SQL; Sereus handles identity, membership, replication and transport.
 
-### Why Sereus
-- **Privacy by design**: No global identity directory; identities exist only within strands you join.
-- **Direct peer connections**: libp2p multiaddresses enable end-to-end encrypted, serverless communication.
-- **Familiar SQL**: Each strand is a relational database; apps read/write via standard SQL.
-- **Decentralized & resilient**: Data is distributed across participants' devices (cadres).
-- **Developer-friendly**: Focus on application logic; the fabric handles distribution and transport.
+## Core concepts
 
-### Core Concepts
-- **Strand**: An invitation-only trust domain backed by a shared SQL database with RBAC.
-- **Cadre**: The set of nodes (phone, laptop, NAS, cloud server, …) that one party uses to participate. A cadre has a private **control network** (its own Optimystic DB on the `CadreControl` schema) that tracks members, owner keys, and strand participation.
-- **Cohort**: All cadres of all members of a given strand — the combined peer set that hosts that strand's data.
-- **Transport**: libp2p (NAT traversal, relays, encrypted streams).
+- A **party** is a person or organisation. Its **cadre** is the set of nodes it runs: phone apps, browser tabs, home machines, servers.
+- A cadre shares a private **control database**, which records the party's machines, its owner keys and the strands it takes part in.
+- An **owner key** is a signing key a person holds. Its signature authorizes changes to the control database.
+- A **strand** is an invitation-only SQL database shared among parties, on a network of its own. The application it runs is its **sApp**.
+- Every member party serves a strand from its own nodes. No central server or global identity directory exists.
 
-### Technology Stack
-- **Quereus** (SQL processor) — query parsing, transactions, distribution-aware planning. External (`../quereus`).
-- **Optimystic** (storage engine) — B-trees, block storage, sharding, sync, plus FRET DHT for content addressing and node discovery. External (`../optimystic`).
-- **libp2p** — addressing, NAT traversal, circuit relays, encryption.
+[Concepts](docs/concepts.md) explains the model and holds the glossary. The [documentation index](docs/README.md) lists every document by task and by subsystem.
 
-### Repo Layout
+## A first program
 
-This monorepo is split into three top-level areas:
+[Getting started](docs/getting-started.md) builds a Node.js program in which two parties share a database. Its central calls, excerpted from that walkthrough:
 
-- `packages/` — published libraries and apps (see below).
-- `ops/` — operational tooling for running infrastructure (libp2p relay/bootstrap, Docker stacks, runbooks).
-- `docs/` — design, architecture, and protocol documentation. **Start with [`docs/architecture.md`](docs/architecture.md).** Public site source is in `docs/web/`.
-- `schemas/` — Quereus schema artifacts (e.g. `strand.qsql`, `cadre.qsql`).
-- `tickets/` and `tess/` — AI-driven ticket workflow (see [`tess/agent-rules/tickets.md`](tess/agent-rules/tickets.md)).
+```js
+// Party A founds a strand and invites.
+const founded = await a.foundStrand({ strandId, type: 'o', sAppConfig: sApp });
+const invitation = await a.createOpenInvitation(sApp.id, 24 * 60 * 60 * 1000);
+const invitationText = a.encodeInvitation(invitation);
 
-### Packages
+// Party B redeems the invitation, then both read and write with SQL.
+const formed = await b.formStrand(b.decodeInvitation(invitationText), {
+	partyId: b.partyId,
+	purpose: 'getting started',
+});
+await aDb.exec('insert into App.Note (Id, Author, Body) values (?, ?, ?)', ['n1', 'a', 'written on A']);
+```
+
+The excerpt omits starting the nodes, publishing the invitation and attaching the strand on B; the walkthrough has every step.
+
+## Packages
 
 | Package | Purpose |
 | --- | --- |
-| [`@serfab/cadre-core`](packages/cadre-core) | Core library that runs a cadre node: connects to the control network, watches the `Strand` table, starts/stops per-strand libp2p+Optimystic instances, manages enrollment and seeds. Used by every runtime below. |
-| [`@serfab/cadre-cli`](packages/cadre-cli) | CLI wrapper to start and manage a single cadre node from a `cadre.yaml` config — the headless deployment target for servers, NAS boxes, and CI. |
-| [`@serfab/cadre-host`](packages/cadre-host) | Self-hosted cadre manager for an always-on home machine. Spawns cadre nodes as native child processes, ships a localhost Svelte UI, an installer (systemd-user / LaunchAgent / NSSM), DDNS + UPnP/PCP NAT layer, and a grant-token node-donation flow. Sibling of `cadre-provider`. |
-| [`@serfab/cadre-provider`](packages/cadre-provider) | Reference provider service for hosting cadre nodes on behalf of paying users — Docker-based orchestration, API keys / JWT, quotas, billing hooks. |
-| [`@serfab/cadre-rn`](packages/cadre-rn) | React Native kit for apps that run a cadre node on a phone: native crypto for libp2p's Noise connection encryption, imported by subpath so an app installs only the native modules it uses. |
-| [`@serfab/config-check`](packages/config-check) | Strict checking of a parsed config file (unknown keys, wrong types, missing required keys, environment-variable overrides), reported as one error listing every problem. No dependencies; used by `cadre-cli`. |
-| [`@serfab/quereus-plugin-sereus`](packages/quereus-plugin-sereus) | Quereus plugin that exposes a Sereus strand as a SQL database. Composes the `@optimystic/quereus-plugin-crypto` and `@optimystic/quereus-plugin-optimystic` plugins and manages libp2p. |
-| [`@serfab/reference-app-rn`](packages/reference-app-rn) | React Native reference app: a peer-to-peer chat that exercises the full cadre + strand stack on phones. |
-| [`@serfab/reference-app-web`](packages/reference-app-web) | Svelte 5 + Vite SPA counterpart to the RN app; validates the Optimystic stack in a browser. |
-| [`@serfab/integration-tests`](packages/integration-tests) | Multi-process integration tests that drive real libp2p networking, storage, and multi-party scenarios across the cadre packages. |
+| [`@serfab/cadre-core`](packages/cadre-core) | The library that runs a cadre node: the control network, strand lifecycle, membership, invitations, and the edge node for phone and browser apps. cadre-cli, cadre-host, cadre-rn and the reference apps are built on it. |
+| [`@serfab/cadre-cli`](packages/cadre-cli) | The `cadre` command: one headless always-on node from a config file, operator commands, and the node's Docker image. |
+| [`@serfab/cadre-host`](packages/cadre-host) | Runs always-on nodes on a home machine for cadres owned by phones. A per-user service with a local web UI, UPnP port mapping, dynamic DNS and signed updates. Nodes join by QR claim or invitation. |
+| [`@serfab/cadre-provider`](packages/cadre-provider) | Reference service for renting out nodes: an HTTP API with API-key and OAuth sign-in that runs each node as a Docker container. |
+| [`@serfab/cadre-rn`](packages/cadre-rn) | React Native kit: phone node, secure key storage, polyfills, Metro configuration and native crypto. Imported by subpath only. |
+| [`@serfab/quereus-plugin-sereus`](packages/quereus-plugin-sereus) | Quereus plugin that opens a strand as a SQL database. cadre-core uses it; tools and tests can use it directly. |
+| [`@serfab/config-check`](packages/config-check) | Strict, dependency-free checking of a parsed config file, used by cadre-cli and cadre-provider. |
+| [`reference-app-rn`](packages/reference-app-rn) | React Native sample chat app. |
+| [`reference-app-ns`](packages/reference-app-ns) | NativeScript sample chat app (Android). |
+| [`reference-app-web`](packages/reference-app-web) | Svelte and Vite sample chat app for the browser. |
+| [`integration-tests`](packages/integration-tests) | Scenarios that run real nodes over real transports. Not published. |
 
-External workspaces this monorepo depends on (linked via `resolutions` in the root `package.json`): `../quereus` and `../optimystic`.
+[Architecture](docs/architecture.md) shows what depends on what.
 
-### Getting Started
+## Technology stack
 
-#### As an application developer
+- [Quereus](https://github.com/gotchoices/quereus): the SQL engine. Schemas, constraints and queries.
+- [Optimystic](https://github.com/gotchoices/Optimystic): the storage engine. Blocks, replication and distributed transactions.
+- FRET (`p2p-fret`): the distributed hash table Optimystic uses to find the nodes that hold a block.
+- [libp2p](https://libp2p.io/): connections, encryption and circuit relays.
 
-1. Read [`docs/architecture.md`](docs/architecture.md) for the cadre/strand model (control network, cohorts, seeds, enrollment).
-2. Pick a cadre runtime:
-   - Headless server / NAS → `@serfab/cadre-cli` (see its README for `cadre.yaml`).
-   - Home machine for a small trust circle → `@serfab/cadre-host` (`npm i -g @serfab/cadre-host && cadre-host install`).
-   - In-app embedded node → depend on `@serfab/cadre-core` directly (see `packages/reference-app-rn` for a worked example).
-3. Define your sApp schema (Quereus `declare schema App { … }`) and use `@serfab/quereus-plugin-sereus` (or `cadre-core`'s APIs) to read/write the strand from SQL.
+## Repository layout
 
-#### As a contributor
+- `packages/`: the libraries and apps in the table.
+- `docs/`: documentation. Start at the [index](docs/README.md). `docs/web/` is the source of the public site.
+- `schemas/`: Quereus schemas. `control.qsql` (the control database), `strand.qsql` (the tables every strand carries), `chat.qsql` and `chat-simple.qsql` (sample app schemas).
+- `ops/`: tooling for operating a relay.
+- `scripts/`, `test-harness/`: release and check scripts, and test infrastructure shared across packages.
+- `tickets/`, `tess/`: the ticket workflow; see [`tess/agent-rules/tickets.md`](tess/agent-rules/tickets.md).
 
-```bash
+## Contributing
+
+The repository uses Yarn 4 workspaces. The root `package.json` links `@quereus/quereus` and the `@optimystic/*` packages to sibling checkouts, so clone `quereus` and `optimystic` beside this repository first.
+
+```sh
 yarn install
-yarn build        # workspaces foreach -At run build
-yarn test         # workspace tests
+yarn build
+yarn lint
 yarn typecheck
+yarn test
 ```
 
-The repo uses Yarn 4 workspaces. The root `package.json` links `@quereus/*` and `@optimystic/*` to sibling checkouts (`../quereus`, `../optimystic`) — clone those alongside this repo for local development.
+[Testing](docs/contributing/testing.md) says what each command needs and which of them a change must pass.
 
-**Yarn settings and the publish token.** `.yarnrc.yml` is committed and holds no secret: it selects the `node-modules` linker — Yarn 4's own default, Plug'n'Play, breaks native modules and the stale-build guard — and it carries the React Native peer-dependency patches. Publishing needs an npm token, which is yours to keep out of the repo — put it in your account-level Yarn config with `yarn config set npmAuthToken <token> --home`, or export `YARN_NPM_AUTH_TOKEN`. If you already have a local `.yarnrc.yml` from before it was committed (it held the token), git will refuse to check the committed one out over it: move the token to your account-level config first, then delete the local `.yarnrc.yml`, then pull.
+`.yarnrc.yml` is committed and holds no secret. It selects the `node-modules` linker, because Plug'n'Play breaks native modules and the stale-build guard, and it carries peer-dependency patches for React Native. Publishing needs an npm token, which stays out of the repository: set it with `yarn config set npmAuthToken <token> --home`, or export `YARN_NPM_AUTH_TOKEN`.
 
-### Ops (running bootstrap/relay nodes)
+## Operating a relay
 
-If you're operating infrastructure (e.g. **libp2p relay** and/or **bootstrap** nodes), start here:
-- [`ops/README.md`](ops/README.md) (entry point)
-- [`ops/docker/README.md`](ops/docker/README.md) (Docker-based production workflow + installer)
+Nodes behind NAT are reached through a libp2p relay. [`ops/README.md`](ops/README.md) is the entry point for running one.
 
-The public site lives in [`docs/web/`](docs/web/) (Overview, Architecture, Stack, Use Cases, Get Started) and is published to `https://sereus.org`.
+## Status
 
-### Status
+Sereus is under active development, and its APIs still change between releases. Each subsystem document ends with a "Limits and accepted tradeoffs" section that states what the shipped system does not guarantee; read the ones for the parts an app depends on before building on Sereus. Tests known to fail are recorded in `tickets/.pre-existing-known.md`, which [Testing](docs/contributing/testing.md) explains how to read.
 
-Active development. Core concepts are stable; APIs/tooling are evolving. Current work state lives in [`tickets/`](tickets/). Early adopters should expect rapid iteration and close-to-the-code workflows.
-
-**Multi-device replication: works, with named exceptions.** A single node holding its own data is
-solid. Several machines sharing a copy is exercised by a real-network integration suite — nodes on
-real transports, no mocked networking — and most of it passes. It is not uniformly reliable, and
-the gaps are specific rather than general:
-
-- **A block only one machine holds can be unreadable by the others** — an outright error, not a
-  delay. Intermittent and frequent: **4 failures in 10 measured runs** of the scenario that covers
-  it (2026-08-24/25). It failed every run before an upstream fix on 2026-08-24; that fix reduced
-  the rate without eliminating it. The rate is not well determined and a green run tells you
-  nothing.
-- **A row written on one machine can stay invisible to a third** when that machine's copy of the
-  control collection forks.
-- **Concurrent joins to the same invitation from two machines** do not converge.
-
-All three sit in the underlying `@optimystic/db-p2p` layer rather than in this repository. Each is
-tracked with a reproduction and a measured rate in
-[`tickets/blocked/`](tickets/blocked/), and every currently-failing test is listed in
-[`tickets/.pre-existing-known.md`](tickets/.pre-existing-known.md) with the ticket that owns it.
-
-If you are deciding whether to build on this, **read that file rather than this paragraph** — it
-carries dates and rates, and it is updated with each measurement. A statement of readiness in a
-README is stale the moment the next fix lands.
-
-### Credits
+## Credits
 
 Sereus is a project of the GotChoices Foundation.

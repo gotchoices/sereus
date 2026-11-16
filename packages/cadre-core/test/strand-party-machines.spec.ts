@@ -4,7 +4,7 @@ import { StrandPartyMachines, cohortGateWaitingForMachines, watchRemovedMachines
 import type { PartyStrandPeer, PartyStrandPeers } from '../src/strand-party-peers.js';
 
 /**
- * The offline queue's hold for the party's own machines (docs/strands.md → "Waiting for the
+ * The offline queue's hold for the party's own machines (docs/strands/writes.md → "Waiting for the
  * party's own machines"): the gate's branching over a stand-in node gate and key network, and
  * the tracker's handling of failed reads. Pure; the hold end to end is
  * `strand-offline-waits-for-party-machine.integration.ts`.

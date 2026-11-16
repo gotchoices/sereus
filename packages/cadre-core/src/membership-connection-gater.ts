@@ -108,8 +108,8 @@
  * provisionally admitted stranger can open or advertise the party's protocols;
  * what keeps it out of the control-database cohort is the control node's
  * membership predicate (`CadreNode.isControlNetworkMember`, wired as Optimystic's
- * `isNetworkMember`). FRET's ring still counts it: `docs/architecture.md` →
- * "Per-stream protocol guard" → "What it does not cover".
+ * `isNetworkMember`). FRET's ring still counts it: `docs/cadre/control-security.md` →
+ * "Limits and accepted tradeoffs".
  *
  * ## The relay-reservation seam
  *

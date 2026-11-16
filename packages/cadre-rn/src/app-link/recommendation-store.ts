@@ -2,7 +2,7 @@
  * `AppRecommendationStore`: the owner app's record that the user allowed another Sereus app to
  * join before that app asked. When the recommended app's join request opened as a link arrives
  * with that app's scheme as its `reply.scheme`, the owner app takes the pre-approval and answers
- * with a targeted invitation without asking again (docs/architecture.md → "Recommending another
+ * with a targeted invitation without asking again (docs/cadre/apps.md → "Recommending another
  * app").
  *
  * A pre-approval is the security contract: it is used up by the one answer it allows, lasts

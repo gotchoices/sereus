@@ -1,7 +1,7 @@
 /**
  * offline-mode-switch.tsx — Settings → Node's "Offline mode" switch: whether a message is taken as
  * sent once it is queued on this phone, or once the strand's other members hold it
- * (docs/strands.md → "Offline mode").
+ * (docs/strands/writes.md → "Offline mode").
  */
 
 import { useState } from 'react';

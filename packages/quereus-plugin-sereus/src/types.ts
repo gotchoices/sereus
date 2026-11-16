@@ -23,7 +23,7 @@ export type StrandTransactor = 'local' | 'network' | 'test';
 
 /**
  * The sApp schema a connection applies, and its version: both or neither, so a schema cannot reach the
- * strand without the number its version gate compares (docs/strands.md → "Until then: every member on
+ * strand without the number its version gate compares (docs/strands/app-schema.md → "Every member on
  * the same schema version").
  */
 export type StrandAppSchemaOptions =
@@ -95,7 +95,7 @@ export interface StrandConnectionBaseOptions {
 	 */
 	transactor?: StrandTransactor;
 	/**
-	 * Turn on Optimystic's offline queue for this connection (docs/strands.md → "Offline mode").
+	 * Turn on Optimystic's offline queue for this connection (docs/strands/writes.md → "Offline mode").
 	 * Absent: no offline configuration reaches the plugin, and the result carries no
 	 * {@link SereusPluginResult.offline}. Programmatic only — the SQL plugin config cannot carry it.
 	 */
@@ -104,8 +104,9 @@ export interface StrandConnectionBaseOptions {
 	 * The gate this connection's offline queue and offline live reads ask, in place of the node's
 	 * own `cohortReachability` (Optimystic's `docs/offline-sync.md` → "When to submit"). Registered
 	 * with the collection factory before any table opens, so every table takes it. cadre-core passes
-	 * a gate that also waits for the party's own machines (docs/strands.md → "Waiting for the party's
-	 * own machines"). Absent: the node's gate, or the always-open one on a transactor without a cohort.
+	 * a gate that also waits for the party's own machines (docs/strands/writes.md → "Waiting for the
+	 * party's own machines"). Absent: the node's gate, or the always-open one on a transactor without a
+	 * cohort.
 	 */
 	cohortReachability?: ICohortReachability;
 }
@@ -213,7 +214,7 @@ export interface SereusPluginResult {
 	 * connection runs, as an `AppSchemaOutdatedError` naming both. This connection's writes can then
 	 * erase what the newer version added, with no error anywhere, so the host must close the database
 	 * (cadre-core stops the strand). Reported by a check that runs from when the `App` schema is applied
-	 * until {@link shutdown} (docs/strands.md → "A running member stops"), and by a deferred
+	 * until {@link shutdown} (docs/strands/app-schema.md → "A running member stops"), and by a deferred
 	 * {@link appSchema} retry that finds the strand ahead. Never on a connection with no `App` schema. A
 	 * listener added after the report is called at once. Returns an idempotent unsubscribe.
 	 */

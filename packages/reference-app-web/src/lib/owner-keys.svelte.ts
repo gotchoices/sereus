@@ -3,7 +3,7 @@
  * (`CadreNode.listOwnerKeys`) and, on an owner tab, Add an owner key and Make a backup (owner
  * grants, `createOwnerGrant`), the outstanding grants with Withdraw, Export this tab's key and
  * Remove (`planOwnerKeyRemoval`, `removeOwner`), with Redeem an owner grant and Import on any tab
- * (docs/architecture.md → "Owner Keys", "Owner grants"). The browser counterpart of the phone
+ * (docs/cadre/owner-keys.md). The browser counterpart of the phone
  * app's `owner-keys-section.tsx`, `owner-grant-views.tsx` and `owner-keys.ts`, with the same
  * list, forms, prompt and wording, "this tab" for "this device", and Download for Share. A tab
  * has no camera scanner, so Redeem and Import take pasted text only. The owner-grant words are

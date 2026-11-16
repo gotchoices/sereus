@@ -199,7 +199,7 @@ function placeholderHtml(): string {
       <li><span class="endpoint">GET /api/events</span> (Server-Sent Events)</li>
       <li><span class="endpoint">/nat/*</span>, <span class="endpoint">/update/*</span></li>
     </ul>
-    <p>See <a href="https://github.com/gotchoices/sereus/blob/master/docs/cadre-host.md">docs/cadre-host.md</a>.</p>
+    <p>See <a href="https://github.com/gotchoices/sereus/blob/master/docs/hosting/cadre-host.md">docs/hosting/cadre-host.md</a>.</p>
   </body>
 </html>
 `;

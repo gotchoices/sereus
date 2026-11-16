@@ -1,7 +1,7 @@
 /**
  * Removing a machine from a cadre cuts it off a strand its party does NOT manage
- * (`docs/architecture.md` → "Removing a machine"; `docs/strands.md` → "The host's re-invitation
- * seats the new key"), proved on a real network and on rows production wrote: the test calls no
+ * (`docs/cadre/membership.md` → "Removing a machine"; `docs/strands/keys.md` → "A strand the party
+ * does not manage"), proved on a real network and on rows production wrote: the test calls no
  * membership writer.
  *
  * `machine-removal-rotates-party-key` proves the replacement in a strand the party founded, where

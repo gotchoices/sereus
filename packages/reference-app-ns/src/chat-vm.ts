@@ -106,7 +106,7 @@ export class ChatViewModel extends Observable {
 	private readonly readsInFlight = new Set<StrandInstance>();
 	/**
 	 * In memory only: a message read from storage carries no mark, and a mark whose commit
-	 * nothing follows stays until the app restarts (docs/strands.md, "A commit's durability").
+	 * nothing follows stays until the app restarts (docs/strands/writes.md, "A commit's durability").
 	 */
 	private readonly undelivered: UndeliveredMark[] = [];
 
@@ -221,7 +221,8 @@ export class ChatViewModel extends Observable {
 
 		// Gated on `strand.database`: a joiner comes up `'syncing'` with no database until
 		// it has received the strand's data from another member, and a write before that
-		// would fork the Participant table (it never merges — docs/strands.md, "Joining").
+		// would fork the Participant table (it never merges — docs/strands/formation.md,
+		// "Joining: no writes before the first sync").
 		// `refresh()` re-enters here every poll while unregistered, so the registration
 		// lands on the first poll after the strand becomes writable.
 		if (strand?.database && participantId && !this.registered && this.registeringStrand !== strand) {

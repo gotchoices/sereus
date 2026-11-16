@@ -1,21 +1,33 @@
-## Sereus Schema Guide (for Quereus)
+# Writing an app schema
 
-Purpose: A compact, example-driven reference so a human or AI agent can define a full Sereus strand schema using Quereus’ declarative SQL. Assumes familiarity with SQL; focuses on Quereus- and Sereus-specific patterns.
+This guide shows how to write the schema of an sApp in Quereus's declarative SQL, and which schema patterns work on a strand, where every member's nodes re-execute and store every write. It is for app developers who know SQL; it covers what Quereus and Sereus do differently from a single-server database.
 
-What the examples are: each `sql schema` example below is an sApp schema *body* — the bare `table`, `index`, `view` and `assertion` items an app passes as the plugin's `schema` option. Anything else — `create table …`, a misspelled item keyword — is refused when the schema is applied (Quereus alone would silently skip it), and so is a `seed` item (see [Seeds](#seeds-local-quereus-databases-only)). Sereus wraps the body as `declare schema App { … }`, applies it, and chooses the storage module (Optimystic) itself. The sApp's name and version are the plugin's `sapp_id` and `sapp_version` settings, not part of the schema text. Beside the schema body the app passes its version, `schemaVersion` (the plugin's `schema_version` setting, cadre-core's `SAppConfig.schemaVersion`): a whole number it raises with every change to the schema, since a strand refuses an app whose number is below the highest a member has applied ([strands.md → Until then](strands.md#until-then-every-member-on-the-same-schema-version)). Because Sereus puts the app's tables in schema `App`, app code qualifies them (`App.messages`), as the reference apps do (`packages/reference-app-web/src/lib/chat-dml.ts`); the query examples below leave them unqualified for brevity. `packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the examples; every code block carries one marker for it:
-- `sql schema` or `sql schema <name>` — an sApp schema body. Applied, then an insert, update and delete are planned against every table and a select against every view. The name lets query examples refer to it.
-- `sql query <name>` — every statement is planned, not run, against the `sql schema <name>` block; tables are named unqualified.
-- `sql script` — a complete statement sequence, run as-is.
-- `sql fragment` — shown for reading only (a lone constraint line that is not a statement on its own). Never run.
+See also: [concepts](concepts.md) for the terms, [app schema versions and upgrades](strands/app-schema.md), [durability and offline mode](strands/writes.md), and the [cadre-core API guide](api.md).
 
-Key Quereus characteristics:
-- Declarative, order-independent schema blocks (`declare schema <name> { ... }`).
-- Columns are NOT NULL by default (unless explicitly `null`).
-- Table-level mutation context variables, declared with `with context (...)`, available in `default` and `check`.
-- Global assertions (an `assertion ... check (...)` item).
-- Auto-deferred row-level CHECKs when needed; immediate for simple per-row checks.
+## What an app schema is
 
-Declarative workflow (engine-driven migration):
+An app schema is a schema body: the `table`, `index`, `unique index`, `view`, `materialized view` and `assertion` items an app passes as `SAppConfig.schema` to cadre-core, or as the `schema` option of `@serfab/quereus-plugin-sereus`. Sereus wraps the body as `declare schema App { … }`, applies it on every node that runs the app, at every connect, and chooses the storage module (Optimystic) itself. `applyAppSchema` in `packages/quereus-plugin-sereus/src/app-schema.ts` is the one place that applies it.
+
+What follows from that:
+
+- **Items only.** Anything that is not one of the six items is refused when the schema is applied: `create table …`, a misspelled item keyword, a `seed` item (see [Seed items are refused](#seed-items-are-refused)). Quereus alone would skip an item it does not recognize, and the app would run without it.
+- **The schema has a version.** Beside the body the app passes `schemaVersion`, a whole number of at least 1 that it raises with every change to the schema. A strand refuses an app whose number is below the highest a member has applied: see [App schema versions across a strand's members](strands/app-schema.md#app-schema-versions-across-a-strands-members).
+- **Tables live in schema `App`.** App code qualifies them (`App.messages`), as `packages/reference-app-web/src/lib/chat-dml.ts` does. The query examples in this guide leave names unqualified for brevity.
+- **The strand has tables of its own.** Sereus also applies schema `Strand` (`schemas/strand.qsql`), which holds the strand's membership. An app table may share a name with one of them: see [Same-named tables in Strand and App](strands/app-schema.md#same-named-tables-in-strand-and-app).
+- **The sApp's identity is not in the schema text.** In cadre-core the author's public key and the release string are `SAppConfig.id` and `SAppConfig.version`, beside the schema.
+- **The author signs the schema.** Under a node's default `requireSignedSchemas` policy, `SAppConfig.signature` is the author's signature over `schema`, `version` and `schemaVersion`, so a change to the schema text needs a new signature.
+
+### Quereus rules that differ from other SQL engines
+
+- Schema declarations are order-independent: an item may refer to one declared after it.
+- A column is `not null` unless it is declared `null`.
+- A table can declare mutation context variables with `with context (…)`. The writer supplies them with each statement, and the table's `default` and `check` expressions read them. See [Mutation context](#mutation-context).
+- An `assertion … check (…)` item states an invariant across tables.
+- A `check` that reads only its own row runs when the row is written. A `check` that reads other rows or an aggregate is deferred automatically and runs at commit.
+
+### Declaring a schema in plain Quereus
+
+Outside Sereus, a Quereus database declares a schema, inspects the migration the engine derives from it, and applies it:
 
 ```sql script
 -- Optional: ensure standard SQL nullability semantics
@@ -40,17 +52,30 @@ apply schema main with seed;
 explain schema main;       -- returns { info: 'hash:...' }
 ```
 
-That is raw Quereus. Inside Sereus you write only the items between the braces; see "What the examples are" above. `seed` items and `with seed` have no Sereus equivalent; see [Seeds](#seeds-local-quereus-databases-only).
+Inside Sereus an app writes only the items between the braces. Sereus runs the `declare` and the `apply`, and `seed` and `with seed` have no Sereus equivalent.
 
-Conventions used below:
-- "Strand" = the database shared by consenting participants.
-- "Cadre" = a user's personal device cluster that manages/stores data on their behalf.
-- "Cohort" = all nodes belonging to a strand (the combined cadres of all strand members).
-- Role/rights are modeled at the schema layer using context variables + checks.
+### Seed items are refused
 
----
+In plain Quereus a `seed` item lists rows for one table, and `apply schema … with seed` inserts them idempotently (`on conflict do nothing`):
 
-### Minimal Strand Schema Skeleton
+```sql script
+declare schema main using (default_vtab_module = 'memory') {
+  table roles (code text primary key, label text null);
+
+  -- One seed item per table; each row lists every column in declaration order
+  seed roles (('admin', 'Administrator'), ('member', 'Member'), ('guest', null));
+}
+
+apply schema main with seed;
+```
+
+Quereus also parses a `seed <table> values (<columns>) values (...)` form, but it ignores that column list and inserts each row positionally: a row that omits a column fails, and one that lists columns out of declaration order puts its values in the wrong columns. List every column instead.
+
+Sereus refuses an sApp schema that contains a `seed` item. The schema is applied on every node of the strand at every connect, so seed inserts would add a network write to each connect, and two nodes inserting the same seed key at once would collide. An app that needs rows when the strand is created, such as a role list, inserts them itself from the node that founds the strand.
+
+## Tables, keys and constraints
+
+### A minimal schema
 
 ```sql schema
 -- Identities scoped to the strand; emails optional to allow pseudonyms/handles
@@ -81,58 +106,9 @@ table messages (
 );
 ```
 
----
+`check on insert` limits a check to one operation; `check on update` and `check on delete` do the same for the other two.
 
-### Roles & Permissions (Schema-Enforced via Context)
-
-Quereus supports table-level mutation context (e.g., `actor_id`, `auth_token`) for use in defaults and checks. This enables application-enforced RBAC without a central auth server.
-
-```sql schema
-table roles (
-  code text primary key,           -- 'admin', 'member', ...
-  sort integer default 0
-);
-
-table user_roles (
-  user_id  text,
-  role     text references roles(code),
-  constraint pk_user_roles primary key (user_id, role)
-);
-
--- Application-provided context (names are up to you), declared by the table that reads it
--- and supplied with each write: `insert ... with context auth_token = ?, ...`
--- You can use custom functions: has_role(token, 'admin') → 1/0
-
-table protected_records (
-  id       text primary key,
-  tenant   text,
-  data     text,
-  created  text,
-
-  -- Multi-tenant isolation: write must match current_tenant
-  constraint tenant_guard check (
-    tenant = context.current_tenant_id
-  ),
-
-  -- Require a particular role to insert/update
-  required_role text default 'member',
-  constraint write_auth check (
-    has_role(context.auth_token, required_role) = 1
-  )
-) with context (
-  current_tenant_id text,
-  auth_token        text
-);
-```
-
-Notes:
-- Use your own user-defined functions (UDFs) such as `has_role(token, role)` to integrate signatures/claims. Register them as deterministic, or the CHECK that calls them is rejected.
-- A table must declare every context variable it reads in `with context (...)`. Undeclared, a bare name in a `default` fails when the schema is applied, but a `context.<name>` in a `check` applies cleanly and fails only on the first write.
-- The same pattern works for audit trails (see below) and cryptographic checks.
-
----
-
-### Integrity: Foreign Keys, Composite Keys, Immediate vs Auto-Deferred Checks
+### Foreign keys, composite keys and deferred checks
 
 ```sql schema
 table customers (
@@ -173,16 +149,22 @@ table order_items (
 );
 ```
 
-Id immutability / delete guards:
+`within_limit` reads another table and an aggregate, so the engine defers it to commit. A transaction can therefore insert several items that pass only as a set.
 
-```sql fragment
-constraint id_immutable check on update (new.id = old.id);
-constraint no_delete    check on delete (false);
+### Immutable ids and delete guards
+
+`new` and `old` name the row after and before the write. A check that compares them makes a column immutable, and `check on delete (false)` forbids deletes:
+
+```sql schema
+table things (
+  id   text primary key,
+  name text,
+  constraint id_immutable check on update (new.id = old.id),
+  constraint no_delete    check on delete (false)
+);
 ```
 
----
-
-### Generated Columns, Defaults, and Domain-Like Checks
+### Generated columns and column checks
 
 ```sql schema
 table articles (
@@ -197,9 +179,32 @@ table articles (
 );
 ```
 
----
+Built-in functions such as `isISODatetime` and `typeof` validate a value's format or type in a check:
 
-### Views for Read Models / Projections
+```sql schema
+table events (
+  id     text primary key,
+  at     text,    -- ISO8601 UTC timestamp
+  suffix text,
+  n      any null,
+  constraint ts_valid    check (isISODatetime(at) and at like '%Z'),
+  constraint n_is_int    check (n is null or typeof(n) = 'integer')
+);
+```
+
+### Indexes
+
+An index speeds a query; a `unique index` also refuses a duplicate value. What a refused duplicate looks like when two members write at once is under [A `unique` column refuses a duplicate the same way](#a-unique-column-refuses-a-duplicate-the-same-way).
+
+```sql schema
+table users ( id text primary key, handle text );
+
+unique index idx_users_handle on users(handle);
+```
+
+### Views
+
+A view is a named read model. Keep write logic out of views.
 
 ```sql schema
 table users ( id text primary key, email text, display text );
@@ -212,39 +217,148 @@ view v_users_with_roles as
    group by u.id, u.email, u.display;
 ```
 
----
-
-### Indexes (Performance & Uniqueness)
+A view over `values` gives a fixed code list without a table, so no node has to insert its rows:
 
 ```sql schema
-table users ( id text primary key, handle text );
-
-unique index idx_users_handle on users(handle);
+view Status as
+  select * from (values
+    ('new','New'),
+    ('ready','Ready'),
+    ('done','Done')
+  ) as Status(Code, Name);
 ```
 
----
+### Assertions across tables
 
-### Ordering Events (There Is No Commit-Order Column)
+An assertion states an invariant that does not belong to a write of any one table. The engine checks it at commit.
 
-A strand table gives you exactly the columns you declared, nothing more. There is no
-auto-increment, no rowid, no commit-sequence column, and no function that returns one. A query
-without `order by` returns rows in whatever order the plan produced them — usually primary-key
-order, since the storage is a B-tree keyed on the primary key, but a plan served by a secondary
-index will not — and with a UUID or text `id` primary-key order is arbitrary anyway, not
-chronological. Always write the `order by` you mean. The one transaction-related function the
-engine offers, `StampId()`, returns an identifier for the *current* transaction (peer-id hash +
-random bytes); it tells you *which* transaction wrote a row, never *when* relative to another.
+```sql schema ledger
+table ledger (
+  id    integer primary key,
+  kind  text check (kind in ('debit','credit')),
+  amt   real check (amt >= 0)
+);
 
-You also cannot fake a server-assigned timestamp. Quereus rejects non-deterministic functions
-(`RANDOM`, current-time) in constraints, defaults and computed columns at schema definition
-time, because peers re-execute a transaction's statements to validate it and must reach the
-same answer. That rejection is a `CREATE TABLE`-time error, not a runtime surprise: writing
-`created_at text default datetime('now')` fails when the schema is applied.
+-- Sum(credits) = Sum(debits)
+assertion balanced_book check (
+  (select coalesce(sum(case when kind='credit' then amt else 0 end),0) from ledger)
+  =
+  (select coalesce(sum(case when kind='debit'  then amt else 0 end),0) from ledger)
+);
+```
 
-The sanctioned way to get a clock value into a default or check is **mutation context** — the
-writer resolves the value and passes it with the statement, so it becomes part of the signed,
-replayable transaction rather than something each validator re-evaluates (see "Explicit table
-context declaration" below):
+## Mutation context
+
+Mutation context is a set of variables a table declares with `with context (…)`. The writer supplies a value for each with the statement (`insert … with context name = ?, … values (…)`), and the table's `default` and `check` expressions read them. The values travel in the statement, so they are part of the transaction that every validating node re-executes. An app uses this to enforce authorization, audit columns and signatures in the schema, with no central server.
+
+A context value is whatever the writer supplied. A check that must hold against a dishonest member therefore has to verify something the writer cannot forge, such as a signature.
+
+### Declaring and supplying context
+
+```sql schema
+table secured_objects (
+  id   text primary key,
+  data text,
+  constraint signed_change check (
+    verify(digest(Tid, id, data), context.signature, context.user_key, 'ed25519')
+  )
+) with context (
+  user_key  text,   -- base64url ed25519 public key
+  signature text,   -- base64url signature over the digest
+  Tid       int
+);
+```
+
+A table must declare every context variable it reads. An undeclared bare name in a `default` fails when the schema is applied. An undeclared `context.<name>` in a `check` applies cleanly and fails only on the first write.
+
+`digest` and `verify` are registered on every strand. Signatures and keys are base64url text, as in `schemas/strand.qsql`.
+
+### Roles and permissions
+
+```sql schema
+table roles (
+  code text primary key,           -- 'admin', 'member', ...
+  sort integer default 0
+);
+
+table user_roles (
+  user_id  text,
+  role     text references roles(code),
+  constraint pk_user_roles primary key (user_id, role)
+);
+
+-- Application-provided context (names are up to you), declared by the table that reads it
+-- and supplied with each write: `insert ... with context auth_token = ?, ...`
+-- You can use custom functions: has_role(token, 'admin') → 1/0
+
+table protected_records (
+  id       text primary key,
+  tenant   text,
+  data     text,
+  created  text,
+
+  -- Multi-tenant isolation: write must match current_tenant
+  constraint tenant_guard check (
+    tenant = context.current_tenant_id
+  ),
+
+  -- Require a particular role to insert/update
+  required_role text default 'member',
+  constraint write_auth check (
+    has_role(context.auth_token, required_role) = 1
+  )
+) with context (
+  current_tenant_id text,
+  auth_token        text
+);
+```
+
+`has_role` is a function the app registers with Quereus; Sereus does not supply it. Register such a function as deterministic, or the engine rejects the `check` that calls it.
+
+### Audit columns and signature checks
+
+```sql schema
+-- The application supplies the context variables with each write:
+--   insert into documents (...) with context actor_name = ?, actor_key = ?, ... values (...)
+
+table documents (
+  id        text primary key,
+  tenant    text,
+  title     text,
+  content   text,
+
+  -- Audit defaults derived from context
+  created_by text default actor_name,
+  created_at text,
+  op_sig     text default operation_signature,
+
+  -- Multi-tenant write barrier
+  constraint tenant_isolation check (tenant = context.current_tenant_id),
+
+  -- Signature check with the crypto functions every strand registers (digest, verify);
+  -- signatures and keys are base64url text, the same idiom schemas/strand.qsql uses
+  constraint signature_valid check (
+    verify(digest(id, title, content, created_by), op_sig, context.actor_key, 'ed25519')
+  )
+) with context (
+  actor_name          text,
+  actor_key           text,   -- the signer's ed25519 public key
+  operation_signature text,
+  current_tenant_id   text
+);
+```
+
+## Ordering Events (There Is No Commit-Order Column)
+
+A strand table has exactly the columns its schema declares. There is no auto-increment, no rowid, no commit-sequence column, and no function that returns one. A query without `order by` returns rows in whatever order the plan produced them: usually primary-key order, because the storage is a B-tree keyed on the primary key, but not when a secondary index serves the plan. With a UUID or other text `id`, primary-key order is not chronological anyway. Always write the `order by` you mean.
+
+`StampId()`, the one transaction-related function, returns an identifier for the current transaction. It says which transaction wrote a row, never when that transaction ran relative to another.
+
+### A timestamp comes from the writer
+
+Quereus rejects non-deterministic functions (`random`, the current time) in constraints, defaults and generated columns, because nodes re-execute a transaction's statements to validate it and must reach the same answer. The rejection happens when the schema is applied: `created_at text default datetime('now')` fails at apply, not at the first write.
+
+To use a clock value in a default or check, pass it as [mutation context](#mutation-context). The writer resolves the value and sends it with the statement, so it is part of the transaction and each validating node reads the same value:
 
 ```sql schema event-clock
 table events (
@@ -260,24 +374,19 @@ table events (
 insert into events (id, body) with context now_iso = datetime('now') values ('e1', 'hi');
 ```
 
-That moves *where* the timestamp comes from, not *how much it is worth*: any timestamp on a row
-is still whatever the writing client asserted about itself — nothing in the stack checks it.
+The timestamp is still what the writing client asserted about itself. Nothing in Sereus, Quereus or Optimystic checks it.
 
-Underneath, the storage engine *does* keep a true commit order: each table maps to one
-Optimystic collection, and that collection's append-only log assigns every committed
-transaction a revision number — 1, 2, 3, ... — agreed by every replica
-(`../optimystic/docs/correctness.md` §6.3, "Ordering Guarantees"). It is real, and it is not
-currently reachable from SQL. Two caveats if you go looking for it anyway: it is commit order,
-not send order or causal order — two peers posting concurrently are ordered by whichever commit
-the cohort accepted first, not by which was written first on either device — and it is scoped
-to one table's collection, so there is no defined order between rows in two different tables.
+### The storage engine's commit order is not visible to SQL
 
-Until (if ever) that changes, pick one of two patterns:
+Each table maps to one Optimystic collection. That collection's append-only log gives every committed transaction a revision number that every replica agrees on (Optimystic's `docs/correctness.md`, "Ordering Guarantees"). SQL cannot read that number.
 
-**Pattern A — client timestamp with a deterministic tiebreak.** What the reference chat apps
-do. Simple, and its weakness is worth saying plainly: the timestamp is asserted by the row's
-author, so a wrong or dishonest clock silently reorders history and nothing in the stack
-notices. Fine for a cooperative app; not fine when back-dating matters.
+The number would not replace the patterns in this section even if SQL could read it. It is commit order, not send order or causal order: two members posting at once are ordered by whichever commit was accepted first, not by which was written first on either device. It is also scoped to one table's collection, so it defines no order between rows of two tables.
+
+An app that needs an order uses [Pattern A](#pattern-a-client-timestamp-with-a-deterministic-tiebreak) or [Pattern B](#pattern-b-record-what-the-author-had-already-seen).
+
+### Pattern A: client timestamp with a deterministic tiebreak
+
+The reference chat apps order by a timestamp column and break ties on the primary key. The row's author asserts the timestamp, so a wrong or dishonest clock reorders history and nothing detects it. That is acceptable for a cooperative app and not where back-dating matters. The query runs against the `Message` table declared under [Pattern B](#pattern-b-record-what-the-author-had-already-seen):
 
 ```sql query message-graph
 select Id, Content, Timestamp
@@ -285,12 +394,9 @@ select Id, Content, Timestamp
  order by Timestamp asc, Id asc;
 ```
 
-**Pattern B — record what the author had already seen.** Instead of (or alongside) a
-timestamp, have each row name the other rows its author had seen when writing it. That builds a
-happened-before graph in your own schema — it does not give you absolute time, but an insertion
-claiming to predate something its author had demonstrably already seen becomes detectable, and
-honest participants can bound a dishonest clock from both sides. This is the shape Matrix uses
-(`prev_events`) and Secure Scuttlebutt uses (per-feed hash chains). A minimal sketch:
+### Pattern B: record what the author had already seen
+
+Instead of a timestamp, or beside one, each row names the other rows its author had seen when writing it. The rows then form a happened-before graph in the app's own schema. The graph gives no absolute time, but a row that claims to predate something its author had demonstrably already seen is detectable, and honest participants can bound a dishonest clock from both sides. Matrix (`prev_events`) and Secure Scuttlebutt (per-feed hash chains) use this shape.
 
 ```sql schema message-graph
 table Message (
@@ -307,116 +413,63 @@ table MessageParent (
 );
 ```
 
-**Not a third pattern: a self-imposed integer sequence is a poor fit here.** The obvious idea — an
-integer primary key assigned as `max(id) + 1` — is safe in the sense that matters: when two peers
-concurrently insert the same primary key, exactly one commits and the other is refused with the
-ordinary `UNIQUE constraint failed: <Table>.<Column>` error. Nothing is silently lost. But the
-refused writer has to notice the error, recompute `max(id) + 1` against its new view, and write
-again — and the more peers post at once, the more often that happens, because every one of them
-computed the same next id from the same local maximum. A stricter "no gaps" variant
-(`id = 0 or exists(id - 1)`) inherits the same contention. The sketches under Patterns A and B
-key their rows on a value each peer mints for itself (a UUID), which no other peer can collide
-with, so they need no retry loop at all. Use that unless a gapless integer sequence is itself a
-requirement. If it is, the retry is yours to write, and it needs a randomized backoff: every
-refused peer recomputes the same next id from the same view, so retries that fire immediately
-collide with each other again.
+### An integer sequence needs a retry loop
 
-**A secondary `unique` column is the same safe guard as the primary key, including at the same
-instant.** For a secondary `unique` column raced by two rows with different primary keys at the
-same instant, the losing writer is correctly told its insert failed and its row lands nowhere on
-either machine — a table row and each of its indexes are reserved together before any of them is
-made final, so the unique index can refuse the loser before its table row is ever stored. So a
-secondary `unique` column (a username, an email address, a claimed handle) is a safe thing to
-stand between two members and a duplicate, the same as the primary key. The permanent guard is
-`packages/integration-tests/src/scenarios/control-concurrent-unique-column-race.integration.ts`.
+An integer primary key assigned as `max(id) + 1` loses nothing: when two members insert the same key at once, one commits and the other is refused with `UNIQUE constraint failed: <Table>.<Column>`. But the refused writer has to recompute `max(id) + 1` against its new view and write again, and the more members post at once, the more often that happens, because each computed the same next id from the same local maximum. A "no gaps" variant (`id = 0 or exists(id - 1)`) has the same contention.
 
-One thing to watch when handling either refusal, primary key or secondary `unique` column: a
-*concurrent* duplicate can arrive as a plain `Error` rather than the engine's `ConstraintError`
-type, while a *sequential* duplicate (the same value inserted after the first has already
-committed) always comes back as a `ConstraintError`
-(`../optimystic/tickets/backlog/bug-concurrent-unique-refusal-is-not-a-constraint-error.md`). Both
-shapes carry the same `UNIQUE constraint failed: <Table>.<Column>` text, in the error's own message
-or in the message of an error on its `cause` chain, so match on that text rather than on the
-error's type. This applies to the `max(id) + 1` retry above as much as to a secondary column.
+Patterns A and B key their rows on a value each member mints for itself (a UUID), which no other member can collide with, so they need no retry loop. Use that unless a gapless integer sequence is itself a requirement. If it is, the app writes the retry, with a randomized backoff: every refused member recomputes the same next id from the same view, so retries that fire at once collide again.
 
----
+### A `unique` column refuses a duplicate the same way
 
-### Client-Generated Keys and Retrying a Write
+A secondary `unique` column (a username, an email address, a claimed handle) is as safe a guard against a duplicate as the primary key, including when two members insert different rows with the same value at the same instant. Optimystic reserves a table row and each of its index entries together before it makes any of them final, so the unique index refuses the losing writer before its table row is stored. The loser's insert fails and its row lands on no machine.
 
-The patterns above mint the primary key on the client. That is the right shape, and it carries one
-corollary worth stating on its own: **mint the key once per logical event, and hold it across
-every attempt to store that event.** A key minted inside the insert call makes the insert
-unrepeatable, and an unrepeatable insert turns any retry into a second row.
+Either refusal, primary key or `unique` column, reaches the writer as Quereus's `ConstraintError` with the message `UNIQUE constraint failed: <Table>.<Column>`, whether the first write committed earlier or at the same instant. With offline mode on, the refusal arrives after the commit call has returned, as the queued transaction's failure: see [Offline mode](strands/writes.md#offline-mode).
 
-The reason is that a write can fail without settling whether it landed. Optimystic can raise a
-`TornActionError` that is not marked `final` (some of the write may be stored), a
-`SyncRetryExhaustedError`, or a partial-commit error; a commit can also be accepted while the
-response back to the writer is lost. Cadre names exactly this class in
-`packages/cadre-core/src/control-write-retry.ts` → `reportsPossiblyStoredWrite`, and its only job
-is to refuse to re-run such a write, "because a re-run could store the write twice". Control
-writes get that protection automatically, from the funnel every one of them passes through.
-**Strand writes do not** — `StrandDatabase.getDatabase()` hands your app a raw Quereus `Database`
-and your app calls `exec` on it, with no retry funnel in between. Whatever repeats the write —
-usually a person pressing Send again — is where the protection has to live.
+## Client-Generated Keys and Retrying a Write
 
-With a stable key, it lives in the key itself: two attempts at one event carry one primary key, so
-the primary key refuses the duplicate no matter how many attempts are made or how late a torn
-write lands. A retry then has two things to do beyond re-presenting the key:
+The ordering patterns mint the primary key on the client. One rule follows from that: mint the key once per logical event, and keep it across every attempt to store that event. A key minted inside the insert call makes the insert unrepeatable, and any retry then stores a second row.
 
-- **Read before re-writing.** `select <Key> from <Table> where <Key> = ?` distinguishes "the
-  earlier attempt never landed" from "it landed but its outcome never came back". Row present:
-  report success and write nothing. Row absent: insert normally. It is one key lookup, and only
-  the retry path pays for it. An equality on every primary-key column is served as a single tree
-  descent with no filter added by the SQL engine, and whether that descent can come back empty for
-  a row that exists on a networked strand is an open question
-  (`tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked.md`) — which is survivable
-  here precisely because the key is stable: a lookup that wrongly reports "absent" leads to an
-  insert the primary key then refuses, so the writer gets an error to report and never a second
-  row. Do not invert that and treat the read as the thing keeping the row unique.
-- **Do not reach for `insert or ignore` instead.** It is shorter and it does work against strand
-  tables, but Quereus applies `IGNORE` to *every* constraint on the row, matching SQLite — a NOT
-  NULL, CHECK or foreign-key violation also silently skips the row. A message whose author row is
-  missing would vanish without a word rather than failing loudly.
+### A write can fail without settling whether it landed
 
-The key must belong to the event the user composed, not to the attempt: if the user edits the
-text after a failed attempt, that is a different event and it needs a new key. Reusing the old one
-would report the edit as stored while the stored row still held the pre-edit text. The three
-reference chat apps implement exactly this — see `insertChatMessage` /
-`newChatMessageId` in `packages/reference-app-web/src/lib/chat-dml.ts` and the composer rule in
-`packages/reference-app-rn/src/chat-send.ts`, `packages/reference-app-ns/src/chat-vm.ts`
-(`ChatViewModel.send`) and `packages/reference-app-web/src/lib/messages.svelte.ts` (`sendMessage`).
+Optimystic can raise a `TornActionError` that is not marked `final` (part of the write may be stored), a `SyncRetryExhaustedError`, or a partial-commit error. A commit can also be accepted while the response to the writer is lost.
 
-The other half of the rule: hold the key exactly as long as the event is still the one being
-composed. A key released only when an attempt resolves outlives its draft — a user who sees a
-"not confirmed" message arrive anyway and clears the box would have the *same* text, typed again
-later, taken for a retry, found stored, and silently dropped. So the reference apps release the key
-at the first of:
+cadre-core refuses to re-run its own control writes after such an error (`reportsPossiblyStoredWrite` in `packages/cadre-core/src/control-write-retry.ts`), because a re-run could store the write twice. Strand writes have no such protection. `StrandDatabase.getDatabase()` returns a plain Quereus `Database`, and the app calls `exec` on it directly. Whatever repeats the write, usually a person pressing Send again, has to carry the protection.
 
-- **an attempt resolving**, stored or found already stored;
-- **the composer no longer holding the text the key was minted for** (on web, the author and the
-  text) — clearing and retyping the same words, or editing away and back, is a new event with a
-  new key;
-- **a read of the table showing the key's row**, which means an attempt that reported failure did
-  land. The apps then also drop the "not confirmed" notice, and clear the box if it still holds
-  that text.
+### Retrying with a stable key
 
-The read must never release the key while an attempt is in flight: if that attempt then failed,
-the user would be told to retry with no key left to re-present, and the retry would mint a new
-one — the duplicate this section exists to prevent. The next read after the attempt settles
-releases it instead. React Native keeps the rule in `ChatSender` (`composerChanged`, `settle`,
-`packages/reference-app-rn/src/chat-send.ts`); NativeScript in `ChatViewModel`'s `draft` setter
-and `settlePendingDraft`; web in `composerChanged` and `settlePendingDraft` in
-`messages.svelte.ts`.
+Two attempts at one event carry one primary key, so the primary key refuses the duplicate however many attempts are made and however late a torn write lands. A retry does two more things:
 
-This is also why the writes cadre-core itself re-runs are safe: they key their rows on values they
-derive rather than mint — the membership reconciler's `MemberPeer` binding is keyed on the node's
-own peer id and its `ConsumedInvite` row on the invitation key
-(`packages/cadre-core/src/strand-membership-reconciler.ts`) — so a second pass re-presents the
-same key and the second write is refused rather than duplicated.
+- **Read before writing again.** `select <Key> from <Table> where <Key> = ?` tells "the earlier attempt never landed" from "it landed and its outcome never came back". Row present: report success and write nothing. Row absent: insert. Only the retry path pays for the lookup.
+- **Do not use `insert or ignore` instead.** It works against strand tables, but Quereus applies `ignore` to every constraint on the row, as SQLite does: a `not null`, `check` or foreign-key violation also skips the row silently. A message whose author row is missing would vanish instead of failing.
 
----
+The read is a convenience, not the guard. An equality on every primary-key column is served as one tree descent, and whether that descent can come back empty for a row that exists on a networked strand is an open question (ticket `debt-composite-pk-point-lookup-unreliable-untracked`). A stable key makes a wrong "absent" harmless: the insert that follows is refused by the primary key, so the writer gets an error and never a second row.
 
-### Common Table Expressions (CTE), Recursive, and Hints
+A write the app repeats automatically is best keyed on a value it derives, such as a peer id or an invitation key, so that every pass presents the same key without having to remember one.
+
+### The key belongs to the event, not the attempt
+
+If the user edits the text after a failed attempt, that is a different event and needs a new key. Reusing the old key would report the edit as stored while the stored row held the earlier text.
+
+For the same reason the app keeps the key only while the event is still the one being composed. It drops the key when an attempt resolves (stored, or found already stored), when the composer no longer holds the text the key was minted for, or when a read of the table shows the key's row. It must not drop the key on a read while an attempt is in flight: if that attempt then failed, the retry would have no key to present and would mint a second one.
+
+The three reference chat apps implement this rule; the web app's version is `newChatMessageId` and `insertChatMessage` in `packages/reference-app-web/src/lib/chat-dml.ts`. [When the composer releases a message id](platforms/reference-apps.md#when-the-composer-releases-a-message-id) describes each app's composer and names its code.
+
+## Party-private app state
+
+An sApp often needs state that belongs to one party alone and should follow that party across its own devices: a read position, a draft, a display preference. Sereus has no store that is private to one party and replicated across that party's devices. The guidance is to keep such a value in the strand database, in a table keyed by the owning party (one row per member id, for example).
+
+What that arrangement does and does not give:
+
+- **Every member can read it.** The strand database is visible to every member of the strand, whatever key a row is stored under. A per-party key partitions the data by owner and hides it from nobody. Do not store anything there whose disclosure to another member of the strand would matter.
+- **The key does not restrict writes.** Nothing about a per-party key stops another member writing that row. If only the owner may change its value, the schema has to say so with a check over the writer's identity: see [Roles and permissions](#roles-and-permissions) and [Audit columns and signature checks](#audit-columns-and-signature-checks).
+- **Device-local storage is not an alternative.** The app's own local storage and cadre-core's node-local records (`packages/cadre-core/src/node-local-snapshot.ts`) are never replicated, so state kept there does not reach the party's second device, which is usually the reason the state is wanted.
+- **No migration is defined.** If Sereus adds a private store, an app that used strand tables moves its data itself.
+
+## Queries
+
+The query examples name tables unqualified. App code writes `App.<table>`.
+
+### Common table expressions
 
 The examples read this table:
 
@@ -454,7 +507,9 @@ select s.employee_id, s.last_seen
   from staff s join managers m on m.manager_id = s.employee_id;
 ```
 
-Set operations (against the "Putting It All Together" schema below):
+### Set operations
+
+Against the schema of [A complete example](#a-complete-example). `diff` is a Quereus extension:
 
 ```sql query chat
 -- union: users who started a conversation or posted a message
@@ -479,86 +534,9 @@ diff
 select sender_id from messages;
 ```
 
----
+### RETURNING with NEW and OLD
 
-### Global Assertions (Cross-Table Invariants)
-
-Use assertions for invariants that aren’t naturally bound to a single table mutation.
-
-```sql schema ledger
-table ledger (
-  id    integer primary key,
-  kind  text check (kind in ('debit','credit')),
-  amt   real check (amt >= 0)
-);
-
--- Sum(credits) = Sum(debits)
-assertion balanced_book check (
-  (select coalesce(sum(case when kind='credit' then amt else 0 end),0) from ledger)
-  =
-  (select coalesce(sum(case when kind='debit'  then amt else 0 end),0) from ledger)
-);
-```
-
----
-
-### Audit & Security with Mutation Context (Signatures, Tenants, Actor Info)
-
-```sql schema
--- The application supplies the context variables with each write:
---   insert into documents (...) with context actor_name = ?, actor_key = ?, ... values (...)
-
-table documents (
-  id        text primary key,
-  tenant    text,
-  title     text,
-  content   text,
-
-  -- Audit defaults derived from context
-  created_by text default actor_name,
-  created_at text,
-  op_sig     text default operation_signature,
-
-  -- Multi-tenant write barrier
-  constraint tenant_isolation check (tenant = context.current_tenant_id),
-
-  -- Signature check with the crypto functions every strand registers (digest, verify);
-  -- signatures and keys are base64url text, the same idiom schemas/strand.qsql uses
-  constraint signature_valid check (
-    verify(digest(id, title, content, created_by), op_sig, context.actor_key, 'ed25519')
-  )
-) with context (
-  actor_name          text,
-  actor_key           text,   -- the signer's ed25519 public key
-  operation_signature text,
-  current_tenant_id   text
-);
-```
-
----
-
-### Seeds (Local Quereus Databases Only)
-
-```sql script
-declare schema main using (default_vtab_module = 'memory') {
-  table roles (code text primary key, label text null);
-
-  -- One seed item per table; each row lists every column in declaration order
-  seed roles (('admin', 'Administrator'), ('member', 'Member'), ('guest', null));
-}
-
-apply schema main with seed;
-```
-
-Quereus also parses a `seed <table> values (<columns>) values (...)` form, but it ignores that column list and inserts each row positionally: a row that omits a column fails, and one that lists columns out of declaration order lands its values in the wrong columns. List every column instead.
-
-Quereus inserts seed rows only when a schema is applied `with seed`, idempotently (`on conflict do nothing`). **Sereus refuses an sApp schema containing a `seed` item** (`applyAppSchema` in `packages/quereus-plugin-sereus/src/app-schema.ts`): the schema is applied on every node of the strand at every connect, and two nodes inserting the same seed key at once would collide (see [Ordering Events](#ordering-events-there-is-no-commit-order-column)). An app that needs rows at birth inserts them itself from the node that founds the strand.
-
----
-
-### RETURNING with NEW/OLD (DML Feedback)
-
-Against the "Putting It All Together" schema below:
+In `returning`, `NEW` is the row an insert or update wrote, and `OLD` is the row an update or delete replaced or removed. Against the schema of [A complete example](#a-complete-example):
 
 ```sql query chat
 -- Insert returning generated values (slug is a generated column)
@@ -577,16 +555,9 @@ delete from messages where id = 'm1'
 returning OLD.id, OLD.body;
 ```
 
-Rules recap:
-- INSERT: `NEW` references inserted values.
-- UPDATE: `NEW` is updated row; `OLD` is previous row.
-- DELETE: `OLD` references deleted row.
+### Table-valued functions and JSON
 
----
-
-### Table-Valued Functions & JSON Helpers
-
-Against the "Putting It All Together" schema below:
+Against the schema of [A complete example](#a-complete-example):
 
 ```sql query chat
 -- Explode a JSON array column into rows (e.g., message tags)
@@ -601,13 +572,39 @@ select key, value
  where type = 'integer';
 ```
 
-A table-valued function sees a preceding table's columns only through `cross join lateral`; a comma join (`from messages m, json_each(m.tags)`) fails with "m.tags isn't a column".
+A table-valued function sees a preceding table's columns only through `cross join lateral`. A comma join (`from messages m, json_each(m.tags)`) fails with "m.tags isn't a column".
 
----
+### Window functions and a running digest
 
-### Putting It All Together: A Compact sApp Schema
+Against the `ledger` table of [Assertions across tables](#assertions-across-tables):
 
-This example demonstrates a realistic consent-based messaging app schema using all key features: FK, composite PK, checks (immediate + auto-deferred), generated columns, indexes, views, mutation context, and assertions.
+```sql query ledger
+-- Running balance in entry order: credits add, debits subtract
+select id,
+       kind,
+       amt,
+       sum(case when kind = 'credit' then amt else -amt end)
+         over (order by id rows between unbounded preceding and current row) as running_balance
+  from ledger;
+
+-- Cumulative digest over ordered entries (pattern used in VoteTorrent): each step
+-- hashes the previous digest together with the next entry
+with recursive
+  entries as (select row_number() over (order by id) as n, id, kind, amt from ledger),
+  chain(n, cumulative_digest) as (
+    select n, digest(id, kind, amt) from entries where n = 1
+    union all
+    select e.n, digest(c.cumulative_digest, e.id, e.kind, e.amt)
+      from chain c join entries e on e.n = c.n + 1
+  )
+select n, cumulative_digest from chain;
+```
+
+`group_concat` is not available as a window function and there is no digest window aggregate, so a running digest is a recursive CTE, not an `over (…)` clause.
+
+## A complete example
+
+A messaging schema that uses foreign keys, a composite primary key, immediate and deferred checks, a generated column, an index, a view, mutation context and an assertion together:
 
 ```sql schema chat
 -- Users & roles
@@ -698,99 +695,21 @@ assertion conversation_has_admin check (
 );
 ```
 
----
+## How the examples are checked
 
-### Practical Guidance & Patterns
-- Prefer declarative schema items (the body Sereus wraps in `declare schema App { ... }`); they’re order-independent and diffable.
-- Model authorization at the data layer using context variables + checks; keep business rules close to data.
-- Use global assertions for invariants spanning multiple tables.
-- Expect some checks to be validated at COMMIT (auto-deferred) when referencing external rows/aggregates.
-- Keep views as read models; avoid complex write logic in views.
-- Rows a strand needs at birth, such as a role list, are inserted by the app when it founds the strand, because Sereus refuses `seed` items (see [Seeds](#seeds-local-quereus-databases-only)).
-- Index for uniqueness and query speed; prefer named composite PKs where natural.
-- Mint a client-generated primary key once per logical event and hold it across retries — a strand write can fail without settling whether it landed, so a key minted per attempt turns a manual retry into a duplicate row. See [Client-Generated Keys and Retrying a Write](#client-generated-keys-and-retrying-a-write).
-- Per-user state (read position, drafts, preferences) has no private home yet: a per-party key in the strand table partitions it but hides nothing from other members — see [`strand-contracts.md` → Party-Private App State (Interim)](strand-contracts.md#party-private-app-state-interim).
+`packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts` executes the SQL in this guide. Every code block carries one marker in its fence's info string, and a block with any other info string fails the spec:
 
-This guide is intentionally compact and example-first. With it, an agent should be able to author strand schemas that enforce consent, membership, multi-tenancy, and audit/security directly in Quereus.
+- `sql schema` or `sql schema <name>`: an sApp schema body. The spec applies it, then plans an insert, an update and a delete against every table and a select against every view. The name lets query blocks refer to it, and must be unique in the guide.
+- `sql query <name>`: the spec plans every statement, without running it, against the `sql schema <name>` block, with `App` as the only schema on the search path.
+- `sql script`: a complete statement sequence, run as written.
+- `sql fragment`: shown for reading only (a lone constraint line that is not a statement). Never run.
 
+Planning proves that a check or query compiles, not that it succeeds when run.
 
----
+## Limits and accepted tradeoffs
 
-### Additional Coverage: Patterns from VoteTorrent
-
-Explicit table context declaration:
-
-```sql schema
-table secured_objects (
-  id   text primary key,
-  data text,
-  constraint signed_change check (
-    verify(digest(Tid, id, data), context.signature, context.user_key, 'ed25519')
-  )
-) with context (
-  user_key  text,   -- base64url ed25519 public key
-  signature text,   -- base64url signature over the digest
-  Tid       int
-);
-```
-
-VALUES-based enum/view:
-
-```sql schema
-view Status as
-  select * from (values
-    ('new','New'),
-    ('ready','Ready'),
-    ('done','Done')
-  ) as Status(Code, Name);
-```
-
-Window functions and a cumulative digest (against the Global Assertions `ledger` table):
-
-```sql query ledger
--- Running balance in entry order: credits add, debits subtract
-select id,
-       kind,
-       amt,
-       sum(case when kind = 'credit' then amt else -amt end)
-         over (order by id rows between unbounded preceding and current row) as running_balance
-  from ledger;
-
--- Cumulative digest over ordered entries (pattern used in VoteTorrent): each step
--- hashes the previous digest together with the next entry
-with recursive
-  entries as (select row_number() over (order by id) as n, id, kind, amt from ledger),
-  chain(n, cumulative_digest) as (
-    select n, digest(id, kind, amt) from entries where n = 1
-    union all
-    select e.n, digest(c.cumulative_digest, e.id, e.kind, e.amt)
-      from chain c join entries e on e.n = c.n + 1
-  )
-select n, cumulative_digest from chain;
-```
-
-`group_concat` is not available as a window function and there is no digest window aggregate, so a running digest is a recursive CTE rather than an `over (...)` clause.
-
-Utility validation functions in constraints:
-
-```sql schema
-table events (
-  id     text primary key,
-  at     text,    -- ISO8601 UTC timestamp
-  suffix text,
-  n      any null,
-  constraint ts_valid    check (isISODatetime(at) and at like '%Z'),
-  constraint n_is_int    check (n is null or typeof(n) = 'integer')
-);
-```
-
-Id immutability / delete guards (inline on a real table):
-
-```sql schema
-table things (
-  id   text primary key,
-  name text,
-  constraint id_immutable check on update (new.id = old.id),
-  constraint no_delete    check on delete (false)
-);
-```
+- **Commit order is not readable from SQL.** Optimystic keeps a per-table commit order, and no column or function exposes it, so an app orders rows by a value its writers assert (ticket `expose-commit-order-to-sql-decision`).
+- **Timestamps and other context values are unverified.** A value passed as mutation context is the writer's claim. Only a check the schema itself makes, such as a signature check, constrains it.
+- **Strand writes are not protected against a repeated attempt.** The app must hold a stable key across retries, as described under [Client-Generated Keys and Retrying a Write](#client-generated-keys-and-retrying-a-write).
+- **There is no party-private replicated store.** Per-party state kept in strand tables is readable by every member (ticket `feat-party-private-app-state`).
+- **Seed rows are not applied to a strand.** The founding app inserts the rows a strand needs at creation.

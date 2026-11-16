@@ -9,7 +9,7 @@
  * into arithmetic: it times the relayed dial under a budget far above any the stack imposes,
  * and then re-runs it under the budgets that actually bound it in production. It is now also
  * the proof that the limits cadre-core declares carry the slowest link sereus supports (a
- * 3-second round trip, 1500 ms one-way — `docs/architecture.md` → "Relay Integration").
+ * 3-second round trip, 1500 ms one-way — `docs/network/deadlines.md` → "The declared link").
  *
  * Deliberately BARE libp2p — websockets + noise + yamux + circuit-relay-v2 + identify, with
  * cadre-core's `DEFAULT_CONNECTION_MONITOR` — and no cadre, no Optimystic, no database. The
@@ -32,8 +32,8 @@
  * ── What it measured, 2026-09-26, one Windows machine, loopback dedicated relay ──
  *
  * The delay is injected by `harness/ws-latency.ts` in `pipelined` mode — a constant ONE-WAY
- * latency on frames a node dials out (see docs/testing.md → "Where measurements live"; a
- * figure without its mode says nothing). Because only dialed sockets are delayed, one
+ * latency on frames a node dials out (see docs/contributing/gates.md → "Opt-in measurements";
+ * a figure without its mode says nothing). Because only dialed sockets are delayed, one
  * peer-to-peer round trip through the relay costs 2× the one-way figure, while one round trip
  * between a node and the relay costs 1×.
  *
@@ -205,8 +205,8 @@ const CADRE_DECLARED = armOf(
 const ARMS = [DB_P2P_FALLBACK, CADRE_DECLARED];
 
 /**
- * The slowest link sereus supports, one-way: a 3-second round trip (`docs/architecture.md` →
- * "Relay Integration"). At or below it the `cadre-core declared` arm must open a connection
+ * The slowest link sereus supports, one-way: a 3-second round trip (`docs/network/deadlines.md` →
+ * "The declared link"). At or below it the `cadre-core declared` arm must open a connection
  * the listener holds and a stream works on.
  */
 const SUPPORTED_ONE_WAY_MS = 1500;

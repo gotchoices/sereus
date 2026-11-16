@@ -2,8 +2,8 @@
  * Two-node control-DB convergence over the live control network.
  *
  * The regression anchor for the claim that the `CadreControl` store **replicates
- * peer-to-peer** across a party's cadre nodes (docs/architecture.md — `CadrePeer`
- * as the "authoritative, replicated form"). Network-backing has now LANDED
+ * peer-to-peer** across a party's cadre nodes (docs/cadre/control-replication.md →
+ * "Control tables are network-backed"). Network-backing has now LANDED
  * (`control-db-network-backed`), so this asserts the positive convergence directly.
  *
  * How it was wired (context for reviewers):

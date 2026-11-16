@@ -1,7 +1,7 @@
 /**
- * Offline mode end to end (docs/strands.md → "Offline mode"): a phone-shaped party writes while
- * its only partner is down, restarts with the write still queued, and the write reaches the
- * partner exactly once when the partner returns.
+ * Offline mode end to end (docs/strands/writes.md → "Offline mode"): a phone-shaped party writes
+ * while its only partner is down, restarts with the write still queued, and the write reaches
+ * the partner exactly once when the partner returns.
  *
  * ── The parties ──
  *
@@ -15,9 +15,10 @@
  * `strand-relay-only-restart-reconverges`. Direct connections cannot run this journey: a strand
  * node always listens on an ephemeral port (`strand-network-config.ts`), and here both parties
  * restart while the other is down, so each would come back remembering only the other's old
- * port (docs/strands.md → "a member whose address changed while it was connected to nobody is
- * unreachable"). A relayed address names the relay and the strand peer id, both stable across
- * a restart, so each side's saved network state can still dial the other.
+ * port (docs/network/strand-addressing.md → "Limits and accepted tradeoffs": a member whose
+ * address changed while it was connected to nobody stays unreachable). A relayed address names
+ * the relay and the strand peer id, both stable across a restart, so each side's saved network
+ * state can still dial the other.
  *
  * ── The flow ──
  *

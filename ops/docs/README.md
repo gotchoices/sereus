@@ -1,10 +1,7 @@
-## Ops docs
+# Relay operating procedures
 
-Shared operational guidance that applies across deployment methods (Docker, systemd, future k8s).
+Procedures for a Sereus relay that apply however the relay process is run. To deploy a relay, start with the [relay runbook](../docker/README.md).
 
-### Topics
-- `dnsaddr.md`: publish libp2p endpoints via DNS TXT records (`/dnsaddr/...`)
-- `keys.md`: key persistence, Peer ID stability, and backup/restore guidance
-- `ice-servers.md`: how WebRTC clients find a STUN server (the relay's built-in responder), and why there is no TURN
-
-
+- [`dnsaddr.md`](dnsaddr.md): publish the relay's addresses as DNS TXT records, so that nodes are configured with a name instead of a host and port.
+- [`keys.md`](keys.md): the relay's identity key, why its peer ID must stay the same, and how to back the key up and restore it.
+- [`ice-servers.md`](ice-servers.md): the relay's STUN responder, how apps find it, and why there is no TURN server.

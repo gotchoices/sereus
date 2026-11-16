@@ -1,27 +1,26 @@
 # @serfab/cadre-host
 
-Self-hosted cadre node manager for basement-PC deployments. Runs one always-on machine whose job is to **run always-on nodes for cadres that live on people's phones**: your own cadre first, and a friend's or a family member's if they scan a code you show them. The phone stays the authority for its cadre, and your box runs a node that joins it. It exposes a localhost web UI to manage that. It holds no owner key and never runs a cadre of its own.
+`cadre-host` runs always-on Sereus nodes on a machine you own, for cadres that live on people's phones: your own, and a friend's or family member's if you show them a code. It installs as a per-user service with a web UI on localhost, starts each node as a child process, and makes the nodes reachable through your router.
 
-The sibling of [`@serfab/cadre-provider`](../cadre-provider/README.md): the provider hosts nodes for paying tenants with API keys, billing, and Docker; cadre-host hosts them for free for a handful of people you trust, as native child processes, with a one-shot installer.
+The phone stays the authority for its cadre. cadre-host holds no owner key and never runs a cadre of its own. [cadre-host design](https://github.com/gotchoices/sereus/blob/master/docs/hosting/cadre-host.md) explains how it works; this README covers installing, running and configuring it.
 
-`cadre-host join` starts a node and shows a QR code; the phone that owns the cadre scans it to claim the node. A cadre that already has a member this machine can reach can instead hand the node an invitation (`cadre-host join --invitation`). The NAT/DDNS layer (`/nat/*`) maps the ports of every node this machine runs.
+## Prerequisites
 
-[docs/cadre-host.md](../../docs/cadre-host.md) is the design source of truth.
+- **Node.js 20.19 or later**, with npm.
+- **A machine that stays on**, running Linux with systemd user services, macOS, or Windows with [NSSM](https://nssm.cc/download) (`nssm.exe` on `PATH`).
+- **A phone with a Sereus app** whose cadre the node will join. The app scans the code cadre-host shows.
+- **Optional: an OS keychain.** cadre-host stores DDNS tokens and push keys through `keytar`. On Debian or Ubuntu that needs `libsecret-1-0` and a running secret service. Without a keychain it stores them in a file ([Files it writes](#files-it-writes)).
 
 ## Install
 
-cadre-host installs entirely within your user account. **No step requires root**, with one optional exception (`loginctl enable-linger`) called out under *Root requirements* below.
-
-Pick whichever install style suits you:
-
-### Global install (binary on PATH)
+Install globally:
 
 ```bash
-npm install -g @serfab/cadre-host    # sudo only if your npm prefix is system-owned (e.g. /usr/lib)
+npm install -g @serfab/cadre-host
 cadre-host install
 ```
 
-### Local install (self-contained — recommended if you want everything under one folder)
+Or keep everything in one folder:
 
 ```bash
 mkdir -p ~/cadre && cd ~/cadre
@@ -29,319 +28,369 @@ npm install @serfab/cadre-host
 npx cadre-host install --data-dir ~/cadre/data
 ```
 
-From inside `~/cadre`, `npx cadre-host <command>` runs the local binary (`join`, `nat`, `uninstall`, …) without any path prefix — `npx` resolves it from `node_modules/.bin/`. **Caveat:** outside `~/cadre`, `npx cadre-host` won't find the local install and will silently download a fresh copy from the npm registry. To avoid that, either always `cd ~/cadre` first or symlink the binary onto your PATH:
+With a folder install, run commands as `npx cadre-host <command>` from inside `~/cadre`. Outside that folder `npx` does not find the local copy and downloads a new one from the registry, so either `cd ~/cadre` first or link the binary onto your `PATH`:
 
 ```bash
 ln -s ~/cadre/node_modules/.bin/cadre-host ~/.local/bin/cadre-host
-# now `cadre-host join` works from anywhere
 ```
 
-If you'd rather skip `npx` and the symlink, the explicit path `./node_modules/.bin/cadre-host <command>` always works from `~/cadre` too.
+A folder install also uses a data directory that is not the default. The commands that read files directly (`ui`, `start`, `push`, `uninstall`) then need `--data-dir ~/cadre/data`; `ui`, `start` and `push` also accept `CADRE_HOST_DATA_DIR`.
 
-The wizard (run either way):
+`cadre-host install` does the following:
 
-1. Prompts for the data directory and UI port (defaults shown in `[...]`), skipping any you gave as a flag. It asks about UPnP only on a machine behind a router: one that holds a public IP address (a VPS) is reached directly, and the wizard says so instead of asking.
-2. Writes `<dataDir>/host.config.json` and seeds `<dataDir>/nat.json` with the UPnP choice.
-3. Registers a per-user service: `systemctl --user` unit (Linux), `LaunchAgent` (macOS), or NSSM service (Windows; requires `nssm.exe` on PATH — see `service/README.md`).
-4. Prints how to open the UI: the URL on a desktop (and opens it), or, over SSH or on a machine with no display, the exact `ssh -L` command to run from your own computer. Everything else (a public name, joining a cadre, ports) happens in the UI.
+1. Asks for the data directory and the UI port, skipping any you gave as a flag. On a machine behind a router it asks whether to use UPnP. On a machine that holds a public IP address it says the nodes are reached directly and does not ask.
+2. Creates the data directory, private to your account, and writes `host.config.json` and `nat.json` into it.
+3. Registers and starts a per-user service: a `systemctl --user` unit on Linux, a LaunchAgent on macOS, the NSSM service `CadreHost` on Windows.
+4. Prints how to open the UI. On a desktop it also opens the browser. Over SSH or on a machine with no display it prints the `ssh -L` command to run from your own computer.
 
-Run `cadre-host install --non-interactive --data-dir <path>` for unattended provisioning.
+`cadre-host install --non-interactive --data-dir <path>` installs without prompts. `--no-service` writes the data directory and registers no service; run the host yourself with `cadre-host start --data-dir <path>`.
 
-### Root requirements
+### Permissions
 
-The installer never writes outside your home directory. On Linux the unit goes to `$XDG_CONFIG_HOME/systemd/user/cadre-host.service` (default `~/.config/systemd/user/cadre-host.service`); the data dir defaults to `$XDG_DATA_HOME/cadre-host` (default `~/.local/share/cadre-host`) or wherever you point `--data-dir`. The data dir is set to 0700 and must be a folder dedicated to cadre-host ([Security posture](../../docs/cadre-host.md#security-posture)). Registering a `systemctl --user` unit does **not** require root — any user can do it.
+On Linux and macOS no step needs root, and the installer writes only inside your home directory. The data directory must be a folder used only by cadre-host: on Linux and macOS the installer sets it to mode 0700.
 
-There is **one optional** root command:
+On Linux, a `systemctl --user` service stops when your last session ends unless lingering is enabled. The installer tries `loginctl enable-linger` and continues if that fails. To enable it yourself, before or after installing:
 
 ```bash
-sudo loginctl enable-linger <your-user>
+sudo loginctl enable-linger "$USER"
 ```
 
-`enable-linger` is what allows your `systemctl --user` services to start at boot and keep running after you log out. Without linger, cadre-host runs only while you have an active session (desktop login or SSH) and stops when that session ends. With linger, it runs whenever the machine is on.
+On Windows, creating a service requires an Administrator PowerShell. [`service/README.md`](./service/README.md) describes the service on each platform.
 
-The installer attempts `loginctl enable-linger` for you and logs a warning if it can't (you aren't root, `loginctl` is missing, running inside a container, …). **The install succeeds either way** — you can enable linger separately, before or after `cadre-host install`. Without linger you can still verify everything by logging in and running `systemctl --user start cadre-host` by hand.
+## Join your first cadre
 
-### System-wide install (not yet supported)
+After `install` the service is running and hosts no nodes. A node starts when you join a cadre.
 
-`cadre-host install --system` is accepted by the CLI but currently errors out. A proper system-wide install — dedicated `cadre` user, unit at `/etc/systemd/system/`, install under `/opt/cadre/...` — needs additional work around data-dir ownership and capability dropping and is tracked separately.
-
-### Service-host details
-
-The rendered unit files live at:
-
-| Platform | Path |
-| -------- | ---- |
-| Linux    | `~/.config/systemd/user/cadre-host.service` |
-| macOS    | `~/Library/LaunchAgents/com.serfab.cadre-host.plist` |
-| Windows  | NSSM-managed service `CadreHost` (registry-stored config) |
-
-See [`service/README.md`](./service/README.md) for templates, manual-smoke instructions, and the cross-platform CI gap.
-
-## After install — joining your first cadre
-
-`cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. cadre-host never pre-spawns nodes; each one starts when you click **Join a cadre** in the local UI or run `cadre-host join`. This walkthrough goes from "install just finished" to "first hosted node is claimed."
-
-Each node this host runs joins a cadre that lives on a phone — yours, or a friend's — and that phone stays the authority for the cadre. Your host never holds an owner key and never becomes the authority for anyone's data. See [docs/cadre-host.md § Join a cadre](../../docs/cadre-host.md#join-a-cadre) for the full lifecycle.
-
-### 1. Verify the service is running
+### 1. Check that the service is running
 
 ```bash
-systemctl --user status cadre-host
+cadre-host status
 ```
 
-Look for `Active: active (running)`. If it's not active, `journalctl --user -u cadre-host -f` shows the live log.
+It prints `Service installed: yes` and `Service running: yes`. If it is not running, read the log:
+
+| Platform | Service state | Log |
+|---|---|---|
+| Linux | `systemctl --user status cadre-host` | `journalctl --user -u cadre-host -f` |
+| macOS | `launchctl print gui/$(id -u)/com.serfab.cadre-host` | `<dataDir>/logs/out.log`, `err.log` |
+| Windows | `nssm.exe status CadreHost` | `<dataDir>\logs\out.log`, `err.log` |
+
+`cadre-host node list` confirms that the management API answers. With no nodes it prints ``Hosted nodes: none. Run `cadre-host join` to start one.``
 
 ### 2. Open the local UI
 
-The UI listens on `http://127.0.0.1:<uiPort>/` (default port 8765) on the host machine itself.
+The UI is at `http://127.0.0.1:8765/` (or the port you chose) on the host machine. `cadre-host ui` prints the URL and opens it.
 
-- **On the host:** open the URL in a browser, or run `cadre-host ui` to print + open it.
-- **From a different machine on your LAN** (most basement PCs are headless): the UI is bound to loopback only and has no authentication — that's intentional, and any account on the machine can reach it ([Security posture](../../docs/cadre-host.md#security-posture)). Use SSH port-forwarding from the client side:
+The UI listens on loopback only and has no login, so from another computer you reach it through an SSH forward. Use the same port number on both ends, because the server refuses requests addressed to any other port:
 
-  ```bash
-  # from your laptop:
-  ssh -L 8765:127.0.0.1:8765 user@my-basement-pc
-  # then open http://127.0.0.1:8765 in the laptop's browser
-  ```
+```bash
+ssh -L 8765:127.0.0.1:8765 user@my-host
+# then open http://127.0.0.1:8765 on your own computer
+```
 
-  The forward stays up as long as the SSH session does.
+### 3. Join with a QR code
 
-### 3. Join your cadre
-
-Decide whose cadre this node is for — a family member, a friend, or your own phone. That person already has **their own** cadre on their phone; you are adding a node to it, not enrolling them into anything of yours.
-
-In the local UI, open **Join** and click **Join a cadre**. The page starts the node and shows a QR code and the same text with a copy button. Scan the code with the Sereus app on the phone that owns the cadre, or paste the text into it. The line under the node changes to `Claimed by owner <fingerprint> into cadre <partyId>` once the phone has claimed it, then to `Connected to the cadre`, and the code gives way to a link to the node's page. **Cancel** removes a node nobody has claimed yet. Closing the tab loses nothing: the Join page lists every node still waiting to be claimed.
-
-From a shell instead:
+Open **Join** in the UI and click **Join a cadre**, or run:
 
 ```bash
 cadre-host join
 ```
 
-The command starts the node and prints a QR code and the same text under it, then waits and prints `✓ Claimed by owner <fingerprint> into cadre <partyId>` once the phone has claimed the node; the node now appears on the Nodes page as claimed. `--no-qr` prints only the text (on stdout, alone, so it can be piped); `--no-wait` exits once the code is shown, and the node keeps waiting. Ctrl-C while waiting also leaves the node waiting.
+Either one starts a node and shows a QR code with the same content as text. Scan the code with the Sereus app on the phone that owns the cadre, or paste the text into the app. The command waits and then prints:
 
-If the page or the command warns that the node cannot be reached from outside your home network, a phone on your home network can still claim it; see [Reachability](#reachability--can-people-actually-reach-your-nodes) for the ports to forward.
+```
+✓ Claimed by owner 1a2b3c4d into cadre <partyId>
+```
 
-To host a node for a friend, join again and let the friend scan the new code. **Anyone who scans the code claims the node**, so show it only to the person it is for; if the wrong person claimed it, **Reset** on the node's page (or `cadre-host node reset <id>`) removes that node and starts a fresh one with a new code.
+Check the result:
 
-**The second way: paste an invitation.** Once the cadre already has a member this machine can reach (an always-on node, here or elsewhere), the owner's app can copy a cadre invitation instead of scanning anything. Paste it under **Or paste a cadre invitation** on the Join page, or run:
+```bash
+cadre-host node list
+```
+
+The node's line reads `joined`, names the cadre and the owner's key fingerprint, and ends with `connected` once the node holds a connection to the cadre.
+
+- **Whose cadre.** The node joins the cadre of whoever scans the code. To host a node for a friend, join again and let the friend scan the new code.
+- **Keep the code private.** Anyone who scans it claims the node. If the wrong person did, `cadre-host node reset <id>` replaces the node with a fresh one and a new code.
+- **Reachability warning.** If the page or the command warns that the node cannot be reached from outside your network, a phone on your home network can still claim it. See [Reachability](#reachability) before relying on it away from home.
+
+### 4. Or join with an invitation
+
+When the cadre already has a member this machine can reach, such as another always-on node, the owner's app can copy a cadre invitation instead. Paste it under **Or paste a cadre invitation** on the Join page, or run:
 
 ```bash
 cadre-host join --invitation "<the invitation text>"
 ```
 
-The node starts in the cadre the invitation names and redeems it at one of the cadre's members; the line under it reads `Joining cadre <partyId>…`, then `Joined cadre <partyId> at member <peerId>`. This does not work for a cadre's **first** always-on node: its only members are phones, which nothing can dial, so the join fails with "No member … could be reached". Use the QR code for that one. When no member could be reached because the member is offline for a while, **Retry** on the node (or `cadre-host node retry <id>`) starts it again with the same invitation; an invitation the cadre refused (expired, used up, or made for another device) cannot be retried, so remove the node and join with a fresh one.
+The command prints `✓ Joined cadre <partyId> at member <peerId>` when a member admits the node.
 
-### 4. Manage hosted nodes
+This cannot add a cadre's first always-on node: its only members are phones, which nothing can dial, so the join fails with no member reachable. Use the QR code for that node. If the join failed because the member was offline, run `cadre-host node retry <id>` once it is back. If the cadre refused the invitation (expired, used up, or made for another device), remove the node and join with a new invitation.
 
-```bash
-cadre-host node list              # id, status, cadre, owner fingerprint, connected
-cadre-host node remove <id>       # stop the node and delete its data on this machine
-cadre-host node reset <id>        # remove it and start a fresh one with a new code
-cadre-host node retry <id>        # start an invitation node again once a member is reachable
-```
-
-`<id>` is the `hn_…` id the list and the UI's Nodes page show. Removing a node deletes its record, stops the child and deletes its working directory (its identity key and node-local data); the cadre keeps the node's row until its owner removes it there. A hosted node's page in the UI offers **Remove** and **Reset** (the same calls; **Retry** on a failed node is a reset, except on an invitation node no member could be reached for, where it is `node retry`) rather than Stop: the respawn supervisor treats a claimed, joining or waiting node as expected to be running and would bring a merely stopped node straight back. A node that crashes or dies in a reboot is respawned with the same identity, ports and code, so a QR code already shown stays valid and a claimed node stays in its cadre.
-
-## Reachability — can people actually reach your nodes?
-
-Every node this machine runs needs two ports reachable from outside your home network: its libp2p TCP port and its WebSocket port (the one a phone dials). How they get there depends on where the machine sits, and cadre-host works that out itself (**Connectivity → Network**, or `cadre-host nat settings --network auto|lan|public`):
-
-- **Behind a router** (a home or office network): cadre-host asks the router to map both ports over UPnP as each node starts, or you forward them by hand (below).
-- **On a public IP address** (a VPS, or a server with a routed address): there is nothing to map. Each node is reached at its own ports, and the status shows them as `direct`. Allow them through any firewall on the machine (`sudo ufw allow <tcp>:<ws>/tcp`, which the status prints for you) and in your hosting provider's firewall. No `nat forward` is needed. A cloud machine whose interface holds only a private address while the provider forwards its public IP to it (AWS, GCP) reads as behind a router: set `--network public` there.
-
-`auto` (the default) picks public when one of the machine's interfaces holds a public IPv4 address, re-checked every few minutes. After installing (and any time your network changes):
+### 5. Manage the nodes
 
 ```bash
-cadre-host nat status     # network mode, UPnP and router state, external IP, and per node: mapped / forwarded by hand / direct / unreachable, with what to do
-cadre-host nat test       # re-run the probes right now
+cadre-host node list          # id, status, cadre, owner fingerprint, connected
+cadre-host node remove <id>   # stop the node and delete its data on this machine
+cadre-host node reset <id>    # remove it and start a fresh one with a new code
 ```
 
-If a node reads `unreachable`, the status says which of its ports to forward on your router and to which address on this machine, then the command that records the external ports you chose:
+`<id>` is the `hn_…` id that the list and the UI show. Removing a node deletes its identity key and its copy of the cadre's data from this machine. The cadre keeps its entry for the node until the owner removes it in their app. There is no stop command: cadre-host restarts a node that crashes or dies in a reboot, with the same identity and ports, so a code already shown stays valid.
+
+## Reachability
+
+A phone away from home reaches a node through two ports: the node's TCP port and its WebSocket port. cadre-host works out where the machine sits and acts accordingly.
+
+- **Behind a router.** cadre-host asks the router to map both ports over UPnP when a node starts. If that does not work, forward them yourself.
+- **On a public IP address** (a VPS). Nothing needs mapping; the status shows the nodes as `direct`. Allow the two ports through the machine's firewall and your hosting provider's. The status prints a `ufw` command for them.
+
+Check the result after installing and whenever your network changes:
 
 ```bash
-cadre-host nat forward hn_abc123 --tcp 10003 --ws 10004   # the ports your router forwards to that node
-cadre-host nat forward hn_abc123 --clear                  # forget them
+cadre-host nat status   # network mode, router, external IP, and a verdict per node
+cadre-host nat test     # run the probes again now
 ```
 
-The UI's **Connectivity** page shows the same per node, with an "I forwarded these ports" form. A node whose public addresses change restarts to announce them to the cadre it belongs to, at most once every 10 minutes; a node that restarts or respawns keeps its ports, so the forward stays valid. If your ISP uses carrier-grade NAT, a port forward will not help and the status says so. See [docs/cadre-host.md § Manual port forwarding](../../docs/cadre-host.md#manual-port-forwarding).
+Each node reads `mapped` (UPnP), `manual` (forwarded by you), `direct` (public IP) or `unreachable`. An `unreachable` node says why and what to do. The **Connectivity** page shows the same.
 
-**Which addresses the QR code carries.** A phone tries each address in turn, so the code carries only ones a phone can use: the public addresses (your DDNS name when set, otherwise the public IP) and one LAN address for phones at home. Docker bridges, VPN interfaces and TCP are left out. By default the LAN address is this machine's address on the router's network. To choose it, or to leave it out (a machine reached only by its public name), or to list exact addresses instead, use **Settings → Claim code addresses** in the UI, or set `claimAddresses` in `host.config.json`:
+Three cases need a setting made by hand:
 
-```json
-"claimAddresses": { "lan": "192.168.1.20" }
-"claimAddresses": { "lan": "none" }
-"claimAddresses": { "addrs": ["/dns4/node.example.org/tcp/443/wss"] }
-```
+- **A cloud machine with a private interface address** whose provider forwards a public IP to it (AWS, GCP): `cadre-host nat settings --network public`.
+- **A machine behind a router that also has a public address** on a second network card or a tunnel: `cadre-host nat settings --network lan`.
+- **Carrier-grade NAT.** If your ISP shares one public address among customers, neither UPnP nor a port forward works, and the status says so. cadre-host cannot make such a node reachable from outside your network.
 
-The next code shown uses the change; no restart is needed. Exact `addrs` apply to every node this host runs, each code appending that node's own peer ID, so leave `/p2p/…` off them and give each node its own address (or run one node).
+### Forward ports by hand
 
-When your residential IP changes (it will), members can't find you on the old IP. DDNS (a hostname that auto-updates to your current IP) fixes this:
+1. Run `cadre-host nat status`. Under the unreachable node, **To fix** lists the ports to forward and the address of this machine to forward them to.
+2. In your router's settings, forward each of those ports (TCP) to that address, on the same internal port number. Choose any external port; the same number is simplest.
+3. Tell cadre-host the external ports you chose:
+
+   ```bash
+   cadre-host nat forward hn_abc123 --tcp 10003 --ws 10004
+   ```
+4. The node restarts to announce its new address, and `nat status` shows it as `manual`.
+
+`cadre-host nat forward <id> --clear` forgets a forward. cadre-host does not test the forward: it trusts the ports you give it. A node keeps its ports when it restarts, so the router rule stays valid until you remove the node. [Manual port forwarding](https://github.com/gotchoices/sereus/blob/master/docs/hosting/cadre-host.md#manual-port-forwarding) has the details.
+
+### Set up dynamic DNS
+
+A home connection's IP address changes. Without a hostname, a device that holds only the old address cannot find the node, and every node restarts to announce the new one. A dynamic DNS name avoids both. To have cadre-host keep a DuckDNS name current:
+
+1. Sign in at <https://www.duckdns.org/>, register a subdomain and copy your token.
+2. Configure it. Omit `--token` to be prompted for it without echo.
+
+   ```bash
+   cadre-host nat ddns set duckdns --hostname mybox.duckdns.org --token <token>
+   ```
+3. Run `cadre-host nat status`. The `DDNS` lines show the hostname and the result of the last update. cadre-host updates the record when the IP changes, checking every 5 minutes.
+
+If your router or another tool already updates a DNS name, tell cadre-host to use the name without updating it:
 
 ```bash
-# DuckDNS — cadre-host updates the record itself. Sign up at duckdns.org and grab a token first.
-cadre-host nat ddns set duckdns --hostname mybox.duckdns.org --token <duckdns-token>
-
-# Externally-managed — your router or another tool updates DNS; cadre-host just records the hostname.
 cadre-host nat ddns external --hostname mybox.example.com
 ```
 
-If you use the DuckDNS form, the token is stored in the OS keychain when `libsecret` is installed (`sudo apt install libsecret-1-0` on Debian/Ubuntu), and unencrypted in `<dataDir>/nat-secrets.json` otherwise. The service logs a warning at startup when it falls back to unencrypted storage.
+### Choose the addresses in the claim code
+
+A phone tries each address in the code in turn, so the code carries only addresses a phone can use: the public address (the DDNS name when set, otherwise the public IP) and one LAN address for phones at home. To change that, use **Settings → Claim code addresses** in the UI or set `claimAddresses` in `host.config.json`:
+
+| Value | Effect |
+|---|---|
+| `{ "lan": "auto" }` | Default. This machine's address on the router's network; none on a public IP. |
+| `{ "lan": "192.168.1.20" }` | Use this LAN address. |
+| `{ "lan": "none" }` | No LAN address; phones use the public address only. |
+| `{ "addrs": ["/dns4/node.example.org/tcp/443/wss"] }` | Use exactly these addresses, for example behind a reverse proxy. |
+
+The next code shown uses the change. Exact `addrs` apply to every node on this host and each code appends that node's own peer id, so leave `/p2p/…` off and either run one node or give each node its own address.
+
+## Push credentials
+
+An always-on node can wake a suspended phone app through Firebase Cloud Messaging (Android) or APNs (iOS) ([Push wake](https://github.com/gotchoices/sereus/blob/master/docs/strands/hibernation.md#push-wake)). This needs the push credentials of the app's publisher, so it applies when you publish the app your hosted nodes serve. Every node on the host receives the same credentials.
+
+Storing the credentials does not by itself send any wake. A node sends one only when the program running it reports strand activity, and the nodes cadre-host starts never do (ticket `passive-strand-activity-fanout-detector`). The steps here put the credentials in place.
+
+1. **FCM.** In the [Firebase console](https://console.firebase.google.com), open the app's project, then **Project settings → Service accounts → Generate new private key**. The downloaded JSON contains `project_id`, `client_email` and `private_key`. Save the private key to a file.
+2. **APNs.** In the [Apple Developer portal](https://developer.apple.com/account), under **Certificates, Identifiers & Profiles → Keys**, create a key with Apple Push Notifications service enabled and download the `.p8` file. Note the key id, your team id and the app's bundle id.
+3. **Store them.**
+
+   ```bash
+   cadre-host push fcm  --project-id <id> --client-email <email> --private-key-file ./fcm-key.pem
+   cadre-host push apns --key-id <id> --team-id <id> --bundle-id <id> --private-key-file ./AuthKey.p8
+   cadre-host push status
+   ```
+
+`push apns` targets Apple's sandbox host, which development and TestFlight builds use. Add `--production` for an App Store build; a device token from one is rejected by the other. A node picks up new credentials the next time it is spawned. The `push` commands need no running service.
 
 ## CLI reference
 
-All commands except `install`, `uninstall`, `status`, `start`, `ui`, and the `push` group talk to the running cadre-host management API over loopback. They print a connection error if the service isn't running.
+`install`, `uninstall`, `status`, `start`, `ui` and the `push` group work on files and the OS service directly. The `join`, `node` and `nat` commands are clients of the running service's management API and accept two more options:
 
-The `cadre-host push` group needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json`. Private keys land in the OS keychain when one is available, otherwise a plain-JSON fallback at `<dataDir>/nat-secrets.json` (mode `0600` on POSIX; **on Windows the permission bits don't apply, so any account on the machine can read it** — install keytar's native dependency to avoid that); the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so a node picks them up the next time it is spawned. Every storage-profile node carries them when they are configured, hosted nodes included.
+- `--port <port>`: the management API port. The default is `CADRE_HOST_PORT`, or 8765 when that is unset. These commands do not read `host.config.json`, so if you installed with another `--ui-port`, or the service reported that it bound a different port, pass `--port` or set `CADRE_HOST_PORT`.
+- `--host <host>`: the management API host, default `127.0.0.1`. The API accepts only loopback names.
+
+They exit with status 2 when the service cannot be reached and 1 when it refuses the request.
+
+### `cadre-host install [--non-interactive] [--data-dir <path>] [--ui-port <port>] [--no-upnp] [--no-browser] [--no-service] [--node-path <path>]`
+
+Set up the data directory and register the service ([Install](#install)). `--no-upnp` turns UPnP off from the start. `--no-browser` skips opening the UI. `--node-path` sets the Node.js binary the service runs; the default is the one running the installer. `--system` is accepted and fails: only per-user installs are supported.
+
+### `cadre-host uninstall [--remove-data] [--yes] [--data-dir <path>]`
+
+Stop and deregister the service. The data directory is kept unless you pass `--remove-data`, which deletes node identities, records and settings after a confirmation; `--yes` skips the confirmation and is required when stdin is not a terminal. `--data-dir` names the directory to delete when it is not the default.
 
 ### `cadre-host status`
 
-Print whether the service is registered and currently active.
-
-```
-$ cadre-host status
-Service installed: yes
-Service running:   yes
-```
-
-### `cadre-host ui [--no-browser]`
-
-Print the local-UI URL (e.g. `http://127.0.0.1:8765`) and open it in the default browser. Reads `uiPort` from `host.config.json`; doesn't require the service to be running (if not, the browser will fail to connect — that's feedback enough). Pass `--no-browser` to just print the URL.
-
-### `cadre-host join [--no-qr] [--no-wait]`
-
-Start a hosted node waiting to be claimed and show the code the owner's phone scans to add it to their cadre: a QR code and the same text, then (unless `--no-wait`) wait until the phone claims it and print `✓ Claimed by owner <fingerprint> into cadre <partyId>`. `--no-qr` prints the text only, on stdout alone. See [*Join your cadre*](#3-join-your-cadre).
-
-### `cadre-host join --invitation <encoded> [--no-wait]`
-
-Start a hosted node that redeems a cadre invitation the owner's app copied, instead of showing a code: `Joining cadre <partyId> through the invitation…`, then (unless `--no-wait`) wait and print `✓ Joined cadre <partyId> at member <peerId>`, or `✗ Could not join: <message>` and exit 1. When no member could be reached, it says what to do: for the cadre's first always-on node, use `cadre-host join` without `--invitation` and scan the QR code instead; otherwise `cadre-host node retry <id>` once a member is online. An invitation that does not decode is refused before any node starts. See [*Join your cadre*](#3-join-your-cadre).
-
-### `cadre-host node list`
-
-Print every hosted node: id, status (`spawning`, `unclaimed`, `joining`, `joined` or `error`), cadre, owner fingerprint (the first 8 characters of the owner key) and whether a joined node is connected.
-
-### `cadre-host node remove <id>`
-
-Stop one hosted node and delete its data on this machine — its record, the child and its working directory. Its cadre keeps the node's row until the owner removes it there. `<id>` is the `hn_…` id the list shows.
-
-### `cadre-host node reset <id> [--no-qr] [--no-wait]`
-
-Remove a hosted node and start a fresh one with a new code, then show the code and wait as `join` does. For a node someone else claimed first, or one that failed. An invitation node is replaced by one waiting to be claimed too.
-
-### `cadre-host node retry <id> [--no-wait]`
-
-Start an invitation node again after no member of its cadre could be reached, with the same invitation and the same identity, then wait as `join --invitation` does. Refused (409) for any other node, including one whose invitation the cadre refused.
-
-### `cadre-host nat status [--json]`
-
-Print current NAT state — whether UPnP is on and a router was found (and this machine's address on its network), external IP, CGNAT detection, the host-level reachability result and the DDNS configuration — then one block per hosted node: its id and verdict (`mapped`, `manual` or `unreachable`), the TCP and WebSocket ports as internal → external with where the route came from (UPnP or forwarded by hand), and its public addresses. An `unreachable` node adds why, and the forward to make: which ports to forward to which address on this machine, and the `cadre-host nat forward` command to run afterwards. With `--json`, dumps the raw response from the management API.
-
-### `cadre-host nat test [--json]`
-
-Re-run the reachability probe right now and print the updated NAT state. Useful after changing port-forwarding rules on your router.
-
-### `cadre-host nat forward <nodeId> [--tcp <port>] [--ws <port>] [--clear-tcp] [--clear-ws] [--clear]`
-
-Record the external ports your router forwards to one node, by the node id `nat status` shows: `--tcp` for its TCP port, `--ws` for its WebSocket port, `--clear-tcp`/`--clear-ws`/`--clear` to forget them. Ports are whole numbers 1–65535. Prints the node's block from the updated status. If the node's public addresses changed, it restarts to announce them; a node already restarted for an address change in the last 10 minutes waits until those 10 minutes are up. An id the host does not run is refused with a pointer to `nat status`.
-
-### `cadre-host nat settings [--upnp|--no-upnp]`
-
-Turn UPnP port mapping on or off. Turning it off releases every mapping the router granted and keeps the ports you forwarded by hand.
-
-### `cadre-host nat ddns set <provider> --hostname <h> [--token <t>]`
-
-Configure cadre-host to push DNS updates itself. Currently the only `<provider>` is `duckdns`. If `--token` is omitted, the command prompts for it (with echo suppressed) when stdin is a TTY. The token is stored in the OS keychain when available, otherwise unencrypted at `<dataDir>/nat-secrets.json` (a startup warning surfaces this).
-
-### `cadre-host nat ddns external --hostname <h>`
-
-Tell cadre-host that some other tool (your router firmware, a separate `ddclient`, etc.) is updating DNS, and to record the hostname for publishing to peers without trying to update it itself.
-
-### `cadre-host push fcm --project-id <id> --client-email <email> [--private-key-file <path>] [--private-key <pem>] [--data-dir <path>]`
-
-Store Firebase Cloud Messaging (Android) service-account credentials so a storage node can wake suspended mobile apps. The three values come from the Firebase service-account JSON (`project_id`, `client_email`, `private_key`). Supply the key either as a file (`--private-key-file`, preferred) or inline (`--private-key`); with neither, the command exits with an error. See [docs/cadre-host.md § Push credentials](../../docs/cadre-host.md#push-credentials-fcmapns) for how to mint the credentials and how they reach the spawned node.
-
-### `cadre-host push apns --key-id <id> --team-id <id> --bundle-id <id> [--private-key-file <path>] [--private-key <pem>] [--production] [--data-dir <path>]`
-
-Store Apple Push Notification service (iOS) auth-key credentials. `--key-id`/`--team-id` identify the `.p8` auth key downloaded from the Apple Developer portal; `--bundle-id` becomes the `apns-topic`. As with `push fcm`, pass the key via `--private-key-file` (preferred) or `--private-key`. Targets the **sandbox** APNs host by default — pass `--production` for an App Store build. A token minted for one host is rejected by the other, so this must match the build under test.
-
-### `cadre-host push options [--cooldown-ms <ms>] [--debounce-ms <ms>] [--data-dir <path>]`
-
-Set the non-secret push tuning knobs: `--cooldown-ms` is the minimum gap between wakes for one (peer, strand) pair (anti-spam), `--debounce-ms` the per-strand burst-coalescing window. Pass only the flag(s) you want to change.
-
-### `cadre-host push clear <target> [--data-dir <path>]`
-
-Remove stored push credentials. `<target>` is `fcm`, `apns`, or `all`. Clearing `apns` also drops the bundle id / sandbox toggle from `host.config.json`. With nothing configured, no `push` block is written into the spawned node's `cadre.json` and the node falls back to control-network push-wake only.
-
-### `cadre-host push status [--data-dir <path>]`
-
-Print which push platforms are configured, the APNs bundle id and sandbox/production mode, and the current cooldown/debounce values. Never prints key material.
+Print whether the service is registered and whether it is running.
 
 ### `cadre-host start [--data-dir <path>] [--no-tui]`
 
-Run cadre-host in the foreground. Normally invoked by the service unit, not directly; after `install --no-service` it is how the host runs. `--data-dir` overrides the install-time data directory (also honors `$CADRE_HOST_DATA_DIR`).
+Run cadre-host in the foreground. The service runs this command; after `install --no-service` you run it yourself. The data directory comes from `--data-dir`, then `CADRE_HOST_DATA_DIR`, then the platform default. `--no-tui` has no effect. Do not run `start` beside a running service on the same data directory.
 
-### `cadre-host install [--no-service] [...flags]`
+### `cadre-host ui [--no-browser] [--data-dir <path>]`
 
-Run the first-run wizard. See [**Install**](#install) at the top of this README.
+Print the UI's URL and open it in the default browser. Over SSH or with no display it prints the `ssh -L` command instead. It reads `uiPort` from `host.config.json` and does not check that the service is running.
 
-`--no-service` writes the data dir (`host.config.json`, `nat.json`) and stops there: no OS service is registered and no browser opens. Run the host by hand with `cadre-host start --data-dir <path>`. This is the setup for a test session, for example a phone walkthrough against a host run from a checkout ([`docs/reference-app-rn.md`](../../docs/reference-app-rn.md)). Don't run `start` on top of a service install: the service already binds `uiPort`, and a second host on the same data dir moves to the next free port.
+### `cadre-host join [--invitation <encoded>] [--no-qr] [--no-wait]`
 
-### `cadre-host uninstall [--remove-data] [--yes]`
+Start a hosted node. Without `--invitation`, show the code the owner's phone scans, wait for the claim and print `✓ Claimed by owner <fingerprint> into cadre <partyId>`. The text of the code goes to stdout alone and everything else to stderr, so `--no-qr`, which omits the QR code, can be piped. With `--invitation`, redeem a cadre invitation and print `✓ Joined cadre <partyId> at member <peerId>`, or `✗ Could not join: <reason>` and exit 1. `--no-wait` exits once the code is shown or the node started. Ctrl-C while waiting leaves the node as it is.
 
-Stop and deregister the service. Preserves the data dir by default; pass `--remove-data --yes` to wipe node identities, hosted-node records, NAT state, and update state too.
+### `cadre-host node list`
 
-```bash
-cadre-host uninstall                       # stop + deregister, keep data
-cadre-host uninstall --remove-data --yes   # also delete the data dir
-```
+Print every hosted node: id, status (`spawning`, `unclaimed`, `joining`, `joined` or `error`), cadre, the first 8 characters of the owner key, whether a joined node is connected, and the error of a failed one.
 
-## What `cadre-host start` does today
+### `cadre-host node remove <id>`
 
-`start` loads `host.config.json`, brings up the orchestrator, the NAT layer, the hosted-node service with its watcher and supervisor, and the update service, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Routes:
+Stop a hosted node and delete its record, its process and its working directory.
 
-- `/api/hosted-nodes` (list, start a node waiting to be claimed or one that redeems an invitation, its claim details, remove, reset, retry — no bearer; same-machine admin) — the surface `cadre-host join` and `cadre-host node` drive.
-- `/update/*` (update flow) — matches the CLI's contract.
-- `/nat/*` (NAT/DDNS) — every hosted node's ports are mapped, and `PUT /nat/nodes/:nodeId/forward` records the ports you forwarded by hand (what `cadre-host nat forward` calls).
-- `/api/status`, `/api/nodes`, `/api/nodes/:id`, `/api/nodes/:id/logs`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA. `/api/nodes` is read-only: end a hosted node through `DELETE /api/hosted-nodes/:id`.
-- `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see [Building the SPA](#building-the-spa)).
+### `cadre-host node reset <id> [--no-qr] [--no-wait]`
 
-If the configured `uiPort` is in use the server tries `uiPort+1..uiPort+9`; on total failure it exits with a message listing every port attempted. An origin guard rejects requests whose `Host` or `Origin` is not `127.0.0.1[:port]` / `localhost[:port]` (defeats DNS-rebind from a malicious page). There is no login — the security model is "same machine as the cadre-host user" (see threat model below).
+Remove a hosted node and start a fresh one waiting to be claimed, then show its code and wait as `join` does. Use it for a node the wrong person claimed or one that failed. A node that joined by invitation is also replaced by one waiting to be claimed.
+
+### `cadre-host node retry <id> [--no-wait]`
+
+Start an invitation node again with the same invitation and identity, after no member could be reached, and wait as `join --invitation` does. The service refuses it for any other node, including one whose invitation the cadre refused.
+
+### `cadre-host nat status [--json]`
+
+Print the network mode, UPnP and router state, the external IP, whether carrier-grade NAT was detected, the overall reachability and the DDNS state. Then, for each node: its verdict, its TCP and WebSocket ports as internal → external with the source of the route, its public addresses, and for an unreachable node the reason and the fix. `--json` prints the raw API response.
+
+### `cadre-host nat test [--json]`
+
+Run router discovery and the external IP probes again, then print the status.
+
+### `cadre-host nat settings [--network <auto|lan|public>] [--upnp] [--no-upnp]`
+
+Set the network mode or turn UPnP on or off. `auto` (the default) picks `public` when an interface holds a public IPv4 address. Turning UPnP off releases the router's mappings and keeps the ports you forwarded by hand.
+
+### `cadre-host nat forward <nodeId> [--tcp <port>] [--ws <port>] [--clear-tcp] [--clear-ws] [--clear]`
+
+Record the external ports your router forwards to one node's TCP and WebSocket ports, or forget them. Ports are whole numbers from 1 to 65535. The node restarts if its public addresses change, at most once in 10 minutes.
+
+### `cadre-host nat ddns set <provider> --hostname <hostname> [--token <token>]`
+
+Have cadre-host keep a dynamic DNS record current. The only `<provider>` is `duckdns`. Without `--token` the command prompts for it; when stdin is not a terminal the flag is required.
+
+### `cadre-host nat ddns external --hostname <hostname>`
+
+Use a hostname that something else keeps current. cadre-host puts it in the nodes' addresses and never updates it.
+
+### `cadre-host push fcm --project-id <id> --client-email <email> [--private-key-file <path>] [--private-key <pem>] [--data-dir <path>]`
+
+Store Firebase Cloud Messaging service-account credentials. Give the key as a file (preferred) or inline; one of the two is required.
+
+### `cadre-host push apns --key-id <id> --team-id <id> --bundle-id <id> [--private-key-file <path>] [--private-key <pem>] [--production] [--data-dir <path>]`
+
+Store an APNs auth key. `--bundle-id` is the app's bundle id. `--production` selects Apple's production host instead of the sandbox.
+
+### `cadre-host push options [--cooldown-ms <ms>] [--debounce-ms <ms>] [--data-dir <path>]`
+
+Set push timing. `--cooldown-ms` is the minimum time between two wakes of the same peer for the same strand. `--debounce-ms` is how long a strand's changes are collected into one wake.
+
+### `cadre-host push clear <target> [--data-dir <path>]`
+
+Remove stored push credentials. `<target>` is `fcm`, `apns` or `all`.
+
+### `cadre-host push status [--data-dir <path>]`
+
+Print which push platforms are configured, the APNs bundle id and host, and the timing options. It prints no key material.
+
+## Configuration
+
+| Environment variable | Read by | Meaning |
+|---|---|---|
+| `CADRE_HOST_PORT` | `join`, `node`, `nat` | Default for `--port` |
+| `CADRE_HOST_DATA_DIR` | `start`, `ui`, `push` | Default for `--data-dir` |
+| `CADRE_HOST_UPDATE_MANIFEST_URL` | `start` | Where to fetch the update manifest; overrides `updates.manifestUrl` |
+| `CADRE_HOST_UPDATE_DEV_KEY` | `start` | Development only: a different key for verifying update manifests |
+
+`host.config.json` holds these settings. The UI's Settings page edits `updates` and `claimAddresses`. To change `uiPort`, edit the file and restart the service.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `uiPort` | 8765 | Port of the UI and management API |
+| `dataDir` | per platform | The data directory, fixed at install |
+| `updates.autoApply` | `false` | Install updates without asking |
+| `updates.manifestUrl` | unset | Another update manifest URL |
+| `claimAddresses` | `{ "lan": "auto" }` | [Addresses in the claim code](#choose-the-addresses-in-the-claim-code) |
+
+The file also holds `push`, the settings of `cadre-host push` that are not secret (APNs bundle id and host, timing), and a record of the install. Network mode, UPnP, forwarded ports and DDNS are kept in `nat.json` and set with `cadre-host nat` or the Connectivity page; the `upnpEnabled` value in `host.config.json` records the install-time answer and is not read afterwards.
 
 ## Updates
 
-cadre-host checks `https://releases.serfab.io/cadre-host/latest.json` once per `start` and every 24 hours thereafter. **Notify-by-default**: an available update is recorded in `<dataDir>/update-state.json` and surfaced by the local UI; the user clicks "apply" to install it. Auto-apply is opt-in via the local-UI settings page (writes `updates.autoApply: true` into `host.config.json`).
+cadre-host checks for a new release when it starts and every 24 hours. It only notifies by default: the UI shows a banner, and **Apply** installs the release with `npm install -g` and restarts the service. If the install fails, the previous version is reinstalled and the error is shown. Turn on automatic updates on the Settings page.
 
-The manifest URL is overridable two ways:
-- `CADRE_HOST_UPDATE_MANIFEST_URL` env var (wins over config).
-- `updates.manifestUrl` in `host.config.json` (settable from the local UI).
-
-Manifests are signed with Ed25519; cadre-host refuses to apply any release whose signature doesn't match the embedded release key. For CI / dev signing, set `CADRE_HOST_UPDATE_DEV_KEY` to a base64-encoded raw 32-byte public key.
-
-**Threat model.** Any local process running as the cadre-host user can fully control cadre-host (read node identities, start or remove hosted nodes, install arbitrary global packages). Signature verification protects against a compromised release CDN — it is **not** a defense against local-machine compromise. Treat the host like any other long-running service: limit who can run shells as that user, keep the OS patched, and show a join code only to the person it is for.
-
-Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `npm install -g @serfab/cadre-host@<version>` (5-minute timeout), and restart the OS service unit so the new binary takes effect. On install failure, the previous version is reinstalled and the error is surfaced via `update-state.json` — the still-running binary continues to serve. The service-host restart is best-effort; if it fails, the binary swap already succeeded and the user can restart manually.
+Each release is announced by a manifest signed with a key built into cadre-host, and a manifest whose signature does not verify is never applied ([Updates](https://github.com/gotchoices/sereus/blob/master/docs/hosting/cadre-host.md#updates)).
 
 ## Local UI
 
-`cadre-host start` serves a Svelte 5 SPA at `http://127.0.0.1:<uiPort>/`. **Local-only by design:** the server binds to loopback (`127.0.0.1`) only and rejects requests whose `Host` or `Origin` header is not a loopback hostname, so the UI is unreachable from your LAN even though it has no login. To use it from another machine, SSH-port-forward as shown in [*After install*, step 2](#2-open-the-local-ui).
+The UI has five pages.
 
-Five pages cover the day-to-day operations:
+- **Home.** Service version, update notice, and how many nodes are joined, waiting and reachable.
+- **Connectivity.** Network mode, UPnP, DDNS, a reachability test, and each node's ports and public addresses with a form for ports you forwarded.
+- **Nodes.** Each node's status, cadre and owner fingerprint; a node's page adds its log, its code while it waits, and Reset, Retry and Remove.
+- **Join.** The **Join a cadre** button, the invitation field, and the nodes still waiting.
+- **Settings.** Updates, claim code addresses and install details.
 
-- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner, a connectivity tile ("N of M nodes reachable from outside", or plainly that none can be, linking to Connectivity), a hosted-nodes tile ("N joined, M waiting", plus failed ones when there are any, linking to Join), and the running-node count.
-- **Connectivity** — UPnP and router status, "Test reachability", a carrier-grade NAT notice when detected, UPnP toggle and DDNS provider configuration; then one entry per hosted node, labelled with the cadre it joined, "waiting to be claimed" or "joining cadre <partyId>", with its reachability, its TCP and WebSocket ports (internal → external, and whether UPnP or a hand forward provides the route), its public addresses (copyable), what to forward when it cannot be reached, and an "I forwarded these ports" form. A node's page shows the same entry for that node.
-- **Nodes** — one row per hosted node with its status, cadre, owner fingerprint and whether it is connected. A node's page adds recent stats, the log tail (last 200 lines, "Refresh" pulls again) and a **Cadre** card: the code and **Cancel** while it waits to be claimed, **Cancel** while it redeems an invitation, **Reset** and **Remove** once joined (**Remove** alone for an invitation node), **Retry** and **Remove** when it failed (for an invitation node, **Retry** only when no member could be reached). cadre-host doesn't auto-spawn nodes, so this list is empty until you join a cadre.
-- **Join** — the **Join a cadre** button and the **Or paste a cadre invitation** field, then each node waiting to be claimed with its QR code, its text, its reachability and a live line that follows the claim, and each node redeeming an invitation with its live line, or its error, the first-node hint and **Retry** when no member could be reached (see [*After install*, step 3](#3-join-your-cadre)).
-- **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, UI port), uninstall pointer.
+## Files it writes
 
-The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, a hosted node is added, claimed, joins, fails or is removed, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
+The default data directory is `~/.local/share/cadre-host` on Linux (or `$XDG_DATA_HOME/cadre-host`), `~/Library/Application Support/CadreHost` on macOS and `%LocalAppData%\CadreHost` on Windows.
 
-### Building the SPA
+| Path | Contents |
+|---|---|
+| `<dataDir>/host.config.json` | Install settings |
+| `<dataDir>/nat.json` | Network mode, UPnP, forwarded ports, DDNS hostname |
+| `<dataDir>/hosted-nodes.json` | One record per node, including claim secrets and invitations |
+| `<dataDir>/update-state.json` | Last update check and its result |
+| `<dataDir>/nat-secrets.json` | DDNS token and push keys, only when no OS keychain is available |
+| `<dataDir>/orchestrator/state.json` | Running processes and their ports |
+| `<dataDir>/orchestrator/<id>/` | One node: `identity.key`, `cadre.json`, `storage/`, `node.log`, and the node's own state files |
+| `<dataDir>/logs/` | Service output on macOS and Windows |
+| `~/.config/systemd/user/cadre-host.service` | Linux service unit |
+| `~/Library/LaunchAgents/com.serfab.cadre-host.plist` | macOS LaunchAgent |
 
-`yarn workspace @serfab/cadre-host build` compiles both the server (TypeScript) and the SPA (`vite build` against `ui/`). The bundle lands in `dist/ui/` and is served by the same Fastify instance that handles `/api/*` and friends. When `dist/ui/` is missing (e.g. running from source without building), the server still answers all API routes and shows a placeholder at `/` explaining how to build.
+With a keychain, secrets are stored there under the service name `sereus-cadre-host`. Without one, cadre-host prints a warning and uses `nat-secrets.json` with mode 0600. Windows has no file modes, so that file is readable by other accounts that can reach the folder. When push credentials are configured, each node's `cadre.json` also contains them.
 
-For UI-only iteration: `yarn workspace @serfab/cadre-host dev:ui` starts Vite on `:5173` and proxies `/api`, `/nat`, `/update` to `127.0.0.1:8765` (override with `CADRE_HOST_PORT`).
+A node whose `identity.key` is lost cannot be restored; the owner removes it from the cadre and claims a new one.
+
+## Limits
+
+- **Per-user install only.** `cadre-host install --system` fails. There is no install under a dedicated system user.
+- **No login.** Any account on the machine can call the management API. Do not run cadre-host on a machine with users you do not trust.
+- **Carrier-grade NAT.** A node behind it cannot be reached from outside the home network, because hosted nodes do not use relays.
+- **UPnP only.** NAT-PMP is not supported, and some older routers' UPnP is not found. Forward ports by hand in those cases.
+- **Updates use `npm install -g`.** They update a global install whose npm prefix your account can write. A folder install is not updated by **Apply**: run `npm install @serfab/cadre-host@latest` in its folder and restart the service.
+- **No storage limit.** A node stores all the shared data of its cadre's strands.
+- **Hosted nodes send no push wake.** [Push credentials](#push-credentials) says why.
+- **NSSM is not bundled.** On Windows you install it yourself.
+
+## Development
+
+`yarn workspace @serfab/cadre-host build` compiles the server and builds the UI into `dist/ui/`. Without the UI build the server still answers the API and serves a placeholder page. `yarn workspace @serfab/cadre-host dev:ui` runs the UI on port 5173 and proxies API calls to `127.0.0.1:8765` (or `CADRE_HOST_PORT`).
+
+Every command needs a `###` heading under [CLI reference](#cli-reference) in this file; `src/bin/__tests__/cli-reference.test.ts` checks both directions.
 
 ## More
 
-- [docs/cadre-host.md](../../docs/cadre-host.md) — persona, deployment model, both ways to join a cadre, hosted-node lifecycle, NAT, security posture.
-- [docs/architecture.md](../../docs/architecture.md) — overall cadre architecture.
+- [cadre-host design](https://github.com/gotchoices/sereus/blob/master/docs/hosting/cadre-host.md): deployment model, joining, respawn, NAT, updates.
+- [cadre-host management API](https://github.com/gotchoices/sereus/blob/master/docs/hosting/cadre-host-api.md): routes, events and writable settings.
+- [Adding and removing machines](https://github.com/gotchoices/sereus/blob/master/docs/cadre/membership.md): claims and cadre invitations.
+- [Concepts](https://github.com/gotchoices/sereus/blob/master/docs/concepts.md): cadres, parties, strands.

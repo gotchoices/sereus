@@ -184,8 +184,9 @@ const DEFAULT_OWNER_KEY_FILE = 'owner.key';
 
 /**
  * `owner.keyFile` as an absolute path, else `<nodeStateDir>/owner.key`. Refused when it is the
- * identity key file: an owner key is never the node identity (`docs/architecture.md` → Owner
- * Keys), and `cadre start --owner` would otherwise make the node's identity an owner of its party.
+ * identity key file: an owner key is never the node identity (`docs/cadre/owner-keys.md` → What
+ * an owner key is), and `cadre start --owner` would otherwise make the node's identity an owner of
+ * its party.
  */
 function resolveOwnerKeyFile(config: CliConfig, nodeStateDir: string): string {
   const ownerKeyFile = config.owner?.keyFile

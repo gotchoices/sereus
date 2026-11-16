@@ -71,8 +71,8 @@
  *
  * ABOUT THE FEATURE, not the test: in a live deployment the cold-start branch
  * overlaps with FRET's probes rather than standing alone — which cases each one
- * actually covers is written up in `docs/architecture.md` (Control Network
- * Convergence → "Cold-start retry"), not repeated here.
+ * actually covers is written up in `docs/cadre/control-convergence.md`
+ * ("Cold-start retry" → "Overlap with FRET's probes"), not repeated here.
  */
 
 import { describe, it, expect } from 'vitest';

@@ -11,7 +11,7 @@ import { startCadreMember, type CadreMemberHandle } from '../fixtures/cadre-memb
  * always-on member the invitation names. The browser tab founds its own party (B) on first
  * load, as every tab does, and then joins A through the Cadre page's "Join my existing
  * cadre": A mints a machine invitation targeted at the tab's peer id, the tab pastes it
- * and joins, and its one node moves from B to A (docs/architecture.md → "An app joins an
+ * and joins, and its one node moves from B to A (docs/cadre/apps.md → "An app joins an
  * existing cadre"). The tab's chat strand has no control row, so B's export is empty and a
  * machine invitation, which admits a member and no owner, is allowed.
  *
@@ -22,7 +22,7 @@ import { startCadreMember, type CadreMemberHandle } from '../fixtures/cadre-memb
  * After the reload the tab must still be in A, still a `member`, with its key absent from A's
  * `OwnerKey` rows (`__cadre.isOwner()` false) and its start record saying `joined`.
  *
- * Admitted with nothing to move, the card goes on to remove B (architecture.md → "Dissolving the
+ * Admitted with nothing to move, the card goes on to remove B (docs/cadre/apps.md → "Dissolving the
  * party it left"): B holds no strand and no other machine, so its control block database goes
  * and the start record stops naming it as `formerPartyId`.
  *

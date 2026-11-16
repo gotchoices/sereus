@@ -182,7 +182,8 @@ async function setupDroneAndPhone(tag: string): Promise<TestContext> {
 
 	// The drone FOUNDS (writes the Header); the phone joins without waiting for its
 	// first sync, since the dial that carries the Header to it happens below — a
-	// joiner's database is withheld until then (docs/strands.md, "Joining").
+	// joiner's database is withheld until then (docs/strands/formation.md,
+	// "Joining: no writes before the first sync").
 	const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, founder: true });
 	expect(droneStrand.status).toBe('active');
 

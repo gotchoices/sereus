@@ -4,7 +4,7 @@
  * errors, and the edge node's refusal before it switches party.
  *
  * A hand-copied twin of reference-app-rn's `src/join-failure.ts`; the two apps
- * share no code by design (docs/reference-app-ns.md).
+ * share no code by design (packages/reference-app-ns/README.md).
  */
 
 import {

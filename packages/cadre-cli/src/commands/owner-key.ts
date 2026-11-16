@@ -1,7 +1,7 @@
 /**
  * `cadre owner-key show|export|import`: the owner key this server holds in its owner key file
  * (`owner-key-file.ts`), as text a person can back up or carry to another device
- * (`docs/architecture.md` → Owner Keys → Exporting and importing an owner key).
+ * (`docs/cadre/owner-keys.md` → Exporting and importing an owner key).
  *
  * The file comes from the node's config (`owner.keyFile`, default `<nodeStateDir>/owner.key`), so
  * these commands find the key `cadre start --owner` signs with, and the loader's refusal of an

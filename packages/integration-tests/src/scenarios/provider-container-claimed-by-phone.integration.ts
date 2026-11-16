@@ -1,7 +1,7 @@
 /**
  * A PHONE-SHAPED owner rents a provider container that waits to be claimed and claims it with
- * the node code the provider hands out: `docs/architecture.md` → Enrollment Flow: Phone Adds
- * Provider Drone, "By claim", on the wire (row 4 of Which Side Dials, the claim arm).
+ * the node code the provider hands out: `docs/hosting/provider.md` → Provider flow, "By claim",
+ * on the wire (the Claim row of `docs/cadre/membership.md` → Which side dials).
  *
  * Terms used below:
  *

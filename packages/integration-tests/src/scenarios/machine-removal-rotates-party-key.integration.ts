@@ -1,6 +1,6 @@
 /**
  * Removing a machine from a cadre cuts it off a strand the cadre shares with another party
- * (`docs/architecture.md` → "Removing a machine"), proved on a real network and on rows
+ * (`docs/cadre/membership.md` → "Removing a machine"), proved on a real network and on rows
  * production wrote: the test calls no membership writer.
  *
  * Machines:
@@ -339,7 +339,7 @@ describe('Removing a machine replaces the party key in a strand shared with anot
 		const a1Control = owner.getControlDatabase()!;
 
 		// ── A2 goes offline ─────────────────────────────────────────────────────
-		// A background `CadrePeer` write still committing at a stop tears (docs/testing.md).
+		// A background `CadrePeer` write still committing at a stop tears (docs/contributing/testing.md).
 		expect(await a2.node.registerSelf()).not.toBe('skipped');
 		const a2ListenAddr = sameListenAddr(a2.node);
 		await a2.node.stop();

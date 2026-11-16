@@ -1,7 +1,7 @@
 /**
  * machines.svelte.ts — state of the Cadre page's "Devices and nodes" card: every machine of this
  * cadre (apps and always-on nodes), the devices invited and not joined yet, the key replacements a
- * removal left waiting, and on an owner tab, Remove (`CadreNode.removeMachine`; docs/architecture.md
+ * removal left waiting, and on an owner tab, Remove (`CadreNode.removeMachine`; docs/cadre/membership.md
  * → "Removing a machine"). The browser counterpart of the phone app's `machines-section.tsx` and
  * `machines.ts`, with the same list, confirmation and wording. Owner keys are not machines and stay
  * when one is removed; removing one is a separate step under Owner keys (`owner-keys.svelte.ts`),

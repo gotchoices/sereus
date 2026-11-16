@@ -1,7 +1,7 @@
 /**
  * E2E: an owner grant and a cadre invitation are redeemed at a member while the owner that
- * minted them is OFFLINE (`docs/architecture.md` → "Enrollment Flow: Invitation Redeemed at Any
- * Member", "Owner grants").
+ * minted them is OFFLINE (`docs/cadre/membership.md` → "Cadre invitations";
+ * `docs/cadre/owner-keys.md` → "Owner grants").
  *
  * Machines:
  * - **A**, the owner: phone-shaped (`listenAddrs: []`), founds the cadre. Its control storage

@@ -1,7 +1,7 @@
 /**
  * A phone in offline mode does not commit a queued transaction alone while one of its party's
- * own machines holds the strand and cannot be reached (gotchoices/sereus#56; docs/strands.md →
- * "Waiting for the party's own machines").
+ * own machines holds the strand and cannot be reached (gotchoices/sereus#56;
+ * docs/strands/writes.md → "Waiting for the party's own machines").
  *
  * ── The machines ──
  *
@@ -396,7 +396,7 @@ async function runRemovalReleasesQueue(seeded: boolean, strandType: 'o' | 'c' = 
 		say('the phone has met the node (seeded: %s), and the node holds %s', seeded, metTx);
 
 		// ── The node stops for good, and a transaction waits for it ──
-		// A background `CadrePeer` write still committing at a stop tears (docs/testing.md).
+		// A background `CadrePeer` write still committing at a stop tears (docs/contributing/testing.md).
 		expect(await node.registerSelf()).not.toBe('skipped');
 		await node.stop();
 		await waitUntil(() => !phoneConnected(), { timeoutMs: CONVERGE_MS, intervalMs: 250, description: "the phone's strand node sees the node go" });

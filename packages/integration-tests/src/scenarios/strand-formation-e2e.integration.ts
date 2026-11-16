@@ -446,7 +446,8 @@ describe('E2E Strand Formation', () => {
 				// transactor, so the manual dial is all replication needs.
 				// Alice FOUNDS (writes the Header); Bob joins without waiting for his first
 				// sync, because the mesh that carries the Header to him is only dialed below —
-				// a joiner's database is withheld until then (docs/strands.md, "Joining").
+				// a joiner's database is withheld until then (docs/strands/formation.md,
+				// "Joining: no writes before the first sync").
 				const aliceStrand = await aliceNode.addStrand({
 					strandRow,
 					sAppConfig: SAPP_CONFIG_A,
@@ -1082,7 +1083,7 @@ describe('E2E Strand Formation', () => {
 
 				// A hook is posted the five SIGNED fields and nothing else. No `validationUrl`, no
 				// owner keys, no bootstrap addresses ever reach an outside approver — a privacy
-				// property of the wire contract (`docs/api.md` → Validate Strand Formation) that this
+				// property of the wire contract (`docs/api.md` → Formation approval hook) that this
 				// is the only place checked end to end.
 				expect(Object.keys(posted!).sort()).toEqual(
 					['disclosure', 'peerKey', 'strandId', 'token', 'usageStampId'],

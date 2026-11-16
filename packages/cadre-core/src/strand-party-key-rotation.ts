@@ -1,7 +1,7 @@
 /**
  * Party key rotation: the driver that moves a party onto a fresh membership key in one closed
  * strand after a machine was removed from the cadre, so the removed machine is left holding a
- * key that is no longer a member there (docs/architecture.md → "Removing a machine").
+ * key that is no longer a member there (docs/cadre/membership.md → "Removing a machine").
  *
  * ## What it rests on
  *
@@ -51,7 +51,7 @@
  *    row stays: K' is seated from outside, by the membership reconciler redeeming the host's fresh
  *    invitation under K' (`strand-membership-reconciler.ts` → "Redeeming under the pending key")
  *    or by the strand's manager admitting K' by hand, and the reconciler kicks this driver when
- *    it sees the seat (docs/strands.md → Replacing the party's key). The run then continues from
+ *    it sees the seat (docs/strands/keys.md → Replacing the party's key). The run then continues from
  *    step 3; step 4 is skipped, since K is no manager, and step 5 is K's self-signed leave alone.
  * 3. **Bind under K'**: this machine's own strand peer id and every live sibling's, each
  *    `registerMemberPeer(K', id)` (insert-if-absent). Self-signed by K', so this step also runs

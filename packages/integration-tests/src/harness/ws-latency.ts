@@ -244,7 +244,8 @@ let progressTimer: ReturnType<typeof setInterval> | undefined;
  * accurate totals come from a boundary something in the process actually declares:
  * `installWsLatency` prints the running totals before it zeros them, and its `restore()`
  * prints that install's final line. For a `WS_FRAME_STATS=1` baseline that is the line the
- * committed latency arm's install emits — see docs/testing.md → "Where measurements live".
+ * committed latency arm's install emits — see docs/contributing/gates.md →
+ * "Opt-in measurements".
  * A scenario that needs the total of an interval it marks itself opens a window
  * (`openWsFrameWindow`) rather than inferring the end from these lines.
  */

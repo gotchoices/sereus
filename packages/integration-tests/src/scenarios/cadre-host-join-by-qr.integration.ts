@@ -6,7 +6,7 @@
  *
  * - **Hosted node** — a real `cadre-cli` child the host's `HostProcessOrchestrator` spawns
  *   with `CADRE_CLAIM_SECRET` (`HostedNodeService.join`); it belongs to nobody until a
- *   phone claims it (docs/cadre-host.md → Hosted nodes: Join a cadre).
+ *   phone claims it (docs/hosting/cadre-host.md → Join a cadre).
  * - **Phone-shaped claimant** — an in-process `CadreNode` with `listenAddrs: []`, WebSocket
  *   and circuit-relay transports only, `profile: 'transaction'`, owner genesis run on
  *   itself: the claimant of `node-claim-by-phone.integration.ts`.

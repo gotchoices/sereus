@@ -12,7 +12,7 @@ import type { ControlRetryOptions } from './control-retry.js';
  * three-machine party commits control writes unanimously (`ceil(3 × 0.75) = 3` approvals) —
  * and no `superMajorityThreshold` can lower that bar without violating Optimystic's
  * partition-safety condition at the shipped admission fraction (the arithmetic lives in
- * `docs/architecture.md` → "Replication cluster size"). Cadre therefore accepts unanimity
+ * `docs/cadre/control-replication.md` → "Replication cluster size"). Cadre therefore accepts unanimity
  * and absorbs the transient half of its cost here: a write that failed because the cohort
  * did not ANSWER (a stream reset mid-connection-formation, zero approvals) is re-presented
  * a moment later, which the degraded-cohort-member scenario measured as safe (a failed
@@ -91,8 +91,8 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * (`cohortReadDeadlineMs` in `link-budget.ts`: 7 s at the default declared link, 5 s before it
  * was derived, 1 s at Optimystic's own default), so it still gets one retry inside this budget
  * where it once got two; an attempt that runs into the `ClusterClient` response deadline
- * (10.5 s at the default declared link) still gets none. See `docs/cadre-consistency.md` →
- * "Deadlines Over Optimystic's Reads and Commits".
+ * (10.5 s at the default declared link) still gets none. See `docs/network/deadlines.md` →
+ * "Deadlines over Optimystic's reads and commits".
  *
  * NOTE: a failed commit attempt also pays a cancel discharge before its error returns
  * (optimystic `TransactorSource.transact`'s catch) — bounded by six rounds and
@@ -110,7 +110,7 @@ export const SCHEMA_INIT_ATTEMPTS = 5;
  * condition to watch, not work to do: if that case ever starts failing with
  * `failed after 2/3 attempt(s)`, the cancel discharge is where the time went.
  */
-// eslint-disable-next-line no-restricted-syntax -- cuts off by design: it ends the retries of slow attempts rather than waiting them out; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: it ends the retries of slow attempts rather than waiting them out; see docs/network/deadlines.md → "Deadlines over Optimystic's reads and commits"
 export const CONTROL_WRITE_RETRY_BUDGET_MS = 10_000;
 
 /**

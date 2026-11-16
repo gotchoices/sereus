@@ -132,9 +132,9 @@ export type OwnerGenesisResult = 'enrolled' | 'member' | 'failed' | 'timed-out';
  * Default bound on {@link runOwnerGenesis} and {@link wireJoinedOwnerKey}: what a start can wait
  * for its owner step, which runs control reads and one control write, before it goes on without
  * it. Not derived from the link, since a start that waited out a stalled write (about 84 s, see
- * `docs/cadre-consistency.md`) would be a start the user gave up on.
+ * `docs/network/deadlines.md`) would be a start the user gave up on.
  */
-// eslint-disable-next-line no-restricted-syntax -- cuts off by design: a start goes on without its owner step rather than wait out a stalled control write; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: a start goes on without its owner step rather than wait out a stalled control write; see docs/network/deadlines.md → "Deadlines over Optimystic's reads and commits"
 export const DEFAULT_OWNER_GENESIS_TIMEOUT_MS = 60_000;
 
 /** Default `EdgeNodeOptions.ownerKeyLabel`: the founding owner key's name on its `OwnerKey` row. */

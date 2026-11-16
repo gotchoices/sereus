@@ -2,12 +2,11 @@
  * Comparison of the hand-kept copies of `schemas/chat-simple.qsql` against the file.
  *
  * The reference apps embed the schema as a string constant (a React Native bundle cannot
- * read a `.qsql` file from disk) and `docs/reference-app-rn.md` prints it. Each copy has
+ * read a `.qsql` file from disk). The docs link to the file and print no copy. Each copy has
  * a spec that registers `describeChatSchemaCopy` for it:
  *   - `packages/reference-app-rn/test/chat-schema-drift.spec.ts`
  *   - `packages/reference-app-web/test/chat-schema-drift.spec.ts`
  *   - `packages/reference-app-ns/test/chat-schema-drift.spec.ts`
- *   - `packages/quereus-plugin-sereus/test/chat-simple-doc-drift.spec.ts` (the document)
  */
 
 import { readFile } from 'node:fs/promises';

@@ -31,7 +31,7 @@ export default defineConfig({
     // Vitest counts the tests under a failed `beforeAll` as skipped; the second
     // reporter names them as not run, after the summary `verbose` prints. The
     // list lives here rather than in a `--reporter` flag because that flag
-    // replaces it — see docs/testing.md → "Tests that did not run".
+    // replaces it — see docs/contributing/gates.md → "Tests that did not run".
     reporters: ['verbose', '../../test-harness/setup-failure-reporter.ts'],
     coverage: { 
       reporter: ['text', 'html'],

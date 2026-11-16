@@ -1,7 +1,7 @@
 /**
  * E2E: every machine's trusted-owner anchor follows an owner addition, a removal and a
- * re-addition made by another machine (`docs/architecture.md` → "How the anchor follows the
- * owner table", under "Seed Delivery Protocol").
+ * re-addition made by another machine (`docs/cadre/control-security.md` → "How the anchor follows
+ * the owner table", under "The trusted-owner anchor").
  *
  * Machines:
  * - **A**, the founding owner, listening on a loopback WebSocket port.

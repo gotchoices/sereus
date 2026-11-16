@@ -1,294 +1,200 @@
 # @serfab/cadre-core
 
-Core library for Sereus cadre nodes—the infrastructure that enables parties to manage their personal cluster of nodes participating in distributed strand networks.
+The library that runs a Sereus cadre node. A node connects one machine to its party's private control network, starts the strands the party takes part in, and gives the app each strand as a SQL database.
 
-## Why Sereus Cadre Core?
+In Sereus a **party** is a person or organisation, its **cadre** is the set of machines it runs, and a **strand** is an invitation-only SQL database shared among parties. [Concepts](https://github.com/gotchoices/sereus/blob/master/docs/concepts.md) defines the terms used here, and [Getting started](https://github.com/gotchoices/sereus/blob/master/docs/getting-started.md) walks through a first app with two parties.
 
-In traditional distributed systems, users depend on centralized services to manage their data and identities. **Sereus** inverts this model: each user (or "party") controls their own **cadre**—a personal cluster of nodes ranging from always-on cloud servers to intermittently-connected mobile devices.
+## Prerequisites
 
-The cadre architecture provides:
+- **An ES module project.** The package ships ES modules only. It runs on Node.js 20.19 or later, in browsers, and in React Native and NativeScript apps.
+- **A block store for the platform.** cadre-core stores data through Optimystic's `IRawStorage` interface and does not bundle a durable implementation; see [Storage provider](#storage-provider).
 
-- **Sovereignty**: Your data lives on your nodes, under your control
-- **Resilience**: Multiple nodes means no single point of failure
-- **Flexibility**: Mix cloud servers, home NAS, laptops, and phones
-- **Privacy**: Cryptographic authorization without central servers
-
-A cadre doesn't exist in isolation. Cadres participate in **strands**—shared data spaces where multiple parties collaborate. When you join a messaging app, your cadre joins that strand. When you share a document, you're creating a strand between your cadre and theirs.
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              Your Cadre                                  │
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │                        Control Network                              │ │
-│  │            (Private Optimystic DB for cadre management)             │ │
-│  │                                                                     │ │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐           │ │
-│  │  │ Phone    │──│ Laptop   │──│ Cloud    │──│ NAS      │           │ │
-│  │  │ (edge)   │  │ (edge)   │  │ (core)   │  │ (core)   │           │ │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘           │ │
-│  └────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                     │
-│              ┌─────────────────────┼─────────────────────┐              │
-│              ▼                     ▼                     ▼              │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐      │
-│  │ Strand A         │  │ Strand B         │  │ Strand C         │      │
-│  │ (Chat App)       │  │ (Shared Docs)    │  │ (Photo Backup)   │      │
-│  └──────────────────┘  └──────────────────┘  └──────────────────┘      │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-Each `CadreNode` instance:
-1. **Connects to the control network** - A private Optimystic database shared only by your nodes
-2. **Watches for strand changes** - Automatically detects when you join or leave strands
-3. **Manages strand instances** - Spins up isolated libp2p networks for each strand
-4. **Handles peer enrollment** - Cryptographically authorizes new devices to join your cadre
-
-## Installation
+## Install
 
 ```bash
 npm install @serfab/cadre-core
 ```
 
-## Quick Start
+The [quick start](#quick-start) also imports two packages directly:
 
-```typescript
-import { CadreNode } from '@serfab/cadre-core';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+```bash
+npm install @optimystic/db-p2p @optimystic/quereus-plugin-crypto
+```
 
+## Quick start
+
+This script starts one node for a new party on Node.js, makes it the owner of its cadre, founds a strand, and reads back a row it wrote. It keeps everything in memory, so each run starts a new party.
+
+```ts
+import { CadreNode, InMemoryKeyStore, createOwnerKey, signSchema } from '@serfab/cadre-core';
+import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+
+// The sApp: an app schema signed by its author. The author's public key is the sApp id.
+const authorKey = generatePrivateKey('ed25519', 'base64url') as string;
+const sApp = {
+	version: '1.0.0',
+	schemaVersion: 1,
+	schema: 'table Note (Id text primary key, Body text not null);',
+};
+const sAppConfig = {
+	id: getPublicKey(authorKey, 'ed25519', 'base64url', 'base64url') as string,
+	...sApp,
+	signature: signSchema(sApp, authorKey),
+};
+
+// One store per scope: one for the control database, one for each strand.
+const stores = new Map<string, MemoryRawStorage>();
+const storeFor = (scope: string): MemoryRawStorage => {
+	let store = stores.get(scope);
+	if (!store) {
+		store = new MemoryRawStorage();
+		stores.set(scope, store);
+	}
+	return store;
+};
+
+const keyStore = new InMemoryKeyStore();
 const node = new CadreNode({
-  controlNetwork: {
-    partyId: 'your-unique-party-id',
-    bootstrapNodes: ['/ip4/192.168.1.100/tcp/4001/p2p/12D3KooW...']
-  },
-  profile: 'storage',  // 'storage' for servers, 'transaction' for mobile
-  storage: {
-    // Storage provider factory - called once per scope (each strand id, plus this
-    // party's control database) for per-scope isolation
-    provider: (scope) => new FileRawStorage(`/data/sereus/${scope}`),
-    quotaBytes: 10 * 1024 * 1024 * 1024  // 10 GB
-  }
+	keyStore,
+	controlNetwork: { partyId: crypto.randomUUID(), bootstrapNodes: [] },
+	profile: 'transaction',
+	storage: { provider: storeFor },
 });
-
-// Start the node
 await node.start();
-console.log('Node started with Peer ID:', node.peerId?.toString());
 
-// Listen for strand events
-node.on('strand:started', ({ strandId }) => {
-  console.log('Joined strand:', strandId);
-});
+// A new cadre has no owner. Create an owner key, seat it as the first owner, and sign with it.
+const owner = await createOwnerKey(keyStore);
+await node.getControlDatabase()!.ensureOwnerKey(owner.publicKey);
+await node.useOwnerSigner(owner);
 
-// Check active strands
-for (const [id, strand] of node.getStrands()) {
-  console.log(`Strand ${id}: ${strand.status}, ${strand.connectedPeers} peers`);
+// Publish the strand to the party and start it here.
+const { instance } = await node.foundStrand({ strandId: 'notes', sAppConfig });
+
+// The strand is a Quereus database. App tables are in the App schema.
+const db = instance.database!.getDatabase();
+await db.exec("insert into App.Note (Id, Body) values ('1', 'hello')");
+for await (const row of db.eval('select Body from App.Note')) {
+	console.log(row.Body); // hello
 }
 
-// Graceful shutdown
 await node.stop();
 ```
 
-## Node Profiles
+Expected output is the line `hello`. Set `DEBUG=sereus:*` to see what the node does on the way.
 
-| Profile | Storage Role | Use Case | Ring Zulu |
-|---------|--------------|----------|-----------|
-| **transaction** | Arachnode disabled; transaction verification via FRET only | Mobile devices, intermittent connectivity | No |
-| **storage** | Ring Zulu + storage rings (storage rings not yet implemented — stub) | Servers, NAS, always-on nodes | Yes |
+An app on a phone or in a browser does not construct `CadreNode` itself. It calls `createEdgeNode` from `@serfab/cadre-core/edge-node`, which builds the node over the app's key store and storage, creates the owner key on first run, and remembers how to start again. See [The edge node](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#the-edge-node).
 
-Transaction-profile nodes verify transactions via FRET only, with Arachnode disabled. Storage-profile nodes additionally join Ring Zulu and (when implemented) the concentric storage rings.
+## Configuration
 
-> **Note:** The storage-ring subsystem is currently a no-op stub (`arachnode-stub.ts`). See [Node Profiles in `docs/architecture.md`](../../docs/architecture.md#node-profiles) for the full design.
+`new CadreNode(config)` takes a `CadreNodeConfig`, declared in [`src/types.ts`](src/types.ts). [Configuration](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#configuration) describes every option group. The options most embedders set:
 
-## Strand Filtering
+| Option | Meaning |
+| --- | --- |
+| `controlNetwork.partyId` | The party this node serves. The app mints it once, for example as a UUID, and reuses it on every start. |
+| `controlNetwork.bootstrapNodes` | Multiaddrs of the party's other machines to dial at start. Empty for the first machine. |
+| `profile` | `'transaction'` or `'storage'`; see [Profile](#profile). |
+| `strandFilter` | Which of the party's strands this node runs; see [Strand filter](#strand-filter). |
+| `storage.provider` | Where blocks are kept; see [Storage provider](#storage-provider). |
+| `keyStore` | Where the node's identity key and other secrets are kept. With neither this nor `privateKey`, the node gets a new peer id on every start. `InMemoryKeyStore` is for tests; `FileKeyStore` from `@serfab/cadre-core/key-store-file` is the Node.js backend. |
+| `network` | Listen addresses, transports and relays. On Node.js the default listens on TCP. A browser or phone passes WebSocket and circuit-relay transports with `listenAddrs: []`. |
+| `requireSignedSchemas` | Default `true`: an sApp config without a valid author signature is refused. Set `false` only for development. |
 
-Mobile apps typically shouldn't participate in all strands. Use filters to control participation:
+### Profile
 
-```typescript
-// Only participate in strands for a specific app
-strandFilter: { mode: 'sAppId', sAppId: 'com.example.chat' }
+`profile` says what kind of machine this is. `'transaction'` is an app on a phone or in a browser, connected some of the time. `'storage'` is an always-on machine: it also runs a relay server by default and keeps a copy of every strand its `strandFilter` admits, including strands no app on that machine uses. Every node stores the data of the strands it runs, whatever its profile. See [Node profiles](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-profiles).
 
-// Only participate in one specific strand
-strandFilter: { mode: 'strandId', strandId: 'strand-abc123' }
+### Strand filter
 
-// Control network only, no strand participation
-strandFilter: { mode: 'none' }
+`strandFilter` limits which of the party's strands the node runs. An app that should run only its own strands filters by its sApp id.
 
-// Participate in all strands (default for servers)
-strandFilter: { mode: 'all' }
+```ts
+strandFilter: { mode: 'all' }                        // every strand of the party (the default)
+strandFilter: { mode: 'sAppId', sAppId }             // strands of one sApp
+strandFilter: { mode: 'strandId', strandId: 'notes' } // one strand
+strandFilter: { mode: 'none' }                       // the control network only
 ```
 
-## Enrolling New Devices
+`sAppId` is the sApp author's public key in base64url, the same value as `SAppConfig.id`. It is not a reverse-DNS application name. See [Strand filtering](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#strand-filtering).
 
-Adding a new device to your cadre uses the Seed Bootstrap API:
+### Storage provider
 
-```typescript
-// On the new device: generate identity
-const enrollment = new EnrollmentService();
-const { peerId, privateKey } = await enrollment.createCadrePeer();
-// Store privateKey securely, send peerId + multiaddrs to owner
+`storage.provider` is a function from a scope key to an `IRawStorage`. cadre-core calls it once for the control database and once for each strand the node starts.
 
-// On owner device: authorize the new peer and create seed
-await node.authorizePeer(newDevicePeerId, newDeviceMultiaddrs);
-const seed = await node.createSeed();
-
-// Deliver seed to new device (via protocol, API, or out-of-band)
-await node.deliverSeed(newDeviceMultiaddr, seed);
-// Or encode for QR/link: const encoded = node.encodeSeed(seed);
-
-// On new device: apply seed to join cadre
-const result = await newNode.applySeed(seed);
-```
-
-For a machine whose peer id and addresses you already have, use the helper (`cadre enroll add` runs it on the owner node):
-
-```typescript
-// One call: authorize + create seed
-const { seed, encodedSeed } = await node.addDrone({ dronePeerId, droneMultiaddrs });
-
-// The new machine starts with it: `cadre start --seed <encodedSeed> --pin-owner-key <owner key>`
-
-// Await the dial of the drone from the addresses addDrone kept (a drone cannot
-// dial a phone); the row insert starts a pass that dials it anyway, about 50 ms
-// later, and retries a failed dial after 15 s, 30 s, 60 s, then every 2 minutes
-await node.reconcileControlCohort();
-```
-
-A provider-hosted node is added with `rentNode` instead (below).
-
-### Renting a provider node
-
-An app rents an always-on node from a hosting provider with `rentNode`, which adds the container to this node's cadre by invitation when a member is reachable from anywhere and by claim otherwise ([architecture.md → Renting a node from an app](../../docs/architecture.md#renting-a-node-from-an-app)). Everything it needs loads on React Native and in the browser:
-
-```typescript
-import { createProviderClient, createTokenSource, fetchProviderDescriptor, rentNode } from '@serfab/cadre-core';
-
-const descriptor = await fetchProviderDescriptor('https://nodes.acme.example/api/v1/descriptor');
-// `stored` comes from the PKCE sign-in (createPkce, authorizationUrl, readAuthorizationRedirect,
-// exchangeAuthorizationCode) or from the app's own store; `save` writes each refreshed pair back
-const tokens = createTokenSource({ descriptor, clientId: 'my-app', tokens: stored, persist: save });
-const client = createProviderClient({ apiBaseUrl: descriptor.apiBaseUrl, tokens });
-
-const rental = await rentNode(node, client, { onProgress: (step) => console.log(step) });
-// rental.join: 'invitation' (the container joins by itself; watch client.getContainer(id).join)
-// or 'claim' (the node is in the cadre when rentNode returns, rental.peerId names it).
-// Keep rental.containerId: finishRental(node, client, containerId) resumes a rental the app
-// was killed in the middle of, and the container is what the provider bills.
-```
-
-## API Reference
-
-### CadreNode
-
-The main entry point for cadre participation.
-
-| Method | Description |
-|--------|-------------|
-| `start()` | Connect to control network and begin strand participation |
-| `stop()` | Gracefully disconnect from all networks |
-| `getStrands()` | Get all active strand instances |
-| `getStrand(id)` | Get a specific strand instance |
-| `foundStrand(config)` | **Create a strand**: publish its `Strand` row and start it locally as founder, in one call that is safe to re-run after an interruption. Returns the instance plus the row it actually runs under — for a closed strand read the membership key from there, since a resumed founding keeps the stored key |
-| `addStrand(row)` | Attach only — start a local instance for a row that already exists (the join path; also testing/direct API). Does **not** publish |
-| `stopStrand(id)` | Stop a strand on this node only (the shared `Strand` row stays; rediscovered on restart) |
-| `publishStrand(id, type?, memberKey?)` | Owner-signed `Strand` row insert — makes the strand visible cadre-wide. Idempotent: a live row with the same `(Type, MemberPrivateKey)` is returned unwritten; different content on the same id throws. Prefer `foundStrand` when creating a strand |
-| `unpublishStrand(id)` | Owner-signed party-wide removal — deletes this party's `Strand` row; every node stops the strand. Destroys a closed strand's `MemberPrivateKey` |
-| `getEnrollmentService()` | Access peer enrollment API |
-| `isOwner()` | Whether this node can act as an owner of its cadre: an owner key is wired for signing (`useOwnerSigner`) and is a live `OwnerKey` row; never the node's identity key. The gate the owner-only flows (`createCadreInvitation`, `createOwnerGrant`, `claimNode`, `rentNode`) share with the apps |
-| `invitationReach()` | Where a device could redeem an invitation minted now from, judged on the other members' addresses (`anywhere`, `local-network`, `issuer-only`), without minting one; `rentNode` chooses its join path by it |
-
-### Events
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `control:connected` | - | Connected to control network |
-| `control:disconnected` | - | Disconnected from control network |
-| `strand:started` | `{ strandId }` | Strand instance started |
-| `strand:stopped` | `{ strandId }` | Strand instance stopped |
-| `strand:error` | `{ strandId, error }` | Error in strand instance. A failed launch re-emits this on every retry (backing off up to 5 min), so treat it as a repeating signal, not a one-shot. The exception is an `AppSchemaRefusedError` (the app's schema can never apply to the strand's tables, or, as its subclass `AppSchemaOutdatedError`, the strand records a higher `schemaVersion` than the app's): that strand is not retried until the next `addStrand`. A running strand whose app schema another member has since superseded (a higher `schemaVersion` recorded) is stopped the same way: `strand:stopped`, then this with the `AppSchemaOutdatedError` ([strands.md → A running member stops](../../docs/strands.md#a-running-member-stops)) |
-| `strand:commit-durability` | `StrandCommitDurability` | After every commit on a strand's database that wrote something: whether another member already holds it (`heldElsewhere`), whether `strand:commit-held` will say when one does (`followed`), and, on a node offering offline mode, which of the party's machines it did not reach (`awaitedMachines`). Also readable as `instance.database.commitDurability(tx)`; see [strands.md → A commit's durability](../../docs/strands.md#a-commits-durability) |
-| `strand:commit-held` | `{ strandId, transactionId }` | A followed commit held only below full replication is now held by every member of its cohort |
-
-## Related Documentation
-
-- **[Cadre Architecture](../../docs/architecture.md)** - Deep dive into the cadre system design
-- **[Strand Management](../../docs/strands.md)** - How strands connect multiple cadres
-- **[Schema Guide](../../docs/schema-guide.md)** - Optimystic schema definitions
-
-## React Native Support
-
-This package is compatible with React Native. For mobile apps, use the RN-specific storage provider:
-
-```typescript
-import { CadreNode } from '@serfab/cadre-core';
-import { RNRawStorage } from '@optimystic/db-p2p-storage-rn';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+```ts
+import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { FileKeyStore } from '@serfab/cadre-core/key-store-file';
 
 const node = new CadreNode({
-  controlNetwork: {
-    partyId: 'your-unique-party-id',
-    bootstrapNodes: ['/dns4/relay.example.com/tcp/443/wss/p2p/12D3KooW...']
-  },
-  profile: 'transaction',  // Mobile devices typically use transaction profile
-  strandFilter: { mode: 'sAppId', sAppId: 'com.example.myapp' },
-  storage: {
-    // RN storage provider creates per-scope AsyncStorage
-    provider: (scope) => new RNRawStorage(scope)
-  },
-  network: {
-    // TCP doesn't work in React Native — use WebSocket transport instead
-    transports: [webSockets(), circuitRelayTransport()],
-    listenAddrs: []  // RN nodes typically cannot listen
-  }
+	keyStore: new FileKeyStore('/var/lib/my-app/keys'),
+	controlNetwork: { partyId, bootstrapNodes: [] },
+	profile: 'storage',
+	storage: { provider: (scope) => new FileRawStorage(`/var/lib/my-app/data/${scope}`) },
 });
 ```
 
-### Storage Provider Pattern
+- **The scope key is safe to use as a name.** It is a strand id, or `control-` followed by a hex encoding of the party id. Every key stays within `[a-z0-9._-]`, so it can go straight into a path or a database name. Do not parse it.
+- **Return the same data for the same key.** The provider is called again for a scope after its strand stops or the node restarts, and must return a store over the same durable data.
+- **Keep the control scope per party.** Two parties on one device must get two control stores, which the function form gives them. A single `IRawStorage` instance is also accepted, but it shares one store across every scope and can serve only one party.
+- **Close the stores yourself.** cadre-core never closes what the provider returned.
 
-The `storage.provider` option accepts either:
-- **An `IRawStorage` instance** - One store shared by every scope, so it can serve only a single party
-- **A factory function** `(scope: string) => IRawStorage` - Creates isolated storage per scope (recommended)
+| Package | Class | Platform |
+| --- | --- | --- |
+| `@optimystic/db-p2p` | `MemoryRawStorage` | Any; nothing persists |
+| `@optimystic/db-p2p-storage-fs` | `FileRawStorage` | Node.js |
+| `@optimystic/db-p2p-storage-rn` | `LevelDBRawStorage` | React Native |
+| `@optimystic/db-p2p-storage-ns` | `SqliteRawStorage` | NativeScript |
+| `@optimystic/db-p2p-storage-web` | `IndexedDBRawStorage` | Browsers |
 
-A **scope key** is what the factory receives. It is the strand id for each strand, and
-`controlStorageScope(partyId)` — `control-<lowercase hex of the party id>` — for the control
-database, which holds one party's own records and must not be shared between parties. Every
-key is opaque and already safe as a file, directory or database name (always within
-`[a-z0-9._-]`), and two different keys are two different names even on a filesystem that
-ignores case (Windows, macOS): use it verbatim, do not parse it. `isControlStorageScope(scope)`
-tells the two kinds apart. The control key holds the charset by lowercase hex encoding; a strand
-id holds it by check — `assertStrandScopeKey` runs on every strand launch, so a strand
-whose row replicated in from another node with an unusable id (including one with an
-uppercase letter) is refused rather than
-handed to the factory, and on `publishStrand`, so this node never writes such an id into
-the party's control database to begin with.
+See [Storage](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#storage) for the cache cadre-core puts in front of a store and the rules that follow from it.
 
-Available storage implementations:
-| Package | Environment | Description |
-|---------|-------------|-------------|
-| `@optimystic/db-p2p` | All | `MemoryRawStorage` - In-memory (testing only) |
-| `@optimystic/db-p2p-storage-fs` | Node.js | `FileRawStorage` - File system storage |
-| `@optimystic/db-p2p-storage-rn` | React Native | `RNRawStorage` - AsyncStorage-based |
+## What the node keeps, and where
 
-### React Native Considerations
+cadre-core writes no files of its own. Everything durable goes through an object the embedder supplies:
 
-1. **Network Transport**: libp2p's TCP transport doesn't work in RN. Pass `transports: [webSockets(), circuitRelayTransport()]` in the `network` config (see example above).
+- **Blocks** of the control database and of each strand go to `storage.provider`.
+- **Secrets** go to `keyStore`: the node's identity key, the owner key, and the record of strands joined from other parties.
+- **Node-local state** goes to the stores named in the config (`trustedOwners`, `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`). Each defaults to memory. The file-backed versions are Node.js subpath imports such as `@serfab/cadre-core/trusted-owner-store-file`.
 
-2. **Schema Loading**: The control schema is embedded in the package. Do not set `schemaPath` in React Native.
+A node that keeps these in memory forgets which owner keys it trusts and which machines to dial when the process exits. See [Node-local state](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-local-state).
 
-3. **Profile**: Mobile devices should use `profile: 'transaction'` for battery/bandwidth efficiency.
+## API map
 
-4. **Strand Filtering**: Always filter strands on mobile to avoid participating in unnecessary networks.
+The [cadre-core API guide](https://github.com/gotchoices/sereus/blob/master/docs/api.md) lists every call an app makes, what each one promises and where its mechanism is explained.
 
-## Related Packages
+| Task | Calls | Guide section |
+| --- | --- | --- |
+| Create and run a node | `new CadreNode`, `start`, `stop`, `createEdgeNode` | [Creating a node](https://github.com/gotchoices/sereus/blob/master/docs/api.md#creating-a-node) |
+| Hold and manage owner keys | `createOwnerKey`, `useOwnerSigner`, `isOwner`, `addOwner`, `createOwnerGrant` | [Owner keys](https://github.com/gotchoices/sereus/blob/master/docs/api.md#owner-keys) |
+| Add a machine to the cadre | `createCadreInvitation`, `redeemCadreInvitation`, `claimNode`, `addDrone`, `rentNode` | [Adding a machine](https://github.com/gotchoices/sereus/blob/master/docs/api.md#adding-a-machine) |
+| List and remove machines | `listMachines`, `planMachineRemoval`, `removeMachine` | [Listing and removing machines](https://github.com/gotchoices/sereus/blob/master/docs/api.md#listing-and-removing-machines) |
+| Found a strand | `foundStrand`, `signSchema` | [Founding](https://github.com/gotchoices/sereus/blob/master/docs/api.md#founding) |
+| Invite another party | `createOpenInvitation`, `publishFormationInvite`, `encodeInvitation` | [Inviting another party](https://github.com/gotchoices/sereus/blob/master/docs/api.md#inviting-another-party) |
+| Join a strand | `formStrand`, `requestJoin`, `addStrand`, the `strand:discovered` event | [Joining](https://github.com/gotchoices/sereus/blob/master/docs/api.md#joining) |
+| Read and write | `getStrand`, `instance.database.getDatabase()`, `setStrandOfflineMode` | [The strand's database](https://github.com/gotchoices/sereus/blob/master/docs/api.md#the-strands-database) |
+| Stop or leave a strand | `stopStrand`, `unpublishStrand`, `forgetJoinedStrand` | [Stopping and leaving](https://github.com/gotchoices/sereus/blob/master/docs/api.md#stopping-and-leaving) |
+| Administer a closed strand | `revokeMember`, `addMemberByManager`, `leaveStrand` | [Membership of closed strands](https://github.com/gotchoices/sereus/blob/master/docs/api.md#membership-of-closed-strands) |
+| Approve joins from outside the party | `enrollValidationKey`, `signFormationApproval` | [Formation approval hook](https://github.com/gotchoices/sereus/blob/master/docs/formation-approval-hook.md) |
+| React to changes and failures | `node.on(...)`, the error classes | [Events](https://github.com/gotchoices/sereus/blob/master/docs/api.md#events), [Errors](https://github.com/gotchoices/sereus/blob/master/docs/api.md#errors) |
 
-- **[@optimystic/db-core](https://github.com/gotchoices/optimystic)** - Distributed database core
-- **[@optimystic/db-p2p](https://github.com/gotchoices/optimystic)** - libp2p integration for Optimystic
-- **[@optimystic/db-p2p-storage-fs](https://github.com/gotchoices/optimystic)** - File system storage (Node.js)
-- **[@optimystic/db-p2p-storage-rn](https://github.com/gotchoices/optimystic)** - AsyncStorage (React Native)
+## Entry points
+
+| Import | Use |
+| --- | --- |
+| `@serfab/cadre-core` | Everything that runs on every platform |
+| `@serfab/cadre-core/edge-node` | `createEdgeNode`, for phones and browsers |
+| `@serfab/cadre-core/key-store-file`, `/trusted-owner-store-file`, `/bootstrap-peer-store-file`, `/enrolled-machine-store-file`, `/strand-network-state-file` | File-backed stores, Node.js only |
+| `@serfab/cadre-core/push-node` | FCM and APNs senders, Node.js only |
+| `@serfab/cadre-core/node-default-transports`, `/primary-lan-address` | Node.js transport list and LAN address probe |
+
+## Related documentation
+
+- [Architecture](https://github.com/gotchoices/sereus/blob/master/docs/architecture.md): how the control network, strands and nodes fit together.
+- [Writing an app schema](https://github.com/gotchoices/sereus/blob/master/docs/schema-guide.md): how to write the Quereus schema an sApp runs.
+- [Writing to a strand](https://github.com/gotchoices/sereus/blob/master/docs/strands/writes.md): commit durability and offline mode.
+- [Running a node in a React Native app](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md), [in a NativeScript app](https://github.com/gotchoices/sereus/blob/master/docs/platforms/nativescript.md) and [in a browser](https://github.com/gotchoices/sereus/blob/master/docs/platforms/browser.md).
+- [`@serfab/cadre-cli`](https://github.com/gotchoices/sereus/blob/master/packages/cadre-cli/README.md) runs a node from the command line without writing code.
 
 ## License
 
 MIT
-

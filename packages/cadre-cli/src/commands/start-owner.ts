@@ -1,7 +1,7 @@
 /**
  * `cadre start --owner` and `--owner-grant`: this server deliberately holds an owner key for its
- * party (`docs/architecture.md` → Owner Keys), kept in the owner key file (`owner-key-file.ts`),
- * never derived from the node identity.
+ * party (`docs/cadre/owner-keys.md` → What an owner key is), kept in the owner key file
+ * (`owner-key-file.ts`), never derived from the node identity.
  *
  * The key is loaded, or created, before the node is built, so a file that cannot be read fails the
  * start before any port is bound. Once the control database is up, `--owner` wires it by where it

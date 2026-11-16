@@ -1,7 +1,7 @@
 /**
  * cadre-host's second way into a cadre, end to end: the host starts a real `cadre-cli` child
  * with a cadre invitation the owner minted, and the child redeems it at a member of the cadre
- * (docs/cadre-host.md → Join by invitation).
+ * (docs/hosting/cadre-host.md → Join by invitation).
  *
  * Machines:
  *

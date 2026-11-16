@@ -1,792 +1,186 @@
 # @serfab/reference-app-web
 
-Svelte 5 + Vite SPA that runs a real **Sereus cadre node in the browser**. It is
-the browser counterpart to `@serfab/reference-app-rn` (which targets phones via
-React Native), and the validation surface for "the Sereus cadre/strand stack
-actually works in a browser."
+A Svelte 5 and Vite single-page app that runs a cadre node in a browser tab. It is the browser counterpart of the React Native and NativeScript reference apps, and the one that exercises signed app schemas, strand formation and the cadre-management screens in a browser.
 
-The app boots a `CadreNode` from `@serfab/cadre-core`:
+The reusable part, for a developer embedding a node in their own page, is documented in [Running a node in a browser](../../docs/platforms/browser.md). [The reference apps](../../docs/platforms/reference-apps.md) compares the three apps and describes the screens they share.
 
-```
-CadreNode → control network (CadreControl) → signed open chat strand (chat sApp)
-```
+## What it demonstrates
 
-- **Control network** — an Optimystic network named `control-<partyId>` carrying
-  the `CadreControl` schema (owner keys, cadre peers, strands).
-- **Owner self-genesis** — a solo node seeds itself as its own owner under an
-  owner key of its own, never its libp2p identity (see [The tab's owner key](#the-tabs-owner-key)).
-- **Signed chat strand** — an open strand whose chat sApp schema is **signed**;
-  `StrandInstanceManager` verifies the signature on start
-  (`assertSchemaSignature`), so the browser exercises the schema-signature gate
-  the RN reference currently skips.
-- **Strand database** — the chat `Participant`/`Message` tables backed by Quereus over
-  Optimystic. A solo node coordinates its own writes, so DML lands on the
-  strand's IndexedDB-backed storage with no peers needed.
+- cadre-core's edge node (`createEdgeNode`) over IndexedDB: `src/lib/web-edge-platform.ts`, `src/lib/strand-storage.ts`, `src/lib/node-local-slots.ts`.
+- A tab that founds a cadre on its own, seats its own owner key, and runs an open chat strand whose schema is signed. cadre-core verifies the signature when the strand starts.
+- Strand formation between two parties: one creates a formation invitation bound to a closed strand, the other redeems it.
+- Reachability through a circuit relay, with an upgrade to WebRTC.
+- The cadre-management screens: adding a device, listing and removing machines, owner keys and owner grants, joining another cadre.
+- Offline mode for the chat strand.
+- A diagnostics page over the node, libp2p, storage and the control database's authorization rules.
 
-Identity (Ed25519 peer key) and the start record (the party, and whether the tab
-founded or joined it) persist in IndexedDB across reloads.
+## Prerequisites
 
-It also drives the **consent/invitation strand-formation flow** (Phase 2): a tab
-can mint an `OpenInvitation` for the chat sApp (responder) or join via a pasted
-invitation (initiator), forming a **closed** strand keyed by a minted member key.
-The `CadreControl` authorization gates ("RBAC") — owner keys, formation
-invites/usage, strand membership type + member-key presence, and a live
-owner-gate probe — are observable on the Diagnostics page.
-
-> **Live convergence is covered.** Two-party **cross-cohort convergence** (a
-> message written by one party replicating to another through a shared closed
-> strand) is exercised end-to-end by the formation→convergence e2e tier, with an
-> in-process headless cadre **responder** as the dialable second party (the browser
-> is the initiator and needs no relay) — see
-> [Automated end-to-end tests](#automated-end-to-end-tests).
+- The repository installed and built: `yarn install` then `yarn build` at the root. The root `package.json` links `@optimystic/*` and `@quereus/quereus` to the sibling checkouts `../optimystic` and `../quereus`, which must be present and built.
+- A Chromium-based browser. Firefox and Safari are untested.
+- For the Playwright suite: `yarn workspace @serfab/reference-app-web test:e2e:install`, once, to install Chromium.
 
 ## Run
 
 ```bash
-yarn workspace @serfab/reference-app-web dev      # dev server on :5173
-yarn workspace @serfab/reference-app-web build    # static SPA bundle in dist/
+yarn workspace @serfab/reference-app-web dev      # development server on http://localhost:5173
+yarn workspace @serfab/reference-app-web build    # type-check, then a static bundle in dist/
 yarn workspace @serfab/reference-app-web preview  # serve the built bundle
 ```
 
-On first page load the app generates a fresh Ed25519 keypair and a party id,
-stores both in IndexedDB (in the `sereus-strand-control` database's `kv` store),
-and starts the cadre node. Reload preserves the peer ID and party ID. Each
-control/strand network gets its own IndexedDB database:
+On the first load the tab generates an Ed25519 identity and a party id, stores both in IndexedDB and starts the node. To check that it works:
 
-- `sereus-strand-control` — the key store (identity, owner key, joined-strand and strand-move
-  records) and the node-local records: the saved start (`start-options`), the per-party records
-  (`<record>.<partyId>`), the Messages page's queued messages (`chat-queued-messages`, see
-  [Messages in offline mode](#messages-in-offline-mode)) and, while the old cadre is being
-  removed, the dissolve marker (`dissolving-party`).
-- `sereus-strand-control-<encoded party id>` — one party's control network blocks.
-- `sereus-strand-sereus-web-chat` — the chat strand's blocks (participants/messages) and, in its
-  `kv` store, the transactions offline mode queued and has not yet sent.
+1. **Home** shows Status `running`, Control `connected` and Owner `enrolled`.
+2. On **Messages**, send a message. It appears in the list.
+3. Reload the page. Home shows the same Party ID and Peer ID, and the message is still listed.
 
-Delete those databases from DevTools → Application → Storage to reset identity
-and stored messages.
+To start again as a new node, clear the site's data in the browser (DevTools → Application → Storage). [Which database holds what](../../docs/platforms/browser.md#which-database-holds-what) lists the IndexedDB databases the app creates.
 
 ## Routes
 
-- `#/` — **Home** — node status, party id, peer id, control-network connection,
-  chat-strand status, owner state, relay (dialability) status, Restart, and
-  the **strand-formation panel**: create an invitation (responder) / join via a
-  pasted invitation (initiator), showing the resulting strand id + membership type.
-- `#/cadre` — **Cadre** — cadre membership: **Join my existing cadre** (see
-  [Joining an existing cadre](#joining-an-existing-cadre)), **Add a device or app** (see
-  [Adding a device or app](#adding-a-device-or-app)), **Devices and nodes** (see
-  [Devices and nodes](#devices-and-nodes)) and **Owner keys** (see [Owner keys](#owner-keys)).
-- `#/messages` — compose / list chat messages backed by the strand's
-  `App.Participant` / `App.Message` tables (Quereus SQL). The chat sApp is
-  append-only — there is no edit/delete (that belonged to the old demo app).
-- `#/log` — **Activity** — a CadreNode lifecycle event log
-  (`control:*`, `strand:*`, `seed:*`, owner genesis), newest first.
-- `#/diag` — diagnostics surface (see below).
+- `#/` **Home.** Node status, party id, peer id, control connection, chat-strand status, owner standing and relay state, a **Restart node** button, and the [strand formation](#strand-formation) panel.
+- `#/cadre` **Cadre.** Four cards, each described in [The reference apps](../../docs/platforms/reference-apps.md):
+  - **Join my existing cadre**: [Joining an existing cadre](../../docs/platforms/reference-apps.md#joining-an-existing-cadre)
+  - **Add a device or app**: [Adding a device or app](../../docs/platforms/reference-apps.md#adding-a-device-or-app)
+  - **Devices and nodes**: [Devices and nodes](../../docs/platforms/reference-apps.md#devices-and-nodes)
+  - **Owner keys**: [Owner keys](../../docs/platforms/reference-apps.md#owner-keys)
+- `#/messages` **Messages.** Send and list messages in the tab's chat strand, with an **Offline mode** checkbox and a mark on each message that is not yet delivered ([Messages not yet delivered](../../docs/platforms/reference-apps.md#messages-not-yet-delivered)). The list refreshes every 4 seconds.
+- `#/log` **Activity.** The last 50 node events (`control:*`, `strand:*`, `seed:*`, `cadre:removed`) and the app's own records of relay, owner, join and dissolve steps, newest first.
+- `#/diag` **Diagnostics.** See [Diagnostics](#diagnostics).
 
-## Storage bridge (`lib/strand-storage.ts`)
+Where the web app's cadre screens differ from the phone apps', [Differences between the apps](../../docs/platforms/reference-apps.md#differences-between-the-apps) says how.
 
-The tab runs `@serfab/cadre-core/edge-node`'s edge node over IndexedDB (`lib/web-edge-platform.ts`;
-[Architecture → The edge node](../../docs/architecture.md#the-edge-node)), the same runtime the
-phone kit's `createPhoneNode` runs over the secure store and rn-leveldb. cadre-core partitions data
-by storage scope key: the strand id for each strand, and `controlStorageScope(partyId)` —
-`control-<hex party id>` — for the control database. `IndexedDBRawStorage` wraps an
-**already-open** handle (the opener is async), while `EdgeNodeStorage.rawStorage` is synchronous,
-so the platform returns cadre-core's `lazyRawStorage` over `openStore(scope)`: a scope's database
-(`sereus-strand-<key>`) opens on its first use, nothing is opened ahead of a start or an
-`addStrand`, and a strand the control network lists gets storage like any other. One handle and
-one `IndexedDBRawStorage` per key, cached until the edge node's stop closes them (`closeStores`).
-A strand's offline journal (`openJournal`, `EdgeNodeStorage.offlineJournal`) is one
-`IndexedDBKVStore` over that same handle, cached and closed the same way
-([strands.md → On the edge node](../../docs/strands.md#on-the-edge-node)).
+## The chat strand
 
-### Two databases, not one
+The tab adds one open strand with the fixed id `sereus-web-chat` (`src/lib/chat-strand.ts`, `addChatStrand` in `src/lib/cadre-web.ts`). The id is constant so that its IndexedDB database, and so its messages, survive a reload. The strand is added with `founder: true` and no row in the control database, so it is local to the tab: a join to another cadre does not move it.
 
-The tab's **node-local** `kv` records stay in the database historically named
-`sereus-strand-control` (`NODE_LOCAL_STORE_KEY`): the tab's key store (`lib/node-local-slots.ts` →
-`nodeLocalKeyStore`: the Ed25519 identity under `peer-private-key`, the owner key under
-`owner-private-key`, and cadre-core's joined-strand and strand-move records under
-`keystore.<slot>`) and the edge node's node-local records (`nodeLocalKv`: the saved start, the
-dissolve marker, and each party's trusted-owner anchor, bootstrap peers, enrolled-machine count and
-strand network state under `<record>.<partyId>`, the keys `cadre-core/src/edge-node/node-local.ts`
-names). They cannot move into the party-scoped control database, because the party id that names it
-is one of the records read out of them. Each party's records are filed under its own id because a
-tab that joins another cadre switches party, and comes back to the one it founded when the join
-fails: one key per tab would have the joined party's first save overwrite the founded party's records.
+The schema is `CHAT_SCHEMA`; `test/chat-schema-drift.spec.ts` holds it equal to `schemas/chat-simple.qsql`. The app signs it at run time with a demonstration author key bundled in the source, which is not a real author identity. Two rules apply when changing it:
 
-**The saved start** (`kv` key `start-options`, the edge node's record) names the party and how the
-tab came to it (`origin: 'founded' | 'joined'`, the party left as `formerPartyId`). On load the store
-reads it and starts its options with the current relays (`lib/store.svelte.ts` → `start`); its
-`autoStart` is ignored, since a tab starts on load. A tab with none mints a party and starts it as
-`founded`, with the owner-key label `browser`; a join rewrites it once a member admitted the tab
-([Joining an existing cadre](#joining-an-existing-cadre)). A record that is present but one the
-edge node cannot use (it logs and drops it) fails the start with a clear message rather than
-founding a fresh party over it; clear the site's data to start over.
+- **Raise `CHAT_SCHEMA_VERSION` with every change.** The version is covered by the signature, and a strand refuses an app whose schema version is below the highest it has seen ([App schema versions across a strand's members](../../docs/strands/app-schema.md#app-schema-versions-across-a-strands-members)).
+- **A changed table may not open over stored data.** A build opens a database an earlier build left only when the change needs no rewrite of stored rows, such as adding a nullable column with no default. Otherwise adding the chat strand fails and Home's status reads `error`. Nothing migrates the data; clear the site's data.
 
-**Upgrade.** A tab from before the edge node has a `party-start` record and no `start-options`, so
-it founds a fresh party once; the old party's data and any `strand-move.*` records stay unread in
-IndexedDB. Its identity and owner key carry over, since they are under the same `kv` keys.
-Development builds only, no compatibility.
+## Strand formation
 
-The node-local database also holds the control **blocks** of tabs that ran before the
-block store became party-scoped. They are left in place, unread and undeleted: they
-belong to a party that was never recorded alongside them, which is the defect the scoping
-fixed (see the `NODE_LOCAL_STORE_KEY` comment in `lib/strand-storage.ts`).
+The Home panel runs cadre-core's formation calls between two parties ([Inviting and joining](../../docs/strands/formation.md)). The invitation text is moved by copy and paste.
 
-## Solo cadre (Phase 1)
+1. **Create invitation** (`createInvitation` in `src/lib/cadre-web.ts`). The tab calls `createOpenInvitation` for the chat sApp, then `foundStrand` with `type: 'c'`, a new member key and the invitation bound to the strand, and shows the text from `encodeInvitation`. It refuses unless the relay state is `reserved`, because the invitation carries the tab's addresses.
+2. **Form strand** (`joinViaInvitation`). The other party calls `decodeInvitation` and `formStrand`, then `addStrand` with the strand id and the member key the reply carried. If the first party's strand is still starting, `formStrand` fails with a retryable refusal and the invitation is not spent; press **Form strand** again.
 
-No control bootstrap, no listen addresses. The node self-seeds as its own
-owner and hosts a single signed chat strand with no peers. Send →
-list round-trips and the data survives reload (DML persists to the strand's
-IndexedDB database). This is the single-node analogue of the RN reference's
-current coverage, plus the schema-signature gate.
+The party that creates the invitation must be dialable, so in a demonstration between two tabs that tab needs a relay ([Environment variables](#environment-variables)). The joining tab only dials out and needs none.
 
-Owner genesis is **fail-soft and bounded** (the edge node's `runOwnerGenesis`, 60 s): the chat
-round-trip runs on the solo node and does not depend on owner, so a genesis that fails or does not
-settle is logged and shown as `failed` or `timed-out` on Home / Diagnostics rather than aborting
-startup.
+## Scripts
 
-### Messages in offline mode
+Run each as `yarn workspace @serfab/reference-app-web <script>`.
 
-The Messages page shows the same four things as the phone app ([reference-app-rn.md → Messages
-Not Yet Delivered](../../docs/reference-app-rn.md#messages-not-yet-delivered)), with the rules in
-`lib/send-marks.ts`:
+| Script | What it does |
+|---|---|
+| `dev` | Vite development server |
+| `build` | `typecheck`, `typecheck:e2e`, then `vite build` |
+| `preview` | serves `dist/` |
+| `typecheck` | `tsc --noEmit` over the app |
+| `typecheck:e2e` | `tsc --noEmit` over the Playwright specs (`tsconfig.e2e.json`) |
+| `check:svelte` | `svelte-check` |
+| `test` | the Vitest unit suite |
+| `dev:test` | Vitest in watch mode |
+| `test:e2e` | the Playwright suite |
+| `test:e2e:install` | installs Chromium for Playwright |
+| `test:e2e:ui` | Playwright's interactive runner |
 
-- **Offline mode**, a checkbox beside the strand status, calls the edge node's
-  `setStrandOfflineMode`: every strand takes it at once, and the saved start keeps it, so the next
-  load starts every strand in it. Off by default.
-- **The queue line** ("2 waiting to send · waiting for the other members · showing saved messages")
-  follows `strand:queue-state` and is absent while the queue is empty.
-- **Each message's mark** follows `strand:offline-status` by the transaction id its insert
-  returned: "Waiting to send" (with "May not go through" when another writer could make it fail),
-  "Sending", then "Not yet delivered" until another member holds it, or "Not sent" with the reason,
-  shown above the list once the refused row has gone. A waiting message that was never sent has
-  **Discard**; a queue that refuses because a send may already have landed is shown as "Already
-  being sent".
-- **After a reload** the page rebuilds the marks from `chat-queued-messages`, which names the
-  message each queued transaction stores until the queue settles it (`lib/queued-messages.ts`):
-  the queue reports transactions only by id.
+## Environment variables
 
-### The tab's owner key
+| Variable | Read | Meaning |
+|---|---|---|
+| `VITE_RELAY_ADDR` | when the bundle is built or the dev server starts | comma-separated relay multiaddrs the tab reserves on |
+| `VITE_STUN_URLS` | same | comma-separated `stun:` URLs that replace the default of one STUN server per relay host |
+| `FORMATION_E2E_DISABLED` | by `test:e2e` | any non-empty value skips the Playwright specs under `e2e/distributed/` |
+| `CI` | by `test:e2e` | two retries per test, and the suite starts its own preview server instead of reusing one |
 
-The tab keeps one owner key, apart from its identity, under the node-local `kv` key
-`owner-private-key` (the libp2p protobuf bytes of an Ed25519 private key, the identity's stored
-form, written strict where the browser supports it): the `cadre/owner` slot of the tab's key store
-(`nodeLocalKeyStore` in `lib/node-local-slots.ts`), which the edge node's owner step reads. One per
-tab, not per party: a key may own several cadres.
+When `VITE_RELAY_ADDR` is unset, the tab reads the browser setting `localStorage["relay-addr"]`, in the same format. `src/lib/relay-config.ts` reads the addresses at each start and at **Restart node**. With neither set the tab starts with no relay.
 
-- **Founded party, no `OwnerKey` row yet:** the slot's key (created now unless the slot
-  already holds one) becomes the founding row, labelled `browser`, and is wired. Home's
-  **Owner** row reads `enrolled`.
-- **Founded party that has owners:** the slot's key is wired only when it is a live owner
-  (`enrolled`); otherwise the tab is a `member` and no key is created, since a new one could
-  not be seated without another owner's signature.
-- **Joined party:** see [Joining an existing cadre](#joining-an-existing-cadre).
-- **`failed`, `timed-out`:** the owner step threw (logged to the console) or did not settle within
-  the edge node's bound; the node runs without an owner key wired.
-- **Export, import, owner grants** (`lib/cadre-web.ts` and `lib/store.svelte.ts`, pass-throughs
-  to the edge node, behind the Cadre page's [Owner keys](#owner-keys) card): `exportOwnerKey`
-  exports the tab's own key and names the key it exported, optionally passphrase-locked;
-  `importOwnerKey` stores an exported key in the slot (refused when the slot holds a different
-  one) and wires it when the party lists it, which the edge node reports as `running` with the
-  owner `enrolled` and the store follows. `redeemOwnerGrant` seats the slot's key, created when the
-  slot is empty, through an owner grant and wires it the same way. Minting, listing and withdrawing
-  grants (`createOwnerGrant`, `listOwnerGrants`, `withdrawOwnerGrant`), listing owner keys and
-  removing one (`listOwnerKeys`, `planOwnerKeyRemoval`, `removeOwner`) go through the edge node the
-  same way, in turn with its transitions.
-- **Exposure** is the peer key's: origin-scoped IndexedDB. Clearing the site's data loses the
-  owner key with the identity, and the tab is then no owner of the party it founded unless it
-  imports an export of the key or redeems a backup grant. Non-extractable WebCrypto keys were
-  weighed and declined, because a file or QR copy of the key needs an exportable key.
+```bash
+VITE_RELAY_ADDR=/dns4/relay.example.com/tcp/443/wss/p2p/<relay peer id> \
+  yarn workspace @serfab/reference-app-web dev
+```
 
-A build whose `CHAT_SCHEMA` changes an existing table can open a database an earlier build left in the browser only when the Optimystic table module can make the change without rewriting stored rows: adding a column that is nullable, with no `DEFAULT`, not generated and with no inline constraint, or dropping a column no key or index uses (Optimystic `packages/quereus-plugin-optimystic/README.md`). The schema apply's `ALTER TABLE` for any other change is refused, and adding the chat strand fails (Home's status reads `error`). Nothing migrates it under the current no-backwards-compatibility policy; clear the site's data to start over.
+```js
+// In the browser console, for a build with no VITE_RELAY_ADDR; then press Restart node.
+localStorage.setItem('relay-addr', '/ip4/127.0.0.1/tcp/4003/ws/p2p/<relay peer id>');
+```
 
-Raise `CHAT_SCHEMA_VERSION` (the config's `schemaVersion`, covered by its signature) with every change to `CHAT_SCHEMA`: a strand refuses an app whose number is below the highest it has seen.
+`ops/README.md` describes running a relay. [Transport and reachability](../../docs/platforms/browser.md#transport-and-reachability) explains what the reservation does.
 
-## Strand formation (consent / invitation flow)
+## Tests
 
-The Home **Strand formation** panel drives the cadre-core formation API
-end-to-end. The flow is between two parties; in a browser-only demo that means
-**two tabs** (a relayed second cadre), with the invitation moved out-of-band by
-copy/paste:
+**Unit** (`test`). Vitest under Node over `test/**/*.spec.ts`: the key store and node-local store over a hand-built IndexedDB handle, the storage bridge, and the chat schema's match with `schemas/chat-simple.qsql`. The run starts with the [stale-build guard](../../docs/contributing/gates.md#stale-build-guard), because the specs execute compiled output of cadre-core and the linked sibling packages.
 
-1. **Responder** clicks *Create invitation* → `foundStrand(…, { background: true })`
-   publishes the closed host strand the invitation is bound to and continues its
-   start in the background, `node.createOpenInvitation(sAppId)` mints a
-   `FormationInvite` token, and `encodeInvitation` base64url-encodes it. Copy the
-   encoded blob.
-2. **Initiator** pastes it and clicks *Form strand* → `decodeInvitation` →
-   `formStrand(invitation, { partyId })` runs the formation protocol against the
-   responder's cadre and returns `{ memberKey, invitePrivateKey, strandId }`. While
-   the responder's host strand is still starting, `formStrand` throws the retryable
-   `host-strand-unavailable` refusal and the token stays unspent; *Form strand*
-   again.
-3. The initiator then launches the resulting **closed** strand against the same
-   signed chat schema: `addStrand({ strandRow: { Id: strandId, MemberPrivateKey:
-   invitePrivateKey, Type: 'c' }, sAppConfig })`.
+**Playwright** (`test:e2e`). Chromium only, one worker. The suite builds the app and serves it on `http://127.0.0.1:4173`. The root `yarn test` does not run it.
 
-### Dialability (relay reservation)
+- `e2e/solo/` runs one tab alone: start and reload persistence, routing, the message round trip, the schema-signature check, the Diagnostics page, the formation panel's refusals, the owner-gate probe and an owner-key export.
+- `e2e/distributed/` runs one tab against a cadre node started inside the test process (`e2e/fixtures/`). The tab redeems a formation invitation and a message written on each side reaches the other; it joins the node's cadre with a machine invitation; and it joins as an owner with an owner grant. These specs skip themselves when the in-process node cannot start.
 
-A browser tab can't open a listener, so to be **dialable** for formation it must
-hold a circuit-relay-v2 **reservation** and advertise a `/p2p-circuit` address.
-The relay is deployment infrastructure (see `ops/`), so its multiaddr is resolved
-at runtime:
+Not covered by any spec: two tabs reaching each other through a relay, the Devices and nodes card, a tab's own removal, importing an owner key, redeeming an owner grant on the Owner keys card, and removing an owner key.
 
-- `VITE_RELAY_ADDR` (build-time, comma-separated), then
-- `localStorage["relay-addr"]` (per-browser, read only when the build sets none).
+## Diagnostics
 
-When a relay is configured the tab listens on `/webrtc` plus the bare `/p2p-circuit` entry
-cadre-core adds for a named relay, and the edge node's config names the relays through
-`network.relayAddrs` with `requireRelay: false` (`cadre-core/src/edge-node/config.ts`): the
-control node dials the relay, asks it for a reservation slot, and waits for the `/p2p-circuit`
-address to appear (Home "Relay" row → `reserved`), and each strand node gets a supervised
-reservation of its own, so the tab's strand nodes publish a circuit address too. A first attempt
-that lands nothing is logged and retried in the background rather than failing the start, so a
-tab still boots solo when its relay is down. The **supervisor** re-drives the reservation whenever
-it is later lost, on a backoff that starts at 2 s and doubles up to 60 s. The dial, the retries,
-and the status all live in cadre-core (`relay-reservation.ts`); this app only supplies the
-addresses (`lib/web-edge-platform.ts`) and renders the result.
+- **`#/diag`** refreshes every 2 seconds while the tab is visible. Its sections are Cadre, Control authorization, Identity, Connectivity, Transports, FRET, Storage, Crypto sanity and Recent errors.
+- **Control authorization** shows the control database's owner and validation key counts, its `FormationInvite` and `FormationUsage` rows, and each `Strand` row's type and whether it has a member key. **Verify owner gate** attempts a `Strand` insert signed by a key that is not an owner, with no formation usage behind it, and reports whether the control schema rejected it.
+- **Transports** should list four entries: WebSockets, circuit relay and two WebRTC transports. A TCP entry means a Node transport was instantiated in the browser.
+- **Connectivity** lists each connection with its remote address and direction, and counts relayed and direct paths.
+- **Home → Relay** reads `none`, `dialing`, `reserved`, `retrying` or `error`, refreshed every 4 seconds.
+- **`window.__cadre`** exists while the node runs. It exposes read-only getters (party id, the running start options, relay state, owner standing) and the formation and formed-strand calls the Playwright specs use; `exposeDebugHook` in `src/lib/cadre-web.ts` lists them.
 
-Each relay is also the tab's **STUN** server, for upgrading a relayed connection to a
-direct WebRTC one: cadre-core's `resolveStunServers` turns each relay address into
-`stun:<relay host>:3478`. `VITE_STUN_URLS` (comma-separated `stun:` URLs) replaces
-that, for a relay whose STUN is published elsewhere. See `ops/docs/ice-servers.md`.
+## Troubleshooting
 
-The status is **recomputed on every read** from the node's live `/p2p-circuit`
-addresses, so a reservation lost after startup (relay restarted, connection
-dropped) stops reporting `reserved` and makes *Create invitation* refuse, rather
-than minting an invitation carrying dead addresses. While the supervisor is
-working the badge reads `retrying`, and it returns to `reserved` on its own once
-the relay is back — no page reload. A resting `error` now means nothing is going
-to try again (no node, or the node was stopped). The Home badge refreshes on the
-4 s poll; `createInvitation` reads it at the decision point.
+- **Create invitation says the tab is not dialable.** No relay reservation is held. Set a relay address, press **Restart node**, and wait for Home → Relay to read `reserved`.
+- **Relay stays at `retrying`.** The relay cannot be reached or refused the reservation; the reason is shown beside the state and on Activity. The node keeps trying. `error` means nothing is trying, because no node is running or it was stopped.
+- **A relay or bootstrap address is never dialled from a deployed page.** A page served over HTTPS can open only `wss://` connections to other hosts.
+- **The start fails with "The saved start … cannot be read".** The `start-options` record exists and cannot be parsed. The app will not found a new party over it; clear the site's data.
+- **Home's status is `error` after a schema change.** See [The chat strand](#the-chat-strand).
+- **Removing the cadre the tab left reports that a database is open in another tab.** Another tab of this origin still runs that party (`StoreDeleteBlockedError`). Close it; the browser then completes the deletion.
+- **`check:svelte` reports a `PrivateKey` type mismatch in `src/lib/cadre-web.ts`.** Two copies of `@libp2p/interface` are resolved. (ticket `reference-app-web-libp2p-interface-dedup`)
+- **`test` stops before running any spec.** The stale-build guard found a `dist` older than its `src`. Rebuild the package it names.
 
-The reservation is **requested explicitly**, not left to libp2p's relay discovery.
-Discovery only nominates a peer it has learned the relay protocol from over
-identify, and a cadre node's identify is network-namespaced while the relay in
-`ops/` runs the stock one — so the tab would never learn that the relay is a
-relay. Reserving needs no identify, and the tab was handed the relay's address,
-so `relay-reservation.ts` asks for the slot directly.
+## Limits
 
-With **no** relay configured the tab stays in the Phase-1 solo posture
-(`listenAddrs: []`); *Create invitation* then surfaces a clear "not dialable —
-configure a relay" error instead of failing silently. (Joining still works if the
-pasted invitation points at a dialable responder.)
+- **Messages shows only the tab's own chat strand.** A strand formed through the Home panel is not shown there; it can be read and written only through `window.__cadre`.
+- **Formed strands are not reopened after a reload.** cadre-core keeps the record of each strand joined from another party, but the app registers no handler that opens them again.
+- **Two tabs of one origin run the same node identity.** Nothing stops a second tab from starting the party the first runs ([Limits and accepted tradeoffs](../../docs/platforms/browser.md#limits-and-accepted-tradeoffs)).
+- **Lists are polled.** Messages and Home refresh on timers, not on change notifications.
+- **No provider rental.** The Cadre page cannot rent an always-on node. (ticket `feat-reference-app-web-rents-a-provider-node`)
+- **`allowPrivateDial` is on.** The app dials loopback, private and plain `ws://` addresses, which a development setup needs.
 
-### Authorization gates ("RBAC")
-
-There is no app-level role engine — "RBAC" here is the authorization model the
-`CadreControl` schema constraints enforce, plus strand membership:
-
-- `OwnerKey` / `ValidationKey` inserts are owner-signed (genesis bootstraps
-  the first).
-- `Strand` inserts are authorized by an owner signature **or** a valid
-  `FormationUsage` row (indirect consent via a consumed `FormationInvite`).
-- Closed strands (`Type: 'c'`) carry a member private key; open strands don't.
-
-These gates are observable on Diagnostics (see below). The "Verify owner gate"
-button attempts an *unauthorized* `Strand` insert (a non-enrolled key + bogus
-signature, no consuming `FormationUsage`); the `CadreControl` constraint rejects it
-at commit, demonstrating the gate is live.
-
-> Live two-party cross-cohort convergence over a formed closed strand is covered by
-> the formation→convergence e2e tier — see
-> [Automated end-to-end tests](#automated-end-to-end-tests).
-
-## Adding a device or app
-
-The Cadre page's **Add a device or app** card is the owner side of
-[handing an invitation from app to app](../../docs/architecture.md#handing-an-invitation-from-app-to-app),
-with the phone app's flows and wording (`lib/add-device.svelte.ts`, `AddDevice.svelte`):
-
-- **Paste request** — paste the join request the other app shows under *Join my existing
-  cadre* and choose *Use request*. The tab refuses its own request and an app already in the
-  cadre, then asks for approval: the app's name (what it calls itself, unverified) and its code
-  (the short peer id, to compare with the one the other app shows). *Add* mints an invitation
-  only that app can redeem (`createCadreInvitation({ peerId })`). Paste only: no camera scanning.
-- **Copy invitation** — an open, single-use invitation that whoever is given its text first
-  can redeem.
-
-Either invitation admits the app as a machine and a member, for 24 hours, and grants no
-ownership. An app that is to be an owner too takes an owner grant instead, made under
-[Owner keys](#owner-keys) → *Add an owner key*.
-
-The minted invitation shows as a QR code (`lib/QrCode.svelte`) and as text with a copy
-button, with its expiry and, when no other machine of the cadre has an address a device
-could dial, a warning that the new app can join only while this tab is open. It stays on
-the card, in memory only, until *Done*, including across visits to other pages.
-**Outstanding invitations** lists the live open ones, latest expiry first, each with *Withdraw*.
-One made for a single app is listed under [Devices and nodes](#devices-and-nodes) instead, as
-a device invited and not joined yet, so each invitation shows once.
-
-Only an owner can mint: a tab that is not one, or whose owner genesis failed, sees one line
-instead. The invitation must carry an address: with no relay reservation and no other
-machine of the cadre holding one, *Make invitation* fails and says the tab has no relay
-address. With a relay and no other machine (the usual solo tab) it succeeds with the
-open-tab warning.
-
-## Devices and nodes
-
-The Cadre page's **Devices and nodes** card lists every machine of this cadre and lets an
-owner remove one: an uninstalled app, a lost or stolen phone, an always-on node whose machine
-died ([Removing a machine](../../docs/architecture.md#removing-a-machine)). It has the phone
-app's list, confirmation and wording ([reference-app-rn.md → Devices and Nodes](../../docs/reference-app-rn.md#devices-and-nodes)),
-with "this tab" for "this device" (`lib/machines.svelte.ts`, `Machines.svelte`).
-
-- **The list** has one row per machine `CadreNode.listMachines` reports: what it is, from the
-  node profile it published ("App", "Always-on node", or "Machine" until it publishes one), with
-  "(this tab)" on the tab's own row; "Last seen" from its last self-signed record (a running
-  machine re-stamps it every 7.5 minutes); and "Key", the first 8 characters of its identity
-  key, in the fingerprint form cadre-host uses. A row that no longer passes this tab's
-  membership check says **Not trusted here**. Owner keys are not machines and are not listed
-  here.
-- **Invited, not joined yet**: each live invitation made for one app whose peer has not
-  joined, with its code, owner or member, and expiry, and *Withdraw* (asks once).
-- **When it is read**: when the node reaches `running` and its owner step settles, after each
-  removal or withdrawal here, after *Add a device or app* makes an invitation, and on
-  *Refresh*; it is not polled. A read that finishes after the node was replaced is dropped.
-- **Key replacements waiting**: below the list, while `CadreNode.listPendingPartyKeyRotations`
-  reports any, the phone app's lines, by workspace id, with "this tab" for "this device" and the
-  key in `Copyable` ([reference-app-rn.md → Devices and Nodes](../../docs/reference-app-rn.md#devices-and-nodes)).
-
-  *When it is read.* With the list and again on `strand:party-key-rotation-blocked` and
-  `strand:party-key-rotated`; a read that fails is logged and keeps the last list.
-
-  *Finishing another party's.* Paste the host's fresh invitation into *Form strand* on Home, on
-  the tab or device the line says ([Strand formation](#strand-formation-consent--invitation-flow)):
-  the party redeems it under the new key, and the replacement then completes on its own.
-- **Who can remove.** On an owner tab every row has *Remove* except the tab's own, under which
-  "A tab does not remove itself from its cadre: to remove this tab, use another owner device."
-  (`self`): leaving a cadre is the tab's own flow, and another machine removes it, which the tab
-  then learns ([When this tab is removed](#when-this-tab-is-removed)).
-  A member sees the list with one line saying only an owner can remove machines.
-- **The confirmation** reads `planMachineRemoval` and opens "Remove this ‹app, always-on node or
-  machine›?" in the card, with the machine's key, what happens (it leaves the cadre, the
-  invitations it could join again with are withdrawn, and this cadre's membership key in each
-  private workspace the cadre manages is replaced), the workspaces this removal does not finish
-  from this tab, by id (`plan.strands`), with how another party's is finished, and what removal
-  does not do. *Remove* runs `removeMachine`. One another owner removed meanwhile says "Already
-  removed". The confirmation stays open across a visit to another page; a join, or this tab's own
-  removal, closes it.
-- **A lost phone's owner key stays.** Removing a machine leaves every owner key live, so the
-  confirmation also says "If this was a lost or stolen phone that held an owner key, remove that
-  key too in Owner keys; otherwise whoever has the phone can still act as an owner.", with
-  *Go to Owner keys*, which closes it and scrolls to [Owner keys](#owner-keys).
-
-### When this tab is removed
-
-When an owner removes this tab from its cadre while the tab runs, the node reports it
-(`cadre:removed`) and the edge node acts on it, as on the phone
-([cadre-rn README → Removed from the cadre](../cadre-rn/README.md#removed-from-the-cadre)):
-
-1. **In turn.** A start, stop, join, dissolve or strand-move retry in progress finishes first:
-   the edge node queues the removal behind them.
-2. **The node stops**, and the saved start stops naming the party before anything is deleted.
-   It becomes a start of `formerPartyId`, the party the tab founded and left, or is deleted when
-   there is none. The tab ignores the record's `autoStart`, so the next load starts that party,
-   or founds a fresh one, as the card's button does.
-3. **The party's storage is deleted** with the dissolve's marked removal
-   ([Removing the cadre the tab left](#removing-the-cadre-the-tab-left)), after finishing any
-   removal a marker already names.
-4. **Status `removed`.** The store maps the edge node's `removed` to its own: the Cadre page
-   shows "This tab was removed from cadre ‹party id› by an owner (‹its key's fingerprint›). Its
-   copy of that cadre has been deleted from this browser.", with **Go back to your own cadre**
-   when the tab founded one, or **Start a new cadre**, and a line saying that joining another
-   cadre starts from the tab's own, since a join switches a running node. *Restart node* on Home
-   does the same. The card stays until a start reaches `running`. The join card's steps and an
-   open removal confirmation are cleared.
-
-It is best-effort, as the report is: a tab removed while it was closed is not told after the
-next load, and runs that cadre while its machines refuse it (the `NOTE:` at `watchRemoval` in
-`cadre-core/src/edge-node/edge-node.ts`). A failure acting on the report is logged by the edge
-node and reaches the store as `error`.
-
-## Owner keys
-
-The Cadre page's **Owner keys** card lists this cadre's owner keys; on an owner tab it makes owner
-grants (one for another device or app, or a backup), lists and withdraws the outstanding ones,
-exports this tab's key and removes a key; on any tab it redeems an owner grant and imports a key
-([architecture.md → Owner Keys](../../docs/architecture.md#owner-keys), [Owner grants](../../docs/architecture.md#owner-grants)).
-It has the phone app's list, forms, prompt and wording ([reference-app-rn.md → Owner Keys](../../docs/reference-app-rn.md#owner-keys)),
-with "this tab" for "this device", Download for Share, and paste only for Redeem and Import, since
-a tab has no scanner (`lib/owner-keys.svelte.ts`, `lib/owner-grants.ts`, `OwnerKeys.svelte`,
-`OwnerGrantForm.svelte`, `OwnerKeyExportForm.svelte`).
-
-- **The list** has one row per live owner key `listOwnerKeys` reports: the name it was added
-  under ("browser" for the key the tab founded its cadre with), or "Unnamed key"; its fingerprint
-  (first 8 characters), with "This tab" on the key this tab signs with; and **Not trusted here**
-  when this tab's trusted-owner anchor lacks it. It is read, with the owner grants, when the node
-  reaches `running` and its owner step settles, after each action here, and on *Refresh*; a read
-  that finishes after the node was replaced is dropped. A member sees the list, one line saying
-  only an owner can add or remove owner keys, Redeem and Import.
-- **Add an owner key** (owner only): a name (at most 64 characters), then `createOwnerGrant` with
-  the default 15 minutes and one use. The grant is shown once: "Whoever uses this first becomes an
-  owner of this cadre. Show or send it only to your own device or app.", "Valid until ‹time›,
-  once." and where the other device or app takes it, a line on its reach when it is not
-  `anywhere` (only on the home network, or only while this tab is open), the QR code and the text
-  with a copy button. Whoever redeems it becomes an owner with a key of its own, listed under that
-  name.
-- **Make a backup** (owner only): the same form, the name defaulting to "Backup", then
-  `createOwnerGrant({ expiresInMs: null })`: an owner grant with no expiry, shown once under "Whoever
-  holds this can become an owner of this cadre until it is used or withdrawn. Keep it like a key:
-  somewhere safe and offline. This tab does not keep a copy." and "It works only while one of this
-  cadre's machines can be reached at an address it carries. To keep a copy that works with no
-  network, use Export this tab's key.", with *Download*, which saves it as
-  `sereus-owner-grant-‹name›.txt` (the name kept to letters, digits, `-` and `_`, else the grant's
-  key fingerprint).
-- **A grant needs an address.** It carries this cadre's machines' addresses, so a tab with no
-  relay reservation in a cadre with no other dialable machine (a solo tab without a relay) cannot
-  make one; the form shows cadre-core's refusal.
-- **Outstanding owner grants** (owner only) lists the live ones, backups first: the name, "Never
-  expires" or its expiry, and the uses left, each with *Withdraw*, which asks once ("Nobody can
-  become an owner with it afterwards. Owner keys it already added stay owners; remove those
-  above.") and runs `withdrawOwnerGrant`.
-- **Redeem an owner grant** (every tab) takes pasted grant text and runs the store's
-  `redeemOwnerGrant`. The outcomes are the phone's: "Now an owner"; "Already an owner" (the grant
-  was not used); and "Owner grant accepted" when the key's row has not reached this tab yet. Each
-  refusal is worded (a grant spent, for another cadre, its issuer unknown, no machine reachable,
-  this tab alone). A wired key changes the owner state with the node still `running`, so Add a
-  device or app and Devices and nodes read their standing again.
-- **Export this tab's key** (owner, when the list marks a key "This tab"): a name, defaulting to
-  that key's, and **Protect with a passphrase**, on by default, with the passphrase typed twice;
-  the button stays disabled and says why while the passphrase is empty or the two differ. Then
-  `exportOwnerKey`, which exports the key in the tab's owner slot and names it, and the export is
-  titled with that key. The slot's key is the only key the tab signs with, so the export is the
-  key the list marks.
-- **Shown once.** An export or a grant stays on the card until *Done*, including across visits to
-  other pages. An export shows "Anyone who has this can control your cadre. Keep it somewhere safe
-  and offline. This tab does not keep a copy.", the QR code, the text with a copy button, and
-  *Download*, which saves it as `sereus-owner-key-‹fingerprint›.txt`. Both downloads go through a
-  `Blob` URL revoked a second after the click; nothing of either is written to `localStorage` or
-  IndexedDB. A join, its rollback or a restart replaces the node, and the card's next read forgets
-  what it shows with the rest of the card.
-- **Keep a copy: this tab's own key is site data.** The tab's owner key lives in its origin's
-  IndexedDB ([The tab's owner key](#the-tabs-owner-key)), so clearing the site's data loses it
-  with the tab's identity. A backup grant, or an export of this tab's key, kept outside the browser
-  is what makes the tab an owner again after that.
-- **Import an owner key** takes pasted export text; a locked one
-  (`sereus-owner-key-locked:1.…`) shows a passphrase field. The outcomes are the phone's: an owner
-  of this cadre ("This tab is now an owner of this cadre, with ‹name› (‹fingerprint›)."); an owner
-  this tab takes from its next start, when the node already signs with another key; and "This
-  key is not an owner of this cadre. An owner can add it.", the key kept in the slot. The last two
-  both come back `wired: false`, and the card reads the owner keys again to tell them apart. A tab
-  already holding a different key, a wrong passphrase and text that is not an owner key are
-  refused by name. A wired key changes the owner state as a redemption's does.
-- **Remove** (owner only, on every row but this tab's own, under which "A tab cannot remove its
-  own owner key; use another owner key."): `planOwnerKeyRemoval`, then "Remove owner key
-  ‹name› (‹fingerprint›)?" in the card, with the owner grants the key made, which stop working
-  with it (`Backup "Paper" stops working.`), one **Keep** box per device or owner key the removed
-  key added (checked by default; a device named as Devices and nodes names it), the line about
-  this tab's own key when the removed key added it (`ownDependency`), and the `last-owner`
-  refusal ("It cannot be removed: it is the only owner key of this cadre.") with only *Close*.
-  *Remove* runs `removeOwner(key, { revouch })` with the kept rows, then both cards re-read. A
-  removal that keeps anything while no other machine is reachable, this tab's own machine row
-  included, is refused (`alone`) with a line asking to connect first, or to remove a lost only
-  other machine under Devices and nodes.
-
-**Uses.** A lost or stolen phone that held an owner key: remove its machine under Devices and
-nodes, then its key here. A backup to keep offline: make a backup, then download or print the QR
-code; a new browser or phone joins the cadre with it as an owner. Another device or app of yours
-that should be an owner: *Add an owner key*, then redeem the grant there, or join with it.
-
-## Joining an existing cadre
-
-The Cadre page's **Join my existing cadre** card is the joining side of
-[handing an invitation from app to app](../../docs/architecture.md#handing-an-invitation-from-app-to-app):
-a tab that founded a cadre of its own on first load joins the user's main cadre, with the
-phone app's flow and wording (`lib/join-cadre.svelte.ts`, `lib/join-flow.ts`,
-`JoinCadre.svelte`). The join is the edge node's `joinCadre` ([An app joins an existing
-cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre)), called by the store once
-`lib/web-join.ts` has decoded the pasted text: an owner grant, or an invitation found to be this
-tab's.
-
-- **This tab's request** — the join request (`encodeCadreJoinRequest`, app name "Sereus web
-  reference") as a QR code and copyable text, with the tab's code (the short peer id) to
-  compare with what the owner's app shows. Paste it in that app under *Add a device or app*
-  → *Paste request*, or ask it for an open invitation.
-- **Join** — paste the response, open invitation or owner grant and choose *Join*. An owner
-  grant, made in the app that holds the cadre under Owner keys → *Add an owner key*, makes the
-  tab an owner too (the joining step says so). A response made for another app's request is
-  refused before anything stops. A credential for the party the tab already runs is redeemed in
-  place, nothing switched or rolled back. Otherwise its one node moves: the founded party's strands, pending joins and invitations are exported and
-  kept as a move record in the tab's key store (`cadre-core/src/edge-node/strand-move.ts`; a
-  `keystore.cadre/strand-move/…` `kv` key), the node stops and starts in the credential's
-  party (Home's status reads `joining`, and the "Add a device or app" and "Devices and nodes"
-  cards forget what belongs to the party left), and the credential is redeemed there, waiting
-  for a member to answer. The card shows each step:
-  joining (with *Cancel* while it waits), admitted, moving strands, removing the old cadre,
-  then done with the standing and the moved count. A join refused, expired or cancelled puts
-  the tab back in the party it left, unchanged, and says why.
-- **The move needs an owner grant.** When the founded party holds anything to move, a join by
-  invitation is refused up front (`StrandsNeedOwnerJoinError`): every row a move seats is
-  owner-signed, and an invitation admits a member. The card says to make an owner grant in the
-  app that holds the cadre and paste it instead; the tab then joins as an owner, its slot's key
-  (created when empty) seated by the grant. The tab's own chat strand has no control row, so a fresh
-  tab's export is empty and an invitation is fine; the chat strand keeps working in the joined
-  party as the same local strand.
-- **After admission** the saved start names the joined party (`origin: 'joined'`, the
-  founded party as `formerPartyId`), and the tab's owner slot's key is wired for signing only
-  when the party lists it as an owner (`wireJoinedOwnerKey`; after an owner grant it is asked
-  again every 2 s within the edge node's 60 s bound while the row arrives). Home's
-  **Owner** row reads `enrolled` or `member`. A joined party never runs owner genesis, so a
-  reload cannot seat the tab's key as a founding `OwnerKey` row of a cadre it merely joined.
-- **Every start adopts** the move records naming its party, once the tab's key is wired as
-  an owner there, before it reports `running`: a tab closed after admission finishes the
-  move on its next load, and a member whose owner grant arrived late finishes it at the
-  next start (*Restart node* on Home). A move the join left incomplete shows *Retry moving*,
-  the edge node's `finishStrandMove`: it asks the party again whether the tab's key is an owner
-  and adopts on the running node; a refusal (`StrandMoveNotOwnerError`) or a failure shows as
-  the stalled step. Moved strands reach the party as rows, party keys and invitations, and
-  cadre-core records them in the tab's key store; the tab does not open them (it has no
-  `strand:discovered` handler).
-- **The founded party stays in IndexedDB** under its own names (its control block database,
-  its `<record>.<partyId>` records, its joined-strand records) until the tab removes it, which
-  the card does on its own once the move has finished ([Removing the cadre the tab left](#removing-the-cadre-the-tab-left)).
-- **Two same-origin tabs** share the node-local database and the saved start. A join in
-  one tab switches the other only on its next load; until then the other keeps running the
-  left party against that party's stores. Unsupported, on the same footing as the two-tab
-  note in `lib/node-local-slots.ts`.
-
-### Removing the cadre the tab left
-
-Once a join's move has finished, the card goes on to remove the party the tab founded and
-left (B), so the tab runs only as a member of the cadre it joined (A): "Removing this tab's
-old cadre from this browser…", then done. It is the edge node's `dissolveFormerParty`
-([Dissolving the party it left](../../docs/architecture.md#dissolving-the-party-it-left)),
-called by the store's `dissolveFormerParty`:
-
-1. **Refused before anything stops** unless the running start names a `formerPartyId` other
-   than its own party, and while B's move record exists (`StrandMovePendingError`): the card
-   shows the strands still waiting, with *Retry moving*.
-2. A's holdings are read on the running node (`readStrandHoldings`).
-3. The node stops and a node is started for B alone (no strand launched, no relay, no owner
-   step, nothing saved) to export B's strands and list its machines.
-4. **Refused, nothing deleted,** when B holds a strand or open pending join A does not, or a
-   machine other than this tab (`FormerPartyNotEmptyError`). Other machines: "kept in this
-   browser; nothing was lost". Only strands or joins: the card asks "Delete them with the old
-   cadre?", and *Delete them* removes again with those ids discarded.
-5. **Removed:** B's control block database (the platform's `destroyScope`: `deleteStore` in
-   `lib/strand-storage.ts`, which closes this page's handle first), B's `<record>.<B>` records,
-   its trusted-owner anchor, its joined-strand records and its move record; the saved start
-   drops `formerPartyId`. Strand block databases stay: a moved strand's database is A's copy too.
-6. The edge node starts A again, as after a load, whatever happened above, and the store
-   attaches to it.
-
-**A marker makes the removal resumable.** `kv` `dissolving-party` = `{ v: 1, partyId: B }` is
-written before the first deletion and deleted after the saved start stops naming B. Every
-start reads it first: a marker naming another party finishes the deletions without checking
-again and drops that party as `formerPartyId`; one naming the party being started was not
-written by a removal and is deleted with a warning. A tab closed partway finishes on its next
-load. The same marked removal deletes the storage of a party an owner removed this tab from,
-with no check, once its node has stopped and the start record no longer names it
-([When this tab is removed](#when-this-tab-is-removed)).
-
-**Another tab of this site still running B** keeps B's database open, and the browser fires
-`blocked` on the delete and waits for that tab. `deleteStore` does not wait: the removal stops
-with the marker kept (the next start reports it as the edge node's `unfinishedRemoval`), and the
-card says "Close this site's other tabs to finish removing the old cadre". The browser deletes the database once that tab closes, and the next start (a
-reload, or *Restart node* on Home) finishes the rest. A second delete of the same database
-from this page while the first still waits is refused at once, since it would wait behind
-the first.
-
-**On load**, a running start that still names B shows "This tab's old cadre is still in this
-browser" with *Remove it now* and *Later* (or the waiting strands, when a move is
-unfinished); a removal a start could not finish shows what stopped it. Each is shown once per
-start of the node, not on every visit to the page. An old cadre kept on purpose is shown
-again after each reload.
-
-## Diagnostics (`#/diag`)
-
-Polls every two seconds while the tab is visible. Surfaces:
-
-- **Cadre** — party id, control-network connection + control peer id, CadrePeer
-  membership count, owner self-genesis outcome, and the chat strand's status
-  / connected peers / latency hint / sApp id / error.
-- **Control authorization (RBAC)** — the `CadreControl` gates made observable:
-  owner/validation key counts, the `FormationInvite` / `FormationUsage` audit
-  rows, each control-DB `Strand`'s membership type (open/closed) + member-key
-  presence, the relay-dialability posture, and a "Verify owner gate" button
-  that probes an unauthorized control write (expected: rejected).
-- **Identity** — peer ID, persistence badge, first-seen timestamp and age.
-- **Connectivity** — control-node status, listen multiaddrs (empty in a browser
-  peer), per-connection peer ID / remote multiaddr / direction / open protocols,
-  and the relayed-vs-direct path summary.
-- **Transports** — names of registered libp2p transports. The healthy browser
-  bundle is **four** entries: WebSockets, circuit-relay, and the two WebRTC
-  transports. **No TCP transport should appear** — cadre-core imports
-  `@optimystic/db-p2p`'s main entry (which statically imports `@libp2p/tcp`),
-  but the explicit transports array means `tcp()` is never instantiated, so it
-  must not leak into the runtime list. Its presence indicates a Node-only
-  transport leaked into the browser bundle.
-- **FRET** — known peer count, network size estimate, churn, partition,
-  Arachnode ring membership (on the control node).
-- **Storage** — `IndexedDBRawStorage` (the control network's), quota / usage,
-  raw approximate bytes, per-object-store row counts for the control database.
-- **Crypto sanity** — host-API checks the libp2p stack relies on.
-- **Recent errors** — a ten-deep ring buffer fed by the start/stop catch blocks,
-  per-connection `close` events, and global `error` / `unhandledrejection`
-  events.
-
-## Vite config notes
-
-Browsers natively provide `crypto.subtle`, `EventTarget`, `ReadableStream`,
-`structuredClone`, `Promise.withResolvers`, `AbortSignal.throwIfAborted`, and
-`TextEncoder`/`Decoder`, so the polyfill surface is much smaller than RN.
-
-`vite.config.ts` aliases only the Node built-ins that transitive libp2p deps
-reach for — `os`, `net`, `tls` → empty shim; `stream` → `readable-stream`;
-`buffer` → npm `buffer`. cadre-core pulls in `@optimystic/db-p2p`'s main entry,
-which statically imports `@libp2p/tcp`; the existing `net`/`os`/`tls` aliases
-already cover its Node built-ins, and `tcp()` is never called (the app supplies
-an explicit transports array), so nothing TCP-related runs. **`node:crypto` /
-`crypto` are deliberately not aliased**: anything reaching for them in a browser
-bundle is a real bug we want surfaced. (cadre-core's push notifiers formerly
-imported `node:crypto`; they now live behind the Node-only
-`@serfab/cadre-core/push-node` subpath, so a production `vite build` externalizes
-no `node:crypto` from cadre-core.)
-
-`src/polyfills.ts` handles the two residual gaps even modern browsers don't
-cover:
-
-- `globalThis.Buffer` — wired to the npm `buffer` package.
-- `setTimeout` / `setInterval` return values with no-op `.ref()` / `.unref()`.
-
-If you discover another missing API, add it to `polyfills.ts` with a comment
-explaining which package needs it — do not introduce a `crypto` shim.
-
-## Browser support
-
-- **Chromium / Chrome**: primary development target.
-- **Firefox**: should work — relies only on standard APIs (WebSocket, IndexedDB,
-  WebCrypto, `crypto.subtle`). Smoke-check before relying on it.
-- **Safari**: untested. `@optimystic/db-p2p-storage-web` targets Safari 14+.
-  Smoke-check before relying on it.
-
-If anything fails in Firefox / Safari, capture the console error and file a fix
-ticket rather than papering it over with a shim — the same applies as for
-`crypto`.
-
-## Architecture
+## Layout
 
 ```
 src/
-  App.svelte             # nav + hash route switcher (Home, Cadre, Messages, Activity, Diagnostics)
-  Home.svelte            # node status + party/peer/control/strand/relay state + strand-formation panel
-  Cadre.svelte           # /cadre — cadre membership page, and the card after an owner removed this tab
-  JoinCadre.svelte       # /cadre's "Join my existing cadre" card
-  AddDevice.svelte       # /cadre's "Add a device or app" card
-  Machines.svelte        # /cadre's "Devices and nodes" card
-  OwnerKeys.svelte       # /cadre's "Owner keys" card
-  OwnerGrantForm.svelte  # the Owner keys card's form for Add an owner key and Make a backup
-  OwnerKeyExportForm.svelte # the Owner keys card's export form
-  Messages.svelte        # /messages — chat strand send / list
-  Activity.svelte        # /log — CadreNode lifecycle event log
-  Diagnostics.svelte     # /diag — cadre + libp2p diagnostic surface
-  main.ts                # mount + polyfill bootstrap
-  polyfills.ts           # Buffer global + timer .ref/.unref shim
-  main.css               # global styles
+  main.ts, polyfills.ts     entry; Buffer global and timer handles
+  App.svelte                navigation and the hash router's switch
+  Home.svelte               node status and the strand formation panel
+  Cadre.svelte              the Cadre page; JoinCadre, AddDevice, Machines, OwnerKeys are its cards
+  Messages.svelte           chat strand: send, list, offline mode
+  Activity.svelte           event log
+  Diagnostics.svelte        diagnostics page
   lib/
-    cadre-web.ts             # the tab's edge node, built once, and the tab's surface over it: diagnostics getters, chat strand, formation, cadre invitations, owner-key and owner-grant pass-throughs, debug hook
-    web-edge-platform.ts     # the edge node's platform: key store, per-scope IndexedDB storage, transports, listen addresses
-    web-join.ts              # this tab's join request, and the check of a pasted invitation or owner grant
-    node-local-slots.ts      # the key store and the node-local store, over the node-local database's kv store
-    strand-storage.ts        # per-scope IndexedDB IRawStorage, opened on first use; deleting a scope
-    chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
-    store.svelte.ts          # Svelte 5 runes store: follows the edge node's status, attaches the page layer to each node, runs its actions; CadreNode event log
-    network.svelte.ts        # strand-formation panel state (create / join invitation)
-    add-device.svelte.ts     # "Add a device or app" state: request, approval, mint, list and withdraw open ones
-    machines.svelte.ts       # "Devices and nodes" state: the cadre's machines, the devices invited, removing one
-    owner-keys.svelte.ts     # "Owner keys" state: the cadre's owner keys and owner grants, making, withdrawing and redeeming a grant, export, import, removing a key
-    owner-grants.ts          # the owner-grant words and helpers, shared with the join card's failure words
-    join-cadre.svelte.ts     # "Join my existing cadre" state: the request, the join and its steps
-    join-flow.ts             # the join's steps, their words, and the words for each failure
-    cadre-format.ts          # peer-id code, key fingerprint, expiry and error text shared by the Cadre page's cards
-    relay-config.ts          # optional circuit-relay multiaddr from a runtime manifest
-    messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling, the marks on sent messages, offline mode
-    send-marks.ts            # what a sent message's mark and the queue line say, from the offline queue's statuses
-    queued-messages.ts       # the node-local record of queued messages, so a reload marks them again
-    router.svelte.ts         # tiny hash-based router (#/, #/cadre, #/messages, #/log, #/diag)
-    diagnostics.svelte.ts    # tick-driven snapshot store powering /diag
-    Copyable.svelte          # copy-to-clipboard chip used in /diag and /cadre
-    QrCode.svelte            # text drawn as an SVG QR code (the `qrcode` package)
-  shims/
-    empty.ts             # vite alias target for node:os / node:net / node:tls
+    web-edge-platform.ts    the edge node's platform: key store, storage, transports
+    strand-storage.ts       one IndexedDB database per storage scope
+    node-local-slots.ts     key store and node-local records
+    relay-config.ts         relay addresses from VITE_RELAY_ADDR or localStorage
+    cadre-web.ts            the tab's edge node; chat strand, formation, invitations, debug hook
+    store.svelte.ts         reactive node state; start, restart, join, dissolve
+    chat-strand.ts          chat schema and its signed sApp configuration
+    messages.svelte.ts      message list, marks, offline mode (send-marks.ts, queued-messages.ts)
+    *.svelte.ts             state for each Cadre card and for diagnostics
+  shims/empty.ts            alias target for os, net and tls
+e2e/                        Playwright specs and fixtures
+test/                       Vitest specs
+vite.config.ts              aliases (see the platform document)
 ```
 
-## Automated end-to-end tests
+## Links
 
-A Playwright suite lives in `e2e/`. Chromium-only for now; Firefox / Safari are
-explicit non-goals at this layer.
-
-```bash
-# One-time browser install (downloads Chromium if not already cached).
-yarn workspace @serfab/reference-app-web test:e2e:install
-
-# Run the suite (builds and previews the SPA automatically).
-yarn workspace @serfab/reference-app-web test:e2e
-```
-
-- **Tier 1 — solo** (`e2e/solo/`) — always runs. Covers boot + identity/party
-  persistence, hash routing, the chat strand send/list round-trip, reload
-  persistence of strand DML, the schema-signature gate (a pure-Node assertion
-  that the valid signed config verifies and a tampered one throws
-  `SchemaVerificationError`), the diagnostics-surface invariants — notably the **four-transport** Transports list,
-  the canary that no TCP transport leaked into the browser bundle — and
-  (`formation-rbac.spec.ts`) the **formation + RBAC** surface a single tab can
-  prove: the formation panel renders, the dialability guard rejects *Create
-  invitation* with no relay, a malformed invitation is rejected on join, the
-  **owner gate** rejects an unauthorized control write, and the authorization
-  surface reflects the genesis owner + zero formation rows. `owner-keys.spec.ts`
-  exports the tab's own key under a passphrase on the Cadre page, and checks the export shown
-  once and the downloaded file's text.
-- **Tier 2 — formation → convergence** (`e2e/distributed/formation-convergence.spec.ts`)
-  — the live two-party tier. The dialable second party is an **in-process headless
-  cadre responder** (`e2e/fixtures/formation-responder.ts`), booted in the spec's
-  `beforeAll` (the Playwright worker process — `global-setup` runs in a different
-  process and cannot share the live node handle). The browser is the **initiator**:
-  it dials out only, so it needs **no relay**. The happy path redeems an
-  `OpenInvitation` through the Home formation panel, asserts a **closed** strand
-  (`type:'c'` + member key) forms, wires the strand cohort link by hand
-  (`__cadre.dialStrandPeer`, since control-network strand discovery is still TODO),
-  and then proves convergence: a message the responder seeds replicates to the
-  browser through the cohort, and the responder records a `FormationUsage` consent
-  row bound to the strand. A negative test redeems a deliberately-**expired**
-  invitation and asserts the join is rejected with no formed strand and no new
-  consent row. The reverse (browser→responder) direction is a best-effort tail on
-  the happy path. The tier self-skips if the responder cannot boot, and can be
-  disabled with `FORMATION_E2E_DISABLED=1`. This tier replaced the obsolete
-  bootstrap-mesh distributed suite, which asserted *membership-free* Optimystic
-  convergence over a shared network — a model that no longer exists now that chat
-  data lives in a strand cohort.
-- **Tier 2 — join an existing cadre** (`e2e/distributed/join-cadre.spec.ts`) — an
-  in-process headless cadre (`e2e/fixtures/cadre-member.ts`: owner genesis, a loopback
-  WebSocket listener) mints a machine invitation targeted at the tab's peer id; the tab
-  pastes it under *Join my existing cadre*, and Home then shows that party and `member`.
-  After a reload the same two values hold, the tab's key is absent from the party's
-  `OwnerKey` rows (`__cadre.isOwner()` is false) and the start record says `joined`: the
-  defect this pins is a joined party running owner genesis on every start. The card also
-  removes the party the tab founded, which held nothing to move, so the start record names
-  no `formerPartyId` and that party's control block database is gone. Same gate and
-  self-skip as the formation tier.
-- **Tier 2 — owner grants** (`e2e/distributed/owner-grants.spec.ts`) — the same in-process
-  cadre mints an owner grant; the tab joins with it and is an owner of that party, then makes a
-  backup on the Owner keys card, checks the grant shown once and the downloaded file's text, finds
-  it under Outstanding owner grants and withdraws it. A grant carries the cadre's machines'
-  addresses, which a solo tab without a relay has none of, so the backup is made in the joined
-  cadre, whose member listens on loopback.
-
-Devices and nodes, and this tab's own removal, have no tier: removing a machine needs a second
-owner machine, which neither fixture runs. Neither has importing an owner key, since a solo tab's
-slot already holds the key it founded its cadre with, redeeming an owner grant on the card, nor
-removing an owner key.
-
-Wiring this suite into CI is out of scope for the current ticket — it stops at
-"runs cleanly locally."
-
-## Out of scope (for follow-up)
-
-- Real-time push (gossip / sync subscription wiring) — convergence is poll-based.
-- A richer app-level RBAC notion beyond the schema-enforced `CadreControl` gates.
-- Two same-origin tabs running one party. Nothing keeps a second tab from starting the party the
-  first runs: they share the node-local database, the start record and the identity. When an
-  owner removes that machine, the tab that acts first rewrites the start record and deletes the
-  party's records under the other, and its delete of the control database waits for the other
-  tab to close (`deleteStore`), with the marker kept.
+- [Running a node in a browser](../../docs/platforms/browser.md)
+- [The reference apps](../../docs/platforms/reference-apps.md)
+- [The cadre node](../../docs/cadre/node.md)
+- [Relays](../../docs/network/relay.md)
+- [Inviting and joining](../../docs/strands/formation.md)
+- [Owner keys](../../docs/cadre/owner-keys.md)

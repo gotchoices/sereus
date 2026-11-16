@@ -94,7 +94,7 @@
  *   precondition of this file's claims, not one of them.
  * • The removed party still holds the strand's shared read key and everything it already
  *   replicated. Nothing here pretends otherwise — that residual is documented in
- *   `docs/strands.md` ("Revocation is forward-looking only"), not fixed by removal.
+ *   `docs/strands/membership.md` ("What removal still does not do"), not fixed by removal.
  */
 
 import { describe, it, expect } from 'vitest';

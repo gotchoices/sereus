@@ -1,141 +1,138 @@
 # @serfab/reference-app-ns
 
-NativeScript Core reference app whose purpose is **runtime validation**: proving
-the full Sereus / Optimystic stack (`@serfab/cadre-core`, `@optimystic/db-p2p`,
-`@quereus/quereus`, libp2p) bundles and boots under NativeScript's V8/JSC engine.
+A NativeScript Core chat app (TypeScript and XML, no UI framework) that runs a cadre node on NativeScript's V8 runtime, on Android. It exists to show that cadre-core, db-p2p, Quereus and libp2p bundle and run there; the screens are deliberately plain.
 
-UI framework: **NativeScript Core** (plain TypeScript + XML) — not Svelte Native
-(archived / Svelte-4-only) and not Vue. The UI is deliberately trivial; the value
-is in the bundler config, polyfills, WebSocket transport, and SQLite storage.
+The reusable part, for a developer embedding a node in their own NativeScript app, is documented in [Running a node in a NativeScript app](../../docs/platforms/nativescript.md). [The reference apps](../../docs/platforms/reference-apps.md) compares this app with the React Native and browser ones.
 
-Full architecture — topology, the re-audited V8/JSC polyfill table, the webpack
-resolver config, the startup order, and the testing strategy — is in
-[`docs/reference-app-ns.md`](../../docs/reference-app-ns.md).
+## What it demonstrates
 
-> The full **chat-connect UI** (Chat + Settings tabs, connect over WebSocket +
-> circuit relay, apply seed, create strand, poll-based bidirectional chat) is at
-> parity with reference-app-rn, and an automated **Maestro e2e** (`yarn … test:e2e`,
-> see below) reuses the RN drone fixture + flows verbatim. `src/solo-smoke.ts`
-> remains as a programmatic solo/forming-mode helper (no UI).
+- cadre-core's edge node (`createEdgeNode`) over SQLite: `src/ns-edge-platform.ts`.
+- The globals NativeScript lacks, each shimmed in `src/polyfills/`, with an audit logged at every launch.
+- A webpack configuration that bundles the stack without TCP and without Node's `crypto`: `webpack.config.js`, `browser-map.js`.
+- A phone that founds a cadre on its own, creates an open chat strand on that phone and reads and writes it with SQL.
+- A phone that connects to an always-on node, applies a seed, or joins another cadre with a machine invitation.
+
+## Prerequisites
+
+- The repository installed and built: `yarn install` then `yarn build` at the root. The root `package.json` links `@optimystic/*` and `@quereus/quereus` to the sibling checkouts `../optimystic` and `../quereus`, which must be present and built.
+- The NativeScript CLI (`ns`), the Android SDK, and a running Android emulator or a connected device. The SQLite and WebSocket plugins are native, so nothing runs without one.
+- For `test:e2e` only: `adb` and the [Maestro CLI](https://maestro.mobile.dev/getting-started/installing-maestro) on `PATH`.
+
+## Run
+
+```bash
+yarn workspace @serfab/reference-app-ns android   # ns run android
+```
+
+1. Read the device log. The polyfill audit prints one line per global; none should be marked `✗`.
+2. Open **Settings** from the Chat screen's action bar. Leave **Party ID** blank and tap **Connect**. The node starts alone, founds a party with a generated id, and the screen shows **Connected** and the node's **Peer ID**.
+3. Tap **Create Chat Strand**. A dialog titled "Strand created" appears.
+4. Go back to **Chat**, type a message and tap **Send**. The message appears in the list.
+5. Close and reopen the app. It reconnects to the same party without a tap and shows the same Peer ID. The strand from step 3 is not reopened, because the app neither publishes it nor records its id ([How it differs from the React Native app](#how-it-differs-from-the-react-native-app)).
+
+To connect to an always-on node instead, enter that node's party id and its WebSocket bootstrap address before **Connect**. Use a `/wss` address: the app's manifest does not permit cleartext traffic, so Android is expected to refuse a `/ws` one ([Troubleshooting](#troubleshooting)). [Two-node startup](../../docs/contributing/device-testing.md#two-node-startup) has the procedure for starting the node and building the address.
+
+## Screens
+
+The app is one navigation stack, not tabs: Chat is the first page and **Settings** is an action in its title bar.
+
+- **Chat** shows a status line, the messages of one strand and a composer. It polls the strand every 2 seconds. A message that no other member holds yet is marked "Not yet delivered" ([Messages not yet delivered](../../docs/platforms/reference-apps.md#messages-not-yet-delivered)).
+- **Settings → Node** takes a party id, bootstrap addresses and relay addresses (comma-separated) and has **Connect** and **Disconnect**. A blank party id is replaced by a generated one. The app saves the options of a successful start and restarts with them at the next launch; **Disconnect** turns that off.
+- **Settings → Add Peer** dials a multiaddr from the control node.
+- **Settings → Seed Bootstrap** applies a pasted control network seed. The node accepts a seed only from an owner it already trusts, so this works on a phone that founded the cadre or joined it by that owner's invitation ([Seed trust policies](../../docs/cadre/control-security.md#seed-trust-policies)).
+- **Settings → Join a Cadre** redeems a pasted cadre invitation with `EdgeNode.joinCadre`. The phone moves to the invitation's party and keeps its identity; a failed join returns it to the party it left ([An app joins an existing cadre](../../docs/cadre/apps.md#an-app-joins-an-existing-cadre)).
+- **Settings → Strands** lists the running strands and has **Create Chat Strand**.
+
+The sections after Node are shown only while the node is connected.
+
+## How it differs from the React Native app
+
+- **The join field takes a machine invitation only.** A pasted owner grant is refused as unreadable. A phone whose own cadre holds something to move is refused the join (`StrandsNeedOwnerJoinError`) and has no other way in. (ticket `feat-reference-app-ns-owner-grant-join`)
+- **A created strand is not published.** `createChatStrand` calls `CadreNode.addStrand` with `founder: true`, which starts the strand on this phone and writes no `Strand` row to the control database. The React Native app calls `foundStrand`, which publishes the row so the party's other machines open the strand.
+- **A created strand is not reopened after a restart.** Nothing records its id: the node restarts the strands the control database lists, and this one is not listed. Its data stays in its SQLite file, and **Create Chat Strand** makes a new, empty strand.
+- **Strands that other machines publish are not opened.** The app has no handler for `strand:discovered`.
+- **Chat shows whichever strand the node lists first.** There is no strand picker and the choice is not stable when the node runs several.
+- **The chat schema is unsigned.** `src/ns-edge-platform.ts` sets `requireSignedSchemas: false` so the demonstration schema loads. A production app signs its schema.
+- **No offline mode, no owner-key, device-list or dissolve screens, and no first-launch question.** (ticket `feat-strand-offline-mode-nativescript` for offline mode)
+
+The chat schema is `CHAT_SCHEMA` in `src/chat-strand.ts`; `test/chat-schema-drift.spec.ts` holds it equal to `schemas/chat-simple.qsql`. Raise `CHAT_SCHEMA_VERSION` with every change to it, because a strand refuses an app whose schema version is below the highest it has seen ([App schema versions across a strand's members](../../docs/strands/app-schema.md#app-schema-versions-across-a-strands-members)).
 
 ## Layout
 
 ```
 app/
-  app.ts            ENTRY: polyfills (incl. @valor/nativescript-websockets) FIRST, then audit + Application.run
-  app-root.xml      TabView → Chat + Settings (each a Frame defaultPage)
-  app.css           dark theme shared by both screens
-  chat/             chat screen: status bar, message ListView, composer (binds getChatVm())
-  settings/         settings screen: connect/join-cadre/seed/add-peer/create-strand/modal (SettingsViewModel → cadre-vm)
+  app.ts               entry: polyfills, audit, Application.run
+  app-root.xml         one Frame; Chat is the default page
+  chat/                Chat page
+  settings/            Settings page and its view model
 src/
-  polyfills/        V8/JSC-audited globals (hermes, event, abort, intl, websocket, node-crypto, node-os, buffer-global, audit)
-  ns-edge-platform.ts the edge node's platform: key store, node-local store and per-scope block stores over SQLite
-  cadre-phone.ts    the phone's one edge node (@serfab/cadre-core/edge-node) + the peer dial on its running node
-  cadre-vm.ts       CadreViewModel (Observable) — edge-node status/strands/join (← use-cadre + cadre-context)
-  join-failure.ts   plain words for each way a join can fail (hand-copied twin of RN's)
-  chat-vm.ts        ChatViewModel (Observable) — poll loop, optimistic send, participant auto-register (← use-chat)
-  test-ids.ts       automationText constants shared with the e2e flows (ported from RN)
-  chat-strand.ts    create/join chat strand (ported from reference-app-rn)
-  chat-operations.ts insert/query participants + messages (ported)
-  solo-smoke.ts     startSolo → createChatStrand → insertMessage → queryMessages (programmatic)
-webpack.config.js   node shims + react-native/browser conditions + named-package browser rewrite
-browser-map.js      the named packages and their `browser` file maps (webpack.config.js + scripts/bundle-check.js)
-nativescript.config.ts
+  polyfills/           runtime globals, Node module shims, the audit
+  shims/               replacements for libp2p's user-agent module and libp2p-noise's crypto
+  ns-edge-platform.ts  key store and storage over SQLite
+  ns-db-path.ts        database path on Android
+  cadre-phone.ts       the app's one edge node
+  cadre-vm.ts          view model over the edge node: status, strands, join, seed
+  chat-vm.ts           view model for Chat: poll, send, participant registration
+  chat-strand.ts       chat schema and strand creation
+  chat-operations.ts   SQL for participants and messages
+  join-failure.ts      wording for each way a join can fail
+  solo-smoke.ts        start alone, create a strand, write and read one message (no UI)
+  test-ids.ts          automation ids used by the pages and the Maestro flows
+webpack.config.js      resolver rules (see the platform document)
+browser-map.js         packages whose `browser` file map is applied
 ```
-
-The chat schema is `CHAT_SCHEMA` in `src/chat-strand.ts`, a copy of reference-app-rn's. Raise `CHAT_SCHEMA_VERSION` (the config's `schemaVersion`) with every change to it: a strand refuses an app whose number is below the highest it has seen.
 
 ## Scripts
 
-| Script | What it does | Agent-runnable? |
-|--------|--------------|-----------------|
-| `yarn workspace @serfab/reference-app-ns typecheck` | `tsc --noEmit` across the new package + cadre-core/db-p2p/storage-ns/quereus types | yes |
-| `yarn workspace @serfab/reference-app-ns test` | `vitest run` — unit suite over `test/**/*.spec.ts` (the SQLite edge-node platform over `node:sqlite`, and the cadre, settings and chat view models), preceded by the shared stale-build check on cadre-core and the linked `@optimystic`/`@quereus` siblings | yes |
-| `yarn workspace @serfab/reference-app-ns test:bundle` | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, the named-package browser variants). The analog of reference-app-rn's `expo export`. | yes |
-| `yarn workspace @serfab/reference-app-ns test:bundle:native` | `ns prepare android` — the same webpack compile plus the gradle native-plugin build | **no** — needs local Android SDK / gradle |
-| `yarn workspace @serfab/reference-app-ns test:e2e` | `node scripts/run-e2e.mjs` — spawns the RN drone fixture, `adb reverse`, runs the reused RN Maestro flows against the NS app | **no** — needs emulator + built APK + Maestro + adb (see Automated e2e) |
-| `ns build android` / `ns build ios` | full native device build | **no** — needs local Android SDK / Xcode, out-of-band / CI |
+Run each as `yarn workspace @serfab/reference-app-ns <script>`.
 
-## Device smoke (manual / out-of-band)
+| Script | What it does | Needs a device |
+|---|---|---|
+| `android` | `ns run android`: build, install and run | yes |
+| `ios` | `ns run ios`; the package declares no iOS runtime, see [Limits](../../docs/platforms/nativescript.md#limits-and-accepted-tradeoffs) | yes |
+| `typecheck` | `tsc --noEmit` | no |
+| `test` | the Vitest unit suite | no |
+| `dev:test` | Vitest in watch mode | no |
+| `test:bundle` | webpack compile of the whole import graph, no native build | no |
+| `test:bundle:native` | `ns prepare android`: the same compile plus the Gradle build | Android SDK |
+| `test:e2e` | Maestro flows against an installed app | yes |
+| `clean` | removes `platforms/` and `hooks/` | no |
 
-A real device or emulator is required (the SQLite + WebSocket plugins are native).
+## Environment variables
 
-1. `yarn install` at the repo root.
-2. `yarn workspace @serfab/reference-app-ns android` (`ns run android`) with an
-   emulator running, or `ns run ios` on macOS.
-3. On boot, the **polyfill audit** logs a table to the device console (`✓ native ·
-   ∙ polyfilled · ✗ missing`). Confirm nothing is `✗` before libp2p loads.
-4. **Settings** tab → leave Party ID blank (auto-generated) → **Connect**. The
-   node boots solo; status flips to *Connected* and the **Peer ID** is shown.
-5. **Create Chat Strand** → "Strand created" modal.
-6. **Chat** tab → type `hello` → **Send**. Expect it to appear in the list (local
-   echo). Relaunch cold: the app reconnects by itself to the same party (the
-   last start options are remembered — Settings → **Disconnect** turns that off)
-   and shows the **same Peer ID** (identity persisted in the SQLite `kv` table
-   under `peer-private-key`).
-7. Against a drone (see [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md)
-   § Two-Node Startup): enter the drone's Party ID + bootstrap multiaddr before
-   Connect. Then paste the drone's **enrollment invite** into *Paste enrollment
-   invite (for trust)* along with the seed before **Apply Seed** — a cold phone
-   has an empty trusted-owner anchor and otherwise rejects a seed signed by
-   another cadre. Expect *Seed applied / Pinned 1 owner key(s)*. A **second**
-   Apply Seed with the invite field blank must also succeed (the pin persisted).
-   Messages then replicate bidirectionally.
+Only `test:e2e` (`scripts/run-e2e.mjs`) reads any, and all are optional.
 
-### Two-node drone start (manual)
+| Variable | Default | Meaning |
+|---|---|---|
+| `DRONE_WS_PORT` | `4002` | WebSocket port of the test drone |
+| `DRONE_HTTP_PORT` | `4080` | port of the drone's HTTP sidecar |
+| `MAESTRO_APP_ID` | `org.gotchoices.sereus.chat.ns` | application id Maestro launches; matches `nativescript.config.ts` |
+| `MAESTRO_BIN` | `maestro` | Maestro executable |
 
-```bash
-# Drone (Node.js) — listens on WebSocket so the phone can reach it
-cd packages/cadre-cli
-node dist/bin/cadre.js start -c ../reference-app-rn/drone.cadre.yaml --listen-for-seeds --ws-port 4002
-# → note the printed Peer ID, then build the bootstrap multiaddr:
-#   /ip4/<LAN_IP>/tcp/4002/ws/p2p/<DRONE_PEER_ID>
-```
+## Tests
 
-On the phone's **Settings** tab: enter the drone's **Party ID**
-(`reference-chat-party`) + that **bootstrap addr** → **Connect** → paste the seed
-+ the drone's **enrollment invite** → **Apply Seed** → **Create Chat Strand**,
-then chat on the **Chat** tab. The full
-walk-through is shared with RN —
-[`docs/reference-app-rn.md` § Two-Node Startup Sequence](../../docs/reference-app-rn.md#two-node-startup-sequence).
+- **Unit** (`test`). Vitest under Node over `test/**/*.spec.ts`: the SQLite platform under the real edge node, with `node:sqlite` standing in for the plugin; the view models, with `@nativescript/core` aliased to `test/stubs/nativescript-core.ts`; and the polyfills whose failures would otherwise show only on a phone. The pages are not covered. The run starts with the [stale-build guard](../../docs/contributing/gates.md#stale-build-guard), because the specs execute compiled output of cadre-core and the linked sibling packages.
+- **Bundle** (`test:bundle`). `scripts/bundle-check.js` runs the webpack compile for Android and fails on any error, any warning, or any bundled file that the browser rewrite should have replaced. It proves the import graph resolves and parses. It does not run the code.
+- **Device** (`test:e2e`). See [maestro/README.md](maestro/README.md). Three of the four flows cannot pass against this app; its [Limits](maestro/README.md#limits) section says why.
 
-## Automated e2e (Maestro)
+## Diagnostics
 
-```bash
-yarn workspace @serfab/reference-app-ns test:e2e
-```
+- **Polyfill audit.** Logged at launch by `src/polyfills/audit.ts`: `✓` native, `∙` polyfilled, `✗` missing, followed by a warning that lists the missing globals.
+- **`runSoloSmoke`** (`src/solo-smoke.ts`). Starts the node alone, creates a strand, inserts a message and reads it back, and returns the peer id and whether the message was read. Call it from a debugger or a temporary button; no screen uses it. Like any start, it replaces the saved start.
+- **Dialogs.** A failed connect, seed, join or dial shows the error's text in a dialog; a failed join is reworded by `src/join-failure.ts`.
 
-`scripts/run-e2e.mjs` **reuses reference-app-rn's drone fixture, HTTP sidecar,
-Maestro flows, `_setup.yaml`, and `_helpers/*` verbatim** — they are
-runtime-agnostic, so the only difference from an RN run is `MAESTRO_APP_ID`
-(→ `org.gotchoices.sereus.chat.ns`). There are no duplicate flow files in this
-package; see [`maestro/README.md`](maestro/README.md). The orchestrator spawns
-the RN fixture, waits for `GET /health`, reads its `test-data.json`, sets up
-`adb reverse tcp:4002`/`tcp:4080`, runs the three flows
-(`1-connect-and-send`, `2-drone-to-phone`, `3-round-trip`), and tears down.
+## Troubleshooting
 
-**Prerequisites (out-of-band — not agent-runnable):**
+- **A global is marked `✗` in the audit.** A NativeScript upgrade stopped providing it, or a shim's guard no longer matches. Fix the shim in `src/polyfills/` before looking at libp2p errors.
+- **`Cannot read properties of undefined (reading 'env')` at load.** A module ran before `src/polyfills/process.ts`. The polyfill import must be the first line of `app/app.ts`.
+- **Every outbound dial times out although the socket opens.** `WebSocket.prototype.bufferedAmount` is undefined; check the audit line for it.
+- **A `/ws` address cannot be dialled on Android but a `/wss` one can.** Android is blocking cleartext traffic. `App_Resources/Android/src/main/AndroidManifest.xml` does not set `android:usesCleartextTraffic`, and the app targets an API level where the default is to refuse ([What the app must provide](../../docs/platforms/nativescript.md#what-the-app-must-provide)).
+- **`test` stops before running any spec.** The stale-build guard found a `dist` older than its `src`. Rebuild the package it names.
+- **`test:bundle` fails on a warning.** A dependency imports a name that the resolved version does not export. See [`exportsPresence: 'warn'`](../../docs/platforms/nativescript.md#exportspresence-warn).
 
-- a built NS APK installed on a running Android emulator
-  (`ns build android` / `ns run android`; the SQLite + WebSocket plugins are
-  native, so an emulator or device is mandatory)
-- `adb` on PATH
-- the [Maestro CLI](https://maestro.mobile.dev/getting-started/installing-maestro)
-  on PATH
+## Links
 
-**One-time verification:** confirm Maestro's `id:` matcher resolves the NS
-`automationText` values (Android `contentDescription` / iOS
-`accessibilityIdentifier`) via Maestro Studio against a real build. If `id:`
-matching is unworkable on NS, fall back to Appium — see
-[`docs/reference-app-ns.md` § Testing strategy](../../docs/reference-app-ns.md#maestro-e2e-device--ci--out-of-band).
-
-## Storage
-
-Reuses `@optimystic/db-p2p-storage-ns` (`SqliteRawStorage`, `openOptimysticNSDb`,
-`loadOrCreateNSPeerKey`) — SQLite via the `@nativescript-community/sqlite` peer
-dependency. One database per cadre-core storage scope: `sereus-<strandId>` per strand,
-and `sereus-control-<hex party id>` for the party's control database. The peer
-identity, the owner key and the edge node's node-local records (the saved start, each
-party's trusted-owner anchor and dial hints) live in `sereus-peer-identity`. The edge
-node (`@serfab/cadre-core/edge-node`) runs over these through `ns-edge-platform.ts`;
-see [`docs/reference-app-ns.md` § Storage](../../docs/reference-app-ns.md#storage).
+- [Running a node in a NativeScript app](../../docs/platforms/nativescript.md)
+- [The reference apps](../../docs/platforms/reference-apps.md)
+- [Device testing](../../docs/contributing/device-testing.md)
+- [The cadre node](../../docs/cadre/node.md)

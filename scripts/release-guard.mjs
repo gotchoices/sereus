@@ -87,8 +87,8 @@ export function alreadyFullyPublishedFailure(version, packages) {
 	}
 	return (
 		`every publishable package already has ${version} on npm, so this release has nothing to publish.\n` +
-		'   To finish a half-done release instead of starting one, see docs/releasing.md →\n' +
-		'   "Recovering a half-finished release".'
+		'   To finish a half-done release instead of starting one, see docs/contributing/releasing.md →\n' +
+		'   "Recovering".'
 	);
 }
 

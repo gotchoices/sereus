@@ -23,7 +23,7 @@ export { OwnerKeyAddRefusedError, OwnerKeyRemovalRefusedError } from './owner-ke
 export { ControlDatabase, parseNullableStoredDatetimeMs, MissingHostStrandError, InvitationExhaustedError, CadreInviteIssuerUnknownError, OwnerGrantIssuerUnknownError, IssuedRowNotHereYetError, buildAuthorizationMessage, registerPartyIdFunction, formationVouchMessage, formationConsentMessage, cadreInviteAddMessage, cadreInviteRedeemMessage, cadreInviteConsentMessage, ownerGrantAddMessage, ownerGrantRedeemMessage, ownerGrantConsentMessage, projectSeedPeers, REAPABLE_TABLES, type ReapableTable, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type FormationInviteRow, type FoundingRows, type FoundingInvite, type MembershipChangeListener, type GuardedDeleteListener, type ControlWriteAbandonedListener, type RevokedRowRef, type ControlSign, type SelfRecordSigner, type CadrePeerRetouchMode, type CadrePeerRetouchOutcome, type OwnerGrantRedemptionFields } from './control-database.js';
 
 // The control schema version a store is migrated to on start, and what `start()` throws, with a
-// reason, when the store must not be migrated (docs/architecture.md → "Control schema versions and
+// reason, when the store must not be migrated (docs/cadre/control-schema.md → "Schema versions and
 // migrations")
 export { CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_BASELINE_VERSION, CONTROL_SCHEMA_VERSION_TAG } from './control-schema.js';
 export { ControlStoreIncompatibleError, type ControlStoreIncompatibility } from './control-schema-version.js';
@@ -92,7 +92,7 @@ export { encodeFileSafeComponent } from './file-safe-name.js';
 // node key BEFORE `CadreNode` exists.
 export { loadOrCreateIdentityKey } from './identity-key.js';
 
-// Owner keys (`docs/architecture.md` → Owner Keys): the one interface owner signatures go
+// Owner keys (`docs/cadre/owner-keys.md`): the one interface owner signatures go
 // through, the key-store slot an owner key lives in apart from the identity slot, and the
 // text form a key is exported and imported in. Cross-platform: pure JS crypto only.
 export {
@@ -726,7 +726,7 @@ export {
 // OAuth 2 + PKCE sign-in, the typed client for its container API, and `rentNode` /
 // `finishRental`, which add the rented container to this node's cadre by invitation or by
 // claim. Global `fetch` and `crypto.getRandomValues` only, so the whole set loads on React
-// Native and in the browser (`docs/architecture.md` → "Renting a node from an app"). The
+// Native and in the browser (`docs/hosting/provider.md` → "Renting a node from an app"). The
 // barrel is the curated list; it is not repeated here.
 export * from './provider/index.js';
 

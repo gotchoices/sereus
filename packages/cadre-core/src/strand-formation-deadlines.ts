@@ -88,8 +88,8 @@ export interface FormationDeadlines {
  *   strand's `StrandPartyKey` to issue the joiner's membership invite; then one
  *   strand-database commit issues the invite.
  *   Every one of those is a read of this party's own control database, which in steady state
- *   touches held blocks and consults nobody (`cadre-consistency.md` → "Deadlines Over
- *   Optimystic's Reads and Commits"), so `R` is charged as headroom for the ones that do
+ *   touches held blocks and consults nobody (`docs/network/deadlines.md` → "Deadlines over
+ *   Optimystic's reads and commits"), so `R` is charged as headroom for the ones that do
  *   consult, not per read. Waking a hibernating host strand inside the issue is NOT counted
  *   either: `wakeHostStrandForFormation` cuts it off by design with a retryable rejection
  *   and leaves the wake running, so the joiner's retry finds the strand live.

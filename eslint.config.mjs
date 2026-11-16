@@ -104,8 +104,8 @@ const PHONE_RUNTIME_GUARD = [
 //   `-- cuts off by design: <why>; see …`        it waits on the link through an Optimystic read
 //                                                or commit, but its value is what its caller can
 //                                                tolerate, so it must not grow with the link; the
-//                                                sites are listed in docs/cadre-consistency.md →
-//                                                "Deadlines Over Optimystic's Reads and Commits"
+//                                                sites are listed in docs/network/deadlines.md →
+//                                                "Deadlines over Optimystic's reads and commits"
 //   `-- measured, not derived: <where>`          it waits on the link but bounds a whole phase of
 //                                                many exchanges with no round-trip count to derive
 //                                                from (a joining machine's first sync), so it is

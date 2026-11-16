@@ -2,26 +2,22 @@ Focus: Sereus monorepo. Also have `../quereus` + `../optimystic` workspaces for 
 
 ## Repo orientation
 
-- `packages/` — monorepo libs + apps. Cadre runtimes: `@serfab/cadre-core` (library), `@serfab/cadre-cli` (headless CLI), `@serfab/cadre-host` (self-hosted manager w/ local UI, installer, NAT; runs nodes that join phone-owned cadres by QR claim or invitation), `@serfab/cadre-provider` (multi-tenant Docker host). SQL access: `@serfab/quereus-plugin-sereus`. Strict config-file checking shared across those programs, with no dependencies: `@serfab/config-check`. React Native kit (native Noise crypto; subpath imports only): `@serfab/cadre-rn`. Reference apps: `reference-app-rn`, `reference-app-web`. Cross-package real-network tests: `integration-tests`.
-- `ops/` — operational tooling (Docker stacks, systemd scaffolds, infra test scripts) for libp2p relay/bootstrap nodes. Not app code.
-- `docs/` — design + protocol docs. [`docs/architecture.md`](docs/architecture.md) is entry point; [`docs/cadre-host.md`](docs/cadre-host.md), [`docs/strands.md`](docs/strands.md), [`docs/cadre-consistency.md`](docs/cadre-consistency.md), [`docs/testing.md`](docs/testing.md) cover subsystems; [`docs/push-network.md`](docs/push-network.md) and [`docs/strand-contracts.md`](docs/strand-contracts.md) are design-stage (decentralized push; human contracts on strands). Current work state lives in [`tickets/`](tickets/), not in docs.
-- `schemas/` — Quereus schema artifacts (e.g. `cadre.qsql`, `strand.qsql`).
+- `packages/` — monorepo libs + apps. Cadre runtimes: `@serfab/cadre-core` (library), `@serfab/cadre-cli` (headless CLI), `@serfab/cadre-host` (self-hosted manager w/ local UI, installer, NAT; runs nodes that join phone-owned cadres by QR claim or invitation), `@serfab/cadre-provider` (multi-tenant Docker host). SQL access: `@serfab/quereus-plugin-sereus`. Strict config-file checking shared across those programs, with no dependencies: `@serfab/config-check`. React Native kit (native Noise crypto; subpath imports only): `@serfab/cadre-rn`. Reference apps: `reference-app-rn`, `reference-app-web`, `reference-app-ns`. Cross-package real-network tests: `integration-tests`.
+- `ops/` — operational tooling (Docker stack, installer, infra test scripts) for libp2p relay nodes. Not app code.
+- `docs/` — see "Docs". Index: [`docs/README.md`](docs/README.md). Current work state lives in [`tickets/`](tickets/), not in docs.
+- `schemas/` — Quereus schema artifacts (`control.qsql`, `strand.qsql`, `chat.qsql`, `chat-simple.qsql`).
 - `test-harness/` — test infrastructure shared across packages (stale-build guard, schema-text comparison, reporter for tests a failed setup kept from running). Not a workspace, never built; imported by relative path from packages' vitest `globalSetup` and specs.
-- `tickets/` + `tess/` — AI-driven ticket workflow (see "Tickets" below).
+- `tickets/` + `tess/` — AI-driven ticket workflow (see "Tickets").
 
 ## General
 
 Most style rules machine-enforced by `yarn lint` (ESLint flat config in
-`eslint.config.mjs`), a fully-enforced gate — every encoded rule is `error`, no
+`eslint.config.mjs`, then the doc check `scripts/check-docs.mjs`), a fully-enforced gate — every encoded rule is `error`, no
 `warn` backlog. **Lowercase SQL reserved words** and **no runtime inline `import()`** are not
-machine-checkable, human-review-only (see [`docs/testing.md`](docs/testing.md) → "Lint coverage").
+machine-checkable, human-review-only (see [`docs/contributing/gates.md`](docs/contributing/gates.md) → "Lint coverage").
 
 - Lowercase SQL reserved words (e.g., `select * from Table`)
 - No inline `import()` unless dynamically loading
-- Don't create summary docs; update existing docs
-- Docs describe the system as it is now. A problem that was found and fixed is history: name the ticket slug (or the upstream commit) and stop. Do not retell the diagnosis, the dates, or the before-state. Keep a past fact only when it is the reason the current design is the way it is, and then state it as a constraint, not a story.
-- One list item, one claim plus its reason. When an item needs a second topic, give it a labelled sub-paragraph; when it describes a mechanism with several parts, make it a headed section and leave a one-sentence item linking to it.
-- Extending a doc: add to the section that owns the topic, or add a section. Do not append to the nearest bullet.
 - Stay DRY
 - No lengthy summaries
 - No backwards compat yet
@@ -37,7 +33,32 @@ machine-checkable, human-review-only (see [`docs/testing.md`](docs/testing.md) �
 - Think cross-platform (browser, node, RN, etc.)
 - .editorconfig has formatting (tabs for code)
 
-Start w/ [`docs/architecture.md`](docs/architecture.md) to come up to speed, then read + maintain these + other docs along w/ work.
+## Docs
+
+Come up to speed: [`docs/concepts.md`](docs/concepts.md) (model + the only glossary), then [`docs/architecture.md`](docs/architecture.md) (how the pieces fit), then the one subsystem doc the task touches. Maintain docs along w/ work.
+
+Layout:
+
+- `docs/cadre/` — one party's control network + machines (schema, replication, convergence, trust + admission, adding/removing machines, owner keys, several apps in one cadre, the node).
+- `docs/strands/` — lifecycle, inviting + joining, closed-strand membership + keys, writes + offline mode, app schemas, hibernation.
+- `docs/network/` — relays, strand addressing, deadlines + link budget.
+- `docs/hosting/` — cadre-host design + its management API, provider-hosted nodes. `docs/platforms/` — React Native, NativeScript, browser, the reference apps.
+- App developers: [`docs/getting-started.md`](docs/getting-started.md), [`docs/api.md`](docs/api.md), [`docs/schema-guide.md`](docs/schema-guide.md).
+- `docs/contributing/` — testing, gates, topology coverage map, device testing, releasing.
+- `docs/design/` — designs not built (decentralized push, human contracts on strands, async control consistency). Not a description of the system.
+- Package `README.md` — install, run, command/flag/option reference for that package. Concepts live in `docs/`; published READMEs link there by GitHub URL (relative links are dead on npm).
+
+Rules:
+
+- One home per fact. Source + schema comments own per-function behaviour, per-constraint rules, signatures, constants. Docs own the model, each mechanism's what + why, invariants + what they prevent, what an API promises, config + defaults, procedures, limits. READMEs own usage. Link instead of restating.
+- Docs describe the system as it is now. A problem that was found and fixed is history: name the ticket slug (or the upstream commit) and stop. Do not retell the diagnosis, the dates, or the before-state. Keep a past fact only when it is the reason the current design is the way it is, and then state it as a constraint, not a story.
+- Not in docs: measurements from a run, what a test does or which spec proves a claim, work status, hand copies of interfaces/enums, `file.ts:123` line refs. The topology coverage map is the one place scenario files are listed.
+- Known limits + accepted tradeoffs go in the owning doc's "Limits and accepted tradeoffs" section: what is not guaranteed or was declined, why, revisit condition. Cite an open ticket by slug only.
+- One list item, one claim plus its reason. When an item needs a second topic, give it a labelled sub-paragraph; when it describes a mechanism with several parts, make it a headed section and leave a one-sentence item linking to it.
+- Extending a doc: add to the section that owns the topic, or add a section. Do not append to the nearest bullet. Don't create summary docs.
+- Size is gated (`yarn check:docs`, part of `yarn lint`): document 6,000 words, paragraph or list item 120, table cell 50; links + heading anchors must resolve. Over budget means split by topic or move detail to the source comment that owns it, not raise the limit.
+- Source comments cite docs as `docs/<path>.md → "Heading"`. Renaming or moving a heading: grep for its title and update the citations in the same change.
+- Terms: use the glossary's meaning; add a term there, not in a subsystem doc.
 
 ## Tickets (tess)
 

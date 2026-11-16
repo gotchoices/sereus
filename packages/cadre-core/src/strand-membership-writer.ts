@@ -149,7 +149,7 @@ export class StrandTransactionBusyError extends Error {
 
 /**
  * A membership write refused because the strand's offline queue holds transactions its members
- * have not taken yet (docs/strands.md → "Offline mode"). Every `Strand` table is network-acknowledged, and a
+ * have not taken yet (docs/strands/writes.md → "Offline mode"). Every `Strand` table is network-acknowledged, and a
  * network-acknowledged commit made while transactions are queued waits for them to settle while
  * holding Quereus's execution lock, so every other statement on the strand database, the app's
  * included, would wait with it for up to the plugin's `networkCommitTimeoutMs`. Nothing was

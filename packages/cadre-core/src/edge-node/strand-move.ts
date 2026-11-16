@@ -1,6 +1,6 @@
 /**
  * Carrying the strands of the party this app founded into the party it joins
- * (docs/architecture.md → "An app joins an existing cadre" → "Moving the app's strands").
+ * (docs/cadre/apps.md → "Moving the app's strands").
  *
  * The app runs one node, so cadre-core's two ends of a move run on two nodes, one after the
  * other: `exportStrandBundle` on the left party's node before the switch, `adoptStrandBundle` on

@@ -11,7 +11,7 @@ const log = debug('sereus:plugin:strand');
 
 /**
  * The version gate of `applyAppSchema`: compare `declared` with the version the strand records in
- * `Strand.AppSchemaVersion`, the highest any member has applied (docs/strands.md → "Until then: every
+ * `Strand.AppSchemaVersion`, the highest any member has applied (docs/strands/app-schema.md → "Every
  * member on the same schema version").
  *
  *  - none recorded, or a lower one: record `declared`, so the apply that follows may proceed;
@@ -106,7 +106,7 @@ function blockAvailabilityFailureIn(err: unknown): boolean {
 /**
  * Write `declared` over `recorded` as one atomic batch outside any transaction another caller holds.
  * Refused without trying while the offline queue lists transactions: the table is network-acknowledged,
- * so the commit would wait behind them holding the database's execution lock (docs/strands.md →
+ * so the commit would wait behind them holding the database's execution lock (docs/strands/writes.md →
  * "Membership writes are refused while transactions are queued").
  */
 async function recordVersion(db: Database, declared: number, recorded: number | undefined, released: AbortSignal): Promise<void> {
@@ -175,7 +175,7 @@ export interface AppSchemaVersionCheckWaits {
  * A connection's check of the strand's recorded App schema version while it runs, and its one report
  * that another member has recorded a higher version than the one it runs
  * (`SereusPluginResult.onAppSchemaSuperseded`): this connection's writes can then erase what the newer
- * version added (docs/strands.md → "A running member stops").
+ * version added (docs/strands/app-schema.md → "A running member stops").
  *
  * Each check is a live read of `Strand.AppSchemaVersion`, run on every `Database.watch` wake of that
  * table (this machine's commits and, with strand reactivity, any machine's), {@link COHORT_CONNECT_SETTLE_MS}
@@ -287,7 +287,7 @@ function deliver(listener: AppSchemaSupersededListener, error: AppSchemaOutdated
 /**
  * The floor of the running version check: how long it goes without a read when no watch wake and no
  * peer connect has come. The change-notification renewal interval, which bounds a lost notification
- * the same way (docs/strands.md → "Change notifications (reactivity)").
+ * the same way (docs/strands/app-schema.md → "Change notifications").
  *
  * NOTE: a member's writes between another member's record and this member's next check can still
  * erase what the newer version added: milliseconds with strand reactivity, up to this long without.

@@ -1,6 +1,6 @@
 /**
  * `EdgeNode.redeemOwnerGrant`'s sequence: make the app an owner of the party it runs in with
- * owner-grant text, seating the owner slot's key (docs/architecture.md → "Owner grants"). Runs
+ * owner-grant text, seating the owner slot's key (docs/cadre/owner-keys.md → "Owner grants"). Runs
  * over a narrow view of the runtime ({@link OwnerGrantRuntime}), inside one of its transitions,
  * as the join does.
  */

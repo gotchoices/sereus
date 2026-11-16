@@ -2,7 +2,7 @@
  * owner-keys-section.tsx — Settings → "Owner keys": this cadre's owner keys; on an owner device,
  * Add an owner key and Make a backup (owner grants, `owner-grant-views.tsx`), Export this device's
  * key, the outstanding grants and Remove; and Redeem an owner grant and Import on any device
- * (docs/reference-app-rn.md → "Owner Keys"; docs/architecture.md → "Owner Keys", "Owner grants").
+ * (docs/platforms/reference-apps.md → "Owner keys"; docs/cadre/owner-keys.md).
  * The words are `owner-keys.ts`'s. Also `SigningKeyFact`, the line the approval prompts name the
  * signing key with.
  *

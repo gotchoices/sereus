@@ -90,7 +90,7 @@ export function useChat(opts: UseChatOptions): UseChatResult {
   // cannot change a mark on another. In memory, except that a queued message is also recorded in
   // `queuedMessages` until its queue settles it: a message read from storage carries no mark
   // otherwise, and a mark whose commit nothing follows stays until the app restarts
-  // (docs/strands.md, "A commit's durability").
+  // (docs/strands/writes.md, "A commit's durability").
   const [sent, setSent] = useState<readonly SentMessage[]>([]);
   const sentRef = useRef(sent);
   sentRef.current = sent;
@@ -127,9 +127,10 @@ export function useChat(opts: UseChatOptions): UseChatResult {
 
   // Gated on `strand.database`: a joiner comes up `'syncing'` with no database until it
   // has received the strand's data from another member, and a write before that would
-  // fork the Participant table (it never merges — see docs/strands.md, "Joining"). The
-  // dep on `strand.database` is what re-runs this once the strand becomes writable
-  // (`use-cadre` re-renders on `strand:writable`).
+  // fork the Participant table (it never merges — see docs/strands/formation.md,
+  // "Joining: no writes before the first sync"). The dep on `strand.database` is what
+  // re-runs this once the strand becomes writable (`use-cadre` re-renders on
+  // `strand:writable`).
   useEffect(() => {
     if (!strand?.database || !participantId) return;
     const sid = strand.strandId;

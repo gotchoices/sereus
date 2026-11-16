@@ -173,7 +173,7 @@ export const REVOCATION_REFRESH_RETRY_MS = 30_000;
  * How soon a strand with more distinct bound peer ids than its cluster size is
  * refreshed again after a successful refresh. On such a strand this node may be
  * outside a membership block's cohort, so it takes in no storage event for a
- * removal (`docs/architecture.md` → "Table change subscriptions").
+ * removal (`docs/cadre/control-convergence.md` → "Table change subscriptions").
  */
 export const REVOCATION_WIDE_STRAND_REFRESH_MS = 30_000;
 
@@ -533,7 +533,7 @@ export class StrandRevocationEnforcer {
    * the removed party's now unreachable machines and had to downsize to the
    * live holders first. It
    * recovers on its own, so this is a latency cost, not a defect, and it is
-   * stated for app authors in `docs/strands.md` → Removing Members. If it ever
+   * stated for app authors in `docs/strands/membership.md` → Removing members. If it ever
    * stops recovering — a write that never commits, or `cluster-fetch:no-quorum` —
    * that is an upstream (Optimystic) conversation, not a workaround here.
    */

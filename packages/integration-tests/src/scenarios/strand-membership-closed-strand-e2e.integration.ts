@@ -568,7 +568,8 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		// No strand-level connection exists yet, so nothing could have synced — and
 		// nothing CAN be written: the joiner's `addStrand({ founder:false })` came up
 		// `'syncing'` with its database withheld until the founder's Header reaches it
-		// (the first-sync gate, docs/strands.md → "Joining").
+		// (the first-sync gate, docs/strands/formation.md → "Joining: no writes before the
+		// first sync").
 		expect(joinerStrand.database).toBeUndefined();
 		expect(joinerNode.isRunning).toBe(true);
 

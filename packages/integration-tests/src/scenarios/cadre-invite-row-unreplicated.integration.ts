@@ -1,7 +1,7 @@
 /**
  * E2E: a cadre invitation is redeemed at a member that never received the invitation's row,
  * because the owner minted it while cut off from that member and then went offline
- * (`docs/architecture.md` → "Enrollment Flow: Invitation Redeemed at Any Member").
+ * (`docs/cadre/membership.md` → "Cadre invitations").
  *
  * Machines, as in `cadre-invite-any-member`:
  * - **A**, the owner, on a loopback WebSocket listen address, so M's FRET evicts it once it

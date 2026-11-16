@@ -8,8 +8,8 @@
  * `BlockUnavailableError` (`cohort-unreachable`). A table with no collection cannot be shown empty
  * by any one machine: only the block's cohort can say it is absent, and Optimystic asks it again on
  * every read. The founder therefore commits an empty collection for every declared table before it
- * writes the strand's Header (docs/strands.md, "Joining: no writes before the first sync"), and
- * peer-join backfill hands those collections to every joiner.
+ * writes the strand's Header (docs/strands/formation.md, "Joining: no writes before the first
+ * sync"), and peer-join backfill hands those collections to every joiner.
  *
  * What it asserts: with the other member connected, no read of any `App` or `Strand` table on
  * either side is slower than {@link LOCAL_READ_MS}, which a relayed round trip on the 100 ms link

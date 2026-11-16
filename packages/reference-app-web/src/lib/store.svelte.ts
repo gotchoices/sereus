@@ -472,7 +472,7 @@ export async function restart(): Promise<void> {
 }
 
 /**
- * Join the cadre pasted join text names (docs/architecture.md → "An app joins an existing
+ * Join the cadre pasted join text names (docs/cadre/apps.md → "An app joins an existing
  * cadre"): `EdgeNode.joinCadre`, once the text is decoded as a machine invitation found to be
  * this tab's, or as an owner grant, which makes the tab an owner too. Already running in that
  * party: the edge node redeems in place. Otherwise it records the running party's strands for the
@@ -535,7 +535,7 @@ export function redeemOwnerGrant(text: string): Promise<RedeemedOwnerGrant> {
 }
 
 /**
- * Remove the cadre this tab founded and left (docs/architecture.md → "Dissolving the party it
+ * Remove the cadre this tab founded and left (docs/cadre/apps.md → "Dissolving the party it
  * left"): `EdgeNode.dissolveFormerParty`; `discard` gives up the strand and join ids the running
  * party does not hold. Refused with nothing stopped when the running start names no such party or
  * a move from it waits (`StrandMovePendingError`). Otherwise the edge node stops the node, reads

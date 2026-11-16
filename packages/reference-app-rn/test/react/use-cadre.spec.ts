@@ -787,7 +787,7 @@ describe('useCadreInternal — removed from the cadre by an owner', () => {
  * The relay posture the UI shows is POLLED — `CadreNode` announces neither a
  * reservation gained nor one lost — so the poll is the whole mechanism behind the
  * claim that a relay coming back mid-session starts working with no app restart
- * (`docs/reference-app-rn.md` → "Reachability: configuring a relay"). These cover the
+ * (`docs/platforms/react-native.md` → "Reachability: configuring a relay"). These cover the
  * wiring; `connection-status.spec.ts` covers the wording it produces.
  */
 describe('useCadreInternal — relay posture polling', () => {

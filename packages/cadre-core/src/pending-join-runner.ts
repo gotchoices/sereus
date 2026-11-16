@@ -3,7 +3,7 @@
  * invitation (`CadreControl.JoinRequest`, one row per invitation, with its outcome in
  * `JoinSuccess` / `JoinFailure`) in the background, on every owner machine of the party, until
  * the join works, the invitation is used up or expires, or the user dismisses it. The behaviour
- * is described in `docs/strands.md` → "Joining while the inviter is offline".
+ * is described in `docs/strands/formation.md` → "Joining while the inviter is offline".
  *
  * `CadreNode` owns every side effect and hands this module plain functions
  * ({@link PendingJoinRunnerDeps}): read the joins, hear a change to the tables they are read

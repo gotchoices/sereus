@@ -469,7 +469,7 @@ describe('a sealed strand', () => {
 
     // The MANAGER arm of the same writer reads committed.Manager, now empty, so the
     // post-revocation cleanup loop is gone for good — the consequence the sealing
-    // paragraph of docs/strands.md now states. Nothing else can reject: the row is there
+    // paragraph of docs/strands/membership.md now states. Nothing else can reject: the row is there
     // (so the writer reaches the DELETE) and the founder's tombstone satisfies
     // Revocation.Authorized (it is still a committed Member).
     await expect(removeMemberPeer(db, {

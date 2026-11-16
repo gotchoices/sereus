@@ -11,7 +11,7 @@
  * and arms a timer, and runs are single-flight: changes inside the coalescing window share
  * one run, a change during a run produces exactly one follow-up run, and a consumer's own
  * `trigger` (start, retry backoff) and the backstop go through the same rule.
- * `docs/architecture.md` → "Table change subscriptions" says what the seam does not hear,
+ * `docs/cadre/control-convergence.md` → "Table change subscriptions" says what the seam does not hear,
  * which is why consumers keep a backstop.
  */
 import debug from 'debug';

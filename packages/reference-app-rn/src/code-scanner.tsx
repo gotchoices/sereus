@@ -6,7 +6,7 @@
  *
  * `expo-camera` is a native module: a dev client built before it was added throws
  * "Cannot find native module 'ExpoCamera'" as this file loads, which is when Settings loads
- * (docs/reference-app-rn.md → "When Native Rebuild Is Needed").
+ * (docs/platforms/react-native.md → "When a native rebuild is needed").
  */
 
 import { useEffect, useRef, useState } from 'react';

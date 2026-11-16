@@ -6,7 +6,7 @@
  *
  * reference-app-ns carries a hand-copied twin (`src/join-failure.ts` there), without the
  * cancelled-join alert, since it offers no cancel; the two apps share no code by design
- * (docs/reference-app-ns.md).
+ * (packages/reference-app-ns/README.md).
  */
 
 import {

@@ -94,7 +94,7 @@ const REGISTRATION_BUDGET_MS = 90_000;
  * registration that happened in 3 of 13 runs (a probe saw the one announcing member deliver to no
  * one, itself included), and in none of 7 runs with this wait. An app pays this only in the
  * seconds after a machine registers; Optimystic documents it for groups of three or fewer machines
- * rather than fixing it, and docs/strands.md → "What a watcher sees" records it.
+ * rather than fixing it, and docs/strands/app-schema.md → "What a watcher sees" records it.
  */
 const RECORD_GOSSIP_SETTLE_MS = 10_000;
 

@@ -21,7 +21,7 @@ import { replaceOnce, withItems, withLegacyTable } from '../../../test-harness/c
  * catalog alone, so it lists the same statements it does over the optimystic module.
  */
 
-const DOCS_SECTION = 'docs/architecture.md → "Control schema versions and migrations"';
+const DOCS_SECTION = 'docs/cadre/control-schema.md → "Schema versions and migrations"';
 const FIXTURE_DIR = new URL('./fixtures/control-schema/', import.meta.url);
 const FIXTURE_NAME = /^v(\d+)\.qsql$/;
 

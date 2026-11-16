@@ -1,403 +1,232 @@
 # @serfab/quereus-plugin-sereus
 
-A [Quereus](https://github.com/nicktobey/quereus) plugin that connects a Quereus
-database to a [Sereus](../../docs/architecture.md) strand for SQL access. It
-composes the [@optimystic/quereus-plugin-crypto](https://github.com/nicktobey/optimystic/tree/main/packages/quereus-plugin-crypto)
-and [@optimystic/quereus-plugin-optimystic](https://github.com/nicktobey/optimystic/tree/main/packages/quereus-plugin-optimystic)
-plugins, manages libp2p networking, and optionally applies a sApp schema.
+A [Quereus](https://github.com/gotchoices/quereus) plugin that connects a Quereus `Database` to a Sereus strand, so an app or tool reads and writes the strand with SQL. It registers the Optimystic storage module and the crypto functions, creates the strand's libp2p node (or uses one it is given), applies the strand's own `Strand` schema, and applies the app's schema as `App`.
 
-## Features
+`@serfab/cadre-core` opens every strand database through this package. An app that runs a cadre node gets its strand databases from cadre-core; use this package directly for tools, tests and Quoomb.
 
-- **Strand connection**: Connect a Quereus database to a Sereus strand with a single call.
-- **Plugin composition**: Automatically registers the crypto and optimystic plugins.
-- **Node management**: Creates a libp2p node or accepts an injected one (e.g. from a CadreNode).
-- **Schema application**: Wraps DDL in `declare schema App { ... } apply schema App;`.
-- **Two runtimes**: A Node entry (`./plugin`) and a self-contained browser bundle
-  (`./plugin-browser`) for Quoomb-web and other browser/worker hosts.
-- **Two entry points**: A plugin-loader-compatible default export and a
-  programmatic `connectToStrand()` API.
-
-## Artifacts
-
-The package ships two plugin artifacts, selected automatically by the consumer's
-environment via the `exports` map:
-
-| Artifact | Built by | Transports | Default storage | Use from |
-|---|---|---|---|---|
-| `dist/plugin.js` | `tsc` | TCP + WebSockets | in-memory / FS | Node (`./plugin`) |
-| `dist/plugin-browser.js` | `esbuild` | WebSockets + circuit-relay | IndexedDB | Browser/worker (`./plugin-browser`) |
-
-The browser bundle is a single self-contained, minified ESM file of roughly 1.9 MiB
-raw / 0.6 MiB gzipped (the exact measurement and its date live beside the size caps in
-`test/browser-bundle.spec.ts`; a second copy of the numbers here would go stale). A
-source map, `dist/plugin-browser.js.map`, ships beside it with the original sources
-embedded, so devtools still show readable code. It bundles only the TCP-free libp2p
-surface (`@optimystic/db-p2p/rn`) and does **not** import `@quereus/quereus` at
-runtime — registrations are applied against the host-supplied `db`, so it reuses the
-host's Quereus instance rather than instantiating a second one.
-
-## Installation
+## Install
 
 ```bash
-npm install @serfab/quereus-plugin-sereus
-# or
-yarn add @serfab/quereus-plugin-sereus
+yarn add @serfab/quereus-plugin-sereus @quereus/quereus
 ```
 
----
+The `Database` passed to this package must come from the same `@quereus/quereus` instance the package resolves.
 
-## Using it from Quoomb Web (step by step)
+## First run
 
-[Quoomb Web](../../../quereus/packages/quoomb-web) loads plugins by URL: its
-worker calls `import(url)` and registers the module's default export against the
-live database. To connect Quoomb Web to a strand you need to (1) make the
-**browser bundle** reachable at an importable URL, and (2) give it a strand id
-and at least one **browser-dialable** bootstrap address.
-
-### Prerequisites
-
-- A **strand id** (UUID) to connect to.
-- For networked use: a libp2p **bootstrap/relay reachable over secure WebSockets**
-  (`/wss`) from an `https://` page. Browsers cannot dial raw TCP, and a plain
-  `ws://`/`tcp` address will not dial from a TLS origin. WebSockets +
-  circuit-relay are the only supported transports in v1.
-- The strand's **sApp schema** (optional — only needed to bootstrap a brand-new
-  strand or to expose `App.*` tables before any peer has).
-
-### Step 1 — Make the browser bundle importable
-
-Pick one of the hosting options below ([Hosting the browser
-bundle](#hosting-the-browser-bundle)). The quickest are:
-
-- **Published CDN URL** (recommended once published):
-  `https://cdn.jsdelivr.net/npm/@serfab/quereus-plugin-sereus/dist/plugin-browser.js`
-- **Local dev**: copy `dist/plugin-browser.js` into Quoomb Web's `public/` folder
-  so it is served same-origin at `http://localhost:5173/plugin-browser.js`.
-
-The URL must serve the file with `Content-Type: text/javascript` (or
-`application/javascript`) and CORS that permits the page origin.
-
-### Step 2a — Load via the Plugins panel (manual)
-
-1. Open Quoomb Web → **Plugins** panel.
-2. Paste the bundle URL into the plugin URL field and install it.
-   - The manual installer validates the URL and only accepts **`https://`** (or
-     `file://`) ending in `.js`/`.mjs`. A same-origin `http://localhost` URL is
-     **rejected here** — use Step 2b (config) for local-dev http, or serve
-     Quoomb over https.
-3. Open the plugin's config and set at least:
-   - `strand_id` — the strand UUID.
-   - `bootstrap_nodes` — comma-separated `/wss` multiaddrs.
-   - `schema` — optional sApp DDL.
-4. Run a query, e.g. `select * from App.Message`.
-
-### Step 2b — Load via `quoomb.config.json` (autoload)
-
-The config/autoload path calls the loader directly and **bypasses the
-https-only check**, so it is the right choice for local `http://localhost`
-during development. In Quoomb Web, open the **Config** modal and import this
-JSON (or set it as `quoomb.config.json`):
-
-```jsonc
-{
-  "plugins": [
-    {
-      "source": "https://cdn.jsdelivr.net/npm/@serfab/quereus-plugin-sereus/dist/plugin-browser.js",
-      "config": {
-        "strand_id": "550e8400-e29b-41d4-a716-446655440000",
-        "bootstrap_nodes": "/dns4/relay.example/tcp/443/wss/p2p/Qm...",
-        "schema": "table Message (Id integer primary key, Content text not null)"
-      }
-    }
-  ],
-  "autoload": true
-}
-```
-
-With `autoload: true`, the plugin loads on session start and applies the schema.
-
-### Step 3 — Query the strand
-
-Once loaded, the `optimystic` vtab is the default and `App.*` tables resolve
-against the strand:
-
-```sql
-select * from App.Message;
-insert into App.Message (Id, Content) values (1, 'hello strand');
-```
-
-### Notes & limitations
-
-- **Storage.** When `storage` is not injected, the browser bundle opens a default
-  `IndexedDBRawStorage` against an IndexedDB database named
-  `sereus-strand-<strandId>`. State survives reload. The plugin treats the
-  IndexedDB handle as borrowed and does **not** close it on `shutdown()` — its
-  lifecycle is the page/worker.
-- **Network transactor by default.** Every connection commits through the
-  strand's libp2p cohort unless it asks otherwise; the in-process `local`
-  transactor is a testing/tooling option (`connectToStrand({ transactor:
-  'local' })`), not a browser deployment mode.
-- **WebRTC** requires cross-origin isolation (COOP/COEP) and is tracked as a
-  follow-up; v1 is WebSockets + circuit-relay only.
-- **Lifecycle.** Quoomb Web's loader keeps only the manifest and discards the
-  plugin's returned `shutdown()`, so the libp2p node is torn down with the
-  worker rather than on plugin unload.
-
----
-
-## Hosting the browser bundle
-
-The browser bundle is just an ESM file; it can be served from anywhere that
-returns a JavaScript content type with appropriate CORS.
-
-### Published package on a CDN (recommended)
-
-After `yarn pub:quereus-plugin-sereus` (see [Publishing](#publishing)), the npm
-package is mirrored by the public CDNs, which serve the correct content type and
-CORS automatically:
-
-- jsDelivr: `https://cdn.jsdelivr.net/npm/@serfab/quereus-plugin-sereus/dist/plugin-browser.js`
-- jsDelivr (pinned): `https://cdn.jsdelivr.net/npm/@serfab/quereus-plugin-sereus@0.7.1/dist/plugin-browser.js`
-- unpkg: `https://unpkg.com/@serfab/quereus-plugin-sereus/dist/plugin-browser.js`
-
-### Self-hosted / same-origin
-
-Copy `dist/plugin-browser.js` to any static host (or Quoomb Web's `public/`) and
-reference it by URL. Same-origin hosting sidesteps CORS entirely.
-
-### Loading from GitHub
-
-Loading the bundle straight from a GitHub repo has a caveat: **`dist/` is
-gitignored**, and `raw.githubusercontent.com` serves files as `text/plain` with
-`X-Content-Type-Options: nosniff`, so the browser refuses to `import()` it as a
-module. Two routes that *do* work:
-
-1. **jsDelivr's GitHub endpoint**, which serves repo files with the correct MIME
-   type and CORS — but only files that exist at the ref. Since `dist/` is not
-   committed, this requires the built bundle to be present at the ref you point
-   at (e.g. a CI step that commits `plugin-browser.js` to a `dist`/`gh-pages`
-   branch or a tag):
-
-   ```
-   https://cdn.jsdelivr.net/gh/gotchoices/sereus@<tag-or-branch>/packages/quereus-plugin-sereus/dist/plugin-browser.js
-   ```
-
-2. **GitHub Pages**: publish `plugin-browser.js` to a Pages site, which serves it
-   with a JavaScript content type and CORS.
-
-For most cases the npm-backed CDN URL above is simpler and is the recommended
-GitHub-free hosting path. (Note: GitHub *Release assets* are served as
-`application/octet-stream` and cannot be imported as ESM.)
-
----
-
-## Programmatic API
+This Node script opens a strand in one process, writes two rows and reads them back. It is adapted from `test/e2e/local-transactor.e2e.spec.ts`. It imports `FileRawStorage` from `@optimystic/db-p2p-storage-fs`, which this package depends on; add that package to your own dependencies if your package manager does not expose transitive ones.
 
 ```typescript
+import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 import { Database } from '@quereus/quereus';
+import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { connectToStrand } from '@serfab/quereus-plugin-sereus';
+
+const dir = './data/my-strand';
+await mkdir(dir, { recursive: true });
 
 const db = new Database();
 const strand = await connectToStrand(db, {
-  strandId: '550e8400-e29b-41d4-a716-446655440000',
-  schema: 'table Message (Id integer primary key, Content text not null)',
-  bootstrapNodes: ['/ip4/1.2.3.4/tcp/9100/p2p/QmPeerId'],
+	strandId: randomUUID(),
+	transactor: 'local',
+	storage: new FileRawStorage(dir),
+	schema: 'table Msg (Id integer primary key, Body text not null)',
+	schemaVersion: 1,
 });
 
-for await (const row of db.eval('select * from App.Message')) {
-  console.log(row);
+await db.exec(`insert into App.Msg (Id, Body) values (1, 'a'), (2, 'b')`);
+for await (const row of db.eval('select count(*) as c from App.Msg')) {
+	console.log(row);	// { c: 2 }
 }
 
+await db.close();
 await strand.shutdown();
 ```
 
-### Plugin-loader (Node)
+The script uses the `local` transactor so that it needs no other node. An application leaves `transactor` unset. Close the `Database` before calling `shutdown()`, so no write can begin on a released connection.
 
-The `./plugin` export is compatible with Quereus plugin-loader:
+How to write the `schema` text is in the [schema guide](https://github.com/gotchoices/sereus/blob/master/docs/schema-guide.md).
+
+## Entry points
+
+| Import | Runs in | Provides |
+|---|---|---|
+| `@serfab/quereus-plugin-sereus` | Node | `connectToStrand`, `checkAppSchema`, the error classes and the types |
+| `@serfab/quereus-plugin-sereus/plugin` | Node | Default export: a plugin registration function that takes settings as SQL values. A bundler that honours the `browser` condition gets the browser bundle instead. |
+| `@serfab/quereus-plugin-sereus/plugin-browser` | Browser or worker | The same registration function as one bundled ESM file (`dist/plugin-browser.js`, with a source map beside it). It imports `@quereus/quereus` by bare specifier, which the host must resolve. |
+
+The Node entries create a TCP libp2p node and keep blocks in memory unless given storage. The browser entry dials WebSockets and circuit relays only, and stores blocks in IndexedDB.
+
+## `connectToStrand(db, options)`
+
+Resolves to a [connection result](#the-connection-result). The options type is `StrandConnectionOptions` in [`src/types.ts`](src/types.ts).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `strandId` | required | The strand's id. The strand's libp2p network is named `strand-<strandId>`. |
+| `schema`, `schemaVersion` | none | The app schema body and its version, given together or not at all. Without them the connection serves the `Strand` tables only. |
+| `bootstrapNodes` | `[]` | Multiaddrs of nodes that already serve the strand. |
+| `transactor` | `'network'` | Which Optimystic transactor commits go through. See [`transactor` values](#transactor-values). |
+| `storage` | none | An `IRawStorage` that persists the strand's blocks. Borrowed: `shutdown()` does not close it. |
+| `clusterSize` | `4` | Nodes the strand's replication cluster should have: an integer of at least 2. See [`clusterSize`](#clustersize). |
+| `libp2pNode`, `coordinatedRepo` | none | An existing strand node and its repo, given together. The connection uses the node and leaves it running on `shutdown()`. `port`, `bootstrapNodes`, `fretProfile` and `clusterSize` are then unused. |
+| `port` | `0` | TCP listening port of the node the connection creates. `0` picks a free port. The browser entry ignores it. |
+| `fretProfile` | `'edge'` | FRET profile of the node the connection creates: `'edge'` or `'core'`. |
+| `enableCache` | `true` | Passed to the Optimystic plugin as `enable_cache`. |
+| `offline` | none | Turns on Optimystic's offline queue. See [Durability and offline mode](#durability-and-offline-mode). |
+| `cohortReachability` | none | The gate the offline queue asks before it submits, in place of the node's own. cadre-core passes one that also waits for the party's own machines. |
+| `sAppId`, `sAppVersion` | none | Accepted and not read by the connection. |
+
+### The app schema and its version
+
+`schema` is the body of `declare schema App { … }`: `table`, `index`, `unique index`, `view`, `materialized view` and `assertion` items. `schemaVersion` is a whole number of at least 1 that the app raises with every change to the schema. The strand records the highest version any member has applied, and a connect below it applies nothing and fails with `AppSchemaOutdatedError`. See [App schema versions across a strand's members](https://github.com/gotchoices/sereus/blob/master/docs/strands/app-schema.md#app-schema-versions-across-a-strands-members).
+
+### `transactor` values
+
+- `'network'`: commits go through the strand's libp2p cluster. A node that is alone coordinates for itself, so this works with one node or many. It is the only value an application should use.
+- `'local'`: commits go straight to this process's raw storage and no other node is consulted. For in-process tests and tooling. Give it a persistent `storage` to keep data across restarts.
+- `'test'`: Optimystic's in-memory fake. No libp2p node is created unless one is injected. For unit tests.
+
+### `clusterSize`
+
+4 is the smallest size at which a write still commits while one holder is offline; at 2 or 3 every holder must be awake for every write. Every node of a strand must use the same value, and the value is fixed when the libp2p node is created. The full reasoning is in [Replication cluster size](https://github.com/gotchoices/sereus/blob/master/docs/cadre/control-replication.md#replication-cluster-size).
+
+## The connection result
+
+`connectToStrand` and the plugin's default export both resolve to a `SereusPluginResult` ([`src/types.ts`](src/types.ts)).
+
+| Member | Use |
+|---|---|
+| `shutdown()` | Releases the Optimystic plugin and stops the libp2p node if the connection created it. |
+| `transactor` | The transactor the connection resolved to. |
+| `hydrated` | How many persisted tables and indexes the catalog was loaded with before the schemas were applied. Both are 0 on empty storage. |
+| `appSchema` | Present when `schema` was given. A promise that never rejects and settles with how the apply ended: `applied`, `failed` or `cancelled`. |
+| `appSchemaWaitingFor`, `appSchemaDeferredBy` | Present when the connect-time apply was deferred: what it waits for (`'queue'` or `'cohort'`), and the queued transaction ids that refused it. |
+| `onAppSchemaSuperseded(listener)` | Called once, with an `AppSchemaOutdatedError`, when another member has recorded a higher schema version. The host must then close the database. |
+| `applyAppSchema({ schema, schemaVersion })` | Applies an app schema to the live connection and starts the version check for it. |
+| `onCommitDurability(listener)`, `onCommitFullyHeld(listener)` | Report who holds what each commit wrote. |
+| `offline` | The offline queue's controller. Present when `offline` was given. |
+| `createEmptyCollections(except?)` | Commits an empty collection for every declared table that has none. For a strand's founder. |
+
+## App schema checks and refusals
+
+`checkAppSchema({ schema, schemaVersion })` needs no strand. It rejects with `AppSchemaRefusedError` for the refusals that the schema text and version decide alone: a `seed` item, an item the parser did not recognize (a `create …` prefix, a misspelled keyword), a syntax error, or a version that is not a whole number of at least 1.
+
+A connect raises `AppSchemaRefusedError` when the schema can never apply to the strand's tables as they are, for example a `not null` column with no default added to a table that has rows. `AppSchemaOutdatedError` is its subclass for a version below the one the strand records. Retrying the same schema fails the same way, so a host should not retry. `appSchemaRefusalOf(error)` finds either error through wrapping errors. A storage or network fault is never one of these errors. See [A schema that can never apply here is not retried](https://github.com/gotchoices/sereus/blob/master/docs/strands/app-schema.md#a-schema-that-can-never-apply-here-is-not-retried).
+
+An apply that queued offline transactions refuse, or that cannot reach the strand's other nodes, does not fail the connect. The connection comes up with the schema it had, sets `appSchemaWaitingFor`, and retries; `appSchema` settles when a retry ends. See [An app schema upgrade waits for the queue or the cohort](https://github.com/gotchoices/sereus/blob/master/docs/strands/app-schema.md#an-app-schema-upgrade-waits-for-the-queue-or-the-cohort).
+
+An app table may share its name with one of the strand's own tables; the two are stored separately. See [Same-named tables in Strand and App](https://github.com/gotchoices/sereus/blob/master/docs/strands/app-schema.md#same-named-tables-in-strand-and-app).
+
+## Durability and offline mode
+
+`onCommitDurability` is called after every commit that wrote something, before the commit returns. `onCommitFullyHeld` is called once when a commit that was reported below full replication becomes held by every node of its cluster. Both pass through from `@optimystic/quereus-plugin-optimystic`, whose README defines the report: [A commit's durability](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#a-commits-durability--pluginoncommitdurabilitylistener). The `SqlCommitDurability` and `CommitFullyHeld` types are re-exported here.
+
+The `offline` option is that plugin's `offline` block without `journalLabel`, which this package derives from the strand id: [Offline mode](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#offline-mode--pluginoffline). With it, the result's `offline` is the queue's controller, and `offlineControllerOf(db)` finds the same controller from the `Database`. The queue's status, state and error types are re-exported here. Without a `journal` the queue lives in memory, except in the browser entry, which journals into the strand's IndexedDB database. The `Strand` tables are always acknowledged by the network, queue or not.
+
+What these mean for an app is in [Writing to a strand: durability and offline mode](https://github.com/gotchoices/sereus/blob/master/docs/strands/writes.md).
+
+## Founding a strand: `createEmptyCollections`
+
+A table nobody has written has no collection, so no single node can show that it is empty: every read of it asks the strand's other nodes, and fails while they are offline. The result's `createEmptyCollections(except?)` commits an empty collection for every table the `Strand` and `App` schemas declare that has none, and resolves to the number it committed.
+
+- `except` lists qualified tables (`'Strand.Header'`) that the caller is about to write. Their inserts create their collections, so those tables are left out. A name that matches no declared table throws.
+- The founder calls it once, before its founding write, while no other node can have written to the strand. cadre-core's founder bootstrap does this.
+- Call it only while nothing else writes through the `Database`. It commits whatever is staged in those collections, outside any SQL transaction.
+
+The same step is exported as `createEmptyCollections(db, bridge, schemaNames, except?)` for a database composed outside this package. `bridge` is the Optimystic plugin's transaction bridge (`txnBridge` on its result). The call throws when `schemaNames` declare no Optimystic table.
+
+## Plugin settings
+
+The default export of `./plugin` and `./plugin-browser` takes a settings map of SQL values and resolves to the same [connection result](#the-connection-result):
 
 ```typescript
-import { Database, registerPlugin } from '@quereus/quereus';
+import { Database } from '@quereus/quereus';
 import sereusPlugin from '@serfab/quereus-plugin-sereus/plugin';
 
 const db = new Database();
-const result = await registerPlugin(db, sereusPlugin, {
-  strand_id: '550e8400-e29b-41d4-a716-446655440000',
-  schema: 'table Message (Id integer primary key, Content text not null)',
-  bootstrap_nodes: '/ip4/1.2.3.4/tcp/9100/p2p/QmPeerId',
-});
-
-await result.shutdown();
-```
-
-### Local transactor (in-process, no cohort)
-
-`transactor: 'local'` sends every transaction straight to this process's raw
-storage — no peers are consulted at all. It is for in-process tests and tooling
-(this package's own e2e suites run on it); applications should stay on the
-default `network` transactor, which a lone node coordinates for itself.
-
-Pair it with a persistent `IRawStorage` to survive restart: the same storage
-instance is wired into both the libp2p data path and the optimystic plugin's
-local transactor.
-
-```typescript
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
-
-const storage = new FileRawStorage('./data/my-strand');
-const strand = await connectToStrand(db, {
-  strandId: 'abc',
-  transactor: 'local',
-  storage,
-  schema: 'table Msg (Id integer primary key, Body text not null)',
+const strand = await sereusPlugin(db, {
+	strand_id: '550e8400-e29b-41d4-a716-446655440000',
+	schema: 'table Message (Id text primary key, Content text)',
+	schema_version: 1,
+	bootstrap_nodes: '/ip4/192.0.2.10/tcp/9100/p2p/<peer id>',
 });
 ```
 
-The plugin treats `storage` as borrowed: `shutdown()` releases the libp2p node
-and collection factory but does **not** close the storage.
+Quereus's `registerPlugin(db, sereusPlugin, settings)` also works, but it returns nothing, so the caller has no `shutdown()` to call.
 
-### With an injected node
+| Setting | Default | Accepts |
+|---|---|---|
+| `strand_id` | required | A string: the strand's id |
+| `bootstrap_nodes` | `''` | Comma-separated multiaddrs |
+| `schema` | none | The app schema body |
+| `schema_version` | none | A whole number of at least 1. Required with `schema` and refused without it |
+| `transactor` | `'network'` | `'network'`, `'local'` or `'test'` |
+| `storage_path` | none | Node entry only: a directory for a `FileRawStorage`. The browser entry rejects it |
+| `port` | `0` | An integer from 0 to 65535 |
+| `enable_cache` | `true` | `true`, `false`, `1` or `0` |
+| `fret_profile` | `'edge'` | `'edge'` or `'core'` |
+| `sapp_id`, `sapp_version` | `'unknown'`, `'1.0.0'` | Strings. Accepted and not read by the connection |
 
-When integrating with an existing CadreNode or other libp2p host:
+`clusterSize`, `offline`, `storage`, `libp2pNode` and `cohortReachability` have no setting; they are programmatic only.
 
-```typescript
-const strand = await connectToStrand(db, {
-  strandId: 'abc',
-  libp2pNode: existingNode,
-  coordinatedRepo: existingRepo,
-});
-```
+Settings are checked strictly when the plugin loads (`parseConfig` in [`src/parse-config.ts`](src/parse-config.ts)):
 
-The plugin uses the injected node instead of creating one, and will not stop it
-on shutdown.
+- An unknown key or a value of the wrong type fails the load with one error that lists every problem. Nothing falls back to a default the user did not choose, so a host that adds keys of its own to the settings map cannot load the plugin.
+- A setting left out, set to null, or (for the string and select settings) set to `''` takes its default.
+- `port`, `schema_version` and `enable_cache` must be a JSON number or boolean. A `${VAR}` reference in `quoomb.config.json` expands to a string, which they reject.
 
-### A commit's durability
+## Loading in Quoomb Web
 
-The result's `onCommitDurability(listener)` is called after every commit that wrote something, before the commit returns, with who holds what it wrote; `onCommitFullyHeld(listener)` is called once when a commit reported `followed` below full replication becomes held by its whole cohort. Both pass through from `@optimystic/quereus-plugin-optimystic`, whose README explains the report ([A commit's durability](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#a-commits-durability--pluginoncommitdurabilitylistener)); the `SqlCommitDurability` and `CommitFullyHeld` types are re-exported here. A cadre app reads the same reports through `@serfab/cadre-core` ([strands.md → A commit's durability](../../docs/strands.md#a-commits-durability)).
+Quoomb Web imports a plugin by URL in its worker and registers the module's default export. The published browser bundle does not load that way:
 
-### Offline mode
+- **The bundle imports `@quereus/quereus` by bare specifier.** The build leaves Quereus external so that the plugin uses the host's Quereus instance. A browser resolves a bare specifier in a module imported by URL only through an import map, and Quoomb Web's worker supplies none, so the import fails before the plugin registers.
+- **The Plugins panel's install-by-URL registers a plugin with empty settings.** This plugin refuses that, because `strand_id` is required. Only a `plugins` entry in `quoomb.config.json` carries settings.
 
-With `offline` given, the result's `offline` is the queue's controller (`enter()`, `exit()`, `whenDrained()`, `onStatus(listener)`, `entries()`, …), passed through from `@optimystic/quereus-plugin-optimystic` ([Offline mode](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#offline-mode--pluginoffline)); `offlineControllerOf(db)` finds it from the `Database`, and the status, state and error types are re-exported here. The `Strand` tables are always acknowledged by the network, and an `App` schema apply that queued transactions refuse is retried once they drain rather than failing the connect: the result's `appSchema` settles with how it ended, `appSchemaWaitingFor` is `'queue'`, and `appSchemaDeferredBy` names the transactions that refused it. An apply that cannot reach the strand's cohort is deferred too, offline mode or not (`appSchemaWaitingFor: 'cohort'`): see [strands.md → An app schema upgrade waits for the queue or the cohort](../../docs/strands.md#an-app-schema-upgrade-waits-for-the-queue-or-the-cohort). Where the queue is saved is in [strands.md → Offline mode](../../docs/strands.md#offline-mode).
+The browser entry is for a host that resolves `@quereus/quereus` itself, such as an app whose bundler includes the entry and maps the specifier to the app's own Quereus module. Such a host also meets these limits:
 
-### App schema refusals and versions
+- **Bootstrap addresses must be ones a browser can dial.** From an `https://` page that means `/wss` addresses or addresses through a relay. Plain `ws://` and raw TCP do not dial.
+- **A host that loads by URL through Quoomb's loader needs `https:`.** The loader accepts only `https:` and `file:` plugin URLs, so a bundle served from `http://localhost` is refused.
+- **Quoomb's loader discards the registration result,** so nothing calls `shutdown()`. The libp2p node stops when the worker does.
+- **The browser entry has no WebRTC transport.**
 
-A schema that can never apply to the strand's tables, such as a `not null` column with no default added to a table with rows, fails the connect with `AppSchemaRefusedError` (exported with `appSchemaRefusalOf(error)`, which finds one through wrapping errors), so a host knows not to retry it, and so does a connect whose `schemaVersion` is below the one the strand records, with its subclass `AppSchemaOutdatedError`. `checkAppSchema({ schema, schemaVersion })` raises the refusals the schema's text and version alone decide (a `seed` item, an item the parser skipped, a syntax error, a version that is not a whole number of at least 1) without a strand database: see [strands.md → A schema that can never apply here is not retried](../../docs/strands.md#a-schema-that-can-never-apply-here-is-not-retried).
+## What it registers
 
-While the connection runs it checks the strand's recorded version, and the result's `onAppSchemaSuperseded(listener)` is called once, with an `AppSchemaOutdatedError`, when another member has recorded a higher one: the connection's writes would then erase what the newer version added, so close the database ([strands.md → A running member stops](../../docs/strands.md#a-running-member-stops)). The result's `applyAppSchema({ schema, schemaVersion })` applies a schema to the live connection (an app claiming a strand it serves as a storage replica) and starts that check for it.
+- The `optimystic` virtual table module, set as the database's default, so tables declared without a `using` clause are stored in the strand.
+- The functions `StampId()`, `digest()`, `sign()`, `verify()` and `randomBytes()`.
+- Schema `Strand` (the strand's membership tables) on every connection, and schema `App` when `schema` is given.
 
-### Founding a strand: `createEmptyCollections()`
+## What it writes
 
-A table nobody has written has no collection, so no single machine can show it empty: every read of it asks the other members, and fails while they are offline. The result's `createEmptyCollections(except?)` commits an empty collection for every table the `Strand` and `App` schemas declare that has none yet, and resolves to how many it committed. `except` lists qualified tables (`'Strand.Header'`) the caller is about to write: their inserts create their collections, so every tree of those tables is left out, and a name matching no declared table throws. The founder calls it once, before its founding write, while no other machine can have written to the strand; cadre-core's founder bootstrap does this, leaving out the tables its founding transaction writes ([strands.md → Joining](../../docs/strands.md#joining-no-writes-before-the-first-sync)). Call it only while nothing else writes through the `Database`: it commits whatever is staged in those collections outside any SQL transaction.
+- **Node, `storage` or `storage_path` given:** the strand's blocks, in that storage. Without either, blocks live in memory and are lost when the process exits.
+- **Browser entry:** an IndexedDB database named `sereus-strand-<strandId>`, holding the strand's blocks and, with `offline` on and no `journal` given, the offline queue's journal. `shutdown()` does not close or delete it.
 
-The same step is exported on its own as `createEmptyCollections(db, bridge, schemaNames, except?)`, for a database composed outside this plugin: `bridge` is the Optimystic plugin's transaction bridge (`txnBridge` on its result), and the call throws when `schemaNames` declare no Optimystic table. cadre-core's control-database genesis calls it with `['CadreControl']` ([architecture.md → Control tables are network-backed](../../docs/architecture.md#control-tables-are-network-backed)).
+Set `DEBUG=sereus:plugin:*` for the connection's log.
 
----
+## Other exports
 
-## Configuration
-
-### `StrandConnectionOptions` (programmatic API)
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `strandId` | string | *required* | UUID of the strand to connect to |
-| `bootstrapNodes` | string[] | `[]` | Bootstrap multiaddrs for peer discovery |
-| `schema` | string | — | sApp schema DDL to apply, as the body of `declare schema App { ... }`. An item the Quereus parser would skip (`create unique index …`, a misspelled item keyword) is refused rather than ignored. Its tables may share names with the strand's own tables; they are stored separately ([Same-Named Tables](../../docs/strands.md#same-named-tables-in-strand-and-app)). Given only with `schemaVersion` |
-| `schemaVersion` | number | — | Version of `schema`, given with it: a whole number of at least 1 the app raises with every change to the schema. The strand records the highest version any member has applied, and a connect below it applies nothing and fails with `AppSchemaOutdatedError` ([strands.md → Until then](../../docs/strands.md#until-then-every-member-on-the-same-schema-version)) |
-| `sAppId` | string | `'unknown'` | sApp author public key |
-| `sAppVersion` | string | `'1.0.0'` | sApp version |
-| `port` | number | `0` | libp2p listening port (0 = random) |
-| `enableCache` | boolean | `true` | Enable optimystic caching |
-| `fretProfile` | `'edge' \| 'core'` | `'edge'` | FRET profile |
-| `clusterSize` | number | `4` | Nodes the **strand's** replication cluster should have (the control network uses its own fixed `CONTROL_REPLICATION_BREADTH` and never reads this). 4 is the smallest breadth whose 0.75 super-majority (`ceil(4 × 0.75) = 3`) still commits with one holder offline; at 2 or 3 every holder must be awake for every write, and at 2 read repair cannot converge at all. Every peer on the strand should use the same value: a peer configured much higher derives a larger expected cohort and can reject a coordinator's smaller declared peer set as a downsize. Frozen when the libp2p node is created, so a change takes effect on the next restart. Must be an integer ≥ 2 (`MIN_CLUSTER_SIZE`, Optimystic's own minimum). Leaving it unset is *not* the same as passing 4 elsewhere — Optimystic's own fallback is 10, so this default is applied here. Ignored when `libp2pNode` is injected |
-| `libp2pNode` | Libp2p | — | Inject an existing libp2p node |
-| `coordinatedRepo` | IRepo | — | Required when `libp2pNode` is provided |
-| `transactor` | `'local' \| 'network' \| 'test'` | `'network'` | Storage engine transactions go through. `'network'`: the strand's libp2p cohort, which a lone node coordinates for itself — the only value an application should use. `'local'`: this process's raw storage directly, no peers consulted (in-process tests and tooling). `'test'`: Optimystic's in-memory fake; no libp2p node is created unless one is injected (unit tests) |
-| `storage` | IRawStorage | — | Persistent raw storage. Borrowed — not closed on `shutdown()` |
-| `offline` | `StrandOfflineOptions` | — | Turn on Optimystic's offline queue: the plugin's `offline` block less `journalLabel`, which is derived from the strand id. Programmatic only; no plugin setting carries it. See [Offline mode](#offline-mode) |
-
-### Plugin settings (plugin-loader / Quoomb)
-
-| Setting | Type | Default | Description |
-|---|---|---|---|
-| `strand_id` | string | *required* | UUID of the strand |
-| `bootstrap_nodes` | string | `''` | Comma-separated bootstrap multiaddrs |
-| `schema` | string | — | sApp schema DDL |
-| `schema_version` | number | — | Version of `schema`: a whole number of at least 1, required with `schema` and refused without it |
-| `sapp_id` | string | `'unknown'` | sApp author public key |
-| `sapp_version` | string | `'1.0.0'` | sApp version |
-| `port` | number | `0` | libp2p listening port: an integer from 0 to 65535 (0 = random) |
-| `enable_cache` | boolean | `true` | Enable caching: `true`, `false`, `1` or `0` |
-| `fret_profile` | select | `'edge'` | FRET profile (`'edge'` or `'core'`) |
-| `transactor` | select | `'network'` | Storage engine (`'local'`, `'network'` or `'test'`) — see the `transactor` row above |
-| `storage_path` | string | — | Node entry only: directory for a persistent `FileRawStorage`. The browser entry rejects it (it stores in IndexedDB) |
-
-Settings are checked strictly at load. An unknown key (including the retired
-`mode`) or a value of the wrong type fails the load with one error that names
-every offending setting; nothing falls back to a default the user did not
-choose. Leaving a setting out, NULL, or `''` means "use the default" (`''`
-only for the string and select settings). A host that adds keys of its own to
-the plugin's settings map therefore fails to load the plugin. `port` and
-`enable_cache` must be a JSON number and boolean: a `${VAR}` reference in
-`quoomb.config.json` expands to a string, which they reject.
-
-**Bootstrap multiaddrs.** Browsers can only dial transports reachable from an
-`https://` page. Use `/wss` (or `/dns/.../wss`, or a relay-fronted multiaddr).
-Plain `/tcp/.../ws` over HTTP won't dial from a TLS origin, and raw TCP is
-unavailable in the browser.
-
-## Provided functions and modules
-
-Registered automatically from the composed plugins:
-
-- **Virtual table module**: `optimystic` (set as default vtab)
-- **Functions**: `StampId()`, `digest()`, `sign()`, `verify()`, `randomBytes()`
-
----
+`MIN_CLUSTER_SIZE`, `DEFAULT_STRAND_CLUSTER_SIZE`, `CONTROL_REPLICATION_BREADTH`, `COHORT_READ_DEADLINE_MS`, the cluster policies and their builders ([`src/cluster-size.ts`](src/cluster-size.ts)), and `wrapStorageWithCache` / `disposeStorageCache` ([`src/cached-storage.ts`](src/cached-storage.ts)) are exported for cadre-core, which builds the control and strand nodes with them. An app has no reason to call them.
 
 ## Development
 
 ```bash
-yarn build    # tsc + esbuild (emits dist/plugin.js and dist/plugin-browser.js)
-yarn test     # Run tests (unit + e2e projects, plus browser-bundle smoke tests)
-yarn test:e2e # Run only the e2e project (real libp2p + FileRawStorage)
-yarn dev:test # Watch mode
+yarn build      # tsc, then esbuild writes dist/plugin-browser.js
+yarn test       # unit and e2e projects
+yarn test:e2e   # e2e project only: real libp2p and FileRawStorage
+yarn dev:test   # watch mode
+yarn typecheck
 ```
 
-`build` runs `tsc -p tsconfig.build.json` (emits `dist/plugin.js`,
-`dist/plugin-browser.js` declarations, and other entries) and then
-`node scripts/build-browser.mjs` (overwrites `dist/plugin-browser.js` with the
-bundled artifact and its sourcemap, and prints raw + gzipped size).
+The suite refuses to run against a stale build of the linked `@optimystic/*` and `@quereus/quereus` packages: see [Stale-build guard](https://github.com/gotchoices/sereus/blob/master/docs/contributing/gates.md#stale-build-guard). Releasing is covered in [Releasing](https://github.com/gotchoices/sereus/blob/master/docs/contributing/releasing.md).
 
-The browser-bundle smoke tests (`test/browser-bundle.spec.ts` and
-`test/browser-shape.spec.ts`) run under the `unit` project: they build the
-bundle on demand if missing, then check that the artifact parses as ESM, has no
-Node-only or TCP imports, stays under the size caps, and that its default export
-reaches the IndexedDB layer in a jsdom + `fake-indexeddb` environment.
+## Documentation
 
-The `e2e` project covers two scenarios over real libp2p + `FileRawStorage`:
-
-- `test/e2e/local-transactor.e2e.spec.ts` — a single in-process connection on the
-  `local` transactor, including cold-restart persistence across the shared
-  storage directory.
-- `test/e2e/networked.e2e.spec.ts` — two in-process peers exchanging strand data
-  through a `createLibp2pNode` mesh: cross-peer replication, bidirectional
-  convergence, and late-joiner catch-up.
-
-## Publishing
-
-From the monorepo root:
-
-```bash
-yarn pub:quereus-plugin-sereus   # clean + build + npm publish --access public
-```
-
-This is also included in the aggregate `yarn pub` release step. Publishing emits
-both `dist/plugin.js` and the browser bundle `dist/plugin-browser.js` (both are
-in the package `files`), so the CDN URLs under [Hosting the browser
-bundle](#hosting-the-browser-bundle) resolve immediately after a successful
-publish.
+- [Schema guide](https://github.com/gotchoices/sereus/blob/master/docs/schema-guide.md): writing an app schema.
+- [App schemas: versions, upgrades and change notifications](https://github.com/gotchoices/sereus/blob/master/docs/strands/app-schema.md).
+- [Writing to a strand: durability and offline mode](https://github.com/gotchoices/sereus/blob/master/docs/strands/writes.md).
+- [Concepts](https://github.com/gotchoices/sereus/blob/master/docs/concepts.md) and [architecture](https://github.com/gotchoices/sereus/blob/master/docs/architecture.md).
 
 ## License
 
 MIT
-</content>
-</invoke>

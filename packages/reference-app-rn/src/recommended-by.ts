@@ -1,5 +1,5 @@
 /**
- * recommended-by.ts — which Sereus app recommended this one (docs/architecture.md → "Recommending
+ * recommended-by.ts — which Sereus app recommended this one (docs/cadre/apps.md → "Recommending
  * another app"). Two hints name its scheme: the Android install referrer of an install from that
  * app's store link, and the `cadre-recommended-by` link it opens when this app is installed, which
  * `app/+native-intent.tsx` routes to Settings.

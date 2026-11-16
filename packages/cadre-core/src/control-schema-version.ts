@@ -14,8 +14,8 @@
  * The same change classifier ({@link classifyControlSchemaChange}) is what
  * `control-schema-versions.spec.ts` runs over each pair of consecutive control schema versions,
  * so a schema edit that no store could be migrated across fails when it is made. Where the
- * version lives, when it changes and what a new version may change: docs/architecture.md →
- * "Control schema versions and migrations".
+ * version lives, when it changes and what a new version may change: docs/cadre/control-schema.md →
+ * "Schema versions and migrations".
  *
  * The stored tag is the version of the last start that applied the schema to the store: the
  * apply's `alter table OwnerKey set tags (…)` persists since Optimystic 1.16.0, so after a
@@ -55,7 +55,7 @@ export class ControlStoreIncompatibleError extends Error {
 	readonly buildVersion: number;
 	/** The DDL the apply would have run, from `diff schema`; for diagnostics, not for parsing. */
 	readonly pendingDdl: readonly string[];
-	/** `controlStorageScope(partyId)`: the storage the embedder deletes to recreate (docs/architecture.md). */
+	/** `controlStorageScope(partyId)`: the storage the embedder deletes to recreate (docs/cadre/control-schema.md). */
 	readonly storageScope: string;
 
 	constructor(
@@ -92,14 +92,14 @@ function refusalMessage(
 	const store = `The control store for party ${JSON.stringify(partyId)}`;
 	const versions = `it records control schema version ${storeVersion}; this build declares ${buildVersion}`;
 	const recreate = 'Run a release whose control schema matches the store, or recreate the control store ' +
-		`(storage scope ${storageScope}) as docs/architecture.md describes.`;
+		`(storage scope ${storageScope}) as docs/cadre/control-schema.md describes.`;
 	switch (reason) {
 		case 'newer-release':
 			return `${store} was migrated by a newer release (${versions}). Update this app or node to that ` +
 				'release or a later one; the store and its rows are intact.';
 		case 'before-migrations':
 			return `${store} was written before control schema migrations (${versions}; migrations start at ` +
-				`version ${CONTROL_SCHEMA_BASELINE_VERSION}, and docs/architecture.md says why earlier stores are not ` +
+				`version ${CONTROL_SCHEMA_BASELINE_VERSION}, and docs/cadre/control-schema.md says why earlier stores are not ` +
 				`migrated), so this build cannot upgrade it in place. ${recreate}`;
 		case 'not-migratable':
 			return `${store} cannot be migrated to this build's control schema (${versions}): applying it would ` +
@@ -120,7 +120,7 @@ function refusalMessage(
  *    declares something this build does) would put back what that release removed, and the newer
  *    release would then refuse its own store;
  *  - its version is below the baseline, whatever the diff: a store written by 1.16.0 or earlier,
- *    which the baseline paragraph of docs/architecture.md explains cannot be migrated;
+ *    which docs/cadre/control-schema.md → "Where the version is recorded" explains cannot be migrated;
  *  - any pending statement is `unmigratable` ({@link classifyControlSchemaChange}).
  *
  * Every `additive` and `catalog-only` change passes, so a store from an older migratable
@@ -189,7 +189,7 @@ function schemaVersionOf(tags: Readonly<Record<string, SqlValue>> | undefined): 
 
 /**
  * How applying one `diff schema` statement to a warm store treats its rows, from most to least
- * migratable (docs/architecture.md → "Control schema versions and migrations"):
+ * migratable (docs/cadre/control-schema.md → "Schema versions and migrations"):
  *  - `additive`: a new table, a new index, or a table tag change, which the optimystic module
  *    applies without touching a row;
  *  - `catalog-only`: a change the optimystic module applies to the table's catalog record without

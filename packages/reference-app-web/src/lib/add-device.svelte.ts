@@ -1,6 +1,6 @@
 /**
  * add-device.svelte.ts — state of the Cadre page's "Add a device or app" card: an owner of
- * this cadre makes an invitation another app redeems to join it (docs/architecture.md →
+ * this cadre makes an invitation another app redeems to join it (docs/cadre/apps.md →
  * "Handing an invitation from app to app"). The browser counterpart of the phone app's
  * `add-device-section.tsx`, with the same flows and wording.
  *

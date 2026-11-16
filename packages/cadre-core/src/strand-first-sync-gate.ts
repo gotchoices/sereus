@@ -48,7 +48,8 @@
  * table declared at founding has a collection from the start (the founder bootstrap commits the
  * rest empty before its founding transaction writes the Header and the membership rows), so a
  * probe read fetches it; a table a later schema version adds reads as absent until its first
- * write creates the collection — see `docs/strands.md` ("Joining") for that residual.
+ * write creates the collection — see `docs/strands/formation.md` ("What the gate does not
+ * cover") for that residual.
  *
  * Owned by `StrandInstanceManager`: created in `buildStrandDatabase` for every database build, armed
  * only for a non-founder launch whose first probe fails, stopped and dropped in
@@ -109,7 +110,7 @@ export const DEFAULT_STRAND_FIRST_SYNC_BACKSTOP_MS = 2_000;
  * `integration-tests/src/harness/ws-latency.ts` in `pipelined` mode — frames stay overlapped
  * in flight, so the figure is latency and bandwidth stays unlimited; the harness's other mode
  * (`serial`) is a per-socket frame-rate cap and its delays are NOT comparable
- * (`docs/testing.md` → "Link latency"). Two delays were used: 900 ms one-way, a round trip
+ * (`docs/contributing/gates.md` → "Opt-in measurements"). Two delays were used: 900 ms one-way, a round trip
  * near 1.8 s, the band sereus supported first; and 1 500 ms one-way, the supported 3-second
  * round trip. Times run from the `addStrand` call to writable.
  *

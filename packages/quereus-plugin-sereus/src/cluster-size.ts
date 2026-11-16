@@ -45,16 +45,16 @@ export const MIN_CLUSTER_SIZE = 2;
  *
  * **Measured at 5000**, 2026-09-26, one Windows developer machine, two relay-only `CadreNode`s
  * on one shared loopback dedicated relay, the one-way outbound frame delay raised to 900 ms
- * (`pipelined` mode — see `docs/testing.md` → "Where measurements live") AFTER the strand had
- * formed and first synced, for a round trip near 1.8 s. A machine that had joined, gone away
- * while the other wrote, then re-attached over its own stale store and read the row written
- * while it was away. Declined reads over that journey, after the delay was raised: **18 at
- * Optimystic's 1000 ms, 2 at 5000 ms.** A declined read is
+ * (`pipelined` mode — see `docs/contributing/gates.md` → "Opt-in measurements") AFTER the
+ * strand had formed and first synced, for a round trip near 1.8 s. A machine that had joined,
+ * gone away while the other wrote, then re-attached over its own stale store and read the row
+ * written while it was away. Declined reads over that journey, after the delay was raised:
+ * **18 at Optimystic's 1000 ms, 2 at 5000 ms.** A declined read is
  * `cluster-fetch:peers-silent { silent: 1, consulted: 2 }` followed by
  * `cluster-fetch:no-quorum`, retried about a second later until one lands; at 5000 the
  * corroboration succeeded instead (`cluster-fetch:local-current`). Both journeys COMPLETED at
  * either value, which is why no committed scenario gates this — 900 ms is not where it breaks.
- * The recipe for re-measuring is in `docs/testing.md` → "Where measurements live".
+ * The recipe for re-measuring is in `docs/contributing/gates.md` → "Opt-in measurements".
  *
  * **Measured at 7000 against 5000**, 2026-09-29, same machine and shape, at 1 500 ms one-way
  * (the supported 3 s round trip), fresh-join arm, one run each under
@@ -83,8 +83,8 @@ export const MIN_CLUSTER_SIZE = 2;
  *
  * **What else it lengthens.** Every cadre-core deadline that waits on an Optimystic read or
  * commit waits on this one too; which of them cut the read off on purpose and which must
- * outlast it is listed in `docs/cadre-consistency.md` → "Deadlines Over Optimystic's Reads and
- * Commits".
+ * outlast it is listed in `docs/network/deadlines.md` → "Deadlines over Optimystic's reads and
+ * commits".
  *
  * **One value for both networks, not two.** The reason to widen is the link, and a phone's
  * control node and its strand nodes share it; nothing about control traffic or strand traffic
@@ -97,7 +97,7 @@ export const MIN_CLUSTER_SIZE = 2;
  * the slowest first sync measured is stated on it. Re-measure the first-sync band before
  * raising the declared link round trip, or when a deployment's first sync grows more
  * collections than the two-table scenario measured above — `DEFAULT_STRAND_FIRST_SYNC_TIMEOUT_MS`
- * carries the result and `docs/testing.md` the recipe.
+ * carries the result and `docs/contributing/gates.md` the recipe.
  * Nothing warns when the margin goes; the symptom is `StrandAwaitingFirstSyncError` on a join
  * that was progressing normally, which is the failure this pair of numbers exists to end.
  */
@@ -124,7 +124,7 @@ export const COHORT_READ_DEADLINE_MS = 7000;
  * actually serve the network and downsizes a cohort it cannot fill (`allowDownsize: true`,
  * which Cadre passes), so any value at or above the party's node count yields the same
  * behaviour: cohort = whole party. 16 is roughly twice the largest deployment the product
- * documents (`docs/architecture.md` → "Enterprise (Multi-Node Mixed)", 7 nodes) — headroom
+ * documents (`docs/architecture.md` → "Deployment shapes", 7 nodes) — headroom
  * without pretending to support arbitrarily large parties; a party genuinely running more
  * than 16 nodes is back to partial replication for its control database and should raise
  * this. It is a constant rather than the live member count because Optimystic freezes the
@@ -138,7 +138,7 @@ export const COHORT_READ_DEADLINE_MS = 7000;
  *
  * Canonical explanation of all of the above — the read-repair mechanics, what whole-party
  * breadth does and does not remove, and what the wider cohort costs in write availability —
- * is `docs/architecture.md` → "Replication cluster size". Keep it there, not here.
+ * is `docs/cadre/control-replication.md` → "Replication cluster size". Keep it there, not here.
  *
  * **Deliberately not `clusterPolicy.assumedClusterSize`.** That option means "the smallest
  * cohort this deployment can genuinely field", and it feeds both the membership admission
@@ -168,7 +168,8 @@ export const CONTROL_REPLICATION_BREADTH = 16;
  * consumer, reintroduces exactly the divergence this constant exists to prevent. The absence
  * is a researched decision, not an inherited default: no threshold both relaxes the
  * three-node unanimity bar and satisfies Optimystic's partition-safety condition at the
- * shipped admission fraction — see `docs/architecture.md` → "Replication cluster size".
+ * shipped admission fraction — see `docs/cadre/control-replication.md` → "Replication
+ * cluster size".
  *
  * `sizeTolerance` only makes sense alongside `allowDownsize`: a fixed
  * {@link CONTROL_REPLICATION_BREADTH}-wide target is unsatisfiable by any real (2-7 node)
@@ -293,7 +294,7 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * restarted after someone joined derives a wider expected cohort than one that did not, and the
  * membership admission gate's confident path is what rejects the *wider* view. And a `Member` is
  * a party, not a machine; cohort width consumes machines. Full reasoning in
- * `docs/architecture.md` → "Replication cluster size".
+ * `docs/cadre/control-replication.md` → "Replication cluster size".
  *
  * **Four machines, not four parties.** This number counts machines, and today that is not the
  * same as counting independent holders. Cohort selection upstream is owner-blind — it
@@ -309,7 +310,7 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * (`StrandConnectionOptions.bootstrapNodes`) or a hand-written dial (see the doc). Every party
  * now holds its own membership identity, so the missing piece is placement, not identity:
  * tracked as `backlog/feat-strand-party-diverse-placement`. Full reasoning:
- * `docs/architecture.md` → "Replication cluster size".
+ * `docs/cadre/control-replication.md` → "Replication cluster size".
  *
  * Raising or lowering it per strand is still the embedder's call
  * ({@link resolveStrandClusterSize}, `CadreNodeConfig.strandClusterSize`,
@@ -394,7 +395,7 @@ export const STRAND_CLUSTER_POLICY = Object.freeze({
  * cohort view, and that view is bounded by this number, so a member configured much higher
  * can reject a smaller declared set as a downsize. Divergence is a live hazard whenever FRET
  * has a confident network-size estimate — not the unconditional refusal earlier revisions of
- * this comment described. See `docs/architecture.md` → "Replication cluster size".
+ * this comment described. See `docs/cadre/control-replication.md` → "Replication cluster size".
  */
 export function resolveStrandClusterSize(configured?: number): number {
 	if (configured === undefined) {

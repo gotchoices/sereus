@@ -1,9 +1,9 @@
 /**
  * machines-section.tsx — Settings → "Devices and nodes": every machine of this cadre (apps and
  * always-on nodes), the devices invited and not joined yet, the key replacements a removal left
- * waiting, and on an owner device, Remove (`machine-removal.tsx`; docs/architecture.md → "Removing a
- * machine"). A node this phone rented from a hosting provider says so, from the app's rental record.
- * The words for a listed machine are `machines.ts`'s.
+ * waiting, and on an owner device, Remove (`machine-removal.tsx`; docs/cadre/membership.md →
+ * "Removing a machine"). A node this phone rented from a hosting provider says so, from the app's
+ * rental record. The words for a listed machine are `machines.ts`'s.
  */
 
 import { useEffect, useRef, useState } from 'react';

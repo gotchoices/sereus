@@ -1,8 +1,9 @@
 /**
  * E2E: an owner removes another owner's machine from the cadre with one call,
  * `CadreNode.removeMachine`, then that owner's key with another, `CadreNode.removeOwner`, keeping
- * the device the key vouched (`docs/architecture.md` → "Removing a machine", "Removing an owner
- * key"), and every other machine follows by replication.
+ * the device the key vouched (`docs/cadre/membership.md` → "Removing a machine";
+ * `docs/cadre/owner-keys.md` → "Removing an owner key"), and every other machine follows by
+ * replication.
  *
  * Machines:
  * - **A**, the founding owner, listening on a loopback WebSocket port: the remover.

@@ -127,7 +127,7 @@ function printHelp() {
 	stdout.write('package.json: listed in the packument, carrying the dist-tag, and its tarball downloadable.\n');
 	stdout.write('The dist-tag defaults to SEREUS_DIST_TAG, then `latest`. Exits non-zero, naming the packages\n');
 	stdout.write(`still missing, when the deadline passes first (default 600 s; set ${WAIT_SECONDS_ENV}).\n`);
-	stdout.write('Only reads the registry, so it is safe to re-run. See docs/releasing.md.\n');
+	stdout.write('Only reads the registry, so it is safe to re-run. See docs/contributing/releasing.md.\n');
 }
 
 async function main() {

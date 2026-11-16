@@ -3,8 +3,8 @@
  * membership, owner, peer-record and admission-chain reads that every flow repeats cost nothing
  * after the first.
  * `ControlDatabase` keeps one per cached table and drops it from its table-change subscription
- * (`docs/architecture.md` → "Membership rows view"); this class holds only the caching rules, so
- * they are testable without a database.
+ * (`docs/cadre/control-convergence.md` → "Membership rows view"); this class holds only the
+ * caching rules, so they are testable without a database.
  */
 /**
  * How long installed rows are served before the next read reloads them, change or no change.

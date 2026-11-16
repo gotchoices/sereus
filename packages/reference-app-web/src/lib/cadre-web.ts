@@ -7,7 +7,7 @@
  * → `start`), owner genesis on a party the tab founded, the start saved for the next load, joining
  * another cadre by invitation or owner grant with the founded party's strands carried along,
  * dissolving the cadre left, redeeming an owner grant, and acting on an owner's removal of this
- * tab (docs/architecture.md → "The edge node"). It runs those one at a time, re-applies the
+ * tab (docs/cadre/node.md → "The edge node"). It runs those one at a time, re-applies the
  * store's event handlers to every node it builds before that node starts, and bounds the owner
  * step.
  *

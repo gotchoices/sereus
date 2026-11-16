@@ -2,7 +2,7 @@
  * node-claim.ts — read the code a cadre-host shows for a node waiting to be claimed, and
  * put a failed claim into words for the person holding the phone.
  *
- * The code is `sereus-join:1.<…>` (docs/cadre-host.md → "Join by QR code"); decoded, it is
+ * The code is `sereus-join:1.<…>` (docs/hosting/cadre-host.md → "Join by QR code"); decoded, it is
  * what `CadreNode.claimNode` takes. No React and no native imports, so
  * `test/node-claim.spec.ts` runs these in Node.
  *

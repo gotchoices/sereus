@@ -1,7 +1,7 @@
 /**
  * owner-grants.ts — what the Owner keys card says about owner grants (`OwnerKeys.svelte`,
  * `OwnerGrantForm.svelte`, `owner-keys.svelte.ts`): a grant made, listed, redeemed or refused, and
- * the removal prompt's lines for the grants a removed key made (docs/architecture.md → "Owner
+ * the removal prompt's lines for the grants a removed key made (docs/cadre/owner-keys.md → "Owner
  * grants"). No Svelte, so the join card's words (`join-flow.ts`) use the refusals too.
  *
  * A grant's text makes whoever holds it an owner: log the grant's key, never the text.

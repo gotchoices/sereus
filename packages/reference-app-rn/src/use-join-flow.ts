@@ -1,7 +1,7 @@
 /**
  * use-join-flow.ts — the part of `useCadreInternal` behind Settings → "Join my existing cadre":
  * the join and the steps after it (moving this app's chats, removing the cadre it left), held as
- * a `JoinFlow` (`join-flow.ts`; docs/reference-app-rn.md → "Joining an Existing Cadre"). The
+ * a `JoinFlow` (`join-flow.ts`; docs/platforms/reference-apps.md → "Joining an existing cadre"). The
  * node it switches is `use-cadre.ts`'s, reached through the {@link JoinFlowHost} callbacks. Asking
  * an owner app on this phone by link, whose answer joins through this flow, is `use-link-request.ts`.
  */

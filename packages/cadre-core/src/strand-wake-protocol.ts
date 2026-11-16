@@ -58,8 +58,8 @@ const MAX_WAKE_SIZE = 64 * 1024;
  * inside this deadline and is not counted. In steady state those reads touch only held blocks and do not consult the
  * cohort. If a wake or address request is seen timing out while the receiver's membership read
  * is consulting, count one membership decision in this deadline or answer the check from the
- * materialized authorized-peer snapshot. See docs/cadre-consistency.md → "Deadlines Over
- * Optimystic's Reads and Commits".
+ * materialized authorized-peer snapshot. See docs/network/deadlines.md → "Deadlines over
+ * Optimystic's reads and commits".
  */
 export const DEFAULT_WAKE_TIMEOUT_MS = relayedRequestBudgetMs();
 

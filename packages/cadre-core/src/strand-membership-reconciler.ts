@@ -103,7 +103,7 @@
  * A machine removal replaces the party's member key K in each closed strand with a fresh key K'
  * (`strand-party-key-rotation.ts`), and in a strand the party does not manage K cannot seat K'
  * itself: the strand's host has to re-invite the party, or its manager admit K' by hand
- * (docs/strands.md → Replacing the party's key). The host's fresh invitation is staged here like
+ * (docs/strands/keys.md → Replacing the party's key). The host's fresh invitation is staged here like
  * any other and lands in step 2, which is why one rule governs that step: **while a
  * `PendingStrandPartyKey` row exists for the strand, this loop never writes a `Strand.Member`
  * row under K.** The removed machine holds K, and a seat written under K is a seat it keeps.
@@ -212,7 +212,7 @@
  * dead invitation, and a busy burn leaves the invitation staged for the next pass.
  *
  * A write refused because the strand's offline queue holds transactions
- * (`StrandOfflineQueueBusyError`, docs/strands.md → "Offline mode") is a busy refusal too: it
+ * (`StrandOfflineQueueBusyError`, docs/strands/writes.md → "Offline mode") is a busy refusal too: it
  * wrote nothing, and the ladder retries it until the queue drains. A membership commit queued
  * behind an app commit anyway (the race that refusal leaves open) can fail with Optimystic's
  * `OfflineCommitTimeoutError`, which is an unclassified failure here: a redemption keeps the

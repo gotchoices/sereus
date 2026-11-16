@@ -1,9 +1,9 @@
 /**
  * use-link-request.ts — the part of the join flow behind Settings → "Join my existing cadre" →
  * "Choose the app that holds your cadre": this app opens an owner app on this phone with its join
- * request, and the owner app opens this one back with the answer (docs/architecture.md → "Between
- * apps on one phone"; docs/reference-app-rn.md → "Joining an Existing Cadre"). An invitation in
- * the answer goes through the join flow's `joinExistingCadre`, as a pasted one does.
+ * request, and the owner app opens this one back with the answer (docs/cadre/apps.md → "Between
+ * apps on one phone"; docs/platforms/reference-apps.md → "Joining an existing cadre"). An
+ * invitation in the answer goes through the join flow's `joinExistingCadre`, as a pasted one does.
  *
  * The answer carries an invitation, which holds its private key: log what became of it, never its text.
  */

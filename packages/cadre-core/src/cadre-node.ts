@@ -4182,8 +4182,8 @@ export class CadreNode implements SAppIdLookup {
   // the convergence test does it by hand with a manual dial(). reconcileControlCohort
   // productionizes that: each node resolves its known siblings' control addresses
   // and proactively dials a bounded, backbone-preferential set, re-observing and
-  // re-dialing dropped connections on each pass. See docs/architecture.md (Control
-  // Network) and control-cohort.ts for the selection policy.
+  // re-dialing dropped connections on each pass. See docs/cadre/control-convergence.md
+  // ("Cohort auto-connect") and control-cohort.ts for the selection policy.
   // ============================================================================
 
   /**
@@ -4931,7 +4931,7 @@ export class CadreNode implements SAppIdLookup {
   // local-only). The remedy: detect "wrote while alone" (no identified sibling the
   // cohort would admit: committedAlone), queue the affected row, and RE-ISSUE the write
   // once one is reachable, as an idempotent monotonic update that now broadcasts.
-  // See docs/architecture.md (Control Network Convergence → "Writes made while alone").
+  // See docs/cadre/control-convergence.md ("Writes made while alone").
   // ============================================================================
 
   /**
@@ -5815,7 +5815,7 @@ export class CadreNode implements SAppIdLookup {
    * higher App schema version than the one its database runs (`onAppSchemaSuperseded`), so its writes
    * would erase what the newer version added, or a rebuild after hibernation was refused the schema
    * (`AppSchemaRefusedError`), which every later rebuild would be too. Leaves what a refused launch
-   * leaves (docs/strands.md → "A running member stops"): no instance, the sApp config registered, the
+   * leaves (docs/strands/app-schema.md → "A running member stops"): no instance, the sApp config registered, the
    * strand suppressed in the watcher until the next {@link addStrand}, which launches through the
    * connect's version gate. Storage, saved network state and control rows stay. Emits
    * `strand:stopped`, then `strand:error` with the refusal, so an app tells its user to update on
@@ -6304,7 +6304,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Replace a running strand node whose launch seed names a machine removed from the cadre with one
    * built from a fresh seed, which a removed machine is not in, so an offline queue stops waiting
-   * for it (`docs/strands.md` → Waiting for the party's own machines). The same pair hibernation
+   * for it (`docs/strands/writes.md` → Waiting for the party's own machines). The same pair hibernation
    * runs, so the app sees what it sees on a wake, and a queue is restored from its journal; the
    * quiesce waits for a build in flight. A strand that went down meanwhile takes a fresh seed at its
    * next wake, so it is left down.
@@ -6679,7 +6679,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Switch a strand between offline mode, where a commit resolves once the transaction is queued on
-   * this machine, and online mode (docs/strands.md → "Offline mode"). Affects transactions begun from
+   * this machine, and online mode (docs/strands/writes.md → "Offline mode"). Affects transactions begun from
    * now on; one already open keeps the acknowledgement it began with. The mode belongs to the strand:
    * a hibernating strand takes it at its next build, and it lasts across hibernation and every
    * rebuild until the process exits, after which the strand starts in `strandOffline.initialMode`.
@@ -6708,7 +6708,7 @@ export class CadreNode implements SAppIdLookup {
    * The party's other machines known to hold `strandId` (each has written its `StrandPeer` row for
    * it) with no open connection from this node's strand node: what a queued transaction reporting
    * `waitingFor: 'cohort'` may be waiting for, by control peer id (`listMachines`, `removeMachine`)
-   * and strand peer id (docs/strands.md → "Waiting for the party's own machines"). Empty on a
+   * and strand peer id (docs/strands/writes.md → "Waiting for the party's own machines"). Empty on a
    * strand not running here, and on a node offering no offline mode. Nothing releases the wait on
    * its own: the transaction is safe in the journal, and removing the machine is the user's call.
    */
@@ -6796,7 +6796,7 @@ export class CadreNode implements SAppIdLookup {
     if (existing) {
       // NOTE: reads local converged state, and `queryStrand` does not filter rows whose
       // StampId a Revocation has retired. So on a sibling that still physically holds a row
-      // deleted elsewhere while ALONE (the delete-while-alone gap in docs/architecture.md),
+      // deleted elsewhere while ALONE (the delete-while-alone gap in docs/cadre/control-convergence.md),
       // an owner-signed republish now no-ops onto that doomed row instead of re-seating the
       // id under a fresh stamp. Harmless while that gap is itself unresolved — both
       // behaviours end at the same unconverged state — but if delete-while-alone ever gains
@@ -7188,7 +7188,7 @@ export class CadreNode implements SAppIdLookup {
    * deletion cannot be replayed, and `queryStrands` reads raw (no retired-stamp filter),
    * so siblings that already hold the row keep running the strand until the collection
    * itself converges (logged loudly; see "Deletes made while alone" in
-   * docs/architecture.md).
+   * docs/cadre/control-convergence.md).
    *
    * A no-op (no throw, no tombstone) when the row is already absent — but a
    * locally-running instance of that id is still stopped.
@@ -7200,7 +7200,7 @@ export class CadreNode implements SAppIdLookup {
    * step, not a widening of this method.
    *
    * Refuses while the strand's offline queue on this machine holds transactions, unless
-   * `options.discardQueued` (docs/strands.md → "Leaving a strand with unsent transactions"). The
+   * `options.discardQueued` (docs/strands/writes.md → "Leaving a strand with unsent transactions"). The
    * check and the discard run before the control-plane delete, so a delete refused afterwards
    * leaves the discarded transactions discarded.
    *
@@ -7282,7 +7282,7 @@ export class CadreNode implements SAppIdLookup {
    * NOT the strand row's shared `MemberPrivateKey`, which formation hands to every
    * joining party — is what the founder bootstrap derives `Member.Key`/`Manager.MemberKey`
    * from. It replicates to every machine this party owns (same plaintext-at-rest stance
-   * as `MemberPrivateKey`; docs/strands.md → "Closed-Strand Member Key Handling") and is
+   * as `MemberPrivateKey`; docs/strands/keys.md → "Closed-strand member key handling") and is
    * never put on the formation wire.
    *
    * A founding seats the key in the same transaction as the strand row, not through here.
@@ -8462,7 +8462,7 @@ export class CadreNode implements SAppIdLookup {
    * strand stays, so a later re-formation reuses the same identity.
    *
    * Refuses while the strand's offline queue on this machine holds transactions, unless
-   * `options.discardQueued` (docs/strands.md → "Leaving a strand with unsent transactions"). The
+   * `options.discardQueued` (docs/strands/writes.md → "Leaving a strand with unsent transactions"). The
    * check and the discard run before the party-wide row is removed, so a removal refused
    * afterwards leaves the discarded transactions discarded.
    *
@@ -8485,7 +8485,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Before a leave changes anything: refuse while the strand's offline queue holds transactions,
-   * unless the app asked to discard them (docs/strands.md → "Leaving a strand with unsent
+   * unless the app asked to discard them (docs/strands/writes.md → "Leaving a strand with unsent
    * transactions"). Transactions Optimystic will not withdraw stay in the journal, named in one
    * warning, and the leave goes on: they may already be saved, and a cohort that never returns
    * would otherwise block the leave forever.
@@ -9061,7 +9061,7 @@ export class CadreNode implements SAppIdLookup {
    * as serving the control database and is one this node sends control writes to (an
    * authorized member, or a device whose admission it is writing). Optimystic counts a peer
    * into a control block's cohort on those same terms; with none, a write commits on this node
-   * alone and is queued for re-issue once one is reachable (docs/architecture.md → "Writes made
+   * alone and is queued for re-issue once one is reachable (docs/cadre/control-convergence.md → "Writes made
    * while alone").
    *
    * It exists so an embedder can warn an owner before a control write that this machine
@@ -9921,7 +9921,7 @@ export class CadreNode implements SAppIdLookup {
    * Whether a control write made now could fork the party's history: no sibling is reachable
    * ({@link committedAlone}) while the party has other members. Such a write commits on this
    * node alone, and if another member writes the same collection meanwhile, both take it to the
-   * same revision with different content, which no re-issue heals (docs/architecture.md →
+   * same revision with different content, which no re-issue heals (docs/cadre/control-convergence.md →
    * "Writes made while alone"). A party with no other members cannot fork.
    *
    * What a caller does on `true` depends on the write. An `OwnerKey` add has no re-issue path at
@@ -10269,7 +10269,7 @@ export class CadreNode implements SAppIdLookup {
    * withdrawal of every live invitation it could redeem to come back, and a
    * `PendingStrandPartyKey` row per closed strand the party holds a key for, in ONE transaction
    * ({@link ControlDatabase.removeMachine}), with a `Revocation` tombstone per removed row so the
-   * removal holds on every machine ("Deletes made while alone" in docs/architecture.md), under
+   * removal holds on every machine ("Deletes made while alone" in docs/cadre/control-convergence.md), under
    * one owner approval. The pending row reaches the removed machine in that same transaction, so
    * the fresh key rides in it sealed to the machines that remain
    * ({@link pendingPartyKeyRecipients}): the removed machine holds the row and cannot open it. Afterwards this node forgets the machine as a dial target, and the
@@ -10858,7 +10858,7 @@ export class CadreNode implements SAppIdLookup {
    * the peer id, addresses and secret its host showed (the QR code): mint a seed, prove
    * possession of the secret beside it (`claim-proof.ts`), deliver it, and on acceptance
    * vouch the node into this cadre and keep its addresses as a dial target. The owner
-   * side of the claim-secret entry in the Seed Delivery Protocol (`docs/architecture.md`).
+   * side of "Claiming a node" (`docs/cadre/membership.md`).
    *
    * Requires the seed service with an owner key ({@link useOwnerSigner}), as
    * {@link addDrone} does, and like it is one owner approval (the seed and the vouch). The
@@ -11835,7 +11835,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Ask to join through `invitation` and have the party keep trying until the join works, the
    * invitation is used up or expires, or the request is dismissed: across restarts, and from
-   * any owner machine of the party (`docs/strands.md` → "Joining while the inviter is
+   * any owner machine of the party (`docs/strands/formation.md` → "Joining while the inviter is
    * offline"). Records a party-wide `JoinRequest` row, runs one attempt on this machine at
    * once, and returns the status after it: `'joined'` when the inviter answered yes, `'waiting'`
    * when it was unreachable or not ready, `'failed'` when it refused for good.

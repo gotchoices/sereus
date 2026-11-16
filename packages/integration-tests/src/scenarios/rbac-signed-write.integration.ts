@@ -106,7 +106,8 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 			// Alice FOUNDS (writes the Header); Bob joins without waiting for his first sync,
 			// since the dial that carries the Header to him happens below — a joiner's
-			// database is withheld until then (docs/strands.md, "Joining").
+			// database is withheld until then (docs/strands/formation.md, "Joining: no writes
+			// before the first sync").
 			const aliceStrand = await aliceNode.addStrand({ strandRow, sAppConfig, founder: true });
 			const bobStrand = await bobNode.addStrand({ strandRow, sAppConfig, awaitFirstSync: false });
 			expect(aliceStrand.status).toBe('active');

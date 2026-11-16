@@ -1,7 +1,7 @@
 /**
  * join-flow.ts — the steps "Join my existing cadre" shows once Join is tapped, and the plain
- * words for each (docs/reference-app-rn.md → "Joining an existing cadre"). No React: the hook
- * (`use-join-flow.ts`, part of `use-cadre.ts`) holds the flow, so it survives a tab switch,
+ * words for each (docs/platforms/reference-apps.md → "Joining an existing cadre"). No React: the
+ * hook (`use-join-flow.ts`, part of `use-cadre.ts`) holds the flow, so it survives a tab switch,
  * and `join-cadre-section.tsx` renders it.
  */
 

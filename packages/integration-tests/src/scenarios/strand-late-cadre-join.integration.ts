@@ -254,8 +254,8 @@ async function foundStrandAlone(label: string, handles: LateJoinHandles): Promis
 
 	// Open strand, `founder: true`: on an open strand the flag seats only the
 	// `Strand.Header` — and that row is what every later joiner waits to receive
-	// before its database is published (docs/strands.md, "Joining"), so the founder
-	// must actually found.
+	// before its database is published (docs/strands/formation.md, "Joining: no writes
+	// before the first sync"), so the founder must actually found.
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 	const founderStrand = await founder.addStrand({
 		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null },

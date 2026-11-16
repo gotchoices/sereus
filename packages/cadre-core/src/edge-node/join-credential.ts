@@ -1,6 +1,6 @@
 /**
  * What `EdgeNode.joinCadre` takes: a machine invitation, which admits the app as a machine, or an
- * owner grant, which makes it a machine and an owner at once (docs/architecture.md → "An app
+ * owner grant, which makes it a machine and an owner at once (docs/cadre/apps.md → "An app
  * joins an existing cadre"). Both name the party; the codecs refuse each other's text by name,
  * so an app's one join field decodes whichever was pasted.
  */

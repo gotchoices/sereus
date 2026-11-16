@@ -4,7 +4,7 @@
  *
  * The second install has its own name, URL scheme and package, so it is a separate app to the
  * phone, with its own identity and storage: two Sereus apps on one phone, for trying the join by
- * link (docs/reference-app-rn.md → "Joining an Existing Cadre") on a single device.
+ * link (docs/platforms/reference-apps.md → "Joining an existing cadre") on a single device.
  */
 
 import type { ConfigContext, ExpoConfig } from 'expo/config';

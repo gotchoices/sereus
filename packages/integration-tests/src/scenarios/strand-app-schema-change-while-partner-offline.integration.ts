@@ -1,6 +1,7 @@
 /**
  * An app schema change does not keep a strand closed while its other member is offline
- * (gotchoices/sereus#55; docs/strands.md → "An app schema upgrade waits for the queue or the cohort").
+ * (gotchoices/sereus#55; docs/strands/app-schema.md → "An app schema upgrade waits for the queue or
+ * the cohort").
  *
  * ── The flow ──
  *
@@ -11,7 +12,7 @@
  *      `waiting-for-cohort`: the apply writes the strand's catalog, which needs the absent A. A query
  *      that would use the new index still works, because B keeps running v1.
  *   4. A retry lands with A still offline: by then a run of failed contacts has marked A dead, so B
- *      commits without it (docs/strands.md), and `appSchemaState()` reports `applied`.
+ *      commits without it (docs/strands/app-schema.md), and `appSchemaState()` reports `applied`.
  *   5. B restarts with A still offline and finds nothing to send: the change is in its store, so
  *      `applied` was true. It serves a query through the index and takes a write.
  *   6. A is respawned with v2 and reads that write through the index.

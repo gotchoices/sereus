@@ -62,8 +62,8 @@
  * (`harness/ws-latency.ts`). That latency arm is the only place in the suite where relayed
  * bring-up meets a link that is not instant, so a change that made formation, seeding or
  * replication far more latency-sensitive fails here instead of shipping. It is NOT a
- * bandwidth or loss model — delay only. `WS_SEND_DELAY_MS` (docs/testing.md) pins the whole
- * process, so setting it runs all three tests in this file at that delay.
+ * bandwidth or loss model — delay only. `WS_SEND_DELAY_MS` (docs/contributing/gates.md) pins
+ * the whole process, so setting it runs all three tests in this file at that delay.
  *
  * The third run is the PER-PARTY arm, on loopback: A reserves on relay 1 and B on relay 2, the
  * shape two strangers who each configured their own relay actually have. Every address A
@@ -578,7 +578,7 @@ describe('E2E blind-relay phone-to-phone (two parties, both relay-only, on a sha
 	// against the 60 s gate, which is too thin to commit. `pipelined` is the honest latency
 	// model — `serial` in the same fixture is a frame-RATE cap and fails this scenario at
 	// 1 ms, which is what made gotchoices/sereus#13 look like a 10 ms breaking point. Never
-	// quote one mode's number for the other; docs/testing.md holds the full sweep.
+	// quote one mode's number for the other.
 	// NOTE: those durations are a developer machine's. The binding gate on this arm is the
 	// 20 s `JOIN_FINISH_MS` one, which 100 ms of delay already misses; if CI hardware turns
 	// out slower enough to make 10 ms flaky here, lower `LINK_LATENCY_MS` rather than

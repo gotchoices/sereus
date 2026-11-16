@@ -1,6 +1,6 @@
 /**
  * Test owner keys: generated on their own, never derived from a node's libp2p identity
- * (`docs/architecture.md` → Owner Keys → "Independent of machines").
+ * (`docs/cadre/owner-keys.md` → "What an owner key is").
  */
 
 import { ed25519 } from '@noble/curves/ed25519.js';

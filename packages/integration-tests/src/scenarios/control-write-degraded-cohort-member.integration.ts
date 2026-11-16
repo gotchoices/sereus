@@ -42,8 +42,8 @@
  *
  * Control writes run one at a time under the node's write lock, so while a
  * member stalls each failing write holds every other control write on the node
- * for those ~84 s (`docs/cadre-consistency.md` → "Deadlines Over Optimystic's
- * Reads and Commits").
+ * for those ~84 s (`docs/network/deadlines.md` → "Deadlines over Optimystic's
+ * reads and commits").
  *
  * One case here was a standing EXPECTED FAILURE (`it.fails`) until 2026-08-25:
  * control reads on the writing node blocked behind an in-flight stalled write
@@ -69,10 +69,10 @@
  * It is NOT covered here and cannot be, for the reason in the next paragraph:
  * pinning the coordinator to C makes every case fail with `Missing block`
  * before any degradation is reached, writes included (the write path reads
- * through the same seam). `docs/architecture.md` therefore records that branch
- * as observed-not-asserted. Pinning to a healthy node measures the other
- * branch, the one where a healthy coordinator must RPC into the degraded member
- * and the degradation bites.
+ * through the same seam). `docs/contributing/topology-coverage.md` therefore
+ * records that branch as observed-not-asserted. Pinning to a healthy node
+ * measures the other branch, the one where a healthy coordinator must RPC into
+ * the degraded member and the degradation bites.
  *
  * Why A and not B: `findCoordinator` is also the READ path's routing seam
  * (`NetworkTransactor.batchesForPayload`), and only A holds the control trees'

@@ -1,8 +1,8 @@
 /**
  * join-cadre-section.tsx — Settings → "Join my existing cadre": this app joins the cadre another
  * Sereus app already holds, moves its chats there and removes its own cadre from this phone
- * (docs/reference-app-rn.md → "Joining an existing cadre"). The other side is the owner app's
- * "Add a device or app" (`add-device-section.tsx`).
+ * (docs/platforms/reference-apps.md → "Joining an existing cadre"). The other side is the owner
+ * app's "Add a device or app" (`add-device-section.tsx`).
  *
  * "Choose the app that holds your cadre" opens an owner app on this phone with this app's request
  * (the hook's `askOwnerApp`); its answer comes back as a link Settings takes, since this section

@@ -53,7 +53,7 @@
  * other. A node with configured relays is built with that discovery switched off
  * altogether when it has a transport list to wrap (`node-transports.ts`), because it
  * CAN reach a relay-capable peer in its own namespace and take the configured relay's
- * slot. See `relay-reservation.ts`'s module doc and `docs/architecture.md`.
+ * slot. See `relay-reservation.ts`'s module doc and `docs/network/relay.md`.
  */
 
 import { multiaddr, type Component } from '@multiformats/multiaddr';

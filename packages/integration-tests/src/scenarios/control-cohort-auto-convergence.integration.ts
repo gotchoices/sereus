@@ -72,7 +72,7 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 
 			// Production onboarding vouches the new node BEFORE handing it a seed
 			// (addDrone / addPhoneWithRelay in seed-bootstrap.ts, and the
-			// enrollment sequences in docs/architecture.md). Without it A's inbound gate
+			// enrollment sequences in docs/cadre/membership.md). Without it A's inbound gate
 			// refuses B's cold-start seed dial.
 			await A.authorizePeer(B.peerId!.toString());
 

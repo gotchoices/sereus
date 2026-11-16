@@ -7,7 +7,7 @@ import { Parser } from '@quereus/quereus';
  * migrates the store to this version and records it (`control-schema-version.ts`).
  *
  * When it changes, what a new version may change, and the fixture each version keeps:
- * docs/architecture.md → "Control schema versions and migrations", enforced by
+ * docs/cadre/control-schema.md → "Schema versions and migrations", enforced by
  * `control-schema-versions.spec.ts`.
  */
 export const CONTROL_SCHEMA_VERSION = 4;
@@ -15,7 +15,7 @@ export const CONTROL_SCHEMA_VERSION = 4;
 /**
  * The first control schema version whose fixture is kept, and the oldest a store can be
  * migrated from. A store that records a version below it (written by 1.16.0 and earlier,
- * which recorded none) is refused with reason `before-migrations`; docs/architecture.md
+ * which recorded none) is refused with reason `before-migrations`; docs/cadre/control-schema.md
  * says why it is not migrated.
  */
 export const CONTROL_SCHEMA_BASELINE_VERSION = 3;
@@ -251,7 +251,7 @@ declare schema CadreControl {
     -- seats its Strand.Member / Strand.Manager rows. Separate from Strand.MemberPrivateKey, which
     -- every joining party receives and so could forge (gotchoices/sereus#4). A side table because
     -- a joiner holds no Strand row. Replicated in plaintext to every machine the party owns
-    -- (docs/strands.md → "Closed-Strand Member Key Handling") but never put on the formation wire.
+    -- (docs/strands/keys.md → "Closed-strand member key handling") but never put on the formation wire.
     table StrandPartyKey (
         Id text primary key,        -- the strand id
         PrivateKey text,            -- ed25519, base64 protobuf, as Strand.MemberPrivateKey (cadre-core strandMemberKeyPair)
@@ -344,7 +344,7 @@ declare schema CadreControl {
 
     -- A join this party asked for by redeeming another party's invitation, kept party-wide so
     -- the request outlives the device that asked and any owner machine can carry it on
-    -- (docs/strands.md → "Joining while the inviter is offline"). The row is the request alone
+    -- (docs/strands/formation.md → "Joining while the inviter is offline"). The row is the request alone
     -- and never changes; its outcome is a JoinSuccess or JoinFailure row keyed by this row's
     -- stamp, so asking again (a fresh stamp) starts clean and a dismissal's tombstone retires
     -- the outcome with the request. Invitation is a bearer credential, replicated in plaintext

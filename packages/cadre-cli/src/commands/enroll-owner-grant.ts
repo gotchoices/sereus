@@ -14,7 +14,7 @@ const log = debug('cadre:cli:enroll-owner-grant');
 /**
  * `cadre enroll owner-grant`: ask the RUNNING owner node, over its loopback admin channel, to mint
  * an owner grant, and print the encoded grant. Whoever holds it becomes an owner of the cadre
- * with a key of their own, through any member machine (`docs/architecture.md` → Owner grants):
+ * with a key of their own, through any member machine (`docs/cadre/owner-keys.md` → Owner grants):
  * another server (`cadre start --owner-grant`), or a reference app. It is how a server is made an
  * owner without copying an existing owner key onto it.
  *

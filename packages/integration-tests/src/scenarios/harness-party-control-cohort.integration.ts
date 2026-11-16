@@ -37,9 +37,9 @@
  * broad smoke test. Binding its writes to a three-machine cohort would bind the canary
  * to the unanimity bar — at three machines a super-majority is `ceil(3 x 0.75) = 3`,
  * i.e. EVERY machine must approve — which is a known fragility documented in
- * `docs/architecture.md` → "Replication cluster size". A flaky canary costs more than it
- * buys, so the multi-machine claim lives here and `happy-path` only carries a comment
- * saying what it does and does not exercise.
+ * `docs/cadre/control-replication.md` → "Replication cluster size". A flaky canary costs
+ * more than it buys, so the multi-machine claim lives here and `happy-path` only carries
+ * a comment saying what it does and does not exercise.
  *
  * MEASURED OUTCOMES (single machine, localhost websockets; several consecutive runs of
  * this file alone, recorded so a future change of behaviour shows up as a change of

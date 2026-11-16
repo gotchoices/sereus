@@ -60,7 +60,7 @@ export function newChatMessageId(): string {
  *
  * The `Message` insert is one statement that returns its commit's id: it holds the database for
  * its whole run, so a durability read with that id is this write's, not that of a cadre-core
- * write to the same strand database that ran while this one waited (docs/strands.md, "A
+ * write to the same strand database that ran while this one waited (docs/strands/writes.md, "A
  * commit's durability").
  *
  * @returns The `StampId()` of the commit that stored the message, or null when the database

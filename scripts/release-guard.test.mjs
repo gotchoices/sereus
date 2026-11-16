@@ -106,7 +106,7 @@ test('a release with nothing left to publish is refused', () => {
 	]);
 	assert.match(failure, /already has 0\.13\.0 on npm/);
 	// It points at recovery rather than at starting over.
-	assert.match(failure, /Recovering a half-finished release/);
+	assert.match(failure, /docs\/contributing\/releasing\.md →\n\s+"Recovering"\./);
 });
 
 test('a partly-published release is not refused — that is exactly what a resumed publish is for', () => {

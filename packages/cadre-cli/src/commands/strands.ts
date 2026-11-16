@@ -57,8 +57,8 @@ const REMOVAL_WARNINGS = [
   '⚠ Removal is party-wide: every cadre node in this party stops running this strand.',
   '  Other parties in the strand are unaffected — this removes our participation only.',
   '⚠ If this node currently has no control-network connections, the deletion is local-only',
-  '  and may not reach sibling nodes when they come back (see "Delete-while-alone',
-  '  durability" in docs/architecture.md).',
+  '  and may not reach sibling nodes when they come back (see "Deletes made while',
+  '  alone" in docs/cadre/control-convergence.md).',
 ];
 
 /** The extra warning a closed strand earns: the removal destroyed a secret. */

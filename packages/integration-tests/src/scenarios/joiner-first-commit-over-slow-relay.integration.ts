@@ -72,10 +72,10 @@
  * declared link gives (`strand-peer-redial.ts`). The rows reached the founder 37 s and 38 s after
  * the restart began, in two runs.
  *
- * The sixth arm checks what the app is told about a write made alone (docs/strands.md, "A commit's
- * durability"), on an undelayed link: with the joiner stopped, the founder writes one row, and its
- * strand database must report that commit held only here, followed, and owed to the stopped joiner's
- * strand node (gotchoices/sereus#44); once the joiner restarts
+ * The sixth arm checks what the app is told about a write made alone (docs/strands/writes.md, "A
+ * commit's durability"), on an undelayed link: with the joiner stopped, the founder writes one row,
+ * and its strand database must report that commit held only here, followed, and owed to the stopped
+ * joiner's strand node (gotchoices/sereus#44); once the joiner restarts
  * over its kept storage and takes the copies it is owed, the founder must emit `strand:commit-held`
  * for it.
  */

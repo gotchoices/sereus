@@ -25,7 +25,7 @@ import { isNoiseCryptoMode, NOISE_CRYPTO_MODES } from '@serfab/cadre-rn/phone-no
  *
  * Throws on any other value: a misspelt mode is a build misconfiguration, and
  * silently running a different mode would corrupt the measurement the switch exists
- * for (see `docs/reference-app-rn.md` → Phone (RN app) Configuration).
+ * for (see `docs/platforms/react-native.md` → Native crypto).
  */
 function envNoiseCryptoMode(): NoiseCryptoMode | undefined {
 	const raw = process.env.EXPO_PUBLIC_NOISE_CRYPTO?.trim();

@@ -404,8 +404,7 @@ if (typeof Promise.withResolvers !== 'function') {
 // Required by: p-timeout 7 (via p-queue, p-event), which constructs one unchecked and
 // would otherwise throw `ReferenceError: DOMException is not defined`; `abortReason`
 // below. Modules that feature-detect the global (react-native-webrtc's event-target-shim,
-// whatwg-fetch, expo/virtual/streams.js) only change which class they use — see
-// docs/reference-app-rn.md § The web APIs the phone's connectivity depends on.
+// whatwg-fetch, expo/virtual/streams.js) only change which class they use.
 //
 // A named Error subclass rather than the `domexception` npm package, a full WebIDL
 // implementation that drags in webidl-conversions. It covers `name`, `message`, the

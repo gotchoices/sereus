@@ -1,7 +1,7 @@
 /**
  * The app's side of signing in to a hosting provider: OAuth 2 authorization code with PKCE
  * (RFC 6749 §4.1, RFC 7636), the flow for a public client that holds no secret, against the
- * endpoints a provider descriptor names (`docs/architecture.md` → "Provider descriptor and
+ * endpoints a provider descriptor names (`docs/hosting/provider.md` → "The provider descriptor and
  * sign-in"). Opening the browser is the app's or its kit's; this module builds the URL it
  * opens, reads the redirect it comes back with, exchanges and refreshes tokens, and keeps a
  * token fresh for the provider client ({@link createTokenSource}).

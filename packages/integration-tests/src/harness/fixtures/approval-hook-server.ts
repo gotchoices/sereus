@@ -49,7 +49,7 @@ export interface ApprovalHookServer {
 	readonly lastRequest: FormationVouchFields | null;
 	/**
 	 * Request line + headers of the most recent request. The rest of the wire contract
-	 * (`docs/api.md` → Validate Strand Formation) lives here rather than in the body: a hook
+	 * (`docs/api.md` → Formation approval hook) lives here rather than in the body: a hook
 	 * operator is promised a `POST`, a JSON content type, and the `ValidationUrl`'s own path
 	 * (which may carry a hook secret, so it must arrive unmangled).
 	 */

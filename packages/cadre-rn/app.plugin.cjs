@@ -6,10 +6,10 @@
 // connections unless the app opts in, counts `ws://` as cleartext, and the React Native
 // template opts in for debug builds only. Opting in is safe because Noise encrypts and
 // authenticates every libp2p connection against the peer id in the address; the full
-// reasoning is in docs/reference-app-rn.md → "Release builds: cleartext WebSocket".
+// reasoning is in docs/platforms/react-native.md → "Release builds need cleartext WebSocket".
 //
 // `appLinks`: the native settings `@serfab/cadre-rn/app-link` needs so two Sereus apps on one
-// phone can open each other with a join request and its answer (docs/architecture.md →
+// phone can open each other with a join request and its answer (docs/cadre/apps.md →
 // "Between apps on one phone"). Android: the main activity handles `sereus-join-request:` links,
 // so the system chooser lists every owner app, and the known Sereus apps' schemes are declared
 // under `<queries>`. iOS: the same schemes are listed in LSApplicationQueriesSchemes. On both,

@@ -12,7 +12,7 @@ import { multiaddr, type Multiaddr } from '@multiformats/multiaddr'
  * Listen addresses when `LISTEN_ADDRS` is unset. TCP *and* WebSockets: React Native has no
  * raw TCP transport, so a phone can only reach this over `/ws` (or `/wss` behind a TLS
  * front — see `ANNOUNCE_ADDRS`). `4002/ws` is the port the RN client and the drone configs
- * in `docs/reference-app-rn.md` already expect.
+ * in `docs/contributing/device-testing.md` already expect.
  */
 export const DEFAULT_LISTEN_ADDRS = ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws']
 

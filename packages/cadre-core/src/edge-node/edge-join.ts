@@ -1,7 +1,7 @@
 /**
  * `EdgeNode.joinCadre`'s sequence: redeem in place on a node already running in the credential's
  * party, or stop the running node, start one in that party, redeem there and go back on any
- * failure (docs/architecture.md → "An app joins an existing cadre"). The credential is a machine
+ * failure (docs/cadre/apps.md → "An app joins an existing cadre"). The credential is a machine
  * invitation, which admits the app as a machine, or an owner grant, which makes it a machine and
  * an owner at once ({@link JoinCredential}). Runs over a narrow view of the runtime
  * ({@link JoinRuntime}), inside one of its transitions.

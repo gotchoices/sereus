@@ -1,6 +1,6 @@
 /**
  * The pending party key, sealed to the machines that remain: how `PendingStrandPartyKey.SealedKey`
- * carries the key a party moves to after a machine removal (`docs/architecture.md` → "Removing a
+ * carries the key a party moves to after a machine removal (`docs/cadre/membership.md` → "Removing a
  * machine"). The row is written in the same control transaction as the removed machine's
  * tombstone, so it reaches that machine; what it carries must open only for the others.
  *

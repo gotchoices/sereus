@@ -18,7 +18,7 @@
  * deadline that never waits on the link; `-- link-bound, not yet derived: <ticket slug>` marks
  * one that does and names the ticket that owns converting it. Grep for the second to list the
  * deadlines this module does not yet cover. `-- cuts off by design: <why>; see
- * docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"` keeps a deadline
+ * docs/network/deadlines.md → "Deadlines over Optimystic's reads and commits"` keeps a deadline
  * that does wait on the link, through an Optimystic read or commit, but whose value is what its
  * caller can tolerate: it gives up on purpose and must not grow with the link. That doc section
  * lists every such site. `-- measured, not derived: <where the measurement lives>` keeps a
@@ -150,8 +150,8 @@
  * to a peer that never completes a connection waits up to the 42 500 ms dial deadline, each of
  * that peer's addresses up to 39 000 ms inside it, and one that connects and never answers
  * waits 10 500. A control write against a connected, silent member fails after about 84 s
- * (one pend round and three cancel rounds; `docs/cadre-consistency.md` → "Deadlines Over
- * Optimystic's Reads and Commits"). The dial case was not measured. cadre's cut-off budgets
+ * (one pend round and three cancel rounds; `docs/network/deadlines.md` → "Deadlines over
+ * Optimystic's reads and commits"). The dial case was not measured. cadre's cut-off budgets
  * (`CONTROL_WRITE_RETRY_BUDGET_MS`, `CONTROL_READ_RETRY_BUDGET_MS`) are checked between
  * attempts, so one attempt can outlast them by that much. If writes on a fast link are seen
  * waiting out the dial deadline against an unreachable machine, declare that deployment's real
@@ -210,7 +210,7 @@ import { resolveLinkDeadlines, type Libp2pConnectionTimeouts, type RpcDeadlineDe
  *
  * **Why 3 500.** Sereus supports two machines that reach each other only through a relay up to
  * a **3-second link round trip** (1 500 ms each way — a congested mobile or satellite link;
- * `docs/architecture.md` → "Relay Integration"). The worst relayed dial measured at that link,
+ * `docs/network/deadlines.md` → "The declared link"). The worst relayed dial measured at that link,
  * opening the relay connection first, was 15 113 ms, above the 15 000 ms a declaration of
  * exactly 3 000 would derive, so the declaration rounds the supported link up to the next half
  * second. 3 500 derives 17 500 ms of link time and leaves about 2.4 s over that dial: room for a
@@ -418,7 +418,7 @@ export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
  * `CONTROL_READ_RETRY_BUDGET_MS` must stay below this, which
  * `control-read-retry.spec.ts` pins.
  */
-// eslint-disable-next-line no-restricted-syntax -- cuts off by design: an expired decision admits a connection only, and the dial budgets add it as a flat allowance; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: an expired decision admits a connection only, and the dial budgets add it as a flat allowance; see docs/network/deadlines.md → "Deadlines over Optimystic's reads and commits"
 export const ADMISSION_DECISION_TIMEOUT_MS = 2_000;
 
 /**

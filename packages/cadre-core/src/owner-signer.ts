@@ -1,6 +1,6 @@
 /**
  * The owner signer: the one interface a node's owner signatures go through
- * (`docs/architecture.md` → Owner Keys → The owner signer).
+ * (`docs/cadre/owner-keys.md` → The owner signer).
  *
  * cadre-core needs owner signatures, never an owner private key, so a backend that keeps the
  * key where the node cannot read it (a hardware key, a vault behind biometrics) fits the same

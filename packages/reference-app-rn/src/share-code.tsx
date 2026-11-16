@@ -8,7 +8,7 @@
  *
  * `react-native-svg` and `expo-clipboard` are native modules: a dev client built before
  * they were added fails as this file loads, which is when Settings loads
- * (docs/reference-app-rn.md → "When Native Rebuild Is Needed").
+ * (docs/platforms/react-native.md → "When a native rebuild is needed").
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';

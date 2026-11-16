@@ -24,7 +24,7 @@ export { KeytarSecretsStore, FileSecretsStore };
 
 /**
  * Try the OS keychain (keytar) first; fall back to a 0600 JSON file in the
- * cadre-host rootDir. The fallback path is documented in `docs/cadre-host.md`.
+ * cadre-host rootDir. The fallback path is documented in `docs/hosting/cadre-host.md`.
  *
  * `keytar` is loaded via dynamic import inside a try/catch so a missing native
  * dependency never crashes package import. The same applies to runtime errors

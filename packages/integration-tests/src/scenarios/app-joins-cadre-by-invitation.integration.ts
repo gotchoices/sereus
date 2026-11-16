@@ -1,8 +1,8 @@
 /**
  * E2E: an app joins a cadre with the two credentials an owner mints, a machine invitation and
- * an owner grant, in the two ways one app hands a credential to another (`docs/architecture.md`
- * → "Handing an invitation from app to app", "Owner grants"), the first while no always-on
- * machine is up.
+ * an owner grant, in the two ways one app hands a credential to another (`docs/cadre/apps.md`
+ * → "Handing an invitation from app to app"; `docs/cadre/owner-keys.md` → "Owner grants"), the
+ * first while no always-on machine is up.
  *
  * Machines:
  * - **A**, the owner: phone-shaped (`listenAddrs: []`), founds the cadre.

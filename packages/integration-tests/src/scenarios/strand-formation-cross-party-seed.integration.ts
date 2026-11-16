@@ -50,7 +50,7 @@
  * restart is not proven by this scenario; `strand-relay-only-restart-reconverges` is that
  * proof. A host relay reservation that rotates while the two are NOT connected still
  * leaves a dead address until the host dials in or a third member's FRET snapshot
- * forwards the fresher record (see `docs/strands.md`).
+ * forwards the fresher record (see `docs/network/strand-addressing.md`).
  */
 
 import { describe, it, expect } from 'vitest';

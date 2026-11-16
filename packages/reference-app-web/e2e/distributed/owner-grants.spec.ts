@@ -9,7 +9,8 @@ import { startCadreMember, type CadreMemberHandle } from '../fixtures/cadre-memb
  * The cadre (party A) is the in-process `fixtures/cadre-member.ts` node, A's one always-on
  * machine. It mints an owner grant, and the tab, which founded a party of its own on first load,
  * pastes it under "Join my existing cadre" and joins A as a machine and an owner
- * (docs/architecture.md → "An app joins an existing cadre", "Owner grants").
+ * (docs/cadre/apps.md → "An app joins an existing cadre"; docs/cadre/owner-keys.md → "Owner
+ * grants").
  *
  * The backup is the point of the second half: an owner grant names the addresses of the cadre's
  * machines, and a solo tab without a relay has none, so a tab can make a backup only in a cadre

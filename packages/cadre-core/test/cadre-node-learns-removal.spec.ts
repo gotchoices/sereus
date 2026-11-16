@@ -8,7 +8,7 @@ import { createConfig, makeOwner, vouchedRow, inject, anchorWith, type Owner, ty
 /**
  * A node reports its own removal from the cadre (`cadre:removed`, `removedFromCadre()`) only
  * when a `CadrePeer` tombstone names it, it has no live row, and a membership refresh of this
- * process saw its live row before: "Removing a machine" in docs/architecture.md. Driven
+ * process saw its live row before: "Removing a machine" in docs/cadre/membership.md. Driven
  * through the gate suites' fake control database, whose `queryCadrePeers` drops rows with a
  * retired stamp as the real one does.
  */

@@ -1,240 +1,321 @@
 # @serfab/cadre-provider
 
-Reference provider service for hosting Sereus cadre nodes on behalf of users.
+A reference service for renting out always-on Sereus cadre nodes. It exposes an HTTP API through which a customer's app creates a node, runs each node as a Docker container of the `@serfab/cadre-cli` image, and never holds a customer's owner key.
 
-## Overview
+This README covers running and configuring the service and its HTTP reference. How a rented node joins a cadre, what the provider can see, and how an app rents a node through cadre-core are described in [Provider-hosted nodes](https://github.com/gotchoices/sereus/blob/master/docs/hosting/provider.md).
 
-This package provides a complete provider API that enables:
-- **Container Management**: Allocate, monitor, and terminate cadre node containers
-- **Billing Integration**: Usage metering, quota enforcement, and payment processor hooks
-- **Authentication**: API key and OAuth/JWT authentication, with built-in sign-in endpoints for apps ([Sign-in from apps](#sign-in-from-apps-oauth-2-with-pkce))
-- **Provider descriptor**: what an app's store screen shows about this provider ([Provider descriptor](#provider-descriptor))
-- **Docker Orchestration**: Container lifecycle management via Docker API
+## Prerequisites
 
-## Installation
+- **Node.js 20 or later.**
+- **Docker Engine on the same machine**, with the user that runs the provider allowed to use the Docker socket (`docker.socketPath`, default `/var/run/docker.sock`).
+- **The node image on that Docker host**, under the name in `docker.image` (default `sereus-cadre-node:latest`). No image is published; [First run](#first-run) builds it from the repository. With the default `pullPolicy` the provider does not pull, so an image that is absent makes every create end in `error`.
+- **A Docker network** with the name in `docker.network` (default `sereus_provider`). The provider does not create it.
+- **For customers on phones: a DNS name or IP address** at which this machine's `docker.portRange` (default 10000–20000) is reachable from the internet, set as `docker.publicHost`. Without it only the invitation join is accepted ([Joining a cadre: claim or invitation](#joining-a-cadre-claim-or-invitation)).
+- **TLS in front of the API** for anything but a local test. The API hands out bearer tokens and node claim secrets; the provider itself serves plain HTTP.
 
-```bash
-npm install @serfab/cadre-provider
-```
-
-## Quick Start
-
-### CLI Usage
+## Install
 
 ```bash
-# Start the provider service
-cadre-provider start -c provider.yaml
-
-# Validate configuration
-cadre-provider check -c provider.yaml
-
-# Enable debug logging
-cadre-provider start -c provider.yaml --debug
+npm install -g @serfab/cadre-provider
 ```
 
-### Programmatic Usage
+This installs the `cadre-provider` command. To embed the server in your own process instead, see [Programmatic use](#programmatic-use).
 
-```typescript
-import { createProviderServer, loadConfig } from '@serfab/cadre-provider';
+## First run
 
-const config = loadConfig({ configFile: 'provider.yaml' });
-const server = await createProviderServer({ config });
-await server.start();
-```
+These steps start a provider on one machine and create a container that waits to be claimed.
 
-## API Endpoints
+1. Build the node image from a checkout of the repository. The build context is the repository root.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/status` | Health check |
-| GET | `/api/v1/descriptor` | What this provider says about itself, for an app's store screen ([Provider descriptor](#provider-descriptor)); public |
-| GET | `/api/v1/oauth/authorize` | Start a sign-in from an app ([Sign-in from apps](#sign-in-from-apps-oauth-2-with-pkce)); public, `auth.oauth` only |
-| POST | `/api/v1/oauth/authorize` | The dev consent page's form; `auth.oauth.devConsentPage` only |
-| POST | `/api/v1/oauth/token` | Exchange a code for tokens, or refresh them; public, `auth.oauth` only |
-| POST | `/api/v1/containers` | Create a new container; `join` says how it gets into its cadre ([Joining a cadre: claim or invitation](#joining-a-cadre-claim-or-invitation)) |
-| GET | `/api/v1/containers` | List customer's containers, each with its `partyId` and `joinState` |
-| GET | `/api/v1/containers/:id` | Get container status (reads the node live and folds its join state into the record) |
-| GET | `/api/v1/containers/:id/code` | The node code a phone claims the container with (claim containers only) |
-| GET | `/api/v1/containers/:id/peer` | The container's peer id and every address it reports, read live |
-| DELETE | `/api/v1/containers/:id` | Terminate container |
-| GET | `/api/v1/billing/plans` | List billing plans |
-| GET | `/api/v1/billing/status` | Get customer billing status, with the subscription's standing and dates ([Subscription state](#subscription-state-and-termination-for-non-payment)) |
+	```bash
+	git clone https://github.com/gotchoices/sereus.git
+	cd sereus
+	docker build -f packages/cadre-cli/docker/Dockerfile -t sereus-cadre-node:latest .
+	```
+
+2. Create the Docker network.
+
+	```bash
+	docker network create sereus_provider
+	```
+
+3. Create an API key. The provider stores only the SHA-256 hash of a key.
+
+	```bash
+	KEY=$(openssl rand -hex 32)
+	printf '%s' "$KEY" | sha256sum | cut -d' ' -f1    # on macOS: shasum -a 256
+	```
+
+4. Write `provider.yaml` with the hash. `publicHost: localhost` lets one machine exercise the claim join; a real deployment uses its public name.
+
+	```yaml
+	auth:
+	  mode: api-key
+	  apiKeyHashes:
+	    - <the hash printed in step 3>
+	docker:
+	  publicHost: localhost
+	storage:
+	  type: file
+	  path: ./provider-data
+	```
+
+5. Check the configuration, then start.
+
+	```bash
+	cadre-provider check -c provider.yaml
+	cadre-provider start -c provider.yaml
+	# Cadre Provider API listening at http://0.0.0.0:3000/api/v1
+	```
+
+6. Confirm the API answers. This route needs no key.
+
+	```bash
+	curl http://localhost:3000/api/v1/status
+	# {"ok":true,"service":"cadre-provider","version":"<package version>"}
+	```
+
+7. Create a container.
+
+	```bash
+	curl -X POST http://localhost:3000/api/v1/containers \
+	  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+	  -d '{"join":{"kind":"claim"}}'
+	```
+
+	The answer is `201` with the new record. Its `status` is `pending` or `creating`:
+
+	```json
+	{
+	  "ok": true,
+	  "data": {
+	    "container": {
+	      "id": "ctr_V1StGXR8_Z5jdHi6",
+	      "customerId": "admin",
+	      "partyId": "unclaimed",
+	      "profile": "storage",
+	      "status": "pending",
+	      "resources": {},
+	      "tags": {},
+	      "createdAt": "2026-11-16T10:00:00.000Z",
+	      "updatedAt": "2026-11-16T10:00:00.000Z",
+	      "join": { "kind": "claim" }
+	    }
+	  }
+	}
+	```
+
+8. Read the container until its `status` is `running`, then ask for its node code.
+
+	```bash
+	curl -H "Authorization: Bearer $KEY" http://localhost:3000/api/v1/containers/ctr_V1StGXR8_Z5jdHi6
+	curl -H "Authorization: Bearer $KEY" http://localhost:3000/api/v1/containers/ctr_V1StGXR8_Z5jdHi6/code
+	# {"ok":true,"data":{"code":"sereus-join:1.…","peerId":"12D3Koo…","multiaddrs":["/dns4/localhost/tcp/<port>/ws/p2p/12D3Koo…"]}}
+	```
+
+	A `status` of `error` carries the reason in `error`; a missing image or network appears there as Docker's own message.
+
+9. Remove the container.
+
+	```bash
+	curl -X DELETE -H "Authorization: Bearer $KEY" http://localhost:3000/api/v1/containers/ctr_V1StGXR8_Z5jdHi6
+	# {"ok":true,"message":"Container terminated"}
+	```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `cadre-provider start` | Loads the configuration and starts the API server. `SIGINT` or `SIGTERM` shuts it down and exits 0. |
+| `cadre-provider check` | Loads and validates the configuration, prints it with every secret shown as `[redacted]`, and says when there is no `provider` block for `GET /descriptor` to serve. Exits 1 on an invalid configuration. |
+| `cadre-provider --version` | Prints the package version. |
+
+| Flag | Commands | Meaning |
+|---|---|---|
+| `-c, --config <path>` | `start`, `check` | Configuration file, `.yaml`, `.yml` or `.json`. Without it the defaults and the environment apply. |
+| `-p, --port <port>` | `start` | Port to listen on, a whole number from 0 to 65535. Overrides the file and `PROVIDER_PORT`. |
+| `-d, --debug` | `start` | Enables the `cadre:*` and `sereus:*` debug log namespaces. |
 
 ## Configuration
 
-Configuration can be provided via YAML/JSON file or environment variables. Both are checked
-strictly at start: an unknown or misspelled key, or a wrongly-typed value, stops the provider
-(`start` and `check` alike) with an error naming every problem and where it came from, instead
-of silently applying the default. A file holding `server: { prot: 3000 }` with
-`PROVIDER_AUTH_MODE=apikey` in the environment fails with:
+Configuration is read from the file, then from environment variables, which override the file one setting at a time. The result is checked strictly at `start` and at `check`: an unknown or misspelled key, or a value of the wrong type, stops the provider with one error that names every problem and where it came from. A file holding `server: { prot: 3000 }` with `PROVIDER_AUTH_MODE=apikey` in the environment fails with:
 
 ```
 Config /etc/cadre-provider.yaml: unknown key server.prot (did you mean 'port'?)
 Environment variable PROVIDER_AUTH_MODE: auth.mode must be one of 'none', 'api-key', 'oauth', got "apikey"
 ```
 
-A block with no children (`server:` on its own) counts as absent. `storage.type: file` needs
-`storage.path`. `docker.defaultResources.memoryLimit` must be a size the orchestrator can read
-(`512M`, `2G`) and `cpuLimit` a quoted number (`"0.5"`); a create request's own `resources` are
-held to the same rule. `docker.portRange.end` must not be below `start`; each container takes four
-ports from the range (health, metrics, libp2p TCP, libp2p WebSocket), so the default 10000–20000
-serves 2,500 containers. `docker.network` may not be `host`, `none` or `container:<id>`, modes in
-which Docker ignores those port bindings. `docker.publicHost` must be a DNS name or IP address with no whitespace
-([Phones dial containers at the public host](#phones-dial-containers-at-the-public-host)). `auth.oauth` is allowed
-only with `mode: oauth` ([Sign-in from apps](#sign-in-from-apps-oauth-2-with-pkce)), and `provider.publicUrl` must be
-`https` except at a loopback host ([Provider descriptor](#provider-descriptor)). Values under `push` and
-`billing` are never echoed into an error, and `check` prints the loaded config with every secret
-shown as `[redacted]`, then says whether `GET /descriptor` has a `provider` block to serve.
+A block with no children (`server:` on its own line) counts as absent. Values under `push` and `billing` are never echoed into an error. A commented example is in the repository, not in the npm package: [`example.provider.yaml`](https://github.com/gotchoices/sereus/blob/master/packages/cadre-provider/example.provider.yaml). The option types are in [`src/config/types.ts`](./src/config/types.ts).
 
-### Example Configuration
+### Settings
+
+| Key | Default | Meaning |
+|---|---|---|
+| `server.host` | `0.0.0.0` | Address the API binds. |
+| `server.port` | `3000` | API port; `0` asks the OS for a free port. |
+| `server.basePath` | `/api/v1` | Prefix of every route. |
+| `server.cors.origin`, `server.cors.credentials` | `true`, `true` | CORS policy: an origin string, a list of them, or `true`/`false`. |
+| `auth.*` | `mode: api-key` | See [Authentication and permissions](#authentication-and-permissions) and [Sign-in from apps](#sign-in-from-apps-oauth-2-with-pkce). |
+| `docker.socketPath` | `/var/run/docker.sock` | Docker Engine socket. |
+| `docker.network` | `sereus_provider` | Network containers attach to. Not `host`, `none` or `container:<id>`, in which Docker ignores port bindings. |
+| `docker.image` | `sereus-cadre-node:latest` | Node image. |
+| `docker.pullPolicy` | `if-not-present` | `always` pulls the image before every create. `if-not-present` and `never` do not pull; the image must already be on the host. |
+| `docker.defaultResources.memoryLimit` | `512M` | Memory limit: a size such as `512M` or `2G`. |
+| `docker.defaultResources.cpuLimit` | `"0.5"` | CPU count as a quoted string. |
+| `docker.defaultResources.storageQuotaBytes` | 10 GB | Passed to the node as its storage quota. |
+| `docker.portRange.start`, `.end` | `10000`, `20000` | Host ports for containers, four each, so the default range holds 2,500 containers. |
+| `docker.publicHost` | unset | DNS name or IP address at which the port range is reachable from outside ([Phones dial containers at the public host](#phones-dial-containers-at-the-public-host)). |
+| `billing.enabled` | `false` | Turns on the quota check and the billing tick ([Billing](#billing)). |
+| `billing.defaultPlanId` | `starter` | Plan of a billing record created without one. |
+| `billing.usageCollectionIntervalSec` | `60` | Seconds between billing ticks. |
+| `storage.type` | `memory` | `memory` or `file`. `memory` loses every record at restart while the containers keep running in Docker; use `file` for anything but a test. |
+| `storage.path` | unset | Directory for the file store; required with `file` ([Files the provider writes](#files-the-provider-writes)). |
+| `logging.level` | `info` | `debug` turns on the HTTP server's request log. Other diagnostics use the `debug` package (`--debug`, or `DEBUG=cadre:provider:*`). |
+| `push` | unset | Push credentials given to customers' nodes ([Push credentials](#push-credentials)). |
+| `provider` | unset | What `GET /descriptor` publishes ([Provider descriptor](#provider-descriptor)). |
+
+A create request's own `resources` are held to the same rules as `docker.defaultResources`, and replace it as a whole: a request that sets only `memoryLimit` runs with no CPU limit.
+
+`billing.stripeSecretKey` and `billing.stripeWebhookSecret` are accepted and redacted, and `auth.jwksUri`, `auth.issuer` and `auth.audience` are accepted, but the provider does not read any of the five. They are in the loaded configuration for your own hooks and webhook handler to use.
+
+### Environment variables
+
+Each variable overrides one setting. A boolean variable accepts `true`, `false`, `1` or `0`, and a number variable only a number; anything else fails the start. An empty value counts as unset. Unknown `PROVIDER_*` names are ignored, because other software may use the prefix.
+
+| Variable | Setting |
+|---|---|
+| `PROVIDER_HOST` | `server.host` |
+| `PROVIDER_PORT` | `server.port` |
+| `PROVIDER_BASE_PATH` | `server.basePath` |
+| `PROVIDER_AUTH_MODE` | `auth.mode` |
+| `PROVIDER_ALLOW_INSECURE_NO_AUTH` | `auth.allowInsecureNoAuth` |
+| `PROVIDER_JWKS_URI` | `auth.jwksUri` |
+| `PROVIDER_ISSUER` | `auth.issuer` |
+| `PROVIDER_AUDIENCE` | `auth.audience` |
+| `PROVIDER_OAUTH_DEV_CONSENT_PAGE` | `auth.oauth.devConsentPage` |
+| `PROVIDER_ID` | `provider.id` |
+| `PROVIDER_NAME` | `provider.name` |
+| `PROVIDER_PUBLIC_URL` | `provider.publicUrl` |
+| `PROVIDER_DOCKER_SOCKET` | `docker.socketPath` |
+| `PROVIDER_DOCKER_IMAGE` | `docker.image` |
+| `PROVIDER_DOCKER_NETWORK` | `docker.network` |
+| `PROVIDER_DOCKER_PUBLIC_HOST` | `docker.publicHost` |
+| `PROVIDER_BILLING_ENABLED` | `billing.enabled` |
+| `STRIPE_SECRET_KEY` | `billing.stripeSecretKey` |
+| `STRIPE_WEBHOOK_SECRET` | `billing.stripeWebhookSecret` |
+| `PROVIDER_STORAGE_TYPE` | `storage.type` |
+| `PROVIDER_STORAGE_PATH` | `storage.path` |
+| `PROVIDER_LOG_LEVEL` | `logging.level` |
+
+API key hashes, OAuth clients and push credentials have no variable; they are set in the file.
+
+### Push credentials
+
+A node that holds FCM or APNs credentials can send a push notification that wakes a customer's suspended phone ([Push wake](https://github.com/gotchoices/sereus/blob/master/docs/strands/hibernation.md#push-wake)). The `push` block supplies those credentials to the nodes this provider creates.
+
+The credentials do not by themselves send any wake. A node sends one only when the program running it reports strand activity, and the `cadre start` process in each container never does (ticket `passive-strand-activity-fanout-detector`).
 
 ```yaml
-server:
-  host: 0.0.0.0
-  port: 3000
-  basePath: /api/v1
-
-auth:
-  mode: api-key  # none, api-key, or oauth (default: api-key)
-  # api-key with no keys configured rejects every privileged call (401).
-  # apiKeyHashes: [<sha256-hex>, ...]   # static admin keys, granted '*'
-  #
-  # mode: none disables auth entirely (every caller becomes a wildcard
-  # 'dev-customer'). It is fully open, so it must be acknowledged explicitly:
-  # mode: none
-  # allowInsecureNoAuth: true
-
-docker:
-  socketPath: /var/run/docker.sock
-  network: sereus_provider
-  image: sereus-cadre-node:latest
-  defaultResources:
-    memoryLimit: 512M
-    cpuLimit: "0.5"
-
-billing:
-  enabled: true
-  stripeSecretKey: sk_test_...
-  usageCollectionIntervalSec: 60
-
-storage:
-  type: file
-  path: /data/provider
+push:
+  default:                      # every customer without an entry under tenants
+    fcm:
+      projectId: my-firebase-project
+      clientEmail: push@my-firebase-project.iam.gserviceaccount.com
+      privateKey: "-----BEGIN PRIVATE KEY-----\n…"
+    apns:
+      keyId: ABC123DEFG
+      teamId: TEAM123456
+      bundleId: com.example.app
+      privateKey: "-----BEGIN PRIVATE KEY-----\n…"
+      production: true          # optional; false or absent uses the APNs sandbox
+    cooldownMs: 300000          # optional
+    debounceMs: 10000           # optional
+  tenants:
+    customer-42:                # a customer id; same shape as default
+      fcm: { projectId: …, clientEmail: …, privateKey: … }
 ```
 
-### Environment Variables
+- **One set per container, chosen by customer id.** When a container is created, the provider uses the entry under `tenants` for the container's customer, or `default` when there is none, or nothing. An entry under `tenants` replaces `default` as a whole. One customer's entry is never given to another customer's node.
+- **A platform block is all or nothing.** `fcm` needs `projectId`, `clientEmail` and `privateKey`; `apns` needs `keyId`, `teamId`, `bundleId` and `privateKey`. A partial block stops the provider at start.
+- **`cooldownMs` and `debounceMs` are optional.** They limit how often the node pushes; the node's defaults are 5 minutes and 10 seconds.
+- **The credentials are in the container's environment.** The provider passes them as the `CADRE_PUSH` variable, fixed when the container is created, so a changed `push` block reaches only containers created afterwards, and `docker inspect` on the host shows them.
 
-Each variable overrides one setting on its own; none depends on another being set. A boolean
-variable accepts `true`, `false`, `1` or `0`, and a number variable only a number
-(`PROVIDER_BILLING_ENABLED=yes` and `PROVIDER_PORT=3000abc` both fail start). An empty value
-counts as unset. Unknown `PROVIDER_*` names are ignored, since other software may use the prefix.
+## Authentication and permissions
 
-| Variable | Setting | Description |
-|----------|---------|-------------|
-| `PROVIDER_HOST` | `server.host` | Server host |
-| `PROVIDER_PORT` | `server.port` | Server port (0 to 65535; 0 picks a free port) |
-| `PROVIDER_BASE_PATH` | `server.basePath` | Base path for API routes |
-| `PROVIDER_AUTH_MODE` | `auth.mode` | Authentication mode (`none`, `api-key`, `oauth`) |
-| `PROVIDER_ALLOW_INSECURE_NO_AUTH` | `auth.allowInsecureNoAuth` | Set to `true` to acknowledge running fully open with `PROVIDER_AUTH_MODE=none` |
-| `PROVIDER_JWKS_URI` | `auth.jwksUri` | JWKS endpoint (oauth mode) |
-| `PROVIDER_ISSUER` | `auth.issuer` | Expected token issuer (oauth mode) |
-| `PROVIDER_AUDIENCE` | `auth.audience` | Expected token audience (oauth mode) |
-| `PROVIDER_OAUTH_DEV_CONSENT_PAGE` | `auth.oauth.devConsentPage` | Set to `true` to serve the built-in consent form in place of an `authorizeCustomer` hook; needs `PROVIDER_ALLOW_INSECURE_NO_AUTH=true`, and the clients stay in the file |
-| `PROVIDER_ID` | `provider.id` | Stable identifier in the descriptor |
-| `PROVIDER_NAME` | `provider.name` | Display name in the descriptor |
-| `PROVIDER_PUBLIC_URL` | `provider.publicUrl` | The origin this API is reached at (`https`, or `http` at a loopback host); every descriptor URL is built from it |
-| `PROVIDER_DOCKER_SOCKET` | `docker.socketPath` | Docker socket path |
-| `PROVIDER_DOCKER_IMAGE` | `docker.image` | Container image |
-| `PROVIDER_DOCKER_NETWORK` | `docker.network` | Docker network for tenant containers |
-| `PROVIDER_DOCKER_PUBLIC_HOST` | `docker.publicHost` | DNS name or IP address at which the published container ports are reachable from outside; containers announce it, and `join.kind: "claim"` is accepted. Read when a container is created, so existing containers keep the host they were created under until recreated |
-| `PROVIDER_BILLING_ENABLED` | `billing.enabled` | Enable billing (`true`/`false`) |
-| `STRIPE_SECRET_KEY` | `billing.stripeSecretKey` | Stripe API key |
-| `STRIPE_WEBHOOK_SECRET` | `billing.stripeWebhookSecret` | Stripe webhook signing secret |
-| `PROVIDER_STORAGE_TYPE` | `storage.type` | `memory` or `file` |
-| `PROVIDER_STORAGE_PATH` | `storage.path` | Directory for file storage (required with `file`) |
-| `PROVIDER_LOG_LEVEL` | `logging.level` | `debug`, `info`, `warn` or `error` |
+The provider is closed by default. The default mode is `api-key`, and with no keys configured every authenticated route answers `401`. A caller sends its credential as `Authorization: Bearer <credential>`.
 
-## Authentication & permissions
+### API keys
 
-The provider is **closed by default**. The default mode is `api-key`, and with
-no keys configured every authenticated route returns `401` — a freshly started
-provider is reachable but rejects all privileged calls.
+In `api-key` mode a bearer is accepted from one of three sources, in this order:
+
+1. **The `validateApiKey` hook**, when you pass one ([Custom authentication](#custom-authentication)). With a hook installed the other two are not consulted.
+2. **`auth.apiKeyHashes`**: SHA-256 hex hashes of administrator keys. A matching key acts as customer `admin` with permission `*`. [First run](#first-run) shows how to make one.
+3. **Key records in the store**, each with its own customer id, permissions and optional expiry. The provider has no command or route that creates one; your own code writes it with `store.saveApiKey` and `hashApiKey`:
+
+	```typescript
+	import { createProviderServer, createStore, hashApiKey, loadConfig } from '@serfab/cadre-provider';
+
+	const config = loadConfig({ configFile: 'provider.yaml' });
+	const store = createStore(config.storage);
+	await store.saveApiKey({
+		keyHash: hashApiKey(rawKey),
+		customerId: 'customer-42',
+		name: 'customer-42 app key',
+		permissions: ['containers:*', 'billing:read'],
+		createdAt: new Date(),
+	});
+	const server = await createProviderServer({ config, store });
+	await server.start();
+	```
 
 ### Insecure no-auth mode
 
-`mode: none` disables authentication and grants every caller a wildcard
-identity (`dev-customer` with `['*']`). Because that is fully open, it is **not
-reachable implicitly**: the provider refuses to start in `none` mode unless the
-insecure setting is explicitly acknowledged.
+`mode: none` disables authentication and treats every caller as customer `dev-customer` with permission `*`. The provider refuses to start in this mode unless the configuration acknowledges it:
 
 ```yaml
 auth:
   mode: none
-  allowInsecureNoAuth: true   # required, or the provider refuses to start
+  allowInsecureNoAuth: true
 ```
 
-…or via environment: `PROVIDER_AUTH_MODE=none PROVIDER_ALLOW_INSECURE_NO_AUTH=true`.
-Without the acknowledgement, both `cadre-provider start` and `cadre-provider
-check` fail with a clear error. Use this only for local/dev.
+The same can be set with `PROVIDER_AUTH_MODE=none PROVIDER_ALLOW_INSECURE_NO_AUTH=true`. Use it only on a development machine.
 
 ### Permission scopes
 
-Each authenticated identity carries a `permissions` array. Privileged routes
-require a matching scope; a request that authenticates but lacks the scope
-returns `403 INSUFFICIENT_SCOPE`. Wildcards are supported: `*` grants
-everything, and `<resource>:*` (e.g. `containers:*`) grants every scope under
-that resource. Static `apiKeyHashes` admin keys and `none`-mode callers carry
-`['*']`, so they pass every check; store/JWT identities can be scoped down.
+Each authenticated identity carries a list of permissions. A request that authenticates but lacks the route's scope is answered `403 INSUFFICIENT_SCOPE`. `*` grants everything, and `<resource>:*` (for example `containers:*`) grants every scope of that resource.
 
 | Route | Required scope |
-|-------|----------------|
+|---|---|
 | `POST /containers` | `containers:create` |
-| `GET /containers` | `containers:read` |
-| `GET /containers/:id` | `containers:read` |
-| `GET /containers/:id/peer` | `containers:read` |
-| `GET /containers/:id/code` | `containers:read` |
+| `GET /containers`, `GET /containers/:id`, `GET /containers/:id/peer`, `GET /containers/:id/code` | `containers:read` |
 | `DELETE /containers/:id` | `containers:delete` |
 | `GET /billing/status` | `billing:read` |
-| `GET /billing/plans` | none (public listing) |
-| `GET /status` | none (skipped by auth) |
-| `GET /descriptor`, `GET`/`POST /oauth/authorize`, `POST /oauth/token` | none (skipped by auth: an app reaches them before it has a token) |
+| `GET /status`, `GET /descriptor`, `GET /billing/plans`, `/oauth/authorize`, `/oauth/token` | none; no bearer is read |
 
-Scope enforcement is orthogonal to ownership: per-container routes still verify
-that the container belongs to the calling customer regardless of scope.
+Scope and ownership are separate checks. Every per-container route also verifies that the container belongs to the calling customer, and answers `403 FORBIDDEN` when it does not.
 
-## Custom Authentication
+### Custom authentication
+
+`createProviderServer` takes `authHooks` ([`AuthHooks`](./src/server/auth.ts)). `validateApiKey(key)` replaces the key lookup in `api-key` mode. `validateJwt(token)` validates a bearer in `oauth` mode that is not one of the provider's own tokens; the provider does not verify JWTs itself. Each returns `{ customerId, permissions }`, or `undefined` to refuse.
 
 ```typescript
 import { createProviderServer, loadConfig, type AuthHooks } from '@serfab/cadre-provider';
 
 const authHooks: AuthHooks = {
-  async validateJwt(token) {
-    const user = await verifyMyJWT(token);
-    return {
-      customerId: user.id,
-      permissions: user.scopes,
-    };
-  },
+	async validateJwt(token) {
+		const user = await verifyWithMyIdentityProvider(token); // your code
+		return { customerId: user.id, permissions: user.scopes };
+	},
 };
 
-const server = await createProviderServer({
-  config: loadConfig(),
-  authHooks,
-});
+const server = await createProviderServer({ config: loadConfig({ configFile: 'provider.yaml' }), authHooks });
 ```
 
 ## Sign-in from apps: OAuth 2 with PKCE
 
-An app needs a token scoped to one customer's containers without ever seeing the customer's
-password or card. With `auth.mode: oauth` and an `auth.oauth` block the provider runs the
-standard flow for a public client, OAuth 2 authorization code with PKCE (RFC 6749 §4.1 and
-RFC 7636): the app opens `GET /oauth/authorize` in the system browser, the customer signs in and
-pays on your pages, the browser is sent back to the app with a one-time code, and the app
-exchanges the code at `POST /oauth/token` for a bearer. Your account system plugs in through one
-hook. An operator with an identity provider of their own leaves `auth.oauth` unset and keeps
-`validateJwt`.
+An app needs a token limited to one customer's containers without seeing the customer's password or card. With `auth.mode: oauth` and an `auth.oauth` block, the provider runs OAuth 2 authorization code with PKCE (RFC 6749 §4.1, RFC 7636): the app opens `GET /oauth/authorize` in the system browser, the customer signs in and pays on your pages, the browser returns to the app with a one-time code, and the app exchanges the code at `POST /oauth/token` for a bearer. An operator with an identity provider of their own leaves `auth.oauth` unset and uses `validateJwt`. The app's side is in cadre-core ([Renting a node from an app](https://github.com/gotchoices/sereus/blob/master/docs/hosting/provider.md#renting-a-node-from-an-app)).
 
-### Configuration
+### Registering apps
 
 ```yaml
 auth:
@@ -249,86 +330,58 @@ auth:
     devConsentPage: false
 ```
 
-`auth.oauth` is allowed only with `mode: oauth`. `clients` is file-only and names at least one
-app; each `clientId` is unique. Each redirect URI is an absolute URL with no fragment, compared
-by exact string equality (no trailing-slash, case or query normalization): a custom scheme is
-the usual form, and `http` is accepted only at a loopback host, since the code travels in that
-URL. Each scope is one of the [permission scopes](#permission-scopes) or a `<resource>:*`
-wildcard; `*` is not allowed.
+`auth.oauth` is allowed only with `mode: oauth`. `clients` names at least one app, and each `clientId` is unique. A redirect URI is an absolute URL with no fragment, compared by exact string equality. A custom scheme is the usual form; `http` is accepted only at a loopback host, because the code travels in that URL. Each scope is one of the [permission scopes](#permission-scopes) or a `<resource>:*` wildcard; `*` is not allowed.
 
-### The hook
+### The `authorizeCustomer` hook
+
+Your account system connects through one hook, called after the client, redirect URI and scopes have been checked. It receives the browser's headers (its cookies tell your site who is signed in) and the authorize query.
 
 ```typescript
 const authHooks: AuthHooks = {
-  async authorizeCustomer({ clientId, scopes, headers, query }) {
-    const session = await readSessionCookie(headers.cookie);
-    const here = `/api/v1/oauth/authorize?${new URLSearchParams(query)}`;
-    if (!session) return { redirect: `https://acme.example/login?next=${encodeURIComponent(here)}` };
-    if (!session.paid) return { redirect: `https://acme.example/checkout?next=${encodeURIComponent(here)}` };
-    return { customerId: session.customerId, planId: session.planId };
-  },
+	async authorizeCustomer({ clientId, scopes, headers, query }) {
+		const session = await readSessionCookie(headers.cookie); // your code
+		const here = `/api/v1/oauth/authorize?${new URLSearchParams(query)}`;
+		if (!session) return { redirect: `https://acme.example/login?next=${encodeURIComponent(here)}` };
+		if (!session.paid) return { redirect: `https://acme.example/checkout?next=${encodeURIComponent(here)}` };
+		return { customerId: session.customerId, planId: session.planId };
+	},
 };
 ```
 
-`authorizeCustomer` runs once the client, redirect URI and scopes have been checked, with the
-browser's headers (its cookies are how your site knows who is signed in) and the authorize
-query. It answers one of three ways. `{ customerId, planId? }` issues the code; a customer with
-no billing record gets one with that plan on the first code, so `GET /billing/status` answers
-for every signed-in customer and the plan's container limit applies from the first create.
-`{ redirect }` sends the browser to your login or checkout page, which brings it back to the
-same authorize URL afterwards. `{ deny }` sends the app `error=access_denied` with that reason.
+It answers in one of three ways:
+
+- `{ customerId, planId? }` issues the code. A customer with no billing record gets one with that plan, so the plan's container limit applies from the first create.
+- `{ redirect }` sends the browser to your login or checkout page, which returns it to the same authorize URL afterwards.
+- `{ deny }` returns the app `error=access_denied` with that reason.
 
 ### The dev consent page
 
-With no hook and `devConsentPage: true` the provider serves a form instead: whoever opens the
-authorize URL types a customer id, picks a plan and approves. Anyone can sign in as any
-customer, so it requires `allowInsecureNoAuth: true`, the acknowledgement `mode: none` needs;
-without it `start` and `check` refuse. The provider refuses to start with neither a hook nor the
-page, since no sign-in could ever succeed, and with both, since the page's form would sign anyone
-in beside the hook. For local development only.
+With no hook and `devConsentPage: true`, the provider serves a form in place of your account system: whoever opens the authorize URL types a customer id, picks a plan and approves. Anyone can sign in as any customer, so it requires `allowInsecureNoAuth: true`.
+
+The provider refuses to start with neither a hook nor the page, because no sign-in could succeed, and with both, because the form would sign anyone in alongside the hook.
 
 ### Endpoints
 
-All three are public. `GET /oauth/authorize` takes `response_type=code`, `client_id`,
-`redirect_uri`, `scope` (space-separated), `state`, `code_challenge` and
-`code_challenge_method=S256`. An unknown client or an unregistered redirect URI is answered with
-a 400 page and no redirect, since redirecting to an unregistered URI is the attack. Every other
-fault (`plain` challenge method, a malformed challenge, a missing state, a scope that is unknown
-or outside the client's allowance) redirects to the registered URI with `error`
-(`invalid_request`, `invalid_scope`, `unsupported_response_type` or `access_denied`),
-`error_description` and the `state`. On success the browser is sent to
-`redirect_uri?code=…&state=…`; the code lives ten minutes and is single-use.
+`GET /oauth/authorize` takes `response_type=code`, `client_id`, `redirect_uri`, `scope` (space-separated), `state`, `code_challenge` and `code_challenge_method=S256`.
 
-`POST /oauth/token`, form-encoded or JSON, answers
-`{ access_token, token_type: "Bearer", expires_in, refresh_token, scope }` with
-`Cache-Control: no-store`:
+- An unknown client or an unregistered redirect URI is answered with a `400` page and no redirect, since redirecting to an unregistered URI is the attack the registration prevents.
+- Every other fault redirects to the registered URI with `error` (`invalid_request`, `invalid_scope`, `unsupported_response_type` or `access_denied`), `error_description` and the `state`.
+- On success the browser is sent to `redirect_uri?code=…&state=…`. The code lasts ten minutes and can be presented once.
 
-- `grant_type=authorization_code` with `code`, `code_verifier`, `client_id` and `redirect_uri`:
-  `invalid_grant` when the code is unknown, expired, already presented (even once with a wrong
-  verifier), issued to another client or redirect URI, or the verifier does not hash to the
-  challenge.
-- `grant_type=refresh_token` with `refresh_token` and `client_id`: rotates. The presented
-  refresh token is spent, its access token deleted, and a new pair issued with the same scopes;
-  `invalid_grant` when it is unknown, expired, already used or for another client.
+`POST /oauth/token` takes a form-encoded or JSON body and answers `{ access_token, token_type: "Bearer", expires_in, refresh_token, scope }` with `Cache-Control: no-store`.
 
-Errors follow RFC 6749 §5.2: `400 { error, error_description }` with `invalid_request`,
-`invalid_client`, `invalid_grant` or `unsupported_grant_type`.
+- `grant_type=authorization_code` with `code`, `code_verifier`, `client_id` and `redirect_uri`. It answers `invalid_grant` when the code is unknown, expired, already presented (even once with a wrong verifier), issued to another client or redirect URI, or the verifier does not hash to the challenge.
+- `grant_type=refresh_token` with `refresh_token` and `client_id`. The presented refresh token and its access token stop working and a new pair is issued with the same scopes. It answers `invalid_grant` when the token is unknown, expired, already used or issued to another client.
+
+Token errors follow RFC 6749 §5.2: `400 { error, error_description }` with `invalid_request`, `invalid_client`, `invalid_grant` or `unsupported_grant_type`.
 
 ### Bearer lookup order
 
-In `oauth` mode a bearer is first looked up as a built-in token. It is stored hashed, as API
-keys are, as an API key record named `oauth:<clientId>` whose permissions are the granted
-scopes; an expired one is deleted and counts as absent. A bearer that is not one goes to
-`validateJwt` when the hook is installed, so one provider can serve its own tokens and an
-external identity provider's at once. Codes and refresh tokens are stored hashed too
-(`authorization-codes.json` and `refresh-tokens.json` with the file store); the raw values exist
-only in the redirect and the token response.
+In `oauth` mode a bearer is first looked up as one of the provider's own tokens. An access token is stored hashed, as an API key record named `oauth:<clientId>` whose permissions are the granted scopes; an expired one is deleted and counts as absent. A bearer that is not one of these goes to `validateJwt` when that hook is installed, so one provider can accept its own tokens and an external identity provider's. Codes and refresh tokens are stored hashed too; the raw values exist only in the redirect and the token response.
 
 ## Provider descriptor
 
-`GET /descriptor` (public) is what an app's store screen renders and what cadre-core's
-`parseProviderDescriptor` reads, built at request time from the `provider` block plus
-`server.basePath`, so it never disagrees with the registered routes:
+`GET /descriptor` is public. It is what an app's store screen shows and what cadre-core's `parseProviderDescriptor` reads. The provider builds it at request time from the `provider` block and `server.basePath`.
 
 ```yaml
 provider:
@@ -336,7 +389,7 @@ provider:
   name: Acme Cadre Nodes
   publicUrl: https://nodes.acme.example   # the origin this API is reached at
   termsUrl: https://acme.example/terms    # optional
-  regions: ["eu-west"]                    # optional
+  regions: ["eu-west"]                    # optional, in your own words
   icon: https://acme.example/icon.png     # optional
 ```
 
@@ -358,272 +411,215 @@ provider:
 }
 ```
 
-`publicUrl` is `https`, except at a loopback host for a dev run, with no query or fragment.
-`oauth.scopes` is the union of the registered clients' allowances, and the descriptor carries no
-client id: each app pairs it with the client id it registered. `oauth` is present only when
-`auth.oauth` is configured; a provider with an identity provider of its own publishes a
-descriptor elsewhere naming that provider's endpoints. Without a `provider` block the route
-answers `404 NOT_CONFIGURED`, and `check` says so. Where an app gets descriptors from is an open
-decision (`decide-provider-directory`); this route is what every option reads from.
+- **`id`, `name` and `publicUrl` are required.** Without a `provider` block the route answers `404 NOT_CONFIGURED`, and `check` says so.
+- **`publicUrl` is `https`**, with no query or fragment; `http` is accepted only at a loopback host, for a development run. Tokens and node codes travel over the URLs built from it.
+- **`oauth` is present only when `auth.oauth` is configured**, and `oauth.scopes` is the union of what the registered clients may be granted. cadre-core refuses a descriptor without `oauth`, so a provider that uses an external identity provider publishes its own descriptor naming that provider's endpoints.
+- **There is no client id in the descriptor.** Each app pairs it with the client id it registered.
 
-## Custom Billing
+## HTTP API
 
-```typescript
-import { createProviderServer, loadConfig, type BillingHooks } from '@serfab/cadre-provider';
+Routes are under `server.basePath` (default `/api/v1`).
 
-const billingHooks: BillingHooks = {
-  async processPayment(customerId, amountCents) {
-    const result = await stripe.charges.create({ ... });
-    return { success: true, transactionId: result.id };
-  },
-};
+| Method | Path | Answer |
+|---|---|---|
+| GET | `/status` | `{ ok, service, version }`; a liveness check. |
+| GET | `/descriptor` | The [provider descriptor](#provider-descriptor). |
+| GET, POST | `/oauth/authorize` | [Sign-in](#endpoints); `POST` exists only with the dev consent page. |
+| POST | `/oauth/token` | [Token exchange and refresh](#endpoints). |
+| POST | `/containers` | `201 { container }` for the new container. |
+| GET | `/containers` | `{ containers }`: the calling customer's records. |
+| GET | `/containers/:id` | `{ container, health? }`; reads a running node live. |
+| GET | `/containers/:id/code` | `{ code, peerId, multiaddrs }` for a container waiting to be claimed. |
+| GET | `/containers/:id/peer` | `{ peerId, multiaddrs }`: every address the node reports, read live. |
+| DELETE | `/containers/:id` | Stops and removes the container and its volume. |
+| GET | `/billing/plans` | `{ plans }`; public. |
+| GET | `/billing/status` | `{ billing }`: the customer's billing record, absent when there is none. |
 
-const server = await createProviderServer({
-  config: loadConfig(),
-  billingHooks,
-});
+Except for the descriptor and the OAuth endpoints, a success is `{ "ok": true, "data": … }` and a failure is `{ "ok": false, "error": { "code", "message" } }`.
+
+| Status | Code | Meaning |
+|---|---|---|
+| 400 | `INVALID_REQUEST` | The create body failed validation; the message names the field. |
+| 401 | `UNAUTHORIZED`, `AUTH_ERROR` | No credential, an unknown one, or a hook that threw. |
+| 403 | `INSUFFICIENT_SCOPE` | The identity lacks the route's scope. |
+| 403 | `FORBIDDEN` | The container belongs to another customer. |
+| 403 | `QUOTA_EXCEEDED` | Plan limit reached, subscription lapsed, or a balance with no payment method. |
+| 404 | `NOT_FOUND` | No such container. |
+| 404 | `NOT_CONFIGURED` | `GET /descriptor` without a `provider` block. |
+| 409 | `NOT_CLAIMABLE`, `ALREADY_CLAIMED`, `CONTAINER_GONE` | `GET /containers/:id/code` refusals. |
+| 503 | `NOT_AVAILABLE` | The node has not reported what the route needs yet; ask again. |
+
+A `DELETE` whose stop or removal failed answers `200` with `{ "ok": false, "message": "Termination failed" }`, and the record becomes `error`.
+
+### Joining a cadre: claim or invitation
+
+`POST /containers` takes `join`, which is required, and optionally `profile`, `resources`, `strandFilter` and `tags`. The body names no party, address or owner key: a claim supplies the party and the owner, and an invitation bundle carries the party, the members to dial and the owner keys the node trusts. The sequence of each join is in [Provider flow](https://github.com/gotchoices/sereus/blob/master/docs/hosting/provider.md#provider-flow).
+
+```json
+{ "join": { "kind": "claim" } }
+{ "join": { "kind": "invitation", "invitation": "sereus-invite:1.…" }, "profile": "storage", "tags": { "label": "home" } }
 ```
+
+| Field | Rule |
+|---|---|
+| `join.kind` | `claim` or `invitation`. `claim` is refused unless `docker.publicHost` is set. |
+| `join.invitation` | The text an owner's app produces with `encodeCadreInvitation`. Checked for shape; an error never echoes it. |
+| `profile` | `storage` (default) or `transaction`. |
+| `resources` | `memoryLimit`, `cpuLimit` and `storageQuotaBytes`, as in `docker.defaultResources`. |
+| `strandFilter` | A string, passed to the node as `CADRE_STRAND_FILTER`. |
+| `tags` | An object of strings, stored on the record and returned. |
+
+A request that fails any rule is answered `400 INVALID_REQUEST` and nothing is provisioned.
+
+**Claim.** The container starts with a one-time secret the provider generates. The app polls `GET /containers/:id/code`, decodes the code with cadre-core's `decodeNodeClaimPayload` and passes it to `CadreNode.claimNode`. The code is `sereus-join:1.…`, the format a cadre-host shows as a QR code. It carries the node's peer id, its claim secret, and only its WebSocket address at `publicHost`.
+
+| `GET /containers/:id/code` answer | When |
+|---|---|
+| `200 { code, peerId, multiaddrs }` | The node is waiting to be claimed and has reported its peer id and public WebSocket address. |
+| `503 NOT_AVAILABLE` | The node has not reported them yet. |
+| `409 NOT_CLAIMABLE` | The container was created with an invitation. |
+| `409 ALREADY_CLAIMED` | A live read shows the node has an owner. |
+| `409 CONTAINER_GONE` | The container is `stopped` or `error`. |
+
+**Invitation.** The container redeems the bundle at one of the members it names, so `publicHost` is not required. A bundle that is not well formed is refused at create; a `sereus-join-request:1.` text is refused as "a join request, not an invitation".
+
+### The container record
+
+`GET /containers/:id` and the list return these fields. Dates are ISO 8601 strings.
+
+| Field | Meaning |
+|---|---|
+| `id`, `customerId`, `profile`, `resources`, `tags`, `createdAt`, `updatedAt` | As created. |
+| `status` | `pending`, `creating`, `enrolling`, `running`, `stopping`, `stopped` or `error`. |
+| `error` | The failure, when `status` is `error`. |
+| `partyId` | The cadre the node serves. A claim container reports `unclaimed` until the claim is recorded. |
+| `peerId` | The node's peer id, once it first reported healthy. |
+| `join` | `{ kind }` only. The secret and the bundle are never returned here. |
+| `joinState` | Claim: `awaiting`, or `claimed` with `ownerKey` and `partyId`. Invitation: `pending`, `accepted` with `memberPeerId`, or `failed` with `error` and `retryable`. |
+| `ownerKey` | The owner key a claim named. |
+| `stopReason` | `customer` after a `DELETE`, `non-payment` after a lapse. |
+
+The provider updates `joinState`, `partyId` and `ownerKey` whenever it reads the node, and `GET /containers/:id` reads a `running` node on every call; the list returns the records as stored. A client that selects containers from the list by `partyId` misses an unclaimed one and should select by `joinState`.
+
+An invitation that was spent or expired before the node redeemed it ends as `failed` with `invite-spent` in `error` and `retryable: false`. The container keeps running; delete it and create another with a new invitation.
+
+### One-shot mode
+
+`POST /containers` and `DELETE /containers/:id` accept `shutdownAfter: true`. The provider answers normally with `"shutdownInitiated": true` added, then shuts down and exits 0. `DELETE` also accepts it as the query `?shutdownAfter=true`; the body wins when both are present. A request that fails does not shut the provider down.
+
+```bash
+curl -X DELETE "$URL/api/v1/containers/$ID?shutdownAfter=true" -H "Authorization: Bearer $KEY"
+```
+
+This suits a batch job that provisions or removes one container and exits. The service definitions in [`service/`](./service/README.md) treat exit 0 as final for that reason.
+
+## Billing
+
+The provider enforces plan limits, records usage, and stops the containers of a customer whose subscription lapses. It computes no charges and calls no payment processor: your own code reports subscription changes to it.
+
+- **Plans.** `GET /billing/plans` lists three built-in plans, `starter`, `professional` and `enterprise`, with container limits of 3, 10 and 100 (`DEFAULT_PLANS` in [`src/service/billing-service.ts`](./src/service/billing-service.ts)). They are not configurable.
+- **Billing records.** A customer gets a record at their first OAuth sign-in, or when your code calls `server.billingService.initializeCustomer(customerId, planId?)`. A customer with no record, such as `admin`, is not limited.
+- **Quota.** With `billing.enabled`, `POST /containers` is refused with `403 QUOTA_EXCEEDED` when the customer's containers that are not `stopped` or `error` have reached the plan's limit, when the subscription is `lapsed`, or when the record has a positive balance and no payment method.
+- **Usage.** With `billing.enabled`, every `usageCollectionIntervalSec` the provider records, for each `running` container, the interval as uptime, Docker's transmitted-bytes counter, and the node's count of active strands at that moment. Stored bytes are recorded as zero.
+
+`createProviderServer` accepts `billingHooks` (`BillingHooks`), but the service does not call them.
 
 ### Subscription state and termination for non-payment
 
-Each customer's billing record (`GET /billing/status`) carries `subscription`:
+Each billing record (`GET /billing/status`) carries `subscription`:
 
 ```json
 { "status": "past-due", "renewsAt": null, "lapsesAt": "2026-11-08T00:00:00.000Z" }
 ```
 
-- `status`: `active`, `past-due` or `lapsed`. A new customer starts `active`.
-- `renewsAt`: when the current period renews; `null` once lapsed. A new customer's is the end of the month.
-- `lapsesAt`: `past-due` only; when the grace period ends and the customer's containers are stopped.
+- `status`: `active`, `past-due` or `lapsed`. A new record starts `active`.
+- `renewsAt`: when the current period renews; `null` once lapsed. A new record's is the end of the month.
+- `lapsesAt`: set only while `past-due`; when the grace period ends.
 
-The provider holds no payment logic. Your payment processor's webhook reports each change through
-`server.billingService`: `updateSubscription(customerId, patch)` writes the fields it is given
-(and clears `lapsesAt` unless the status is `past-due`), and `lapseSubscription(customerId)` lapses
-the subscription. `updateSubscription` refuses `status: 'lapsed'`, since only `lapseSubscription`
-also stops the containers. With Stripe, after verifying the event's signature and mapping its
-customer to yours:
+Your payment processor's webhook reports each change through `server.billingService`. `updateSubscription(customerId, patch)` writes the fields it is given. `lapseSubscription(customerId)` lapses the subscription and stops the customer's containers; `updateSubscription` refuses `status: 'lapsed'` because it stops nothing. Both throw for a customer with no billing record. With Stripe, after verifying the event and mapping its customer to yours:
 
 ```typescript
 const { billingService } = server;
 
 switch (event.type) {
-  case 'invoice.paid':
-    await billingService.updateSubscription(customerId, {
-      status: 'active',
-      renewsAt: new Date(invoice.lines.data[0].period.end * 1000), // the paid period's end
-    });
-    break;
-  case 'invoice.payment_failed':
-    await billingService.updateSubscription(customerId, {
-      status: 'past-due',
-      lapsesAt: new Date(Date.now() + GRACE_PERIOD_MS), // your grace period
-    });
-    break;
-  case 'customer.subscription.deleted':
-    await billingService.lapseSubscription(customerId);
-    break;
+	case 'invoice.paid':
+		await billingService.updateSubscription(customerId, {
+			status: 'active',
+			renewsAt: new Date(invoice.lines.data[0].period.end * 1000),
+		});
+		break;
+	case 'invoice.payment_failed':
+		await billingService.updateSubscription(customerId, {
+			status: 'past-due',
+			lapsesAt: new Date(Date.now() + GRACE_PERIOD_MS), // your grace period
+		});
+		break;
+	case 'customer.subscription.deleted':
+		await billingService.lapseSubscription(customerId);
+		break;
 }
 ```
 
-A subscription lapses when `lapseSubscription` is called, or on the billing tick (every
-`billing.usageCollectionIntervalSec`, with `billing.enabled`) once a `past-due` record's `lapsesAt`
-has passed. A lapse marks the record `lapsed` with both dates `null`, answers every further
-`POST /containers` with `403 QUOTA_EXCEEDED` "Subscription lapsed", and stops each of the customer's
-containers that is still up, one at a time. Each stopped container's record carries
-`stopReason: 'non-payment'` on `GET /containers/:id` and in the list (a `DELETE` writes
-`stopReason: 'customer'`), so an app can tell the user why the node stopped and offer to remove it
-from the cadre. A `past-due` customer still creates containers: the grace period is yours to set.
+A subscription lapses when `lapseSubscription` is called, or on the billing tick once a `past-due` record's `lapsesAt` has passed. A lapse marks the record `lapsed` with both dates `null` and stops each of the customer's live containers, one at a time, with `stopReason: 'non-payment'`. A `past-due` customer can still create containers.
 
-Renewing a lapsed subscription (`updateSubscription` to `active`) does not bring stopped containers
-back. Each container's volume, and the node identity in it, was deleted with the container
-([Per-tenant durable state](#per-tenant-durable-state)), so the customer rents a new one.
+Renewing a lapsed subscription does not bring stopped containers back. Each container's volume, and the node identity in it, was deleted with the container, so the customer rents a new one.
 
-## Deployment
-
-### Docker
-
-```bash
-docker build -t cadre-provider .
-docker run -p 3000:3000 -v /var/run/docker.sock:/var/run/docker.sock cadre-provider
-```
-
-### Per-tenant durable state
-
-Each container gets a named Docker volume of its own, `cadre-<containerId>-data`, mounted at `/data`.
-The node mints its libp2p identity key into it on first boot (the provider never sees the key) and
-keeps its config, bootstrap-peer store and trusted-owner anchor there, so **the container keeps the
-same peer id across restarts and image upgrades** — without it, a restarted node is a stranger to the
-cadre that authorized it. The volume is created on first provision, re-attached (never recreated) when
-a container is recreated under the same id, and deleted along with the container on terminate. Nothing
-in `/data` survives termination, by design.
-
-### Joining a cadre: claim or invitation
-
-A rented node gets into the user's cadre the same two ways a cadre-host node does, and the
-provider handles no owner key and no seed for it: the app **claims** the container with a
-one-time code, or the container **redeems an invitation** at a member of the cadre that is
-already online. `POST /containers` takes `join` beside `profile`, `resources`, `strandFilter`
-and `tags`:
-
-```json
-{ "join": { "kind": "claim" } }
-{ "join": { "kind": "invitation", "invitation": "sereus-invite:1.…" } }
-```
-
-`join` is required, and the body carries no party, addresses or owner keys: a claim names the
-party and the owner, and an invitation bundle names the party, the members to dial and the
-owner keys the node pins itself. The rest of the body is checked at the same boundary:
-`profile` must be `storage` or `transaction`, `strandFilter` a string, `resources` an object
-with `memoryLimit`/`cpuLimit` the orchestrator can read and a numeric `storageQuotaBytes`, and
-`tags` an object of strings. A request that fails any of it is `400 INVALID_REQUEST` naming the
-field, with nothing provisioned.
-
-**Claim** — for a cadre whose only member is the phone, which nothing can dial. The container
-starts waiting to be claimed (`CADRE_CLAIM_SECRET`, a secret the provider mints per container),
-with the placeholder party `unclaimed`. A claim needs `docker.publicHost`, since the phone
-dials the container; without it the create is `400 INVALID_REQUEST` naming
-`docker.publicHost`. The app then:
-
-1. Polls `GET /containers/:id/code`: `503 NOT_AVAILABLE` until the node reports its peer id
-   and an announced WebSocket address, then `200 { code, peerId, multiaddrs }`. The code is
-   `sereus-join:1.…` (cadre-core's node claim payload, the same code a cadre-host shows as a
-   QR code): the node's peer id, its claim secret, and only its `/ws` address at `publicHost`,
-   ending in `/p2p/<peerId>`, since a phone can dial neither TCP nor an in-container address.
-   `409 NOT_CLAIMABLE` for an invitation container, `409 ALREADY_CLAIMED` once a
-   live read says the node has an owner, `409 CONTAINER_GONE` for a stopped or failed one.
-2. Hands the code to `CadreNode.claimNode` (after `decodeNodeClaimPayload`). The node verifies
-   the proof, records the claim, and restarts in-process into the phone's cadre; `/status` is
-   briefly `unhealthy` while it does.
-3. Reads `GET /containers/:id`: the provider folds the node's report into the record as
-   `joinState: { kind: 'claim', state: 'claimed', ownerKey, partyId }` and replaces the record's
-   `partyId` and `ownerKey`. Before the claim it reads `joinState: { kind: 'claim', state: 'awaiting' }`.
-
-**Invitation** — for a cadre with an always-on member the container can reach; the phone can
-close as soon as the create returns. The bundle is the text the owner's app encodes
-(`encodeCadreInvitation`), checked for shape at create (prefix `sereus-invite:1.`, base64url
-JSON, version 1, a party, the invitation key, the signed row, at least one owner key, and at
-least one member address naming the member it reaches; a `sereus-join-request:1.` text is
-refused as "a join request, not an invitation"). The error never echoes the bundle, which
-carries the invitation's private key. The party comes from the bundle, which also names the
-members to dial and carries the owner keys the node pins itself.
-`docker.publicHost` is not required: the container dials out and holds its connections (a
-phone cannot dial it directly later without one). `GET /containers/:id` reads
-`joinState: { kind: 'invitation', state: 'pending' }`, then `accepted` with the `memberPeerId`
-that admitted it, or `failed` with `error` and `retryable`. An invitation spent or expired
-before the node redeemed it reports `failed` with `invite-spent` in the error and
-`retryable: false`, and the container keeps running with nothing to do: delete it and rent
-again with a fresh invitation. There is no retry route.
-
-**What the API shows.** A container's `join` is returned as `{ kind }` only: the claim secret
-leaves the provider in `GET /containers/:id/code` and nowhere else, and the invitation bundle
-never. The secret is returned to the authenticated owner of the container over whatever TLS
-the deployment puts in front of the API, so put TLS in front of it. `GET /containers` carries
-each container's `partyId` and `joinState` from the record, with no live read per row;
-`GET /containers/:id` always reads the node live and folds what it reports. A claim
-container's `partyId` is `unclaimed` until the claim is folded, so a client that picks
-containers out of the list by party misses it; find it by `joinState` instead. An unclaimed container is never reaped: it is
-billed like any other running container until the customer deletes it.
-
-**On the host.** The record holds the secret or the bundle (the file store's `containers.json`
-with `storage.type: file`), so a provider restart reproduces the container's environment; and
-`docker inspect` on the host shows `CADRE_CLAIM_SECRET` or `CADRE_INVITATION` in the
-container's environment. A container restarted by Docker (`unless-stopped`) replays the same
-environment: a claimed node starts from its `claim.json` and, with the secret still set,
-answers a rival claimant `already-claimed`.
-
-**Upgrading from the seed path.** A container an earlier provider created with `pinnedOwnerKeys`
-and a delivered seed keeps running with no `join` and no `joinState`: `GET /containers/:id`
-shows it, `DELETE` stops it, and `GET /containers/:id/code` answers `409 NOT_CLAIMABLE`.
+## Containers on the Docker host
 
 ### Phones dial containers at the public host
 
-Every container listens for libp2p on TCP (port 4001 inside the container) and on
-WebSocket (4002), and the provider publishes both on host ports from
-`docker.portRange`, on all interfaces. A phone has no TCP transport and listens on
-nothing, so it reaches a container only by dialing that WebSocket port, at an address
-someone gave it.
+Each container listens for libp2p on TCP (port 4001 inside the container) and on WebSocket (4002). The provider publishes both on host ports from `docker.portRange`, on all interfaces, so the firewall must admit that range. The container's health and metrics ports are published on `127.0.0.1` only; the provider is their only reader.
 
-`docker.publicHost` supplies the address: the DNS name or IP address at which this
-machine's published ports are reachable from outside. When it is set, each container
-announces `/dns4/<publicHost>/tcp/<TCP host port>` and
-`/dns4/<publicHost>/tcp/<WebSocket host port>/ws` (`/ip4` or `/ip6` for an IP address)
-besides its in-container addresses, and `GET /containers/:id/peer` returns all of them,
-each ending in `/p2p/<peerId>`. The node code carries only the WebSocket one, the address a
-phone can dial. A phone whose cadre has no other member online rents a node like this:
+A phone has no TCP transport and listens on nothing, so it reaches a container only by dialing the container's WebSocket port at an address it was given. `docker.publicHost` supplies that address. When it is set, each container announces `/dns4/<publicHost>/tcp/<TCP host port>` and `/dns4/<publicHost>/tcp/<WebSocket host port>/ws` (`/ip4` or `/ip6` for an IP address) in addition to its in-container addresses.
 
-1. `POST /containers` with `{ "join": { "kind": "claim" } }`.
-2. `GET /containers/:id/code` until it answers `200`.
-3. `CadreNode.claimNode` with the decoded code: the phone dials the container's WebSocket
-   address and claims it, and the container takes the phone's party and owner from the claim.
+- **In-container addresses are still announced**, so containers on one Docker network reach each other directly.
+- **The host is fixed when a container is created.** A changed `publicHost` reaches only containers created afterwards.
+- **There is no TLS proxy.** Containers announce plain `/ws`.
 
-[docs/architecture.md → Enrollment Flow: Phone Adds Provider Drone](../../docs/architecture.md#enrollment-flow-phone-adds-provider-drone)
-describes the flow.
+### Per-tenant durable state
 
-- **In-container addresses are still returned**, so containers on one Docker network
-  reach each other directly. A phone's dial to them fails and libp2p tries the next.
-- **The host is fixed when a container is created.** It is part of the container's
-  environment, so a changed `publicHost` reaches only containers created afterwards.
-- **Until the claim, the container admits a connection and nothing else.** A node waiting
-  to be claimed refuses every control-database stream and relay reservation; once claimed,
-  it admits any peer (cadre-core's cold-start rule) until the phone's rows reach it over
-  the connection the claim opened.
-- **No TLS proxy.** A provider that fronts containers with `/wss` on 443 would announce
-  the proxy's address instead and needs a per-container path or port there; the
-  provider does not do this.
-- **A claim needs the host, an invitation does not.** `join.kind: 'claim'` is refused
-  without `publicHost`, since the phone dials the container to claim it;
-  `join.kind: 'invitation'` is allowed, since the container dials the member, but a phone
-  cannot dial such a container directly later ([Joining a cadre: claim or invitation](#joining-a-cadre-claim-or-invitation)).
+Each container gets a named Docker volume, `cadre-<containerId>-data`, mounted at `/data`. The node generates its identity key there on first start and keeps its configuration and node-local state there, so the container keeps the same peer id across restarts and image upgrades. The volume is deleted with the container on terminate. The reasons are in [Durable container identity](https://github.com/gotchoices/sereus/blob/master/docs/hosting/provider.md#durable-container-identity).
 
-### Kubernetes
+A custom orchestrator passed to `createProviderServer` must give each container durable storage at `/data` and delete it on removal.
 
-For Kubernetes deployments, implement a custom orchestrator or use the Docker orchestrator with Docker-in-Docker.
-A custom orchestrator **must** give each container durable per-tenant storage at `/data` (a PVC, say) and
-delete it on terminate — see the volume contract above.
+### What the host can read
 
-### One-shot mode
+The container record holds the claim secret or the invitation bundle, so that a provider restart can reproduce the container's environment. `docker inspect` on the host shows `CADRE_CLAIM_SECRET`, `CADRE_INVITATION` and `CADRE_PUSH` in a container's environment. Restrict access to the Docker socket and to `storage.path` accordingly.
 
-Both `POST /containers` and `DELETE /containers/:id` accept a
-`shutdownAfter: true` flag. When set, the provider responds normally,
-then gracefully exits the process after the response flushes. This is
-intended for batch jobs, CI tasks, and managed orchestrators (e.g.
-Kubernetes Jobs) that provision a single container and exit.
+### Stuck provisions
 
-Shutdown only fires when the operation actually succeeds: quota errors,
-authentication failures, ownership mismatches, and orchestrator errors
-all return their normal error response and the process stays up.
+A provider that stops while a container is being created or removed leaves a record in `pending`, `creating`, `enrolling` or `stopping`. A sweep at start and every 5 minutes resolves such records and removes containers that never came up ([How the provider tracks a container](https://github.com/gotchoices/sereus/blob/master/docs/hosting/provider.md#how-the-provider-tracks-a-container)). A container waiting to be claimed is not stopped by the sweep; it runs, and is billed, until its customer deletes it.
 
-```bash
-# Provision then exit
-curl -X POST $URL/api/v1/containers \
-  -H 'Authorization: Bearer ...' \
-  -d '{"join":{"kind":"invitation","invitation":"sereus-invite:1.…"},"shutdownAfter":true}'
+## Files the provider writes
 
-# Terminate then exit (body form)
-curl -X DELETE $URL/api/v1/containers/$ID \
-  -H 'Authorization: Bearer ...' \
-  -d '{"shutdownAfter":true}'
+With `storage.type: file`, the provider keeps these in `storage.path` and rewrites them as records change.
 
-# Terminate then exit (query form, for clients that avoid DELETE bodies)
-curl -X DELETE "$URL/api/v1/containers/$ID?shutdownAfter=true" \
-  -H 'Authorization: Bearer ...'
+| File | Contents |
+|---|---|
+| `containers.json` | Container records, including each claim secret or invitation bundle. |
+| `api-keys.json` | Key records and OAuth access tokens, by hash. |
+| `authorization-codes.json`, `refresh-tokens.json` | Pending OAuth codes and refresh tokens, by hash. |
+| `customer-billing.json` | Billing records. |
+| `usage-metrics.jsonl` | One line per container per billing tick. |
+
+The provider writes no log file; it logs to standard output and standard error.
+
+## Programmatic use
+
+```typescript
+import { createProviderServer, loadConfig } from '@serfab/cadre-provider';
+
+const config = loadConfig({ configFile: 'provider.yaml' });
+const server = await createProviderServer({ config });
+await server.start();
 ```
 
-On success the response body carries `"shutdownInitiated": true` so the
-caller can confirm the flag was honored (the actual shutdown is
-observed by the connection closing).
+`loadConfig` takes `configFile`, `env` and `overrides`; overrides are applied last and are typed but not validated. `createProviderServer` takes `config` and optionally `authHooks`, `billingHooks`, `orchestrator` and `store`, and returns `{ app, containerService, billingService, start, stop, requestShutdown }`, where `app` is the Fastify instance. The exports are listed in [`src/index.ts`](./src/index.ts).
 
-For supervised one-shot runs use the unit files under
-[`service/`](./service):
+## Running as a service
 
-- Linux: [`cadre-provider.service`](./service/cadre-provider.service) (systemd, `RestartPreventExitStatus=0`)
-- macOS: [`com.serfab.cadre-provider.plist`](./service/com.serfab.cadre-provider.plist) (launchd, `SuccessfulExit=false`)
-- Windows: [`install-service.ps1`](./service/install-service.ps1) (NSSM, `AppExit 0 Exit`)
-
-All three are configured so a clean exit (code 0) is final — the host
-won't restart the provider after it gracefully shuts down.
+[`service/`](./service/README.md) has a systemd unit, a launchd property list and a Windows (NSSM) install script.
 
 ## License
 
 MIT
-

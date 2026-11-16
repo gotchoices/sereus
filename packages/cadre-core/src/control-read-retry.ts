@@ -76,9 +76,9 @@ export const CONTROL_READ_RETRY_DELAYS_MS: readonly number[] = [100, 400];
  * the budget still buys is the fast failures it was built for: the ~25 ms transactor read-phase
  * aggregate off a stream still forming, and a `cohort-unreachable` read during bring-up, which
  * fails fast because there is no connection to ask. Both retry twice well inside 1500 ms. See
- * `docs/cadre-consistency.md` → "Deadlines Over Optimystic's Reads and Commits".
+ * `docs/network/deadlines.md` → "Deadlines over Optimystic's reads and commits".
  */
-// eslint-disable-next-line no-restricted-syntax -- cuts off by design: a slow attempt is not retried, because the admission gate this budget is sized for has already failed open by then; see docs/cadre-consistency.md → "Deadlines Over Optimystic's Reads and Commits"
+// eslint-disable-next-line no-restricted-syntax -- cuts off by design: a slow attempt is not retried, because the admission gate this budget is sized for has already failed open by then; see docs/network/deadlines.md → "Deadlines over Optimystic's reads and commits"
 export const CONTROL_READ_RETRY_BUDGET_MS = 1_500;
 
 /**

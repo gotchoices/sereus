@@ -1,7 +1,7 @@
 /**
  * `@serfab/cadre-rn/app-link` — what two Sereus apps on one phone need to hand a join request and
  * its answer to each other by opening each other with a link, and for one to recommend another.
- * See the kit README's "App links" section and docs/architecture.md → "Between apps on one phone".
+ * See the kit README's "App links" section and docs/cadre/apps.md → "Between apps on one phone".
  *
  * Imports nothing from React Native or Expo: the app passes `Linking.canOpenURL` in, so this runs
  * under a Node test.

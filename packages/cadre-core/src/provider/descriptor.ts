@@ -1,6 +1,6 @@
 /**
  * The provider descriptor: what a hosting provider says about itself (`GET /descriptor`,
- * `docs/architecture.md` → "Provider descriptor and sign-in"), as an app's store screen
+ * `docs/hosting/provider.md` → "The provider descriptor and sign-in"), as an app's store screen
  * renders it and as the sign-in and the provider client read it. The parser refuses, with a
  * plain message, a document the rest of this directory could not work with.
  *

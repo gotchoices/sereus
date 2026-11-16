@@ -31,9 +31,9 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // {@link speaksBlockTransfer}.
 //
 // NOTE: this offers the WHOLE local store to every newly connected peer, which is right
-// while a network is one party's handful of machines (see docs/architecture.md →
+// while a network is one party's handful of machines (see docs/cadre/control-replication.md →
 // Replication cluster size — the control network replicates to the whole party by intent,
-// and "On a strand, the machine count is not a party count"). If these meshes ever get
+// and "On a strand, four machines are not four parties"). If these meshes ever get
 // large, filter the pushed set by FRET cohort responsibility for each block id instead of
 // pushing everything.
 //
@@ -58,8 +58,8 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // - The CONTROL network MUST pass one, because that argument does not carry over: its
 //   inbound connection gate deliberately admits non-members in several states (an
 //   un-enrolled node taking its seed, an open enrollment window, an outstanding
-//   invitation, configured bootstrap/relay peers — see docs/architecture.md, the
-//   control-network inbound connection gate). Pushing the whole control store to such a
+//   invitation, configured bootstrap/relay peers — see docs/cadre/control-security.md,
+//   "The connection gate"). Pushing the whole control store to such a
 //   peer would hand a stranger the party's entire membership, addresses and strand list.
 //   `CadreNode` passes a lookup in its in-memory authorized-member snapshot; the gate is
 //   consulted at PUSH time, not at schedule time, and fails closed on a thrown check. A denied

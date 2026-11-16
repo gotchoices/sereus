@@ -1,7 +1,7 @@
 /**
  * The owner-key actions an app's owner-key screen offers, built from the owner-key slot
  * (`owner-key-store.ts`) and the export text (`owner-key-export.ts`): export the device's own key,
- * and import an exported key into the device's owner slot (`docs/architecture.md` → Owner Keys →
+ * and import an exported key into the device's owner slot (`docs/cadre/owner-keys.md` →
  * Exporting and importing an owner key). One copy for the phone kit and the web app.
  *
  * Over `CadreNode`'s public surface only; pure-JS crypto, so it loads on React Native and in the

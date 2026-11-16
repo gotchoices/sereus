@@ -1,8 +1,8 @@
 /**
  * Two-node convergence for party-wide strand removal (`unpublishStrand`).
  *
- * The regression anchor for the claim in docs/architecture.md ("Strand Membership
- * Bootstrap" → party-wide removal) and the `unpublishStrand` doc comment: *every
+ * The regression anchor for the claim in docs/strands/lifecycle.md ("Stopping,
+ * removing and leaving") and the `unpublishStrand` doc comment: *every
  * node of the party stops its instance once its watcher observes the missing
  * `Strand` row*. All prior coverage asserts on the node that ISSUED the removal —
  * `packages/cadre-core/test/strand-unpublish.spec.ts` stands in for a sibling by
@@ -38,9 +38,10 @@
  * - filter-excluded siblings (unit-covered: a node whose `strandFilter` never
  *   admitted the strand never observes the removal);
  * - the doc claim that a stopped node RETAINS the strand's local durable storage
- *   (architecture.md, same paragraph) — this harness stores into `MemoryRawStorage`
- *   owned by the node being torn down, so there is nothing outliving the stop to
- *   read back; proving retention needs a persistent-storage fixture;
+ *   (docs/strands/lifecycle.md → "Limits and accepted tradeoffs") — this harness
+ *   stores into `MemoryRawStorage` owned by the node being torn down, so there is
+ *   nothing outliving the stop to read back; proving retention needs a
+ *   persistent-storage fixture;
  * - a third node.
  */
 

@@ -1,8 +1,8 @@
 /**
  * owner-grant-views.tsx — the owner-grant parts of Settings → "Owner keys" (`owner-keys-section.tsx`
  * holds their state): the form for Add an owner key and Make a backup, the grant shown once, the
- * outstanding grants with Withdraw, and Redeem an owner grant (docs/reference-app-rn.md → "Owner
- * Keys"). The words are `owner-keys.ts`'s.
+ * outstanding grants with Withdraw, and Redeem an owner grant (docs/platforms/reference-apps.md →
+ * "Owner keys"). The words are `owner-keys.ts`'s.
  *
  * A grant's text makes whoever holds it an owner: log the grant's key, never the text.
  */

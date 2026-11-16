@@ -9,7 +9,7 @@ const log = debug('sereus:cadre:strand-app-schema');
  * `StrandDatabase.appSchemaState()`: whether the database runs the `App` schema its launch was
  * given. `'waiting-for-queue'` while queued offline transactions refuse the apply (the database runs
  * the earlier schema); `'waiting-for-cohort'` while the strand's members cannot be reached; `'failed'`
- * when a later retry failed for another reason. docs/strands.md → "An app schema upgrade waits for the
+ * when a later retry failed for another reason. docs/strands/app-schema.md → "An app schema upgrade waits for the
  * queue or the cohort" says what the database runs in the cohort case, and when `'applied'` is not yet true.
  */
 export type StrandAppSchemaState = 'applied' | 'waiting-for-queue' | 'waiting-for-cohort' | 'failed';
@@ -35,8 +35,8 @@ export interface StrandAppSchemaListeners {
   /**
    * Another member recorded a higher App schema version than the one the database runs
    * (`SereusPluginResult.onAppSchemaSuperseded`): its writes can erase what the newer version added, so
-   * the strand must stop (docs/strands.md → "A running member stops"). At most once per database, and at
-   * once, whether or not the database has been published.
+   * the strand must stop (docs/strands/app-schema.md → "A running member stops"). At most once per
+   * database, and at once, whether or not the database has been published.
    */
   onAppSchemaSuperseded?: (event: { strandId: string; error: AppSchemaOutdatedError }) => void;
 }

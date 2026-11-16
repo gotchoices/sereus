@@ -25,7 +25,7 @@ const MAX_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 
 /**
  * Default backstop: the longest the watcher goes without re-reading when no change to
- * `Strand` or `JoinedStrand` is heard (`docs/architecture.md` → "Table change subscriptions"
+ * `Strand` or `JoinedStrand` is heard (`docs/cadre/control-convergence.md` → "Table change subscriptions"
  * says what the change subscription misses).
  *
  * NOTE: on a cadre larger than `CONTROL_REPLICATION_BREADTH` (16), a machine outside the

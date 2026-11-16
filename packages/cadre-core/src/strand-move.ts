@@ -11,7 +11,7 @@
  *
  * The case this serves is a phone app that founded a one-node cadre of its own (party B) and
  * then joins the user's main cadre (party A) by switching its one node across
- * (docs/architecture.md → "An app joins an existing cadre" → "Moving the app's strands"). Two
+ * (docs/cadre/apps.md → "Moving the app's strands"). Two
  * nodes never run at once, so the move has two ends: {@link exportStrandBundle} reads everything
  * B's node knows about its strands while it still runs, the embedder carries the bundle across
  * the switch as data, and {@link adoptStrandBundle} seats it on A's node once the app's key is

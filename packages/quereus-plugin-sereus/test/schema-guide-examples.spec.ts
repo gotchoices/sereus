@@ -54,7 +54,7 @@ interface GuideBlock {
 
 /** Functions the guide's examples call that the application, not Sereus, registers. */
 const APP_SUPPLIED_FUNCTIONS = [
-	// has_role(token, role) → 1/0, the Roles & Permissions example's authorization hook.
+	// has_role(token, role) → 1/0, the Roles and permissions example's authorization hook.
 	// Must be deterministic, or the determinism gate rejects the CHECK that calls it.
 	createScalarFunction({ name: 'has_role', numArgs: 2, deterministic: true }, () => 1),
 ];

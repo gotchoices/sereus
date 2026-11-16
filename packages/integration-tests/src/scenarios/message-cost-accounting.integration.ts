@@ -14,8 +14,8 @@
  * It exists so the message-reduction tickets that cite `message-cost-accounting` (GitHub #50,
  * gotchoices/Optimystic#39) can each show a before and after against one instrument, instead of
  * each writing a throwaway one. It asserts nothing but completion; budgets belong in the pinned
- * cadre-core specs listed in docs/testing.md. Change what it measures only when you mean to make
- * older numbers incomparable, and say so in the ticket that does it.
+ * cadre-core specs listed in docs/contributing/gates.md. Change what it measures only when you
+ * mean to make older numbers incomparable, and say so in the ticket that does it.
  *
  * ── Running it ──
  *

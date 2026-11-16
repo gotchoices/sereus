@@ -1,6 +1,6 @@
 /**
  * Two always-on members of one cadre restarted at the same moment (a host reboot, a power cut),
- * gotchoices/sereus#53 (`docs/architecture.md` → "Writes made while alone").
+ * gotchoices/sereus#53 (`docs/cadre/control-convergence.md` → "Writes made while alone").
  *
  * Machines:
  * - **A**, the owner: phone-shaped (`listenAddrs: []`), founds the cadre and admits M1 and M2 the
@@ -70,8 +70,8 @@ describe('Two cadre members restarted together', () => {
 				&& (await members[1]!.node.resolvePeerAddrs(m1)).length > 0, {
 				timeoutMs: STARTUP_MS, intervalMs: 500, description: 'M1 and M2 resolve each other\'s address records',
 			});
-			// Each member's first publish must land before the stop (docs/testing.md: a background
-			// `CadrePeer` write still committing at a stop tears).
+			// Each member's first publish must land before the stop (docs/contributing/testing.md:
+			// a background `CadrePeer` write still committing at a stop tears).
 			for (const member of members) {
 				expect(await member.node.registerSelf()).not.toBe('skipped');
 			}

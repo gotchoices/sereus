@@ -1,6 +1,6 @@
 /**
  * The owner-key slot: an owner key kept in a {@link KeyStore} slot of its own, apart from the
- * node's identity slot (`docs/architecture.md` → Owner Keys).
+ * node's identity slot (`docs/cadre/owner-keys.md`).
  *
  * Unlike the identity slot (`identity-key.ts`), an empty owner slot is never filled on read: an
  * owner key exists because the user made or imported one. Nothing here overwrites a slot that

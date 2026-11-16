@@ -13,7 +13,7 @@ tmp/
 .tess-*.log
 
 # Release-signing private keys — the cadre-host update secret is custodied
-# offline and must NEVER be committed (see docs/cadre-host.md → Release signing).
+# offline and must NEVER be committed (see docs/hosting/cadre-host.md → Release signing).
 *.key
 cadre-host-release.key
 

@@ -1,6 +1,6 @@
 /**
  * The party's other machines known to hold one strand, and the offline queue's gate that waits
- * for them (`docs/strands.md` → Waiting for the party's own machines).
+ * for them (`docs/strands/writes.md` → Waiting for the party's own machines).
  *
  * Why. Optimystic's own reachability gate (`KeyNetworkCohortReachability` in db-p2p) knows only
  * the peers this strand node has itself met and seen serve the network. A sibling of the party

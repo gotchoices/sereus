@@ -3,9 +3,9 @@
  * still converge.
  *
  * The block-repair corroboration yardstick (`repairCorroborationClusterSize`, see
- * `docs/architecture.md` → "Replication cluster size") is derived per node from the
- * machines that node believes are enrolled. On the control network that number is
- * read at bring-up out of a node-local record written by the PREVIOUS run
+ * `docs/cadre/control-replication.md` → "Replication cluster size") is derived per
+ * node from the machines that node believes are enrolled. On the control network that
+ * number is read at bring-up out of a node-local record written by the PREVIOUS run
  * (`enrolled-machine-store.ts`), because the control libp2p node is built before the
  * database holding the membership rows exists. So a party that has just grown
  * genuinely runs with its members declaring different numbers until each restarts —

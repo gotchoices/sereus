@@ -48,7 +48,7 @@ function getDb(strand: StrandInstance): Database {
 /**
  * Whether the strand reports this commit held by no other member yet: the message is lost if
  * this device stops for good before one holds it, so show it as not yet delivered until
- * `strand:commit-held` names the commit (docs/strands.md, "A commit's durability").
+ * `strand:commit-held` names the commit (docs/strands/writes.md, "A commit's durability").
  *
  * Call it in the same synchronous step that records the mark. cadre-core updates the record
  * before it emits `strand:commit-held`, so an event that landed while the send's awaits unwound

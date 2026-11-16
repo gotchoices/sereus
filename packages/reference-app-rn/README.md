@@ -1,462 +1,184 @@
-# Sereus P2P Chat — React Native Reference App
+# Sereus P2P Chat: React Native reference app
 
-A minimal peer-to-peer chat app built on the Sereus cadre system. Demonstrates strand creation, cadre networking, and real-time messaging between phones and drone servers — all over libp2p with no central server.
+A chat app for Android and iOS that runs a Sereus cadre node on the phone, built with Expo and [`@serfab/cadre-rn`](../cadre-rn/README.md). It is the sample to copy from when building a phone app on Sereus, and the app the device procedures in this repo are run against.
 
-## Architecture Overview
+## What it demonstrates
 
-```
-Phone (this app)                        Drone (cadre-cli)
-─────────────────                       ─────────────────
-CadreNode (transaction profile)  ←────→ CadreNode (storage profile)
-  ├─ Control network sync                 ├─ Control network sync
-  ├─ Strand instances (chat DBs)          ├─ Strand instances (persistent)
-  └─ WebSocket + Circuit Relay            └─ TCP + WebSocket listener
-```
+- **A node on the phone.** One `transaction`-profile node, started by the kit's `createPhoneNode` in `src/cadre-phone.ts`, with LevelDB storage, keys in the platform secure store, WebSocket, circuit-relay and WebRTC transports, and native Noise encryption.
+- **Chat over a strand.** Founding an open strand, attaching strands that other machines of the cadre founded, reading and writing the chat tables with SQL, and marking messages no other member holds yet.
+- **A closed strand between two parties.** Making a formation invitation and joining by one.
+- **Cadre management.** Joining an existing cadre, adding a device or app, listing and removing machines, owner keys and owner grants, claiming a cadre-host node by its code, and renting a node from a provider.
+- **Background start.** Starting again unattended from the saved start, and waking on a push notification.
 
-The phone runs a **transaction-profile** node (lightweight, intermittent) while the drone runs a **storage-profile** node (always-on, persists data). They sync over a shared control network identified by a Party ID.
-
-**Strands** are isolated P2P databases. Each chat strand has `Participant` and `Message` tables running on Optimystic (distributed serializable transactions) with Quereus as the SQL engine. Their schema is `CHAT_SCHEMA` in `src/chat-strand.ts`; raise `CHAT_SCHEMA_VERSION` (the config's `schemaVersion`) with every change to it, since a strand refuses an app whose number is below the highest it has seen.
+[The reference apps](../../docs/platforms/reference-apps.md) describes each screen, the call it makes and the reason for its design. [Running a node in a React Native app](../../docs/platforms/react-native.md) covers what any React Native app needs: polyfills, Metro configuration, transports, storage and native rebuilds.
 
 ## Prerequisites
 
-- Node.js 22+
-- Yarn (workspace-aware)
-- Android SDK (for Android) or Xcode (for iOS)
-- Expo dev client (`expo-dev-client`)
-- The sibling `optimystic` and `quereus` repos cloned alongside `sereus`:
-  ```
-  projects/
-  ├── sereus/       # this repo
-  ├── optimystic/
-  └── quereus/
-  ```
+- Node.js 20.19 or later, and Yarn 4 through Corepack (the repo pins `yarn@4.12.0`).
+- For a local native build: the Android SDK, or Xcode on macOS. A cloud build with EAS needs neither.
+- Three sibling checkouts beside `sereus`, each installed and built:
 
-## Quick Start (App First — No Drone)
+	```
+	projects/
+	├── sereus/       this repo
+	├── optimystic/
+	├── quereus/
+	└── Fret/
+	```
 
-You can start the app standalone, chat locally, and add a drone later.
+	The root `package.json` links the `@optimystic/*` and `@quereus/quereus` packages from `../optimystic` and `../quereus`, and Optimystic links `p2p-fret` from `../Fret`. `metro.config.js` names all three as linked roots, so Metro can follow those links. Without `../Fret` a local bundle fails with "Unable to resolve module p2p-fret".
 
-### 1. Build workspace dependencies
+- An EAS build does not use the sibling checkouts: `scripts/eas-build-pre-install.sh` removes the links before install, and the packages come from npm.
 
-From the sereus monorepo root:
+## Run
+
+From the repo root:
 
 ```bash
 yarn install
-yarn build   # builds cadre-core and other workspace packages
+yarn build
 ```
 
-### 2. Run the app
+Build and install a development client. It contains the native modules; JavaScript then loads from Metro, so most changes need no rebuild ([When a native rebuild is needed](../../docs/platforms/react-native.md#when-a-native-rebuild-is-needed)).
 
 ```bash
 cd packages/reference-app-rn
-yarn android    # or: yarn ios
-yarn start --host localhost
+yarn android                                                # local build; or: yarn ios
+npx eas build --profile development --platform android      # or a cloud build with EAS
 ```
 
-For Android emulators, forward the Metro port:
+On Windows, a local Android build needs `JAVA_HOME`, for example `$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"`.
+
+Start Metro, and on Android forward its port to the device:
 
 ```bash
+yarn start
 adb reverse tcp:8081 tcp:8081
 ```
 
-On Windows, set the Java path for Android builds:
+### First run
 
-```powershell
-$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
-```
+1. Open **Settings**. The app asks "Do you already use Sereus apps?"; tap **No, start fresh**.
+2. Leave **Party ID** and **Bootstrap addr** empty and tap **Connect**. The Node card shows Status "Connected", a generated party id and the phone's peer id.
+3. Tap **Create Chat Strand**. A "Strand created" result appears.
+4. Switch to **Chat**, type a message and send it. It appears in the list marked "Not yet delivered", because no other member of the strand holds a copy yet.
 
-### 3. Start a local strand
+The app saves what it connected with and reconnects by itself on the next launch, unless **Disconnect** was tapped.
 
-1. In **Settings**, enter a **Party ID** (or leave blank for auto-generated) and tap **Connect** — leave Bootstrap addr empty
-2. Tap **Create Chat Strand**
-3. Switch to the **Chat** tab and start messaging
+### With a drone
 
-The app remembers what it last connected with. On the next launch it reconnects by itself with the same Party ID and addresses, unless you tapped **Disconnect** first; either way Settings shows the remembered values.
+`drone.cadre.yaml` in this package is a `@serfab/cadre-cli` configuration for an always-on node the phone can dial: party id `reference-chat-party`, the `storage` profile, `strandFilter: all`, and a WebSocket listener on port 4002. In [Device testing → Two-node startup](../../docs/contributing/device-testing.md#two-node-startup) the drone founds the cadre with `cadre start --owner` and the phone joins it with an owner grant under **Join my existing cadre**. Typing the drone's party id and address under **Connect** founds a separate cadre on the phone and does not make the drone a member. The [cadre-cli README](../cadre-cli/README.md) covers running a drone as a service.
 
-Messages are stored locally in LevelDB. The node operates solo in "forming" mode — no network required yet.
+To invite another party into a closed strand, the phone needs a relay: a React Native app cannot accept connections, so its only dialable address is one a relay forwards. Enter a relay's multiaddr under **Relay** before Connect, or build with `EXPO_PUBLIC_RELAY_ADDR`. Joining someone else's invitation needs no relay.
 
-### 4. Add a drone later
+## Scripts
 
-Start the drone server:
+| Script | What it does |
+|---|---|
+| `yarn start` | Starts Metro for the development client (`expo start --dev-client`). |
+| `yarn start:frozen` | The same with file watching off, so no write in the repo reaches the phone during a device run. |
+| `yarn metro:observe` | Prints each Metro update that changes code on the phone. Options: `--port`, `--host`, `--platform`, `--bundle-url`. |
+| `yarn android`, `yarn ios` | Builds the native app locally and runs it. |
+| `yarn build:dev`, `yarn build:preview` | EAS cloud builds with the `development` and `preview` profiles of `eas.json`. |
+| `yarn typecheck` | `tsc --noEmit`. |
+| `yarn test` | The headless test projects (see [Tests](#tests)). |
+| `yarn test:bundle` | Exports the Android bundle with Metro and discards it: a check that the whole import graph resolves. |
+| `yarn test:e2e` | Runs the Maestro flows against a local drone fixture. |
 
-```bash
-cd packages/cadre-cli
-npx cadre start -c ../reference-app-rn/drone.cadre.yaml --listen-for-seeds
-```
+[Device testing → Device test runs](../../docs/contributing/device-testing.md#device-test-runs) explains when to use `start:frozen` and how to read `metro:observe`.
 
-Note the **Peer ID** from the console output. Back in the app's **Settings** tab (while still connected), use **Add Peer** to dial the drone:
+## Environment variables
 
-```
-/ip4/<drone-ip>/tcp/4002/ws/p2p/<drone-peer-id>
-```
+Expo inlines `EXPO_PUBLIC_` variables into the bundle when Metro builds it, so set them where `yarn start` or the build runs.
 
-The drone joins the control network and syncs your strands — no need to disconnect and reconnect.
+| Variable | Default | Effect |
+|---|---|---|
+| `EXPO_PUBLIC_RELAY_ADDR` | none | Relay multiaddrs, comma-separated, that the node reserves on. Prefills the **Relay** field; a saved start's list takes precedence. |
+| `EXPO_PUBLIC_STUN_URLS` | derived from the relays | STUN server URLs for WebRTC, comma-separated. Unset, each relay's host is used. |
+| `EXPO_PUBLIC_NOISE_CRYPTO` | `symmetric` | Connection encryption implementation: `symmetric`, `full` or `off`. Any other value stops the app at start with a message naming the three. |
+| `EXPO_PUBLIC_PROVIDER_DESCRIPTOR_URL` | none | A hosting provider's descriptor URL. Unset, **Rent an always-on node** is not shown. |
+| `EXPO_PUBLIC_PROVIDER_CLIENT_ID` | `sereus-chat` | The OAuth client id this app is registered under at that provider. |
+| `APP_VARIANT` | none | `second` builds the second install (next section). Read by `app.config.ts`. |
 
-Alternatively, you can apply a **seed** (base64url-encoded bootstrap payload) in the Seed Bootstrap section, or paste the drone address during initial connect.
-
-## Quick Start (With Drone)
-
-If you want the drone running from the start:
-
-### 1. Start the drone
-
-```bash
-cd packages/cadre-cli
-npx cadre start -c ../reference-app-rn/drone.cadre.yaml --listen-for-seeds
-```
-
-The drone config (`drone.cadre.yaml`) uses:
-- Party ID: `reference-chat-party`
-- WebSocket on port `4002` (phones can't use raw TCP)
-- Circuit relay enabled (for NAT traversal)
-
-### 2. Run the app and connect
-
-In **Settings**:
-
-1. **Party ID** — enter `reference-chat-party` (must match the drone config)
-2. **Bootstrap addr** — enter the drone's WebSocket multiaddr:
-   ```
-   /ip4/<drone-ip>/tcp/4002/ws/p2p/<drone-peer-id>
-   ```
-   For a local emulator, use your machine's LAN IP (not `127.0.0.1`).
-3. Tap **Connect**
-
-### 3. Create a strand and chat
-
-1. In **Settings**, tap **Create Chat Strand**
-2. Switch to **Chat** — type and send
-
-The drone automatically joins all strands (`strandFilter: all`), so it syncs immediately.
-
-A phone can hold several strands at once (the one it created plus any open strands
-auto-joined from the network). The Chat tab picks a single **active strand**
-deterministically — the strand you explicitly created/joined, otherwise the
-lexicographically smallest id — so an inbound auto-joined strand never silently
-hijacks the view. Use the strand-chip picker above the message list to switch
-between them; switching resets the conversation to the selected strand.
-
-## Connecting Multiple Users
-
-Each phone runs its own CadreNode. To chat between two phones:
-
-1. Start the drone — it acts as the rendezvous point
-2. Both phones connect to the same Party ID and drone bootstrap address (at startup or via **Add Peer** later)
-3. Phone A creates a strand — the app **publishes** its `Strand` row to the shared
-   control database (an owner-signed insert; each phone self-genesis as its
-   own owner at startup, so the first node to enroll its key is the founding
-   owner)
-4. Phone B's node observes the new row via control-network sync and emits
-   `strand:discovered`; the app auto-joins it via `joinChatStrand`
-5. Both phones can now send and receive messages on the shared strand — once the
-   strand-level cohort converges (peers find each other through the control
-   network's `CadrePeer` records; see the cohort-bootstrap wiring)
-
-> **Note:** joining a discovered strand needs no owner, but publishing a
-> **new** strand does. In a shared party the founding owner is whichever node
-> enrolled its key first, so a second phone may be able to join strands without
-> being able to create its own. This is a demo simplification of the owner
-> model.
-
-> **On Party IDs:** a Party ID names **one party's private control network** —
-> not a shared public room. The open quick-start above has everyone join the
-> *same* party (`reference-chat-party`) purely for convenience: that conflates
-> several users into a single party's control network. The closed-strand flow
-> below demonstrates the real model — **cross-party consent**, where a host
-> party invites an invitee (a different party) into one strand without merging
-> control networks.
+`yarn test:e2e` reads `DRONE_WS_PORT` (4002), `DRONE_HTTP_PORT` (4080), `MAESTRO_APP_ID` (`org.gotchoices.sereus.chat`) and `MAESTRO_BIN` (`maestro`).
 
 ## A second install on one phone
 
-Settings → Join my existing cadre → **Choose the app that holds your cadre** opens another Sereus app on the same phone, so trying it needs two. `APP_VARIANT=second` builds this app as a second, separate app (`app.config.ts`): "Sereus P2P Chat (second)", URL scheme `sereus-chat-second`, package and bundle id ending in `.second`, with its own identity and storage.
+**Settings → Join my existing cadre → Choose the app that holds your cadre** opens another Sereus app on the same phone, so trying it needs two. `APP_VARIANT=second` builds this app as a separate one: name "Sereus P2P Chat (second)", URL scheme `sereus-chat-second`, package and bundle id ending in `.second`, with its own identity and storage.
 
 ```bash
-# Cloud build, as for the main dev client (eas.json profile development-second)
+# Cloud build (eas.json profile development-second)
 npx eas build --profile development-second --platform android   # or ios
 
-# Or locally. Prebuild rewrites android/ for the variant: run it again without APP_VARIANT before building the main app.
+# Or locally. Prebuild rewrites android/ for the variant, so run it again
+# without APP_VARIANT before building the main app.
 APP_VARIANT=second npx expo prebuild --clean --platform android
 APP_VARIANT=second npx expo run:android
 ```
 
-On Windows PowerShell, set the variable with `$env:APP_VARIANT = "second"` instead.
+In PowerShell, set the variable with `$env:APP_VARIANT = "second"`.
 
-A development build takes its name, scheme and `extra` from the dev server, not from the build, so the second install needs a dev server of its own started with the same variable: `APP_VARIANT=second yarn start --port 8082` (and `adb reverse tcp:8082 tcp:8082` on Android). Served by the main app's dev server, it would call itself by the main app's name and scheme, and answers meant for it would go to the main app, which refuses them. Both installs share the slug and so the dev client's `exp+sereus-p2p-chat` scheme: open the second one from its own icon, or with `sereus-chat-second://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8082`.
+The second install needs a dev server of its own, started with the same variable on another port:
 
-## Trust model / closed strands
-
-The quick-start uses **open** strands (`Type:'o'`): any connected node can join.
-Sereus's actual trust model is **invitation-only** strands (`Type:'c'`) formed
-through an explicit host→invitee consent handshake. The Settings screen's
-**"Closed Strand (Invite-Only)"** section demonstrates all four pillars:
-
-> **Inviting requires a relay.** An invitation embeds the inviter's own addresses,
-> and a phone has none of its own — React Native cannot open a listener, so the only
-> address a phone ever has is the `/p2p-circuit` address a circuit-relay reservation
-> earns it. Set one in Settings under **Relay** (or ship a build with
-> `EXPO_PUBLIC_RELAY_ADDR`) before using "Create Closed Strand + Invite"; without
-> one the app refuses up front, naming that field, and founds nothing. *Joining*
-> someone else's invitation needs no relay — the invitee is the side that dials. See
-> "Reachability: configuring a relay" in
-> [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md).
-
-1. **FormationInvite issuance (host).** *"Create Closed Strand + Invite"*:
-   - mints an `OpenInvitation` (`createOpenInvitation(CHAT_SAPP_ID, …)`),
-   - mints a `MemberPrivateKey` and creates a closed strand in one resumable call
-     (`foundStrand({ strandId, type: 'c', memberPrivateKey, sAppConfig, formationInvite }, { background: true })`,
-     which publishes the `Strand` row and returns, then attaches as founder in the
-     background); the publish also **persists** the invitation's `FormationInvite`
-     row under the host's owner, **bound to that strand**, in the same control
-     transaction and owner approval, so the token is redeemable and the responder
-     knows which strand to provision. The key it carries onward is the one that call
-     *resolved*, which on a repeat of an already-published strand id is the stored
-     key rather than the freshly minted one,
-   - shows a single copyable, base64url-encoded `OpenInvitation` code
-     (`encodeInvitation`) for out-of-band delivery (paste / link / QR). The strand
-     id and membership key are **not** in this code — they travel back over the
-     formation protocol after consent.
-
-2. **Invitee consent.** *"Join via Invite"* decodes the `OpenInvitation`
-   (`decodeInvitation`) and calls `formStrand(invitation, disclosure)` — the
-   explicit consent step. The `disclosure` carries the invitee's `partyId` +
-   `purpose`; the host's responder validates the formation token (via a
-   `ControlFormationUsageRecorder` backed by the live
-   `FormationInvite`/`FormationUsage` tables), writes the `FormationUsage` consent
-   row against the bound strand, and returns the host's real strand id + membership
-   key in the `FormStrandResult`. The handshake **requires the host reachable** — on a
-   phone that means a held relay reservation, since the invitee dials the host's
-   control node and then its strand nodes at the addresses the invitation carried. So
-   it correctly fails on a single device with no peer — you cannot join a closed
-   strand without the host's consent. A join made while the host's strand is still
-   starting is refused with the retryable `host-strand-unavailable` and the token
-   stays unspent; *Join via Invite* again.
-
-3. **Schema-gated join.** After consent, the invitee attaches the host's closed
-   strand using the id + membership key the `FormStrandResult` now carries
-   (`joinClosedChatStrandFromFormation`), under the chat `sAppConfig`. The strand's
-   DDL is the chat schema, so bring-up is gated by schema verification — not an
-   open free-for-all.
-
-4. **Role assignment.** The creator is assigned the app-level role `owner`; a
-   joiner is assigned `member` (the `Participant.Role` column in the chat schema).
-
-### Where the boundaries are (honest scope)
-
-- **Role granularity is app-level, not cadre-level.** Sereus's control network
-  has **no first-class per-strand RBAC primitive** — membership is
-  `MemberPrivateKey`-granular (member vs non-member). `owner`/`member` therefore
-  lives in the chat `Participant.Role` column and is assigned on create/join, *not* in
-  the control network. Fine-grained strand RBAC as a cadre-core primitive is not
-  yet implemented.
-
-- **The on-the-wire consent handshake is wired in cadre-core.** The DB-level
-  consent path (`insertFormationInvite` / `recordFormationUsage` /
-  `redeemInvitation`) is functional and exercised by the integration harness, and
-  a pure `formStrand` round-trip now closes the loop over libp2p: binding the
-  invite to a host strand (`foundStrand`'s `formationInvite`, or
-  `publishFormationInvite(..., { strandId })` for a strand already founded) lets the
-  responder resolve that strand, write the `FormationUsage` consent record against
-  it, and return the host's real strand id + membership key in the
-  `FormStrandResult` (provision-then-record). That is why this app hands out a
-  single `encodeInvitation` code with **no** side-channel envelope — the strand id
-  and membership key are delivered by the protocol after consent, not pasted
-  alongside the invitation. (This closed the former gap tracked as
-  `formstrand-protocol-thread-consent-and-provision`.)
-
-- **Two-device only.** The full handshake needs the host and invitee on separate,
-  mutually reachable nodes; it cannot be exercised on a single device.
-
-## Scripts
-
-| Script | Description |
-|--------|-------------|
-| `yarn start` | Start Expo dev server |
-| `yarn android` | Build and run on Android |
-| `yarn ios` | Build and run on iOS |
-| `yarn build:dev` | EAS cloud build (development profile) |
-| `yarn build:preview` | EAS cloud build (preview profile) |
-| `yarn test:bundle` | Verify the Metro bundle compiles for Android |
-| `yarn test:e2e` | Run the Maestro e2e suite against a local drone fixture (see below) |
-
-## E2E Tests (Maestro)
-
-`yarn test:e2e` runs a Maestro suite against a locally-spawned drone fixture.
-The orchestrator (`scripts/run-e2e.mjs`):
-
-1. Spawns the drone fixture (`test-fixture/start.mjs`) — in-memory CadreNode +
-   HTTP sidecar on port 4080
-2. Waits for `/health`
-3. `adb reverse tcp:4002` + `tcp:4080` so the emulator can reach host loopback
-4. Runs `maestro test maestro/flows/ -e JOIN_CODE=… -e STRAND_ID=… …` (`JOIN_CODE`: the drone's owner grant, so the phone joins as an owner)
-
-### Prerequisites
-
-- **Android emulator** running with the dev-client APK installed
-  (`yarn android` once produces a usable build)
-- **`adb`** on PATH (Android SDK platform-tools)
-- **Maestro CLI** on PATH —
-  [install](https://maestro.mobile.dev/getting-started/installing-maestro)
-- iOS support is not wired in `run-e2e.mjs`; the YAML flows themselves are
-  platform-agnostic
-
-### Flow inventory
-
-| File | What it covers |
-|------|----------------|
-| `maestro/_setup.yaml` | Connect (founding the phone's own cadre), join the drone's cadre by invitation, create strand, discover the shared strand |
-| `maestro/flows/1-connect-and-send.yaml` | Send a message; local echo appears |
-| `maestro/flows/2-drone-to-phone.yaml` | Drone HTTP insert → phone displays it |
-| `maestro/flows/3-round-trip.yaml` | Phone send → drone sees; drone send → phone sees; both visible |
-| `maestro/flows/4-solo-create-strand.yaml` | No drone: connect alone → create strand → `Strand created` modal (does not use `_setup.yaml`) |
-
-### Artifacts
-
-- `maestro/.fixture.log` — full stdout/stderr from the drone fixture
-- `maestro/.maestro-junit.xml` — JUnit report from Maestro
-- `test-fixture/test-data.json` — emitted by the fixture each run; gitignored
-
-### Troubleshooting
-
-- **"adb reverse" warning**: emulator not running, or wrong device default —
-  run `adb devices` to confirm and `emulator -avd <name>` to start one.
-- **The join never finishes** (the flow times out waiting for the join
-  section's OK, with "Waiting for an always-on machine of your cadre to answer"
-  on screen): the phone dials the member address in the drone's invitation, its
-  `127.0.0.1:4002` listener, and that dial did not tunnel to the host. Verify
-  `adb reverse --list` shows both rules; a device without `adb reverse` cannot
-  reach the drone.
-- **`maestro: command not found`**: install Maestro per the link above;
-  override `MAESTRO_BIN=/path/to/maestro` if not on PATH.
-
-## Project Structure
-
-```
-reference-app-rn/
-├── app/                    # Expo Router screens
-│   ├── _layout.tsx         #   Tab navigator (Chat + Settings)
-│   ├── index.tsx           #   Chat screen — message list & input
-│   └── settings.tsx        #   Settings — connect, dial peers, create strands
-├── src/
-│   ├── cadre-phone.ts      #   CadreNode singleton (WebSocket + LevelDB config)
-│   ├── use-cadre.ts        #   React hook: node lifecycle & strand events
-│   ├── use-chat.ts         #   React hook: message polling & send
-│   ├── chat-strand.ts      #   Strand creation with embedded chat schema
-│   └── chat-operations.ts  #   SQL helpers (insert/query participants & messages)
-├── drone.cadre.yaml        # Drone server config for local development
-├── metro.config.js         # Bundler config: @serfab/cadre-rn/metro plus this repo's linked roots
-├── app.json                # Expo app manifest
-└── app.config.ts           # Adds the kit plugin and the second install (APP_VARIANT=second)
+```bash
+APP_VARIANT=second yarn start --port 8082
+adb reverse tcp:8082 tcp:8082
 ```
 
-## Key Concepts
+A development build takes its name, scheme and `extra` from the dev server, not from the build. Served by the main app's dev server, the second install would present the main app's scheme, and answers meant for it would go to the main app, which refuses them. Both installs share the dev client's `exp+sereus-p2p-chat` scheme, so open the second one from its own icon or with `sereus-chat-second://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8082`.
 
-**Control network** — The shared Optimystic network (keyed by Party ID) where nodes discover each other and advertise strands. Creating a strand publishes a `Strand` row here (an owner-signed write); every other node's strand watcher then sees the row and the app auto-joins via the `strand:discovered` event. That event fires once per strand per run, and on a relaunch it fires before the app can subscribe — so the app also drains `CadreNode.getDiscoveredStrands()` right after subscribing, which is how strands from a previous session come back instead of showing `0 strand(s)`.
+## Tests
 
-**Strand** — An isolated P2P database. The quick-start creates strands of type `'o'` (open), meaning any connected node can participate. The trust-model demo also creates type `'c'` (closed) strands, which are invitation-only and gated by a membership key — see "Trust model / closed strands" below.
+`yarn test` runs four Vitest projects under plain Node (`vitest.config.ts`); none loads React Native:
 
-**Transaction vs storage profile** — Transaction nodes (phones) participate in consensus but don't persist long-term; storage nodes (drones) archive everything and stay online.
+| Project | Covers |
+|---|---|
+| `node` | The modules that hold rules and wording without React or native imports, and solo strand founding over a fake of the LevelDB native module. |
+| `react` | The `useCadre` and `useChat` hooks under `react-test-renderer`, with the node mocked. |
+| `metro-babel` | Probes compiled with the app's own Metro Babel transformer, for defects that exist only in the bundle Hermes runs. |
+| `polyfills` | The globals this app's installed dependencies read, checked against the kit's polyfills. |
 
-**Seed** — A bootstrap payload containing peer addresses for joining an existing cadre. Paste a base64url seed in Settings to skip manual address entry.
+The `node` project executes other packages' compiled output, so it fails at setup when cadre-core or a linked sibling's `dist` is older than its source ([Stale-build guard](../../docs/contributing/gates.md#stale-build-guard)). Run `yarn build` at the root first.
 
-## Hermes Polyfills
+`yarn test:e2e` needs an Android emulator running with the development client installed, `adb` on the PATH, and the [Maestro CLI](https://maestro.mobile.dev/getting-started/installing-maestro). It writes the fixture's log to `maestro/.fixture.log`, a JUnit report to `maestro/.maestro-junit.xml` and the fixture's data to `test-fixture/test-data.json`; all three are ignored by git. [Device testing → Maestro flows](../../docs/contributing/device-testing.md#maestro-flows) describes the fixture, each flow and what a failed run means.
 
-React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fast but missing many Web/Node.js APIs that libp2p, Optimystic, and their dependencies expect. The global polyfills ship in the kit [`@serfab/cadre-rn`](../cadre-rn/README.md), and `@serfab/cadre-rn/polyfills` **must be imported before any library code** — see `index.js`. The kit also holds the Node built-in shims Metro maps (`shims/`) and the Metro helper that maps them (`@serfab/cadre-rn/metro`).
+## Layout
 
-### How it works
+| Path | Contents |
+|---|---|
+| `index.js` | The entry file: the kit's polyfill imports in their required order, then Expo Router, then the background wake task. |
+| `app/` | Expo Router screens: `index.tsx` (Chat), `settings.tsx` (Settings), `_layout.tsx` (tabs), `+native-intent.tsx` (rewrites incoming links before routing). |
+| `src/cadre-phone.ts` | The app's one phone node and the functions the rest of the app calls on it. |
+| `src/use-cadre.ts`, `src/use-chat.ts` | The hooks behind the two screens. |
+| `src/chat-strand.ts`, `src/chat-operations.ts` | The chat schema (`CHAT_SCHEMA`), strand founding and joining, and the SQL helpers. |
+| `src/*-section.tsx` | One Settings section each. |
+| `app.json`, `app.config.ts` | The Expo config; `app.config.ts` adds the kit's config plugin and the second install. |
+| `metro.config.js` | `withCadreMetro` from `@serfab/cadre-rn/metro` plus the linked sibling roots. |
+| `drone.cadre.yaml` | A cadre-cli configuration for a local drone. |
+| `maestro/`, `test-fixture/`, `scripts/run-e2e.mjs` | The Maestro flows, the drone fixture they run against, and the orchestrator. |
 
-1. **`index.js`** imports `@serfab/cadre-rn/polyfills`, then `@serfab/cadre-rn/polyfills/native-crypto` (native Ed25519 and digest), then `@serfab/cadre-rn/polyfills/webrtc`, then `@serfab/cadre-rn/boot-check` (the development-build audit table and reload logger), then hands off to Expo Router
-2. **`metro.config.js`** calls `withCadreMetro` from `@serfab/cadre-rn/metro`, which maps Node.js built-in modules (`node:crypto`, `node:os`, …) to the kit's shim files via `extraNodeModules`, resolves the kit's native peers from this app, and rewrites `@libp2p/crypto`'s Node files to their `.browser.js` variants (see *libp2p/crypto Node → browser rewrite* below, and [docs/reference-app-rn.md § Metro Configuration](../../docs/reference-app-rn.md#metro-configuration))
+A change to `CHAT_SCHEMA` must also be made in `schemas/chat-simple.qsql` and the other reference apps' copies, and must raise `CHAT_SCHEMA_VERSION`.
 
-### Polyfill inventory
+## What the app stores
 
-Files without a path are in `packages/cadre-rn/polyfills/`; the last three are in `packages/cadre-rn/shims/`.
+- **Platform secure store** (`expo-secure-store`): the node's identity key, the owner key, the records of strands joined from other parties, the trusted-owner anchor, and provider sign-in tokens.
+- **LevelDB, app-private:** one database per storage scope, named `sereus-<scope>` (the control database's scope includes the party id; each strand has its own), and `sereus-node-local` for the saved start and the other node-local records.
 
-| File | What it polyfills | Required by |
-|------|-------------------|-------------|
-| `hermes.js` | `crypto.getRandomValues()` (via `react-native-get-random-values`, no Math.random fallback) | @noble/hashes, @libp2p/crypto, @noble/curves |
-| `hermes.js` | `crypto.subtle.digest()` | multiformats/hashes/sha2 (browser variant) |
-| `hermes.js` | `TextDecoder` (UTF-8 only) | uint8arrays/util/bases (module-scope `new TextDecoder('utf8')` pulled in by libp2p/yamux/multiformats). No-op on Expo SDK 52+ Hermes; required on bare RN. |
-| `hermes.js` | `structuredClone()` | @optimystic/db-core (transform tracker, cache-source, coordinator) |
-| `hermes.js` | `Symbol.asyncIterator` (via `Symbol.for(...)` registry) | `for await...of` on custom iterables |
-| `hermes.js` | `ReadableStream`, `WritableStream`, `TransformStream` | Vercel AI SDK, streaming libraries |
-| `hermes.js` | `Promise.withResolvers()` (ES2024) | @libp2p/utils, @chainsafe/libp2p-yamux, it-queue, mortice, abort-error |
-| `hermes.js` | `AbortSignal.prototype.throwIfAborted()` | libp2p, @libp2p/utils, @libp2p/circuit-relay-v2, it-pushable, p-retry |
-| `hermes.js` | Timer `.ref()` / `.unref()` wrappers | @optimystic/db-p2p, undici, libp2p internals |
-| `event.js` | `EventTarget`, `Event` (via `event-target-polyfill` npm), `CustomEvent` (inline) | libp2p, @libp2p/interface |
-| `intl-pluralrules.js` | `Intl.PluralRules` (English-only) | moat-maker (error messages) |
-| `webrtc.js` | `RTCPeerConnection` and the rest of `react-native-webrtc`'s globals | @libp2p/webrtc (private-to-public `browser` variants) |
-| `node-crypto.js` | `createHash()` (sha256, sha512) | multiformats/hashes/sha2 (Node variant), @chainsafe/libp2p-noise crypto/index, @libp2p/crypto Node key modules (before the browser rewrite). *Not* cadre-core push — the FCM/APNs notifiers moved behind the Node-only `@serfab/cadre-core/push-node` subpath. |
-| `node-os.js` | `networkInterfaces()`, `platform()`, etc. | @libp2p/utils (network detection) |
-| `empty.js` | `net`, `tls` empty stubs | libp2p transitive imports — never reached at RN runtime, but must resolve so the bundle builds |
-
-### Adding new polyfills
-
-When adding a new dependency, watch for runtime errors like `Property 'X' doesn't exist` or `TypeError: X is not a function` — these typically mean Hermes is missing an API. The fix is:
-
-1. **Global API** (e.g., `structuredClone`, `Promise.withResolvers`): add to `@serfab/cadre-rn`'s `polyfills/hermes.js`
-2. **Node.js built-in module** (e.g., `crypto`, `os`): create a shim file in `@serfab/cadre-rn`'s `shims/` and add it to the alias table in its `metro/index.cjs`
-3. **Web API class** (e.g., `EventTarget`): add to `@serfab/cadre-rn`'s `polyfills/event.js`, or a new file there imported from its `polyfills/index.js`
-
-Always guard with `typeof` checks so the polyfill is skipped on platforms that have native support.
-
-### libp2p/crypto Node → browser rewrite
-
-`@libp2p/crypto` ships parallel `.browser.js` variants for the modules that use Node's `crypto` at key generation / signing time (`keys/ed25519`, `keys/secp256k1`, `keys/rsa`, `keys/ecdh`, `webcrypto/webcrypto`, `hmac`, `ciphers/aes-gcm`). The browser variants use `@noble/curves` + WebCrypto and work under Hermes; the Node variants call `crypto.generateKeyPairSync`, `createPrivateKey`, `sign`, `verify` — none of which the kit's `shims/node-crypto.js` implements.
-
-The package declares the mapping in its `browser` field, but with `unstable_enablePackageExports: true` (Expo SDK 52+ default, and @libp2p/crypto ships an `exports` map) Metro returns a file it reached through `exports` without the `browser` rewrite (relative imports inside the package do get it; see `docs/reference-app-rn.md` → rule 3). Without the rewrite, the first call to `generateKeyPair('Ed25519')` throws `undefined cannot be used as a constructor` (the Node variant's `crypto.generateKeyPairSync` is undefined in the shim).
-
-`@serfab/cadre-rn/metro` reads the package's own `browser` map from each installed copy it resolves into and applies it via `resolver.resolveRequest` — so any future upstream additions to that map are picked up automatically. The same pattern is mirrored in `sereus-health/apps/mobile/metro.config.js`.
-
-### Built-in APIs (no polyfill needed)
-
-These APIs are natively available in the target Hermes/Expo versions used by this app. Do not add polyfills for them — it wastes bundle size and can cause subtle conflicts.
-
-| API | Available since | Notes |
-|-----|----------------|-------|
-| `TextEncoder` | Hermes (all versions used by Expo SDK 49+) | No polyfill needed; `fast-text-encoding` is unnecessary |
-| `TextDecoder` | Expo SDK 52+ (UTF-8 only) | If you need non-UTF-8 encodings, use `text-encoding` package. **Bare RN** (non-Expo) Hermes through at least 0.85 does NOT ship `TextDecoder`; `@serfab/cadre-rn`'s `polyfills/hermes.js` includes a UTF-8-only fallback (guarded by `typeof` so it's a no-op under Expo) |
-| `BigInt` | Hermes since RN 0.70 | |
-| `crypto.getRandomValues` | RN 0.76+ with New Architecture | `react-native-get-random-values` still recommended as safety net |
-
-### Polyfill quality principles
-
-- Prefer battle-tested npm packages over hand-rolled shims (e.g., `@ungap/structured-clone` over `JSON.parse(JSON.stringify(...))`)
-- Prefer spec-compliant implementations — shortcuts like JSON round-trips silently drop data types
-- Always guard with `typeof` checks so polyfills are skipped on platforms with native support
-- Native modules (like `react-native-get-random-values`) require a dev client rebuild — document this when adding them
-
-### Commonly needed beyond core
-
-The polyfills above cover the libp2p/Optimystic/AI stack. Apps building additional features may need:
-
-| API | Package | When needed |
-|-----|---------|-------------|
-| `URL` / `URLSearchParams` | `react-native-url-polyfill` | If using URL constructor in app code (Hermes has partial support) |
-
-## Drone Configuration
-
-The included `drone.cadre.yaml` is a minimal config for local development. Key settings:
-
-```yaml
-controlNetwork:
-  partyId: "reference-chat-party"    # Must match the phone's Party ID
-profile: storage                      # Always-on, persists strand data
-network:
-  listenAddrs:
-    - "/ip4/0.0.0.0/tcp/4001"        # TCP (LAN peers)
-    - "/ip4/0.0.0.0/tcp/4002/ws"     # WebSocket (required for RN)
-  enableRelay: true                   # Circuit relay for NAT'd phones
-```
-
-See the [cadre-cli README](../cadre-cli/README.md) for production deployment options (systemd, Docker).
+Clearing the app's data or uninstalling it removes the LevelDB databases. On iOS the Keychain survives a reinstall, so the identity key does too. [Where node state is kept](../../docs/platforms/react-native.md#where-node-state-is-kept) lists every record.
 
 ## Troubleshooting
 
-**"Connecting..." never resolves** — Check that the bootstrap addr is correct, the drone is running, and the phone can reach the drone's IP on port 4002. On Android emulators, use your host machine's LAN IP.
+- **Status stays "connecting", or a join keeps waiting for a machine to answer.** Check that the drone is running and that the phone can reach the drone's address on port 4002. Use the machine's LAN address, not `127.0.0.1`, from a separate device.
+- **No messages from the other node.** Both nodes must be in the same party and run the same strand. The chat re-reads the strand every two seconds; look in the Metro console for strand errors.
+- **"Unable to resolve module …" from Metro.** Run `yarn install` at the repo root, and check that the three sibling checkouts exist and are built.
+- **"Property 'X' doesn't exist" or "X is not a function" at startup.** Hermes lacks a global that a dependency reads. `index.js` must import `@serfab/cadre-rn/polyfills` before any library code; then restart Metro with `yarn start --clear`. See [Polyfills](../../docs/platforms/react-native.md#polyfills).
+- **"Cannot find native module …" or a missing Nitro module.** The development client was built before a native dependency was added. Rebuild it.
+- **The app reloads during a test.** See [Device testing → Why it reloaded](../../docs/contributing/device-testing.md#why-it-reloaded).
+- **"There was a problem loading the project" on first launch.** Metro had not built the bundle yet; see [First launch on a cold Metro](../../docs/contributing/device-testing.md#first-launch-on-a-cold-metro).
 
-**No messages appearing** — Ensure both nodes share the same Party ID. Check the Metro console for strand errors. Messages poll every 2 seconds, so there's a brief delay.
+## Links
 
-**Metro bundler errors** — Run `yarn install` from the monorepo root to ensure workspace symlinks are intact. The Metro config watches `sereus/`, `optimystic/`, and `quereus/` workspaces.
-
-**"Property 'structuredClone' doesn't exist"** — Hermes doesn't ship `structuredClone`, which Optimystic uses for defensive deep cloning. `@serfab/cadre-rn`'s `polyfills/hermes.js` provides one: it copies plain data (including Date, Map, Set and circular refs) itself and hands anything else to `@ungap/structured-clone` (see `docs/reference-app-rn.md`, polyfill table). If you see this error, make sure `index.js` imports `@serfab/cadre-rn/polyfills` before any library code, then restart Metro with `--reset-cache`.
-
-**"stabilize tick failed: TypeError: Cannot read properties of undefined (reading 'digest')"** — The `multiformats` package ships a browser variant of its SHA-2 hasher that calls `crypto.subtle.digest()`, which Hermes doesn't support. `@serfab/cadre-rn`'s `polyfills/hermes.js` provides a `crypto.subtle.digest` backed by `@noble/hashes`. If you see this error, restart Metro with `--reset-cache`.
+- [The reference apps](../../docs/platforms/reference-apps.md): the screens, the calls behind them, and how this app differs from the browser and NativeScript samples.
+- [Running a node in a React Native app](../../docs/platforms/react-native.md) and the [`@serfab/cadre-rn` README](../cadre-rn/README.md).
+- [Device testing](../../docs/contributing/device-testing.md): drone startup, Maestro, Metro during a run, cadre-host and provider setups.
+- [Concepts](../../docs/concepts.md) and the [architecture overview](../../docs/architecture.md).

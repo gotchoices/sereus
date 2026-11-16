@@ -1,34 +1,62 @@
 # @serfab/cadre-rn
 
-The React Native kit for Sereus apps. A React Native app that runs a `@serfab/cadre-core` node depends on this package for the platform-specific pieces, instead of copying them from the reference app.
+The React Native kit for Sereus apps: it builds and runs a `@serfab/cadre-core` node on a phone, and supplies the polyfills, Metro settings, native crypto and secure storage that node needs under Hermes. Every entry point is a subpath, so an app installs only the native modules that the subpaths it imports need.
 
-Every entry point is a subpath; there is no root import. An app loads only the parts it uses, so it installs only the native modules those parts need.
+This README is the API reference. Why each piece exists, how a phone becomes reachable, and where node state is stored are in [Running a node in a React Native app](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md).
 
-| Import | What it provides |
+## Install
+
+```sh
+yarn add @serfab/cadre-rn @serfab/cadre-core
+```
+
+Prerequisites: React Native 0.79 or newer, and a native build of the app (a development client or a release build; Expo Go cannot load the native modules). `react-native-quick-crypto` needs React Native's new architecture.
+
+### What the app must install
+
+React Native links native code only for an app's own direct dependencies, so the app lists these native modules in its own `package.json` and rebuilds after adding one. All are optional peer dependencies of the kit: a subpath the app never imports needs nothing.
+
+| Subpath | The app installs |
 |---|---|
-| `@serfab/cadre-rn/phone-node` | `createPhoneNode(platform)`: builds, starts, stops and rebuilds the phone's `CadreNode` the prescribed way, plus `attachStrandWhenWritable` and `retryAfterRestart` |
-| `@serfab/cadre-rn/app-link` | The links two Sereus apps on one phone open each other with to hand over a join request and its answer: link building and parsing, the response codec, the installed-app lookup and `LinkRequestStore` (see [App links](#app-links-serfabcadre-rnapp-link)) |
-| `@serfab/cadre-rn/provider` | Renting a node from a hosting provider: `signInWithProvider` through the system browser, `providerTokensSlot` for the tokens in the secure store, and `rentalStore`, the app's record of its rentals (see [Provider](#provider-serfabcadre-rnprovider)) |
-| `@serfab/cadre-rn/lifecycle` | `createBackgroundRunner`: hibernates the node's strands when the app goes to the background and resumes, bounded, when it returns; `phoneNodeLifecycle(phone)` connects it to a phone node |
-| `@serfab/cadre-rn/key-store` | `SecureStoreKeyStore`: cadre-core's `KeyStore` over the platform secure store, so the node identity lives in the iOS Keychain / Android Keystore rather than plaintext storage |
-| `@serfab/cadre-rn/node-local` | `secureStoreSlot`, `kvStoreSlot` and the record keys: the `DurableSlot`s cadre-core's node-local stores (trusted owners, bootstrap peers, enrolled machines, strand network state) persist through |
-| `@serfab/cadre-rn/noise-crypto` | `buildNoiseCrypto(mode)`, `NoiseCryptoMode`, `DEFAULT_NOISE_CRYPTO_MODE`: runs libp2p's Noise connection encryption in native code. Loading it also switches `crypto.subtle.digest` to native SHA-256/512 (see `native-digest`) |
-| `@serfab/cadre-rn/native-digest` | `installNativeDigest(createHash)`, `nativeDigestActive()`: replaces the boot polyfill's JavaScript `crypto.subtle.digest` with a native hash |
-| `@serfab/cadre-rn/polyfills` | Side effects only: the web APIs libp2p and Optimystic read that Hermes and React Native lack (`AbortSignal.timeout` / `any`, abort reasons, `WebSocket.prototype.bufferedAmount`, `Promise.withResolvers`, `structuredClone`, `DOMException`, `crypto.subtle.digest`, EventTarget / `CustomEvent`, `Intl.PluralRules`, timer `ref()` / `unref()`, and more) |
-| `@serfab/cadre-rn/native-ed25519` | `installNativeEd25519(nativeSubtle)`, `nativeEd25519Active()`: installs `crypto.subtle`'s key, sign and verify methods from a native WebCrypto when any is missing |
-| `@serfab/cadre-rn/polyfills/native-crypto` | Side effects only: native Ed25519 and SHA-256/512 behind `crypto.subtle` from boot, through `react-native-quick-crypto` |
-| `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()`, for apps that use `@libp2p/webrtc` |
-| `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: a boot-time table of which globals are native, polyfilled, known gaps or missing, and a `[reload] <reason>` log line before any reload started from JavaScript |
-| `@serfab/cadre-rn/metro` | CommonJS, for `metro.config.js`: `withCadreMetro(config, options)` adds the Metro settings a Sereus app needs (Node built-in shims, one copy of each native module, libp2p's browser variants) |
-| `"@serfab/cadre-rn"` in `app.json` `plugins` | The Expo config plugin (subpath `./app.plugin.js`, CommonJS): lets Android release builds dial `/ws` addresses, and with `appLinks` registers the app links (see [Config plugin (Expo)](#config-plugin-expo)) |
+| `/polyfills` | `react-native-get-random-values` (`^1.11.0`) |
+| `/polyfills/webrtc` | `react-native-webrtc` (`^124.0.6`), and `@libp2p/webrtc` for the transport |
+| `/polyfills/native-crypto`, `/noise-crypto` | `react-native-quick-crypto` (`^1.1.7`), `react-native-nitro-modules` (`>=0.31.2`), `react-native-quick-base64` (`>=3.0.0`) |
+| `/phone-node` | `@serfab/cadre-core`, `rn-leveldb`, and a secure-store module (`expo-secure-store`, or the bare app's own) |
+| `/lifecycle`, `/node-local`, `/key-store` | `@serfab/cadre-core`; the secure-store module for the last two |
+| `/app-link` | `@serfab/cadre-core`, and the config plugin's `appLinks` option |
+| `/provider` | `@serfab/cadre-core`, and `expo-web-browser` or the bare app's own in-app browser |
+| `/boot-check` | Nothing beyond `react-native` |
+| `/metro`, the config plugin | Nothing |
 
-## Phone node
+`@craftzdog/react-native-buffer`, which `/noise-crypto` imports, is installed by quick-crypto; under a package manager that does not hoist (pnpm's default layout), list it in the app too. The kit's other dependencies, the default transports (`@libp2p/websockets`, `@libp2p/circuit-relay-v2`) and `@optimystic/db-p2p-storage-rn` among them, are ordinary dependencies the app does not list.
 
-`createPhoneNode` is a phone app's whole node bring-up. It keeps the identity and the app's owner key in the secure store, each in its own slot, opens the four node-local stores party-scoped, gives each storage scope its own LevelDB database, makes the phone its party's owner, remembers the last start so the app can start again unattended, moves the node to another party's cadre by machine invitation or owner grant, deletes the cadre it left once that cadre is empty, and deletes a cadre whose owner removed the app. Call it once, at module scope; a second call over the same storage names throws while the first is running.
+## First run
 
-It is `@serfab/cadre-core/edge-node`'s `createEdgeNode` over the secure store and rn-leveldb: the kit supplies the key store (`SecureStoreKeyStore`), the storage (a LevelDB database per storage scope and one for the node-local records, `src/phone-node/leveldb-storage.ts`) and the trusted-owner anchor's secure-store slot; the transitions, the owner step, the saved start, the join, the strand move, the dissolve and the removal are the edge node's, and `PhoneNode`, `PhoneNodeOptions`, `PhoneNodeStatus` and the other names below are its types under the kit's names. An app that runs a node on another platform (a browser, NativeScript) runs the edge node directly over a key store and storage of its own.
+Four files change in the app.
+
+```js
+// index.js: the app's entry module (package.json "main")
+import '@serfab/cadre-rn/polyfills';                 // first
+import '@serfab/cadre-rn/polyfills/native-crypto';   // only with react-native-quick-crypto
+import '@serfab/cadre-rn/polyfills/webrtc';          // only with @libp2p/webrtc
+import '@serfab/cadre-rn/boot-check';                // after every polyfill, before the app
+import 'expo-router/entry';                          // or AppRegistry.registerComponent(...)
+```
+
+```js
+// metro.config.js
+const { getDefaultConfig } = require('expo/metro-config');   // or '@react-native/metro-config'
+const { withCadreMetro } = require('@serfab/cadre-rn/metro');
+
+module.exports = withCadreMetro(getDefaultConfig(__dirname), { projectRoot: __dirname });
+```
+
+```json
+{ "expo": { "plugins": ["@serfab/cadre-rn"] } }
+```
 
 ```ts
+// phone.ts
 import * as SecureStore from 'expo-secure-store';           // or an adapter over the app's own secure store
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { createPhoneNode } from '@serfab/cadre-rn/phone-node';
@@ -43,74 +71,124 @@ export const phone = createPhoneNode({
 	dataVersion: '1',
 });
 
-// Register strand handling before the first start: strands joined from another party
-// come back through `strand:discovered` after every start.
-phone.on('strand:discovered', ({ strand }) => { /* attachStrandWhenWritable(phone.node!, { strandRow: strand, sAppConfig }) */ });
-
 const saved = await phone.loadSavedStart();
 if (saved?.autoStart) await phone.start(saved.options);
+else await phone.start({ partyId: newPartyId, bootstrapAddrs: [], relayAddrs: [] });   // first launch: the app mints a party id, such as a UUID
 ```
+
+After a native rebuild, a first launch ends with `phone.status.state` at `running` and `phone.status.owner` at `enrolled`: the app founded a one-node cadre and holds its owner key. A development build also prints the table `[cadre-rn] polyfill audit` to the device log, with no `MISSING` row. `packages/reference-app-rn/src/cadre-phone.ts` in the repository is a complete example.
+
+## Subpaths
+
+| Import | What it provides |
+|---|---|
+| `@serfab/cadre-rn/phone-node` | `createPhoneNode(platform)`, `attachStrandWhenWritable`, `retryAfterRestart` |
+| `@serfab/cadre-rn/lifecycle` | `createBackgroundRunner`, `phoneNodeLifecycle(phone)` |
+| `@serfab/cadre-rn/app-link` | Link builders and parser, the response codec, `installedSereusApps`, `LinkRequestStore`, `AppRecommendationStore` |
+| `@serfab/cadre-rn/provider` | `signInWithProvider`, `providerTokensSlot`, `rentalStore` |
+| `@serfab/cadre-rn/key-store` | `SecureStoreKeyStore`: cadre-core's `KeyStore` over the platform secure store |
+| `@serfab/cadre-rn/node-local` | `secureStoreSlot`, `kvStoreSlot` and the record keys, for cadre-core's node-local stores |
+| `@serfab/cadre-rn/noise-crypto` | `buildNoiseCrypto(mode)`, `NoiseCryptoMode`, `DEFAULT_NOISE_CRYPTO_MODE` |
+| `@serfab/cadre-rn/native-digest` | `installNativeDigest(createHash)`, `nativeDigestActive()` |
+| `@serfab/cadre-rn/native-ed25519` | `installNativeEd25519(nativeSubtle)`, `nativeEd25519Active()` |
+| `@serfab/cadre-rn/polyfills` | Side effects only: the web APIs Hermes and React Native lack |
+| `@serfab/cadre-rn/polyfills/native-crypto` | Side effects only: native Ed25519 and SHA-256/512 |
+| `@serfab/cadre-rn/polyfills/webrtc` | Side effects only: `react-native-webrtc`'s `registerGlobals()` |
+| `@serfab/cadre-rn/boot-check` | Side effects only, development builds only: the polyfill audit and the reload log |
+| `@serfab/cadre-rn/metro` | CommonJS: `withCadreMetro(config, options)` |
+| `"@serfab/cadre-rn"` in `app.json` `plugins` | The Expo config plugin (subpath `./app.plugin.js`, CommonJS) |
+
+## Phone node
+
+`createPhoneNode` is `@serfab/cadre-core/edge-node`'s `createEdgeNode` over the secure store and rn-leveldb ([The edge node](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#the-edge-node)). `PhoneNode`, `PhoneNodeOptions`, `PhoneNodeStatus` and the other names in this section are the edge node's types under the kit's names.
+
+Call `createPhoneNode` once, at module scope. A second call over the same storage prefix throws while the first node is starting, joining or running. Register event handlers with `phone.on` before the first start: strands joined from another party arrive through `strand:discovered` after every start.
+
+### Platform options
+
+Passed to `createPhoneNode` and fixed for the app's lifetime. `PhoneNodePlatform` in `src/phone-node/node.ts` and `EdgeNodePlatform` in cadre-core are the full types.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `secureStore` | required | `expo-secure-store`, or an adapter with the same three methods (see [Key store and node-local records](#key-store-and-node-local-records)). |
+| `secureStoreOptions` | none | One options object for the identity, the owner key and the anchor. Use `{ keychainAccessible: AFTER_FIRST_UNLOCK }` and no `requireAuthentication`. |
+| `leveldb` | required | rn-leveldb's two constructors and its `destroyDB`, as under [First run](#first-run). |
+| `names` | `DEFAULT_PHONE_NODE_NAMES` | Database prefix, node-local database name and record keys. Renaming one orphans installed phones' records. |
+| `transports` | WebSockets and circuit relay | A function of the relay addresses. An app with WebRTC adds `webRTC({ rtcConfiguration: { iceServers: resolveStunServers(relayAddrs) } })`. |
+| `noiseCrypto` | libp2p-noise's JavaScript crypto | `{ build, defaultMode }`; see [Noise crypto](#noise-crypto). |
+| `allowPrivateDial` | `true` | Dial loopback, private and plain `ws://` addresses, which libp2p's React Native connection gater refuses. |
+| `ownerGenesisTimeoutMs` | 60 s | Bound on settling the owner key at a start or a join. |
+| `dataVersion` | none | Saved with each successful start and reported by `loadSavedStart()` as `writtenBy`. |
+| `configure(config)` | none | Called last with the generated `CadreNodeConfig`, to change what the options do not cover: strand filter, `requireSignedSchemas`, `linkRoundTripMs`. |
+
+### Start options and the saved start
+
+`PhoneNodeOptions` is what one start is made with: `partyId`, `bootstrapAddrs`, `relayAddrs`, and optionally `noiseCryptoMode`, `ownerKeyLabel` (default `phone`), `strandOfflineMode`, `origin` and `formerPartyId`. The kit saves the options of every successful start, so the app can start again unattended.
+
+- **`relayAddrs`** are the circuit relays the node reserves on. With none, the node starts and dials out, but no other party can reach it ([Reachability](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md#reachability-configuring-a-relay)).
+- **`origin`** is `'founded'` (or absent) for a party the app started itself, which settles the owner key on every start, and `'joined'` for one it joined, which never creates one. `joinCadre` saves `'joined'`. A start that names no `origin` takes the saved start's when it is for the same party.
+- **`formerPartyId`** is the party this app founded and left by joining another. Its data stays on disk until `dissolveFormerParty()` deletes it.
+- **`autoStart`** in the saved start is `true` after a successful start and `false` after `stop()`. A failed start saves nothing, so a mistyped address cannot replace the last options that worked. An OS kill leaves it `true`.
+
+### Members
+
+`EdgeNode` in `packages/cadre-core/src/edge-node/edge-node.ts` in the repository states each member's full contract.
 
 | Member | What it does |
 |---|---|
-| `start(options)` | Starts the node, or joins the start in flight; a running node is returned as is. A start called during a stop or restart runs after it, so it never builds on databases being closed. A failed start closes everything it opened and leaves `status` `failed`. A successful one saves its options with `autoStart: true`. |
-| `stop()` | The user's disconnect: waits for a start in flight, saves `autoStart: false`, stops the node, and closes every database it opened (rn-leveldb locks each name, so one left open fails the next start). |
-| `restart(options)` | Rebuilds the node with new relays or a new Noise mode, which libp2p reads only when the node is built. Leaves `autoStart` set. |
-| `joinCadre(credential, options?)` | Joins the cadre a decoded machine invitation or owner grant names, moving this app's one node to that party with the same identity (see [Joining another cadre](#joining-another-cadre)). Resolves once a member admitted the app, with the redemption's result (`asOwner`: the credential was an owner grant), `formerPartyId` and `strandMove` (see [Moving the app's strands](#moving-the-apps-strands)). On a refusal, an expiry while waiting (`invite-spent`, `grant-spent`), a cancel through `options.signal` or a failed start, it starts again what was running before and throws. Options: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, `onProgress` (each redemption pass and pause, then `admitted` and, when this join's strands are being adopted, `moving-strands`; a listener that throws is logged and ignored). |
-| `identityPeerId()` | This app's peer id, the same in every party, for a join request before any cadre is started. Answers at once while a node is running or joining; otherwise reads the identity from the secure store (creating it on a fresh install) in turn with start, stop and join, so the first start uses the same key. |
-| `pendingStrandMove()` | The move from `formerPartyId` still waiting to be adopted: the party it moves to, the strands not seated there yet and those it refused. `undefined` when none waits. |
-| `finishStrandMove()` | Adopts the waiting move on the running node now, in turn with start, stop and join, and returns cadre-core's `StrandMoveReport`; `undefined` when no move names the running party. Throws `StrandMoveNotOwnerError` while the app's key is no owner there. |
-| `dissolveFormerParty(options?)` | Deletes the local storage of `formerPartyId` once the running party holds everything it holds and no other machine is in it, and starts the running party again without `formerPartyId` (see [Dissolving the left cadre](#dissolving-the-left-cadre)). |
-| `loadSavedStart()` | The last successful start's options, `autoStart`, and `writtenBy`: the `dataVersion` of the build that wrote this device's data, for the app to compare with its own. During a stop it answers after the stop has saved `autoStart: false`, and during a removal after the removal has replaced it. |
-| `on(event, handler)` | A node event for the life of the phone node: re-applied to every node a start or restart builds. Returns an unsubscribe. |
-| `status`, `onStatus` | `stopped`, `starting`, `joining` (started in the credential's party and redeeming there; `node` is null meanwhile), `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), `removed` (an owner removed the app from `partyId`; see [Removed from the cadre](#removed-from-the-cadre)), or `failed` (with the error). |
-| `ownerPublicKey()` | The public key of the owner key the running node signs with, for pairing and approval prompts; null unless running with one wired (a `member` has none). |
-| `listOwnerKeys()`, `exportOwnerKey(options?)`, `importOwnerKey(text, passphrase?)`, `planOwnerKeyRemoval(key)`, `removeOwner(key, options?)` | The owner-key screen's calls; see [The phone's owner key](#the-phones-owner-key). |
-| `createOwnerGrant(options?)`, `listOwnerGrants()`, `withdrawOwnerGrant(key)`, `redeemOwnerGrant(text)` | The owner-grant calls on the same screen; see [Owner grants](#owner-grants). |
+| `start(options)` | Starts the node, or joins a start in flight. A running node is returned as is, whatever its options. A failed start closes what it opened and leaves `status` `failed`. |
+| `stop()` | The user's disconnect: saves `autoStart: false`, stops the node and closes every database it opened. |
+| `restart(options)` | Rebuilds the node with new relays or a new Noise mode. Leaves `autoStart` set. |
+| `setStrandOfflineMode(mode)` | Changes the offline mode of running and later strands, and saves it ([Offline mode](https://github.com/gotchoices/sereus/blob/master/docs/strands/writes.md#offline-mode)). Throws while no node runs. |
+| `identityPeerId()` | This app's peer id, the same in every party. With no node running it reads the identity from the secure store, creating it on a fresh install. |
+| `loadSavedStart()` | `{ options, autoStart, writtenBy? }` for the last successful start, or `undefined`. A read fault throws. |
+| `on(event, handler)` | Subscribes to a node event on every node a start or restart builds. Returns an unsubscribe. |
+| `status`, `onStatus(listener)` | `stopped`, `starting`, `joining`, `running` (with `owner`: `enrolled`, `member`, `failed` or `timed-out`), `removed`, or `failed` (with the error). |
+| `node`, `options` | The running `CadreNode` and its start options; `null` unless running. |
+| `unfinishedRemoval` | A removal of a party's local storage that the last start could not finish, or `null`. The next start retries. |
+| `ownerPublicKey()` | The public key the running node signs with as an owner; `null` unless running with one wired. |
+| `linkRequestSlot()`, `recommendationSlot()`, `nodeLocalRecords()` | Storage for the app-link and provider stores, in the node-local database. They work with no node running. |
 
-Platform options with defaults:
-
-- **`transports`**: WebSockets and circuit relay. An app with `react-native-webrtc` adds `webRTC({ rtcConfiguration: { iceServers: resolveStunServers(relayAddrs) } })`, as the reference app does.
-- **`allowPrivateDial`**: `true`. Dials loopback, private and plain `ws://` addresses, which libp2p's React Native gater refuses. Without it an emulator cannot reach `10.0.2.2`, and a relay on the home network or without TLS is unreachable.
-- **`ownerGenesisTimeoutMs`**: 60 s. Also bounds wiring the owner key of a joined party.
-- **`configure(config)`**: none. The last word on the generated `CadreNodeConfig`: strand filter, `requireSignedSchemas`, `linkRoundTripMs`.
+The owner-key, owner-grant, join, strand-move and dissolve calls have sections of their own. Calls that change the node run one at a time, each waiting for the one in progress.
 
 ### The phone's owner key
 
-The app holds at most one owner key, apart from its identity ([architecture.md → Owner Keys](../../docs/architecture.md#owner-keys)): in the same `SecureStoreKeyStore` as the identity, in the owner slot (`DEFAULT_OWNER_KEY_ID`, `cadre/owner`), with the same `secureStoreOptions`. Keep those ungated (`AFTER_FIRST_UNLOCK`, no `requireAuthentication`): background owner writes sign with no user present. Biometric gating belongs with prompting signers (`tickets/backlog/feat-owner-key-on-a-hardware-key.md`).
+The app holds at most one owner key, separate from its identity ([Owner keys](https://github.com/gotchoices/sereus/blob/master/docs/cadre/owner-keys.md)). It is kept in the secure store's owner slot (`DEFAULT_OWNER_KEY_ID`, `cadre/owner`) under the same ungated `secureStoreOptions` as the identity; a signer that prompts before signing is ticket `feat-owner-key-on-a-hardware-key`.
 
 How a start settles it (`status.owner`):
 
-- **Founded party with no `OwnerKey` row yet:** the slot's key becomes the founding row under `PhoneNodeOptions.ownerKeyLabel` (default `phone`) and is wired. It is created now unless the slot already holds one (a key imported before founding, or one an iOS reinstall kept in the Keychain); the kit creates a key nowhere else. `enrolled`.
-- **Founded party that has owners:** the slot's key is wired when it is a live owner (`enrolled`). Otherwise, the slot empty or its key not an owner, the app is a `member` and no key is created, since a new one could not be seated without another owner's signature. A lost slot is recovered by importing an exported key or redeeming a backup grant ([Owner grants](#owner-grants)).
-- **Joined party:** the slot's key is wired when it is a live owner (`enrolled`): the key an owner grant seated, one imported here, or one an owner of the party added. Otherwise `member`. The identity key is never tried, since a machine's network identity is never an owner key.
+- **Founded party with no owner yet.** The slot's key becomes the founding owner key under `ownerKeyLabel`, and the node signs with it (`enrolled`). The key is created unless the slot already holds one, such as a key an iOS reinstall kept in the Keychain.
+- **Any other party.** The node signs with the slot's key when the party lists that key as a live owner (`enrolled`). Otherwise the app is a `member` and no key is created.
 
-The owner-key calls run in turn with start, stop and join, and those that name the node throw while none is running:
+Apart from founding, the kit creates a key only when the app redeems or joins with an owner grant while the slot is empty.
 
-- **`listOwnerKeys()`**: cadre-core's `CadreOwnerKey` rows, with label, voucher, `heldHere` and `trusted`.
-- **`exportOwnerKey({ label?, passphrase? })`**: the slot's key, the key the node signs with, as `{ publicKey, exportText }`. Works with no node running; throws when the slot is empty.
-- **`importOwnerKey(text, passphrase?)`**: stores the key in the slot and, with a node running, wires it when the party lists it (`{ wired: true }`, and `status.owner` becomes `enrolled`). Refused with `OwnerKeySlotOccupiedError` when the slot holds a different key, and with `OwnerKeyExportError` for text that is not an owner key (an invitation or join request is named), a locked export with no passphrase (`passphrase-required`) or a wrong one. A node already signing with another key keeps it until its next start.
-- **`planOwnerKeyRemoval(key)`**, **`removeOwner(key, { revouch })`**: cadre-core's, for the removal prompt and its keep-switches.
+The owner-key calls:
 
-One key imported on two devices signs on both; their concurrent writes conflict as any two owners' do.
+- **`listOwnerKeys()`** returns cadre-core's `CadreOwnerKey` rows, with label, voucher, `heldHere` and `trusted`.
+- **`exportOwnerKey({ label?, passphrase? })`** returns the slot's key as `{ publicKey, exportText }`. It works with no node running and throws when the slot is empty.
+- **`importOwnerKey(text, passphrase?)`** stores the key in the slot, and with a node running wires it when the party lists it (`{ wired: true }`). It throws `OwnerKeySlotOccupiedError` when the slot holds a different key, and `OwnerKeyExportError` for text that is not an owner key, a missing passphrase (`passphrase-required`) or a wrong one. One key imported on two devices signs on both.
+- **`planOwnerKeyRemoval(key)`** and **`removeOwner(key, { revouch })`** are cadre-core's, for the removal prompt.
 
 ### Owner grants
 
-An owner grant is a code whose holder becomes an owner of the cadre, with a key of its own, through any machine of the cadre ([architecture.md → Owner grants](../../docs/architecture.md#owner-grants)). The owner side mints and withdraws grants; the other side redeems one here, or joins with one ([Joining another cadre](#joining-another-cadre)). These calls run in turn with start, stop and join, and throw while no node is running:
+An owner grant is a code whose holder becomes an owner of the cadre, with a key of its own ([Owner grants](https://github.com/gotchoices/sereus/blob/master/docs/cadre/owner-keys.md#owner-grants)). These calls throw while no node is running.
 
-- **`createOwnerGrant({ label?, expiresInMs?, uses? })`**: cadre-core's `CadreNode.createOwnerGrant`, signed by this app's key: `{ grant, encoded, reach }`. 15 minutes and one use by default; `expiresInMs: null` is a backup with no expiry, shown once and kept like a key. `reach` says whether anyone could redeem it once this phone is gone.
-- **`listOwnerGrants()`**: every grant the node holds, minted here or replicated in, with `live`, `withdrawn` and `usesRecorded`.
-- **`withdrawOwnerGrant(key)`**: files the withdrawal; `false` when the grant is not held here or was already withdrawn. Keys it already seated stay owners.
-- **`redeemOwnerGrant(text)`**: makes this app an owner of the running party with the owner slot's key, created when the slot is empty, and wires it (`status.owner` becomes `enrolled`). Answers `{ ownerKey, alreadyOwner, wired }`:
-  - **`alreadyOwner`**: the slot's key is a live owner already, answered before anything is signed or written, connected or not, so the grant spends no use.
-  - **`wired: false`**: the redemption went to another member (this node is not a member machine) and the key's row had not arrived within `ownerGenesisTimeoutMs`; a later start wires it.
-  - **Refused** with the decoder's error for text that is not an owner grant, with cadre-core's `OwnerGrantRejectedError` `party-mismatch` for a grant of another party (before any key is created), and with what `CadreNode.redeemOwnerGrant` throws: `OwnerKeyAddRefusedError` `alone` on a member with no connection to the others, `OwnerGrantRejectedError` (`grant-spent` for an expired, withdrawn or used grant), `OwnerGrantIssuerUnknownError`, `OwnerGrantUnreachableError`.
+- **`createOwnerGrant({ label?, expiresInMs?, uses? })`** returns `{ grant, encoded, reach }`, signed by this app's key. The default is 15 minutes and one use; `expiresInMs: null` makes a backup grant with no expiry. `reach` says whether anyone could redeem it once this phone is gone.
+- **`listOwnerGrants()`** returns every grant the node holds, with `live`, `withdrawn` and `usesRecorded`.
+- **`withdrawOwnerGrant(key)`** returns `false` when the grant is not held here or was already withdrawn. Keys it already seated stay owners.
+- **`redeemOwnerGrant(text)`** makes this app an owner of the running party with the owner slot's key, created when the slot is empty. It returns `{ ownerKey, alreadyOwner, wired }`.
+
+`redeemOwnerGrant` results:
+
+- **`alreadyOwner`**: the slot's key is a live owner already. Nothing is signed or written, so the grant spends no use.
+- **`wired: false`**: this node is not a member machine, so another member redeemed for it, and the key's row had not arrived within `ownerGenesisTimeoutMs`. A later start wires it.
+- **Errors**: `OwnerGrantRejectedError` (`party-mismatch`, or `grant-spent` for an expired, withdrawn or used grant), `OwnerKeyAddRefusedError` (`alone`, on a member with no connection to the others), `OwnerGrantIssuerUnknownError`, `OwnerGrantUnreachableError`, and the decoder's error for text that is not an owner grant.
 
 ### Joining another cadre
 
-An app that runs its own one-node cadre joins the user's main cadre with `joinCadre`, which switches the node rather than running a second one beside it: a node serves one party, and a second libp2p host on the same identity would compete for its peer id. The reasons and the full sequence are in [architecture.md → An app joins an existing cadre](../../docs/architecture.md#an-app-joins-an-existing-cadre).
+An app that runs its own one-node cadre joins the user's main cadre with `joinCadre`, which moves the node and keeps its identity ([An app joins an existing cadre](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md#an-app-joins-an-existing-cadre)).
 
-`joinCadre` takes either credential. A machine invitation admits the app as a machine. An owner grant, made under the owner app's Owner keys, makes it a machine and an owner at once: it seats the owner slot's key, created when the slot is empty ([The phone's owner key](#the-phones-owner-key)), which is how an app brings the strands of the party it founded along.
+`joinCadre` takes either credential. A machine invitation admits the app as a machine. An owner grant makes it a machine and an owner at once, which an app needs to bring along the strands of the party it founded.
 
 ```ts
 import { decodeCadreInvitation, decodeOwnerGrant, OWNER_GRANT_PREFIX } from '@serfab/cadre-core';
@@ -127,28 +205,24 @@ const joined = await phone.joinCadre(credential, {
 });
 ```
 
-The saved start records how the app came to its party:
-
-- **`origin`**: `'founded'` (or absent) runs owner genesis on every start; `'joined'`, which `joinCadre` saves, never does, and wires a key only when the party lists it as an owner ([The phone's owner key](#the-phones-owner-key)), so the app reports `owner: 'member'` otherwise. A start that names no `origin` takes the saved start's when it is for the same party.
-- **`formerPartyId`**: the party this app founded and left. Its data stays on disk under its own names until `dissolveFormerParty()` deletes it, which also drops this field.
-
-Nothing is saved until a member admits the app, so a kill while waiting relaunches into the party it left. `stop()` cancels a join in progress.
+- **Options**: `relayAddrs` and `noiseCryptoMode` (default: the running or saved start's), `signal`, and `onProgress`.
+- **Result**: the redemption's result, plus `asOwner`, `formerPartyId` and `strandMove`.
+- **While waiting**, `status` is `joining` and `phone.node` is `null`. Nothing is saved until a member admits the app, so an app killed while waiting relaunches into the party it left. `stop()` cancels a join.
+- **On failure** (a refusal, an expiry reported as `invite-spent` or `grant-spent`, a cancel, or a failed start) it starts again what was running before and throws.
 
 #### Moving the app's strands
 
-Leaving a party it founded, `joinCadre` carries that party's strands, pending joins and invitations into the party it joins, with cadre-core's `exportStrandBundle` and `adoptStrandBundle` ([architecture.md → Moving the app's strands](../../docs/architecture.md#moving-the-apps-strands)). Leaving a party it joined moves nothing: that party's strands are its owners' to move.
+When the app leaves a party it founded, `joinCadre` carries that party's strands, pending joins and invitations into the party it joins ([Moving the app's strands](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md#moving-the-apps-strands)). Leaving a party it joined moves nothing.
 
-- **Before anything stops**, the strands are exported from the running node, or from a node started for the export alone when none runs (status goes `starting` and back to `stopped`). The bundle is kept in the secure store, `cadre/strand-move/<base64url party id>`, one record per party left: it holds read secrets, party keys and bearer invitations. An empty export removes the party's earlier record instead.
-- **The join is refused** with `StrandsNeedOwnerJoinError`, the party left running and unchanged, when there is something to move and the credential is a machine invitation: every row a move seats is owner-signed, so the app joins with an owner grant instead. A failed export or record write is thrown the same way.
-- **Admitted**, the start is saved, then the bundle is adopted if the app's key is wired as an owner, then the join reports `running`. A kill during the adoption relaunches into the joined party, which finishes it.
-- **`result.strandMove`** is `{ state: 'done' | 'partial', report }` (`partial`: `report.failed` lists what is retried), or `{ state: 'deferred', reason: 'owner-key-not-wired' }`, or `{ state: 'deferred', reason: 'adoption-failed', error }`. Absent when there was nothing to move.
-- **A deferred or partial move** is retried by every start whose owner key is wired, before it reports `running`, or at once by `finishStrandMove()`. The record is deleted when an adoption fails nothing; strands the joined party refuses permanently (it participates in them under its own identity) are left out of later retries and listed in each report.
-- **A failed join** deletes the record it wrote, so the next join exports afresh.
-- **The left party's rows stay** in its storage until it is dissolved (below). No record for `formerPartyId` means nothing from it waits to be adopted; a record the kit cannot parse is deleted with a warning, so the absence is not proof that every strand arrived.
+- **Before anything stops**, the kit exports the strands and keeps the bundle in the secure store, because it holds read secrets, party keys and bearer invitations.
+- **`StrandsNeedOwnerJoinError`** refuses the join, with the party left running and unchanged, when there is something to move and the credential is a machine invitation: every row a move seats is owner-signed.
+- **`result.strandMove`** is `{ state: 'done' | 'partial', report }`, or `{ state: 'deferred', reason }` with `reason` `'owner-key-not-wired'` or `'adoption-failed'` (and its `error`). It is absent when there was nothing to move. In `partial`, `report.failed` lists what is retried.
+- **A deferred or partial move** is retried by every start whose owner key is wired, before it reports `running`, and at once by `finishStrandMove()`, which throws `StrandMoveNotOwnerError` while the app's key is not an owner there.
+- **`pendingStrandMove()`** returns the move still waiting, or `undefined`: the party it moves to, the strands not seated there yet, and those that party refused permanently.
 
 #### Dissolving the left cadre
 
-Once the move has finished, `dissolveFormerParty()` deletes what the party the app founded and left still holds on the phone, so the app runs only as a member of the party it joined ([architecture.md → Dissolving the party it left](../../docs/architecture.md#dissolving-the-party-it-left)). It runs in turn with start, stop and join, and takes a restart of the running node: it stops it, starts a node for the left party alone to read that party's strands, pending joins and machines from its own storage, stops that node, and starts the running party again.
+Once the move has finished, `dissolveFormerParty()` deletes what the party the app founded and left still holds on the phone ([Dissolving the party it left](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md#dissolving-the-party-it-left)). The call stops the running node, reads the left party, and starts the running party again.
 
 ```ts
 import { FormerPartyNotEmptyError } from '@serfab/cadre-rn/phone-node';
@@ -162,42 +236,30 @@ try {
 }
 ```
 
-- **Refused before anything stops** with a plain `Error` unless the node runs with a `formerPartyId` other than its own party, and with `StrandMovePendingError` (`pending`, as `pendingStrandMove()` reports it) while a move from that party waits: call `finishStrandMove()` first, in the party the move names.
-- **Refused after the read** with `FormerPartyNotEmptyError`, the running party started again and nothing deleted, when the left party holds a strand the running party does not, or a pending join still open there, or has a machine other than this app's node (`strandIds`, `pendingJoinIds`, `otherMachines`). A strand or join the running party dropped after the move reads the same, so the ids may be passed back as `discard`; other machines may not: remove them in the left party first.
-- **Removed:** the left party's control database (through `leveldb.destroy`, rn-leveldb's `LevelDB.destroyDB`), its node-local records, its trusted-owner anchor, its unpublished joined-strand records and its move record; the saved start drops `formerPartyId`. Strand databases stay: a moved strand's database is the running party's copy.
-- **A crash partway** is finished by the next start, or the next call: a node-local record under `names.dissolveMarkerKey` (`dissolving-party`) names the party from before the first deletion until the last.
-- **A failure starting the running party again** after the removal is the call's error, the node down; after a refusal it is logged and leaves `status` `failed`.
+- **Refused before anything stops** with `StrandMovePendingError` while a move from that party waits, and with an `Error` when the node is not running with a `formerPartyId`.
+- **Refused after the read**, with nothing deleted: `FormerPartyNotEmptyError` when the left party holds a strand or an open pending join the running party does not, or has a machine other than this app's node. The strand and join ids may be passed back as `discard`; other machines must be removed in the left party first.
+- **Deleted**: the left party's control database, node-local records, trusted-owner anchor, joined-strand records and move record. Strand databases stay: a moved strand's database is the running party's copy.
+- **A crash partway** is finished by the next start or call.
 
 ### Removed from the cadre
 
-When the running node reports that an owner removed this app from its party (cadre-core's `cadre:removed`, [architecture.md → Removing a machine](../../docs/architecture.md#removing-a-machine)), the kit acts on it in turn with start, stop and join, so the app only has to show it:
+When an owner removes this app from its party (cadre-core's `cadre:removed`, [The removed machine learns of it](https://github.com/gotchoices/sereus/blob/master/docs/cadre/removing-machines.md#the-removed-machine-learns-of-it)), the kit acts on it, so the app only has to show it:
 
-- **The node stops**, and the saved start stops naming the party before anything is deleted: it becomes a start of `formerPartyId` (the party this app founded and left, `origin: 'founded'`) with `autoStart: false`, or is deleted when there is none. Nothing starts unattended; the user sees why the app left its cadre first.
-- **The party's local storage is deleted** as a dissolve deletes it: its control database, node-local records, trusted-owner anchor, unpublished joined-strand records and move record, with the same marker, so a failure partway is finished by the next start. Strand databases stay.
-- **`status`** becomes `{ state: 'removed', partyId, removal, formerPartyId? }`: `removal` is cadre-core's `CadreRemoval` (the retired stamp, and `signerKey`, the removing owner, when its key is anchored here). From `removed`, `start` and `joinCadre` work as from `stopped`: the app offers "go back to your own cadre" (`start((await phone.loadSavedStart())!.options)`) when `formerPartyId` is set, and a join otherwise.
-- **A failure rewriting the saved start** leaves the storage, which that start still names, and `status` `failed`.
-- **An app that keeps its own copy of the start options** drops it on `removed`: the kit does not refuse them, and starting them builds the removed party again on empty storage. Starts that read `loadSavedStart()`, as `phoneNodeLifecycle` does, are safe.
+- **The node stops**, and the saved start becomes a start of `formerPartyId` with `autoStart: false`, or is deleted when there is none. Nothing starts unattended.
+- **The party's local storage is deleted**, as a dissolve deletes it.
+- **`status`** becomes `{ state: 'removed', partyId, removal, formerPartyId? }`. From there `start` and `joinCadre` work as from `stopped`: the app offers a return to its own cadre (`start((await phone.loadSavedStart())!.options)`) when `formerPartyId` is set, and a join otherwise.
+- **An app that keeps its own copy of the start options** must drop it on `removed`: starting them builds the removed party again on empty storage.
 
-It is best-effort, as the report is: a phone removed while its app was not running never learns it, and keeps the party's data while the party's other machines refuse it.
+A phone removed while its app was not running never receives the report, and keeps the party's data.
 
 ### Helpers
 
-Two helpers for code that uses the node:
-
-- `attachStrandWhenWritable(node, config)` treats a first sync that outlasts `addStrand`'s budget as progress and waits for the strand to become writable.
-- `retryAfterRestart(write)` retries a write that fails for want of a super-majority, as the first writes after a node restarts alone do.
-
-### What the app must install
-
-`@serfab/cadre-core`, `rn-leveldb` and its secure-store module. `@optimystic/db-p2p-storage-rn` and the default transports are dependencies of the kit. `@libp2p/webrtc` and `react-native-webrtc` only if the app adds WebRTC.
+- **`attachStrandWhenWritable(node, config, { patienceMs? })`** calls `addStrand`, and when the first sync outlasts `addStrand`'s budget it waits for the strand to become writable, up to `patienceMs` (default `DEFAULT_STRAND_PATIENCE_MS`, 240 s).
+- **`retryAfterRestart(write, { attempts?, delayMs? })`** retries a write that fails for want of a super-majority, as the first writes after a node restarts alone do. Defaults: 5 attempts, 3 s apart.
 
 ## Lifecycle
 
-`createBackgroundRunner` follows react-native's `AppState`.
-
-- **On `background`** it hibernates the node's strands and keeps the control connection up for as long as the OS allows. It drops to `background-hibernating` when the control network disconnects.
-- **On `active`** it starts the node again if the OS killed it. It then waits, bounded, for the control network to reconnect, and reports `degraded` if it does not. `inactive` (an incoming call, the app switcher) does nothing.
-- **Rapid flapping** is safe: a later transition always wins over an earlier one still in progress.
+`createBackgroundRunner` (`@serfab/cadre-rn/lifecycle`) follows React Native's `AppState`.
 
 ```ts
 import { AppState } from 'react-native';
@@ -208,13 +270,17 @@ runner.onStateChange(() => render(runner.state, runner.resuming, runner.degraded
 runner.start();   // once the node is running; runner.stop() on logout
 ```
 
-`phoneNodeLifecycle(phone)` supplies the runner's two node hooks from a `PhoneNode`. Its cold start uses the saved start, and only while `autoStart` is set, so a node the user stopped stays stopped. An app that must refresh its own state after a cold start passes its own `ensureNode` instead.
+- **On `background`** it hibernates the node's strands and leaves the control connection up for as long as the OS allows. `state` becomes `background-connected`, then `background-hibernating` when the control network disconnects.
+- **On `active`** it starts the node again if the OS killed it, then waits up to `settleTimeoutMs` (default 15 s) for the control network to reconnect. `resuming` is `true` meanwhile, and `degraded` is `true` if the wait ran out.
+- **`inactive`** does nothing, and a later transition wins over an earlier one still in progress.
 
-The runner never imports `react-native`: `AppState` is assignable to its `AppStateLike`, and tests pass a fake. A push wake (FCM/APNs) is the app's own; the reference app's `push-wake*.ts` is the worked example.
+`phoneNodeLifecycle(phone)` supplies the runner's `getNode` and `ensureNode` from a `PhoneNode`. Its cold start uses the saved start, and only while `autoStart` is set, so a node the user stopped stays stopped. An app that must refresh its own state after a cold start passes its own `ensureNode`.
 
-## App links (`@serfab/cadre-rn/app-link`)
+The runner never imports `react-native`: `AppState` is assignable to its `AppStateLike`. A push wake (FCM or APNs) is the app's own code.
 
-Two Sereus apps on one phone hand a join request and its answer to each other by opening each other with a link, so the user confirms once in the owner app instead of copying a request one way and an invitation back. The answer is a machine invitation, which admits the asking app as a machine only; an app with strands of its own to bring joins with an owner grant instead. [docs/architecture.md → Between apps on one phone](../../docs/architecture.md#between-apps-on-one-phone) has the flow, the link formats, the decisions and the security reasoning; this section is the API. The module imports nothing from React Native or Expo: the app passes `Linking.canOpenURL` in.
+## App links
+
+`@serfab/cadre-rn/app-link` lets two Sereus apps on one phone hand a join request and its answer to each other as links, so the user confirms once in the owner app ([Between apps on one phone](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md#between-apps-on-one-phone)). The answer is a machine invitation, which admits the asking app as a machine only. An app with strands of its own to bring joins with an owner grant instead (ticket `decide-app-link-join-carries-ownership`).
 
 The asking app, which wants to join:
 
@@ -259,27 +325,25 @@ if (link?.kind === 'join-request') {
 }
 ```
 
-- **`parseCadreLink(url)`** says whether a URL is a join request or a join response, and returns its text undecoded. Anything else, a node code (`sereus-join:1.…`) or an invitation included, is `null`, so the app's other link routing is untouched.
-- **`joinRequestLink(text, ownerApp)`** is the request text itself on Android (`ownerApp` `null`), which every opted-in app handles, so the system chooser lists the owner apps. On iOS, which has no chooser, it is `<ownerApp.scheme>://cadre-join-request/<text>`.
-- **`joinResponseLink(reply, response)`** is `<reply.scheme>://cadre-join-response/<response text>` on both platforms. It checks the reply again with cadre-core's `requireCadreJoinReply`, so a web or system scheme throws. Past `CADRE_LINK_MAX_LENGTH` (32 KB) it throws `CadreLinkTooLongError`, and the owner app shows the invitation for copying instead.
-- **`encodeCadreJoinResponse` / `decodeCadreJoinResponse`** are the answer's codec (`sereus-join-response:1.`, encoded as the request is): the request's nonce, the answering app's unverified name, and exactly one of an `invitation` text and a `refused` reason (`denied`, `no-cadre`, `not-owner`, `already-member`).
-- **`installedSereusApps(apps, ownScheme, canOpenURL)`** is for iOS: the apps whose scheme `canOpenURL` reports installed, the app's own excluded. React Native's `canOpenURL` rejects for a scheme missing from `LSApplicationQueriesSchemes`; that app counts as not installed, with a warning naming the scheme.
-- **`LinkRequestStore`** holds the asking app's open request; see [below](#the-open-request).
-- **`PhoneNode.linkRequestSlot()`** is where the store keeps the request: the node-local database, under `PhoneNodeNames.linkRequestKey` (default `link-join-request`), so an asking app the OS killed while the owner app was in front takes the answer when the link starts it. It works with no node running.
-- **Recommending another app** has its own store and links; see [below](#recommending-another-app).
+- **`parseCadreLink(url)`** returns `{ kind, text }` with `kind` `join-request`, `join-response` or `recommended-by`, the text undecoded. Anything else is `null`, a node code or an invitation included.
+- **`joinRequestLink(text, ownerApp)`** is the request text itself when `ownerApp` is `null` (Android, where the system chooser lists every app that handles it). With an owner app (iOS, which has no chooser) it is `<ownerApp.scheme>://cadre-join-request/<text>`.
+- **`joinResponseLink(reply, response)`** is `<reply.scheme>://cadre-join-response/<response text>`. It throws for a web or system scheme, and throws `CadreLinkTooLongError` past `CADRE_LINK_MAX_LENGTH` (32,768 characters); the owner app then shows the invitation for copying.
+- **`encodeCadreJoinResponse` and `decodeCadreJoinResponse`** are the answer's codec: the request's nonce, the answering app's unverified name, and either an `invitation` text or a `refused` reason (`denied`, `no-cadre`, `not-owner`, `already-member`).
+- **`installedSereusApps(apps, ownScheme, canOpenURL)`** returns the apps whose scheme `canOpenURL` reports installed, the app's own excluded. On iOS a scheme missing from `LSApplicationQueriesSchemes` counts as not installed, with a warning naming it.
 
 ### The open request
 
-`LinkRequestStore` is the asking app's guard against answers it did not ask for.
+`LinkRequestStore` is the asking app's guard against answers it did not ask for. Create one per app, over `phone.linkRequestSlot()`. The request is kept in the node-local database, so an asking app that the OS killed while the owner app was in front still takes the answer.
 
-- **`begin(ownerAppName)`** opens a request, or returns the open one with its nonce unchanged, so an answer to an earlier tap still lands.
-- **`take(text)`** returns the decoded answer only when its nonce is the open request's, once, within `LINK_REQUEST_TTL_MS` (30 minutes), and otherwise throws `UnsolicitedJoinResponseError`. A malformed answer throws the codec's error and leaves the request open.
-- **`current()` and `cancel()`** read and close the open request. A slot read that fails throws from `current` and `take` rather than reading as no request.
-- **One per app.** Its calls run one at a time, so two deliveries of the same link cannot both take the answer; a second store over the same slot would not share that.
+- **`begin(ownerAppName)`** opens a request, or returns the open one with its nonce unchanged, so an answer to an earlier tap still arrives.
+- **`take(text)`** returns the decoded answer only when its nonce is the open request's, once, within `LINK_REQUEST_TTL_MS` (30 minutes). Otherwise it throws `UnsolicitedJoinResponseError`. A malformed answer throws the codec's error and leaves the request open.
+- **`current()`** and **`cancel()`** read and close the open request. A slot read that fails throws.
+
+The store's calls run one at a time, so two deliveries of the same link cannot both take the answer. Use one store per slot.
 
 ### Recommending another app
 
-An owner app recommends a Sereus app and lets it join on its first launch without a prompt: the user allows it in the owner app first, and the owner app answers that app's join request without asking again. [docs/architecture.md → Recommending another app](../../docs/architecture.md#recommending-another-app) has the flow and the security reasoning. The pre-approval, like a join answered by link, admits a machine only; a recommended app with strands of its own to bring joins with an owner grant pasted into it (whether these flows may also carry ownership is `tickets/blocked/decide-app-link-join-carries-ownership.md`).
+An owner app can recommend a Sereus app and approve its join in advance, so that app joins on its first launch without a second prompt ([Recommending another app](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md#recommending-another-app)). The pre-approval admits a machine only.
 
 The owner app, which recommends:
 
@@ -299,7 +363,7 @@ const approved = request.reply ? await recommendations.take(request.reply.scheme
 // approved: mint the targeted machine invitation and answer by link, no prompt.
 ```
 
-The recommended app reads the hint once, at first launch (the Play Install Referrer, through the app's own install-referrer module) or from a `recommended-by` link:
+The recommended app reads the hint once, at first launch from the Play install referrer (through the app's own install-referrer module) or from a `recommended-by` link:
 
 ```ts
 import { KNOWN_SEREUS_APPS, parseCadreLink, recommendedBySchemeFromReferrer } from '@serfab/cadre-rn/app-link';
@@ -309,26 +373,22 @@ const recommender = [...KNOWN_SEREUS_APPS, ...extraApps].find((app) => app.schem
 // recommender: ask whether to join it, then send the join request to it as above, with recommender as ownerApp.
 ```
 
-- **`AppRecommendationStore`** keeps the owner app's pre-approvals, one per scheme. `approve(entry)` records one, replacing any for the same scheme; `live(partyId)` lists the live ones, most recently approved first; `withdraw(scheme)` drops one; `take(scheme, partyId)` returns the live one for that scheme and party and removes it, or returns null. An entry lasts `RECOMMENDATION_TTL_MS` (an hour), is used up by one `take`, and is never returned for another party. Its calls run one at a time, as `LinkRequestStore`'s do; a malformed record reads as none, with a warning, and a slot read that fails throws.
-- **`PhoneNode.recommendationSlot()`** is where the store keeps them: the node-local database, under `PhoneNodeNames.recommendationsKey` (default `recommended-apps`). It works with no node running.
-- **`storePageLink(app, platform, ownScheme)`** is the app's Play page on `'android'`, with the install referrer `sereus-recommended-by:1.<ownScheme>` (`recommendedByReferrer`), and its App Store page on `'ios'`, which has no referrer. It is null when the app has no store id for that platform.
-- **`recommendedByLink(app, ownScheme)`** is `<app.scheme>://cadre-recommended-by/<ownScheme>`, for an app already installed; `parseCadreLink` reads it as `{ kind: 'recommended-by', text: <scheme> }`.
-- **`recommendedBySchemeFromReferrer(referrer)`** is the scheme when the referrer is exactly that token, and null for anything else, Play's `utm_source=google-play&utm_medium=organic` for an install no link started included.
-- **Trust neither hint.** Anyone can build a Play link with any referrer, and any app can open another with any link. Use a scheme only when the app's own known list (the kit's plus its extras) has it, by exact equality, and show the name from that list, never from the hint.
+- **`AppRecommendationStore`** keeps the owner app's pre-approvals, one per scheme: `approve(entry)`, `live(partyId)`, `withdraw(scheme)` and `take(scheme, partyId)`. An entry lasts `RECOMMENDATION_TTL_MS` (one hour), is used up by one `take`, and is never returned for another party.
+- **`storePageLink(app, platform, ownScheme)`** is the app's Play page on `'android'`, with the install referrer `sereus-recommended-by:1.<ownScheme>`, or its App Store page on `'ios'`, which has no referrer. It is `null` when the app has no store id for that platform.
+- **`recommendedByLink(app, ownScheme)`** is `<app.scheme>://cadre-recommended-by/<ownScheme>`, for an app already installed.
+- **`recommendedBySchemeFromReferrer(referrer)`** returns the scheme when the referrer is exactly that token, and `null` otherwise.
+
+Trust neither hint: anyone can build a Play link with any referrer, and any app can open another with any link. Use a scheme only when the app's own known list has it, by exact equality, and show the name from that list.
 
 ### Adding an app to the known list
 
-`KNOWN_SEREUS_APPS` has one entry per published Sereus app, `{ name, scheme }`, plus `androidPackage` (its Play application id) and `iosAppStoreId` (its numeric App Store id) once it is in a store, for `storePageLink`. A new app is added to it in `src/app-link/known-apps.ts` and to the copy in `app.plugin.cjs` (the plugin is CommonJS and cannot load the ESM build; a test keeps the two equal), then the kit is released. Until then the app passes itself as an extra, both in the plugin's `appLinks.extraApps` and in the `apps` argument of `installedSereusApps`.
+`KNOWN_SEREUS_APPS` has one entry per published Sereus app: `{ name, scheme }`, plus `androidPackage` and `iosAppStoreId` once it is in a store. A new app is added in `src/app-link/known-apps.ts` and in the copy in `app.plugin.cjs` (the plugin is CommonJS and cannot load the ESM build), and the kit is released. Until then the app passes itself as an extra, in the plugin's `appLinks.extraApps` and in the `apps` argument of `installedSereusApps`.
 
-Every Sereus app needs a URL scheme of its own, `expo.scheme`, which Expo registers: the answer comes back at it, and on iOS which of two apps sharing a scheme opens a link is undefined.
+Every Sereus app needs a URL scheme of its own (`expo.scheme`). The answer comes back at it, and on iOS it is undefined which of two apps sharing a scheme opens a link.
 
-### What the app must install
+## Provider
 
-`@serfab/cadre-core`, for the request codec. Natively, the config plugin's [`appLinks` option](#applinks-links-between-sereus-apps), which takes effect in the next native build.
-
-## Provider (`@serfab/cadre-rn/provider`)
-
-cadre-core's `provider/` has everything an app needs to rent a node from a hosting provider except the three platform pieces: opening the system browser for the sign-in, keeping the tokens, and remembering which containers the app rented ([docs/architecture.md → Renting a node from an app](../../docs/architecture.md#renting-a-node-from-an-app)). This subpath is those three. It imports nothing from React Native or Expo: the app passes `expo-web-browser`'s `openAuthSessionAsync` and its secure store in, so it runs under a Node test.
+`@serfab/cadre-rn/provider` is what cadre-core's `provider/` module leaves to the app when it rents a node from a hosting provider: opening the system browser for the sign-in, keeping the tokens, and remembering which containers the app rented ([Renting a node from an app](https://github.com/gotchoices/sereus/blob/master/docs/hosting/provider.md#renting-a-node-from-an-app)).
 
 ```ts
 import * as SecureStore from 'expo-secure-store';
@@ -351,23 +411,24 @@ const client = createProviderClient({
 	apiBaseUrl: descriptor.apiBaseUrl,
 	tokens: createTokenSource({ descriptor, clientId: 'my-app', tokens, persist: (next) => slot.save(next) }),
 });
-const result = await rentNode(node, client);        // the app records the container id for `finishRental` (below)
+const result = await rentNode(phone.node!, client);
 ```
 
-- **`signInWithProvider({ descriptor, clientId, redirectUri, openAuthSession, scopes?, fetch? })`** runs the OAuth 2 + PKCE handshake cadre-core's `provider/oauth.ts` defines: it mints the verifier and the state, opens `authorizationUrl` through `openAuthSession(url, redirectUri)`, reads the redirect and exchanges the code, returning `ProviderTokens`. `'cancelled'` when the browser closed without a redirect. A redirect carrying the provider's refusal (`access_denied`, `invalid_scope`), one whose state is not this sign-in's, and a refused exchange throw `ProviderAuthError` with the code. `openAuthSession` has the signature of `openAuthSessionAsync`; a bare React Native app passes an adapter over its own in-app browser that resolves `{ type: 'success', url }` on the redirect and anything else on a close. The redirect URI must be one the app registered with the provider, spelled exactly as registered; the app's `+native-intent` (Expo Router) should rewrite that path to a plain screen, since the browser session owns the URL and the single-use code must not stay in navigation state.
-- **`providerTokensSlot(secureStore, providerId, options?)`** keeps one provider's pair in the secure store under `sereus.provider-tokens.<base64url provider id>`: `load()` (`undefined` when none is stored or the record is unreadable as one, logged; a denied read throws), `save(tokens)` (the sign-in's pair, and each one `createTokenSource`'s `persist` rotates to) and `clear()` for sign-out. The tokens are credentials for the customer's account, so they sit where the identity key does; the slot must be ungated, as `secureStoreSlot` must.
-- **`rentalStore(kv)`** over `PhoneNode.nodeLocalRecords()` is the app's record of its rentals, by party, under `rentalsKvKey(partyId)` (`/node-local`): `Rental = { providerId, providerName, containerId, join, peerId?, createdAt, finished }`, with `list(partyId)`, `add(partyId, rental)`, `update(partyId, containerId, { peerId?, finished? })` and `remove(partyId, containerId)`, run one at a time. cadre-core's `rentNode` persists nothing, so an app records the container when the provider creates it (`finished: false`), marks it finished when `rentNode` or `finishRental` returns, and on its next launch offers to finish any record still unfinished. A record that cannot be read reads as no rentals, logged: the containers still exist on the provider's own pages.
-- **`PhoneNode.nodeLocalRecords()`** (`/phone-node`) is the node-local database as a key-value store, for this and any other record an app keeps beside the saved start; it works with no node running.
+- **`signInWithProvider({ descriptor, clientId, redirectUri, openAuthSession, scopes?, fetch? })`** runs the OAuth 2 with PKCE handshake and returns `ProviderTokens`, or `'cancelled'` when the browser closed without a redirect. It throws cadre-core's `ProviderAuthError` when the provider refuses, the redirect's state is not this sign-in's, or the token exchange fails.
+- **`openAuthSession`** has the signature of `expo-web-browser`'s `openAuthSessionAsync`. A bare app passes an adapter that resolves `{ type: 'success', url }` on the redirect.
+- **`redirectUri`** must be spelled exactly as the app registered it with the provider. With Expo Router, rewrite that path to a plain screen in `+native-intent`, so the single-use code is not kept in navigation state.
+- **`providerTokensSlot(secureStore, providerId, options?)`** keeps one provider's token pair in the secure store, ungated: `load()` (`undefined` when none is stored or the record is unreadable; a denied read throws), `save(tokens)` and `clear()`.
+- **`rentalStore(kv)`** over `phone.nodeLocalRecords()` is the app's record of its rentals by party: `list(partyId)`, `add(partyId, rental)`, `update(partyId, containerId, { peerId?, finished? })` and `remove(partyId, containerId)`.
 
-### What the app must install
-
-`@serfab/cadre-core`, and `expo-web-browser` (or the bare app's own in-app browser) for the sign-in; the secure store is the one the key store uses.
+cadre-core's `rentNode` persists nothing. An app records the container when the provider creates it (`finished: false`), marks it finished when `rentNode` or `finishRental` returns, and on its next launch offers to finish any record still unfinished, as `recordingClient` in `packages/reference-app-rn/src/rentals.ts` does.
 
 ## Key store and node-local records
 
-cadre-core asks its host for durable storage: a `KeyStore` for the node identity (`keyStore` in `CadreNodeConfig`, never `privateKey` on a phone) and the owner key, each in a slot of its own, and a `DurableSlot` behind each node-local store (`trustedOwners`, `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`). Left out, each falls back to memory, and a phone that restarts before it reconnects loses its dial hints and its trusted owners. These two subpaths are the phone's answer.
+These two subpaths are for an app that builds its node without `createPhoneNode`, which wires all of this itself.
 
-Both talk to the secure store through `SecureStoreApi`, three async methods (`getItemAsync`, `setItemAsync`, `deleteItemAsync`) over string values. `expo-secure-store` is structurally assignable to it. A bare React Native app passes an adapter over its own secure-storage module that keeps the same contract: `null` for an absent key, a throw for a denied or failed read. Neither subpath imports a native module.
+cadre-core asks its host for a `KeyStore`, and for a `DurableSlot` behind each node-local store: `trustedOwners`, `bootstrapPeers`, `enrolledMachines` and `strandNetworkState`. Left out, each falls back to memory.
+
+Both subpaths reach the secure store through `SecureStoreApi`: `getItemAsync`, `setItemAsync` and `deleteItemAsync` over string values. `expo-secure-store` is assignable to it. A bare React Native app passes an adapter that keeps the same contract: `null` for an absent key, a throw for a denied or failed read.
 
 ```ts
 import * as SecureStore from 'expo-secure-store';
@@ -383,93 +444,41 @@ const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
 	kvStoreSlot(nodeLocalKv, bootstrapPeersKvKey(partyId)), partyId);
 ```
 
-The trust-bearing anchor goes in the secure store; the dial hints, the enrolled-machine count and the strand network state go in a LevelDB database of the app's own (`nodeLocalKv` above is a `LevelDBKVStore` over it), because they grant no authority and outgrow the secure store's value limit. The module headers give the reasoning. A `LevelDBKVStore` holds each write in memory until it is flushed, so keep one per open database for every slot to share, and `close()` it before the database; `kvStoreSlot` flushes on each save. `createPhoneNode` (above) wires all of this; these subpaths are for an app that builds its node another way.
+- **`SecureStoreKeyStore(secureStore, options?)`** throws cadre-core's `KeyStoreAccessError` for a read the store refuses, and returns `undefined` only for an absent slot.
+- **`secureStoreSlot(secureStore, key, options?)`** is a `DurableSlot` over one secure-store entry, for the trusted-owner anchor. It throws at construction for a gated slot.
+- **`kvStoreSlot(kv, key)`** is a `DurableSlot` over one key of a key-value store, flushed on each save. `nodeLocalKv` in the example is a `LevelDBKVStore` from `@optimystic/db-p2p-storage-rn` over a LevelDB database of the app's own.
+- **Record keys**: `anchorSlotKey`, `bootstrapPeersKvKey`, `enrolledMachinesKvKey`, `strandNetworkKvKey` and `rentalsKvKey`, each a function of the party id.
 
-Use the same options object for the key store and the anchor slot. `keychainAccessible: AFTER_FIRST_UNLOCK` lets iOS read the identity and the owner key while the device is locked, which a background or push-wake start needs. `secureStoreSlot` refuses a gated (`requireAuthentication`) slot, because it reads `null` as absent.
-
-### What the app must install
-
-`@serfab/cadre-core` (an optional peer, needed by every subpath that builds or persists a node, or files its records: `/phone-node`, `/lifecycle` and `/node-local`, whose record keys and key-value slot are the edge node's), and the secure-store module it passes in: `expo-secure-store` under Expo, or the bare app's own choice. The LevelDB store is the app's `@optimystic/db-p2p-storage-rn`, which it already has for strand storage.
+A `LevelDBKVStore` holds each write in memory until it is flushed. Keep one per open database for every slot to share, and `close()` it before the database. [Where node state is kept](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md#where-node-state-is-kept) explains which record goes in which store and why the stores are ungated.
 
 ## Polyfills and boot check
 
-**Import `@serfab/cadre-rn/polyfills` before anything else.** libp2p and its dependencies read these globals while their modules evaluate, so a library module that loads first has already captured `undefined`, and the failure shows up much later as an unrelated timeout. Nothing in the package can enforce the order; the app's entry file must:
+Import the polyfill entry points before anything else, in the order shown under [First run](#first-run). [Polyfills](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md#polyfills) lists every global each one patches, which library needs it, and why each import has its position.
 
-```js
-// index.js: the app's entry module (package.json "main")
-import '@serfab/cadre-rn/polyfills';          // first
-import '@serfab/cadre-rn/polyfills/native-crypto';   // only if the app has react-native-quick-crypto
-import '@serfab/cadre-rn/polyfills/webrtc';   // only if the app uses @libp2p/webrtc
-import '@serfab/cadre-rn/boot-check';         // after every polyfill, before the app
-import 'expo-router/entry';                   // or AppRegistry.registerComponent(...)
-```
+`/boot-check` acts only in development builds. It prints the table `[cadre-rn] polyfill audit`, warns with `[cadre-rn] MISSING globals` when a global is absent, and logs `[reload] <reason>` before any reload started from JavaScript.
 
-`boot-check` goes after every polyfill and before the app's own code because both of its parts act at import time: the audit table has to print before an import-time crash could, and the reload logger has to be installed before the app tree evaluates. In a development build logcat shows the table under `[cadre-rn] polyfill audit`, and warns with `[cadre-rn] MISSING globals` if a global the stack reads is absent. `RTCPeerConnection` reads as a known gap in an app that does not import `/polyfills/webrtc`, and `crypto.subtle.importKey` in one that does not import `/polyfills/native-crypto`.
+## Metro
 
-Each patch checks for the API first and does nothing where the runtime already provides it. The reference app's [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#polyfills) lists what each one patches and which library needs it.
-
-### What the app must install
-
-React Native links native modules only for the app's own direct dependencies, so the app lists these in its `package.json` and rebuilds its native app after adding them:
-
-- `react-native-get-random-values` (`^1.11.0`), for `/polyfills`: the native random source behind `crypto.getRandomValues`. There is deliberately no `Math.random` fallback.
-- `react-native-webrtc` (`^124.0.6`), for `/polyfills/webrtc` only.
-
-Both are optional peer dependencies of this package, as is `react-native` itself (`boot-check` imports its `DevSettings`). The pure-JavaScript polyfill libraries (`@ungap/structured-clone`, `web-streams-polyfill`, `event-target-polyfill`, `@noble/hashes`) are ordinary dependencies of this package; the app does not list them.
-
-## `@serfab/cadre-rn/metro`
-
-`withCadreMetro` takes the config the app's own toolchain produced, adds the Sereus settings to it and returns it, so an app's `metro.config.js` is one call. With Expo:
-
-```js
-// metro.config.js
-const { getDefaultConfig } = require('expo/metro-config');
-const { withCadreMetro } = require('@serfab/cadre-rn/metro');
-
-module.exports = withCadreMetro(getDefaultConfig(__dirname), { projectRoot: __dirname });
-```
-
-With bare React Native:
-
-```js
-// metro.config.js
-const { getDefaultConfig } = require('@react-native/metro-config');
-const { withCadreMetro } = require('@serfab/cadre-rn/metro');
-
-module.exports = withCadreMetro(getDefaultConfig(__dirname), { projectRoot: __dirname });
-```
+`withCadreMetro(config, options)` (`@serfab/cadre-rn/metro`, CommonJS) takes the config the app's toolchain produced, adds the Sereus settings and returns it.
 
 | Option | Meaning |
 |---|---|
-| `projectRoot` | The app's directory (`__dirname`). |
-| `linkedRoots` | Optional. Local checkouts whose packages are linked into the app (a monorepo root, sibling repositories). Each is watched, and its `node_modules` is searched after the app's own. Omit it when every package comes from npm. |
+| `projectRoot` | The app's directory (`__dirname`). The kit's peers and `@babel/runtime` resolve from here. |
+| `linkedRoots` | Optional. Local checkouts whose packages are linked into the app (a monorepo root, sibling repositories). Each is watched, and its `node_modules` is searched after the app's own. |
 
-What it adds, keeping whatever the incoming config already set (lists are appended to, an alias the app already has wins, an existing `resolveRequest` is called by the new one):
+It adds symlink support, aliases for the Node built-ins libp2p imports, and a `resolveRequest` that keeps one copy of each native module in the bundle and selects the libp2p variants that run on a phone. It keeps what the incoming config already set: lists are appended to, an alias the app already has wins, and an existing `resolveRequest` is called by the new one. It relies on the toolchain enabling package exports, which both do by default, and leaves condition names to the app.
 
-- Symlink support, and the `linkedRoots` as watch folders and module search paths.
-- Aliases for the Node built-ins libp2p imports: `os` and `crypto` to small shims in this package, `net` and `tls` to an empty module, `stream` and `buffer` to the `readable-stream` and `buffer` packages. Both the bare and the `node:` names are mapped.
-- A `resolveRequest` that resolves this package's peer dependencies (`react-native` and the native modules) from the app, whoever imports them, so the bundle holds one copy of each; resolves `@babel/runtime` helpers to their CommonJS files from the app's copy; and swaps `@libp2p/crypto` and `@libp2p/webrtc` files for the `browser` variants their package lists, which run under Hermes.
-
-It relies on the toolchain's defaults for package exports (both Expo's and React Native's enable them) and leaves condition names to the app. The reference app's [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#metro-configuration) explains each setting; the comments in `metro/index.cjs` have the full reasoning.
-
-The app installs nothing extra for `/metro`. The peers it resolves are the ones the other subpaths already need, and only if something imports them.
+[Metro configuration](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md#metro-configuration) describes each setting and its reason, and the requirement that `@babel/runtime` be 7.29.2 or newer.
 
 ## Config plugin (Expo)
 
-An Expo app lists the kit under `plugins` in its `app.json`:
+An Expo app lists the kit under `plugins` in `app.json`. At prebuild the plugin sets `android:usesCleartextTraffic="true"` on the `<application>` element of the Android manifest, without which an Android release build can dial no `/ws` address ([Release builds need cleartext WebSocket](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md#release-builds-need-cleartext-websocket)).
 
-```json
-{ "expo": { "plugins": ["@serfab/cadre-rn"] } }
-```
-
-At prebuild the plugin sets `android:usesCleartextTraffic="true"` on the `<application>` element of `android/app/src/main/AndroidManifest.xml`. Android release builds refuse plain `ws://` connections without it, so the app can dial no `/ws` address; React Native's template opts debug builds in, which hides the problem until the first release build. Dialing without TLS is safe because Noise encrypts and authenticates every libp2p connection against the peer id in the address; the reference app's [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#release-builds-cleartext-websocket) has the reasoning.
-
-- **It overrides `false` in the manifest.** The plugin sets `true` even where the app's own manifest says `false`.
-- **Against another plugin, the one listed first wins.** When another plugin also sets the attribute (such as `expo-build-properties`' `android.usesCleartextTraffic`), the one listed **first** in `plugins` wins, because Expo runs manifest changes in reverse order of the list.
+- **It overrides `false`** in the app's own manifest.
+- **Against another plugin, the one listed first wins**, as with `expo-build-properties`' `android.usesCleartextTraffic`, because Expo runs manifest changes in reverse order of the list.
 - **A network security config takes precedence.** Android follows an `android:networkSecurityConfig` file over the manifest flag, so an app whose file forbids cleartext must permit it there. The plugin does not edit that file.
-- **iOS is unchanged.** Whether App Transport Security blocks React Native's WebSocket has not been checked; the docs section linked above says what would settle it.
 
-The plugin resolves `expo/config-plugins` from the app's project root when it runs, so the kit installs nothing from Expo. Like any manifest change it takes effect in the next native build.
+The plugin changes nothing on iOS, and installs nothing from Expo: it resolves `expo/config-plugins` from the app's project root.
 
 A bare React Native app, with no prebuild, adds the attribute by hand:
 
@@ -480,88 +489,59 @@ A bare React Native app, with no prebuild, adds the attribute by hand:
 
 ### `appLinks`: links between Sereus apps
 
-The native settings [App links](#app-links-serfabcadre-rnapp-link) needs. Without the option, the plugin does only the above.
+The native settings [App links](#app-links) needs. Without the option, the plugin sets only the cleartext attribute.
 
 ```json
 { "expo": { "scheme": "my-sereus-app", "plugins": [["@serfab/cadre-rn", { "appLinks": true }]] } }
 ```
 
-`"appLinks": { "extraApps": [{ "name": "My Other App", "scheme": "my-other-app" }] }` adds Sereus apps not yet in the kit's known list. An extra may also carry `androidPackage` and `iosAppStoreId`, as a known app does, so one list of extras serves the plugin and the app's code.
+`"appLinks": { "extraApps": [{ "name": "My Other App", "scheme": "my-other-app" }] }` adds Sereus apps not yet in the kit's known list. An extra may also carry `androidPackage` and `iosAppStoreId`.
 
-- **Android.** The main activity gets a `VIEW` intent filter (`DEFAULT`, `BROWSABLE`) for the scheme `sereus-join-request`, so opening a join request lists the app in the system chooser. The manifest gets a `<queries>` `VIEW` intent for that scheme, so the opening app's `resolveActivity` sees the other handlers on Android 11 and later, and one for each scheme of `KNOWN_SEREUS_APPS` and `extraApps`, so `canOpenURL('<scheme>://')` can report which are installed. Each is skipped when already present.
-- **iOS.** The schemes of `KNOWN_SEREUS_APPS` and of `extraApps` are added to `LSApplicationQueriesSchemes`, keeping the entries already there, so `canOpenURL` can report which apps are installed. The prebuild fails when the list passes 50 schemes, the most iOS reads.
-- **The app's own scheme** is `expo.scheme`, which Expo registers as usual.
-- **A misspelt option fails the prebuild**, as does an extra app without a name, with a scheme that is not a lowercase URL scheme, with an `androidPackage` that is not a dotted Java package name, or with an `iosAppStoreId` that is not 1 to 12 digits, rather than leaving the app without links.
+- **Android.** The main activity gets a `VIEW` intent filter (`DEFAULT`, `BROWSABLE`) for the scheme `sereus-join-request`, so opening a join request lists the app in the system chooser. The manifest gets `<queries>` entries for that scheme and for each known and extra app's scheme, so that on Android 11 and later `canOpenURL` can see the other apps.
+- **iOS.** The schemes of the known and extra apps are added to `LSApplicationQueriesSchemes`, keeping the entries already there. The prebuild fails when the list passes 50 schemes, the most iOS reads.
+- **A misspelt option or a malformed extra app fails the prebuild.**
 
-A bare React Native app adds the intent filter and the `<queries>` entry to `AndroidManifest.xml`, and the schemes to `Info.plist`, by hand.
+A bare React Native app adds the intent filter and the `<queries>` entries to `AndroidManifest.xml`, and the schemes to `Info.plist`, by hand.
 
-## `@serfab/cadre-rn/noise-crypto`
+## Noise crypto
 
-Metro resolves `@chainsafe/libp2p-noise`'s browser build, so on React Native every connection handshake and every encrypted frame runs SHA-256, ChaCha20-Poly1305 and X25519 in JavaScript on Hermes. SHA-256 over 512 bytes was measured at about 15 ms on a Galaxy S7 and 5 ms on an Android emulator, against 0.03 ms in Node on the emulator's own machine. `buildNoiseCrypto` returns a Noise crypto implementation backed by `react-native-quick-crypto` instead (the source file's header comment has the full measurements).
-
-```ts
-import { buildNoiseCrypto, DEFAULT_NOISE_CRYPTO_MODE } from '@serfab/cadre-rn/noise-crypto';
-
-const config: CadreNodeConfig = {
-	// ...
-	network: {
-		// ...
-		noiseCrypto: buildNoiseCrypto(DEFAULT_NOISE_CRYPTO_MODE),
-	},
-};
-```
+`buildNoiseCrypto(mode)` (`@serfab/cadre-rn/noise-crypto`) returns an implementation of libp2p-noise's crypto interface backed by `react-native-quick-crypto`, in place of the pure-JavaScript one Metro otherwise bundles ([Native crypto](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md#native-crypto)). Pass it to `createPhoneNode` as `noiseCrypto: { build: buildNoiseCrypto, defaultMode }`. An app that builds its own config sets `network.noiseCrypto: buildNoiseCrypto(mode)`.
 
 | Mode | Effect |
 |---|---|
 | `'off'` | Returns `undefined`: Noise keeps its pure-JavaScript default. |
-| `'symmetric'` (default) | Native SHA-256 and ChaCha20-Poly1305, the per-frame costs. X25519 stays pure JavaScript. |
-| `'full'` | Also native X25519 key generation and Diffie-Hellman. It has had less device time than `'symmetric'`. |
+| `'symmetric'` (`DEFAULT_NOISE_CRYPTO_MODE`) | Native SHA-256 and ChaCha20-Poly1305, the per-frame costs. X25519 stays pure JavaScript. |
+| `'full'` | Also native X25519 key generation and Diffie-Hellman. |
 
-Every mode starts from `noisePureJsCrypto` and overrides only its own functions, so anything it does not replace (`getHKDF`, for one) keeps working.
+- **The mode is read when the node is built.** Changing it means `phone.restart` with a new `noiseCryptoMode`.
+- **`defaultMode` fills in a start that names no mode**, and the filled-in mode is saved with the start, so a device keeps its mode when a new build changes `defaultMode`.
+- **Loading this subpath also installs the native digest**, with quick-crypto's `createHash`.
 
-cadre-core reads `network.noiseCrypto` only when it builds the node. Changing the mode means stopping the node and starting a new one.
+## Native digest and Ed25519
 
-On a `PhoneNode`, `noiseCrypto.defaultMode` fills in a start that names no mode, and the filled-in mode is saved with the start. A device that restarts from `loadSavedStart()` therefore keeps the mode of its first start after `defaultMode` changes in a new build; only a start that passes `noiseCryptoMode` moves it, as the reference app's Settings screen does.
+`@serfab/cadre-rn/polyfills/native-crypto` is the import most apps use: it installs both `installNativeDigest` and `installNativeEd25519` from `react-native-quick-crypto` at boot, before anything imports libp2p. The two functions are also exported separately; neither imports a native module.
 
-The reference app (`packages/reference-app-rn`) is the worked example: it takes the mode as a start option, defaults it from a build-time `EXPO_PUBLIC_NOISE_CRYPTO`, offers the three modes in its Settings screen, and shows the running node's mode on the Node card. [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md#phone-rn-app-configuration) walks through it.
+- **`installNativeDigest(createHash, subtle?)`** (`/native-digest`) replaces the `crypto.subtle.digest` that `/polyfills` installed with one over a Node-style `createHash`, for SHA-256 and SHA-512, and leaves any other digest alone. It checks the hash against a known SHA-256 vector first and keeps the JavaScript digest, with a warning, if the check fails. It returns `'installed'`, `'already'`, `'not-polyfilled'` or `'check-failed'`.
+- **`installNativeEd25519(nativeSubtle, subtle?)`** (`/native-ed25519`) installs `generateKey`, `importKey`, `exportKey`, `sign` and `verify` from a native WebCrypto when the global `crypto.subtle` lacks any of them. It installs the five as a set, because a `CryptoKey` from one implementation is unusable by another's `sign`. It returns `'installed'`, `'already'`, `'not-needed'` or `'unavailable'`.
+- **`nativeDigestActive()`** and **`nativeEd25519Active()`** report whether each is in place.
 
-### Native hashing comes with it
+## What it stores on the device
 
-Loading this subpath also calls `installNativeDigest` (`@serfab/cadre-rn/native-digest`) with quick-crypto's `createHash`, so the boot polyfill's JavaScript `crypto.subtle.digest` is replaced with native SHA-256/512. Optimystic hashes every block through that digest (multiformats' `sha256`), and in pure JavaScript it took 47% of a phone app's JS time. Hashing done before the import uses the JavaScript fallback.
+The LevelDB names are the defaults (`DEFAULT_PHONE_NODE_NAMES`), which the `names` platform option overrides.
 
-### What the app must install
+| Where | Default name | Holds |
+|---|---|---|
+| Secure store | keys under `sereus.ks.` | The identity, the owner key, joined-strand and strand-move records |
+| Secure store | `sereus.anchor.<party>` | The party's trusted-owner anchor |
+| Secure store | `sereus.provider-tokens.<provider>` | One provider's tokens |
+| LevelDB | `sereus-node-local` | The saved start and the other node-local records |
+| LevelDB | `sereus-<scope>` | One per storage scope: the control database and each strand |
 
-React Native links native modules only for the app's own direct dependencies, so the app lists these in its `package.json`:
+[Where node state is kept](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md#where-node-state-is-kept) lists every record and what survives a reinstall.
 
-- `react-native-quick-crypto` (`^1.1.7`)
-- `react-native-nitro-modules` (`>=0.31.2`), quick-crypto's native bridge
-- `react-native-quick-base64` (`>=3.0.0`), which quick-crypto imports
+## Further reading
 
-`react-native-quick-crypto` needs React Native's new architecture. `@craftzdog/react-native-buffer`, which this module imports, is installed by quick-crypto itself; under a package manager that does not hoist (pnpm's default layout), list it in the app too.
-
-All four are optional peer dependencies of this package: an app that never imports `/noise-crypto` does not need them. This module imports only quick-crypto and the buffer; nitro and quick-base64 are peers so that `/metro` resolves them from the app as well, keeping one copy of each.
-
-## `@serfab/cadre-rn/native-digest`
-
-`installNativeDigest(createHash, subtle?)` replaces `crypto.subtle.digest` with one over a Node-style `createHash`, for SHA-256 and SHA-512; any other algorithm stays with the previous digest. It replaces only the digest `polyfills/hermes.js` tagged as its JavaScript fallback, so real WebCrypto, or a digest the app installed itself, is left alone. It checks the hash against a known SHA-256 vector first, and keeps the fallback, with a warning, if the check fails. It returns `'installed'`, `'already'`, `'not-polyfilled'` or `'check-failed'`. `nativeDigestActive()` reports whether the native digest is in place.
-
-It imports no native module. `noise-crypto` calls it, so an app that passes native Noise crypto needs nothing more; an app that does not can call it with its own `createHash` after the polyfills have loaded.
-
-## Native Ed25519 (`@serfab/cadre-rn/polyfills/native-crypto`)
-
-@libp2p/crypto signs and verifies Ed25519 through WebCrypto when it can, and otherwise in pure JavaScript (`@noble/curves`). Hermes has no WebCrypto beyond the boot polyfill's digest, so without this a phone does every signature in JavaScript: 169 ms per verify on a Galaxy S7, against 0.72 ms native (measured by sereus-chat).
-
-```js
-// index.js
-import '@serfab/cadre-rn/polyfills';
-import '@serfab/cadre-rn/polyfills/native-crypto';   // right after /polyfills, before libp2p
-import '@serfab/cadre-rn/boot-check';
-```
-
-It installs `generateKey`, `importKey`, `exportKey`, `sign` and `verify` from react-native-quick-crypto's `subtle` when the global `crypto.subtle` lacks any of them, and installs the native digest (`native-digest`) at the same time. **It has to load at boot**: @libp2p/crypto decides between WebCrypto and JavaScript once, when its Ed25519 module is evaluated, and keeps the answer, so filling the methods later -- from `noise-crypto`, which itself imports libp2p -- would be too late for Ed25519. The digest has no such constraint.
-
-`installNativeEd25519(nativeSubtle, subtle?)` (`@serfab/cadre-rn/native-ed25519`) is the logic, importing no native module. It installs the five as a set, replacing any already present, because a `CryptoKey` from one implementation is unusable by another's `sign`; all or nothing, so a probe never sees half a WebCrypto; and a complete WebCrypto is left alone. The methods serve every algorithm quick-crypto supports, so libp2p's ECDSA and RSA key import and export reach quick-crypto too. It returns `'installed'`, `'already'`, `'not-needed'` or `'unavailable'`.
-
-### What the app must install
-
-react-native-quick-crypto, react-native-nitro-modules and react-native-quick-base64, as for `noise-crypto`, and a native rebuild. Quick-crypto needs React Native's new architecture.
+- [Running a node in a React Native app](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md)
+- [Several apps in one cadre](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md)
+- [cadre-core API guide](https://github.com/gotchoices/sereus/blob/master/docs/api.md)
+- [The reference apps](https://github.com/gotchoices/sereus/blob/master/docs/platforms/reference-apps.md)

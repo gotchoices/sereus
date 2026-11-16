@@ -106,7 +106,8 @@ async function setupStrandBetweenParties(
 	// Party A FOUNDS (writes the Header — and, on a closed strand, the founding
 	// Member/Manager under a party key minted here); party B joins without waiting for
 	// its first sync, since the dial that carries the Header to it happens below — a
-	// joiner's database is withheld until then (docs/strands.md, "Joining").
+	// joiner's database is withheld until then (docs/strands/formation.md,
+	// "Joining: no writes before the first sync").
 	const strandA = await partyA.addStrand({
 		strandRow: strandRow(opts.memberPrivateKeyA ?? null),
 		sAppConfig,

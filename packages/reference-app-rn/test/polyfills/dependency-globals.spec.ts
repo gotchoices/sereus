@@ -139,7 +139,7 @@ const PROVIDED: Record<string, Provision> = {
 		why: 'the boot polyfill provides digest, and polyfills/native-crypto adds quick-crypto\'s '
 			+ 'generateKey/importKey/exportKey/sign/verify. The AES-GCM surface is absent, and the phone '
 			+ 'does not reach it: it uses no libp2p keychain. '
-			+ 'Documented in docs/reference-app-rn.md § Key Dependencies.',
+			+ 'Documented in docs/platforms/react-native.md § Limits and accepted tradeoffs.',
 	},
 	'crypto.randomUUID': {
 		by: 'allowlist',

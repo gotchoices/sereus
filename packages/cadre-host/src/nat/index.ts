@@ -1,7 +1,7 @@
 /**
  * NAT / DDNS substrate for cadre-host.
  *
- * See ./nat-service.ts for the top-level orchestrator and `docs/cadre-host.md`
+ * See ./nat-service.ts for the top-level orchestrator and `docs/hosting/cadre-host.md`
  * for integration notes (the long-running process owner is `cadre-host start`).
  */
 

@@ -20,7 +20,7 @@ import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
  * admits both and the range gate cannot tell them apart. This spec is therefore expected to fail
  * under `yarn check:published` (which runs these suites against registry copies of the siblings)
  * until the hooks ship under a version the floor can name. That is a THIRD triage arm beyond the
- * three `docs/testing.md` lists for that script: not a stale range, not a defect, not a spec that
+ * three `docs/contributing/releasing.md` lists for that script: not a stale range, not a defect, not a spec that
  * assumed the linked install shape — a real upstream capability the published artifact lacks.
  *
  * ONE behaviour, over real optimystic storage: a refused DDL step part-way through the apply

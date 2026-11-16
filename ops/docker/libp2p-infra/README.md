@@ -1,160 +1,124 @@
-# sereus libp2p infra
+# The relay image (`sereus-libp2p-infra`)
 
-Container image for a party-operated libp2p **relay** node — a single Circuit Relay v2 hop
-plus a STUN responder, so one process both relays traffic and helps peers upgrade to a
-direct WebRTC connection. Built by `Dockerfile` from `src/main.ts`.
+This directory builds the container image for a dedicated Sereus relay: one Node.js process that runs a libp2p Circuit Relay v2 server and a STUN responder. This page is the reference for what the process reads from its environment, the limits it runs with and why, and the ports it uses. To deploy it, follow the [relay runbook](../README.md).
 
-Sereus has no global DHT to bootstrap: each strand is its own FRET ring, and a node joins
-by dialing a known participating node directly or reaching it through a relay like this one.
-(A former `bootstrap` role ran a libp2p kad-DHT server; it was removed once cadre-core
-replaced kad-DHT with FRET, which no kad-DHT client consumes.)
+Related: [why `ops/` deploys only this](../../README.md) · [how cadre nodes use a relay](../../../docs/network/relay.md) · [STUN](../../docs/ice-servers.md) · [identity key](../../docs/keys.md)
+
+The process is `src/main.ts`. `src/env.ts` parses every environment variable, and `src/stun.ts` is the STUN responder.
 
 ## Environment variables
 
+An empty value is the same as an unset one and takes the default.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATA_DIR` | `/data` | Where the identity key is persisted. `/data` is the container volume; set it to a writable path when running the process directly on a workstation. A stable value means a stable peer id across restarts. |
-| `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws` | Comma-separated multiaddrs to bind. Both TCP and WebSockets are listened on by default: **React Native has no raw-TCP transport**, so a mobile client can only reach this over `/ws` (or `/wss` behind a TLS front). Override to bind one transport only. |
-| `PUBLIC_HOST` | unset | DNS name or IP clients reach this node at. When set (and `ANNOUNCE_ADDRS` is not), the node advertises one address per listener on this host — `/dns4/<host>/tcp/<port>` and `/dns4/<host>/tcp/<port>/ws` for the defaults — instead of the addresses it bound. See [Advertised addresses](#advertised-addresses). |
-| `PUBLIC_TCP_PORT` | bound port | Port advertised for the raw-TCP listener under `PUBLIC_HOST`. |
-| `PUBLIC_WS_PORT` | bound port | Port advertised for the WebSocket listener under `PUBLIC_HOST`. |
-| `ANNOUNCE_ADDRS` | unset | Comma-separated multiaddrs to advertise, verbatim. Overrides `PUBLIC_HOST`, and **replaces** the advertised set — name every transport clients need. For what `PUBLIC_HOST` can't express, e.g. a `/tls/ws` address behind a TLS front. |
-| `RELAY_APPLY_DEFAULT_LIMIT` | `false` | See below. |
-| `STUN_ENABLED` | `true` | Run the STUN responder (`src/stun.ts`). See [`ops/docs/ice-servers.md`](../../docs/ice-servers.md). |
-| `STUN_PORT` | `3478` | UDP port the STUN responder binds, on all interfaces. |
-| `RELAY_MAX_RESERVATIONS` | `500` | Maximum concurrent reservation slots the relay hands out (`circuitRelayServer`'s `reservations.maxReservations`; libp2p's own default is 15). A cadre member can hold more than one slot — the control node's reservation plus one per strand node running under its own derived transport peerId. |
+| `LISTEN_ADDRS` | `/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws` | Comma-separated multiaddrs to bind. The process has raw-TCP and WebSocket transports only. |
+| `PUBLIC_HOST` | unset | DNS name or IP address clients reach the relay at. When set, the relay advertises one address per listener on this host. |
+| `PUBLIC_TCP_PORT` | the bound port | Port advertised for the raw-TCP listener under `PUBLIC_HOST`. |
+| `PUBLIC_WS_PORT` | the bound port | Port advertised for the WebSocket listener under `PUBLIC_HOST`. |
+| `ANNOUNCE_ADDRS` | unset | Comma-separated multiaddrs to advertise exactly as written. Overrides `PUBLIC_HOST`. |
+| `DATA_DIR` | `/data` | Directory that holds the identity key, `libp2p-private.key.pb`. `/data` is the container's volume. |
+| `RELAY_APPLY_DEFAULT_LIMIT` | `false` | `true` restores libp2p's limit of 128 KiB or two minutes on each relayed connection. See [Relay limits](#relay-limits). |
+| `RELAY_MAX_RESERVATIONS` | `500` | Number of reservation slots the relay grants at one time. |
+| `STUN_ENABLED` | `true` | `false` turns the STUN responder off. |
+| `STUN_PORT` | `3478` | UDP port the STUN responder binds, on all IPv4 interfaces. |
 
-### `RELAY_APPLY_DEFAULT_LIMIT`
+The default listen set has both transports because phones and browsers have no raw-TCP transport and can reach the relay only over WebSockets.
 
-`@libp2p/circuit-relay-v2` defaults to `applyDefaultLimit: true`: every
-reservation it hands out gets a `Limit` (~128 KiB / 2 minutes) stamped onto the
-connections the relay later carries for that client, and libp2p treats such a
-connection as **limited** — `newStream()` throws, and the *receiving* side
-aborts the inbound stream, unless **both** sides opted in with
-`runOnLimitedConnection: true`.
-
-Most cadre traffic does not opt in. `@optimystic/db-p2p`'s four database
-services (`repo`, `cluster`, `sync`, `block-transfer`) register their handlers
-without it, as does sereus's control-network seed delivery, so their relayed
-streams are aborted outright. Only the strand wake/addr protocols
-(`cadre-core/src/strand-wake-protocol.ts`, `strand-addr-protocol.ts`) opt in on
-both sides — and even those stop working once a relayed connection crosses the
-~128 KiB / 2 minute cap, because the relay then closes it. So under the library
-default a relayed connection carries almost no cadre traffic, and what it does
-carry is short-lived.
-
-This image sets `applyDefaultLimit: false` by default, matching the same
-choice `@optimystic/db-p2p` makes for its trusted local clusters (see the
-`relayServerInit` doc comment on `NodeOptions` in `libp2p-node-base.ts`).
-
-**Tradeoff:** this relay does not authenticate clients. Turning the default
-limit off removes the only bandwidth brake on it — anyone who can dial the
-relay can reserve a slot and push unmetered bytes through it. That is the
-accepted posture for party-operated infrastructure. Set
-`RELAY_APPLY_DEFAULT_LIMIT=true` to restore libp2p's default cap for a
-public-facing deployment that wants that brake back — note that with the
-cap on, relayed cadre/control traffic that runs longer than ~2 minutes or
-~128 KiB will be silently dropped by the receiving protocol handler.
-
-A middle ground exists but is not wired up today: `ReservationStoreInit` also
-accepts `defaultDataLimit` and `defaultDurationLimit`, so a deployment could
-keep `applyDefaultLimit: true` while raising the cap to something a cadre
-session survives, rather than choosing between "unmetered" and "broken". If a
-public relay ever needs a brake, expose those two as env vars rather than
-flipping `RELAY_APPLY_DEFAULT_LIMIT` on — flipping it on alone re-breaks
-relayed cadre traffic.
-
-Both variables are parsed strictly at startup (`true`/`false` for the former,
-a positive integer for the latter) and a malformed value throws immediately,
-naming the variable. An empty value is treated as unset and
-takes the default. The resolved values are logged next to the `peerId` line on
-startup.
-
-`LISTEN_ADDRS` and `ANNOUNCE_ADDRS` are held to the same standard: every entry
-must parse as a multiaddr *and* name an address, so a value of `/` — what an
-`env.local` with an unsubstituted variable produces — is rejected rather than
-quietly bound to nothing. Failures name the variable and the offending entry
-(`src/env.ts`). An address that parses but no configured transport can listen on
-fails a moment later inside libp2p, which names it too.
+The [Compose stack](../README.md#variables-passed-to-the-container) forwards these variables from `env.local`, except `DATA_DIR` and `STUN_PORT`.
 
 ## Advertised addresses
 
-What the node advertises is what clients — and the relay reservations NAT'd clients hold —
-are told to dial, so it has to be reachable from outside. It comes from the first of:
+The addresses the relay advertises are the ones clients are told to dial. A node behind NAT that reserves a slot also builds its own `/p2p-circuit` address on each of them and hands that to its peers. An address that cannot be dialled from outside therefore costs every peer of every client a failed dial. The relay takes its advertised set from the first of these that applies:
 
-1. **`ANNOUNCE_ADDRS`**, used verbatim.
-2. **`PUBLIC_HOST`**: each bound listener re-expressed on the public host and port. The
-   port is `PUBLIC_TCP_PORT` / `PUBLIC_WS_PORT`, defaulting to the bound port, which is
-   right for a process run directly on the host. Behind Docker or a router port-forward the
-   public port differs from the bound one, so set it (the `../relay/` stack defaults both
-   to its published `HOST_*` ports). Only raw-TCP and plain-WebSocket listeners can be
-   derived; anything else fails at startup and asks for `ANNOUNCE_ADDRS`.
-3. **Neither:** libp2p advertises what it bound. In a container that is `127.0.0.1` and the
-   bridge IP, which no client can dial, so the node logs a warning.
+1. **`ANNOUNCE_ADDRS`**, used exactly as written. It replaces the whole set, so it must name every transport clients need. A list that names only a TCP address leaves the WebSocket listener bound and unadvertised, and the relay warns at startup when that happens.
+2. **`PUBLIC_HOST`**. The relay re-expresses each bound listener on the public host: `/dns4/<host>/tcp/<port>` for raw TCP and `/dns4/<host>/tcp/<port>/ws` for WebSockets (`/ip4` or `/ip6` when the host is an address literal). The port is `PUBLIC_TCP_PORT` or `PUBLIC_WS_PORT`, defaulting to the bound port.
+3. **Neither.** libp2p advertises what it bound. In a container that is the loopback address and the bridge address, so the relay logs a warning.
 
-The startup log prints the bound listeners, then the advertised addresses with the
-setting they came from.
+The bound port is the right public port only when the process runs directly on a publicly addressed host. Behind Docker's port mapping or a router's port forward the public port differs, which is why it is a separate setting.
 
-## Setting these on a deployed node
+`PUBLIC_HOST` cannot express everything. Use `ANNOUNCE_ADDRS` for a `/tls/ws` address behind a TLS reverse proxy, for a name that resolves only over IPv6 (`/dns6`), and whenever `LISTEN_ADDRS` binds two listeners of one transport on different ports.
 
-The `../relay/` site-instance stack forwards every image-level variable above from
-`env.local` into the container except `DATA_DIR`, which stays at its `/data` default
-because that is where the stack mounts the host data directory — overriding it would
-write the identity key somewhere that is not persisted. Anything not listed in the
-stack's `docker-compose.yml` `environment:` block never reaches the process, so a new
-image-level variable must be added there too. See `../README.md`.
+At startup the process logs its peer ID, the resolved relay limits, the STUN state, the bound listeners, and then the advertised addresses with the setting they came from.
 
-The stack also has to *publish* the ports the process binds. Both default listen
-addresses are published: container `4001` and container `4002` (WebSockets), the
-latter under `HOST_WS_PORT` — and STUN's container `3478/udp`, under `HOST_STUN_PORT`. Overriding `LISTEN_ADDRS` to bind different ports means changing
-those mappings to match — a listener nothing maps to is bound inside the container
-and unreachable from anywhere else, with no error to show for it.
+## Validation at startup
 
-## Reaching this from a mobile client
+The process validates every variable before it binds anything and exits with an error that names the variable and the rejected value.
 
-Phones dial `/ws`; they cannot dial `/ip4/.../tcp/4001` directly. On startup the
-process prints its WebSocket addresses separately for that reason.
+- **Booleans and numbers.** `RELAY_APPLY_DEFAULT_LIMIT` and `STUN_ENABLED` accept `true` or `false`. `RELAY_MAX_RESERVATIONS` accepts a positive integer. The port variables accept `1` to `65535`.
+- **Multiaddr lists.** Every entry of `LISTEN_ADDRS` and `ANNOUNCE_ADDRS` must parse as a multiaddr and name an address. An entry of `/`, which is what an unsubstituted variable in a settings file produces, is rejected instead of binding or advertising nothing.
+- **`PUBLIC_HOST`.** It must be a bare name or address, with no slash, comma or space. Deriving an address fails for a listener that is not raw TCP or plain WebSockets, and for a listener bound to port `0` with no public port set.
+- **STUN.** If the STUN port cannot be bound, the process exits instead of running without STUN.
+- **Identity key.** A key file that exists but cannot be read or decoded stops the process; see [`keys.md`](../../docs/keys.md).
 
-> **The relay listening on `/ws` is only half of what a React Native client needs.**
-> Configuring this correctly and still watching a phone fail to connect is the expected
-> outcome until the client side is fixed too, so check both before assuming the relay is
-> misconfigured.
->
-> React Native declares `WebSocket.bufferedAmount` but never assigns it, so it reads
-> `undefined` at runtime. `@libp2p/websockets` computes back-pressure as
-> `bufferedAmount < maxBufferedAmount`, which is `false` for `undefined`, so **every** send
-> reports "cannot send more" and waits for a `'drain'` event whose own condition
-> (`bufferedAmount === 0`) is equally false forever. The write parks until the socket
-> closes and then rejects with a bare `undefined`, which libp2p's upgrader reports as a
-> misleading `TypeError`. Nothing in that chain names WebSockets, which is why it reads as
-> a relay or NAT problem.
->
-> The client needs a `bufferedAmount` polyfill before any libp2p code loads — see
-> [#11](https://github.com/gotchoices/sereus/issues/11) for the full mechanism,
-> `packages/cadre-rn/polyfills` for working implementations, and the React Native
-> polyfill table in [`@optimystic/db-p2p`'s readme](https://github.com/gotchoices/Optimystic/blob/main/packages/db-p2p/readme.md)
-> for the canonical list.
+## Relay limits
 
-Further points that matter for a phone:
+The image changes the libp2p defaults in this table. The liveness and timeout values are copied by hand from `@serfab/cadre-core`, because the image depends on neither cadre-core nor Optimystic.
 
-- **Set `PUBLIC_HOST`.** Without it a containerized relay advertises addresses no phone
-  can dial, and a phone holding a reservation here builds its circuit address on them.
-- **If you set `ANNOUNCE_ADDRS`, put the WebSocket address in it.** A non-empty
-  announce set *replaces* the advertised addresses rather than adding to them, so a
-  node fronted by a reverse proxy that announces only its TCP address binds
-  WebSockets and tells no one — the listener is up and no client can find it. The
-  process warns at startup when it is in that state; the fix is to announce the
-  address clients should dial, e.g.
-  `/dns4/relay.example.org/tcp/443/tls/ws` for a TLS front.
-- Set `RELAY_APPLY_DEFAULT_LIMIT=false`. With the libp2p default, relayed
-  connections are *limited* and the optimystic database services abort their
-  streams — peers connect and then fail every read and write, which is a
-  confusing way to find out.
-- Dial the **host** port, not the container port. Running this image from the relay
-  site stack, WebSockets are published on `HOST_WS_PORT` (`4011` by default); running
-  the process directly on a workstation it is `4002`. The examples below use `4002`
-  for the direct case.
-- An Android emulator reaches the host at the reserved address `10.0.2.2`, so
-  `/ip4/10.0.2.2/tcp/4002/ws` works with no port forwarding. A USB-attached
-  device needs `adb reverse tcp:4002 tcp:4002` first, then dials
-  `/ip4/127.0.0.1/tcp/4002/ws`.
+| Setting | Image value | libp2p default |
+| --- | --- | --- |
+| Limit on each relayed connection | none | 128 KiB or 2 minutes |
+| Reservation slots | 500 | 15 |
+| Ping deadline, ping interval | 30 s, 35 s | adaptive from 5 s, 10 s |
+| Ping handler timeout | 60 s | 10 s |
+| `inboundUpgradeTimeout`, `dialTimeout` | 17 500 ms | 10 000 ms |
+
+### No limit on a relayed connection
+
+By default `@libp2p/circuit-relay-v2` stamps every reservation with a limit of 128 KiB or two minutes. libp2p marks a connection relayed under that limit as *limited*, and the relay resets it when either bound is reached.
+
+Cadre traffic does not fit inside that limit. A database sync runs longer and carries more than the limit allows; one Optimystic cohort frame can be 512 KiB. Seed delivery does not use a limited connection at all, because a seed can be up to 1 MiB. With the limit on, nodes connect through the relay and then lose their reads and writes part-way.
+
+The image therefore sets `applyDefaultLimit: false`. cadre-core makes the same choice for the relay server a party's own node runs (`packages/cadre-core/src/relay-server.ts`).
+
+### 500 reservation slots
+
+A node behind NAT holds one slot for its control node and one for each strand node it runs, because each strand node has its own peer ID. A relay therefore needs about (machines behind NAT) × (1 + strands each) slots, and libp2p's 15 is filled by three phones that each serve four strands. A dedicated relay serves many parties, and a slot costs it one map entry, so 500 is set well above what is expected.
+
+Raise `RELAY_MAX_RESERVATIONS` if clients are refused reservations. A second libp2p bound, `maxOutboundStopStreams` (300), limits how many circuits can be in setup at the same instant, not how many slots are held; it matters only if hundreds of clients dial through the relay at once.
+
+### Ping deadline, interval and handler timeout
+
+libp2p pings every open connection and closes it on the first ping that misses its deadline. A phone running Noise encryption in JavaScript can be too busy during startup to answer a short deadline. The relay would then close the connection, the phone would redial and pay for another handshake, and it would never catch up. The relay uses the values cadre-core gives every node (`DEFAULT_CONNECTION_MONITOR` in `packages/cadre-core/src/types.ts`):
+
+- **A 30-second deadline**, with libp2p's adaptive timeout pinned to that one value so that it cannot grow past the interval.
+- **A 35-second interval**, longer than the deadline. libp2p starts a new ping each interval whether or not the previous one was answered, and allows one ping stream per connection. A second concurrent ping fails, and the monitor treats that failure as a timeout. An interval shorter than the deadline would therefore become the real deadline.
+- **A 60-second ping handler timeout.** The side being pinged resets the ping stream when its own handler timer fires, and the pinging node counts the reset as a failed ping. The relay's handler timeout must stay above the 30-second deadline its clients use.
+
+The cost is that the relay holds a dead peer's connection for 30 to 65 seconds after the peer stops answering.
+
+### Connection setup timeouts
+
+`inboundUpgradeTimeout` is how long the relay lets an incoming connection take to finish its handshake. The image sets 17 500 ms, the value every cadre node runs with: five link round trips at the 3 500 ms round trip cadre-core declares by default (see [Dial budgets](../../../docs/network/deadlines.md#dial-budgets-are-counted-in-round-trips-not-milliseconds)). The aim is that the relay never gives up on a slow client sooner than the client's own node would. `dialTimeout` is set to the same value and has little effect, because a relay forwards a circuit over the connection its target already holds and dials almost nothing.
+
+## Ports
+
+| Container port | Protocol | Purpose | Published by the Compose stack as |
+| --- | --- | --- | --- |
+| `4001` | TCP | libp2p over raw TCP | `HOST_PORT` (default `4001`) |
+| `4002` | TCP | libp2p over WebSockets | `HOST_WS_PORT` (default `4011`) |
+| `3478` | UDP | STUN | `HOST_STUN_PORT` (default `3478`) |
+
+Clients dial the published port, not the container port.
+
+## Running without Docker
+
+The image is an npm project outside the repository's yarn workspace, so it builds from this directory alone. With Node.js 22, the version the image uses:
+
+```bash
+cd ops/docker/libp2p-infra
+npm install
+npm run build
+DATA_DIR=./data npm start
+```
+
+The process then listens on `4001` and `4002` directly, and `PUBLIC_TCP_PORT` and `PUBLIC_WS_PORT` default to those ports.
+
+## Limits and accepted tradeoffs
+
+- **Clients are not authenticated and traffic is not metered.** Anyone who can dial the relay can reserve a slot and forward any amount of data through it. This is accepted because the alternative, libp2p's default limit, makes the relay unable to carry cadre traffic. An operator limits exposure with `RELAY_MAX_RESERVATIONS` and the host's firewall.
+- **There is no adjustable cap.** `RELAY_APPLY_DEFAULT_LIMIT=true` restores libp2p's fixed 128 KiB and two-minute limit, which breaks relayed cadre traffic. `@libp2p/circuit-relay-v2` also accepts `defaultDataLimit` and `defaultDurationLimit`, which could set a cap large enough for a cadre session; the image does not expose them. A public relay that needs a limit should add those two as variables instead of setting the boolean.
+- **Liveness and timeout values are copied, not shared.** A change to `DEFAULT_CONNECTION_MONITOR` or to cadre-core's link budget must be repeated by hand in `src/main.ts`.
+- **STUN answers over IPv4 only.**
+- **No TLS and no transports other than raw TCP and WebSockets.** A `wss` address needs a TLS reverse proxy in front of the relay.
+- **Builds are not reproducible.** The repository tracks no lockfile for the image and the `Dockerfile` copies none, so `npm install` resolves the newest versions the dependency ranges allow, and two builds of one commit can differ.

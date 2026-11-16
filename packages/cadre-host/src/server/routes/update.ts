@@ -4,7 +4,7 @@
  * `update-available` for the post-apply state when the new version
  * differs from the running one.
  *
- * Mount path: `/update/*` (matches docs/cadre-host.md).
+ * Mount path: `/update/*` (matches docs/hosting/cadre-host-api.md).
  */
 
 import type { FastifyInstance } from 'fastify';

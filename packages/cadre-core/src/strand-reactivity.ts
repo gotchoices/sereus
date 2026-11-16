@@ -3,8 +3,8 @@
  * (`NodeOptions.cohortTopic` in `@optimystic/db-p2p`): a node built with it announces every
  * commit whose collection log tail it applied, and gives the strand's tables tagged
  * `"optimystic.network_watch" = true` a network watch, so an app on another machine is woken
- * by a commit instead of polling. Off unless the operator turns it on; `docs/strands.md` →
- * "Change notifications (reactivity)" says what turning it on costs and exposes.
+ * by a commit instead of polling. Off unless the operator turns it on; `docs/strands/app-schema.md` →
+ * "Change notifications" says what turning it on costs and exposes.
  *
  * "Cohort topic" is Optimystic's name for the substrate and stays inside this module; cadre
  * calls the setting `strandReactivity`.

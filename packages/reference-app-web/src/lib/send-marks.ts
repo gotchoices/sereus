@@ -1,8 +1,8 @@
 /**
  * send-marks.ts — what the Messages page shows under a message this tab sent until the strand's
  * other members hold it, and the line above the list while the strand's offline queue holds
- * anything. Mirrors `reference-app-rn/src/send-marks.ts` (docs/reference-app-rn.md → "Messages
- * Not Yet Delivered").
+ * anything. Mirrors `reference-app-rn/src/send-marks.ts` (docs/platforms/reference-apps.md →
+ * "Messages not yet delivered").
  */
 
 import type { StrandInstance, StrandOfflineStatus, StrandQueueState } from '@serfab/cadre-core';
@@ -43,8 +43,8 @@ const FAILURE_TEXT: Record<Exclude<QueuedFailureReason, 'discarded'>, string> = 
 
 /**
  * Whether the strand reports this commit held by no other member yet: the message is lost if this
- * tab's storage goes before one holds it (docs/strands.md, "A commit's durability"). cadre-core
- * updates the record before it emits `strand:commit-held`.
+ * tab's storage goes before one holds it (docs/strands/writes.md, "A commit's durability").
+ * cadre-core updates the record before it emits `strand:commit-held`.
  */
 function isHeldOnlyHere(strand: StrandInstance, transactionId: string): boolean {
 	const durability = strand.database?.commitDurability(transactionId);

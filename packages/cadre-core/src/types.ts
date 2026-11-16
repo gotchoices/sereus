@@ -907,7 +907,7 @@ export interface CadreNodeConfig {
    * group a notification is rooted at. Enabling registers Optimystic's change-notification
    * protocol handlers on the strand node, which the closed-strand per-stream gate does not
    * cover, and each watched table registers again on every node build. Both
-   * are spelled out in `docs/strands.md` → "Change notifications (reactivity)". The control
+   * are spelled out in `docs/strands/app-schema.md` → "Change notifications". The control
    * node never gets it.
    */
   strandReactivity?: StrandReactivityConfig;
@@ -978,7 +978,7 @@ export interface CadreNodeConfig {
   strandFirstSync?: StrandFirstSyncConfig;
 
   /**
-   * Offline mode on this node's strands (docs/strands.md → "Offline mode"): with it, an app can
+   * Offline mode on this node's strands (docs/strands/writes.md → "Offline mode"): with it, an app can
    * switch a strand so that a commit resolves once the transaction is queued on this machine
    * (`CadreNode.setStrandOfflineMode`), and the queue is saved in `journal` so it survives a
    * restart. Absent: no strand gets a queue, and `setStrandOfflineMode` throws
@@ -1437,8 +1437,8 @@ export interface SAppConfig {
   version: string;
   /**
    * Version of `schema`: a positive integer the app raises with every change to it. A strand
-   * refuses an app whose number is below the highest it has seen (docs/strands.md → "Until then:
-   * every member on the same schema version"). The author's signature covers it, so a host cannot
+   * refuses an app whose number is below the highest it has seen (docs/strands/app-schema.md → "Every
+   * member on the same schema version"). The author's signature covers it, so a host cannot
    * choose it.
    */
   schemaVersion: number;
@@ -1721,7 +1721,7 @@ export interface FormStrandResult {
    * that node.
    *
    * One-shot and in-memory: they are the responder's addresses at the moment of
-   * formation and are never re-resolved — see `docs/strands.md`.
+   * formation and are never re-resolved — see `docs/network/strand-addressing.md`.
    */
   strandAddrs: string[];
 }
@@ -1792,7 +1792,7 @@ export interface CadreNodeEvents {
    * returns: keep handlers short. Covers every commit on the strand database, cadre-core's own
    * membership writes included, so filter by the ids you hold — the `StampId()` a
    * `returning StampId() as Tx` statement gave you. The same record is readable afterwards with
-   * `StrandDatabase.commitDurability(tx)`. See docs/strands.md, "A commit's durability".
+   * `StrandDatabase.commitDurability(tx)`. See docs/strands/writes.md, "A commit's durability".
    */
   'strand:commit-durability': StrandCommitDurability;
   /**
@@ -1809,7 +1809,7 @@ export interface CadreNodeEvents {
    * and every rebuild, unlike a listener on `StrandDatabase.offline`. A restored transaction's
    * `queued` status after a restart is not emitted: it was delivered before anything subscribed, so
    * read `offline.entries()` on the `strand:queue-state` that publication emits. A drained commit
-   * also emits `strand:commit-durability` as an online one does. See docs/strands.md, "Offline mode".
+   * also emits `strand:commit-durability` as an online one does. See docs/strands/writes.md, "Offline mode".
    */
   'strand:offline-status': StrandOfflineStatus;
   /**
@@ -1821,7 +1821,7 @@ export interface CadreNodeEvents {
    * Emitted when a strand's database is published while its `App` schema apply is held back, by
    * queued offline transactions or by a strand cohort it could not reach (`waitingFor`), and
    * `StrandDatabase.appSchemaState()` reads `'waiting-for-queue'` or `'waiting-for-cohort'`. What the
-   * database runs meanwhile is in docs/strands.md → "An app schema upgrade waits for the queue or the
+   * database runs meanwhile is in docs/strands/app-schema.md → "An app schema upgrade waits for the queue or the
    * cohort". A retry that fails for another reason is emitted as `strand:error`; a cancelled one emits
    * nothing.
    */
@@ -1876,7 +1876,7 @@ export interface CadreNodeEvents {
    * Emitted on the machine that replaced the party's membership key in a closed strand, once
    * the control record names the new key: a machine removed from the cadre is left holding a
    * key that is no longer a member there, and every machine's revoked-peer gate denies it on
-   * the rows alone (docs/architecture.md → "Removing a machine"). Every other machine of the
+   * the rows alone (docs/cadre/membership.md → "Removing a machine"). Every other machine of the
    * party learns the new key from the replicated `StrandPartyKey` row and re-keys its running
    * strand without an event.
    */
@@ -1884,7 +1884,7 @@ export interface CadreNodeEvents {
   /**
    * Emitted when a party key replacement cannot be finished here: the party's current key holds
    * no `Strand.Manager` row in the strand, so it cannot seat the new key, and the strand's host
-   * has to re-invite the party, or its manager admit the new key by hand (docs/strands.md →
+   * has to re-invite the party, or its manager admit the new key by hand (docs/strands/keys.md →
    * "Replacing the party's key"). Once per pending key; the `PendingStrandPartyKey` row stays,
    * the membership reconciler redeems the host's invitation under the new key when it arrives,
    * and `MachineRemovalResult.strands` reports the same strand as `needs-another-party`.
@@ -2274,7 +2274,7 @@ export interface MachineRemovalPlan {
 
 /**
  * Where one closed strand's party key is replaced when a machine is removed
- * (docs/architecture.md → "Removing a machine").
+ * (docs/cadre/membership.md → "Removing a machine").
  */
 export interface StrandKeyRotationPlan {
   strandId: string;
@@ -2284,7 +2284,7 @@ export interface StrandKeyRotationPlan {
    *   hibernating strand is reported `here` before its manager seat can be read; the removal
    *   wakes it, and the outcome says what it found.
    * - `another-party`: the strand runs here, but the party holds no manager seat, so the strand's
-   *   host has to re-invite the party, or its manager admit the new key by hand (docs/strands.md →
+   *   host has to re-invite the party, or its manager admit the new key by hand (docs/strands/keys.md →
    *   "Replacing the party's key"); the replacement then finishes on an owner machine of this party.
    * - `later`: the strand does not run on this node (not launched here, excluded by its strand
    *   filter, or still syncing), so the replacement waits for an owner machine that runs it.
@@ -2324,12 +2324,12 @@ export interface StrandKeyRotationOutcome {
    *   control swap waits for a reachable sibling. Any owner machine running the strand finishes it.
    * - `needs-another-party`: the party holds no manager seat in the strand, so it cannot seat
    *   its new key itself; the row stays pending until the strand's host re-invites the party, or
-   *   its manager admits the new key by hand (docs/strands.md → "Replacing the party's key").
+   *   its manager admits the new key by hand (docs/strands/keys.md → "Replacing the party's key").
    */
   outcome: 'rotated' | 'pending' | 'needs-another-party';
 }
 
-/** One closed strand whose membership key replacement has not finished (docs/architecture.md → "Removing a machine"). */
+/** One closed strand whose membership key replacement has not finished (docs/cadre/membership.md → "Removing a machine"). */
 export interface PendingPartyKeyRotation {
   strandId: string;
   /** The key the party is moving to, public half (base64url): what another party's manager admits by hand. */
@@ -2413,7 +2413,7 @@ export interface OwnerKeyRemovalResult {
 /**
  * This node's own removal from its cadre, as it learned it: the `CadrePeer` tombstone naming
  * its peer id, read after it had seen its own live row (`CadreNode.removedFromCadre`, the
- * `cadre:removed` event; "Removing a machine" in docs/architecture.md).
+ * `cadre:removed` event; "Removing a machine" in docs/cadre/membership.md).
  */
 export interface CadreRemoval {
   /** The cadre this node was removed from (`CadreNode.partyId`). */
@@ -2713,7 +2713,7 @@ export interface ApnsCredentials {
 }
 
 // ============================================================================
-// Seed Bootstrap API Types (from architecture.md)
+// Seed Bootstrap API Types (from docs/cadre/membership.md)
 // ============================================================================
 
 /**

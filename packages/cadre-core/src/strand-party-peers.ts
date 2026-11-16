@@ -9,13 +9,13 @@
  * binds every live sibling under the party's current member key and clears a removed
  * machine's binding, so a sibling that was offline when the party's key changed is already
  * bound when it returns, and a machine wrongly bound under a key is cleared. Who binds whom is
- * stated in `docs/strands.md` → Closed-Strand Member Key Handling. The same loop reads the
+ * stated in `docs/strands/membership.md` → Binding the party's machines. The same loop reads the
  * party's pending key through this seam ({@link PartyStrandPeerSource.pendingKey}): while the
  * party is moving to another key in the strand, a staged invitation is redeemed under that key
- * rather than the current one (`docs/strands.md` → Replacing the party's key). On a node
+ * rather than the current one (`docs/strands/keys.md` → Replacing the party's key). On a node
  * offering offline mode, `strand-party-machines.ts` reads the live machines of every strand,
  * open or closed, as the machines a queued transaction must not be committed without
- * (`docs/strands.md` → Waiting for the party's own machines).
+ * (`docs/strands/writes.md` → Waiting for the party's own machines).
  */
 
 import type { OpenedPendingPartyKey } from './strand-party-key-rotation.js';

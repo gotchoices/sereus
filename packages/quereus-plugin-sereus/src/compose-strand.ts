@@ -400,9 +400,9 @@ export async function composeStrand(
 		// can be refused by `QueuedEntriesBlockSchemaChangeError` the same way and needs step 7's path.
 		// NOTE: nor is it deferred for the cohort. On a strand whose catalog lacks a table or column this
 		// schema has (one founded before `AppSchemaVersion` or `Header.sAppSchemaVersion`), the apply writes
-		// the catalog, so a member alone fails its connect until a peer is reachable (docs/strands.md →
-		// "Until then"). If strands founded before such a change must open alone, give this apply step 7's
-		// cohort deferral.
+		// the catalog, so a member alone fails its connect until a peer is reachable
+		// (docs/strands/app-schema.md → "Limits and accepted tradeoffs"). If strands founded before such a
+		// change must open alone, give this apply step 7's cohort deferral.
 		log('Applying Strand membership schema for strand %s', strandId);
 		await db.exec(`
 			declare schema Strand {

@@ -165,8 +165,8 @@ export function reparsePointsUnder(dir) {
  * Remove every link under `dir` without touching what any of them points at, and
  * return the paths removed.
  *
- * `docs/testing.md` records what this exists to prevent: on Windows, a recursive
- * delete of a checkout whose `node_modules` still held the `link:` junctions
+ * `docs/contributing/testing.md` records what this exists to prevent: on Windows, a
+ * recursive delete of a checkout whose `node_modules` still held the `link:` junctions
  * followed them and emptied the sibling checkouts in `../optimystic` and
  * `../quereus`. `check-published`'s worktree has no `resolutions` and so no sibling
  * junctions — but it is full of the ones yarn writes for the workspaces themselves,

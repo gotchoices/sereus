@@ -28,7 +28,7 @@ const fretRoot = path.resolve(__dirname, '../../../Fret');
 // red box but never reloads (.md is not a watched extension and sends nothing). A
 // blockList would only remove those flashes, and any unanchored pattern also blocks
 // module resolution inside node_modules. Device runs that must not change use
-// `yarn start:frozen` (docs/reference-app-rn.md § Device test runs). Revisit if a
+// `yarn start:frozen` (docs/contributing/device-testing.md § Device test runs). Revisit if a
 // cleared red box ever hides a failure mid-run: add a blockList anchored to each
 // root's top-level tickets/, docs/, ops/, tmp/ and .runs/, keeping dist and
 // node_modules watched.

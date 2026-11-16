@@ -743,7 +743,7 @@ describe('CONTROL_REPLICATION_BREADTH', () => {
 	// two-member cohort leaves a member dependent on read repair, which cannot
 	// converge because a lone corroborator's stale answer is accepted as the truth.
 	it('is above the largest party the product documents, and above the strand default', () => {
-		// `docs/architecture.md` -> "Enterprise (Multi-Node Mixed)" is 7 nodes.
+		// `docs/architecture.md` -> "Deployment shapes": the largest party planned for is 7 nodes.
 		expect(CONTROL_REPLICATION_BREADTH).toBeGreaterThan(7);
 		expect(CONTROL_REPLICATION_BREADTH).toBeGreaterThan(DEFAULT_STRAND_CLUSTER_SIZE);
 	});
@@ -820,8 +820,8 @@ describe('controlClusterPolicy / strandClusterPolicy', () => {
 		// Optimystic's own default is 1000 ms, shorter than one round trip between two parties
 		// that reach each other only through a relay — so every cohort peer reads as silent and
 		// the read is declined. This is the assertion that reddens if the field is dropped, or
-		// "tidied" back to the upstream default; see COHORT_READ_DEADLINE_MS for the measurement,
-		// and `docs/testing.md` for why no end-to-end scenario can gate it.
+		// "tidied" back to the upstream default; see COHORT_READ_DEADLINE_MS for the measurement
+		// and for why no end-to-end scenario can gate it.
 		expect(COHORT_READ_DEADLINE_MS).toBeGreaterThan(1000);
 		expect(CONTROL_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);
 		expect(STRAND_CLUSTER_POLICY.cohortQueryTimeoutMs).toBe(COHORT_READ_DEADLINE_MS);

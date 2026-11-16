@@ -1,95 +1,63 @@
-# Cadre Host Service Units
+# cadre-host service files
 
-Host cadre-host as a per-user system service. All three units are configured
-so that **a clean exit (code 0) is final** — `cadre-host uninstall` (or any
-explicit `systemctl stop` / `nssm stop`) leaves the service stopped. Crashes
-still trigger a restart.
+The files `cadre-host install` uses to register cadre-host as a service on each platform, and how to inspect the result. For installing and running cadre-host see the [package README](../README.md).
 
-| Platform | File | Service host |
-| -------- | ---- | ------------ |
-| Linux    | [`cadre-host.service.tmpl`](./cadre-host.service.tmpl)             | systemd (user) |
-| macOS    | [`com.serfab.cadre-host.plist.tmpl`](./com.serfab.cadre-host.plist.tmpl) | launchd (LaunchAgent) |
-| Windows  | [`install-service.ps1`](./install-service.ps1) / [`uninstall-service.ps1`](./uninstall-service.ps1) | NSSM |
+| Platform | File | Service manager | Registered as |
+|---|---|---|---|
+| Linux | [`cadre-host.service.tmpl`](./cadre-host.service.tmpl) | systemd, user unit | `cadre-host` at `~/.config/systemd/user/cadre-host.service` |
+| macOS | [`com.serfab.cadre-host.plist.tmpl`](./com.serfab.cadre-host.plist.tmpl) | launchd, LaunchAgent | `com.serfab.cadre-host` at `~/Library/LaunchAgents/com.serfab.cadre-host.plist` |
+| Windows | [`install-service.ps1`](./install-service.ps1), [`uninstall-service.ps1`](./uninstall-service.ps1) | [NSSM](https://nssm.cc/download) | `CadreHost`, configuration in the registry |
 
-The `.tmpl` files contain `@TOKEN@` placeholders that the installer
-substitutes at install time (`@NODE_PATH@`, `@HOST_JS@`, `@DATA_DIR@`).
-Inspect the rendered files under `~/.config/systemd/user/cadre-host.service`
-or `~/Library/LaunchAgents/com.serfab.cadre-host.plist` after running
-`cadre-host install`.
+Each service runs `node <package>/dist/bin/host.js start --no-tui --data-dir <dataDir>`.
 
-## Scope (v1)
+## How the files are used
 
-**Per-user install only.** The systemd unit is installed under the user's
-control (`systemctl --user`), the launchd unit is a `LaunchAgent` (not a
-`LaunchDaemon`), and NSSM runs as the current user.
+The two `.tmpl` files contain `@NODE_PATH@`, `@HOST_JS@` and `@DATA_DIR@`. The installer replaces them with the Node.js binary (`--node-path`, default the one running the installer), the installed `dist/bin/host.js` and the data directory, writes the result to the path in the table, and starts the service. On Windows the installer runs `install-service.ps1` with the same three values as parameters and then starts the service.
 
-A `--system` flag is accepted by `cadre-host install` but currently errors
-out — running cadre-host as a dedicated system user requires more work
-around data-dir ownership and capability dropping. Tracked separately.
+On every platform a clean exit (code 0) is final and a crash is restarted, so that `cadre-host uninstall` or a manual stop leaves the service stopped.
 
-## Linux (systemd) — manual smoke
+| Platform | Setting that makes exit 0 final | Restart after a crash |
+|---|---|---|
+| Linux | `Restart=on-failure` with `RestartPreventExitStatus=0` | after 5 seconds |
+| macOS | `KeepAlive.SuccessfulExit = false` with `KeepAlive.Crashed = true` | by launchd |
+| Windows | `AppExit 0 Exit` with `AppExit Default Restart` | after 5 seconds, throttled to 10 seconds |
+
+## Linux (systemd)
 
 ```bash
-# Render + install + enable + start in one go:
-cadre-host install --non-interactive --data-dir ~/.local/share/cadre-host
-
-# After install, the unit lives at:
-#   ~/.config/systemd/user/cadre-host.service
-# Inspect status:
 systemctl --user status cadre-host
 journalctl --user -u cadre-host -f
 ```
 
-`Restart=on-failure` + `RestartPreventExitStatus=0` make exit 0 final.
-
-The installer attempts `loginctl enable-linger <user>` so the unit survives
-logout / reboot. This is the **one** step in the install that requires root,
-and it is opportunistic: if `loginctl` is missing or you aren't root, the
-installer logs a warning and continues. Without linger the user-systemd
-service runs only while you have an active session (desktop or SSH) and
-stops when you log out. You can enable linger separately, before or after
-`cadre-host install`:
+A user unit runs only while the user has a session unless lingering is enabled. The installer runs `loginctl enable-linger <user>` and continues if that fails, for example because it needs root or `loginctl` is missing. Enable it yourself, before or after installing, so that the service starts at boot and survives logout:
 
 ```bash
 sudo loginctl enable-linger "$USER"
 ```
 
-## macOS (launchd) — manual smoke
+## macOS (launchd)
 
 ```bash
-cadre-host install --non-interactive --data-dir "$HOME/Library/Application Support/CadreHost"
-
-# After install, the plist lives at:
-#   ~/Library/LaunchAgents/com.serfab.cadre-host.plist
 launchctl print gui/$(id -u)/com.serfab.cadre-host
 tail -f "$HOME/Library/Application Support/CadreHost/logs/out.log"
 ```
 
-`KeepAlive.SuccessfulExit = false` plus `KeepAlive.Crashed = true` mean a
-clean exit stays down while a crash is relaunched.
+The LaunchAgent starts at login (`RunAtLoad`) and writes its output to `logs/out.log` and `logs/err.log` in the data directory.
 
-## Windows (NSSM) — manual smoke
+## Windows (NSSM)
 
-Install [NSSM](https://nssm.cc/download) and put `nssm.exe` on PATH first.
+Install NSSM and put `nssm.exe` on `PATH` before running `cadre-host install`, from an Administrator PowerShell, because creating a Windows service requires administrator rights.
 
 ```powershell
-cadre-host install --non-interactive --data-dir $env:LocalAppData\CadreHost
-
-# After install, inspect the service:
 nssm.exe status CadreHost
 Get-Service CadreHost
 Get-Content $env:LocalAppData\CadreHost\logs\out.log -Tail 30 -Wait
 ```
 
-`AppExit 0 Exit` tells NSSM not to restart on clean exit; other exit codes
-are handled by `AppExit Default Restart` with a 5-second delay and a
-10-second throttle. NSSM is **not** bundled with the npm package; the
-standalone-binary distribution (see `tickets/backlog/cadre-host-standalone-binary.md`)
-will ship it.
+The service starts automatically at boot and writes its output to `logs\out.log` and `logs\err.log` in the data directory, with log rotation on. `install-service.ps1` removes an existing `CadreHost` service first, so it can be run again. It sets no service account, so the service runs under NSSM's default account, LocalSystem, unless you change it with `nssm set CadreHost ObjectName`.
 
-## CI gap
+## Limits
 
-Cross-platform CI does **not** invoke `systemctl --user enable`,
-`launchctl bootstrap`, or `nssm install`. The installer's unit-rendering
-logic is covered by unit tests; the actual service-host registration must
-be smoke-tested manually on each platform before tagging a release.
+- **Per-user install only.** The Linux unit is a user unit and the macOS unit is a LaunchAgent, not a LaunchDaemon. `cadre-host install --system` fails.
+- **NSSM is not bundled** with the npm package. (ticket `cadre-host-standalone-binary`)
+- **Service registration is checked by hand.** The automated tests cover rendering the unit files. They do not run `systemctl --user enable`, `launchctl bootstrap` or `nssm install`, so a change to these files needs a manual install on each platform, checked with the commands in this file.

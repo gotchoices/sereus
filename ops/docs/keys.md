@@ -1,39 +1,30 @@
-## Keys, Peer IDs, and backups
+# The relay's identity key
 
-### What matters
-- In libp2p, a node’s **Peer ID** is derived from its **private key**.
-- If the private key changes, the Peer ID changes.
-- For an infrastructure peer (the relay), you generally want the Peer ID to be **stable**.
+A relay's peer ID is derived from its private key, and the key file is the only state a relay keeps. This page says where the key is, why it must not change, and how to back it up and restore it.
 
-### Standard practice for ops
-- **Generate on first start**, and **persist to disk**.
-- Back up the persisted key material as part of standard server backups.
+Related: [relay runbook](../docker/README.md) · [DNSADDR records](dnsaddr.md)
 
-### In this repo’s reference implementations
-The node will:
-- create a libp2p private key on first start (if missing)
-- write it to a key file under its data directory
+## Why the peer ID must stay the same
 
-As long as the key file persists across restarts/upgrades, the Peer ID is stable.
+Every address for the relay ends in `/p2p/<PEER_ID>`: the DNSADDR records, the relay address each node is configured with, and the `/p2p-circuit` addresses that nodes behind NAT hand to their peers. A relay that starts with a different key has a different peer ID, and none of those addresses reach it until the records and every node's configuration are changed.
 
-**Missing** is the only condition that generates a key. A key file that exists but cannot
-be read or does not decode — an unmounted volume, a permission change, a truncated copy —
-stops the node with an error naming the file, rather than quietly starting it under a new
-Peer ID that no peer recognises. Restore the file from backup instead of deleting it.
+## Where the key is
 
-### Docker (site directory method)
-- `./data/` is bind-mounted into the container as `/data`
-- default key file is `/data/libp2p-private.key.pb` (inside the container)
+The relay stores an Ed25519 private key in `libp2p-private.key.pb` under its data directory (`DATA_DIR`, `/data` in the container). With the Docker stack, `/data` is the instance directory's `data/` on the host (`HOST_DATA_DIR`).
 
-Do not delete `./data/` unless you intentionally want a new Peer ID.
+The file holds the private key unencrypted. Restrict access to the data directory and to its backups.
 
-### systemd / bare server
-Same principle:
-- store key material in a durable path (e.g. `/srv/sereus-ops/<service>/data/`)
-- (optional) point the service at it via env vars if you aren’t using the default paths
+## When a key is generated
 
-### Backup / restore
-- Backup: archive the directory that contains the key file (often the whole `data/` directory).
-- Restore: put it back before starting the service; the Peer ID will match.
+The relay generates a key only when the key file does not exist, which is the case on first start. It logs `generated a new identity key` with the file's path.
 
+A key file that exists but cannot be read or decoded stops the relay with an error that names the file. Causes include a volume that did not mount, a changed permission and a truncated copy. The relay does not start under a new peer ID in that case, because no operator would be told that the peer ID had changed. Restore the file from backup; do not delete it.
 
+Deleting the data directory gives the relay a new peer ID on its next start. Do that only when a new peer ID is intended.
+
+## Backup and restore
+
+- **Back up** the data directory, or the key file alone, with the server's normal backups.
+- **Restore** by putting the file back at the same path before starting the relay. The peer ID then matches the one already published.
+
+`./svc down`, rebuilding the image and updating the clone do not touch the key.

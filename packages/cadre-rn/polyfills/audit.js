@@ -20,8 +20,8 @@
  * different surfaces — that one probes `AbortController` itself, which React Native
  * provides and NativeScript does not, and it probes `BroadcastChannel`, which the
  * NativeScript app needs and this one provably never loads (see
- * docs/reference-app-rn.md § Key Dependencies). A shared list would be a list of
- * per-runtime exceptions and harder to read than two short ones.
+ * docs/platforms/react-native.md § Variants Metro selects by itself). A shared list
+ * would be a list of per-runtime exceptions and harder to read than two short ones.
  *
  * Logs go to console.log / console.warn, which logcat shows as `I/ReactNativeJS`
  * and `W/ReactNativeJS`.
@@ -83,7 +83,7 @@ const PROBES = [
 	},
 	{ path: 'DOMException', key: 'DOMException' },
 
-	// Known gaps — documented in docs/reference-app-rn.md § Key Dependencies.
+	// Known gaps — documented in docs/platforms/react-native.md § Limits and accepted tradeoffs.
 	{
 		path: 'crypto.subtle.encrypt',
 		gap: 'AES-GCM is only reached through @libp2p/keychain, which this app does not use',
@@ -145,7 +145,7 @@ export function runPolyfillAudit() {
 			+ 'something in the stack will read one of these and get undefined. Check the entry file imports '
 			+ '@serfab/cadre-rn/polyfills first (see the @serfab/cadre-rn README). If it does, add the global to '
 			+ '@serfab/cadre-rn\'s polyfills/hermes.js, or record it as a known gap in its polyfills/audit.js '
-			+ 'and in docs/reference-app-rn.md.',
+			+ 'and in docs/platforms/react-native.md.',
 		);
 	}
 }

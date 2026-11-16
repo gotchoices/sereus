@@ -2,7 +2,7 @@
  * Named-package `browser` file maps, shared by the rewrite plugin in
  * webpack.config.js and the check in scripts/bundle-check.js that no file the
  * rewrite should have replaced was bundled. Why each package is listed:
- * docs/reference-app-ns.md § "Named-package Node → browser rewrite".
+ * docs/platforms/nativescript.md § "Named-package Node → browser rewrite".
  */
 
 const path = require('path');

@@ -4,7 +4,7 @@
  * The signing key lives offline with the release operator; only the public
  * half ever ships in the binary. The release operator generates the keypair
  * and embeds the public half with `scripts/release-keygen.mjs --write-source`;
- * see the "Release signing & key management" runbook in `docs/cadre-host.md`.
+ * see the "Release signing" runbook in `docs/hosting/cadre-host.md`.
  * For dev/CI/staging overrides see `CADRE_HOST_UPDATE_DEV_KEY`.
  */
 
@@ -14,7 +14,7 @@ import { createPublicKey } from 'node:crypto';
 /**
  * Raw 32-byte Ed25519 public key, base64-encoded. This is the real production
  * public key embedded by the release operator (see the "Release signing"
- * runbook in `docs/cadre-host.md`). Before a real key was embedded the source
+ * runbook in `docs/hosting/cadre-host.md`). Before a real key was embedded the source
  * shipped an all-zeros placeholder; `isPlaceholderReleaseKey` still detects that
  * state and the publish guard refuses to ship it. Mismatch with the real signer
  * surfaces as `signature_invalid`, which the UI treats as "update available but

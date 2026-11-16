@@ -4,7 +4,7 @@ import type { SqlCommitDurability } from '@serfab/quereus-plugin-sereus';
 import { StrandCommitRecord } from '../src/strand-commit-durability.js';
 import type { PartyStrandPeer } from '../src/strand-party-peers.js';
 
-/** docs/strands.md → "A commit's durability": which of the party's machines a commit is reported as waiting for. */
+/** docs/strands/writes.md → "A commit's durability": which of the party's machines a commit is reported as waiting for. */
 
 const SELF = 'self-strand';
 // The control and strand ids differ: a durability report names peers by their strand id.

@@ -1,680 +1,578 @@
 # @serfab/cadre-cli
 
-CLI wrapper for Sereus cadre nodes - start, monitor, and manage cadre node instances.
+`cadre` runs one headless, always-on Sereus cadre node (a drone) on a server, a home machine or in a container. It also carries the operator commands that put the node into a cadre, report its state, and make owner-signed changes from a server that holds an owner key.
 
-## Quick Start
+Cadre, party, owner key, seed and strand are defined in the [glossary](https://github.com/gotchoices/sereus/blob/master/docs/concepts.md#glossary). To run several nodes on a home machine from a local web UI, use [`@serfab/cadre-host`](https://github.com/gotchoices/sereus/blob/master/packages/cadre-host/README.md), which starts this CLI once per node.
 
-An always-on node for the cadre on your phone, claimed by scanning a code:
+## Prerequisites
 
-```bash
-mkdir my-node && cd my-node
-npm init -y && npm install @serfab/cadre-cli
-npx cadre init --public my-node.example.com    # identity, claim secret, cadre.yaml; --public is where phones reach it from outside
-npx cadre start                                 # or: npm start (init adds the script); waits to be claimed
-npx cadre code --qr                             # in another terminal: the code to scan with the Sereus app on your phone
-npx cadre service                               # to run it at boot instead: prints the unit and how to install it
-```
+- Node.js 20.19 or later.
+- A machine that the cadre's other machines can reach ([Ports](#ports)).
+- One way into a cadre: a Sereus app on the owner's phone to claim the node, or a seed, a cadre invitation or an owner grant from a machine that holds an owner key. [Which side dials](https://github.com/gotchoices/sereus/blob/master/docs/cadre/membership.md#which-side-dials) compares these. A server can also found a party of its own.
+- For `cadre service`, systemd or launchd. For the container, Docker with Compose.
 
-`init` listens on TCP 4001 and WebSocket 4002 (`--port`, `--ws-port`); phones dial the WebSocket port, so that is
-the one to open and forward through a router. After the claim, `cadre start` serves the phone's cadre on every
-later start. See [Waiting to be claimed](#waiting-to-be-claimed) and [The node code](#the-node-code). To configure a
-node by hand instead, start from [example.cadre.yaml](./example.cadre.yaml).
+## Install
 
-## Installation
-
-Choose **one** installation method. Both produce the same CLI; npm is simpler, git gives you bleeding-edge updates.
-
-### Option A: npm (stable releases)
+Globally, where the command is `cadre`:
 
 ```bash
 npm install -g @serfab/cadre-cli
 ```
 
-For server deployments (non-global):
+Or in a folder of its own, where the command is `npx cadre`:
 
 ```bash
-cd /opt/cadre
-npm init -y
-npm install @serfab/cadre-cli @serfab/cadre-core
+mkdir my-node && cd my-node
+npm init -y && npm install @serfab/cadre-cli
 ```
 
-**Paths (npm):**
-| Item | Location |
-|------|----------|
-| CLI binary | `node_modules/.bin/cadre` or global `cadre` |
-| Example config | `node_modules/@serfab/cadre-cli/example.cadre.yaml` |
-| Systemd service | `node_modules/@serfab/cadre-cli/contrib/cadre-node.service` |
-| Install script | `node_modules/@serfab/cadre-cli/contrib/cadre-install.sh` |
+The npm package holds `dist` and `src` only. The other files this README names are linked in the repository: [`example.cadre.yaml`](https://github.com/gotchoices/sereus/blob/master/packages/cadre-cli/example.cadre.yaml), [`contrib/cadre-node.service`](https://github.com/gotchoices/sereus/blob/master/packages/cadre-cli/contrib/cadre-node.service) and [`docker/`](https://github.com/gotchoices/sereus/tree/master/packages/cadre-cli/docker).
 
-### Option B: Git clone (bleeding edge)
+To build from a clone:
 
 ```bash
-git clone https://github.com/gotchoices/sereus.git /opt/sereus
-cd /opt/sereus
-yarn install
+# needs ../optimystic and ../quereus cloned and built: the root package.json links their packages
+corepack enable && yarn install
 yarn workspaces foreach -Rt --from '@serfab/cadre-cli' run build
+node packages/cadre-cli/dist/bin/cadre.js --help
 ```
 
-**Paths (git):**
-| Item | Location |
-|------|----------|
-| CLI binary | `packages/cadre-cli/dist/bin/cadre.js` |
-| Example config | `packages/cadre-cli/example.cadre.yaml` |
-| Systemd service | `packages/cadre-cli/contrib/cadre-node.service` |
-| Install script | `packages/cadre-cli/contrib/cadre-install.sh` |
+## Quick Start
 
-**Updating (git):**
+This sets up an always-on node and adds it to the cadre on a phone by scanning a code.
 
 ```bash
-cd /opt/sereus
-git pull
-yarn install
-yarn workspaces foreach -Rt --from '@serfab/cadre-cli' run build
-sudo systemctl restart cadre-node  # if running as service
+mkdir my-node && cd my-node
+npm init -y && npm install @serfab/cadre-cli
+npx cadre init --public my-node.example.com
+npx cadre start
 ```
 
-## Usage
+`--public` is the name or address at which phones reach this machine from outside its network; leave it out for a node that phones reach on the LAN only. `start` keeps running and prints `✓ Awaiting claim`.
 
-### Start a Node
+In a second terminal in the same folder:
 
 ```bash
-cadre start -c cadre.yaml
-cadre start -c cadre.yaml --debug
+npx cadre status        # expect "Running: true" and "Health: healthy"
+npx cadre code --qr     # scan this with the Sereus app on the phone that owns the cadre
 ```
 
-### Make this server an owner
+When the phone has claimed the node, the first terminal prints `✓ Claimed by owner <key> into party <id>` and then `✓ Restarted into party <id>`, and `curl -s http://localhost:8080/status` shows `"claim": "claimed"`. Every later `cadre start` serves the phone's cadre. To run the node at boot, stop it and follow what `npx cadre service` prints.
 
-An owner key belongs to a person, not to a machine, so a server normally holds none: it is a member of a cadre whose owner keys live on the owner's phone, a hardware key or a backup ([docs/architecture.md → Owner Keys](../../docs/architecture.md#owner-keys)). `cadre start --owner` is the deliberate exception: this server holds an owner key of its own, in the **owner key file**, and signs the cadre's owner writes with it (admitting and inviting machines over the admin channel, removing strands, enrolling approver keys).
+## Ports
 
-```bash
-cadre start -c cadre.yaml --owner
-cadre start -c cadre.yaml --owner --owner-label "office server"   # founding a party: the key's label
+| Port | Open it to |
+|---|---|
+| 4001, libp2p TCP | Servers and desktop nodes that dial this node |
+| 4002, libp2p WebSocket | Phones and browsers, which have no TCP transport. Forward it for phones away from home |
+| 8080, health and status; 9090, Prometheus metrics | Loopback or a management network only |
+| `--admin-port`, admin channel | Nothing: it binds 127.0.0.1, and only when asked for |
+
+`cadre init` and the Docker image listen on 4001 and 4002. `example.cadre.yaml` listens on TCP 4001 only, so a phone cannot dial a node configured from it until `network.listenAddrs` gains a `/ws` entry or `cadre start --ws-port` is given.
+
+The health and metrics servers bind every interface and have no bind-address option. Keep them behind a firewall: `/status` reveals the node's addresses and party, and the health port serves `POST /seed` when `CADRE_SEED_TOKEN` is set.
+
+## Waiting to be claimed
+
+A node started with a claim secret belongs to nobody until an owner's device dials it and proves knowledge of the secret; the node then joins that owner's cadre ([Claiming a node](https://github.com/gotchoices/sereus/blob/master/docs/cadre/membership.md#claiming-a-node)). A phone cannot be dialled, so an always-on node joins a phone's cadre this way.
+
+`cadre init` sets this up. By hand, the config needs:
+
+```yaml
+controlNetwork:
+  partyId: unclaimed        # a placeholder; the claim names the party
+  bootstrapNodes: []
+claim:
+  secretFile: /var/lib/cadre/claim.secret   # base64url of 32 random bytes, and nothing else
 ```
 
-- The owner key file is `owner.keyFile` in the config (`CADRE_OWNER_KEY_FILE`, `--owner-key-file <path>`), by default `owner.key` in the node-state directory. It has the identity file's format, and it is never the identity file: a config naming the same file for both is refused. When the file is missing, `--owner` creates it and says so on stderr. **Anyone who can read that file controls the cadre**; keep it private (start-up warns when other accounts can read it, as for the claim secret file) and back it up (`cadre owner-key export`).
-- On a party with no owner yet, the key founds it: the genesis `OwnerKey` row, labelled `--owner-label` (default `server <hostname>`, at most 64 characters).
-- On a party that lists the key as an owner, the node signs with it; nothing is inserted.
-- On a party whose owners do not include the key, start-up fails, naming the key's fingerprint and public key. Add it as an owner from a device that holds one of the party's owner keys, or import one of the party's owner keys here (`cadre owner-key import`), then start again; or start with an owner grant instead ([With an owner grant](#with-an-owner-grant)).
+The secret comes from that file or from `CADRE_CLAIM_SECRET`, never from a flag, because a flag value shows in the process list. Setting both is refused.
 
-`--owner` needs a node identity (`identity.keyFile` or `--identity-file`): the node's own `CadrePeer` row, which names it in every seed it mints, is signed with it. `--owner-label` is refused without `--owner`, and `--owner-key-file` without `--owner` or `--owner-grant`.
+At the claim the node writes `claim.json` in the node-state directory (`nodeState.dir`, by default the config file's folder) and restarts into the claimed party inside the same process; if that fails, the process exits non-zero. Every later start serves the party in `claim.json` and ignores the config's `partyId`, and an unreadable `claim.json` stops the start.
 
-#### With an owner grant
+The first owner whose proof verifies owns the node, so show the code only to the device that should claim it. A claim secret or a claim on record cannot be combined with `--owner`, `--seed`, `--invitation`, `--owner-grant`, `--pin-owner-key` or their environment forms.
 
-An [owner grant](#owner-grants) makes a server an owner without copying an existing owner key onto it: an owner mints the grant (`cadre enroll owner-grant` on an owner server, or Add an owner key in a reference app), and the server redeems it for a key of its own.
+## Join with a seed
 
-```bash
-CADRE_OWNER_GRANT="$(cat server.grant)" cadre start -c cadre.yaml --identity-file node.key
-# or: cadre start -c cadre.yaml --identity-file node.key --owner-grant "$(cat server.grant)"
-```
-
-- The key is the one in the owner key file, created when missing as `--owner` creates it. A key that already owns another cadre becomes an owner of this one too: one key, several cadres.
-- On a server that is already a member of the cadre, the grant is redeemed in its own store, after one pass dialing the cadre's other machines. That needs a connection to one of them: a key made an owner with none would stay on this machine, so the redemption is refused as `alone` (retryable) when none answered, and starting again once they are reachable redeems it.
-- On a server that is not in the cadre yet, the grant joins it too, as a machine and an owner, at any member the grant names; no `--invitation` or `--seed` is needed, and either beside the grant is refused.
-- After the redemption the node runs as `--owner` does. Once its key is an owner, change `--owner-grant` to `--owner` in the service file: a later start with the grant still there finds the key already an owner, says so and spends nothing, but the grant text stays where anyone who reads the file can see it.
-- `--owner` beside `--owner-grant` is refused on a party with no owner in this node's store, where `--owner` would found the party rather than join one; on a party with owners the grant decides.
-- `CADRE_OWNER_GRANT` is the same as `--owner-grant`, kept out of the process list: the grant is a credential for admin rights over the cadre. Pass one of the two.
-- A grant for another party than the config's `controlNetwork.partyId`, or text that is not an owner grant, stops start-up before the node dials anything.
-
-A failed redemption is reported and the node keeps running, as a failed `--invitation` is. `/status` reports the redemption as `node.ownerGrant`, in `node.invitation`'s shape (`pending`, `accepted`, or `failed` with `error` and `retryable`); on `accepted` it adds `ownerKey`, `alreadyOwner` (no use was spent) and `ownerWired`. `ownerWired` is false when the server joined and its key's row had not reached it within a minute: the key is an owner, the node does not sign as one in this run, and the next start wires it. `cadre status` prints the same as an `Owner grant:` line.
-
-#### `cadre owner-key`
-
-```bash
-cadre owner-key show -c cadre.yaml            # public key, the 8-character fingerprint the apps show, and the file
-cadre owner-key show --json                   # { publicKey, fingerprint, file }
-cadre owner-key export > owner-key.txt        # the key as text; add --passphrase-file <path> to lock it, --label <text> to name it
-cadre owner-key import < owner-key.txt        # store an exported key in the owner key file
-```
-
-Each finds the owner key file as `cadre start` does (`-c`, `--owner-key-file`). An export is the private key: whoever holds the text is an owner of every cadre that lists the key, which the command says on stderr; only the text goes to stdout. A locked export (`sereus-owner-key-locked:1.…`) needs its passphrase on import. Passphrases come from `--passphrase-file <path>` or `CADRE_OWNER_KEY_PASSPHRASE`, never an argument, since an argument lands in shell history and the process list; giving both is refused.
-
-`import` takes the text as an argument, or reads it from stdin when given `-` or nothing; stdin keeps an unlocked key out of shell history too. It refuses a file that holds a different owner key, naming both fingerprints, and importing the key the file already holds changes nothing. An export from the Sereus apps imports the same way.
-
-### Check Status
-
-`cadre status` reads **live runtime** from a running node's health `/status`
-endpoint and reports it alongside the static config summary. A missing config
-file is non-fatal (the live query still runs); when no node is reachable it
-says so and exits with code `3` (rather than reporting a bare `running: false`).
-A node started with an invitation or an owner grant also gets an `Invitation:` or
-`Owner grant:` line saying how its redemption stands (`invitation` and `ownerGrant` under
-`--json`, `null` without one).
-
-```bash
-cadre status -c cadre.yaml
-cadre status --json
-# point at a node on another host/port (env CADRE_HEALTH_PORT also honored):
-cadre status --health-host 10.0.0.5 --health-port 8080 --timeout 2000
-```
-
-### Enroll New Peers
-
-Create a new peer identity:
-
-```bash
-cadre enroll create --output ./keys --name my-node
-```
-
-Writes `<name>.key` (the private key, mode 600) and `<name>.id` (the Peer ID). The key file is
-the libp2p protobuf format — the one identity format `identity.keyFile` accepts. The command
-**refuses to overwrite an existing `<name>.key`**: that file is the node's identity, and
-replacing it changes the node's Peer ID irrecoverably. Move or delete it first if you really
-mean to re-key.
-
-Verify an owner's signature over a peer ID. This is an **offline check**:
-it confirms the signature is valid but does **not** contact the control network
-or register the peer. Membership is granted by the running owner node — see
-[Add a Machine to the Cadre](#add-a-machine-to-the-cadre).
-
-```bash
-cadre enroll register \
-  --peer-id 12D3KooW... \
-  --bootstrap /ip4/.../tcp/4001/p2p/12D3KooW... \
-  --owner-key <public-key> \
-  --signature <signature>
-```
-
-### Add a Machine to the Cadre
-
-A new machine joins in three steps: it makes an identity, the owner admits it and prints a seed, and it starts with that seed. This is the owner-online way; [Join by invitation](#join-by-invitation-the-owner-may-be-offline) is the way that works when the owner is not running at the moment the machine joins.
+Use this when a server that holds an owner key is running and one of the two machines can dial the other.
 
 ```bash
 # 1. On the new machine B: prints B's peer ID, writes node-b.key and node-b.id
 cadre enroll create --output . --name node-b
 
-# 2. On the owner machine A, which is already running as:
+# 2. On the owner machine A, already running as
 #      CADRE_STARTUP_TOKEN=<token> cadre start --owner --admin-port 7070 -c cadre.yaml
+#    stdout: the seed. stderr: the party ID for B's config, the owner key to pin,
+#    and the addresses the seed tells B to dial
 CADRE_STARTUP_TOKEN=<token> cadre enroll add "$(cat node-b.id)" --admin-port 7070 > node-b.seed
 
 # 3. On machine B, whose config names the same controlNetwork.partyId as A's
 cadre start -c cadre.yaml --identity-file node-b.key --pin-owner-key <owner key> --seed "$(cat node-b.seed)"
 ```
 
-`cadre enroll add` asks the running owner node, over its loopback admin channel, to authorize the new machine and mint a seed for it. The owner therefore has to be running with `--owner --admin-port <port>` and `CADRE_STARTUP_TOKEN` set; `enroll add` takes the same port (`--admin-port` or `CADRE_ADMIN_PORT`) and the same token (`--token-file <path>`, the file `cadre start --startup-token-file` writes, or `CADRE_STARTUP_TOKEN`). The token is never accepted as a flag value, since it would show in the process list.
+`cadre enroll add` has the running owner node admit the peer and mint its seed. The seed tells B to dial the addresses the owner advertises. When B cannot reach those, give the owner a public address (`network.appendAnnounceAddrs`) or a relay (`network.relayAddrs`) and restart it before `enroll add`, or pass `--addr <B's multiaddr>` so that the owner dials B.
 
-Only the seed goes to stdout, so `>` and `$(…)` capture exactly what `--seed` takes. Stderr names the party ID the new machine's config must carry, the owner key it pins with `--pin-owner-key`, and the addresses the seed tells it to dial first (the owner node's, and those of the party's always-on machines). `--json` prints `{ peerId, partyId, signerKey, seedAddrs, encodedSeed, warnings }` on stdout instead. Every failure exits 1 with a message that names the fix: no admin channel on that port, a token that does not match the owner's, or a node not started with `--owner`. On the new machine, `cadre start` refuses to start when the seed does not decode or was minted for a different party than its config names.
+A node whose store lists no owner rejects a seed unless its signer is pinned with `--pin-owner-key` or `CADRE_OWNER_KEYS` ([Seed trust policies](https://github.com/gotchoices/sereus/blob/master/docs/cadre/control-security.md#seed-trust-policies)). A seed that does not decode, or names another party than the config, stops the start. One refused later is reported and the node keeps running.
 
-The seed carries whatever addresses the owner advertises; `enroll add` does not choose them. Which setup works depends on the network between the machines:
+## Join by invitation
 
-- **Same LAN:** the owner's listen addresses are enough.
-- **Owner behind NAT:** set `network.appendAnnounceAddrs` on the owner to a forwarded public address, or give it a relay (`network.relayAddrs`), and restart it before running `enroll add`.
-- **New machine reachable, owner not:** pass `--addr <the new machine's multiaddr>` (repeatable) and the owner dials out to it instead, from the control-cohort reconcile pass the add starts (within about 50 ms; a dial that fails is retried after 15 s, 30 s, 60 s, then every 2 minutes).
-
-When the seed carries no address to dial and no `--addr` was given, neither machine can dial the other; `enroll add` warns and names these fixes. Running `enroll add` again for a peer that is already authorized leaves its authorization as it is and mints a fresh seed, so it is the way to pick up changed owner addresses; any `--addr` given on the re-run replaces the address the owner dials.
-
-[docs/architecture.md → Which Side Dials](../../docs/architecture.md#which-side-dials-the-add-a-node-flows-compared) compares this flow with the other ways to add a machine to a cadre, by which machine opens the connection.
-
-### Join by invitation (the owner may be offline)
-
-An owner mints a **cadre invitation** while it is running, hands the bundle to the new machine out of band, and can then go offline: the new machine redeems the bundle at **any member** of the cadre the bundle names, and that member writes the new machine's membership on the owner's behalf ([docs/architecture.md → Enrollment Flow: Invitation Redeemed at Any Member](../../docs/architecture.md#enrollment-flow-invitation-redeemed-at-any-member)). A machine invitation admits a machine and grants nothing else; ownership is a credential of its own, an [owner grant](#owner-grants).
+A cadre invitation is redeemed at any member, so the owner that minted it may be offline when the machine joins. It admits a machine and grants no ownership ([Cadre invitations](https://github.com/gotchoices/sereus/blob/master/docs/cadre/membership.md#cadre-invitations)).
 
 ```bash
-# 1. On the new machine B: prints B's peer ID, writes node-b.key and node-b.id
+# 1. On the new machine B
 cadre enroll create --output . --name node-b
 
-# 2. On the owner machine A, running as `cadre start --owner --admin-port 7070 …` with CADRE_STARTUP_TOKEN set
+# 2. On the owner machine A, running with --owner --admin-port 7070 and CADRE_STARTUP_TOKEN set
 CADRE_STARTUP_TOKEN=<token> cadre enroll invite --peer-id "$(cat node-b.id)" --admin-port 7070 > node-b.invitation
 
-# 3. On machine B, whose config names the same controlNetwork.partyId as A's — A may be offline by now
-cadre start -c cadre.yaml --identity-file node-b.key --invitation "$(cat node-b.invitation)"
+# 3. On machine B, whose config names the same controlNetwork.partyId as A's.
+#    The invitation carries a private key; the variable keeps it out of the process list.
+CADRE_INVITATION="$(cat node-b.invitation)" cadre start -c cadre.yaml --identity-file node-b.key
 ```
 
-`cadre enroll invite` takes the same admin port and token options as `enroll add`. Its flags:
+`--invitation <encoded>` takes the same value as `CADRE_INVITATION`. An invitation needs a node identity and cannot be combined with `--seed` or `--owner`.
 
-- `--peer-id <id>` admits only that device; without it, whichever device redeems first is admitted.
-- `--ttl <duration>` (`30m`, `24h`, `7d`; default 24 hours) and `--uses <n>` (default 1).
+The node redeems the invitation right after it starts. A failure is reported and the node keeps running. `/status` reports the outcome as `node.invitation`, which `cadre status` prints: `pending`, then `accepted` or `failed`. A failure carries an `error`, ending in the member's refusal code such as `(invite-spent)`, and `retryable`, true when starting again with the same invitation may succeed. Starting a member again with the invitation still set writes nothing.
 
-Only the bundle goes to stdout, so `>` and `$(…)` capture exactly what `--invitation` takes; stderr names the party, the key, what it admits, when it expires, and the member addresses the device will try in order. `--json` prints `{ invitation, encoded }` instead. The owner's admin channel also lists the invitations the node holds (`GET /admin/invites`, each with whether it is still live and how many times it was redeemed) and withdraws one (`DELETE /admin/invites/<key>`).
+## Make this server an owner
 
-On the new machine, `--invitation` redeems right after the node is up: the node dials the listed members in order, pins the invitation's owner keys as its trust anchor, and once a member accepts it syncs the control database over that connection. It needs a node identity (the redemption is signed with it) and cannot be combined with `--seed` (the owner-online way to the same end) or with `--owner` (which founds a cadre on this node rather than joining one). To join as an owner as well, start with an owner grant instead of the invitation ([With an owner grant](#with-an-owner-grant)). A node that is already a member, started again with the flag still in its service file, is accepted again without a second record being written. A failed redemption is reported and the node keeps running, as a failed `--seed` is.
-
-`CADRE_INVITATION` is the same as `--invitation`, for a launcher: the bundle carries the invitation's private key, and an argument shows in the process list. Pass one of the two; both at once is refused. While the redemption runs and after it settles, `/status` reports it as `node.invitation`: `{ state: 'pending' }` from start, `{ state: 'accepted', memberPeerId? }` with the member that admitted the node, or `{ state: 'failed', error, retryable }`. A member's refusal keeps its code in parentheses at the end of `error` (`… (invite-spent)`); `retryable` is true only when no member named in the bundle could be reached, so starting again with the same invitation may succeed. The field is absent on a node started without an invitation. cadre-host's join by invitation reads it.
-
-The bundle names the owner's own addresses first and then other members', taken from their signed address records: six addresses at most, so the text fits a QR code. A member that has not yet received the invitation's row seats it from the bundle and admits the device. A member that does not yet hold the issuing owner's key answers `issuer-unknown`, and the device moves on to the next address; an owner added since the members last synced should let one always-on member receive its key before going offline.
-
-### Owner grants
-
-An **owner grant** makes whoever holds it an owner of the cadre, with a key of their own, through any member of the cadre; the owner that minted it may be offline ([docs/architecture.md → Owner grants](../../docs/architecture.md#owner-grants)). It admits no machine by itself: a server that is not in the cadre yet joins with it as a machine and an owner at once ([With an owner grant](#with-an-owner-grant)), and an app redeems it under Owner keys → Redeem an owner grant.
+An owner key belongs to a person, not a machine, so a server normally holds none ([What an owner key is](https://github.com/gotchoices/sereus/blob/master/docs/cadre/owner-keys.md#what-an-owner-key-is)). With `cadre start --owner` the server keeps an owner key in the **owner key file** and signs the cadre's owner writes with it: admitting and inviting machines, removing strands, enrolling approver keys.
 
 ```bash
-# On the owner machine, running as `cadre start --owner --admin-port 7070 …` with CADRE_STARTUP_TOKEN set
-CADRE_STARTUP_TOKEN=<token> cadre enroll owner-grant --label "office server" --admin-port 7070 > server.grant
+cadre start -c cadre.yaml --owner
+cadre start -c cadre.yaml --owner --owner-label "office server"   # the label of a founding key
 ```
 
-`cadre enroll owner-grant` takes the same admin port and token options as `enroll add`. Its flags:
+The owner key file is `owner.keyFile`, by default `owner.key` in the node-state directory, and is never the identity key file. `--owner` creates it when it is missing. Anyone who can read it controls the cadre: keep it private and back it up with `cadre owner-key export`.
 
-- `--label <text>`: the label every key the grant seats carries (at most 64 characters).
-- `--ttl <duration>` (`15m`, `24h`, `7d`; default 15 minutes), or `--ttl never` for a **backup** grant with no expiry, a way back into the cadre kept as carefully as an owner key. A backup names the addresses the cadre's machines have when it is minted, so it stops working if all of them change.
-- `--uses <n>`: how many keys it may make owners (default 1).
+What `--owner` does depends on the owner keys this node's store lists for the party:
 
-Only the grant goes to stdout, so `>` and `$(…)` capture exactly what `--owner-grant` takes. Stderr names the party, the grant's key, its label, uses and expiry, and the member addresses a holder will try, then the warnings: always that whoever holds the grant can become an owner of the cadre until it is used, expires or is withdrawn, then that a backup has no expiry, and that a grant naming no other reachable machine can be redeemed only while this server runs. `--json` prints `{ grant, encoded, reach, warnings }` instead.
+- **None:** the key founds the party, labelled `--owner-label` (default `server <hostname>`, at most 64 characters).
+- **The key is an owner:** the node signs with it.
+- **Other owners only:** the start fails, naming the key. Add it from a device that holds an owner key, import one of the party's keys with `cadre owner-key import`, or start with an owner grant.
 
-The owner's admin channel serves the grants:
+`--owner` needs a node identity.
 
-- `POST /admin/owner-grants`, body `{ label?, expiresInMs?, uses? }`, mints one and answers `{ grant, encoded, reach, warnings }`. `expiresInMs: null` asks for a backup; leaving it out takes the 15-minute default. `peerId` is refused: a grant names no device, and whoever holds it can redeem it.
-- `GET /admin/owner-grants` lists the grants the node holds, each with whether it is still live and how many times it was redeemed (`{ grants: [{ grant, live, withdrawn, usesRecorded }] }`).
-- `DELETE /admin/owner-grants/<key>` withdraws one (`{ withdrawn }`, false when the node does not hold it or it was already withdrawn). Keys it has already made owners stay owners.
+### With an owner grant
 
-### Waiting to be claimed
-
-A node started with a claim secret (`claim.secretFile`, which `cadre init` writes, or `CADRE_CLAIM_SECRET`) belongs to nobody until an owner claims it: the owner's device dials the node and delivers a seed carrying proof that it holds the secret (`CadreNode.claimNode`), and the node then trusts that owner and syncs into its cadre ([docs/architecture.md → Seed Delivery Protocol](../../docs/architecture.md#seed-delivery-protocol), the claim-secret entry). It is the way to add an always-on node to a cadre whose only member is a phone, which cannot be dialed: the node's peer ID, addresses and secret go to the phone out of band (`cadre code` prints them as the [node code](#the-node-code); cadre-host shows the same code), and the phone dials the node. To set one up by hand instead of with `cadre init`:
+An owner grant makes a server an owner without copying an existing owner key onto it. An owner mints it with `cadre enroll owner-grant` or in an app, and the server redeems it for the key in its own owner key file ([Owner grants](https://github.com/gotchoices/sereus/blob/master/docs/cadre/owner-keys.md#owner-grants)).
 
 ```bash
-# 32 random bytes, base64url
-export CADRE_CLAIM_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")"
-cadre start -c cadre.yaml --identity-file node.key
+CADRE_OWNER_GRANT="$(cat server.grant)" cadre start -c cadre.yaml --identity-file node.key
 ```
 
-While it waits, the node accepts a stranger's connection, because the claim seed has to ride one, and nothing else on it: control-database streams and relay reservations are refused until the claim. The secret is one-time: the first owner whose proof verifies becomes the node's owner, any other claimant is refused as `already-claimed`, and the same owner claiming again is accepted. Each proof is bound to this node's peer ID, so the node must keep its identity file for the secret to stay usable, and a proof made for one node claims no other.
+- **A server that is already a member** needs a connection to another machine of the cadre; with none the redemption fails as `alone`, which is retryable.
+- **A server that is not a member** is also admitted as a machine, at any member the grant names. A seed or an invitation beside the grant is refused.
+- **Afterwards** the node runs as `--owner` does. Replace the grant with `--owner` in the service definition, so that the grant text does not stay readable there.
 
-The claim names the cadre. A node waiting to be claimed cannot know which party it will serve, so its config's `controlNetwork.partyId` is a placeholder — use `unclaimed` — and the party comes from the claim seed. The node records the claim as `claim.json` in the node-state directory (`nodeState.dir`): the party, the owner key and the time, never the secret. It writes the record before it anchors the owner, and once the claim seed is acknowledged it restarts in-process into the claimed party (the log says `• Restarting into party <id>`, then `✓ Restarted into party <id> as a node claimed by owner <key>`): the same identity and listen addresses, the health, metrics and admin servers kept. The restart does not wait for the node to dial the machines the claim seed names (the owner's always-on machines and the device that claimed it); it carries the addresses the seed gives for them into the claimed party's stores, and the restarted node dials them. An owner device the seed gives no address for (a phone) reconnects on its own, since it retained the node's addresses when it claimed. A restart that fails exits the process non-zero for the supervisor to respawn it. Every later `cadre start` reads the record first: it serves the record's party, anchors the record's owner, ignores the config's placeholder party (and prints `• Claimed by owner <key> into party <id>` saying so), and refuses the same options the secret does. A `claim.json` that is present but unreadable or malformed refuses the start, because a node that came up unclaimed would be claimable by anyone holding the secret while its owner's cadre had lost it. The secret may stay set after the claim: a claimed node ignores it (`• Already claimed; <source> is ignored`) and, with it set, answers a rival claimant `already-claimed` rather than as an untrusted seed. The files the placeholder party created while the node waited (`trusted-owners.unclaimed.json` and the like) are left in place and never opened again.
+`/status` reports the redemption as `node.ownerGrant`, in the shape of `node.invitation`. On an accepted grant, `ownerWired: false` means the key's row has not reached this node yet; the next start signs with it.
 
-`/status` reports `node.claim` as `claimed` as soon as a claim is on record (read at start, or written in this process — before the claimant is acknowledged, and kept across the restart, so a poller never sees it flip back), `awaiting` with a secret and no record, and `none` without a secret. When claimed, `node.claimedBy` is the record's owner key, and `node.partyId` names the party the running node serves — the claimed one once the restart completes. cadre-host's join flow reads both.
+## Removed from the cadre
 
-A claim secret, and a claim on record, cannot be combined with `--owner`, `--seed`, `--invitation` (or `CADRE_INVITATION`), `--owner-grant` (or `CADRE_OWNER_GRANT`), `--pin-owner-key` or `CADRE_OWNER_KEYS`: each is another way to choose the node's owner, and `cadre start` refuses the combination, naming every conflicting option. The secret comes from `CADRE_CLAIM_SECRET` or from a file the config names, `claim.secretFile` (what `cadre init` writes; `CADRE_CLAIM_SECRET_FILE` sets it from the environment), never from a flag, because a flag value shows in the process list. Setting both is refused. A secret file must hold the secret and nothing else; `cadre start` and `cadre code` warn when other accounts can read it. The secret is never logged; only `cadre code` prints it, inside the code.
+An owner can remove this machine from its cadre ([Removing a machine](https://github.com/gotchoices/sereus/blob/master/docs/cadre/removing-machines.md)). When the running node learns of it, `cadre start` writes `removed.<partyId>.json` into the node-state directory, stops the node and prints a warning. A node that was offline when it was removed may never learn of it.
 
-### Removed from the cadre
+The process and its health server keep running, because a supervisor would restart a process that exited. `/status` reports `node.removed` and `status: unhealthy`. Every later `cadre start` for that party finds the file and does the same.
 
-An owner can remove this machine from its cadre (Remove in the reference app, `CadreNode.removeMachine`). When the running node learns of it (best-effort: the removal has to reach the node before the cadre cuts it off, see [docs/architecture.md → Removing a machine](../../docs/architecture.md#removing-a-machine)), `cadre start` writes `removed.<partyId>.json` into the node-state directory (the cadre, the retired stamp, the owner key that signed the removal when this node trusts that key, and when), stops the node and its strands, and prints `⚠ This node was removed from cadre <id> by owner <key> and has stopped …`. The process and its health server keep running, so a supervisor (systemd, cadre-host) does not read an exit as a crash and respawn the node: `/status` reports `node.removed` (`{ stampId, signerKey, at }`, `null` on a node not removed) with `running: false`, no peer id and `status: unhealthy`, and `cadre status` prints a `Removed:` line. Every later `cadre start` for that party finds the file and does the same without starting the node, because cadre-core reports a removal only to the process that saw it, and a restarted node would otherwise run against a cadre that refuses it. A file that is present but malformed refuses the start.
+To start fresh, delete the node-state directory; a node set up by `cadre init` then waits to be claimed again. To rejoin after an owner has added the machine back, delete only `removed.<partyId>.json`.
 
-`cadre start` deletes nothing: the node-state directory holds the claim and the node-local stores (and, on cadre-host, the identity key), and what to keep is the operator's call. To start fresh, delete the node-state directory (`state/` in a folder `cadre init` wrote; the node then waits to be claimed again). To run in the same cadre once an owner has added the machine back, delete only `removed.<partyId>.json`. On cadre-host, the admin's **Remove** deletes the node and its identity.
+## Command reference
 
-### Run it as a service
+Every command prints its options with `--help`. Commands that read a config take `-c, --config <path>` (default `cadre.yaml`), in YAML or JSON.
 
-`cadre service` prints a service definition that runs this node folder's `cadre start` at boot and restarts it when it exits, then (on stderr) the commands that install it. It writes nothing itself. All paths are absolute (this `node`, this package's `cadre.js`, the config), and the node needs no environment, since `cadre init` keeps the claim secret in the file the config names.
+### cadre init
 
-- **Linux, user unit (default):** a `systemctl --user` unit. Installing it needs no root, but `sudo loginctl enable-linger $USER` is what starts user services at boot and keeps them running after you log out.
+Sets up a folder for a node that waits to be claimed: identity key, claim secret, a config with absolute paths, and empty `state/` and `data/` directories. It adds `start` and `code` scripts to a `package.json` that lacks them. It refuses, writing nothing, when one of its files already exists.
+
+- `--dir <path>`: The node's folder, created when missing. Default: the current folder.
+- `--port <port>`, `--ws-port <port>`: libp2p TCP and WebSocket ports. Default `4001` and `4002`.
+- `--public <addr>`: Where phones reach the node from outside: `host`, `host:port`, `[ipv6]:port`, or a multiaddr such as `/dns4/node.example.com/tcp/443/wss`. The port defaults to `--ws-port`. Repeatable.
+
+Each `--public` becomes a `network.appendAnnounceAddrs` entry.
+
+### cadre start
+
+Starts the node and runs until SIGINT or SIGTERM, then stops its servers, the node and its storage. A configuration error or a refused combination of options prints `Failed to start cadre node: …` and exits with code 1.
+
+- `-d, --debug`: Enable the `cadre:*` and `sereus:*` debug logs.
+- `--identity-file <path>`: The node identity key file. Overrides `identity.keyFile` and `CADRE_KEY_FILE`.
+- `--ws-port <port>`: Append `/ip4/0.0.0.0/tcp/<port>/ws` to the listen addresses.
+- `--health-port <port>`, `--metrics-port <port>`: Server ports, default `8080` and `9090`. `CADRE_HEALTH_PORT` and `CADRE_METRICS_PORT` override the flags.
+- `--no-health-server`: Start neither server. `cadre status`, `cadre code` and `POST /seed` then cannot reach the node.
+- `--seed <encoded>`: Apply a seed at start-up ([Join with a seed](#join-with-a-seed)).
+- `--pin-owner-key <b64url>`: Trust this owner key as a seed signer on a node that lists no owner. Repeatable; added to `CADRE_OWNER_KEYS`.
+- `--listen-for-seeds`: Accept a seed that a member delivers by dialling this node ([Seed delivery protocol](https://github.com/gotchoices/sereus/blob/master/docs/cadre/membership.md#seed-delivery-protocol)). A node with a claim secret listens without this flag.
+- `--invitation <encoded>`, `--owner-grant <encoded>`: Redeem a cadre invitation or an owner grant at start-up. `CADRE_INVITATION` and `CADRE_OWNER_GRANT` carry the same values.
+- `--owner`, `--owner-label <text>`: Hold an owner key for the party, and label it when it founds the party ([Make this server an owner](#make-this-server-an-owner)).
+- `--owner-key-file <path>`: The owner key file, over `owner.keyFile`. Only with `--owner` or an owner grant.
+- `--admin-port <port>`: Bind the [admin channel](#admin-channel) on 127.0.0.1. Requires `CADRE_STARTUP_TOKEN`. `CADRE_ADMIN_PORT` overrides the flag.
+- `--startup-token-file <path>`: Write `CADRE_STARTUP_TOKEN` to this file before any port is bound, for an orchestrator that checks a live process is the one it started.
+
+### cadre code
+
+Prints the node code that the owner's phone scans to claim this node: `sereus-join:1.<base64url>`, holding the peer ID, addresses and claim secret. Only the code goes to stdout.
+
+The command reads the peer ID and addresses from the running node's `/status`. It exits with code 3 when no node answers, and refuses a node that is not waiting to be claimed. It reads the secret itself, from `claim.secretFile` or `CADRE_CLAIM_SECRET`, so a node started with a different secret refuses the code. By default the code carries public names from `network.appendAnnounceAddrs`, then the machine's primary LAN address.
+
+- `--lan <ip>`, `--no-lan`: Use this LAN address instead of the primary one, or none.
+- `--addr <multiaddr>`: Put exactly these addresses in the code, in order. Repeatable.
+- `--all`: Keep every address the node reports, including TCP addresses, Docker bridges and VPN interfaces.
+- `--qr`, `--png <file>`, `--svg <file>`: Also draw a QR code in the terminal, or write it as an image with mode 600, because it carries the secret.
+- `--open`: Open the image in the desktop's viewer; without an image option, a temporary PNG.
+- `--link <url>`: Print `<url>#sereus-join:1.…` and encode that in the QR code. A browser never sends the fragment to a server.
+
+`cadre code` and `cadre status` find the node with `--health-host <host>` (default `localhost`), `--health-port <port>` (default `8080`; `CADRE_HEALTH_PORT` overrides the flag) and `--timeout <ms>` (default `2000`).
+
+### cadre service
+
+Prints a service definition that runs this node's `cadre start` at boot and restarts it when it fails, then prints on stderr the commands that install it. It writes no file. Stop a copy of the node running in a terminal first, because both would bind the same ports. `--name <name>` (default `cadre-node`) names the service, and `--health-port` and `--metrics-port` are passed on to `cadre start`.
+
+- **Linux (default):** a `systemctl --user` unit, installed without root.
+
   ```bash
   mkdir -p ~/.config/systemd/user
   npx cadre service > ~/.config/systemd/user/cadre-node.service
   systemctl --user daemon-reload && systemctl --user enable --now cadre-node
-  sudo loginctl enable-linger $USER
+  sudo loginctl enable-linger $USER   # start at boot, keep running after logout
   ```
-- **Linux, `--system`:** a system unit run as you (`User=`), installed with sudo; no linger needed.
-  ```bash
-  npx cadre service --system | sudo tee /etc/systemd/system/cadre-node.service >/dev/null
-  sudo systemctl daemon-reload && sudo systemctl enable --now cadre-node
-  ```
-- **macOS:** a launchd agent (`~/Library/LaunchAgents/org.sereus.cadre-node.plist`), logging into the node folder.
 
-`--name` changes the service name (to run several nodes; letters, digits, `.`, `_` and `-`), `-c` points at another config, and `--health-port` / `--metrics-port` are passed to `cadre start`. Stop a copy running in a terminal first: the two would hold the same ports. The systemd unit sets `NoNewPrivileges=` and no file-system sandboxing, because the node folder can be anywhere its account can write. The [systemd unit in `contrib/`](./contrib/cadre-node.service) remains the template for a sandboxed node run by a dedicated `cadre` system user with `/etc/cadre` and `/var/lib/cadre`.
+- **Linux, `--system`:** a system unit installed with sudo and run as the current account.
+- **macOS:** a launchd agent, `~/Library/LaunchAgents/org.sereus.cadre-node.plist`, logging into the node folder.
 
-### The node code
+The systemd unit applies no file-system sandboxing; [Linux server deployment](#linux-server-deployment) is the sandboxed layout. The command fails on Windows.
 
-`cadre code` asks the running node (its health `/status`, `--health-port` or `CADRE_HEALTH_PORT`) for its peer ID and addresses, reads the claim secret from `claim.secretFile` or `CADRE_CLAIM_SECRET`, and prints the code the owner's phone scans: `sereus-join:1.<base64url>`, cadre-core's `encodeNodeClaimPayload`, the same code cadre-host shows. It refuses a node that is not `awaiting` a claim.
+### cadre status
 
-The code carries only addresses a phone can use (cadre-core's `selectNodeClaimAddresses`, the same rule cadre-host applies): public names first (`network.appendAnnounceAddrs`, which work away from home; raw public IPs only when there is no name), then one LAN address, the machine's primary one. A phone has no TCP transport and dials each address in turn on its own timeout, so TCP, Docker bridges, VPNs and other interfaces are left out; a shorter code is also a smaller QR code.
+Prints the config file's summary and the live state of a running node, read from its `/status` endpoint. A missing or invalid config is not fatal: the command warns and still queries the node. It exits with code 3 when no node answers. `--json` prints `{ config, runtime }`, where `runtime.reachable` says whether a node answered.
 
-- `--lan <ip>` names the LAN address instead; `--no-lan` leaves LAN addresses out (a machine reached by its public name only).
-- `--addr <multiaddr>` (repeatable) puts exactly those addresses in the code.
-- `--all` keeps every address the node reports, TCP and every interface included (a raw public IP still gives way to a public name).
+### cadre enroll
 
-- `--qr` also draws it as a QR code in the terminal.
-- `--png <file>` / `--svg <file>` write it as an image (mode 600, since it carries the secret), on any platform.
-- `--open` opens that image in the desktop's viewer (macOS, Windows, Linux with `DISPLAY` or `WAYLAND_DISPLAY`), writing a temporary PNG when neither image option is given; without a display it says so.
-- `--link <url>` prints `<url>#sereus-join:1.…` and encodes that in the QR code instead. The code rides in the fragment, which browsers never send to a server. Which URL opens which app is the app's to define (a Universal Link or App Link for its domain).
+#### cadre enroll create
 
-Only the code goes to stdout, so `cadre code > code.txt` captures exactly it. Whoever uses the code first owns the node: show it only to the phone that should claim it.
+Creates a node identity: `<name>.key`, the private key with mode 600, and `<name>.id`, the peer ID. `-o, --output <path>` is the directory (default `.`) and `--name <name>` the file prefix (default `cadre-peer`). The key file is a libp2p protobuf-encoded private key, the only format `identity.keyFile` accepts. An existing key file is never overwritten.
 
-### Strands
+#### cadre enroll add
 
-List the strands this node is running (`cadre strands` is an alias for `cadre strand list`):
+`cadre enroll add <peerId>` has a running owner node admit a machine, and prints the seed that machine starts with ([Join with a seed](#join-with-a-seed)). It and the next two commands reach the owner node's admin channel with:
 
-```bash
-cadre strand list -c cadre.yaml
-cadre strand list --json          # payload on stdout, progress on stderr — pipes into jq
-```
+- `--admin-port <port>`, else `CADRE_ADMIN_PORT`.
+- `--token-file <path>`, a file holding the admin token as `cadre start --startup-token-file` writes it, else `CADRE_STARTUP_TOKEN`. The token is never a flag value.
+- `--timeout <ms>` per request, default `30000`.
 
-Remove a strand. This deletes **this party's** `Strand` row, so every cadre node in the party
-stops running the strand as soon as its strand watcher hears the change. Other *parties* in that strand are
-unaffected — removal withdraws our participation, it does not destroy the network. The write
-is owner-signed, so the node's owner key file must hold one of the party's owner keys ([Make this server an owner](#make-this-server-an-owner)).
+`--addr <multiaddr>` (repeatable) gives the new machine's dialable address, so that the owner dials it. `--json` prints `{ peerId, partyId, signerKey, seedAddrs, encodedSeed, warnings }` instead of the bare seed.
 
-```bash
-cadre strand remove <strandId>
-cadre strand remove <strandId> --yes      # required for a closed strand
-cadre strand remove <strandId> --json
-```
+#### cadre enroll invite
 
-Removing a **closed** strand is irreversible and requires `--yes`: the row carries this
-party's membership key for that network, the key is stored nowhere else, and once it is gone
-the party can never admit another member to that strand. Without `--yes` the command refuses
-and exits non-zero (under `--json` it prints a structured refusal rather than removing).
-`--yes` is not needed for an open strand.
+Has a running owner node mint a cadre invitation and prints it ([Join by invitation](#join-by-invitation)). Stderr describes the invitation and lists the member addresses a device will try.
 
-A strand that was never published is not an error — the command reports "nothing to do" and
-exits 0.
+- `--peer-id <id>` admits only that device. Without it, whichever device redeems first is admitted.
+- `--ttl <duration>` is the lifetime, such as `30m`, `24h` or `7d`. Default `24h`.
+- `--uses <n>` is how many devices may redeem it. Default `1`.
+- `--json` prints `{ invitation, encoded }`.
 
-One caveat the CLI cannot paper over: a removal that commits while this node has **no**
-control-network connections is local-only, and a physical delete cannot be re-issued the way
-an insert can, so siblings may keep running the strand when they come back. Remove while the
-node is connected. See "Deletes made while alone" in
-[`docs/architecture.md`](../../docs/architecture.md#deletes-made-while-alone).
+#### cadre enroll owner-grant
 
-### Approver Keys
+Has a running owner node mint an owner grant and prints it. Whoever holds the grant can become an owner of the cadre until it is used, expires or is withdrawn.
 
-An invitation may carry a validation URL: a web hook an outside approver operates, which has
-to sign off before the invitation can be redeemed. `validation-key` is how the party says
-which approvers it trusts — a party with none enrolled cannot use such invitations at all.
+- `--label <text>` is the label every key the grant seats carries, at most 64 characters.
+- `--ttl <duration>` is the lifetime, default `15m`. `never` makes a backup grant with no expiry, to be kept as carefully as an owner key. It names the cadre's machine addresses as they are when it is minted, and stops working if all of them change.
+- `--uses <n>` is how many keys it may make owners. Default `1`.
+- `--json` prints `{ grant, encoded, reach, warnings }`.
 
-These writes are owner-signed: the node's owner key file must hold one of the party's owner keys ([Make this server an owner](#make-this-server-an-owner)).
+#### cadre enroll register
+
+Verifies an owner's signature over a peer ID, offline: it contacts no network and registers nothing. `-p, --peer-id`, `-a, --owner-key`, `-s, --signature` and `-b, --bootstrap` are all required.
+
+### cadre owner-key
+
+Shows, exports or imports the key in the owner key file ([Exporting and importing an owner key](https://github.com/gotchoices/sereus/blob/master/docs/cadre/owner-keys.md#exporting-and-importing-an-owner-key)). Each subcommand takes `--owner-key-file <path>` and otherwise finds the file as `cadre start` does.
+
+A passphrase comes from `--passphrase-file <path>` or `CADRE_OWNER_KEY_PASSPHRASE`, never from an argument, which shell history and the process list would keep. Giving both is refused.
+
+#### cadre owner-key show
+
+Prints the public key, the 8-character fingerprint the apps show, and the file path. `--json` prints `{ publicKey, fingerprint, file }`.
+
+#### cadre owner-key export
+
+Prints the key as text on stdout. The text is the private key: whoever holds it is an owner of every cadre that lists the key. `--passphrase-file` locks the export, and `--label <text>` names it.
+
+#### cadre owner-key import
+
+`cadre owner-key import [text]` stores an exported key in the owner key file. It reads the text from stdin when the argument is `-` or absent, which keeps an unlocked key out of shell history. The command refuses a file that holds a different key. An export from the Sereus apps imports the same way.
 
 ```bash
-cadre validation-key list -c cadre.yaml
-cadre validation-key list --json            # ["<key>", ...]
-cadre validation-key add <base64url-public-key>
-cadre validation-key remove <base64url-public-key>
+cadre owner-key export --passphrase-file ./passphrase > owner-key.txt
+cadre owner-key import --passphrase-file ./passphrase < owner-key.txt
 ```
 
-Rotate by adding the new key **before** removing the old one: removing the last enrolled key
-leaves every outstanding validation-gated invitation unredeemable until a key is enrolled.
-Removal only narrows who may approve *future* redemptions — joins already approved by the
-removed key stay valid.
+### cadre strand
+
+`cadre strand` and `cadre validation-key` do not talk to a running node. Each starts a node of its own from the config, waits up to 30 seconds to connect to the control network, acts and stops ([Limits](#limits)). Both take `--json` and `-d, --debug`.
+
+#### cadre strand list
+
+Lists the strands the command's node runs, each with its status, latency hint, peer count, last activity and sApp. `cadre strands` and a bare `cadre strand` are the same command.
+
+#### cadre strand remove
+
+`cadre strand remove <strandId>` deletes this party's `Strand` row, so every node of the party stops running the strand. Other parties in the strand are unaffected, and the strand's stored data stays on disk. The write is owner-signed: the owner key file must hold one of the party's owner keys.
+
+- A **closed** strand is refused without `--yes`, with exit code 1. Its row holds the only copy of this party's membership key for that strand, without which the party can never admit another member.
+- A strand with no row reports "nothing to do" and exits 0. The command does not wait for the control database to sync, so it may not see a row that exists.
+- A removal committed while the node has no control-network connection stays on this machine ([Deletes made while alone](https://github.com/gotchoices/sereus/blob/master/docs/cadre/control-convergence.md#deletes-made-while-alone)).
+
+### cadre validation-key
+
+A formation invitation may carry a validation URL: a web hook run by an outside approver, who must sign off before the invitation is redeemed ([Formation approval hook](https://github.com/gotchoices/sereus/blob/master/docs/formation-approval-hook.md)). These commands manage the approver keys the party trusts; a party with none enrolled cannot use such invitations. `add` and `remove` are owner-signed.
+
+#### cadre validation-key list
+
+Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
+
+#### cadre validation-key add
+
+`cadre validation-key add <key>` enrolls a base64url Ed25519 public key.
+
+#### cadre validation-key remove
+
+`cadre validation-key remove <key>` removes a key. To rotate, add the new key first: removing the last enrolled key leaves every outstanding invitation that needs approval unredeemable until a key is enrolled. Joins the removed key already approved stay valid.
 
 ## Configuration
 
-See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration example.
+`cadre start` reads one YAML or JSON file; [`example.cadre.yaml`](https://github.com/gotchoices/sereus/blob/master/packages/cadre-cli/example.cadre.yaml) is a commented example. Every key is checked at start, after the environment variables have been written over the file. An unknown key, a wrong type or a missing required key stops the node, with one error that lists every problem and its source: the file, or a `CADRE_*` variable.
 
-Every key in the file is checked at start, after the environment variables below have been
-applied. An unknown or misspelled key (`network.listenAddr` — the error suggests
-`listenAddrs`), a retired key (`identity.protobufKeyFile`), a value of the wrong type
-(`hibernation.enabled: "yes"`, `storage.type: fs`), or a missing required key
-(`controlNetwork.partyId`) stops the node with an error naming the key and its source — the
-config file, or the `CADRE_*` variable that supplied the value. Every problem in the file is
-reported in one run, one per line, so a hand-edited file is fixed in one pass. There is no
-warn-only mode: a setting the node does not recognise was never doing anything, and the node
-says so rather than starting without it.
+| Key | Variable | Meaning |
+|---|---|---|
+| `controlNetwork.partyId` | `CADRE_PARTY_ID` | Required. The party's ID; a placeholder on a node waiting to be claimed |
+| `controlNetwork.bootstrapNodes` | `CADRE_BOOTSTRAP_NODES` | Required. Multiaddrs of the party's machines to dial at start; `[]` when there are none |
+| `profile` | `CADRE_PROFILE` | Required. `storage` for an always-on node, else `transaction` ([Node profiles](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-profiles)) |
+| `identity.keyFile` | `CADRE_KEY_FILE` | The node's private key file. Without it the node has a new peer ID on every start |
+| `nodeState.dir` | `CADRE_NODE_STATE_DIR` | Directory for the node's own durable files. Default: the config file's directory |
+| `storage.type`, `storage.path`, `storage.quotaBytes` | `CADRE_STORAGE_TYPE`, `CADRE_STORAGE_PATH`, `CADRE_STORAGE_QUOTA` | `file` or `memory`, the data directory that `file` requires, and a quota in bytes |
+| `strandFilter` | `CADRE_STRAND_FILTER` | The strands this node runs: `all` (default), `none`, `{ sAppId: "…" }` or `{ strandId: "…" }`; JSON in the variable ([Strand filtering](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#strand-filtering)) |
+| `hibernation.enabled`, `hibernation.defaultLatencyHint` | `CADRE_HIBERNATION_ENABLED`, `CADRE_LATENCY_HINT` | Whether idle strands hibernate (they do not when the block is absent), and the default hint: `realtime`, `interactive`, `background` or `archive` ([States](https://github.com/gotchoices/sereus/blob/master/docs/strands/hibernation.md#states)) |
+| `strandWatchInterval` | `CADRE_STRAND_WATCH_INTERVAL` | The longest the strand watcher goes without re-reading its tables. Default `300000` ms |
+| `owner.keyFile` | `CADRE_OWNER_KEY_FILE` | The owner key file. Default: `owner.key` in the node-state directory |
+| `claim.secretFile` | `CADRE_CLAIM_SECRET_FILE` | File holding the claim secret |
 
-### Environment Variables
+`strandReactivity` and `push` (variable `CADRE_PUSH`) have sections of their own. `storage.type` and `hibernation.enabled` are required when their block is present. Relative paths in `identity.keyFile`, `owner.keyFile` and `claim.secretFile` resolve against the working directory, not the config file's directory.
 
-| Variable | Config Path | Description |
-|----------|-------------|-------------|
-| `CADRE_PARTY_ID` | `controlNetwork.partyId` | Party/control network UUID. A placeholder (`unclaimed`) on a node waiting to be claimed, and ignored once a claim is on record ([Waiting to be claimed](#waiting-to-be-claimed)) |
-| `CADRE_BOOTSTRAP_NODES` | `controlNetwork.bootstrapNodes` | Comma-separated multiaddrs |
-| `CADRE_PROFILE` | `profile` | Node profile (transaction/storage) |
-| `CADRE_KEY_FILE` | `identity.keyFile` | Path to the node's private key file — a libp2p protobuf-encoded private key, the one accepted identity format (written by `cadre enroll create`, and by cadre-host as each node's `identity.key`). A file in any other shape fails startup rather than being guessed at. `cadre start --identity-file <path>` sets this, so the flag outranks the config file |
-| `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
-| `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
-| `CADRE_STORAGE_QUOTA` | `storage.quotaBytes` | Storage quota in bytes (a whole number) |
-| `CADRE_LISTEN_ADDRS` | `network.listenAddrs` | Comma-separated multiaddrs to listen on. An entry naming a relay (`<relay addr>/p2p-circuit`) fails startup — use `CADRE_RELAY_ADDRS`, which reserves the slot after the control database is up. Only the **control node** binds these as written: a machine also runs one node per strand, and each of those binds the same entries with the port rewritten to `0`, since one port cannot be held twice. A port forwarded through NAT therefore reaches the control node only. Only TCP, WebSocket (`/ws`, `/wss`) and circuit-relay entries are bindable from config — anything else (`/quic-v1`, `/webrtc`, `/webtransport`) fails startup naming the address and the libp2p package it would need, since a config file cannot supply a transport factory |
-| `CADRE_ANNOUNCE_ADDRS` | `network.announceAddrs` | Comma-separated multiaddrs to advertise **instead of** `listenAddrs`. A non-empty value replaces everything the node advertises, including the `/p2p-circuit` address a `relayAddrs` reservation earns it — the node warns at start when both are set. **Control node only**: any entry names a port, and that port is the control node's, so strand nodes drop it rather than advertise an address that reaches the wrong node. A malformed entry fails startup |
-| `CADRE_APPEND_ANNOUNCE_ADDRS` | `network.appendAnnounceAddrs` | Comma-separated multiaddrs to advertise **in addition to** `listenAddrs` — the usual way to publish a reachable address without discarding the rest. Ignored while `announceAddrs` is non-empty. **Control node only**, on the same terms as `CADRE_ANNOUNCE_ADDRS`. A malformed entry fails startup |
-| `CADRE_ENABLE_RELAY` | `network.enableRelay` | `true`/`1` enables this node's circuit-relay server, `false`/`0` disables it; any other value fails startup. Unset ⇒ profile default (on for storage, off for transaction) |
-| `CADRE_STRAND_FILTER` | `strandFilter` | `all`, `none`, or a JSON object — `{"sAppId":"myapp"}` / `{"strandId":"<id>"}`. A malformed value fails startup rather than degrading to `all` |
-| `CADRE_PUSH` | `push` | FCM/APNs credentials as a JSON object (e.g. `{"fcm":{…},"apns":{…}}`), injected per node by an orchestrator. A malformed or partial value fails startup |
-| `CADRE_RELAY_ADDRS` | `network.relayAddrs` | Comma-separated circuit-relay dial multiaddrs (each ending in the relay's peer id) to reserve a slot on, so peers can reach this node from behind NAT. The node listens on a bare `/p2p-circuit` alongside `listenAddrs` and reserves at the end of startup, once its control database is up. A malformed entry fails startup, and so does a relay that grants no reservation on the first attempt (~10 s) — naming a relay means the node does not come up without one |
-| `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation (`true`/`false`/`1`/`0`) |
-| `CADRE_LATENCY_HINT` | `hibernation.defaultLatencyHint` | Default latency hint: `realtime`, `interactive`, `background` or `archive` |
-| `CADRE_STRAND_WATCH_INTERVAL` | `strandWatchInterval` | Strand watcher backstop in milliseconds (default 300000): the watcher re-reads on every change to its tables, and at least this often otherwise. Also caps its retry ladders' first step, 5 s otherwise |
-| `CADRE_OWNER_KEY_FILE` | `owner.keyFile` | The owner key file `cadre start --owner`, `cadre start --owner-grant` and the owner-signed commands use ([Make this server an owner](#make-this-server-an-owner)); same format as the identity file, never the same file. Defaults to `owner.key` in the node-state directory. `--owner-key-file <path>` sets this |
-| `CADRE_CLAIM_SECRET_FILE` | `claim.secretFile` | File holding the claim secret, the file form of `CADRE_CLAIM_SECRET` ([Waiting to be claimed](#waiting-to-be-claimed)); `cadre init` writes it. Setting both is refused |
-| `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets, the claim record `claim.json`, the removal marker `removed.<partyId>.json`). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
-| `CADRE_HEALTH_PORT` | _(env only)_ | Health server port for `cadre start`, and the port `cadre status` queries; the env value wins over `--health-port` |
-| `CADRE_METRICS_PORT` | _(env only)_ | Metrics server port for `cadre start`; the env value wins over `--metrics-port` |
-| `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
-| `CADRE_STARTUP_TOKEN` | _(env only)_ | Bearer token for the loopback admin channel. `cadre start --admin-port` refuses to bind the channel without it; `cadre enroll add`, `cadre enroll invite` and `cadre enroll owner-grant` present it (or read it from `--token-file`). `cadre start --startup-token-file <path>` writes it to that file |
-| `CADRE_ADMIN_PORT` | _(env only)_ | Admin channel port: what `cadre start` binds on `127.0.0.1` (the env value wins over `--admin-port`), and the port `cadre enroll add`, `cadre enroll invite` and `cadre enroll owner-grant` connect to when they are not given `--admin-port` |
-| `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor. Each entry must be a base64url 32-byte Ed25519 public key; a malformed entry fails startup naming the bad value, rather than sitting in the anchor and silently matching no signer |
-| `CADRE_CLAIM_SECRET` | _(env only)_ | Start the node waiting to be claimed ([Waiting to be claimed](#waiting-to-be-claimed)): a one-time secret, base64url of 32 random bytes. The claim names the party; `controlNetwork.partyId` is a placeholder. A malformed value fails startup without echoing it; a set-but-empty value means no claim. May stay set after the claim. Cannot be combined with `--owner`, `--seed`, `--invitation`, `CADRE_INVITATION`, `--owner-grant`, `CADRE_OWNER_GRANT`, `--pin-owner-key` or `CADRE_OWNER_KEYS` |
-| `CADRE_OWNER_KEY_PASSPHRASE` | _(env only)_ | The passphrase `cadre owner-key export` locks an export with and `cadre owner-key import` unlocks one with; the environment form of `--passphrase-file`. Setting both is refused |
-| `CADRE_INVITATION` | _(env only)_ | `cadre start --invitation` without the argument ([Join by invitation](#join-by-invitation-the-owner-may-be-offline)): the encoded bundle `cadre enroll invite` prints, kept out of the process list because it carries the invitation's private key. A set-but-empty value means none. Refused beside `--invitation`; cannot be combined with `--seed`, `--owner` or `CADRE_CLAIM_SECRET`. `/status` then reports `node.invitation` |
-| `CADRE_OWNER_GRANT` | _(env only)_ | `cadre start --owner-grant` without the argument ([With an owner grant](#with-an-owner-grant)): the grant `cadre enroll owner-grant` prints, kept out of the process list because whoever holds it can become an owner. A set-but-empty value means none. Refused beside `--owner-grant`; cannot be combined with `--seed`, `--invitation`, `CADRE_INVITATION` or `CADRE_CLAIM_SECRET`. `/status` then reports `node.ownerGrant` |
+### Listen and announce addresses
 
-Environment variables override config file values. A variable that is **set but
-empty** (or whitespace-only) counts as unspecified and is ignored — this is what
-`docker-compose.yml`'s `${CADRE_ENABLE_RELAY:-}`-style defaults produce for an
-optional variable the operator never set, and it must not clobber what the
-config file says. To force a value off, set it explicitly (e.g.
-`CADRE_ENABLE_RELAY=false`).
+| Key | Variable | Meaning |
+|---|---|---|
+| `network.listenAddrs` | `CADRE_LISTEN_ADDRS` | Multiaddrs to bind. Default: one TCP port chosen by the OS |
+| `network.appendAnnounceAddrs` | `CADRE_APPEND_ANNOUNCE_ADDRS` | Addresses to advertise as well: how to publish a forwarded or public address |
+| `network.announceAddrs` | `CADRE_ANNOUNCE_ADDRS` | Addresses to advertise instead of all others, a relay address included |
+| `network.relayAddrs` | `CADRE_RELAY_ADDRS` | Circuit relays to reserve a slot on, each a dial address ending in the relay's peer ID |
+| `network.enableRelay` | `CADRE_ENABLE_RELAY` | Run a circuit-relay server. Default: on for `storage`, off for `transaction` |
 
-A set `CADRE_*` variable the node does not recognise **fails startup**, naming it
-and suggesting the nearest known name — a misspelled variable is otherwise a
-setting silently not applied. Recognised are the variables in the table above,
-plus three read by the launchers around the CLI rather than by the CLI itself:
-`CADRE_CONFIG` (the systemd unit's config path), and `CADRE_CONFIG_FILE` and
-`CADRE_DEBUG` (the Docker entrypoint's). Names beginning `CADRE_HOST_` belong to
-cadre-host and are skipped. The retired `CADRE_IDENTITY_PROTOBUF` fails startup
-with a pointer to `CADRE_KEY_FILE`.
+Three more keys have no variable: `network.unauthorizedRelayReservationCap` (default `8`), `network.linkRoundTripMs` (default `3500`; set the same value on every machine of a party) and `network.cohortQueryTimeoutMs` (default: two link round trips). [Configuration](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#configuration) and [Deadlines and the link budget](https://github.com/gotchoices/sereus/blob/master/docs/network/deadlines.md) say what they govern.
+
+- **Bindable transports.** A config file can bind TCP and WebSocket (`/ws`, `/wss`) addresses only.
+- **Relays.** Name a relay in `relayAddrs`, not as a `/p2p-circuit` listen address. When no named relay grants a reservation on the first attempt, the start fails ([Relays](https://github.com/gotchoices/sereus/blob/master/docs/network/relay.md)).
+- **Strand nodes.** The configured ports and announce addresses belong to the machine's control node. Each strand's node binds an OS-assigned port, so a forwarded port does not reach it.
 
 ### Strand change notifications
 
-`strandReactivity` turns on Optimystic's change notifications for this node's strand
-nodes, so an app on another machine is woken when a strand table it watches changes,
-instead of polling for it. It is off when absent and has no environment variable.
+`strandReactivity` turns on change notifications on this node's strand nodes, so that an app on another machine is told when a strand table it watches changes, instead of polling. It is off when absent.
 
 ```yaml
 strandReactivity:
-  enabled: true          # required; the boolean true, nothing else enables it
+  enabled: true          # required
   strandIds:             # optional; absent or empty means every strand this node runs
     - "<strand id>"
 ```
 
-It takes effect when a strand's node is next built (a restart, or the strand's next wake
-from hibernation), only reaches tables the sApp tags `"optimystic.network_watch" = true`,
-and should be enabled on every machine serving the strand. What enabling exposes and
-costs is in [`docs/strands.md` → Change notifications
-(reactivity)](../../docs/strands.md#change-notifications-reactivity).
+It takes effect at a restart or at the strand's next wake from hibernation, and should be enabled on every machine serving the strand. [Change notifications](https://github.com/gotchoices/sereus/blob/master/docs/strands/app-schema.md#change-notifications) says what enabling exposes and costs.
 
-## Linux Server Deployment
+### Push credentials
 
-This section covers production deployment on Linux using systemd. Works with either installation method.
+A `push` block gives the node the FCM and APNs credentials with which a node wakes the party's suspended phones ([Push wake](https://github.com/gotchoices/sereus/blob/master/docs/strands/hibernation.md#push-wake)). The credentials alone send nothing: a node sends a wake only when the program that runs it reports strand activity with `CadreNode.notifyStrandActivity`, and `cadre start` never does (ticket `passive-strand-activity-fanout-detector`).
 
-### Prerequisites
-
-You will need:
-- **Party ID**: UUID identifying your control network
-- **Bootstrap nodes**: Multiaddr(s) of existing nodes to connect to
-
-### Port Requirements
-
-All ports are unprivileged (>1024) — no root or special capabilities needed:
-
-| Port | Purpose |
-|------|---------|
-| 4001 | libp2p P2P networking |
-| 8080 | Health probes (`/health`, `/ready`, `/status`) — read-only by default. `POST /seed` is authenticated and **off unless `CADRE_SEED_TOKEN` is set** (then requires `Authorization: Bearer <token>`) |
-| 9090 | Prometheus metrics (`/metrics`) — read-only; keep off the public internet |
-
-Only port **4001** should be reachable from the public internet:
-
-```bash
-sudo ufw allow 4001/tcp comment "Sereus libp2p"
+```yaml
+push:
+  fcm:
+    projectId: my-firebase-project
+    clientEmail: push@my-firebase-project.iam.gserviceaccount.com
+    privateKey: "-----BEGIN PRIVATE KEY-----\n…"
+  apns:
+    keyId: ABC123DEFG
+    teamId: TEAM123456
+    bundleId: org.example.app
+    privateKey: "-----BEGIN PRIVATE KEY-----\n…"
+    production: true       # false or absent: Apple's sandbox host
+  cooldownMs: 300000       # optional: minimum gap between wakes for one peer and strand
+  debounceMs: 10000        # optional: window in which repeated activity on a strand sends one wake
 ```
 
-**Do not** open 8080 (health/seed) or 9090 (metrics) to the public internet —
-keep them on loopback or a trusted management network. The Docker Compose
-template binds both to `127.0.0.1` by default (override per port with
-`HOST_HEALTH_BIND` / `HOST_METRICS_BIND`, e.g. `0.0.0.0`, only behind a
-firewall). `POST /seed` is additionally bearer-gated and is not registered at
-all unless `CADRE_SEED_TOKEN` is set, so the health port carries no
-remotely-mutable surface in the default configuration.
+Either platform block may be omitted. A block that is present must carry every field shown except `production`; a partial block stops the start. `CADRE_PUSH` supplies the whole block as one JSON object. Keep a config file that holds these keys readable by the node's account only.
 
-### Dedicated User vs Regular User
+### Environment variables
 
-**Dedicated `cadre` user (recommended for production):**
-- Security isolation — compromise is contained
-- Systemd hardening features work effectively
-- Standard practice for long-running services
+A variable overrides the config file. Lists are comma-separated, and booleans are `true`, `false`, `1` or `0`. A variable that is set but empty counts as unset, so a Compose default such as `${CADRE_ENABLE_RELAY:-}` does not override the file. An unrecognised `CADRE_*` variable stops the start, except names beginning `CADRE_HOST_`, which belong to cadre-host.
 
-**Regular login user (fine for development):**
-- Simpler setup and debugging
-- Direct file access
-- Run interactively in tmux/screen
+Besides the variables in the [Configuration](#configuration) tables, the commands read ten directly, each described with its option or route: `CADRE_HEALTH_PORT`, `CADRE_METRICS_PORT`, `CADRE_ADMIN_PORT`, `CADRE_STARTUP_TOKEN`, `CADRE_SEED_TOKEN`, `CADRE_OWNER_KEYS` (comma-separated owner keys to pin), `CADRE_CLAIM_SECRET`, `CADRE_INVITATION`, `CADRE_OWNER_GRANT` and `CADRE_OWNER_KEY_PASSPHRASE`.
 
-### Data Locations
+`CADRE_CONFIG`, `CADRE_CONFIG_FILE` and `CADRE_DEBUG` are accepted too: the systemd unit and the Docker entrypoint read them.
 
-| Deployment | Config | Keys | Strand Data | Node State |
-|------------|--------|------|-------------|------------|
-| Systemd (dedicated user) | `/etc/cadre/cadre.yaml` | `/etc/cadre/cadre-peer.key` | `/var/lib/cadre/` | `/var/lib/cadre/` (unit sets `CADRE_NODE_STATE_DIR`) |
-| Development (regular user) | `./cadre.yaml` | `./cadre-peer.key` | `./data/` | `./` (config file's directory) |
-| Docker | Volume `/data/cadre.yaml` | Volume `/data/cadre-peer.key` | Volume `/data/storage/` | Volume `/data/` (config file's directory) |
+## HTTP endpoints
 
-**Node State** holds the trusted-owner anchor (`trusted-owners.<partyId>.json`)
-and the retained cold-start dial targets (`bootstrap-peers.<partyId>.json`) —
-non-replicated, per-party, and required for the node to keep its out-of-band
-trust and its way back into the party across restarts. It also holds each
-strand's saved routing table (`strand-network.<partyId>.json`), which a
-restarted node uses to reach the strand's other members again, and, once an
-owner has removed the node from a cadre, the marker that keeps it stopped
-(`removed.<partyId>.json`, see [Removed from the cadre](#removed-from-the-cadre)), and, on a
-server made an owner, the owner key file (`owner.key`, see
-[Make this server an owner](#make-this-server-an-owner)). It must be writable by the node's
-user, and it belongs in backups alongside the identity key.
+### Health and status
 
-### Installation Steps
+Served on the health port without a credential.
 
-The steps below use variables for paths. Set them based on your installation method:
+- `GET /health`, `GET /`: 200 with `{ "status": "healthy" }` while the node runs. 503 with `starting` before that, or `unhealthy` on a node removed from its cadre.
+- `GET /ready`: 200 with `{ "ready": true }` while the node runs, else 503.
+- `GET /status`: 200 with the status object.
+
+The status object is `HealthStatus` in [`src/server/health.ts`](src/server/health.ts). Besides the node's addresses, its party, and its strand and connection counts, it carries under `node` the `claim` state (`none`, `awaiting` or `claimed`, with `claimedBy`) and the `invitation`, `ownerGrant` and `removed` records.
+
+### Metrics
+
+`GET /metrics` on the metrics port answers in Prometheus text format: `cadre_node_running`, `cadre_node_uptime_seconds`, and gauges named `cadre_strands_*` (total and by state) and `cadre_connections_*` (total, relayed, direct, stuck on a relay, and by transport).
+
+### Seed delivery
+
+`POST /seed` on the health port exists only when `CADRE_SEED_TOKEN` is set. An orchestrator uses it to deliver a seed to a running node.
 
 ```bash
-# === Choose ONE block ===
-
-# For npm install:
-CADRE_ROOT="/opt/cadre"
-CADRE_BIN="$CADRE_ROOT/node_modules/.bin/cadre"
-CADRE_PKG="$CADRE_ROOT/node_modules/@serfab/cadre-cli"
-
-# For git clone:
-CADRE_ROOT="/opt/sereus"
-CADRE_BIN="node $CADRE_ROOT/packages/cadre-cli/dist/bin/cadre.js"
-CADRE_PKG="$CADRE_ROOT/packages/cadre-cli"
+curl -X POST http://localhost:8080/seed \
+  -H "Authorization: Bearer $CADRE_SEED_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"seed":"<encoded seed>"}'
 ```
 
-#### 1. Create service user and directories
+It answers 200 with the result of applying the seed, 400 when the seed is malformed or refused, 401 without a matching token, and 413 for a body over 256 KiB. The token decides who may deliver a seed; the seed's signer must still be an owner key the node trusts or has pinned.
+
+### Admin channel
+
+`cadre start --admin-port <port>` binds an HTTP server on 127.0.0.1 for the `cadre enroll` commands and cadre-host. Every request carries `Authorization: Bearer <CADRE_STARTUP_TOKEN>`. Answers are `{ "ok": true, "data": … }` or `{ "ok": false, "error": { "code", "message" } }`, with the codes `not_authorized` (401), `bad_request` (400), `confirmation_required` (428), `not_ready` (503: the node is not started, or holds no owner key for a route that signs) and `internal` (500).
+
+The routes, all under `/admin`, are `GET identity`, `GET multiaddrs`, `GET members[/:peerId]`, `DELETE members/:peerId`, `GET authorized-members[/:peerId]`, `POST add-drone`, `GET` and `POST invites`, `DELETE invites/:key`, `GET` and `POST owner-grants`, `DELETE owner-grants/:key`, `GET strands`, `DELETE strands/:id` (a closed strand needs `?confirm=1`) and `PUT invite-addresses`. The `AdminServer` comment in [`src/server/admin-server.ts`](src/server/admin-server.ts) gives each route's purpose, request body and answer.
+
+## Files it writes
+
+- **In the node's folder,** from `cadre init`: `cadre.yaml`, `cadre-peer.key` (identity key), `cadre-peer.id` (peer ID) and `claim.secret`.
+- **In the node-state directory:**
+  - `claim.json`: the claim's party, owner key and time, never the secret.
+  - `removed.<partyId>.json`: the removal on record.
+  - `owner.key`: the owner key, created by `cadre start --owner`, an owner grant or `cadre owner-key import`.
+  - `trusted-owners.<partyId>.json`, `bootstrap-peers.<partyId>.json`, `enrolled-machines.<partyId>.json`, `strand-network.<partyId>.json`: the node's own stores ([Node-local state](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-local-state)).
+- **Under `storage.path`:** a directory per strand and one for the control database, each holding that database's blocks and a `store.lock` naming the process that has it open.
+
+Key and secret files are written with mode 600.
+
+Back up the identity key, the owner key file if there is one, and the node-state directory. Losing the identity key changes the node's peer ID, and the cadre then no longer recognises the machine.
+
+## Linux server deployment
+
+For a single account, `cadre init` and [`cadre service`](#cadre-service) are enough. This layout is the sandboxed alternative: a dedicated `cadre` system account, the config in `/etc/cadre`, and everything the node writes in `/var/lib/cadre`. The unit, [`contrib/cadre-node.service`](https://github.com/gotchoices/sereus/blob/master/packages/cadre-cli/contrib/cadre-node.service), is fetched from the repository because the npm package does not carry it.
 
 ```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin cadre
-sudo mkdir -p "$CADRE_ROOT" /etc/cadre /var/lib/cadre
-sudo chown cadre:cadre /var/lib/cadre
-```
+sudo mkdir -p /opt/cadre /etc/cadre /var/lib/cadre/data
+sudo chown -R cadre:cadre /var/lib/cadre
+cd /opt/cadre && sudo npm init -y && sudo npm install @serfab/cadre-cli
 
-#### 2. Install the package
+# identity key and claim secret, owned by the service account
+sudo -u cadre /opt/cadre/node_modules/.bin/cadre enroll create --output /var/lib/cadre --name cadre-peer
+sudo -u cadre sh -c 'umask 077 && node -e "console.log(require(\"crypto\").randomBytes(32).toString(\"base64url\"))" > /var/lib/cadre/claim.secret'
 
-**npm method:**
+# config for a node that waits to be claimed
+sudo tee /etc/cadre/cadre.yaml >/dev/null <<'EOF'
+identity:
+  keyFile: /var/lib/cadre/cadre-peer.key
+controlNetwork:
+  partyId: unclaimed
+  bootstrapNodes: []
+profile: storage
+claim:
+  secretFile: /var/lib/cadre/claim.secret
+nodeState:
+  dir: /var/lib/cadre
+storage:
+  type: file
+  path: /var/lib/cadre/data
+network:
+  listenAddrs:
+    - /ip4/0.0.0.0/tcp/4001
+    - /ip4/0.0.0.0/tcp/4002/ws
+  # appendAnnounceAddrs:                     # the name at which phones reach this machine
+  #   - /dns4/node.example.com/tcp/4002/ws
+EOF
+sudo chown root:cadre /etc/cadre/cadre.yaml && sudo chmod 640 /etc/cadre/cadre.yaml
 
-```bash
-cd /opt/cadre
-sudo npm init -y
-sudo npm install @serfab/cadre-cli @serfab/cadre-core
-```
-
-**git method:**
-
-```bash
-sudo git clone https://github.com/gotchoices/sereus.git /opt/sereus
-cd /opt/sereus
-sudo corepack enable
-sudo yarn install
-sudo yarn workspaces foreach -Rt --from '@serfab/cadre-cli' run build
-sudo chown -R root:root /opt/sereus
-```
-
-#### 3. Copy and edit configuration
-
-```bash
-sudo cp "$CADRE_PKG/example.cadre.yaml" /etc/cadre/cadre.yaml
-
-# Update paths for production layout
-sudo sed -i 's|path: ./data|path: /var/lib/cadre|' /etc/cadre/cadre.yaml
-sudo sed -i 's|keyFile: ./cadre-peer.key|keyFile: /etc/cadre/cadre-peer.key|' /etc/cadre/cadre.yaml
-
-sudo chmod 640 /etc/cadre/cadre.yaml
-sudo chown root:cadre /etc/cadre/cadre.yaml
-
-# Edit with your party ID and bootstrap nodes
-sudo nano /etc/cadre/cadre.yaml
-```
-
-#### 4. Generate peer identity
-
-```bash
-sudo -u cadre $CADRE_BIN enroll create --output /etc/cadre --name cadre-peer
-```
-
-#### 5. Install systemd service
-
-```bash
-sudo cp "$CADRE_PKG/contrib/cadre-node.service" /etc/systemd/system/
-
-# For git installs, update the ExecStart path:
-# sudo sed -i 's|/opt/cadre/node_modules/@serfab/cadre-cli|/opt/sereus/packages/cadre-cli|' \
-#   /etc/systemd/system/cadre-node.service
-# sudo sed -i 's|WorkingDirectory=/opt/cadre|WorkingDirectory=/opt/sereus|' \
-#   /etc/systemd/system/cadre-node.service
-
+# the unit; it runs /usr/bin/node, so edit its ExecStart when Node.js is installed elsewhere
+sudo curl -fsSL https://raw.githubusercontent.com/gotchoices/sereus/master/packages/cadre-cli/contrib/cadre-node.service \
+  -o /etc/systemd/system/cadre-node.service
 sudo systemctl daemon-reload
-sudo systemctl enable cadre-node
-sudo systemctl start cadre-node
+sudo systemctl enable --now cadre-node
+journalctl -u cadre-node -f                                                            # expect "✓ Awaiting claim"
+sudo -u cadre /opt/cadre/node_modules/.bin/cadre code -c /etc/cadre/cadre.yaml --qr    # the code to scan
 ```
 
-### Service Management
+- **Another way in.** For a seed, an invitation or an owner grant, set `controlNetwork.partyId` to the party's ID and remove the `claim` block. Put `CADRE_INVITATION` or `CADRE_OWNER_GRANT` in a drop-in (`sudo systemctl edit cadre-node`) for the first start and remove it afterwards.
+- **The sandbox.** The unit runs the node as `cadre` with `ProtectSystem=strict`: the node can write only under `/var/lib/cadre`, which is why `nodeState.dir` is set.
+
+## Docker
+
+The image is built from a clone of the repository and needs no sibling repositories.
 
 ```bash
-# Check status
-systemctl status cadre-node
-
-# View logs
-journalctl -u cadre-node -f
-
-# Restart
-sudo systemctl restart cadre-node
-
-# Stop
-sudo systemctl stop cadre-node
+git clone https://github.com/gotchoices/sereus.git
+cd sereus/packages/cadre-cli/docker
+cp env.example .env          # set CADRE_PARTY_ID; CADRE_BOOTSTRAP_NODES may stay empty
+docker compose up -d --build
+docker compose logs -f cadre-node
 ```
 
-### Service Security Hardening
+- **Data.** The volume `sereus_cadre_data`, mounted at `/data`, holds the config (`cadre.yaml`), the identity key (`cadre-peer.key`), the storage and the node-state files. The entrypoint creates the key and the config on the first start, and the `CADRE_*` variables override the file on every start.
+- **Ports and addresses.** 4001 and 4002 are published on all host interfaces, 8080 and 9090 on 127.0.0.1; `env.example` documents the `HOST_*` variables that change them. The node reports the container's addresses, so publish the host's with `CADRE_APPEND_ANNOUNCE_ADDRS`, including a `/ws` address for phones.
+- **Joining.** Every variable in `.env` reaches the node: `CADRE_CLAIM_SECRET` (with `CADRE_PARTY_ID=unclaimed`), `CADRE_INVITATION` and `CADRE_OWNER_GRANT` work as they do outside a container.
 
-The systemd service includes:
-
-- Runs as unprivileged `cadre` user
-- `ProtectSystem=strict` — read-only filesystem except `/var/lib/cadre`
-- `ProtectHome=true` — no access to `/home`
-- `PrivateTmp=true` — isolated `/tmp`
-- `NoNewPrivileges=true` — cannot escalate privileges
-- Memory limit (8GB default, adjustable)
-
-Edit `/etc/systemd/system/cadre-node.service` to customize resource limits.
-
-## Docker Deployment
-
-See the [`docker/`](./docker/) directory (`Dockerfile`, `docker-compose.yml`, `env.example`) for Docker Compose deployment, or use:
+To restore a backed-up identity key, stop the node and copy the file back to the same path.
 
 ```bash
-cd packages/cadre-cli/docker  # or node_modules/@serfab/cadre-cli/docker
-cp env.example .env
-# Edit .env with CADRE_PARTY_ID and CADRE_BOOTSTRAP_NODES
-docker compose up -d
+docker compose cp cadre-node:/data/cadre-peer.key ./cadre-peer.key.bak    # back up the identity key
+# other commands run inside the container, against the generated config:
+docker compose exec cadre-node node /app/packages/cadre-cli/dist/bin/cadre.js code -c /data/cadre.yaml --qr
 ```
 
-Node state (peer key, storage) lives in the `sereus_cadre_data` volume. Back up
-the peer identity — losing it changes the node's PeerID. The key file is **binary**
-(a libp2p protobuf private key), so copy it as a file rather than piping it through
-a TTY, which would mangle the bytes:
+## Programmatic use
 
-```bash
-docker compose cp cadre-node:/data/cadre-peer.key ./cadre-peer.key.bak
-# to restore, stop the node first so it re-reads the key on its next start:
-docker compose stop cadre-node
-docker compose cp ./cadre-peer.key.bak cadre-node:/data/cadre-peer.key
-docker compose start cadre-node
-```
-
-## Programmatic Usage
+The package exports its config loader (`resolveConfig`, `loadValidatedConfig`), its HTTP servers (`HealthServer`, `AdminServer`) and its commands. `resolveConfig` returns the file's `storage` and `push` blocks as written; `src/commands/start-node.ts` shows how `cadre start` turns them into what `CadreNode` takes. A node with a health server and no storage block:
 
 ```typescript
-import { resolveConfig } from '@serfab/cadre-cli';
+import { resolveConfig, HealthServer } from '@serfab/cadre-cli';
 import { CadreNode } from '@serfab/cadre-core';
+import { nodeDefaultTransports } from '@serfab/cadre-core/node-default-transports';
 
 const config = await resolveConfig('cadre.yaml');
-const node = new CadreNode(config);
+const node = new CadreNode({
+	privateKey: config.privateKey,
+	controlNetwork: config.controlNetwork,
+	profile: config.profile,
+	strandFilter: config.strandFilter,
+	network: { ...config.network, defaultTransports: nodeDefaultTransports },
+	hibernation: config.hibernation,
+	strandWatchInterval: config.strandWatchInterval,
+});
+
+const health = new HealthServer({ healthPort: 8080, metricsPort: 9090, profile: config.profile });
+health.attach(node);
+await health.start();
 
 node.on('control:connected', () => console.log('Connected'));
-node.on('strand:started', ({ strandId }) => console.log(`Strand ${strandId} started`));
-
 await node.start();
 ```
+
+## Limits
+
+- **`cadre strand` and `cadre validation-key` cannot run beside a running node on the same file store.** They start a second node from the config, and a file store is owned by one process at a time. Stop the node first, or use the running node's admin channel for strands; it has no route for approver keys.
+- **A seed is passed on the command line only.** `--seed` has no file or environment form, a seed grows with the number of machines it names, and Windows caps a command line near 32,000 characters.
+- **A start-up invitation or owner grant is tried once.** The node does not retry a `retryable` failure; start it again.
+- **The identity key file carries no checksum.** A file damaged inside the key bytes still loads, as a different peer ID (ticket `debt-identity-key-file-has-no-integrity-check`).
 
 ## License
 
 MIT
-

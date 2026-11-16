@@ -1,6 +1,6 @@
 /**
  * add-device-section.tsx — Settings → "Add a device or app": an owner of this cadre makes
- * an invitation another app redeems to join it (docs/architecture.md → "Handing an
+ * an invitation another app redeems to join it (docs/cadre/apps.md → "Handing an
  * invitation from app to app"). An invitation admits the app as a machine, never as an
  * owner: ownership is an owner grant, made under Owner keys.
  *
