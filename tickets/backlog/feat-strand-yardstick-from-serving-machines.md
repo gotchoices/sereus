@@ -1,7 +1,7 @@
 ----
 description: When a shared workspace's data needs repair, a machine should only trust an answer confirmed by enough of the machines that actually host that workspace. We currently have no trustworthy count of those machines, so workspaces fall back to a weaker check; build that count and use it.
 prereq: bug-strand-yardstick-counts-party-machines
-files: packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/cadre-node.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, packages/cadre-core/src/strand-member-registry.ts, schemas/strand.qsql, schemas/control.qsql, docs/architecture.md
+files: packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/cadre-node.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, packages/cadre-core/src/strand-member-registry.ts, schemas/strand.qsql, schemas/control.qsql, docs/cadre/control-replication.md
 difficulty: hard
 tradeoffs: The exposure this closes (a lagging machine trusting a single possibly-stale peer) is already tracked for an upstream Optimystic fix (debt-read-repair-single-voter-corroboration) that would make this derivation mostly redundant, and it only benefits workspaces served by three or more machines — a maintainer may reasonably wait for the upstream fix instead.
 ----

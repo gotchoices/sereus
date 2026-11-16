@@ -68,3 +68,13 @@ message that saves the debugging session.
   relay exercise entirely on loopback against a locally spawned relay, so the
   repo gains one automated regression guard for the deployed relay's
   configuration that does not need a deployed host.
+
+## Arm: `--all` stops at the first address that fails
+
+Same script, a separate fault found while the documentation was rewritten. Read from the code, not run against a relay.
+
+`main()` in `ops/test/check-node.mjs` loops over the resolved addresses and awaits `checkOne` for each. `checkOne` throws on a failed dial or a failed relay check, nothing in the loop catches it, and the process exits 1. With `--all` and a `/dnsaddr/` name that resolves to a TCP record and a WebSocket record, a failure on the first record means the second is never dialed.
+
+`ops/test/README.md` recommends `--all` so an operator learns which transport is broken: "a relay can be healthy on TCP while its WebSocket port is closed". When the first record is the broken one, the operator is not told whether the other works.
+
+Expected: with `--all`, every address is tried, each result is printed, and the exit status is non-zero when any failed. To confirm: publish or fake two records where the first names a closed port, run with `--all`, and see that only `target[0]` appears in the output.

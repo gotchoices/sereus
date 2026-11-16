@@ -61,3 +61,14 @@ The half-open abort fix (8c1acc44) landed, so the 5.5 s drop now really happens.
 ## The deadline is now the provisional-admission deadline (2026-10-07)
 
 `stranger-connections-admitted-provisionally` landed. `'admit-for-relay'` is gone: every enrolled member, relay server or not, admits a peer it cannot place with `'admit-provisionally'`, and `createMembershipConnectionGater` arms `PROVISIONAL_ADMISSION_DEADLINE_MS` against the connection (`ProvisionalAdmissions` in `membership-connection-gater.ts`). Its length is `relayedRequestBudgetMs` of the member's own declared link: 28.5 s at the default declaration, up from 5.5 s. At the deadline the gate re-asks `admitInboundControlConnection` and closes the connection only if the peer is still unplaced; an admitted reservation still disarms it early. A hop-connecting outsider is still closed at the deadline, so this defect stands, now after about 28.5 s. The fix point (disarm on a hop stream) is `ProvisionalAdmissions.disarm`, called from the reservation hook today.
+
+## Premise check
+
+Read against the code during the documentation rewrite; nothing was run. The section above this one is correct and is the current statement of the defect. The header and the earlier sections were left as written and now disagree with the code:
+
+- **The `description:` line still says "five seconds in".** The deadline is `PROVISIONAL_ADMISSION_DEADLINE_MS`, which is `relayedRequestBudgetMs()`: 28,500 ms at the default link declaration (`membership-connection-gater.ts`, `link-budget.ts`). A member that declares a slower link waits longer.
+- **Three names in "The defect" no longer exist anywhere in `packages/`:** the `'admit-for-relay'` verdict, `RELAY_ADMISSION_RESERVE_DEADLINE_MS` and `PendingReserveDeadlines`. The verdict is `'admit-provisionally'` and the timer class is `ProvisionalAdmissions`.
+- **The quoted test title changed.** `relay-only-control-addr.integration.ts` now has "a provisionally admitted stranger speaks no control-DB protocol and is closed when it never reserves".
+- **The related ticket `bug-party-run-relay-caps-every-relayed-connection` is finished** (it is in `tickets/.pruned-tickets.jsonl`, completed 2026-09-28), so that half of the blockage is gone.
+
+The defect itself stands as the last section says: `ProvisionalAdmissions.disarm` is called only from the reservation hook, so a peer that hop-connects through the relay and never reserves is closed at the deadline unless the policy can place it by then. One thing the earlier text does not weigh and the code now makes relevant: at the deadline the gate re-asks `admitInboundControlConnection`, so an outsider covered by an outstanding formation invitation at that moment keeps its connection. How often an invited outsider is still unplaced after 28.5 s has not been measured.

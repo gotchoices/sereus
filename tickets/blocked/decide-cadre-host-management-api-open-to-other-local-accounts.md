@@ -1,6 +1,6 @@
 description: On a machine with several user accounts, any account can call cadre-host's local management service without logging in, so it can read a waiting node's one-time claim code and start or remove nodes, even though the data folder is now private. A person needs to decide whether shared machines are supported.
-architecture: docs/cadre-host.md#security-posture
-files: packages/cadre-host/src/server/origin-guard.ts, packages/cadre-host/src/server/server.ts, packages/cadre-host/src/server/routes/hosted-nodes.ts, packages/cadre-host/src/bin/host.ts, docs/cadre-host.md, packages/cadre-host/README.md
+architecture: docs/hosting/cadre-host.md#security-posture
+files: packages/cadre-host/src/server/origin-guard.ts, packages/cadre-host/src/server/server.ts, packages/cadre-host/src/server/routes/hosted-nodes.ts, packages/cadre-host/src/bin/host.ts, docs/hosting/cadre-host.md, packages/cadre-host/README.md
 repro: static
 ----
 # Decide whether other local accounts may use cadre-host's management API
@@ -9,7 +9,7 @@ repro: static
 
 ## The contradiction
 
-`docs/cadre-host.md` → Security posture now says other local accounts are kept out of the data folder, because it holds claim secrets and other credentials. `docs/cadre-host.md` → No login says the case of an attacker on the machine who cannot run code as the cadre-host user is a "non-existent threat model", and "Don't add auth here". Both cannot steer the same code: the first treats other accounts as a threat, and the second says there is no such threat.
+`docs/hosting/cadre-host.md` → Security posture now says other local accounts are kept out of the data folder, because it holds claim secrets and other credentials. `docs/hosting/cadre-host.md` → No login says the case of an attacker on the machine who cannot run code as the cadre-host user is a "non-existent threat model", and "Don't add auth here". Both cannot steer the same code: the first treats other accounts as a threat, and the second says there is no such threat.
 
 Until this is settled, the data folder's 0700 mode protects what is only on disk (node identities, push private keys, invitations, each node's data). It does not protect a pending claim secret, because the API returns it.
 
@@ -30,7 +30,7 @@ With the claim secret, another account can claim the waiting node for a cadre of
 
 ## Proposed text (recommended default)
 
-Replace the `docs/cadre-host.md` → No login section with:
+Replace the `docs/hosting/cadre-host.md` → No login section with:
 
 > ### Local access token
 >
@@ -51,3 +51,7 @@ Any local account on a shared machine can read a waiting node's claim secret, an
 ## Reversibility
 
 Adding the token is easy to reverse, and the project has no backward-compatibility constraint yet. It touches the CLI's API client, the local UI's first load, and any spec that calls the API directly.
+
+## Doc references
+
+`docs/hosting/cadre-host.md` → "No login" (`#no-login`) was rewritten and no longer contains the quoted "non-existent threat model" or "Don't add auth here"; it now says other accounts on the machine can call the API, and the "Limits and accepted tradeoffs" list (`#limits-and-accepted-tradeoffs`) records that as a limit citing this ticket, so the decision asked for here is unchanged and the proposed text would replace the current "No login" section.

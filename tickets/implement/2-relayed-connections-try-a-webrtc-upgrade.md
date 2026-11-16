@@ -1,7 +1,7 @@
 description: Two machines that reach each other through a relay server stay on the relay for good, even when they could talk directly over WebRTC; nothing ever tries the direct path once the relayed connection is open. Each node should try the WebRTC path once in the background and switch to it when it works.
 prereq: webrtc-addresses-never-hold-a-dial
-architecture: docs/architecture.md#relay-integration
-files: packages/cadre-core/src/webrtc-upgrade.ts (new), packages/cadre-core/src/cadre-node.ts (control node build), packages/cadre-core/src/strand-instance-manager.ts (strand node build ~1050), packages/cadre-core/src/peer-dial.ts (address kinds from the prereq), packages/cadre-core/src/link-budget.ts, packages/cadre-core/src/control-protocol-guard.ts (`/webrtc-signaling/0.0.1`), packages/integration-tests/src/scenarios/webrtc-ice-failure-falls-back-to-relay.integration.ts, docs/architecture.md
+architecture: docs/network/relay.md
+files: packages/cadre-core/src/webrtc-upgrade.ts (new), packages/cadre-core/src/cadre-node.ts (control node build), packages/cadre-core/src/strand-instance-manager.ts (strand node build ~1050), packages/cadre-core/src/peer-dial.ts (address kinds from the prereq), packages/cadre-core/src/link-budget.ts, packages/cadre-core/src/control-protocol-guard.ts (`/webrtc-signaling/0.0.1`), packages/integration-tests/src/scenarios/webrtc-ice-failure-falls-back-to-relay.integration.ts, docs/network/relay.md
 difficulty: medium
 ----
 # Relayed connections try a WebRTC upgrade in the background
@@ -71,4 +71,4 @@ Add a `NOTE:` tripwire at the install site. Optimystic groups by limited/unlimit
 - Implement `webrtc-upgrade.ts`: a pure decision function plus a small wrapper that subscribes to the libp2p events.
 - Install it on the control node and on each strand node, only when the node can dial WebRTC.
 - Add the scenario arm and the decision table test, then run `yarn lint`, the cadre-core tests, and the scenario file.
-- Docs: extend the "Direct connections over WebRTC" subsection the prereq adds to `docs/architecture.md` with the upgrade, covering which side dials, the backoff, and that the relayed connection is kept.
+- Docs: extend the "Direct connections over WebRTC" section the prereq adds to `docs/network/relay.md` with the upgrade, covering which side dials, the backoff, and that the relayed connection is kept.

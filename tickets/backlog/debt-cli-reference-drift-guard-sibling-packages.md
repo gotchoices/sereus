@@ -35,3 +35,17 @@ Two ways forward, and choosing between them is part of this ticket:
 
 Worth doing only once the cadre-host guard has lived long enough to show whether
 it catches real drift or just annoys people.
+
+## State after the doc rewrite
+
+The prerequisite has landed: the cadre-host guard is `packages/cadre-host/src/bin/__tests__/cli-reference.test.ts`.
+
+What now exists for cadre-cli: `packages/cadre-cli/README.md` has a `## Command reference` section with one heading per command (`### cadre init`, `#### cadre enroll add`, and so on), beside the task-organized sections. A reviewer's two-way comparison during the rewrite found all 18 leaf commands under a heading and 79 of the 80 options documented. So option 1 above is done for cadre-cli by hand, and nothing keeps it true.
+
+What this ticket still needs for cadre-cli:
+
+- **The guard test.** The same two-way check as cadre-host's: every heading names a real command, and every visible leaf command has a heading.
+- **An importable command tree.** `packages/cadre-cli/src/bin/cadre.ts` keeps `program` in a module-local constant and calls `program.parse()` when the module loads, so a spec cannot import the tree as the cadre-host spec imports `program` from `host.ts`.
+- **A heading shape the guard can read.** cadre-cli's headings are bare command paths, and parent commands (`### cadre enroll`) have headings too. cadre-host's are whole usage lines in backticks, for leaf commands only. The guard's heading parser needs to accept one or be shared.
+
+cadre-provider is unchanged in kind: its README has a `## Commands` section with one table row per command (`start`, `check`) and a table of flags, not headings. With two commands, the weaker "each command name appears in the Commands table" check may be all it needs.

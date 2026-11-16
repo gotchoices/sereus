@@ -1,6 +1,6 @@
 ----
 description: An outside app team reported a freeze and is still waiting to hear back from us. The fix they need has now been published, so all that is left is for a person who can reach them to send the reply — nobody on this repo has a contact channel for them.
-files: packages/cadre-core/package.json, packages/cadre-core/test/control-database-solo.spec.ts, docs/testing.md, scripts/smoke-published-install.mjs
+files: packages/cadre-core/package.json, packages/cadre-core/test/control-database-solo.spec.ts, docs/contributing/gates.md, scripts/smoke-published-install.mjs
 difficulty: easy
 ----
 
@@ -46,8 +46,8 @@ when reading or writing its own settings. They worked around it with manual time
 ## What has been done on our side
 
 - Every package that depends on that lower layer declares the version we test against, and the rule
-  keeping the two in lockstep is written down in [`docs/testing.md`](../../docs/testing.md)
-  ("Declared dependency range vs linked workspace"), enforced by `scripts/check-dep-ranges.mjs`.
+  keeping the two in lockstep is written down in [`docs/contributing/gates.md`](../../docs/contributing/gates.md)
+  ("Declared dependency ranges"), enforced by `scripts/check-dep-ranges.mjs`.
 - Permanent coverage was added for exactly the reporter's configuration — a single node, no other
   members, no inbound listening address, no bootstrap peers — across both node profiles plus a
   restart. It completes in milliseconds.

@@ -1,5 +1,5 @@
 description: Sereus decides whether to retry a write that too few machines answered by reading the error's message text. Optimystic now raises that failure as its own error type, so Sereus could check the type instead and stop depending on the wording.
-architecture: docs/cadre-consistency.md
+architecture: docs/cadre/control-replication.md
 files: packages/cadre-core/src/control-write-retry.ts (`SUPER_MAJORITY_SHORTFALL_UNANSWERED`, `isUnansweredSuperMajorityShortfall`, `matchesRetriableFailure`), packages/cadre-core/test/control-write-retry.spec.ts (the `SUPER_MAJORITY_*` fixtures, `nested`, `ddlFailure`), packages/cadre-core/src/edge-node/strands.ts (`SUPER_MAJORITY_FAILURE`, second arm)
 tradeoffs: Upstream keeps the message byte for byte as a contract with Sereus and pins it in its own tests, so the text match is stable today; the change rewrites about a dozen spec fixtures for no change in behaviour, and a typed check fails closed if a wrapper ever drops the error's `cause` or a second copy of `@optimystic/db-core` is loaded.
 ----

@@ -1,7 +1,7 @@
 ----
 description: A workspace can be created as open to anyone, but no test has ever run one with strangers joining it. We do not know whether an open workspace works in practice, and we already know it is not yet defended.
 prereq: harness-topology-builder
-files: packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, schemas/strand.qsql, schemas/control.qsql, packages/cadre-core/src/control-formation-recorder.ts, docs/architecture.md
+files: packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, schemas/strand.qsql, schemas/control.qsql, packages/cadre-core/src/control-formation-recorder.ts, docs/strands/formation.md
 difficulty: hard
 tradeoffs: The security model for open workspaces is an unresolved design question (feat-open-strand-witness-policy), so a functional test written now can only assert that the happy path works — and a maintainer may reasonably want the policy settled first so the scenario can be written once instead of twice.
 ----
@@ -19,7 +19,7 @@ Open strands are real and structural, not aspirational. The open/closed flag is 
 immutably in two places (`Strand.Header.Type` in `schemas/strand.qsql`, `CadreControl.Strand.Type`
 in `schemas/control.qsql`), an open strand has no member list at all, and an unbound invitation
 takes the responder-provisions path where the recorder mints a fresh open strand and records its
-single consent row atomically (`docs/architecture.md`, `control-formation-recorder.ts`).
+single consent row atomically (`docs/strands/formation.md`, `control-formation-recorder.ts`).
 
 Coverage is one test. `strand-formation-e2e.integration.ts:259-265` exercises open formation in
 `responderCreates` mode with a mock provisioner. Nothing beyond that: no test has several

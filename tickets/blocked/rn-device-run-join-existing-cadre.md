@@ -1,6 +1,6 @@
 description: Someone with two Android devices (or a device and an emulator) and an always-on machine needs to try the phone app's "join my existing cadre" flows by hand, because adding an app to a cadre, joining one, moving chats into it and the new first-launch question were all written and tested without a phone.
-architecture: docs/architecture.md#an-app-joins-an-existing-cadre
-files: packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/src/machines-section.tsx, packages/reference-app-rn/src/use-join-flow.ts, packages/reference-app-rn/src/join-flow.ts, packages/reference-app-rn/src/join-failure.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/maestro/_setup.yaml, docs/reference-app-rn.md
+architecture: docs/cadre/apps.md#an-app-joins-an-existing-cadre
+files: packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/src/machines-section.tsx, packages/reference-app-rn/src/use-join-flow.ts, packages/reference-app-rn/src/join-flow.ts, packages/reference-app-rn/src/join-failure.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/maestro/_setup.yaml, docs/platforms/reference-apps.md
 repro: none
 ----
 
@@ -14,7 +14,7 @@ Four tickets landed with no device: `phone-kit-identity-peer-id-and-join-phases`
 
 ## Setup
 
-Follow `docs/reference-app-rn.md` → "Adding a Device or App", "Devices and Nodes" and "Joining an Existing Cadre". Call the device that holds the cadre the **owner app** and the one joining it the **new app**. Where the doc turns out to be wrong, correcting it is part of this ticket.
+Follow `docs/platforms/reference-apps.md` → "Adding a device or app", "Devices and nodes" and "Joining an existing cadre". Call the device that holds the cadre the **owner app** and the one joining it the **new app**. Where the doc turns out to be wrong, correcting it is part of this ticket.
 
 ## What to run
 
@@ -33,8 +33,18 @@ Follow `docs/reference-app-rn.md` → "Adding a Device or App", "Devices and Nod
 
 Also note how long each joining step runs, whether the wording fits the screen, and how the modals behave when a scanner closes and an alert opens at once.
 
-**Since `machine-invitation-grants-no-ownership` landed, an invitation admits a machine only.** The **Also an owner** switch, the bearer warning and the owner/member word in the lists are gone, so "approve as owner" above is a plain Add or Allow, and every join by invitation ends "as a member". The rows that need the new app to be an owner (the first two as an owner, Open invitation, App that founded first) need an owner grant: on the owner app, Owner keys → Add an owner key, then paste or scan the grant into the new app's join field in place of the invitation (`reference-app-rn-owner-grants`). Also try Owner keys → Make a backup, Outstanding owner grants → Withdraw, and Redeem an owner grant on a member device, as `docs/reference-app-rn.md` → "Owner Keys" describes; the Maestro row's fixture now passes an owner grant (`JOIN_CODE`), so flows 1–3 should get past Create strand.
+**Since `machine-invitation-grants-no-ownership` landed, an invitation admits a machine only.** The **Also an owner** switch, the bearer warning and the owner/member word in the lists are gone, so "approve as owner" above is a plain Add or Allow, and every join by invitation ends "as a member". The rows that need the new app to be an owner (the first two as an owner, Open invitation, App that founded first) need an owner grant: on the owner app, Owner keys → Add an owner key, then paste or scan the grant into the new app's join field in place of the invitation (`reference-app-rn-owner-grants`). Also try Owner keys → Make a backup, Outstanding owner grants → Withdraw, and Redeem an owner grant on a member device, as `docs/platforms/reference-apps.md` → "Owner keys" describes; the Maestro row's fixture now passes an owner grant (`JOIN_CODE`), so flows 1–3 should get past Create strand.
 
 ## If the run finds bugs
 
 File each as its own ticket. Update the doc sections in place with whatever the run teaches.
+
+## Added case: the two-node startup procedure with a cadre-cli drone
+
+`docs/contributing/device-testing.md` → "Two-node startup" was rewritten from the code and has not been run on a device. The drone founds the cadre (`cadre enroll create --name drone`, then `cadre start -c drone.cadre.yaml --identity-file drone.key --owner --admin-port 7070`), an owner grant is minted with `cadre enroll owner-grant --admin-port 7070`, and the phone joins by pasting the grant under **Join my existing cadre**. The procedure it replaced, in which the phone typed the drone's party id and address and tapped Connect, could not make the drone a member (`bug-rn-drone-config-describes-a-flow-that-cannot-work`).
+
+This session already uses "the e2e drone" as the always-on machine, so one run of that section as written, with a hand-started cadre-cli drone in place of the fixture, confirms it.
+
+| Case | How | Expected |
+|---|---|---|
+| Two-node startup as documented | Follow "Two-node startup" steps 1 to 5 exactly, on an emulator (`10.0.2.2`) or a phone on the same Wi-Fi | The grant's address list includes one the phone can reach; the phone reports "This app is now part of your cadre, as an owner"; **Create Chat Strand** succeeds and the drone starts the strand as a storage replica; a message sent on the phone is stored on the drone. Record any step whose command, flag or printed text differs from the document and correct the document |

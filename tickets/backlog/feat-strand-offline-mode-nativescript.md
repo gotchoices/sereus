@@ -1,6 +1,6 @@
 description: Offline mode for strands works on the phone kit and in the browser but not in the NativeScript reference app, because NativeScript has no place to save the queue of unsent transactions yet. Give it one so NativeScript apps can use offline mode too.
-architecture: docs/strands.md
-files: packages/reference-app-ns/src/ns-edge-platform.ts, packages/cadre-core/src/edge-node/platform.ts (`EdgeNodeStorage.offlineJournal`), docs/reference-app-ns.md
+architecture: docs/strands/writes.md
+files: packages/reference-app-ns/src/ns-edge-platform.ts, packages/cadre-core/src/edge-node/platform.ts (`EdgeNodeStorage.offlineJournal`), docs/platforms/nativescript.md
 tradeoffs: NativeScript is a reference platform with no shipping app depending on offline mode, so the work may wait until someone asks; until then `setStrandOfflineMode` refuses there by name.
 ----
 The `strand-offline-mode` work (`strand-offline-platform-journals`) added an optional `offlineJournal(scope)` to the edge node's storage seam and implemented it for React Native (LevelDB) and the browser (IndexedDB). The NativeScript edge platform (`ns-edge-platform.ts`) does not implement it, so on NativeScript `CadreNode.setStrandOfflineMode` throws `StrandOfflineUnavailableError`.

@@ -1,7 +1,7 @@
 ----
 description: We have never run a shared workspace with more than three machines on it, so we do not know how the product behaves at the size a small team or family would actually use.
 prereq: harness-topology-builder
-files: packages/integration-tests/src/harness/node-fixtures.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, packages/integration-tests/vitest.config.ts, docs/architecture.md
+files: packages/integration-tests/src/harness/node-fixtures.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, packages/integration-tests/vitest.config.ts, docs/cadre/control-replication.md
 difficulty: hard
 tradeoffs: Nothing ships on a strand larger than four machines today, the run would be among the slowest in the suite, and a maintainer may reasonably want the four-machine scenario green and stable before paying for a twelve-machine one.
 ----

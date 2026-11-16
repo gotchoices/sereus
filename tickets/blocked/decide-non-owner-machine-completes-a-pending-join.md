@@ -1,6 +1,6 @@
 description: Decide whether a party's always-on machines that hold no owner key (cadre-host nodes or provider containers) may finish a join on the party's behalf while its phone is offline, which needs them to write two kinds of record that today only an owner may sign.
 prereq: pending-join-retry-loop
-files: schemas/control.qsql (JoinedStrand.AuthorizedInsert, StrandPartyKey.AuthorizedInsert, JoinSuccess.AuthorizedInsert), packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/pending-join-runner.ts (from pending-join-retry-loop), packages/cadre-core/src/cadre-node.ts (ensureStrandPartyKey ~5558, enrolledOwnerSigningKey ~2441), docs/architecture.md (JoinedStrand row ~40; cadre-host "holds no owner keys" ~1094, ~2112), docs/cadre-host.md
+files: schemas/control.qsql (JoinedStrand.AuthorizedInsert, StrandPartyKey.AuthorizedInsert, JoinSuccess.AuthorizedInsert), packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/pending-join-runner.ts (from pending-join-retry-loop), packages/cadre-core/src/cadre-node.ts (ensureStrandPartyKey ~5558, enrolledOwnerSigningKey ~2441), docs/cadre/control-schema.md (JoinedStrand row), docs/hosting/cadre-host.md ("holds no owner key")
 ----
 # May a machine that is not an owner finish a pending join?
 
@@ -12,7 +12,7 @@ The maintainer, on gotchoices/sereus#25: "In an ideal world, your entire cadre w
 
 The architecture says the machines most likely to be "your other nodes" cannot do this:
 
-- A party's always-on machine is usually **hosted**: a cadre-host hosted node, or a cadre-provider container. Both are documented as holding **no owner key** ("the recipient's device is the authority and the host never holds owner keys", `docs/architecture.md` → Provider Integration and cadre-host).
+- A party's always-on machine is usually **hosted**: a cadre-host hosted node, or a cadre-provider container. Both are documented as holding **no owner key** ("the recipient's device is the authority and the host never holds owner keys", `docs/hosting/cadre-host.md` → Deployment model and `docs/strands/formation.md` → Who answers formation).
 - Finishing a join writes owner-signed control rows:
   - `JoinedStrand`. Its schema comment says it is "deliberately NOT self-signable by an enrolled CadrePeer: every always-on machine of the party downloads the strands this table names, so a non-owner machine could otherwise make them all host an arbitrary strand."
   - For a closed strand, `StrandPartyKey`, the party's membership identity, which `formStrand` seats via `ensureStrandPartyKey` and which throws without an owner key.
@@ -52,3 +52,13 @@ C stays in place. Joins still finish whenever the invitee's phone is running and
 
 - A and B add schema branches and columns. Removing them later needs every party's control database to drop rows that only the removed branch could have seated. That is possible (no backwards compatibility yet), but it should be decided before apps have users.
 - C is fully reversible.
+
+## Premise check
+
+Read against the code and the rewritten docs; nothing was run. The decision is still open and option C is what ships. Several things the text above cites have changed:
+
+- **The doc quotation is no longer in the docs.** "the recipient's device is the authority and the host never holds owner keys" appears nowhere. `docs/hosting/cadre-host.md` → "Deployment model" now says "The host holds no owner key and never founds a cadre, because a machine that held an owner key could act as its owner without them present". `docs/strands/formation.md` → "Who answers formation" is about answering an invitation, and says a node with no owner key can do that; it does not state the restriction this ticket is about.
+- **Where the restriction is stated now.** `docs/strands/formation.md` → "Joining while the inviter is offline" → "Who retries, and when" ("Every owner machine of the party runs the retry loop"), and → "Limits and accepted tradeoffs", whose item "Only owner machines complete a pending join" names this ticket. `docs/cadre/control-schema.md` has the matching limit, "Only owner nodes publish joins". A decision for A or B changes those three places.
+- **The schema comment quoted above is gone.** `schemas/control.qsql` no longer says `JoinedStrand` is "deliberately NOT self-signable by an enrolled CadrePeer". The comment above the table now explains only why it is a separate table and why it can be reaped. The constraint is unchanged: `JoinedStrand`, `StrandPartyKey` and the join outcome rows still require an owner signature.
+- **Code names in the `files:` line.** `enrolledOwnerSigningKey` no longer exists; `ensureStrandPartyKey` calls `requireOwnerSigner`, and the line numbers given are stale.
+- **The tickets this one leans on have all landed.** `pending-join-retry-loop` (the `prereq:`), `pending-join-control-table`, `formation-responder-installed-at-start`, `invitation-names-every-party-machine` and `cadre-invitations-redeemable-by-any-member` are in `tickets/.pruned-tickets.jsonl`. "What `pending-join-retry-loop` ships" is the shipped behaviour.

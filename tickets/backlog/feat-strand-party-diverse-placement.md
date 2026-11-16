@@ -1,13 +1,13 @@
 ----
 description: When a shared workspace decides which machines hold copies of its data, it should spread them across different people, not just different machines — otherwise "four copies" can mean four devices in one person's house.
 prereq: strand-node-binds-member-peer
-files: packages/quereus-plugin-sereus/src/cluster-size.ts, packages/cadre-core/src/strand-revocation-enforcer.ts, docs/architecture.md
+files: packages/quereus-plugin-sereus/src/cluster-size.ts, packages/cadre-core/src/strand-revocation-enforcer.ts, docs/cadre/control-replication.md
 tradeoffs: The common production case is a one-party workspace where this changes nothing, and the selection half lives upstream in Optimystic (its cohort selection takes no grouping label today) — building the label resolver before upstream can consume it delivers no user-visible benefit.
 ----
 
 # Spread a strand's copies across parties, not just machines
 
-With `strand-node-binds-member-peer` landed, a closed strand knows which machines belong to which party (`Strand.MemberPeer` joined to a live `Strand.Member`). Copy placement should use it: replication breadth currently counts machines by hash proximity with no notion of owner, so a multi-party workspace can keep every copy of a block on one party's machines while the configuration numbers look like they promise otherwise (`docs/architecture.md` → "Replication cluster size" records this honestly).
+With `strand-node-binds-member-peer` landed, a closed strand knows which machines belong to which party (`Strand.MemberPeer` joined to a live `Strand.Member`). Copy placement should use it: replication breadth currently counts machines by hash proximity with no notion of owner, so a multi-party workspace can keep every copy of a block on one party's machines while the configuration numbers look like they promise otherwise (`docs/cadre/control-replication.md` → "Replication cluster size" records this honestly).
 
 **Upstream dependency**: Optimystic's cohort selection takes no grouping label. Requested as `optimystic/tickets/backlog/feat-cohort-selection-owner-aware-placement`; both selection sites need it (`findCluster` and `spread-on-churn.ts`), or the property leaks back out as peers churn. This ticket is the Sereus half — the label resolver and its wiring — and cannot finish before the upstream half exists.
 

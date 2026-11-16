@@ -68,4 +68,16 @@ non-cohort reader* deliberately, not only count copies. Today no fixture in the 
 the two-node closed-strand scenario cannot produce a divergent-commit partition at all,
 for the reason measured above. That is worth knowing before anyone tries to test the
 `MemberExists`-under-partition or `Revocation`-replay hazards that
-`docs/architecture.md` lists beside seal propagation — they need this fixture first.
+`docs/strands/membership.md` lists beside seal propagation — they need this fixture first.
+
+## Third arm — two managers removing each other read as a sealed strand
+
+One more instance for the second arm, from a code reading during the documentation rewrite. Nothing was run.
+
+`isStrandSealed` (`packages/cadre-core/src/strand-membership-writer.ts`) answers true for a closed strand that holds no `Manager` row and at least one `Manager` entry in `Strand.Revocation`. It cannot look for a signed seal, because a tombstone records only the table and the retired stamp, not the action that retired it. The `'remove'` branch of `Manager.Authorized` (`schemas/strand.qsql`) needs only that the signer hold a manager row in the rows the check sees. So two managers that each remove the other, each judged against a view that still shows the remover's own row, leave zero managers and two tombstones, and `isStrandSealed` reports the strand sealed although nobody signed the `'seal'` approval that `sealStrand` requires.
+
+The result has the effects of a real seal and is as permanent: nobody can invite, admit or promote, the founding seat is closed for good by the tombstones, and a party-key replacement after a machine removal reports `waitingOn: 'sealed'` (`listPendingPartyKeyRotations`).
+
+The code and the documents already name the case and leave it unsolved: the "Cross-node caveat" in `removeManager`'s comment, the seal-propagation note on the `Manager` table, and `docs/strands/membership.md` → "Limits and accepted tradeoffs". Whether both removals can in fact commit was not established. The first measurement above says a manager cut off on a strand no larger than its cluster cannot commit at all, and the `Manager` table is tagged to commit through the network even in offline mode, so the stale-reader fixture this ticket asks for is what would show it.
+
+One thing for whoever builds that fixture to weigh: if the tombstone recorded the action, or a seal wrote a row of its own, `isStrandSealed` and the rotation report could tell "no managers, never sealed" from a seal, and the state could be shown to the remaining members as what it is.

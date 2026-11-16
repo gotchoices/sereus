@@ -1,5 +1,5 @@
 description: No test covers a closed-strand join that one of the party's machines finishes in the background while a different machine of the party is the one that opens the strand. Add one real-network test for it, so a break in handing the join's membership invitation between the party's machines fails a test.
-architecture: docs/strands.md#joining-while-the-inviter-is-offline
+architecture: docs/strands/formation.md#joining-while-the-inviter-is-offline
 files: packages/cadre-core/src/cadre-node.ts (stageMembershipInvitesFromPendingJoins, adoptFormationMembershipInvite), packages/cadre-core/src/pending-join-runner.ts (membershipInvitesToStage, observeRows), packages/cadre-core/src/strand-membership-reconciler.ts, packages/integration-tests/src/scenarios/pending-join-survives-restart.integration.ts (harness to copy: a host with a closed strand and a bound invitation, a joiner that calls requestJoin), packages/integration-tests/src/scenarios/strand-always-on-replica-hosts-cross-party-join.integration.ts (a two-machine party)
 tradeoffs: a two-owner-machine real-network scenario adds about a minute to the integration tier, and the staging function itself is a short filter over rows.
 ----

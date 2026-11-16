@@ -1,7 +1,7 @@
 description: Some strands, such as a public vote with very many phones, should let a phone take part without storing or signing the strand's data. Optimystic, the storage layer, cannot run a node that stays out of every storage group yet, so Sereus cannot offer the setting until it does.
 prereq: node-roles-in-cadre-core
-architecture: docs/architecture.md#node-classes
-files: ../optimystic/tickets/plan/client-only-node.md, ../optimystic/packages/db-p2p/src/libp2p-key-network.ts (selfServes, assembleServingCohort), packages/cadre-core/src/node-roles.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/peer-join-backfill.ts, docs/architecture.md, docs/strands.md
+architecture: docs/cadre/node.md#node-classes
+files: ../optimystic/tickets/plan/client-only-node.md, ../optimystic/packages/db-p2p/src/libp2p-key-network.ts (selfServes, assembleServingCohort), packages/cadre-core/src/node-roles.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/peer-join-backfill.ts, docs/cadre/node.md, docs/strands/lifecycle.md, docs/strands/writes.md
 ----
 
 **Blocked: dependency outside this repo.** Unblocked when `@optimystic/db-p2p` ships `NodeOptions.servesBlocks: false`, a client-only node. That work is filed as `../optimystic/tickets/plan/client-only-node.md`.
@@ -26,7 +26,7 @@ A Sereus-only predicate would not work. In a cross-party strand the other partie
 - **Offline writes.** A non-serving phone has no local copy to commit against. Confirm how the offline queue (`strand-offline-queue-survives-restart`) behaves and document it; the app sees writes as pending until a serving machine is reachable.
 - **Closed-strand membership.** `Strand.MemberPeer` bindings and the revoked-peer gate are about who may participate, not who serves; a non-serving machine still seats its binding.
 - **Serving count.** `backlog/feat-strand-yardstick-from-serving-machines` must count only serving machines.
-- Docs: `docs/architecture.md` § Node Classes and `docs/strands.md`.
+- Docs: `docs/cadre/node.md` § Node Classes, `docs/strands/lifecycle.md` and `docs/strands/writes.md`.
 
 ## If nothing is done
 

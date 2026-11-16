@@ -1,5 +1,5 @@
 description: A joining machine's first-sync check makes sure it has fetched each table's rows from the founder before it may write, but not each table's indexes, so in a narrow window a joiner could start its own copy of an index and lose entries the founder made.
-architecture: docs/strands.md#joining-no-writes-before-the-first-sync
+architecture: docs/strands/formation.md#joining-no-writes-before-the-first-sync
 files: packages/cadre-core/src/strand-first-sync-gate.ts (`tableReadable`, `probeSql`, the `NOTE:` on `strandFirstSyncComplete`), ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts (read-only: the live-read refresh at ~1450-1474, `openIndexTree` ~3714, `ensureUniquePopulated` ~2283)
 repro: static
 severity: corruption

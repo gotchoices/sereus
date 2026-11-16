@@ -1,5 +1,5 @@
 description: The NativeScript app's bundler picks the wrong copy of two networking libraries, so the build has to be told to ignore 22 "missing export" complaints; find a way to make it pick the right copies instead.
-files: packages/reference-app-ns/webpack.config.js, packages/reference-app-ns/scripts/bundle-check.js, docs/reference-app-ns.md
+files: packages/reference-app-ns/webpack.config.js, packages/reference-app-ns/scripts/bundle-check.js, docs/platforms/nativescript.md
 difficulty: hard
 ----
 
@@ -80,3 +80,14 @@ whole NativeScript bundle.
 ## Status at triage (2026-09-28, after 1.7.0)
 
 Partly done: gossipsub is gone (optimystic c497dff1), so two webpack ignore patterns are stale. Only the protons 5.6 vs 6.0.2 split remains.
+
+## Premise check
+
+Made while the documentation was rewritten against the code. The installed trees and lock files were read; the bundle was not built, so nothing here says the override can be deleted, only that the two causes this ticket names are no longer in the tree.
+
+- **Cause 2 (gossipsub) is gone from every tree.** No `@chainsafe/libp2p-gossipsub` directory exists under `node_modules` at the root of this repo, of `../optimystic` or of `../Fret`, or under any of their packages' `node_modules`, and none of the three `yarn.lock` files mentions it. This agrees with the triage note above.
+- **Cause 1 as described (hoisted `protons-runtime` 5.6.0 against a nested 6.0.2) is gone too.** `packages/reference-app-ns/node_modules/protons-runtime` is 7.1.2, and so is `../optimystic/packages/db-p2p/node_modules/protons-runtime`, which sits beside `@libp2p/autonat` 3.0.28. Version 7.1.2 exports `streamMessage` (`dist/src/index.d.ts`), the name the autonat pattern in the allowlist is for. So the forced search root now leads autonat to a copy that has the export. The triage note's "only the protons 5.6 vs 6.0.2 split remains" no longer matches the tree.
+- **The workaround is still in place.** `packages/reference-app-ns/webpack.config.js` still sets `exportsPresence: 'warn'` and still carries the `SKEW_WARNINGS` list with its gossipsub and autonat patterns, and its comments and `docs/platforms/nativescript.md` ("`exportsPresence: 'warn'`") still describe the skew.
+- **One 5.6.0 copy remains, in a different place.** `node_modules/@chainsafe/libp2p-noise/node_modules/protons-runtime` at the repo root is 5.6.0. Not checked: whether the bundler's forced search root sends noise's own `protons-runtime` imports to the app's 7.1.2 instead, and whether that matters.
+
+What this leaves: remove the `exportsPresence` block and the allowlist, run `yarn test:bundle` in `packages/reference-app-ns` (it fails on any warning), and see whether anything is reported. If it is clean, the ticket is that deletion plus the comment and doc edits, and the "hard" rating and the scoped-resolver design no longer apply. If something new is reported, the ticket should be rewritten around what the run shows.

@@ -1,5 +1,5 @@
 description: Let the cadre-host web page show which shared data networks (strands) each hosted node is serving for its cadre. The page that used to show this asked the host's own owner node, which no longer exists.
-files: packages/cadre-host/src/orchestrator/host-process-orchestrator.ts, packages/cadre-host/src/server/routes/nodes.ts, packages/cadre-host/ui/src/routes/NodeDetail.svelte, packages/cadre-cli/src/server/admin-server.ts, docs/cadre-host.md
+files: packages/cadre-host/src/orchestrator/host-process-orchestrator.ts, packages/cadre-host/src/server/routes/nodes.ts, packages/cadre-host/ui/src/routes/NodeDetail.svelte, packages/cadre-cli/src/server/admin-server.ts, docs/hosting/cadre-host.md
 tradeoffs: It needs a loopback admin channel on every hosted node (an admin port per node, which `cadre-host-remove-founder-role` dropped), and the view is read-only, since a hosted node is not an owner and cannot sign a strand removal; a maintainer may prefer the owner app to be the only place strands are managed.
 ----
 

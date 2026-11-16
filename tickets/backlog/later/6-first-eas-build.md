@@ -1,7 +1,7 @@
 priority: 4
 description: Trigger first EAS Build (Android), verify dev client, document troubleshooting
 prereq: packages/reference-app-rn, eas.json, Expo account with EAS access
-files: packages/reference-app-rn/eas.json, packages/reference-app-rn/package.json, docs/reference-app-rn.md
+files: packages/reference-app-rn/eas.json, packages/reference-app-rn/package.json, packages/reference-app-rn/README.md
 ----
 
 ## Context
@@ -41,7 +41,7 @@ npx eas build --profile development --platform android
 
 ### Phase 3: Document
 
-Update `docs/reference-app-rn.md` Build & Development Workflow section with:
+Update `packages/reference-app-rn/README.md` Run section with:
 - Exact commands that worked (or workarounds needed)
 - Any EAS configuration changes required
 - Troubleshooting notes for common failures
@@ -53,4 +53,4 @@ Update `docs/reference-app-rn.md` Build & Development Workflow section with:
 - [ ] If build fails, diagnose and fix (likely workspace resolution or native deps)
 - [ ] Install dev client APK, verify Metro connects
 - [ ] Verify MMKV initializes without crash
-- [ ] Update docs/reference-app-rn.md with build troubleshooting section
+- [ ] Update packages/reference-app-rn/README.md with build troubleshooting section

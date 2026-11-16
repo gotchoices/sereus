@@ -1,6 +1,6 @@
 ----
 description: Give sApps a home for per-user state that follows a party across its own machines but stays invisible to the rest of the strand — read position, drafts, preferences. Deferred past the initial release; interim workaround is documented separately.
-files: schemas/control.qsql, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/node-local-snapshot.ts, docs/cadre-consistency.md, docs/strand-contracts.md
+files: schemas/control.qsql, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/node-local-snapshot.ts, docs/design/control-consistency.md, docs/schema-guide.md
 difficulty: medium
 tradeoffs: opening the control database to app data grows the one database whose start-up cost is budgeted; a separate party-private database avoids that at the cost of a second replication path
 likelihood: likely

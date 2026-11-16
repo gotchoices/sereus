@@ -1,6 +1,6 @@
 description: Someone with a phone, a cadre-provider running on a machine the phone can reach, and Docker needs to try the phone app's "Rent an always-on node" screen by hand, because signing in through the system browser, renting a node and the rows for a stopped node were all written without a device or a live provider.
-architecture: docs/architecture.md#renting-a-node-from-an-app
-files: packages/reference-app-rn/src/provider-store-section.tsx, packages/reference-app-rn/src/provider-session.ts, packages/reference-app-rn/src/providers.ts, packages/reference-app-rn/src/rentals.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/app/+native-intent.tsx, packages/cadre-rn/src/provider/sign-in.ts, packages/cadre-rn/src/provider/rental-store.ts, docs/reference-app-rn.md
+architecture: docs/hosting/provider.md#renting-a-node-from-an-app
+files: packages/reference-app-rn/src/provider-store-section.tsx, packages/reference-app-rn/src/provider-session.ts, packages/reference-app-rn/src/providers.ts, packages/reference-app-rn/src/rentals.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/app/+native-intent.tsx, packages/cadre-rn/src/provider/sign-in.ts, packages/cadre-rn/src/provider/rental-store.ts, docs/contributing/device-testing.md, docs/platforms/reference-apps.md
 repro: none
 ----
 
@@ -14,7 +14,7 @@ repro: none
 
 ## Setup
 
-Follow `docs/reference-app-rn.md` → "Renting a Provider Node" → "Dev setup": cadre-provider with `docker.publicHost` set to the address the phone reaches the machine at, the dev consent page on, a `provider` block, and the `sereus-chat` client with both redirect URIs; the dev client started with `EXPO_PUBLIC_PROVIDER_DESCRIPTOR_URL`. Where the doc turns out to be wrong, correcting it is part of this ticket.
+Follow `docs/contributing/device-testing.md` → "Renting a provider node in development": cadre-provider with `docker.publicHost` set to the address the phone reaches the machine at, the dev consent page on, a `provider` block, and the `sereus-chat` client with both redirect URIs; the dev client started with `EXPO_PUBLIC_PROVIDER_DESCRIPTOR_URL`. Where the doc turns out to be wrong, correcting it is part of this ticket.
 
 ## What to run
 

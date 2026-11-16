@@ -1,6 +1,6 @@
 description: When a machine offers both a WebRTC address and a plain relayed address, a join or reconnect tries the WebRTC one first, and where WebRTC cannot connect the join fails outright instead of using the relay that would have worked. Dials that something waits on should go through the relay, and WebRTC should only ever be an extra.
-architecture: docs/architecture.md#relay-integration
-files: packages/cadre-core/src/peer-dial.ts, packages/cadre-core/src/strand-formation-protocol.ts (`openFormationStream` ~836, `dialFormationChannel` ~864), packages/cadre-core/src/cadre-node.ts (`dialControlBootstrapPeers` ~3256), packages/integration-tests/src/scenarios/ (new scenario file), packages/integration-tests/package.json, docs/architecture.md (Relay Integration), ops/docs/ice-servers.md
+architecture: docs/network/relay.md
+files: packages/cadre-core/src/peer-dial.ts, packages/cadre-core/src/strand-formation-protocol.ts (`openFormationStream` ~836, `dialFormationChannel` ~864), packages/cadre-core/src/cadre-node.ts (`dialControlBootstrapPeers` ~3256), packages/integration-tests/src/scenarios/ (new scenario file), packages/integration-tests/package.json, docs/network/relay.md, ops/docs/ice-servers.md
 difficulty: medium
 ----
 # A WebRTC address never holds up a dial that something is waiting on
@@ -58,5 +58,5 @@ Prefer `@multiformats/multiaddr-matcher` (`Circuit`, `WebRTC`), which libp2p its
 - Filter `webrtc` addresses out of formation's `node.dial` list when any other address remains, and rewrite the `openFormationStream` NOTE.
 - Add the `NOTE:` on `dialControlBootstrapPeers`.
 - Write the integration scenario and the table test, then run `yarn lint`, the cadre-core tests, and the new scenario.
-- Docs: add a "Direct connections over WebRTC" subsection under Relay Integration in `docs/architecture.md` stating the rule (blocking dials go relayed first; WebRTC is tried separately), and one sentence in `ops/docs/ice-servers.md` under "Why there is no TURN" saying a failed ICE costs a join nothing.
+- Docs: add a "Direct connections over WebRTC" section to `docs/network/relay.md` stating the rule (blocking dials go relayed first; WebRTC is tried separately), and one sentence in `ops/docs/ice-servers.md` under "Why there is no TURN" saying a failed ICE costs a join nothing.
 - In the handoff, give the measured strand-step timings. If Optimystic's dials were the bottleneck, say so and file the `blocked/` report. Name GitHub #61 so the reviewer can close it.

@@ -34,3 +34,12 @@ Run `yarn dep-check` and read the `warn`-level output for the current, authorita
 - This is dead-code hygiene, not a correctness defect — the dep-check gate is green and correct
   without it. Keep changes mechanical and verify `yarn build` + `yarn typecheck` after removals
   (an "unused" export may be the only thing keeping a file in the build graph).
+
+## Premise check
+
+Read against the tree during the documentation rewrite; `yarn dep-check` was not run, so the counts above (about 15 files, 40 exports, 29 types) are unconfirmed and may have moved.
+
+- **`docs/STATUS.md` in the `files:` line does not exist.** The dependency check is now described in `docs/contributing/gates.md` → "Dependency-check coverage", which names this ticket as the reason dead code only warns. That section is the document to update when rules are promoted.
+- **The rules are still at `warn`.** `knip.ts` sets `files`, `exports`, `types`, `nsExports`, `nsTypes`, `enumMembers` and `duplicates` to `'warn'`.
+- **The three files named above still exist:** `packages/cadre-provider/src/server/index.ts`, `packages/cadre-provider/src/service/index.ts` and `packages/cadre-host/ui/svelte.config.js`.
+- **One more candidate.** `packages/cadre-core/src/arachnode-stub.ts` is exported from `index.ts` and constructed nowhere in `packages/*/src`. An export from a package entry is public surface to knip, so it will not appear in the warn list.

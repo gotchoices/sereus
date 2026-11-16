@@ -1,5 +1,5 @@
 description: Decide whether the React Native kit and the NativeScript reference app should share one copy of the text decoder and object-cloning stand-ins they each install, or keep separate copies that a shared test holds to the same behaviour. Today a fix to one copy has to be ported to the other by hand, and once it was not.
-files: packages/cadre-rn/polyfills/hermes.js, packages/reference-app-ns/src/polyfills/hermes.ts, packages/reference-app-ns/src/polyfills/text-decoder.ts, test-harness/utf8-decoder-inputs.ts, docs/reference-app-ns.md, docs/reference-app-rn.md
+files: packages/cadre-rn/polyfills/hermes.js, packages/reference-app-ns/src/polyfills/hermes.ts, packages/reference-app-ns/src/polyfills/text-decoder.ts, test-harness/utf8-decoder-inputs.ts, docs/platforms/nativescript.md, docs/platforms/react-native.md
 ----
 
 # One copy of the phone runtime stand-ins, or two?

@@ -1,6 +1,6 @@
 description: Someone with an Android phone and an iPhone (or emulator and simulator), each with two copies of the phone app installed, needs to try joining one app's cadre from the other app on the same phone by tapping a button instead of copying and pasting, because both halves were written and checked without a phone.
-architecture: docs/architecture.md#between-apps-on-one-phone
-files: packages/reference-app-rn/src/use-link-request.ts, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/join-link.ts, packages/reference-app-rn/src/recommend-app-section.tsx, packages/reference-app-rn/src/recommended-by.ts, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/src/use-recommending-app.ts, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/app.config.ts, packages/reference-app-rn/README.md, docs/reference-app-rn.md, docs/architecture.md
+architecture: docs/cadre/apps.md#between-apps-on-one-phone
+files: packages/reference-app-rn/src/use-link-request.ts, packages/reference-app-rn/src/join-cadre-section.tsx, packages/reference-app-rn/src/join-link.ts, packages/reference-app-rn/src/recommend-app-section.tsx, packages/reference-app-rn/src/recommended-by.ts, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/app/settings.tsx, packages/reference-app-rn/src/use-recommending-app.ts, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/app.config.ts, packages/reference-app-rn/README.md, docs/platforms/reference-apps.md, docs/cadre/apps.md
 repro: none
 ----
 
@@ -16,7 +16,7 @@ Five tickets landed with no device: `phone-kit-same-phone-join-links` (the kit's
 
 ## Setup
 
-Follow `docs/reference-app-rn.md` → "Joining an Existing Cadre" and "Adding a Device or App", and `packages/reference-app-rn/README.md` → "A second install on one phone". Each install of a development build needs its own dev server started with its own `APP_VARIANT` (the second on another port); a preview build of each avoids that. Call the app holding the cadre **A** and the app asking to join **B**; run each case with B as the second install and A as the main one, and at least once the other way round. Where the doc turns out to be wrong, correcting it is part of this ticket.
+Follow `docs/platforms/reference-apps.md` → "Joining an existing cadre" and "Adding a device or app", and `packages/reference-app-rn/README.md` → "A second install on one phone". Each install of a development build needs its own dev server started with its own `APP_VARIANT` (the second on another port); a preview build of each avoids that. Call the app holding the cadre **A** and the app asking to join **B**; run each case with B as the second install and A as the main one, and at least once the other way round. Where the doc turns out to be wrong, correcting it is part of this ticket.
 
 ## What to run
 

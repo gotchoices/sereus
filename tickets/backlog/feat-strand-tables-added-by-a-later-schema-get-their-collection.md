@@ -1,5 +1,5 @@
 description: A table that a newer version of an app adds to an existing strand starts with no storage behind it, so until someone writes to it every read has to ask another member and fails while the others are offline; decide who creates its storage when the app's schema is upgraded.
-architecture: docs/strands.md#joining-no-writes-before-the-first-sync
+architecture: docs/strands/formation.md#joining-no-writes-before-the-first-sync
 files: packages/quereus-plugin-sereus/src/compose-strand.ts (`applyAppSchema`, `createEmptyCollections`), packages/cadre-core/src/strand-database.ts (`attachAppSchema`), schemas/strand.qsql (`Header`, `-- TODO: revisit for versioning`)
 tradeoffs: There is no strand schema-versioning design yet, so whatever is chosen here may be redone when one exists, and apps can avoid the cost meanwhile by writing to a new table once when they introduce it.
 ----
@@ -10,7 +10,7 @@ tradeoffs: There is no strand schema-versioning design yet, so whatever is chose
 
 - every read of it asks the cohort to prove it absent, about two round trips to another member per read (gotchoices/sereus#47 measured 217 ms per read on a 100 ms link, up to 31.7 s on a phone-shaped link);
 - with no other member reachable, the read throws `BlockUnavailableError` (`cohort-unreachable`);
-- two members that each write to it first, before seeing the other's write, create two histories of one collection, and Optimystic keeps one and drops the other's rows (docs/strands.md, first residual under "Joining").
+- two members that each write to it first, before seeing the other's write, create two histories of one collection, and Optimystic keeps one and drops the other's rows (docs/strands/formation.md, first residual under "Joining").
 
 Eager creation at upgrade was rejected for the founding change: no member is privileged to create, and a member that upgrades while it cannot reach the others would commit an empty collection beside one another member already created and wrote, forking the table even if it never writes.
 

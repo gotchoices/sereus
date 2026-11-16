@@ -1,6 +1,6 @@
 description: Someone with an Android phone and a PC on the same Wi-Fi needs to try adding the PC's always-on node to the phone's cadre by scanning the code the PC shows, because the app's scan-and-claim screen was written and tested without any phone involved.
-architecture: docs/architecture.md#which-side-dials-the-add-a-node-flows-compared
-files: packages/reference-app-rn/src/add-node-section.tsx, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/src/code-scanner.tsx, packages/reference-app-rn/src/node-claim.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/app.json, packages/cadre-rn/src/phone-node/config.ts, docs/reference-app-rn.md
+architecture: docs/cadre/membership.md#which-side-dials
+files: packages/reference-app-rn/src/add-node-section.tsx, packages/reference-app-rn/app/+native-intent.tsx, packages/reference-app-rn/src/code-scanner.tsx, packages/reference-app-rn/src/node-claim.ts, packages/reference-app-rn/src/use-cadre.ts, packages/reference-app-rn/app.json, packages/cadre-rn/src/phone-node/config.ts, docs/contributing/device-testing.md
 repro: none
 ----
 
@@ -14,7 +14,7 @@ The scan-and-claim flow (`rn-app-joins-host-node-by-qr`) landed with no device o
 
 ## Setup
 
-Follow `docs/reference-app-rn.md` → "Adding a Home Machine's Node (cadre-host)". Rebuild the dev client first: one built before `expo-camera` throws "Cannot find native module 'ExpoCamera'" when Settings loads. Where the doc turns out to be wrong, correcting it is part of this ticket.
+Follow `docs/contributing/device-testing.md` → "Adding a home machine's node". Rebuild the dev client first: one built before `expo-camera` throws "Cannot find native module 'ExpoCamera'" when Settings loads. Where the doc turns out to be wrong, correcting it is part of this ticket.
 
 **The PC's firewall, from the 2026-09-17 run of the earlier version of this flow** (Windows 11, Wi-Fi classified **Public**): `node.exe` had two inbound **Block** rules on the Public profile ("Node.js JavaScript Runtime", TCP and UDP) and no Allow rule on any profile, so Windows never prompted and every dial from the phone to the node's LAN address timed out (`adb shell nc` to the node's port timed out too, while the router answered). The doc's "The PC's firewall" lists the checks and both fixes. Fix the firewall before the run, or the first claim fails with the home-network message for a reason that is not the app's. Changing firewall settings on the user's machine is the person's call, not an agent's.
 

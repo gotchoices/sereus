@@ -105,3 +105,20 @@ gate" question, with a concrete instance behind it now: `npm --prefix ops/docker
 install && npm run build` is a real type gate that already exists and is simply not reachable from
 any root script.
 
+
+## Evidence for the `ops/**` arm (found during the documentation rewrite)
+
+Two leftovers under `ops/` that no check reports. `knip.ts` ignores `ops/**` just as ESLint does, and `ops/test` is not a workspace, so the dependency check never reads its `package.json`.
+
+- `ops/test/package.json` depends on `sereus-workspace: file:../..`, which is the repository root. Neither `check-node.mjs` nor `check-stun.mjs` imports anything from it. The install the README gives (`npm --prefix sereus/ops/test install`) works, and has been run in this checkout: it links the whole clone into `ops/test/node_modules`. The entry has no use and ties the two scripts to a full clone.
+- `ops/docker/site-scripts/up.sh`, `down.sh` and `logs.sh` each `exec` a file named `svc` in their own directory. That directory holds `svc.sh`, not `svc`. `ops/scripts/install` links only `svc.sh` into an instance directory, under the name `svc`, and neither copies nor links the three wrappers. No document mentions them. Run where they sit they fail because `svc` does not exist; they work only if someone copies them by hand beside an installed `svc`.
+
+Both are deletions. They are JSON and shell, so neither a lint pass nor a type pass would have found them. They are recorded here as what collects in a tree that nothing checks, and as a reason to weigh a dependency check for `ops/test` and `ops/docker/*` along with the lint.
+
+## Premise check
+
+Read against the tree during the documentation rewrite. The ticket's substance holds; its document references do not.
+
+- **`docs/STATUS.md` does not exist** (it is in the `files:` line and cited twice above). "Lint coverage" is now a section of `docs/contributing/gates.md`. It has no "Scope notes" sub-section; the exclusion is recorded there under "What it cannot catch" → "Trees the config ignores", which names this ticket. That item is what to update when the scope changes.
+- **The ignores are unchanged.** The global `ignores` block of `eslint.config.mjs` still lists `ops/**`, `scripts/**` and `**/scripts/**`.
+- **The unchecked surface has grown again.** `git ls-files -co --exclude-standard scripts | grep -E '\.(mjs|js)$' | xargs wc -l` gives 6,770 lines in 33 files, against 2,854 in the last measurement above. The same listing filtered to `packages/*/scripts/` (`.mjs`, `.js`, `.cjs`, `.ts`) gives 1,090 lines in 7 files, against 891. The root tree now also holds `check-docs.mjs`, `check-published.mjs`, `check-stale-build-guard-wiring.mjs` and the release scripts, each with a test file.

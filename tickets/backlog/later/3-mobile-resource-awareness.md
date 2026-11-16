@@ -28,7 +28,7 @@ Mobile cadre nodes operate under resource constraints that do not apply to serve
 ### Requirements
 
 - `cadre-core` exposes a pluggable `ResourceMonitor` interface (battery level, charging, network type, metered) that the reference app populates from RN APIs. Node.js default is a no-op monitor that reports "plugged in, unmetered" always.
-- Hibernation and sync scheduling read from `ResourceMonitor` to adjust timing. The existing latency-hint table in `docs/architecture.md` is the baseline; resource state applies multipliers/gates on top.
+- Hibernation and sync scheduling read from `ResourceMonitor` to adjust timing. The existing latency-hint table in `docs/strands/hibernation.md` is the baseline; resource state applies multipliers/gates on top.
 - Concurrent-active-strand cap is enforced by `StrandInstanceManager` with a configurable limit, surfaced in `CadreNodeConfig`.
 - All policies are configurable; defaults are conservative for mobile, permissive for servers.
 

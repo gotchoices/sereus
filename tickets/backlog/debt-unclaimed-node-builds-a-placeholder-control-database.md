@@ -1,5 +1,5 @@
 description: A node waiting to be claimed by QR code builds and keeps a full control database for a placeholder cadre that it throws away the moment it is claimed; it only needs to receive one claim, so it could skip that database and its schema setup.
-architecture: docs/architecture.md#seed-delivery-protocol
+architecture: docs/cadre/membership.md#seed-delivery-protocol
 files: packages/cadre-core/src/cadre-node.ts (`start()` ~1360–1560, `isAwaitingClaim` ~1906, `refreshMembershipGate` on `seed-applied`, the claim admission paragraphs ~2641/~2717/~2846), packages/cadre-core/src/seed-bootstrap.ts (`initialize(controlNode, controlDatabase)`, `queryPeers`), packages/cadre-cli/src/commands/start.ts (`restartIntoClaimedParty`), packages/cadre-cli/src/commands/start-node.ts (`buildClaimedNode` doc: the placeholder's files are left behind)
 tradeoffs: The placeholder database costs one schema apply and some disk at the node's first boot, not time on the claim itself (the claimed party's own schema apply after the restart is unavoidable), and skipping it means a second start-up shape in `CadreNode.start()` that every later change to start-up must keep working.
 ----

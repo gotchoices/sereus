@@ -1,5 +1,5 @@
 description: No test runs the main case multi-machine invitations exist for: the inviting phone is off, and a stranger joins through the party's always-on machine. Add one real-network test for it, so a break anywhere along that path fails a test.
-architecture: docs/architecture.md#which-machines-an-invitation-names
+architecture: docs/strands/formation.md#which-machines-an-invitation-names
 files: packages/integration-tests/src/scenarios/strand-formation-cross-party-seed.integration.ts (harness to copy: a host that founds a strand and publishes a bound invitation), packages/integration-tests/src/scenarios/strand-always-on-replica-hosts-cross-party-join.integration.ts (a two-machine party with an always-on storage node), packages/cadre-core/src/cadre-node.ts (createOpenInvitation, siblingInvitationAddrs, admitInboundControlConnection check 6), packages/cadre-core/src/strand-formation-protocol.ts (dialFormationByMachine), packages/cadre-core/src/control-formation-recorder.ts
 tradeoffs: another multi-node real-network scenario adds a minute or more to the integration tier, and each part of the path already has its own narrower test.
 ----

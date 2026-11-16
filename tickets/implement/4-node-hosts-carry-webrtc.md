@@ -1,7 +1,7 @@
 description: The command-line node program can't make direct WebRTC connections, so a home machine that can only be reached through a relay server stays on that relay for every phone and browser that talks to it. Add an opt-in setting that gives it WebRTC whenever it has a relay.
 prereq: webrtc-addresses-never-hold-a-dial
-architecture: docs/architecture.md#relay-integration
-files: packages/cadre-core/src/node-default-transports.ts, packages/cadre-core/src/relay-addrs.ts (`ListenTransportOptions` ~139, `resolveTransportOptions` ~232, `listenTransportKind`, `UnbindableListenAddressError`), packages/cadre-core/src/node-transports.ts, packages/cadre-core/src/strand-network-config.ts, packages/cadre-core/src/types.ts (`NetworkConfig.defaultTransports` ~437), packages/cadre-core/package.json, packages/cadre-cli/src/config/types.ts, packages/cadre-cli/src/config/schema.ts, packages/cadre-cli/src/config/env.ts, packages/cadre-cli/src/commands/start-node.ts, packages/cadre-cli/src/commands/node-session.ts, packages/cadre-cli/docker/Dockerfile, packages/cadre-cli/README.md, packages/cadre-cli/example.cadre.yaml, docs/architecture.md (config block ~2345)
+architecture: docs/network/relay.md#node-kinds
+files: packages/cadre-core/src/node-default-transports.ts, packages/cadre-core/src/relay-addrs.ts (`ListenTransportOptions` ~139, `resolveTransportOptions` ~232, `listenTransportKind`, `UnbindableListenAddressError`), packages/cadre-core/src/node-transports.ts, packages/cadre-core/src/strand-network-config.ts, packages/cadre-core/src/types.ts (`NetworkConfig.defaultTransports` ~437), packages/cadre-core/package.json, packages/cadre-cli/src/config/types.ts, packages/cadre-cli/src/config/schema.ts, packages/cadre-cli/src/config/env.ts, packages/cadre-cli/src/commands/start-node.ts, packages/cadre-cli/src/commands/node-session.ts, packages/cadre-cli/docker/Dockerfile, packages/cadre-cli/README.md, packages/cadre-cli/example.cadre.yaml, docs/cadre/node.md (the `/webrtc` item under "Configuration errors that fail `start()`"), docs/network/relay.md
 difficulty: medium
 ----
 # Node hosts carry WebRTC, opt-in: `network.webrtc`
@@ -71,5 +71,5 @@ A host with a public or forwarded address doesn't need it. A home machine behind
 - Move `@libp2p/webrtc` to cadre-core's dependencies.
 - Add `network.webrtc`, `network.stunUrls`, `CADRE_WEBRTC` and `CADRE_STUN_URLS` to cadre-cli: types, schema, env and both start paths.
 - Do the native-module exploration above, adjust the Dockerfile if needed, and record the results.
-- Docs: the cadre-cli README (config field, env vars, platform support), `example.cadre.yaml` (commented example), the `docs/architecture.md` config block (the `/webrtc` line now points at `network.webrtc`), and the Relay Integration subsection that the WebRTC tickets add.
+- Docs: the cadre-cli README (config field, env vars, platform support), `example.cadre.yaml` (commented example), the `docs/cadre/node.md` → "Configuration errors that fail `start()`" item on listen addresses no transport can bind (the `/webrtc` mention now points at `network.webrtc`), and the "Direct connections over WebRTC" section that the WebRTC tickets add to `docs/network/relay.md`.
 - Run `yarn lint`, the cadre-core and cadre-cli tests, and the Docker build if Docker is available. If it isn't, say so in the handoff.

@@ -1,6 +1,6 @@
 description: The browser reference app should also be able to rent a node from a hosting provider, as the phone app will: sign in on the provider's page, rent, add the node to the cadre, and show its status and subscription dates.
 prereq: reference-app-rn-rents-a-provider-node
-architecture: docs/architecture.md#provider-integration
+architecture: docs/hosting/provider.md
 files: packages/reference-app-web/src/Cadre.svelte, packages/reference-app-web/src/lib/machines.svelte.ts, packages/reference-app-web/src/lib/cadre-web.ts, packages/reference-app-web/README.md
 tradeoffs: The web app is a demonstration surface; a browser tab is rarely the owner device that pays for always-on nodes, and the OAuth redirect in a browser needs a return route the single-page app does not have today, so a maintainer may leave this to the phone app alone.
 ----
@@ -17,4 +17,4 @@ tradeoffs: The web app is a demonstration surface; a browser tab is rarely the o
 
 ## Expected behaviour
 
-The Cadre page gains a "Rent an always-on node" card with the same rows and wording as the phone app's section (`docs/reference-app-rn.md` → Renting a Provider Node), and Devices and nodes marks a rented machine.
+The Cadre page gains a "Rent an always-on node" card with the same rows and wording as the phone app's section (`docs/platforms/reference-apps.md` → Renting a provider node), and Devices and nodes marks a rented machine.

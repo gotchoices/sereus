@@ -1,13 +1,13 @@
 ----
 description: A shared workspace's machines currently refuse machines known to belong to removed people, but admit any stranger by default. Flip the default for invitation-only workspaces: admit only machines positively bound to a current participant.
 prereq: strand-node-binds-member-peer
-files: packages/cadre-core/src/strand-revocation-enforcer.ts, packages/cadre-core/src/strand-membership-writer.ts, docs/strands.md
+files: packages/cadre-core/src/strand-revocation-enforcer.ts, packages/cadre-core/src/strand-membership-writer.ts, docs/strands/membership.md
 tradeoffs: Deny-by-default is unforgiving of replication lag — a legitimate new machine is refused until its binding replicates to the machine it dials, which turns an eventual-consistency delay into a visible connection failure; the current denylist-only posture never locks out a legitimate member.
 ----
 
 # Closed-strand admission should be an allowlist, not just a denylist
 
-`docs/strands.md` → "Relay willingness" names this as the deferred half of the durable-attestation design: the **revocation** half exists (a strand machine refuses machines whose `Strand.MemberPeer` binding is orphaned by its member's removal — `strand-revocation-enforcer.ts`), but admission is still open — a strand transport peer id that appears with *no* binding at all is served. The only gate on an unknown peer today is the 30-minute in-memory relay delegate grant, which admits a connection and attests nothing.
+`docs/strands/membership.md` → "Limits and accepted tradeoffs" names this as the deferred half of the durable-attestation design: the **revocation** half exists (a strand machine refuses machines whose `Strand.MemberPeer` binding is orphaned by its member's removal — `strand-revocation-enforcer.ts`), but admission is still open — a strand transport peer id that appears with *no* binding at all is served. The only gate on an unknown peer today is the 30-minute in-memory relay delegate grant, which admits a connection and attests nothing.
 
 With `strand-node-binds-member-peer` landed, production closed strands have the data an allowlist needs: every machine of every party writes a signed `MemberPeer(MemberKey, PeerId)` row, joined to a live `Strand.Member` row. This ticket is the flip: at the same hooks the revocation gate already holds (connection, stream, dial, relay-reservation), a **closed** strand refuses a peer id with no live-membered binding, instead of only refusing known-orphaned ones.
 

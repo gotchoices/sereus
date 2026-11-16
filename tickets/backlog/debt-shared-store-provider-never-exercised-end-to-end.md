@@ -1,6 +1,6 @@
 ----
 description: Our documentation tells app builders they may hand the system a single data store for everything, but nothing we run actually does that — so the code path they would take has never been executed once, only reasoned about.
-files: packages/quereus-plugin-sereus/src/cached-storage.ts, packages/cadre-core/src/types.ts (RawStorageProvider), packages/cadre-core/src/cadre-node.ts (resolveControlStorage), packages/cadre-core/src/strand-instance-manager.ts (resolveStrandStorage, disposeStrandStorage), packages/integration-tests/src/harness/block-store-probe.ts, docs/architecture.md
+files: packages/quereus-plugin-sereus/src/cached-storage.ts, packages/cadre-core/src/types.ts (RawStorageProvider), packages/cadre-core/src/cadre-node.ts (resolveControlStorage), packages/cadre-core/src/strand-instance-manager.ts (resolveStrandStorage, disposeStrandStorage), packages/integration-tests/src/harness/block-store-probe.ts, docs/cadre/node.md
 difficulty: medium
 severity: wrong-result
 likelihood: unusual
@@ -12,7 +12,7 @@ tradeoffs: No shipped provider takes this form — the CLI, both phone apps, the
 ## What is documented, and what is exercised
 
 `CadreNodeConfig.storage.provider` accepts either a factory keyed on the scope or a **single
-`IRawStorage` instance** shared by the control database and every workspace. `docs/architecture.md`
+`IRawStorage` instance** shared by the control database and every workspace. `docs/cadre/node.md`
 documents the second form as supported.
 
 Every provider this repository ships takes the first form — the CLI's file provider, both phone

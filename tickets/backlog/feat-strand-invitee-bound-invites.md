@@ -1,7 +1,7 @@
 ----
 description: Decide whether an invitation to a private group should name the person it is for, instead of working like a ticket that anyone holding it can use — and if so, whether removing someone should automatically void the invitations addressed to them.
 prereq: bug-strand-invite-no-revocation
-files: schemas/strand.qsql (Invite, ConsumedInvite), packages/quereus-plugin-sereus/src/strand-schema.ts (mirrored STRAND_SCHEMA), packages/cadre-core/src/strand-membership-writer.ts (issueInvite, consumeInvite), packages/cadre-core/src/strand-member-registry.ts, docs/strands.md
+files: schemas/strand.qsql (Invite, ConsumedInvite), packages/quereus-plugin-sereus/src/strand-schema.ts (mirrored STRAND_SCHEMA), packages/cadre-core/src/strand-membership-writer.ts (issueInvite, consumeInvite), packages/cadre-core/src/strand-member-registry.ts, docs/strands/membership.md
 difficulty: hard
 ----
 

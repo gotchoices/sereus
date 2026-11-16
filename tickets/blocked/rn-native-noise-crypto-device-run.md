@@ -1,7 +1,7 @@
 description: Someone with an Android phone needs to build the React Native reference app with its new native encryption and try each encryption setting on a real device, because the change can only be checked for bundling on this machine, not for compiling or running.
 prereq: reference-app-rn-native-noise-crypto
-architecture: docs/reference-app-rn.md#device-test-runs
-files: packages/reference-app-rn/package.json, packages/reference-app-rn/app/settings.tsx, packages/cadre-rn/polyfills/index.js, packages/cadre-rn/src/noise-crypto.ts, docs/reference-app-rn.md
+architecture: docs/contributing/device-testing.md#device-test-runs
+files: packages/reference-app-rn/package.json, packages/reference-app-rn/app/settings.tsx, packages/cadre-rn/polyfills/index.js, packages/cadre-rn/src/noise-crypto.ts, docs/contributing/device-testing.md
 repro: none
 ----
 # Native Noise crypto and the shared kit: nobody has run them on a phone
@@ -14,7 +14,7 @@ The work in `rn-kit-package-and-native-noise-crypto`, `rn-kit-polyfills`, `rn-ki
 
 ## What to run
 
-Follow `docs/reference-app-rn.md` § Device test runs. Rebuild the native app first (§ When Native Rebuild Is Needed), because this change adds native modules.
+Follow `docs/contributing/device-testing.md` § Device test runs. Rebuild the native app first (`docs/platforms/react-native.md` § When a native rebuild is needed), because this change adds native modules.
 
 1. **Build.** `expo run:android` (or an EAS development build) completes. If it fails, record the error; the likely cause is a version of nitro or quick-crypto that does not support React Native 0.79.
 2. **Boot audit.** In a development build, logcat shows the `[cadre-rn] polyfill audit` table with no `MISSING` rows, and `RTCPeerConnection` and `EventTarget` read `polyfilled` (`EventTarget` read `native` before the review of `rn-kit-polyfills`, which found that nothing but `event-target-polyfill` installs it). The WebRTC globals now load after the EventTarget and `Intl.PluralRules` patches instead of before them, so a WebRTC failure here points at that change. The one known effect: `react-native-webrtc`'s own `event-target-shim` now finds `event-target-polyfill`'s global `Event` / `EventTarget` when it loads and chains its classes onto them (before, there were none to find).

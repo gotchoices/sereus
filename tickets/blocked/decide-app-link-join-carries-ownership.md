@@ -1,5 +1,5 @@
 description: Decide whether an app that asks another app on the same phone to let it join the cadre (or that the owner app recommends) can be made an owner in the same step, now that machine invitations no longer grant ownership; without it, an app that has its own conversations to bring has to be given a separately pasted owner grant.
-files: packages/cadre-core/src/cadre-join-request.ts, packages/cadre-rn/src/app-link/recommendation-store.ts, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/src/recommend-app-section.tsx, docs/architecture.md
+files: packages/cadre-core/src/cadre-join-request.ts, packages/cadre-rn/src/app-link/recommendation-store.ts, packages/reference-app-rn/src/add-device-section.tsx, packages/reference-app-rn/src/recommend-app-section.tsx, docs/cadre/apps.md
 ----
 
 # Can a join answered by link also make the app an owner?
@@ -12,7 +12,7 @@ The project owner decided that admitting a machine and granting ownership are tw
 
 Two app-to-app flows used that choice:
 
-- **Between apps on one phone.** App B (asking to join) opens owner app A with a join request; the user confirms in A; A opens B back with a response link carrying an invitation targeted at B's peer id (`docs/architecture.md` → "Between apps on one phone").
+- **Between apps on one phone.** App B (asking to join) opens owner app A with a join request; the user confirms in A; A opens B back with a response link carrying an invitation targeted at B's peer id (`docs/cadre/apps.md` → "Between apps on one phone").
 - **Recommending an app.** A records the user's pre-approval for B, including whether B is an owner; when B asks, A answers without a prompt ("Recommending another app").
 
 An app that founded its own small cadre and has conversations in it can bring them only if it joins as an owner: every row the move writes is owner-signed (`StrandsNeedOwnerJoinError`). In the reference apps that is the common case for these flows.
@@ -29,7 +29,7 @@ After `machine-invitation-grants-no-ownership` both flows admit a machine only. 
 
 **B. The response carries a machine invitation and an owner grant.** A's response link gains an optional owner grant (single use, 15 minutes) beside the invitation; B redeems both.
 - Follows "one flow that does both is two invitations" literally.
-- The grant is a bearer credential sent to whatever app answers to B's reply scheme. Today an app hijacking that scheme gets an invitation targeted at someone else's peer id; under this option it becomes an owner. That turns the accepted impostor-app tradeoff (`docs/architecture.md` → "Between apps on one phone", Security) into an ownership leak.
+- The grant is a bearer credential sent to whatever app answers to B's reply scheme. Today an app hijacking that scheme gets an invitation targeted at someone else's peer id; under this option it becomes an owner. That turns the accepted impostor-app tradeoff (`docs/cadre/apps.md` → "Between apps on one phone", Security) into an ownership leak.
 
 **C. Machine only (what ships after `machine-invitation-grants-no-ownership`).** The link flows admit a machine; ownership is a separately pasted owner grant.
 - Simplest, nothing new to secure.

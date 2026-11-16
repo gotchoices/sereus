@@ -1,5 +1,5 @@
 description: Decide where an app's list of hosting providers comes from, and confirm that paying a provider on its own web page, rather than through an in-app purchase, is acceptable under the app store rules the apps will ship under.
-files: docs/architecture.md, packages/reference-app-rn/
+files: docs/hosting/provider.md, packages/reference-app-rn/
 ----
 
 # Where does the provider list come from, and how do users pay?

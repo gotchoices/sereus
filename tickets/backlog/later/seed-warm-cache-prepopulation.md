@@ -1,11 +1,11 @@
 ----
 description: Optionally warm a fresh node's control/Optimystic cache from a seed, so cold-start needs fewer network round-trips
-files: packages/cadre-core/src/seed-bootstrap.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/types.ts, docs/architecture.md
+files: packages/cadre-core/src/seed-bootstrap.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/types.ts, docs/cadre/membership.md
 ----
 
 ## Background
 
-The original seed design (docs/architecture.md "Control Network Seed") proposed that a seed could carry signed Optimystic transactions to pre-populate a freshly bootstrapped node's control/Optimystic cache, so the new node starts with warm control data instead of fetching everything over the network. That half of the design was never implemented — the `transactions?: SignedTransaction[]` surface was typed, documented, and folded into the seed signature, but `createSeed` never produced it and `applySeed` never consumed it. It was removed wholesale by the implement ticket `remove-seed-transactions-surface` to eliminate dead spec and a latent signing-divergence hazard.
+The original seed design (docs/cadre/membership.md "The seed") proposed that a seed could carry signed Optimystic transactions to pre-populate a freshly bootstrapped node's control/Optimystic cache, so the new node starts with warm control data instead of fetching everything over the network. That half of the design was never implemented — the `transactions?: SignedTransaction[]` surface was typed, documented, and folded into the seed signature, but `createSeed` never produced it and `applySeed` never consumed it. It was removed wholesale by the implement ticket `remove-seed-transactions-surface` to eliminate dead spec and a latent signing-divergence hazard.
 
 This backlog ticket captures the genuine optimization for future, properly-designed work.
 
@@ -22,7 +22,7 @@ A real implementation is gated on infrastructure that does not yet exist:
 - A seed MAY optionally carry a verifiable representation of recent control-network state (transactions and/or materialized blocks) sufficient to warm the new node's cache.
 - Applying it MUST go through a validated path (no raw-storage bypass): each entry verified before it lands in the cache; an invalid entry fails the seed or is skipped without poisoning the cache.
 - Whatever fields are added to the seed/message MUST be produced by the creator AND folded into the canonical signed payload AND verified — produce/sign/verify stay in lockstep (the failure mode that motivated the prior removal).
-- `docs/architecture.md` updated to match delivered behavior; the deferred forward-reference left by the removal ticket replaced with the real design.
+- `docs/cadre/membership.md` updated to match delivered behavior; the deferred forward-reference left by the removal ticket replaced with the real design.
 - Cross-platform safe (browser/node/RN) — no Node-only storage assumptions.
 
 ## Prerequisite

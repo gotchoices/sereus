@@ -1,7 +1,7 @@
 priority: 3
 description: GitHub Actions CI pipeline with EAS Build + Maestro Cloud UI tests
 prereq: first-eas-build (must succeed first), packages/reference-app-rn, packages/cadre-cli
-files: .github/workflows/ci.yml, packages/reference-app-rn/maestro/, docs/reference-app-rn.md
+files: .github/workflows/ci.yml, packages/reference-app-rn/maestro/, docs/contributing/device-testing.md
 ----
 
 ## Context
@@ -137,7 +137,7 @@ Directory: `packages/reference-app-rn/maestro/`
 
 ### 3. Update Documentation
 
-Add CI/CD section to `docs/reference-app-rn.md` covering:
+Add CI/CD section to `docs/contributing/device-testing.md` covering:
 - How the pipeline works
 - Required secrets setup
 - How to run Maestro flows locally
@@ -147,5 +147,5 @@ Add CI/CD section to `docs/reference-app-rn.md` covering:
 - [ ] Add EAS preview build job (gated on master push)
 - [ ] Create `packages/reference-app-rn/maestro/` directory with initial test flows
 - [ ] Add Maestro Cloud job (gated on successful EAS build)
-- [ ] Document CI pipeline and required secrets in docs/reference-app-rn.md
+- [ ] Document CI pipeline and required secrets in docs/contributing/device-testing.md
 - [ ] Verify workflow syntax with `actionlint` or dry-run

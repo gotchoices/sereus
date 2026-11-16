@@ -1,6 +1,6 @@
 description: Phones currently forward live change notifications to other subscribers, the same as servers. Run a simulation to decide whether phones should instead only receive notifications, weighing their battery and bandwidth against how quickly everyone else hears about changes.
 prereq: node-roles-in-cadre-core
-architecture: docs/architecture.md#node-classes
+architecture: docs/cadre/node.md#node-classes
 files: packages/cadre-core/src/node-roles.ts (NODE_ROLE_PRESETS.device.reactivity), ../optimystic/packages/db-p2p/src/testing/reactivity-mesh-harness.ts (per-node edge/core profiles), ../optimystic/packages/substrate-simulator, ../optimystic/docs/reactivity.md (Origination point, Per-cohort policy, Edge profile)
 tradeoffs: Forwarding by every node is working today and its cost on phones has not been observed as a problem, so the simulation may only confirm the current default.
 ----
@@ -27,4 +27,4 @@ Optimystic's `reactivity-mesh-harness` already accepts a per-node `edge`/`core` 
 
 ## Outcome
 
-A default for `NODE_ROLE_PRESETS.device.reactivity` with the measurements behind it recorded in `docs/architecture.md` § Node Classes. If the answer depends on strand size, say so: that would argue for a per-strand setting, which is a separate ticket.
+A default for `NODE_ROLE_PRESETS.device.reactivity` with the measurements behind it recorded in `docs/cadre/node.md` § Node Classes. If the answer depends on strand size, say so: that would argue for a per-strand setting, which is a separate ticket.

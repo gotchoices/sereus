@@ -1,5 +1,5 @@
 description: When an owner adds a machine with a seed while it has no connection, the owner's first connection makes it re-sign the new machine's membership row, and the new machine then rewrites the same row with its own address record a moment later; when that connection is to the new machine itself, the first rewrite is wasted.
-architecture: docs/architecture.md#enrollment-flow-server-adds-drone
+architecture: docs/cadre/membership.md#adding-a-machine-by-seed
 files: packages/cadre-core/src/cadre-node.ts (`runDrainControlReplication` step 4 `drainPendingPeerWrites` ~5011, `reconstructAuthoredMembership` ~4960, `handleControlConnectionChange` ~5072, `addDrone` ~9639), packages/cadre-core/src/seed-bootstrap.ts (`addDrone` ~1442, `authorizePeer` ~423, `reauthorizePeer`)
 tradeoffs: The re-sign is what spreads a membership write the owner made with no connection, so skipping it for the new machine relies on that machine publishing its own record soon, and the saving is one row commit per seeded join, which is rare compared with invitation joins.
 ----
@@ -23,3 +23,11 @@ Skip the step-3 re-sign for a queued row whose machine is the peer whose connect
 - Whether the drain's growth edge can be attributed to one peer at all: it fires when `CadreNode.hasReachableControlSibling` turns true (a connected peer has identified as serving this party's control database and the membership check accepts it), so relays, bootstrap nodes and a claimed node's placeholder do not count (the last confirmed in the node-claim scenario by `claimant-redials-a-restarting-claimed-node`); see `backlog/control-rereplication-broadcast-confirmation`.
 - Whether leaving the entry queued is safe while the drain only fires on the 0 → ≥1 edge (an entry left behind is not looked at again until a full disconnect and reconnect).
 - The claim path (`claimNode` → `vouchPeer`) has the same shape: the claim's vouch is written with a null `Sig` and usually while the owner is alone, so the owner's first connection to the restarted node re-signs the row just before that node publishes its own. `claimant-redials-a-restarting-claimed-node` left this as it is (carrying the node's record in the claim acknowledgement was declined; see the `NOTE:` at `claimNode`'s `vouchPeer` call). Settle the claim path here with the seed path.
+
+## Arm: `addPhoneWithRelay` never queues its row
+
+Found by reading the code during the documentation rewrite; not run. Step 1 above holds for `addDrone` and `authorizePeer` only. Both call `noteControlWrite(peerId, 'authorize')` after the insert, which queues the row for re-sending when it committed with no sibling reachable. `CadreNode.addPhoneWithRelay` returns `seedBootstrapService.addPhoneWithRelay(phonePeerId)` and makes no such call; it is the one owner vouch on `CadreNode` that does not.
+
+A row it writes while the owner is alone is therefore re-sent only by `reconstructAuthoredMembership`, which runs once per process, on the first time the cohort grows. A phone added this way after that first growth, while the owner is alone again, has its row re-sent by nothing on the owner's side; the other machines learn it when the new phone publishes its own record. `addPhoneWithRelay` is documented for the case where both phones are behind NAT (`docs/cadre/membership.md` → "Adding a machine by seed") and has no caller in this repository outside tests, so the effect is unobserved.
+
+Whichever rule this ticket settles for a seeded machine's queued row should apply to the three add calls alike, starting with `addPhoneWithRelay` queuing its row as the other two do.

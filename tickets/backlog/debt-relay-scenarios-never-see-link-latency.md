@@ -1,12 +1,13 @@
 description: A measurement tool can now put one party on a slow link while the other stays fast, but no test asserts anything about it. Nothing yet fails when a message from a slow phone takes too long to reach a fast desktop, which is where the worst delays were seen on real devices.
-architecture: docs/testing.md#topology-coverage-map
+architecture: docs/contributing/topology-coverage.md
 files:
   - packages/integration-tests/src/harness/ws-latency.ts (the fixture that landed; process-wide by construction)
   - packages/integration-tests/src/harness/counting-proxy.ts (the per-link delaying proxy that landed later; measures, does not assert)
   - packages/integration-tests/src/scenarios/relay-round-trip-measure.integration.ts (its only user; opt-in measurement)
   - packages/integration-tests/src/harness/dedicated-relay.ts (one listen address today; the recommended design gives it several)
   - packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts (first user; its latency arm runs at 10 ms)
-  - docs/testing.md (topology coverage map; "Where measurements live")
+  - docs/contributing/topology-coverage.md
+  - docs/contributing/gates.md ("Opt-in measurements")
 tradeoffs: The symmetric everything-is-slow case that already landed is the harsher one, so the asymmetric shape may never catch a defect the existing arm misses — and the relay fixture change it needs is real work.
 ----
 
@@ -14,7 +15,7 @@ tradeoffs: The symmetric everything-is-slow case that already landed is the hars
 
 ## What already landed
 
-`packages/integration-tests/src/harness/ws-latency.ts` adds per-frame outbound delay to every WebSocket the test process dials, and `blind-relay-phone-to-phone-e2e.integration.ts` commits an arm at 10 ms of one-way latency. Relay scenarios are no longer blind to link delay in general. The measurements and the two delay modes are written up in `docs/testing.md` → "Where measurements live".
+`packages/integration-tests/src/harness/ws-latency.ts` adds per-frame outbound delay to every WebSocket the test process dials, and `blind-relay-phone-to-phone-e2e.integration.ts` commits an arm at 10 ms of one-way latency. Relay scenarios are no longer blind to link delay in general. The measurements and the two delay modes are written up in `docs/contributing/gates.md` → "Opt-in measurements".
 
 ## What is still missing
 

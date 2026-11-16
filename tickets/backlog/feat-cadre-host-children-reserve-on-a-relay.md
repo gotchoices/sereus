@@ -1,8 +1,8 @@
 ---
 prereq: node-hosts-carry-webrtc
 description: A home machine running cadre-host behind carrier-grade NAT, or a router that refuses port mapping, cannot be reached from the internet, because cadre-host has no way to point the nodes it runs at a relay. The underlying node program already supports relays; cadre-host just never passes one through.
-architecture: docs/cadre-host.md#nat-and-ddns
-files: packages/cadre-host/src/orchestrator/host-process-orchestrator.ts, packages/cadre-host/src/nat/nat-service.ts, packages/cadre-host/src/nat/address-resolver.ts, packages/cadre-cli/src/config/env.ts, docs/cadre-host.md
+architecture: docs/hosting/cadre-host.md#nat-and-ddns
+files: packages/cadre-host/src/orchestrator/host-process-orchestrator.ts, packages/cadre-host/src/nat/nat-service.ts, packages/cadre-host/src/nat/address-resolver.ts, packages/cadre-cli/src/config/env.ts, docs/hosting/cadre-host.md
 tradeoffs: UPnP or a manual port forward already cover most home networks, and a relay puts a third-party (or self-run) server on the data path with a per-reservation byte limit, so this may wait until a real CGNAT user needs it.
 ----
 
@@ -15,7 +15,7 @@ cadre-host runs every hosted node as a `cadre-cli` child process. `cadre-cli` ca
 - host configuration (`host.config.json`, `nat.json`) has no field for relay addresses;
 - the child spawn in `host-process-orchestrator.ts` removes every `CADRE_*` variable inherited from the manager (`scrubbedParentEnv`) and sets only the fixed per-child variables, none of which is `CADRE_RELAY_ADDRS`.
 
-So when UPnP fails and the operator cannot forward a port (the CGNAT case the host already detects as `cgnatDetected`), the host has no fallback. `docs/cadre-host.md` lists a relay as one of its three NAT layers and marks it "not wired".
+So when UPnP fails and the operator cannot forward a port (the CGNAT case the host already detects as `cgnatDetected`), the host has no fallback. `docs/hosting/cadre-host.md` lists a relay as one of its three NAT layers and marks it "not wired".
 
 ## Expected behaviour
 
@@ -31,7 +31,7 @@ Deploying relays (regions, dnsaddr discovery, abuse limits) is `4-relay-bootstra
 
 ## Docs that change when this lands
 
-The `cadre-host` row of `docs/architecture.md` → "Which nodes can be reached through a relay" (and the sentence under that table naming cadre-host), item 2 of `docs/cadre-host.md` → "NAT and DDNS" plus the other relay mentions in that file (the comparison table, the public-surface bullet, the CGNAT bullet of "Reachability from outside", the NAT line of Status), the matching comment in `packages/cadre-host/src/nat/address-resolver.ts`, and the `NOTE:` in the child env block of `host-process-orchestrator.ts` that says children hold no relay reservation.
+The `cadre-host` row of `docs/network/relay.md` → "Which nodes can be reached through a relay" (and the cadre-host item under "Limits and accepted tradeoffs" in that file), the "No relay for hosted nodes" item of `docs/hosting/cadre-host.md` → "Limits and accepted tradeoffs" plus the CGNAT mentions in that file ("Reachability verdict", "Manual port forwarding", "Public addresses per node"), the matching comment in `packages/cadre-host/src/nat/address-resolver.ts`, and the `NOTE:` in the child env block of `host-process-orchestrator.ts` that says children hold no relay reservation.
 
 ## Note from planning `cadre-host-node-reachability`
 
@@ -39,4 +39,8 @@ The `cadre-host` row of `docs/architecture.md` → "Which nodes can be reached t
 
 ## Arm: turn on WebRTC for children given a relay
 
-Added 2026-11-16. `node-hosts-carry-webrtc` adds cadre-cli's opt-in `network.webrtc` (env `CADRE_WEBRTC`). The project owner decided that cadre-host turns it on for every child it starts with a relay, so a home machine behind carrier-grade NAT can move its connections with phones and browsers from the relay to a direct WebRTC path wherever ICE connects. Pass `CADRE_WEBRTC=true` beside `CADRE_RELAY_ADDRS` in the child env block of `host-process-orchestrator.ts`, and say in `docs/cadre-host.md` that relayed children also offer WebRTC. That ticket records whether `node-datachannel` loads on the platforms cadre-host supports; a platform without it needs the flag left off there.
+Added 2026-11-16. `node-hosts-carry-webrtc` adds cadre-cli's opt-in `network.webrtc` (env `CADRE_WEBRTC`). The project owner decided that cadre-host turns it on for every child it starts with a relay, so a home machine behind carrier-grade NAT can move its connections with phones and browsers from the relay to a direct WebRTC path wherever ICE connects. Pass `CADRE_WEBRTC=true` beside `CADRE_RELAY_ADDRS` in the child env block of `host-process-orchestrator.ts`, and say in `docs/hosting/cadre-host.md` that relayed children also offer WebRTC. That ticket records whether `node-datachannel` loads on the platforms cadre-host supports; a platform without it needs the flag left off there.
+
+## Doc references
+
+The "three NAT layers … not wired" wording quoted under "What is missing" is no longer in the document; the current statement is the "No relay for hosted nodes" item of `docs/hosting/cadre-host.md` → "Limits and accepted tradeoffs" (`#limits-and-accepted-tradeoffs`), which cites this ticket.

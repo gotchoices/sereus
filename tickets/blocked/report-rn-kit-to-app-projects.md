@@ -1,6 +1,6 @@
 description: The phone apps built on Sereus (sereus-chat and sereus-health) still carry their own copies of code this repo now ships as a shared React Native package; someone needs to tell their maintainers the package exists and what it replaces, because those repositories are not ours to change.
 architecture: packages/cadre-rn/README.md
-files: packages/cadre-rn/README.md, packages/cadre-rn/package.json, packages/reference-app-rn/index.js, packages/reference-app-rn/metro.config.js, docs/reference-app-rn.md
+files: packages/cadre-rn/README.md, packages/cadre-rn/package.json, packages/reference-app-rn/index.js, packages/reference-app-rn/metro.config.js, docs/platforms/react-native.md
 difficulty: easy
 ----
 # Tell the other app projects about `@serfab/cadre-rn`

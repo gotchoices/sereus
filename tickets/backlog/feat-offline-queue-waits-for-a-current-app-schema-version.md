@@ -1,12 +1,12 @@
 description: An app that edited a shared workspace while offline can, on reconnecting, send edits made with an older version of the app's tables before it learns a newer version was applied, and those edits erase values the newer version added. Hold such queued edits until the app has confirmed it is still on the current version.
-architecture: docs/strands.md#until-then-every-member-on-the-same-schema-version
-files: packages/quereus-plugin-sereus/src/compose-strand.ts (`cohortReachability` registration), packages/quereus-plugin-sereus/src/app-schema.ts (the version check from `app-schema-version-stops-a-running-member`), packages/cadre-core/src/strand-party-machines.ts (the existing reachability gate), docs/strands.md (Offline mode)
+architecture: docs/strands/app-schema.md#every-member-on-the-same-schema-version
+files: packages/quereus-plugin-sereus/src/compose-strand.ts (`cohortReachability` registration), packages/quereus-plugin-sereus/src/app-schema.ts (the version check from `app-schema-version-stops-a-running-member`), packages/cadre-core/src/strand-party-machines.ts (the existing reachability gate), docs/strands/writes.md (Offline mode)
 tradeoffs: The window is only an offline member reconnecting after a schema upgrade elsewhere, the stop-gap it guards is temporary until lenses let versions coexist, and closing it means a gate that must tell the version table's own blocks apart from app tables' so the check itself can still reach the network.
 ----
 
 # Hold the offline queue until the app schema version is confirmed current
 
-Under the stop-gap in docs/strands.md → "Until then: every member on the same schema version", a running member stops once it reads a higher recorded `App` schema version (`app-schema-version-stops-a-running-member`). A member that was offline at the lower version queued transactions that do not know the newer columns. On reconnect the queue drains as soon as its reachability gate opens, possibly before the version check sees the higher number. Rows are stored keyed by column name, so a queued insert lands with the newer columns null, but a queued update rewrites the row without them and erases their values.
+Under the stop-gap in docs/strands/app-schema.md → "Every member on the same schema version", a running member stops once it reads a higher recorded `App` schema version (`app-schema-version-stops-a-running-member`). A member that was offline at the lower version queued transactions that do not know the newer columns. On reconnect the queue drains as soon as its reachability gate opens, possibly before the version check sees the higher number. Rows are stored keyed by column name, so a queued insert lands with the newer columns null, but a queued update rewrites the row without them and erases their values.
 
 ## Expected behaviour
 

@@ -1,5 +1,5 @@
 description: Sereus now waits longer before deciding a peer has gone quiet, so a slow phone is no longer disconnected mid-sync. Three other places in the codebase build the same kind of network node and were not given that setting, so a slow phone talking to one of them can still be dropped.
-architecture: docs/architecture.md
+architecture: docs/network/deadlines.md
 files:
   - packages/quereus-plugin-sereus/src/connect.ts (`createNode`)
   - packages/quereus-plugin-sereus/src/connect-browser.ts (`createNode`)

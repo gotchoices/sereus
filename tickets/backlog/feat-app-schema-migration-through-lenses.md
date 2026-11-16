@@ -1,12 +1,12 @@
 description: Let members of a shared workspace run different versions of an app, each keeping its own view of the shared tables, so one party upgrading no longer locks out the others. This uses the "lens" mechanism of the database engine Sereus builds on, and needs design work first.
-architecture: docs/strands.md#direction-quereus-lenses
-files: docs/strands.md, packages/quereus-plugin-sereus/src/app-schema.ts, packages/quereus-plugin-sereus/src/compose-strand.ts, ../quereus/docs/lens.md, ../quereus/docs/migration.md
+architecture: docs/strands/app-schema.md#direction-quereus-lenses
+files: docs/strands/app-schema.md, packages/quereus-plugin-sereus/src/app-schema.ts, packages/quereus-plugin-sereus/src/compose-strand.ts, ../quereus/docs/lens.md, ../quereus/docs/migration.md
 tradeoffs: The stop-gap (every member on one schema version) is safe and simple, and each open question below (agreeing on a basis change, retiring columns, shipping lenses, replicated materialized views) is real design work that only pays once apps upgrade independently across parties.
 ----
 
 # App schema migration through Quereus lenses
 
-The decided direction is in docs/strands.md → "Direction: Quereus lenses". It replaces the stop-gap `app-schema-version-gates-strand-open`, under which every member must run the same `App` schema version.
+The decided direction is in docs/strands/app-schema.md → "Direction: Quereus lenses". It replaces the stop-gap `app-schema-version-gates-strand-open`, under which every member must run the same `App` schema version.
 
 ## The shape
 

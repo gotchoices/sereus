@@ -57,7 +57,7 @@ Observed on a Galaxy Note 9 on 2026-09-16, debug build of `packages/reference-ap
 - Whether to open the report at all, given we already carry a local workaround that costs us nothing further.
 - Whether to open an issue or go straight to a pull request. The change is two operators; a pull request is probably less work for everyone than an issue describing it.
 - Which repository and which account. The package's manifest points at `git+https://github.com/libp2p/js-libp2p.git`; `@libp2p/websockets` lives in that monorepo.
-- Once it is sent, record the issue or pull request link here (or in `docs/reference-app-rn.md` beside the polyfill note) so the next person hitting this can see whether upstream has moved and whether our workaround can be dropped.
+- Once it is sent, record the issue or pull request link here (or in `docs/platforms/react-native.md` beside the polyfill note) so the next person hitting this can see whether upstream has moved and whether our workaround can be dropped.
 
 ## Second arm (2026-10-12, from `fix/slow-relay-joiner-strand-connection-keeps-dropping`): the listener side cannot send a reset
 

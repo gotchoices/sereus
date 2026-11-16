@@ -1,5 +1,5 @@
 description: The NativeScript phone app is supposed to be tested by reusing the React Native app's automated UI test scripts unchanged, but the two apps' screens no longer match closely enough for those scripts to run against it.
-files: packages/reference-app-ns/app/chat/chat-page.xml, packages/reference-app-ns/app/settings/settings-page.xml, packages/reference-app-ns/app/app-root.xml, packages/reference-app-ns/src/chat-vm.ts, packages/reference-app-ns/src/cadre-vm.ts, packages/reference-app-ns/src/test-ids.ts, packages/reference-app-rn/maestro/_setup.yaml, packages/reference-app-rn/maestro/flows/4-solo-create-strand.yaml, docs/reference-app-ns.md
+files: packages/reference-app-ns/app/chat/chat-page.xml, packages/reference-app-ns/app/settings/settings-page.xml, packages/reference-app-ns/app/app-root.xml, packages/reference-app-ns/src/chat-vm.ts, packages/reference-app-ns/src/cadre-vm.ts, packages/reference-app-ns/src/test-ids.ts, packages/reference-app-rn/maestro/_setup.yaml, packages/reference-app-rn/maestro/flows/4-solo-create-strand.yaml, docs/contributing/device-testing.md
 ---
 
 # Reused RN Maestro flows cannot pass against the NativeScript app
@@ -83,3 +83,11 @@ The end-to-end suite already needs an emulator, a built APK, Maestro, and adb, s
 it is out-of-band work for a human either way. Nothing an agent or CI runs is
 affected. Filing this so the next person to attempt a NativeScript device run
 does not rediscover it one failed assertion at a time.
+
+## Further arms, from reading the runner and the shared setup
+
+Read from the files, not run.
+
+- **The NativeScript runner passes two variables the fixture never supplies.** `packages/reference-app-ns/scripts/run-e2e.mjs` sets `PARTY_ID: testData.partyId` and `BOOTSTRAP_ADDR: testData.droneBootstrapAddr`. The fixture (`packages/reference-app-rn/test-fixture/start.mjs`) writes only `strandId`, `ownerGrant` and `cadreInvitation` to `test-data.json`, so both reach Maestro as the text `undefined`. No file under `packages/reference-app-rn/maestro/` reads either variable, and the React Native runner (`packages/reference-app-rn/scripts/run-e2e.mjs`) does not pass them. They are what a Connect-first setup would need (the arm above: this app shows its join field only while connected), so either the fixture writes them and a NativeScript setup uses them, or the runner drops them.
+- **The shared setup's comment names the wrong stopping point.** The header of `packages/reference-app-rn/maestro/_setup.yaml` says the NativeScript run passes a machine invitation "so its run stops at Create strand". The run cannot get that far: the first wait in the file is for `btn-first-launch-join`, an id the NativeScript app does not have, so flows 1 to 3 fail there. `docs/contributing/device-testing.md` ("The NativeScript run") already says so.
+- **The strand the setup waits for is never visible to the drone.** `_helpers/discover-phone-strand.js` polls the drone for the strand the phone created. The NativeScript app's **Create Chat Strand** does not publish the strand, so even a setup that reached that step would time out (`bug-reference-app-ns-created-strand-is-never-published`). The fixture's drone also listens on plain `ws`, which the Android build is expected to refuse (`bug-reference-app-ns-android-refuses-plain-websocket`).

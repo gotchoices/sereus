@@ -1,5 +1,5 @@
 description: Each time a node process starts its first shared workspace, it asks a public relay (one that never answers this kind of request) to let the workspace's identity in, twice, and is refused both times; the node has no reliable way to know in advance that the relay will refuse.
-architecture: docs/strands.md#some-questions
+architecture: docs/network/strand-addressing.md#dedicated-relays
 files: packages/cadre-core/src/cadre-node.ts (`resolveSiblingSeed` ~7392, `circuitRelayTargets` ~7488, `refreshDelegateGrants` ~7536, `relaysRefusingStrandAddr` doc ~821), packages/cadre-core/src/delegate-admission.ts (`relaysNotRefusing`), ../optimystic/packages/db-p2p/src/network/identify-on-open.ts (read only)
 tradeoffs: The saving is two refused protocol negotiations per process start per dedicated relay, and any rule that skips a relay it is unsure about can deny a party-run relay's first reservation, which costs more than it saves.
 ----

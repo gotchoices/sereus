@@ -1,7 +1,7 @@
 ----
 description: A workspace can be marked as open to anyone, but nothing about how it protects itself is any different from an invitation-only one. Decide what an open workspace should actually require before it accepts a change, and whether we should offer that mode at all until we can back it up.
 prereq: strand-node-binds-member-peer
-files: schemas/strand.qsql, schemas/control.qsql, packages/quereus-plugin-sereus/src/cluster-size.ts, docs/strands.md, docs/architecture.md
+files: schemas/strand.qsql, schemas/control.qsql, packages/quereus-plugin-sereus/src/cluster-size.ts, docs/strands/lifecycle.md, docs/cadre/control-replication.md
 difficulty: hard
 ----
 
@@ -48,7 +48,7 @@ Danger tracks **how you get in**, not how many are already inside.
 The decision is a product one as much as an engineering one, and there is no defensible default
 to just pick — which is why this sits in backlog rather than going straight to plan.
 
-1. **Do we support genuinely open workspaces at all in the near term?** `docs/strands.md`
+1. **Do we support genuinely open workspaces at all in the near term?** `docs/strands/lifecycle.md`
    states Sereus is intended to be invitation-only. If that holds, the honest move may be to
    restrict what an open workspace is allowed to be used for — read-only publication, say —
    rather than implying it carries the same integrity guarantees as a closed one. Shipping an
@@ -61,7 +61,7 @@ to just pick — which is why this sits in backlog rather than going straight to
 3. **What must a rule-bearing change require, distinct from an ordinary data write?** The
    promising split is that ordinary data commits locally and replicates lazily, while changes
    carrying rules for everyone require attestation from several distinct parties. That is the
-   two-layer model `docs/cadre-consistency.md` already proposes for the control database,
+   two-layer model `docs/design/control-consistency.md` already proposes for the control database,
    applied to strands. It cannot be enforced until the strand can tell parties apart, which is
    why per-party membership identity (`strand-node-binds-member-peer`, the last build ticket of
    the former `feat-strand-party-identity` plan) is a prerequisite; party-aware copy *placement*
