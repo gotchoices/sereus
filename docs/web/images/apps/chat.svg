@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 776.19 776.19" role="img" aria-label="Sereus Chat logo">
+  <rect x="0" width="776.19" height="776.19" rx="95" ry="95" fill="#fdf8f0"/>
+  <!-- Back bubble -->
+  <path fill="#9ccdb9" d="M300 168h300a96 96 0 0 1 96 96v150a96 96 0 0 1-96 96h-58l-96 84v-84h-146a96 96 0 0 1-96-96V264a96 96 0 0 1 96-96z"/>
+  <!-- Front bubble -->
+  <path fill="#1a7f5a" d="M176 236h300a96 96 0 0 1 96 96v150a96 96 0 0 1-96 96H330l-96 84v-84h-58a96 96 0 0 1-96-96V332a96 96 0 0 1 96-96z"/>
+  <!-- Dots -->
+  <circle cx="248" cy="407" r="26" fill="#fdf8f0"/>
+  <circle cx="326" cy="407" r="26" fill="#fdf8f0"/>
+  <circle cx="404" cy="407" r="26" fill="#fdf8f0"/>
+</svg>

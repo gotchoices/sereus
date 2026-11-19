@@ -1,14 +1,144 @@
 <div class="news-header">
   <h1>News</h1>
-  <p>Releases, demos, and ecosystem updates.</p>
+  <p>Releases, apps and milestones across Sereus and its stack, newest first. Detailed notes for every Sereus release are on <a href="https://github.com/gotchoices/sereus/releases" target="_blank" rel="noopener">GitHub</a>.</p>
 </div>
 
 <div class="news-container">
+
+  <h2 class="news-year">2026</h2>
+
   <div class="news-item">
-    <h3>Welcome to Sereus</h3>
-    <div class="news-date">Oct 2025</div>
-    <p>Sereus Home Page goes live.</p>
+    <div class="news-date"><span class="news-tag">Release</span>Nov 2026</div>
+    <h3>Sereus 1.23: quieter connected cohorts</h3>
+    <p>When two or three machines in a cohort stay connected to each other, reading unchanged data no longer makes them ask each other for anything newer every 10 seconds. The release moves to Optimystic 1.27 and Quereus 5.4.</p>
   </div>
+
+  <div class="news-item app">
+    <div class="news-date"><span class="news-tag">Apps</span>Nov 2026</div>
+    <h3>Chat sends photos, and Bonum runs on several devices</h3>
+    <p>Sereus Chat attachments now carry their bytes through a chunked blob store, and WebRTC connections were verified directly from phone to phone. In Bonum, a second device and then a web browser joined the same cadre, set up with QR-code invitations.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Stack</span>Nov 2026</div>
+    <h3>Quereus 5.0</h3>
+    <p>The SQL engine behind every strand reached its fifth major version, about a year and a half after its first commit. Sereus 1.22 adopted it within days.</p>
+  </div>
+
+  <div class="news-item app">
+    <div class="news-date"><span class="news-tag">Apps</span>Nov 2026</div>
+    <h3>WyattERP begins</h3>
+    <p>Design work started on WyattERP, a parametric manufacturing-control system for companies that build modular products. It will run on Sereus, with Bonum handling the accounting.</p>
+  </div>
+
+  <div class="news-item app">
+    <div class="news-date"><span class="news-tag">Apps</span>Oct 2026</div>
+    <h3>Taleus runs on strands, with an Android build</h3>
+    <p>Taleus, the reboot of MyCHIPs on Sereus, now stores each tally in a two-party strand. An Android testing build went up on <a href="/taleus/">sereus.org/taleus</a>, along with invite links that open the app directly.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Release</span>Oct 2026</div>
+    <h3>A month of cadre features: offline invitations, node claiming, change notifications</h3>
+    <p>In <strong>1.10</strong>, a request to join can wait for an inviter who is offline, retrying in the background for up to 30 days. In <strong>1.11</strong>, the relay answers STUN itself, so the separate TURN servers were removed. In <strong>1.12</strong>, apps can subscribe to change notifications on strand tables. In <strong>1.14</strong>, a new always-on node waits to be claimed by its owner's phone, which scans the node's code as a QR code. In <strong>1.18</strong>, the control store migrates in place when a machine upgrades.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Release</span>Sep 2026</div>
+    <h3>Built for phones</h3>
+    <p>In <strong>1.2</strong>, a two-party insert over a relay takes about half as long as before (4.5–5.9 s, down from 8.9–10.2 s), because each write needs fewer network round trips. <strong>1.3</strong> and <strong>1.4</strong> stopped slower phones from being disconnected while they sync, with native encryption and a more patient connection check. <strong>1.6</strong> added <code>@serfab/cadre-rn</code>, a shared kit for React Native apps that run a cadre node. In <strong>1.7</strong>, two parties that can reach each other only through a relay keep replicating after both restart.</p>
+  </div>
+
+  <div class="news-item milestone">
+    <div class="news-date"><span class="news-tag">Milestone</span>Sep 18, 2026</div>
+    <h3>Sereus 1.0 and Optimystic 1.0</h3>
+    <p>Sereus reached 1.0 on the same day as Optimystic 1.0, the distributed storage and transaction layer beneath it. The week before, <strong>0.13</strong> had made multi-machine setups work: two phones each reachable only through a relay can form a strand and replicate both ways, a strand can span two parties with two machines each, and a machine added later catches up on the data it missed.</p>
+  </div>
+
+  <div class="news-item app">
+    <div class="news-date"><span class="news-tag">Apps</span>Sep 2026</div>
+    <h3>Taleus gets its own page</h3>
+    <p><a href="/taleus/">sereus.org/taleus</a> went up, introducing tallies, pledges and lifts, with invite links ready for the app.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Ecosystem</span>Aug 2026</div>
+    <h3>VoteTorrent publishes downloadable apps</h3>
+    <p><a href="https://votetorrent.org" target="_blank" rel="noopener">VoteTorrent</a>, the transparent-elections project that Optimystic grew out of, updated its website with downloadable Android builds.</p>
+  </div>
+
+  <div class="news-item app">
+    <div class="news-date"><span class="news-tag">Apps</span>Jul 2026</div>
+    <h3>Sereus Health launches at sereus.org/health</h3>
+    <p>Sereus Health became the first Sereus app with its own page and an Android download: a private tracker for finding what makes you feel better or worse, with starter catalogs to import. <a href="/chat/">Sereus Chat's page</a> followed, so that invite links open the app. The same month, Chat added relay mode, and Bonum ran its books on a Sereus backend for the first time.</p>
+  </div>
+
+  <div class="news-item app">
+    <div class="news-date"><span class="news-tag">Apps</span>May 2026</div>
+    <h3>Sereus Chat stores its first messages in a strand</h3>
+    <p>Chat moved from a design prototype to the real stack: conversations are now kept in Sereus strands.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Release</span>Apr 2026</div>
+    <h3>First tagged Sereus release</h3>
+    <p>Sereus 0.2.0 started regular versioned releases of the <code>@serfab/*</code> packages, along with documentation of the polyfills each runtime needs. Forty-two more followed by mid-November.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Stack</span>Mar 2026</div>
+    <h3>Quereus 1.0</h3>
+    <p>The Quereus SQL query processor reached 1.0, giving strands a stable SQL engine with declarative constraints.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Stack</span>Feb 2026</div>
+    <h3>Sereus packages on npm, and on React Native</h3>
+    <p>The first <code>@serfab</code> packages were published to npm, with React Native support. Sereus Health was the first app to load the stack.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Stack</span>Jan 2026</div>
+    <h3>Relays, Docker images and Fret</h3>
+    <p>Nodes connected through a relay for the first time, and Docker images arrived for running relays and always-on nodes, which became the basis for keeping phones reachable. Fret, the distributed hash table, was split out of Optimystic into its own package.</p>
+  </div>
+
+  <h2 class="news-year">2025</h2>
+
+  <div class="news-item app">
+    <div class="news-date"><span class="news-tag">Apps</span>Nov – Dec 2025</div>
+    <h3>Chat, Health and Bonum begin</h3>
+    <p>Three apps started within a month of each other: Sereus Chat (November 11), Sereus Health (November 27) and Bonum, for personal and business finance (December 6). Each began from stories and specifications in a design-first workflow.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Stack</span>Nov 2025</div>
+    <h3>Strand formation comes to Sereus</h3>
+    <p>The bootstrap protocol that forms a strand between two parties, first proven in Taleus, was ported into Sereus with its tests passing.</p>
+  </div>
+
+  <div class="news-item milestone">
+    <div class="news-date"><span class="news-tag">Milestone</span>Oct 28, 2025</div>
+    <h3>sereus.org goes live</h3>
+    <p>The Sereus website launched, describing consent-based strands and the use cases they could enable.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Stack</span>Aug 2025</div>
+    <h3>First strand formation test passes</h3>
+    <p>In the Taleus repository, the first test of the tally bootstrap passed. That handshake, in which two parties invite each other into a shared database, became the model for how all strands form.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Stack</span>Jun 2025</div>
+    <h3>Optimystic becomes its own project</h3>
+    <p>The distributed B-tree and transaction layer written for VoteTorrent moved into its own repository as Optimystic.</p>
+  </div>
+
+  <div class="news-item">
+    <div class="news-date"><span class="news-tag">Stack</span>Apr – May 2025</div>
+    <h3>Where it started: Quereus and Taleus</h3>
+    <p>Work began on Quereus, the SQL processor (April), and on Taleus, the effort to rebuild MyCHIPs credit on a peer-to-peer foundation (May). Both became foundations of Sereus: Quereus as its SQL engine, and Taleus as the origin of its strand-forming protocol.</p>
+  </div>
+
 </div>
-
-
