@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdir, readFile } from 'node:fs/promises';
-import { Database, Parser, expressionToString } from '@quereus/quereus';
+import { Database, Parser, expressionToString, registerPlugin } from '@quereus/quereus';
+import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import type { CreateTableStmt, Expression, FunctionExpr } from '@quereus/quereus/parser';
 import {
 	CONTROL_SCHEMA_BASELINE_VERSION,
@@ -10,6 +11,7 @@ import {
 	controlSchemaFileDeclaration
 } from '../src/control-schema.js';
 import { declaredSchemaVersion, pendingControlSchemaChanges, type PendingControlSchemaChange } from '../src/control-schema-version.js';
+import { registerPartyIdFunction } from '../src/control-database.js';
 import { replaceOnce, withItems, withLegacyTable } from '../../../test-harness/control-schema-releases.js';
 
 /**
@@ -53,10 +55,16 @@ function fixtureOf(fixtures: ReadonlyMap<number, string>, version: number): stri
 	return schema;
 }
 
-/** Run `read` on a fresh in-memory database after executing `sql` in it. */
+/**
+ * Run `read` on a fresh in-memory database after executing `sql` in it. The schema's CHECKs
+ * call `verify`, `digest` and `party_id`, which Quereus resolves when the table is created, so
+ * they are registered as `ControlDatabase.initialize` registers them.
+ */
 async function withDatabase<T>(sql: readonly string[], read: (db: Database) => Promise<T> | T): Promise<T> {
 	const db = new Database();
 	try {
+		await registerPlugin(db, cryptoPlugin);
+		registerPartyIdFunction(db, 'schema-versions-party');
 		for (const statement of sql) {
 			await db.exec(statement);
 		}

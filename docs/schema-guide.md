@@ -713,3 +713,4 @@ Planning proves that a check or query compiles, not that it succeeds when run.
 - **Strand writes are not protected against a repeated attempt.** The app must hold a stable key across retries, as described under [Client-Generated Keys and Retrying a Write](#client-generated-keys-and-retrying-a-write).
 - **There is no party-private replicated store.** Per-party state kept in strand tables is readable by every member (ticket `feat-party-private-app-state`).
 - **Seed rows are not applied to a strand.** The founding app inserts the rows a strand needs at creation.
+- **`blobref` columns are not supported yet.** Optimystic's plugin accepts a `blobref` column, which references a large value stored outside the row, but Sereus nodes keep those values in memory, so a restart of every machine holding one loses it (ticket `feat-strand-blobs-persist`). Keep large values out of strand tables until then.

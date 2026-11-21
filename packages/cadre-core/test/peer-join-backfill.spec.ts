@@ -88,6 +88,11 @@ function makeStorage(blocks: Record<string, FakeBlock>, opts: { listBlockIds?: b
       return entry?.latest?.rev === rev ? entry.proof : undefined;
     },
     saveBlockProof: refuse('saveBlockProof'),
+    // Backfill reads proofs through `getBlockProof` only; these raw halves of it stay unused.
+    getProofEntry: refuse('getProofEntry'),
+    saveProofEntry: refuse('saveProofEntry'),
+    getCommitProof: refuse('getCommitProof'),
+    saveCommitProof: refuse('saveCommitProof'),
     saveMaterializedBlock: refuse('saveMaterializedBlock'),
     promotePendingTransaction: refuse('promotePendingTransaction'),
     // Nothing to make durable: the store is a read-only literal map.

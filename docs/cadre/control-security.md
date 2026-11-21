@@ -186,7 +186,7 @@ The control node refuses a peer that is not an authorized member on every protoc
 | `stranger-open` | `/sereus/seed/1.0.0`, `/sereus/formation/1.0.0`, `/sereus/cadre-invite/1.0.0`, `/sereus/owner-grant/1.0.0` | Any peer. Each handler makes its own trust decision inside the protocol: the seed trust policy, the formation token, the invitation's or the grant's proof of possession. |
 | `transport` | identify and identify-push, ping, DCUtR, AutoNAT, the circuit-relay `stop` and `hop` protocols, WebRTC signaling when an embedder adds WebRTC | Any peer. |
 | `members` | `/sereus/strand-wake/1.0.0`, `/sereus/strand-addr/1.0.0` | Authorized members, by a live read of the control database (`isAuthorizedMember`). |
-| `members-snapshot` | Optimystic's four control-database protocols (`repo`, `cluster`, `db-p2p/sync`, `db-p2p/block-transfer`) and FRET's five | Authorized members, by an in-memory snapshot. |
+| `members-snapshot` | Optimystic's five control-database protocols (`repo`, `cluster`, `db-p2p/sync`, `db-p2p/block-transfer`, `db-p2p/blob`) and FRET's five | Authorized members, by an in-memory snapshot. |
 
 A protocol missing from the table is guarded as `members-snapshot`, with one `console.warn` per protocol: it works for members and refuses strangers until someone assigns it a class. A unit test starts a node with every conditional protocol enabled and fails when a served protocol is unclassified, so a new handler or a dependency upgrade that adds one fails CI.
 

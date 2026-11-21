@@ -62,13 +62,19 @@ import {
 	type TopologyMachine,
 } from '../harness/index.js';
 
-/** One tagged table: the only collection on the strand with a network watch. */
+/**
+ * One tagged app table. The strand's own `Strand.AppSchemaVersion` is tagged too
+ * (docs/strands/app-schema.md), so each machine holds {@link SCHEMA_TAG_WATCHES} network watches.
+ */
 const TAGGED_SCHEMA = `
 table Data (
     Key text primary key,
     Val text
 ) with tags ("optimystic.network_watch" = true);
 `;
+
+/** `App.Data` and `Strand.AppSchemaVersion`, each a primary key only: one collection apiece. */
+const SCHEMA_TAG_WATCHES = 2;
 
 /** Every block on two of the three machines, so one machine is outside any block's storage group. */
 const STRAND_BREADTH = 2;
@@ -220,7 +226,7 @@ function watchedCollections(machine: StrandMachine): number {
 /** The tag in the sApp schema opened a network watch on every machine (the production path). */
 async function awaitSchemaTagWatches(machines: ReadonlyArray<StrandMachine>): Promise<void> {
 	try {
-		await waitUntil(() => machines.every((m) => watchedCollections(m) === 1), { timeoutMs: 10_000, intervalMs: 50 });
+		await waitUntil(() => machines.every((m) => watchedCollections(m) === SCHEMA_TAG_WATCHES), { timeoutMs: 10_000, intervalMs: 50 });
 	} catch (error) {
 		throw new Error(
 			"the sApp schema's network_watch tag did not open a network watch on every machine ("

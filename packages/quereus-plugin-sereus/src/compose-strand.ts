@@ -1,5 +1,5 @@
 import debug from 'debug';
-import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInfo } from '@quereus/quereus';
+import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInfo, TypePluginInfo } from '@quereus/quereus';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
@@ -111,11 +111,13 @@ interface PluginRegistrations {
 	vtables?: VTablePluginInfo[];
 	functions?: FunctionPluginInfo[];
 	collations?: CollationPluginInfo[];
+	/** Column types, such as the optimystic plugin's `blobref`. A table declaring one refuses to open where it is unregistered. */
+	types?: TypePluginInfo[];
 }
 
 /**
- * Inline equivalent of `@quereus/quereus`'s `registerPlugin` for plugins that
- * only return functions/vtables/collations. Used directly for the optimystic
+ * Inline equivalent of `@quereus/quereus`'s `registerPlugin`, registering the same four
+ * kinds (vtables, functions, collations, types). Used directly for the optimystic
  * result (so the composition can read `collectionFactory` off the same object),
  * and by the browser crypto strategy to keep the browser bundle from pulling a
  * duplicate `@quereus/quereus` next to the host's instance.
@@ -129,6 +131,9 @@ export function applyRegistrations(db: Database, result: PluginRegistrations): v
 	}
 	for (const collation of result.collations ?? []) {
 		db.registerCollation(collation.name, collation.func, collation.normalizer);
+	}
+	for (const type of result.types ?? []) {
+		db.registerType(type.name, type.definition);
 	}
 }
 

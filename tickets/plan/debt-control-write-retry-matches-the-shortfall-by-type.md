@@ -1,7 +1,7 @@
-description: Sereus decides whether to retry a write that too few machines answered by reading the error's message text. Optimystic now raises that failure as its own error type, so Sereus could check the type instead and stop depending on the wording.
+description: Sereus decides whether to retry a control write that too few machines answered by reading the error messages' text. Optimystic now raises both of those failures as their own error types, so Sereus can check the type instead and stop depending on the wording.
 architecture: docs/cadre/control-replication.md
-files: packages/cadre-core/src/control-write-retry.ts (`SUPER_MAJORITY_SHORTFALL_UNANSWERED`, `isUnansweredSuperMajorityShortfall`, `matchesRetriableFailure`), packages/cadre-core/test/control-write-retry.spec.ts (the `SUPER_MAJORITY_*` fixtures, `nested`, `ddlFailure`), packages/cadre-core/src/edge-node/strands.ts (`SUPER_MAJORITY_FAILURE`, second arm)
-tradeoffs: Upstream keeps the message byte for byte as a contract with Sereus and pins it in its own tests, so the text match is stable today; the change rewrites about a dozen spec fixtures for no change in behaviour, and a typed check fails closed if a wrapper ever drops the error's `cause` or a second copy of `@optimystic/db-core` is loaded.
+files: packages/cadre-core/src/control-write-retry.ts (`SUPER_MAJORITY_SHORTFALL_UNANSWERED`, `isUnansweredSuperMajorityShortfall`, `matchesRetriableFailure`, `TRANSACTOR_AGGREGATE`, `isUncommittedTransactorAggregate`, `reportsIndeterminateCommit`), packages/cadre-core/test/control-write-retry.spec.ts (the `SUPER_MAJORITY_*` fixtures, `nested`, `ddlFailure`), packages/cadre-core/src/edge-node/strands.ts (`SUPER_MAJORITY_FAILURE`, second arm), packages/cadre-core/src/control-read-retry.ts (third arm), packages/cadre-core/test/control-read-retry.spec.ts, packages/cadre-core/test/control-write-lock.spec.ts, packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, ../optimystic/packages/db-core/src/transactor/peers-incomplete-error.ts
+tradeoffs: Upstream keeps the messages byte for byte as a contract with Sereus, so the text match is stable today; the change rewrites a few dozen spec fixtures for no change in behaviour, and a typed check fails closed if a wrapper ever drops the error's `cause` or a second copy of `@optimystic/db-core` is loaded.
 ----
 # Match the super-majority shortfall by type
 
@@ -29,3 +29,14 @@ Upstream's `classifyCommitFailure` is not a replacement. It would claim this one
 ## Second arm: the edge node's strand-write retry
 
 `retryAfterRestart` in `packages/cadre-core/src/edge-node/strands.ts` retries a strand write on `/Failed to get super-majority/i` over the top-level message only, at any rejection count. Its NOTE says to match on a typed error once Optimystic has one. Decide there whether a write some member rejected should still be retried.
+
+## Third arm: the transactor aggregate is typed too (Optimystic 1.29.0)
+
+From 1.29.0 the four "Some peers did not complete:" failures `NetworkTransactor` raises are `PeersIncompleteError` (exported from `@optimystic/db-core`), with `phase` set to `'get'`, `'pend'`, `'commit'` or `'cancel'`. The message text is unchanged. Upstream's release notes name this repo's control-write retry as the consumer: `'get'` and `'pend'` are the phases it treats as retry-safe today.
+
+- `isUncommittedTransactorAggregate` and `reportsIndeterminateCommit` in `control-write-retry.ts` can branch on `phase` instead of the `TRANSACTOR_AGGREGATE` prefix plus the `[block:` / `[blocks:` tokens. That retires the NOTEs about the discriminator being another repo's formatting detail and about the `dischargeCancel` formatter (a cancel is `phase: 'cancel'`, never claimed).
+- `control-read-retry.ts` matches the same aggregate on the read path: same change, `phase === 'get'`.
+- The spec fixtures that build the aggregate as text (`*_IN_PEND_AGGREGATE`, `*_IN_COMMIT_AGGREGATE`, and the ones in `control-read-retry.spec.ts` and `control-write-lock.spec.ts`) become `PeersIncompleteError` objects; pin that the same text alone no longer matches.
+- The guard scenario `control-write-degraded-cohort-member.integration.ts` asserts the `[block:` token on any live aggregate; it should assert `phase` instead.
+
+With both the shortfall and the aggregate typed, nothing in the retry funnel depends on upstream message text, which is what makes the fixture rewrite worth doing now.

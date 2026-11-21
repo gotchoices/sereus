@@ -1,4 +1,4 @@
-import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability, StoredProofEntry } from '@optimystic/db-p2p';
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 
 /**
@@ -208,6 +208,27 @@ export class CountingRawStorage implements IRawStorage {
 	saveBlockProof(blockId: BlockId, rev: number, proof: BlockCommitProof): Promise<void> {
 		this.counter.record('saveBlockProof', blockId);
 		return this.inner.saveBlockProof(blockId, rev, proof);
+	}
+
+	getProofEntry(blockId: BlockId, rev: number): Promise<StoredProofEntry | undefined> {
+		this.counter.record('getProofEntry', blockId);
+		return this.inner.getProofEntry(blockId, rev);
+	}
+
+	saveProofEntry(blockId: BlockId, rev: number, entry: StoredProofEntry): Promise<void> {
+		this.counter.record('saveProofEntry', blockId);
+		return this.inner.saveProofEntry(blockId, rev, entry);
+	}
+
+	/** Keyed by the commit's message hash, not a block, so it counts no distinct block. */
+	getCommitProof(messageHash: string): Promise<BlockCommitProof | undefined> {
+		this.counter.record('getCommitProof');
+		return this.inner.getCommitProof(messageHash);
+	}
+
+	saveCommitProof(messageHash: string, proof: BlockCommitProof): Promise<void> {
+		this.counter.record('saveCommitProof');
+		return this.inner.saveCommitProof(messageHash, proof);
 	}
 
 	getMaterializedBlock(blockId: BlockId, actionId: ActionId): Promise<IBlock | undefined> {

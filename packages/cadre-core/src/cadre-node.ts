@@ -2645,11 +2645,11 @@ export class CadreNode implements SAppIdLookup {
         ADMISSION_DECISION_TIMEOUT_MS,
         relayedRequestBudgetMs(network?.linkRoundTripMs)
       ),
-      // Fail-closed per-stream authorization for the four Optimystic control-DB
+      // Fail-closed per-stream authorization for the five Optimystic control-DB
       // protocols — the members-only layer the connection gater's stranger
       // carve-outs cannot express (see authorizeInboundControlStream). Control
       // node only: strand cohort nodes serve cross-party peers. The protocol guard
-      // (installControlProtocolGuard) checks these four with this same predicate
+      // (installControlProtocolGuard) checks these five with this same predicate
       // first; Optimystic's own check is kept because it is a working, supported
       // upstream defence, not a second policy.
       authorizeInboundStream: (remotePeerId, protocol) =>
@@ -2988,10 +2988,10 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Per-stream authorization for the protocol guard's `members-snapshot` class
-   * (`control-protocol-guard.ts`): the four Optimystic control-DB protocols
-   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), FRET's
+   * (`control-protocol-guard.ts`): the five Optimystic control-DB protocols
+   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer,blob}/…`), FRET's
    * five, and any protocol nobody classed. Also wired as Optimystic's
-   * `authorizeInboundStream` in {@link createControlNode} for the four DB
+   * `authorizeInboundStream` in {@link createControlNode} for the five DB
    * protocols. The fail-closed layer behind the fail-open connection gater.
    * Control node ONLY: strand cohort nodes legitimately serve cross-party peers.
    *

@@ -32,7 +32,7 @@
  *    guard existed, so moving it here changes nobody's admission. That matters most for
  *    strand-addr's delegate grant, which hands out connection and relay admission. The live read
  *    also has no window during `start()` where it admits everyone, which the snapshot does.
- *  - `members-snapshot` — the four Optimystic control-database protocols and the five FRET
+ *  - `members-snapshot` — the five Optimystic control-database protocols and the five FRET
  *    protocols. Authorized members by the in-memory snapshot
  *    (`CadreNode.authorizeInboundControlStream`). These serve the reads a live membership check
  *    would itself make, so a live read from inside their guard would deadlock two machines into
@@ -171,6 +171,9 @@ export function controlProtocolClasses(partyId: string): ReadonlyMap<string, Con
 		...controlDatabaseProtocols(partyId).map((protocol): [string, ControlProtocolClass] => [protocol, 'members-snapshot']),
 		[`${prefix}/db-p2p/sync/1.0.0`, 'members-snapshot'],
 		[`${prefix}/db-p2p/block-transfer/1.0.0`, 'members-snapshot'],
+		// Blob pieces (Optimystic 1.29.0). Its announce handler reads committed state to check a
+		// reference, so it belongs with the reads a live membership check would itself make.
+		[`${prefix}/db-p2p/blob/1.0.0`, 'members-snapshot'],
 		[`${fret}/neighbors`, 'members-snapshot'],
 		[`${fret}/neighbors/announce`, 'members-snapshot'],
 		[`${fret}/maybeAct`, 'members-snapshot'],

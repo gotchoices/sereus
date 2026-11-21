@@ -3,6 +3,8 @@ architecture: docs/network/deadlines.md#dial-budgets-are-counted-in-round-trips-
 files: docs/network/deadlines.md ("Dial budgets are counted in round trips, not milliseconds", "What Optimystic derives, and what cadre-core states on top", "Deadlines below cadre"), packages/cadre-core/src/link-budget.ts (`cohortReadDeadlineMs`), packages/integration-tests/src/scenarios/strand-workload-on-a-phone-link.integration.ts (its doc comment holds the measurement), ../optimystic/packages/db-p2p/src/rpc-deadline.ts (`resolveLinkDeadlines`, read only), ../Fret/packages/fret/src/rpc/outcome.ts (`rttMs`, read only), ../Fret/packages/fret/src/service/fret-service.ts (`applySuccess`, read only)
 ----
 
+**Re-checked 2026-11-20 on `@optimystic/*` 1.29.0: still blocked.** Neither 1.28.0 nor 1.29.0 changes how link deadlines are derived; upstream `feat-link-deadlines-stretch-to-measured-response-time` is still in its backlog.
+
 **Re-checked 2026-11-12 on `@optimystic/*` 1.27.0: still blocked.** 1.27.0 does not change how link deadlines are derived.
 
 # Size link deadlines from measured response time, with the declared link as the floor
