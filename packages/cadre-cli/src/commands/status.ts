@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
-import { describeThrown } from '@serfab/cadre-core';
+import { describeThrown, resolveNodeRoles } from '@serfab/cadre-core';
 import { loadValidatedConfig } from '../config/loader.js';
 import { commandEnv } from '../config/env.js';
 import {
@@ -68,6 +68,9 @@ async function loadConfigSummary(configPath: string, json: boolean): Promise<Con
       config: configPath,
       partyId: config.controlNetwork.partyId,
       nodeClass: config.nodeClass,
+      // The resolved roles, not the file's overrides: the class is a preset, so the overrides
+      // alone say nothing about what the configured node would do.
+      roles: resolveNodeRoles(config.nodeClass, config.roles),
       bootstrapNodes: config.controlNetwork.bootstrapNodes.length,
       strandFilter: config.strandFilter ?? 'all',
       hibernation: config.hibernation?.enabled ?? false,

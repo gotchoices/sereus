@@ -346,6 +346,7 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 | `controlNetwork.partyId` | `CADRE_PARTY_ID` | Required. The party's ID; a placeholder on a node waiting to be claimed |
 | `controlNetwork.bootstrapNodes` | `CADRE_BOOTSTRAP_NODES` | Required. Multiaddrs of the party's machines to dial at start; `[]` when there are none |
 | `nodeClass` | `CADRE_NODE_CLASS` | Required. `server` for an always-on node, else `device` ([Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes)) |
+| `roles` | four `CADRE_ROLE_*` variables | Overrides of the decisions `nodeClass` presets, one role at a time ([Node roles](#node-roles)) |
 | `identity.keyFile` | `CADRE_KEY_FILE` | The node's private key file. Without it the node has a new peer ID on every start |
 | `nodeState.dir` | `CADRE_NODE_STATE_DIR` | Directory for the node's own durable files. Default: the config file's directory |
 | `storage.type`, `storage.path`, `storage.quotaBytes` | `CADRE_STORAGE_TYPE`, `CADRE_STORAGE_PATH`, `CADRE_STORAGE_QUOTA` | `file` or `memory`, the data directory that `file` requires, and a quota in bytes |
@@ -356,6 +357,31 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 | `claim.secretFile` | `CADRE_CLAIM_SECRET_FILE` | File holding the claim secret |
 
 `strandReactivity` and `push` (variable `CADRE_PUSH`) have sections of their own. `storage.type` and `hibernation.enabled` are required when their block is present. Relative paths in `identity.keyFile`, `owner.keyFile` and `claim.secretFile` resolve against the working directory, not the config file's directory.
+
+### Node roles
+
+`nodeClass` is a preset rather than a classification: it settles four decisions — the node's **roles** — that the optional `roles` block can each set on its own. A role left out of the block keeps the class's value, and `roles: {}` means the same as no block at all.
+
+```yaml
+nodeClass: server
+roles:                      # optional, and so is every role in it
+  alwaysOn: true            # true or false
+  overlayTier: core         # 'edge' or 'core'
+  reactivity: forwarder     # 'forwarder' or 'subscriber'
+  strandCohortMember: true  # true or false
+```
+
+| Role | Variable |
+|---|---|
+| `alwaysOn` | `CADRE_ROLE_ALWAYS_ON` |
+| `overlayTier` | `CADRE_ROLE_OVERLAY_TIER` |
+| `reactivity` | `CADRE_ROLE_REACTIVITY` |
+| `strandCohortMember` | `CADRE_ROLE_STRAND_COHORT_MEMBER` |
+
+[Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes) says what each role decides, what the presets are, and what `alwaysOn` turns on. `cadre status` prints the resolved roles beside the class, so an operator sees what the node is doing and not only which roles were overridden.
+
+- **A misspelled role, or a value outside a role's own set, stops the node**, in the same report as the rest of the file's problems, rather than falling back to the preset.
+- **`strandCohortMember: false` is refused when the node starts.** The role is in the configuration ahead of the node that can run a strand while serving none of its blocks; keep such a strand off the machine with `strandFilter` instead.
 
 ### Listen and announce addresses
 

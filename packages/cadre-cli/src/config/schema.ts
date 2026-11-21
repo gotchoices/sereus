@@ -18,7 +18,7 @@
  * of `CliConfig`, and which `CADRE_*` variables can supply a missing key.
  */
 
-import type { ApnsCredentials, FcmCredentials, LatencyHint, NodeClass, PushCredentials } from '@serfab/cadre-core';
+import type { ApnsCredentials, FcmCredentials, LatencyHint, NodeClass, OverlayTier, PushCredentials, ReactivityRole } from '@serfab/cadre-core';
 import {
   type Checker,
   arrayOf,
@@ -94,6 +94,23 @@ const strandFilter: Checker<StrandFilterConfig> = (value, keyPath, ctx) => {
     return ctx.fail(keyPath, describeThrown(err));
   }
 };
+
+/**
+ * Per-role overrides of the node class. Every role is optional — one left out takes the class's
+ * preset — so nothing here is required and `roles: {}` means the same as no block at all. The
+ * value sets are cadre-core's own, written as `oneOf` tables so a role that gains a value there
+ * stops compiling here.
+ *
+ * cadre-core's `resolveNodeRoles` refuses a misnamed role and an out-of-set value too, but it
+ * runs when the node is constructed — after this pass, and one problem at a time. Checking the
+ * block here puts a bad role in the same report as every other problem in the file.
+ */
+const roles = objectOf<Block<'roles'>>({
+  alwaysOn: booleanValue,
+  overlayTier: oneOf<OverlayTier>({ edge: true, core: true }),
+  reactivity: oneOf<ReactivityRole>({ forwarder: true, subscriber: true }),
+  strandCohortMember: booleanValue,
+});
 
 const strandReactivity = objectOf<Block<'strandReactivity'>>(
   {
@@ -197,6 +214,7 @@ const root = objectOf<CliConfig>(
     identity,
     controlNetwork,
     nodeClass: oneOf<NodeClass>({ device: true, server: true }),
+    roles,
     strandFilter,
     strandReactivity,
     storage,

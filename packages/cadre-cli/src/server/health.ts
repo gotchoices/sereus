@@ -1,7 +1,7 @@
 import http from 'node:http';
 import debug from 'debug';
 import { emptyConnectionPathSummary } from '@serfab/cadre-core';
-import type { CadreNode, CadreRemoval, ConnectionPathSummary, StrandInstance } from '@serfab/cadre-core';
+import type { CadreNode, CadreRemoval, ConnectionPathSummary, NodeRoles, StrandInstance } from '@serfab/cadre-core';
 import { bearerRefusal, type BearerRefusal } from './bearer.js';
 
 const log = debug('cadre:cli:health');
@@ -74,6 +74,13 @@ export interface HealthServerOptions {
   metricsPort?: number;
   /** Configured node class ('server' or 'device'); surfaced in /status */
   nodeClass?: string;
+  /**
+   * What the node's class and `roles` block resolved to — the roles the node is actually
+   * running, not only the ones an operator overrode; surfaced in /status beside
+   * {@link nodeClass}. `null` (the default) means this server was built without them and
+   * `/status` reports none, which no `cadre start` path does.
+   */
+  roles?: NodeRoles | null;
   /**
    * Bearer token that gates `POST /seed`. When empty/undefined (the default),
    * the seed route is **not registered** — requests fall through to 404, so a
@@ -177,6 +184,12 @@ export interface HealthStatus {
     peerId: string | null;
     partyId: string;
     nodeClass: string;
+    /**
+     * The node's resolved roles: what `nodeClass` and the config's `roles` block amount to
+     * together. Null only on a health server built without them (see
+     * `HealthServerOptions.roles`).
+     */
+    roles: NodeRoles | null;
     strands: {
       total: number;
       /** Joining machines still waiting for the strand's data from another member. */
@@ -250,6 +263,7 @@ export class HealthServer {
       healthPort: options.healthPort ?? 8080,
       metricsPort: options.metricsPort ?? 9090,
       nodeClass: options.nodeClass ?? '',
+      roles: options.roles ?? null,
       seedToken: options.seedToken ?? '',
       claim: options.claim ?? (() => ({ secretConfigured: false })),
       invitation: options.invitation ?? (() => undefined),
@@ -322,6 +336,7 @@ export class HealthServer {
         // No node is attached to a node started removed; the marker names the party.
         partyId: this.node?.partyId ?? removal?.partyId ?? '',
         nodeClass: this.options.nodeClass,
+        roles: this.options.roles,
         strands: { total: strands.size, syncing, active, idle, hibernating },
         connectionPaths,
         claim: claimState(claim),

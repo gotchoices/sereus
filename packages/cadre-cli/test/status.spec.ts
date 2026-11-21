@@ -22,6 +22,9 @@ const HEALTH: HealthStatus = {
     peerId: '12D3KooWLivePeer',
     partyId: 'party-live',
     nodeClass: 'device',
+    // A device that was told to stay on: the overridden role and the three presets, so the
+    // report is checked against roles that are not all one class's defaults.
+    roles: { alwaysOn: true, overlayTier: 'edge', reactivity: 'forwarder', strandCohortMember: true },
     strands: { total: 4, syncing: 1, active: 1, idle: 1, hibernating: 1 },
     connectionPaths: {
       total: 0,
@@ -48,6 +51,7 @@ const CONFIG: ConfigSummary = {
   config: 'cadre.yaml',
   partyId: 'party-live',
   nodeClass: 'device',
+  roles: { alwaysOn: true, overlayTier: 'edge', reactivity: 'forwarder', strandCohortMember: true },
   bootstrapNodes: 2,
   strandFilter: 'all',
   hibernation: false,

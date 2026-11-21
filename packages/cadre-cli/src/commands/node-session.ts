@@ -115,6 +115,7 @@ export async function oneShotNodeConfig(
     privateKey: config.privateKey,
     controlNetwork: { ...config.controlNetwork, partyId },
     nodeClass: config.nodeClass,
+    roles: config.roles,
     strandFilter: config.strandFilter,
     storage: storage.config,
     network: await resolveNodeNetwork(config.network),

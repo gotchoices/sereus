@@ -33,6 +33,13 @@ export const ENV_MAPPINGS = {
   CADRE_PARTY_ID: { path: 'controlNetwork.partyId', kind: 'string' },
   CADRE_BOOTSTRAP_NODES: { path: 'controlNetwork.bootstrapNodes', kind: 'list' },
   CADRE_NODE_CLASS: { path: 'nodeClass', kind: 'string' },
+  // One variable per role rather than one JSON block, because a role is overridden on its own:
+  // a unit file or a container that sets `alwaysOn` must not have to restate the other three,
+  // and each leaf keeps its own attribution when the validator rejects its value.
+  CADRE_ROLE_ALWAYS_ON: { path: 'roles.alwaysOn', kind: 'boolean' },
+  CADRE_ROLE_OVERLAY_TIER: { path: 'roles.overlayTier', kind: 'string' },
+  CADRE_ROLE_REACTIVITY: { path: 'roles.reactivity', kind: 'string' },
+  CADRE_ROLE_STRAND_COHORT_MEMBER: { path: 'roles.strandCohortMember', kind: 'boolean' },
   CADRE_KEY_FILE: { path: 'identity.keyFile', kind: 'string' },
   CADRE_STORAGE_PATH: { path: 'storage.path', kind: 'string' },
   CADRE_STORAGE_TYPE: { path: 'storage.type', kind: 'string' },

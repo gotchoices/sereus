@@ -28,6 +28,15 @@ controlNetwork:
 # Node class: 'device' (mobile/edge) or 'server' (always-on machine)
 nodeClass: server
 
+# Per-role overrides of what the node class presets (optional, and so is every role in it):
+# a role left out keeps the class's value. Each role also has a CADRE_ROLE_* variable. See
+# the README's "Node roles" for the accepted values and what each role decides.
+# roles:
+#   alwaysOn: true
+#   overlayTier: core
+#   reactivity: forwarder
+#   strandCohortMember: true
+
 # Strand filtering (optional, defaults to 'all')
 # Options: 'all', 'none', { sAppId: "..." }, { strandId: "..." }
 strandFilter: all

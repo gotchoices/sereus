@@ -99,6 +99,36 @@ describe('config file validation', () => {
     expect(message).toContain('unknown key network.listenAddr');
   });
 
+  /**
+   * The node class is only a preset, so a file may override any of the four roles on its own.
+   * The block has to survive validation into the config the node is built from — a checker that
+   * accepted it and returned nothing would leave the node on its class's presets in silence.
+   */
+  it('accepts a roles block and carries it through to the resolved config', async () => {
+    const configPath = writeConfig({
+      ...VALID,
+      nodeClass: 'device',
+      roles: { alwaysOn: true, overlayTier: 'core', reactivity: 'subscriber', strandCohortMember: true },
+    });
+
+    await expect(loadValidatedConfig(configPath, {})).resolves.toMatchObject({
+      roles: { alwaysOn: true, overlayTier: 'core', reactivity: 'subscriber', strandCohortMember: true },
+    });
+  });
+
+  /**
+   * A misspelled role is the one that matters: cadre-core refuses it when the node is
+   * constructed, but only after everything else has been accepted, so an operator should hear it
+   * from the file's own report, with the role it probably meant.
+   */
+  it('rejects a misspelled role, naming the key and the role it probably meant', async () => {
+    const configPath = writeConfig({ ...VALID, roles: { alwaysOne: true } });
+
+    const message = await rejection(loadValidatedConfig(configPath, {}));
+
+    expect(message).toContain("unknown key roles.alwaysOne (did you mean 'alwaysOn'?)");
+  });
+
   // The CLI must never reject its own shipped configs.
   it('accepts the shipped example.cadre.yaml with no environment', async () => {
     await expect(loadValidatedConfig(EXAMPLE_CONFIG, {})).resolves.toMatchObject({ nodeClass: 'server' });

@@ -1,5 +1,5 @@
 import type { PrivateKey } from '@libp2p/interface';
-import type { NodeClass, LatencyHint, StrandFilter, PushCredentials, StrandReactivityConfig } from '@serfab/cadre-core';
+import type { NodeClass, NodeRoles, LatencyHint, StrandFilter, PushCredentials, StrandReactivityConfig } from '@serfab/cadre-core';
 
 /** The forms the `strandFilter` key may take in a config file. */
 export type StrandFilterConfig =
@@ -43,6 +43,14 @@ export interface CliConfig {
 
   /** What kind of machine this node runs on: a device or a server */
   nodeClass: NodeClass;
+
+  /**
+   * Per-role overrides of what {@link nodeClass} means — each of the four decisions the class
+   * would otherwise settle, settable one at a time. Absent, or present and empty, leaves every
+   * role at the class's preset. See `CadreNodeConfig.roles` in `@serfab/cadre-core` for what each
+   * role does, and `docs/cadre/node.md` → "Node classes" for the presets.
+   */
+  roles?: Partial<NodeRoles>;
 
   /** Strand filter configuration */
   strandFilter?: StrandFilterConfig;

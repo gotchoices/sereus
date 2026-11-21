@@ -89,6 +89,7 @@ async function buildNodeConfig(
     strandNetworkState: { store: stores.strandNetworkStateStore },
     controlNetwork: { ...config.controlNetwork, partyId },
     nodeClass: config.nodeClass,
+    roles: config.roles,
     // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a server CLI node
     // (every cadre-host donated node included) hosts a replica of every strand its
     // party publishes; the only opt-out here is `strandFilter`. If an operator needs

@@ -1,4 +1,4 @@
-import { describeThrown } from '@serfab/cadre-core';
+import { describeThrown, type NodeRoles } from '@serfab/cadre-core';
 import type { HealthStatus, InvitationStatus, OwnerGrantRedemptionStatus } from '../server/health.js';
 
 /**
@@ -26,6 +26,8 @@ export interface ConfigSummary {
   config: string;
   partyId: string;
   nodeClass: string;
+  /** What the file's `nodeClass` and `roles` block resolve to together, not just the overrides. */
+  roles: NodeRoles;
   bootstrapNodes: number;
   strandFilter: unknown;
   hibernation: boolean;
@@ -40,6 +42,8 @@ export interface RuntimeLive {
   peerId: string | null;
   partyId: string;
   nodeClass: string;
+  /** The running node's resolved roles, as it reports them; null from a node that reports none. */
+  roles: NodeRoles | null;
   multiaddrs: string[];
   strands: HealthStatus['node']['strands'];
   uptime: number;
@@ -134,6 +138,9 @@ export function buildStatusReport(
         peerId: s.peerId,
         partyId: s.node.partyId,
         nodeClass: s.node.nodeClass,
+        // `?? null` because the field is newer than the endpoint: a node from an older build
+        // answers without it, and the report's own type promises null rather than a missing key.
+        roles: s.node.roles ?? null,
         multiaddrs: s.multiaddrs,
         strands: s.node.strands,
         uptime: s.uptime,
@@ -170,6 +177,7 @@ function formatConfigSection(config: ConfigSummary | null): string[] {
     `  Config:          ${config.config}`,
     `  Party ID:        ${config.partyId}`,
     `  Node class:      ${config.nodeClass}`,
+    `  Roles:           ${formatRoles(config.roles)}`,
     `  Bootstrap Nodes: ${config.bootstrapNodes}`,
     `  Strand Filter:   ${JSON.stringify(config.strandFilter)}`,
     `  Hibernation:     ${config.hibernation ? 'enabled' : 'disabled'}`,
@@ -192,12 +200,23 @@ function formatRuntimeSection(runtime: RuntimeLive | RuntimeUnreachable): string
     `  Peer ID:         ${runtime.peerId ?? '(none)'}`,
     `  Party ID:        ${runtime.partyId}`,
     `  Node class:      ${runtime.nodeClass}`,
+    `  Roles:           ${formatRoles(runtime.roles)}`,
     `  Strands:         total=${s.total} syncing=${s.syncing} active=${s.active} idle=${s.idle} hibernating=${s.hibernating}`,
     ...formatRemoval(runtime),
     ...formatRedemption('Invitation:', runtime.invitation),
     ...formatRedemption('Owner grant:', runtime.ownerGrant),
     ...formatMultiaddrs(runtime.multiaddrs),
   ];
+}
+
+/**
+ * The resolved roles on one line, in the `name=value` shape the strand counts use. Built from the
+ * object's own keys rather than naming the four, so a role cadre-core adds shows up here without
+ * an edit — including one a node of a different build reports.
+ */
+function formatRoles(roles: NodeRoles | null): string {
+  if (!roles) return '(not reported)';
+  return Object.entries(roles).map(([role, value]) => `${role}=${String(value)}`).join(' ');
 }
 
 function formatRemoval({ removed, partyId }: RuntimeLive): string[] {
