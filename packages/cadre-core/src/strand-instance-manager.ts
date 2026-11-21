@@ -8,6 +8,7 @@ import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-d
 import type { StrandOfflineConfig, StrandOfflineListeners, StrandOfflineMode } from './strand-offline.js';
 import type { StrandAppSchemaListeners } from './strand-app-schema-report.js';
 import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
+import { WebrtcUpgradeService } from './webrtc-upgrade.js';
 import { strandNetworkStatePersistence, type StrandNetworkStateStore } from './strand-network-state.js';
 import {
   StrandRevocationEnforcer,
@@ -53,7 +54,7 @@ import { superviseRelayReservation, type RelayReservationSupervisor } from './re
 import { strandRedialTimings, superviseStrandPeerRedial, type StrandPeerRedial } from './strand-peer-redial.js';
 import { groupAddrsByPeerId } from './peer-addr-book.js';
 import { isCohortUnreachableRead } from './control-read-retry.js';
-import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs, webrtcUpgradeDialBudgetMs } from './link-budget.js';
 import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:strand-manager');
@@ -593,6 +594,13 @@ export class StrandInstanceManager {
    */
   private peerRedials: Map<string, StrandPeerRedial> = new Map();
   /**
+   * The per-strand background WebRTC upgrade of relayed connections (`webrtc-upgrade.ts`), keyed
+   * by strand id. Same lifecycle as {@link peerRedials}: started in `buildStrandRuntime` once
+   * the libp2p node exists, stopped first in `releaseRuntime`, so a hibernating strand dials no
+   * upgrade and a resume judges the new node's connections with no backoff carried over.
+   */
+  private webrtcUpgrades: Map<string, WebrtcUpgradeService> = new Map();
+  /**
    * The party's other machines known to hold each strand (`strand-party-machines.ts`), keyed
    * by strand id, on a node offering offline mode for a launch with a party-machine seam. Same
    * lifecycle as {@link peerRedials}: built in `buildStrandRuntime` before the libp2p node (the
@@ -1124,6 +1132,19 @@ export class StrandInstanceManager {
         ...(partyMachines && { partyMachines: () => partyMachines.machines().map((machine) => machine.strandPeerId) })
       }, strandRedialTimings(config.network?.linkRoundTripMs)));
 
+      // Try a direct WebRTC connection in the background for each member this node ends up
+      // reaching through a relay, which on a strand is the normal case: a strand's peers are
+      // other parties' machines, so both sides are often behind NAT. Armed here rather than
+      // after the database phase, so a direct path can be in place by the time the first sync's
+      // reads run. Inert unless the embedder passed a WebRTC transport (`webrtc-upgrade.ts`).
+      const webrtcUpgrade = new WebrtcUpgradeService({
+        label: strandId,
+        node,
+        dialTimeoutMs: webrtcUpgradeDialBudgetMs(config.network?.linkRoundTripMs)
+      });
+      this.webrtcUpgrades.set(strandId, webrtcUpgrade);
+      webrtcUpgrade.start();
+
       const databaseBuild = await this.buildStrandDatabase(instance, config, node);
       if (!this.isCurrentRuntime(instance, node)) {
         // A stop released this runtime during the database phase (`stopStrand` does not
@@ -1591,6 +1612,10 @@ export class StrandInstanceManager {
     }
     this.peerRedials.get(instance.strandId)?.stop();
     this.peerRedials.delete(instance.strandId);
+    // The WebRTC upgrade service before the node it dials on: its stop() also aborts the attempt
+    // in flight, so a hibernating strand holds no ICE negotiation open.
+    this.webrtcUpgrades.get(instance.strandId)?.stop();
+    this.webrtcUpgrades.delete(instance.strandId);
     // The party-machine tracker with the loop and gate that read it; a resume reads afresh.
     this.partyMachines.get(instance.strandId)?.stop();
     this.partyMachines.delete(instance.strandId);

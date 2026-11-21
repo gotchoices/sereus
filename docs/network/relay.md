@@ -195,6 +195,17 @@ A node that listens on `/webrtc` is reachable two ways through each relay it hol
 
 An open relayed connection is never handed back to a dial of a WebRTC address, so an attempt to replace it can go ahead. This is the rule libp2p applies as well.
 
+### Relayed connections are upgraded in the background
+
+Nothing in libp2p replaces a relayed connection with a direct one over WebRTC: it has no such upgrade, and DCUtR, its hole-punching service, does not use WebRTC. Since no dial a caller waits on tries a WebRTC address first either, cadre-core makes the attempt itself (`webrtc-upgrade.ts`), on the control node and on every strand node whose embedder passed a WebRTC transport. It is worth making: a 1 MB strand write measured 2.4-3.2 s direct against 3.8 s relayed, a phone and a node on one local network opened directly in about 0.5 s, and a direct path takes those bytes off the relay.
+
+- **The trigger is a peer's identify over a relay-carried connection,** because identify is when the remote's addresses, the WebRTC one among them, are known. A peer that gains its WebRTC address later is judged again when it pushes the new address.
+- **Which nodes it reaches follows from that trigger.** Optimystic names each node's identify protocol after the network it serves, so two parties' strand nodes identify each other and their control nodes do not. On a strand, whose peers are other parties' machines, the upgrade therefore applies between parties; on the control network it applies to a party's own machines and to a device redeeming an invitation into the party, and never to another party's node.
+- **Exactly one side dials,** so that two upgrades do not cross: the side with the lower peer id when both publish a WebRTC address, otherwise whichever side has one to dial. A dialer needs the WebRTC transport, not a `/webrtc` listener, so a node that publishes no WebRTC address of its own still upgrades towards one that does.
+- **One attempt at a time per peer, then a doubling wait** from 1 minute to 30 minutes, cleared by a success. Two networks that allow no direct path between them fail every time, and each attempt costs relay signalling and ICE gathering, which wakes a phone's radio. The wait is held in memory only, so a restart tries each peer once more.
+- **A capped relayed connection is upgraded on the same terms.** There a direct path is the only one the database protocols can use at all ([Why there is no TURN](../../ops/docs/ice-servers.md#why-there-is-no-turn)).
+- **The relayed connection is left open after a success.** Closing it would race the streams already on it, and new streams prefer the direct connection without being told to: libp2p hands back a direct connection ahead of a relayed one, and Optimystic's stream paths try uncapped connections newest first.
+
 ## Limits and accepted tradeoffs
 
 - **Where a caller fixes the dial order, a WebRTC address is still tried on the same terms as a relayed one.** A wake sent to a hibernating machine, a cadre-invitation or owner-grant redemption, and a sibling's strand-address request each dial the list in the order they were given, and an invitation's address selection ranks a WebRTC address level with the plain relayed address beside it — so under the cap that keeps an invitation inside one QR code it can take a working address's place. The cost is one dial attempt, paid only once an earlier relayed address has failed (ticket `webrtc-address-can-displace-a-working-one`).

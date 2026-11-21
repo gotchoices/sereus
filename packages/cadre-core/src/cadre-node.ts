@@ -136,6 +136,7 @@ import {
 import { StrandWatcher, DEFAULT_STRAND_WATCH_BACKSTOP_MS, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager, liveStrandStatus } from './strand-instance-manager.js';
 import { PeerJoinBackfill } from './peer-join-backfill.js';
+import { WebrtcUpgradeService } from './webrtc-upgrade.js';
 import { deriveCohortMembers } from './strand-cohort.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
@@ -157,7 +158,7 @@ import {
   withTrailingPeerId,
   type PeerDialBudget
 } from './peer-dial.js';
-import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs, webrtcUpgradeDialBudgetMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type CadrePeerRetouchOutcome, type FoundingInvite, type JoinRequestFields, type PendingPartyKeyEntry, type RevokedRowRef } from './control-database.js';
@@ -555,6 +556,13 @@ export class CadreNode implements SAppIdLookup {
    * start() cycle rebuilds it with a fresh caught-up-peer memo.
    */
   private controlBackfill: PeerJoinBackfill | null = null;
+  /**
+   * The control node's background WebRTC upgrade of its relayed connections
+   * ({@link startWebrtcUpgrade}). Created in {@link start} and stopped in {@link cleanup}
+   * beside the backfill, so a stop()→start() cycle starts over with no backoff state from the
+   * previous session.
+   */
+  private webrtcUpgrade: WebrtcUpgradeService | null = null;
   /**
    * Devices whose invitation redemption this member has verified and is admitting right now,
    * each with its count of overlapping redemptions. The control backfill's gate and the
@@ -1739,6 +1747,11 @@ export class CadreNode implements SAppIdLookup {
       // what closes the "genesised alone, headers never replicate" hole.
       this.startControlBackfill();
 
+      // Try a direct WebRTC connection in the background wherever this node ends up talking to
+      // a machine through a relay. Nothing in libp2p does this, and since every dial a caller
+      // waits on now goes relayed-first, nothing else opens a WebRTC connection at all.
+      this.startWebrtcUpgrade();
+
       // Seed the per-stream gate's materialized authorized set now that the
       // control DB is up (non-blocking; the helper never rejects). Until it
       // lands the snapshot is empty, which the stream gate treats as cold
@@ -2359,6 +2372,40 @@ export class CadreNode implements SAppIdLookup {
       ...this.config.controlBackfill
     });
     this.controlBackfill.start();
+  }
+
+  /**
+   * Arm the control node's background WebRTC upgrade: whenever a machine identifies over a
+   * relayed connection and publishes a WebRTC address, dial it once and let new streams move to
+   * the direct connection (`webrtc-upgrade.ts`). The service is inert on a node whose embedder
+   * passed no WebRTC transport, which is every Node.js host; it matters on the phones and
+   * browser tabs that have one.
+   *
+   * Who this can reach is narrower than the connection gate, and not by anything here: the
+   * trigger is `peer:identify`, and Optimystic gives each control node an identify protocol id
+   * naming its own party (`/optimystic/control-<partyId>/id/1.0.0`, the table in
+   * `control-protocol-guard.ts`). Another party's control node never completes identify with this
+   * one, so a formation joiner or a stranger dialing through this node's relay is never a
+   * candidate however long its connection stays open. What is left is this party's own machines
+   * and a device redeeming an invitation INTO this party.
+   *
+   * NOTE: that device is the one case where an upgrade is attempted against a peer this node has
+   * not yet admitted, and ICE tells it this machine's own interface addresses and the address a
+   * STUN server sees it at, which the relayed connection did not. Accepted: it is a machine in
+   * the act of becoming a member, and the same connection already carries the redemption. If
+   * that exposure ever matters, gate this service's attempts on {@link isAuthorizedMember}
+   * rather than narrowing the gate.
+   */
+  private startWebrtcUpgrade(): void {
+    if (!this.controlNode) {
+      return;
+    }
+    this.webrtcUpgrade = new WebrtcUpgradeService({
+      label: this.controlNetworkName(),
+      node: this.controlNode,
+      dialTimeoutMs: webrtcUpgradeDialBudgetMs(this.config.network?.linkRoundTripMs)
+    });
+    this.webrtcUpgrade.start();
   }
 
   /**
@@ -6068,6 +6115,14 @@ export class CadreNode implements SAppIdLookup {
     if (this.controlBackfill) {
       this.controlBackfill.stop();
       this.controlBackfill = null;
+    }
+
+    // The WebRTC upgrade service with it, and for the same reason: no new upgrade dial against a
+    // transport being torn down. Its stop() also aborts the attempt in flight, which otherwise
+    // holds an ICE negotiation — and the timer bounding it — past the node's own stop.
+    if (this.webrtcUpgrade) {
+      this.webrtcUpgrade.stop();
+      this.webrtcUpgrade = null;
     }
 
     // Close control database (this also shuts down the collection factory).

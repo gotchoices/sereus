@@ -347,6 +347,25 @@ export const COMMIT_ROUND_TRIPS = 20;
 export const RELAYED_REQUEST_ROUND_TRIPS = RELAYED_DIAL_ROUND_TRIPS + CIRCUIT_REQUEST_ROUND_TRIPS;
 
 /**
+ * Link round trips the SIGNALLING half of a WebRTC upgrade dial costs, over the relay that
+ * carries it ({@link webrtcUpgradeDialBudgetMs}): {@link RELAYED_DIAL_ROUND_TRIPS} to open the
+ * connection the signalling runs on, then two request-and-answer exchanges over it
+ * ({@link CIRCUIT_REQUEST_ROUND_TRIPS} each) — the offer and its answer, then the ICE candidates
+ * each side trickles to the other.
+ *
+ * Counted from `@libp2p/webrtc`'s `initiateConnection`, which opens ONE signalling stream and
+ * writes those messages on it. The dial leg is normally not spent at all: an upgrade is
+ * attempted only for a peer already reachable over a relay, and that function reuses an open
+ * connection to the peer rather than dialing. It is counted because an upgrade attempt races
+ * the connection it was triggered by, which can close first.
+ *
+ * The ICE connectivity checks that follow cross the two networks' own candidate addresses
+ * rather than the relay, so they are not link time counted here; they get a flat allowance
+ * ({@link ICE_NEGOTIATION_ALLOWANCE_MS}).
+ */
+export const WEBRTC_SIGNALING_ROUND_TRIPS = RELAYED_DIAL_ROUND_TRIPS + 2 * CIRCUIT_REQUEST_ROUND_TRIPS;
+
+/**
  * What a block-transfer push message's BYTES get to cross, on top of the latency
  * {@link CIRCUIT_REQUEST_ROUND_TRIPS} covers, in milliseconds.
  *
@@ -362,6 +381,24 @@ export const RELAYED_REQUEST_ROUND_TRIPS = RELAYED_DIAL_ROUND_TRIPS + CIRCUIT_RE
  * not the declared round trip.
  */
 export const PUSH_TRANSFER_ALLOWANCE_MS = 6000;
+
+/**
+ * What ICE — WebRTC's connectivity check — gets on top of the signalling exchanges
+ * {@link WEBRTC_SIGNALING_ROUND_TRIPS} covers, in milliseconds: gathering each side's candidates
+ * (which includes asking a STUN server for the address it is seen at outside its NAT —
+ * `ops/docs/ice-servers.md`) and then the checks between candidate pairs. Those checks cross the
+ * two networks' own paths, not the relay, so this part does not scale with the declared relay
+ * round trip, any more than a push's bytes do.
+ *
+ * 25 000 ms is deliberately LONGER than the roughly 23 s the WebRTC stack takes to give up by
+ * itself when no candidate pair works (gotchoices/sereus#61), so the upgrade dial's deadline is
+ * a backstop rather than the thing that normally ends an attempt. That is the right way round
+ * here because nothing waits on an upgrade dial — it runs in the background while the relayed
+ * connection carries everything (`docs/network/relay.md` → "Direct connections over WebRTC") —
+ * so cutting a slow but working negotiation off would lose a direct path for nothing, while
+ * erring long costs one timer.
+ */
+export const ICE_NEGOTIATION_ALLOWANCE_MS = 25_000;
 
 /**
  * Deadline for one admission decision, after which the fail-open outcome is
@@ -543,6 +580,25 @@ export function circuitRequestBudgetMs(
  */
 export function relayedRequestBudgetMs(linkRoundTripMs?: number): number {
 	return relayedDialBudgetMs(linkRoundTripMs) + CIRCUIT_REQUEST_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs);
+}
+
+/**
+ * Deadline for ONE background WebRTC upgrade dial of a peer this node already reaches through a
+ * relay (`webrtc-upgrade.ts`): the signalling over that relay
+ * ({@link WEBRTC_SIGNALING_ROUND_TRIPS} at the declared link round trip, plus one
+ * {@link ADMISSION_DECISION_TIMEOUT_MS} for each of the {@link DIAL_ADMISSION_DECISIONS} gates
+ * the signalling connection can pass) and then {@link ICE_NEGOTIATION_ALLOWANCE_MS} for ICE.
+ * 9 x 3 500 + 2 x 2 000 + 25 000 = 60 500 ms at the default declaration.
+ *
+ * The longest budget in this module and the one with the least riding on it: no caller waits for
+ * an upgrade dial, and while it runs the relayed connection carries everything. The two
+ * constants say why each half is shaped the way it is — in particular why erring long is right
+ * here and wrong for every other budget above.
+ */
+export function webrtcUpgradeDialBudgetMs(linkRoundTripMs?: number): number {
+	return WEBRTC_SIGNALING_ROUND_TRIPS * resolveLinkRoundTripMs(linkRoundTripMs)
+		+ DIAL_ADMISSION_DECISIONS * ADMISSION_DECISION_TIMEOUT_MS
+		+ ICE_NEGOTIATION_ALLOWANCE_MS;
 }
 
 /**

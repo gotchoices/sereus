@@ -144,7 +144,7 @@ Injected delay and the frame-rate cap (`harness/ws-latency.ts`) apply to every n
 | The relay-only pair; the joiner's first transaction at loopback speed, at 100 ms delay and on a frame-rate-capped link with a busy event loop; a commit made alone, delivered after a restart | `joiner-first-commit-over-slow-relay.integration.ts` | A passing first commit on the capped link: that arm is marked `it.fails` |
 | The relay-only pair at 100 ms delay; reads of every table, then with the joiner stopped | `strand-read-cost-over-relay.integration.ts` | The capped link, which runs only in an opt-in arm |
 | The relay-only pair; alternating read and write rounds at loopback speed | `strand-workload-on-a-phone-link.integration.ts` | The capped link, which runs only in an opt-in arm marked `it.fails` |
-| The relay-only pair, both also listening on `/webrtc`, with ICE configured so it can never connect; formation, strand bring-up and a write | `webrtc-ice-failure-falls-back-to-relay.integration.ts` | A WebRTC connection that succeeds; link delay |
+| The relay-only pair, both also listening on `/webrtc`; formation, strand bring-up and a write with ICE that can never connect, then the same with ICE that can, where the strand connections must upgrade to WebRTC | `webrtc-ice-failure-falls-back-to-relay.integration.ts` | Link delay; a capped relay; a failed upgrade's backoff |
 
 ## Offline mode and hibernation
 

@@ -85,6 +85,7 @@ import { CADRE_INVITE_PROTOCOL } from './cadre-invite-protocol.js';
 import { OWNER_GRANT_PROTOCOL } from './owner-grant-protocol.js';
 import { WAKE_PROTOCOL } from './strand-wake-protocol.js';
 import { STRAND_ADDR_PROTOCOL } from './strand-addr-protocol.js';
+import { WEBRTC_SIGNALING_PROTOCOL } from './webrtc-upgrade.js';
 import { withTimeout } from './control-stream.js';
 import { describeThrown } from './describe-thrown.js';
 
@@ -189,7 +190,7 @@ export function controlProtocolClasses(partyId: string): ReadonlyMap<string, Con
 		// Registered only while the relay server runs (the storage profile's default).
 		['/libp2p/circuit/relay/0.2.0/hop', 'transport'],
 		// Registered only when an embedder's `network.transports` includes WebRTC.
-		['/webrtc-signaling/0.0.1', 'transport'],
+		[WEBRTC_SIGNALING_PROTOCOL, 'transport'],
 	]);
 }
 
