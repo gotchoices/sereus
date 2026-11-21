@@ -12,7 +12,7 @@ A new machine cannot reach that state alone, for three reasons:
 
 1. **Its control database is empty.** It has no address to dial and no owner key against which to judge the rows it would receive.
 2. **The existing machines refuse it.** Each member refuses control-database streams from a peer that is not an authorized member ([Per-stream protocol guard](control-security.md#per-stream-protocol-guard)), and the control schema rejects a write that no owner authorized. The new machine's row has to exist before the members replicate to it.
-3. **One side often cannot be dialed.** A phone or a browser tab listens on nothing, so it accepts a connection only through a relay reservation.
+3. **One side often cannot be dialed.** A phone or a browser tab binds no socket, so every address it has comes from a relay reservation and it accepts a connection only while it holds one.
 
 Every way of adding a machine therefore delivers three things: a `CadrePeer` row written by someone entitled to write it, an owner key for the new machine to trust that arrives outside the replicated data, and an address at which one side can reach the other.
 

@@ -43,7 +43,9 @@ One rule, held where it cannot be forgotten by the next dial site: **an address 
 - A WebRTC address is still kept and still dialable when it is all a machine published; nothing is filtered away where filtering would leave nothing.
 - `addrKind` stays the one answer to "what kind of address is this", rather than a fourth substring test appearing somewhere.
 
-Reachable today for a browser tab (`reference-app-web` listens on `/webrtc` whenever it has a relay) and for any `CadreNode` configured with the WebRTC transport. `3-phone-listens-on-webrtc` makes every phone publish these addresses, which is when the invitation arithmetic above starts applying to the ordinary two-phone case; this sits in `fix/`, so it is worked before that ticket either way.
+Reachable today for a browser tab (`reference-app-web` listens on `/webrtc` whenever it has a relay) and for any `CadreNode` configured with the WebRTC transport.
+
+**It also reaches every phone already: `3-phone-listens-on-webrtc` landed first (`ticket(implement): phone-listens-on-webrtc`), not after this.** The earlier expectation that this ticket would be worked ahead of it did not hold — nothing on the board expressed the dependency, since `3-phone-listens-on-webrtc` named only `webrtc-addresses-never-hold-a-dial` as its prereq. So the invitation arithmetic above now applies to the ordinary two-phone case, and the wake and redemption arms apply to a phone's own addresses, rather than only to a browser tab and a hand-configured node. Nothing is broken that worked before — each arm costs a retry, a slot or wall-clock time, not correctness — but the exposure is the full phone population rather than the reference web app.
 
 ## Confirming it
 

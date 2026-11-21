@@ -113,8 +113,8 @@ const phone = createPhoneNode({
     circuitRelayTransport(),
     webRTC({ rtcConfiguration: { iceServers: resolveStunServers([...relayAddrs], process.env.EXPO_PUBLIC_STUN_URLS) } }),
   ],
-  // The `/webrtc` address the transport above needs to be dialable at, when a relay can carry
-  // the signalling. No relay: the phone accepts nothing, as before.
+  // The address the transport above is dialable at. Configured separately from it: nothing in
+  // cadre-core derives one from the other (`webrtcListenAddrs`).
   listenAddrs: webrtcListenAddrs,
   noiseCrypto: { build: buildNoiseCrypto, defaultMode: defaultNoiseCryptoMode() },
   // The names installed phones' data is filed under, pinned in `node-local-names.ts`.

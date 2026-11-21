@@ -32,7 +32,7 @@ The reason it is deferred rather than included:
 
 - Confirm a drone/host actually advertises a dialable `/webrtc-direct` multiaddr the phone can
   resolve (peer-address resolution — see completed prereq context in the source plan).
-- Add `webRTCDirect()` to the phone's `network.transports` (dial-only; `listenAddrs` stays `[]`).
+- Add `webRTCDirect()` to the phone's `network.transports` (dial-only; the phone's listen addresses are unchanged — since `phone-listens-on-webrtc` landed they are `['/webrtc']` whenever it has a relay, and no `/webrtc-direct` entry is added).
 - Validate on-device that a phone dials a public `/webrtc-direct` peer and the connection
   classifies as `direct` / `webrtc-direct` (`connection-path.ts` already maps it), with **no**
   relay reservation involved.

@@ -78,8 +78,9 @@ export function buildEdgeNodeConfig(inputs: EdgeNodeConfigInputs): CadreNodeConf
 		network: {
 			transports: inputs.transports,
 			// An edge device binds no socket, so by default it listens on nothing: the only address
-			// it then has is the `/p2p-circuit` address a relay reservation earns it. An explicitly empty `listenAddrs` stays empty through cadre-core's derivation, and
-			// naming a relay adds the bare `/p2p-circuit` search entry to it
+			// it then has is the `/p2p-circuit` address a relay reservation earns it. An explicitly
+			// empty `listenAddrs` stays empty through cadre-core's derivation, and naming a relay
+			// adds the bare `/p2p-circuit` search entry to it
 			// (`cadre-core/src/relay-addrs.ts` → `resolveListenAddrs`). An app whose transports carry
 			// WebRTC — a browser tab or a phone — adds `/webrtc` when it has a relay
 			// (`webrtcListenAddrs`), so a peer can open a direct connection to it.

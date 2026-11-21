@@ -117,7 +117,7 @@ describe("resolveListenAddrs (the control node's listen set)", () => {
       .toEqual(['/ip4/0.0.0.0/tcp/4001']);
   });
 
-  it('preserves an explicitly empty listenAddrs (the React Native "cannot listen" case)', () => {
+  it('preserves an explicitly empty listenAddrs (a device that names no listener of its own)', () => {
     expect(resolveListenAddrs({ listenAddrs: [] })).toEqual([]);
   });
 

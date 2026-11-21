@@ -192,9 +192,9 @@ The app declares `@babel/runtime` `^7.29.2`. Upgrade inside Babel 7 with `yarn u
 
 ## Transport and reachability
 
-A phone binds no socket, so it never listens on TCP or WebSocket: it dials out. The kit's default transports are WebSockets and circuit relay. An always-on node that a phone dials directly must therefore listen on a `/ws` address, for example `/ip4/0.0.0.0/tcp/4002/ws` in a cadre-cli node's `network.listenAddrs`.
+A phone has no TCP or WebSocket listener: it binds no socket and dials out. The kit's default transports are WebSockets and circuit relay. An always-on node that a phone dials directly must therefore listen on a `/ws` address, for example `/ip4/0.0.0.0/tcp/4002/ws` in a cadre-cli node's `network.listenAddrs`.
 
-An app with `react-native-webrtc` adds the WebRTC transport and, with it, a `/webrtc` listen address whenever the phone has a relay. A `/webrtc` listener binds nothing: it registers the signalling handler and derives its address from the relay reservation. Advertising that address is what lets another machine open a direct connection *to* the phone, and lets a relayed connection upgrade to a direct one while the relay carries only the signalling. `webrtcListenAddrs` (`@serfab/cadre-rn/phone-node`) is the listen function to pass, the same one the browser reference app uses:
+An app with `react-native-webrtc` adds the WebRTC transport, and passes a listen function that names `/webrtc` whenever the phone has a relay. Both are needed and neither is derived from the other: the transport alone lets the phone dial a WebRTC address, and the listen address is what lets another machine open a direct connection *to* the phone, and what lets a relayed connection upgrade to a direct one while the relay carries only the signalling. A `/webrtc` listener binds nothing — it registers the signalling handler and derives its address from the relay reservation. `webrtcListenAddrs` (`@serfab/cadre-rn/phone-node`) is the listen function to pass, the same one the browser reference app uses:
 
 ```ts
 transports: (relayAddrs) => [

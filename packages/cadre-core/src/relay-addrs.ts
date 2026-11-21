@@ -126,7 +126,7 @@ export function resolveListenAddrs(network: NetworkConfig | undefined): string[]
   if (!listenAddrs && relayEntries.length === 0) {
     return undefined;
   }
-  // An explicitly empty `listenAddrs` (the React Native "cannot listen" case) stays
+  // An explicitly empty `listenAddrs` (a device that names no listener of its own) stays
   // empty — but a relay named alongside it still gets its listen entry, since
   // acquiring a slot is the whole point of configuring a relay.
   return dedupe([...(listenAddrs ?? [DEFAULT_DIRECT_LISTEN_ADDR]), ...relayEntries]);

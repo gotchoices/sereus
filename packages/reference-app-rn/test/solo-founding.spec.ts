@@ -169,7 +169,10 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
  * `packages/integration-tests/src/scenarios/blind-relay-phone-to-phone-e2e.integration.ts`
  * proves the behaviour for a node of this shape (`listenAddrs: []` + `relayAddrs`), and
  * `cadre-core/test/edge-node/config.spec.ts` proves the edge config resolves to that shape —
- * but the two are joined by inspection, not by a test.
+ * but the two are joined by inspection, not by a test. The node built here is that shape
+ * too, and so is `cadre-phone.ts` with no relay; `cadre-phone.ts` WITH a relay adds
+ * `/webrtc` (`listenAddrs: webrtcListenAddrs`), which nothing in this package covers —
+ * `webrtc-ice-failure-falls-back-to-relay.integration.ts` is the test for that shape.
  */
 describe('solo phone founding with a relay configured but unreachable', () => {
 	const partyId = `rn-relay-down-founding-${uuid()}`;

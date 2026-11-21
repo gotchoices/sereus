@@ -131,7 +131,7 @@ export function strandNodeAddrs(network: NetworkConfig | undefined): StrandNodeA
   if (!configured && relayAddrs.length === 0) {
     return {};
   }
-  // An explicitly empty `listenAddrs` (the React Native "cannot listen" case) stays
+  // An explicitly empty `listenAddrs` (a device that names no listener of its own) stays
   // empty — rewriting must never resurrect a direct listener that was opted out of.
   // Naming a relay with no `listenAddrs` keeps the direct listener the control node
   // keeps in that case (`relay-addrs.ts`), so a relay ADDS reachability rather than

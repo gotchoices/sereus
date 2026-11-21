@@ -475,7 +475,7 @@ describe('CadreNode control-network node options', () => {
       expect(options.bootstrapNodes).toEqual([]);
     });
 
-    it('forwards an empty listenAddrs array — the React Native "cannot listen" case', () => {
+    it('forwards an empty listenAddrs array — a device that names no listener of its own', () => {
       const options = controlOptions(new CadreNode(createConfig({ network: { listenAddrs: [] } })));
 
       expect('listenAddrs' in options).toBe(true);
