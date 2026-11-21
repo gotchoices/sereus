@@ -228,6 +228,7 @@ import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, listenT
 import { selfAddressesChanged } from './self-address-update.js';
 import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer, type ResolvedRelayServer } from './relay-server.js';
+import { resolveNodeRoles, type NodeRoles } from './node-roles.js';
 import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
 import {
   superviseRelayReservation,
@@ -532,6 +533,16 @@ async function resolvesBeforeAbort(work: Promise<unknown>, signal: AbortSignal |
 export class CadreNode implements SAppIdLookup {
   private readonly config: CadreNodeConfig;
   /**
+   * What this node DOES, resolved once from `config.nodeClass` and `config.roles`
+   * (`node-roles.ts`). Everything that used to map the node class itself reads this instead:
+   * the control node's FRET tier and Ring Zulu, the relay-server default, the
+   * {@link hostUnclaimedStrands} default, the `CadrePeer.Profile` this machine publishes, and
+   * the roles every strand node is launched with. The class stays on `config` as what it is —
+   * the preset's name, which is what an operator set and what the CLI reports — and is compared
+   * to a literal nowhere outside `node-roles.ts`.
+   */
+  private readonly roles: NodeRoles;
+  /**
    * The resolved node identity key, set once by {@link resolveIdentityKey}
    * during {@link start} (from `config.keyStore`, else `config.privateKey`).
    * Left undefined when neither is configured — libp2p then generates an
@@ -706,7 +717,8 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Whether an unclaimed strand the filter admits is launched as a storage replica
-   * ({@link CadreNodeConfig.hostUnclaimedStrands}), resolved once from the config.
+   * ({@link CadreNodeConfig.hostUnclaimedStrands}), resolved once from the config over the
+   * {@link roles} default (`alwaysOn`).
    *
    * NOTE: a replica host stores every admitted strand of its party with no quota (Arachnode
    * quotas are unimplemented). Fine at a party's handful of strands; if always-on nodes come
@@ -823,7 +835,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Does this node's CONTROL libp2p run the circuit-relay server, and with which
-   * init? Resolved once from `network` and `nodeClass` by the same function every
+   * init? Resolved once from `network` and {@link roles} by the same function every
    * strand node's build uses (`relay-server.ts`). Read by
    * {@link buildControlNodeOptions} (which configures the server from it) and
    * the unauthorized budget above (whose TTL is the server's).
@@ -1307,10 +1319,19 @@ export class CadreNode implements SAppIdLookup {
 
   constructor(config: CadreNodeConfig) {
     this.config = config;
-    this.hostUnclaimedStrands = config.hostUnclaimedStrands ?? config.nodeClass === 'server';
+    this.roles = resolveNodeRoles(config.nodeClass, config.roles);
+    if (!this.roles.strandCohortMember) {
+      throw new Error(
+        'roles.strandCohortMember: false is not supported yet — running a strand without holding and signing '
+        + 'its blocks needs an Optimystic node that serves none, which does not exist yet '
+        + '(strand-node-that-holds-no-blocks). Leave the role unset, or keep the strand off this machine with '
+        + 'strandFilter.'
+      );
+    }
+    this.hostUnclaimedStrands = config.hostUnclaimedStrands ?? this.roles.alwaysOn;
     this.strandManager = new StrandInstanceManager();
     this.enrollmentService = new EnrollmentService();
-    this.relayServer = resolveRelayServer(config.network, config.nodeClass);
+    this.relayServer = resolveRelayServer(config.network, this.roles);
     this.unauthorizedRelayReservations = new UnauthorizedReservationBudget(
       config.network?.unauthorizedRelayReservationCap,
       this.relayServer.init.reservations.reservationTtl
@@ -2571,7 +2592,7 @@ export class CadreNode implements SAppIdLookup {
    * only caller in production is `createControlNode`.
    */
   private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
-    const { network, nodeClass } = this.config;
+    const { network } = this.config;
     const identityKey = this.identityKey;
     // `network.relayAddrs` contributes the bare `/p2p-circuit` SEARCH entry, which
     // opens no connection — the reservation is driven explicitly at the END of
@@ -2597,7 +2618,7 @@ export class CadreNode implements SAppIdLookup {
       bootstrapNodes: [],
       networkName: this.controlNetworkName(),
       storage: controlStorageProvider,
-      fretProfile: nodeClass === 'server' ? 'core' : 'edge',
+      fretProfile: this.roles.overlayTier,
       relay: this.relayServer.enabled,
       // Merged party-run defaults: no per-connection data/duration cap, a store sized for
       // one party's NAT'd machines. Strand nodes get the same init (`relay-server.ts`).
@@ -2626,7 +2647,10 @@ export class CadreNode implements SAppIdLookup {
         enrolledMachines: this.declaredEnrolledMachines,
         cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(network)
       }),
-      arachnode: { enableRingZulu: nodeClass === 'server' },
+      // Ring Zulu follows `alwaysOn` rather than being a role of its own: the storage rings it
+      // hints at are unimplemented, so there is nothing else to configure yet
+      // (`backlog/later/5-ring-zulu-storage-rings`).
+      arachnode: { enableRingZulu: this.roles.alwaysOn },
       // One join catch-up per node, for the strand node's reason (`strand-instance-manager.ts`,
       // at its `rebalance` option): Optimystic's rebalance growth arm would push a joining
       // member each control block again, one request per block. Every peer the growth arm
@@ -3831,13 +3855,16 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * What this node publishes in its own `CadrePeer.Profile`: whether it is always on, in the
-   * stored form (`node-class.ts`). The column is the one place the old codes survive, because
-   * the control store is the one place backwards compatibility applies
+   * What this node publishes in its own `CadrePeer.Profile`: the `alwaysOn` role, in the stored
+   * form (`node-class.ts`). The column is the one place the old codes survive, because the
+   * control store is the one place backwards compatibility applies
    * (`docs/cadre/control-schema.md` → "Schema versions and migrations").
+   *
+   * ONE method for both uses on purpose: the heartbeat republishes when the stored row differs
+   * from this, so a second derivation that disagreed would republish on every heartbeat forever.
    */
   private publishedProfile(): PublishedProfile {
-    return encodeAlwaysOn(this.config.nodeClass === 'server');
+    return encodeAlwaysOn(this.roles.alwaysOn);
   }
 
   /**
@@ -7742,7 +7769,7 @@ export class CadreNode implements SAppIdLookup {
       sAppConfig,
       storage: this.config.storage,
       network: this.config.network,
-      nodeClass: this.config.nodeClass,
+      roles: this.roles,
       defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
       privateKey: transportKey,
       bootstrapNodes,

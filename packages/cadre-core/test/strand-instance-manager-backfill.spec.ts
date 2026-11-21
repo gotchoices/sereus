@@ -6,6 +6,7 @@ import { signSchema } from '../src/schema-verification.js';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * **What this protects: the ARMING GATE of the peer-join block catch-up.**
@@ -82,7 +83,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   return {
     strandRow,
     sAppConfig,
-    nodeClass: 'device',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     storage: { provider: fakeStorage() },
     ...overrides

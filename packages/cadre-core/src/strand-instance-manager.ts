@@ -49,7 +49,7 @@ import { strandNodeAddrs } from './strand-network-config.js';
 import { listenTransportNodeOptions } from './relay-addrs.js';
 import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer } from './relay-server.js';
-import type { NodeClass } from './node-class.js';
+import type { NodeRoles } from './node-roles.js';
 import { strandCohortTopicOption, type StrandReactivityConfig } from './strand-reactivity.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
 import { strandRedialTimings, superviseStrandPeerRedial, type StrandPeerRedial } from './strand-peer-redial.js';
@@ -144,7 +144,13 @@ export interface StartStrandConfig {
   sAppConfig?: SAppConfig;
   storage?: StorageConfig;
   network?: NetworkConfig;
-  nodeClass: NodeClass;
+  /**
+   * What this node does, resolved once by the owning {@link CadreNode} (`node-roles.ts`).
+   * Retained with the launch config, so a strand woken from hibernation is rebuilt with the
+   * same roles. Read here for the FRET tier, Ring Zulu, the relay-server default and the
+   * cohort-topic host profile.
+   */
+  roles: NodeRoles;
   defaultLatencyHint: LatencyHint;
   privateKey?: PrivateKey;
   /** Cohort-derived discovery seed (multiaddr strings). Defaults to [] when omitted. */
@@ -851,7 +857,7 @@ export class StrandInstanceManager {
    * Build (or rebuild) the libp2p node + StrandDatabase for an instance and
    * attach them, transitioning it to `active`. Shared by `startStrand` (fresh
    * launch) and `resumeStrand` (rehydrating a quiesced instance). Reads all
-   * volatile inputs (bootstrapNodes, servingMachines, network, nodeClass,
+   * volatile inputs (bootstrapNodes, servingMachines, network, roles,
    * privateKey, sApp config) from `config`, so the caller controls the
    * cohort-derived values. Storage is the
    * one input it does NOT re-read from `config`: that belongs to the instance and
@@ -887,7 +893,7 @@ export class StrandInstanceManager {
 
     // Whether this node runs the circuit-relay server, and its init — the same
     // resolution the control node takes from the same config (`relay-server.ts`).
-    const relayServer = resolveRelayServer(config.network, config.nodeClass);
+    const relayServer = resolveRelayServer(config.network, config.roles);
     // The strand-node VIEW of the machine's one `NetworkConfig`, not the control
     // node's resolution: fixed direct listen ports become ephemeral (two nodes cannot
     // bind one port), the announce config is dropped (it names the control node's
@@ -964,9 +970,9 @@ export class StrandInstanceManager {
         ? { connectionGater: config.network.connectionGater }
         : {};
 
-    const reactivityOption = strandCohortTopicOption(config.reactivity, strandId);
+    const reactivityOption = strandCohortTopicOption(config.reactivity, strandId, config.roles.reactivity);
     if (reactivityOption.cohortTopic) {
-      log('strand %s: change notifications on', strandId);
+      log('strand %s: change notifications on, as %s', strandId, config.roles.reactivity);
     }
 
     // The party's other machines holding this strand, for the offline queue's gate, each commit's
@@ -1001,7 +1007,7 @@ export class StrandInstanceManager {
         // this way, the row needs a proof that the id it states is the machine's own.
         ...(partyMachines && { isNetworkMember: (peerId: string) => !partyMachines.removed().has(peerId) }),
         storage: strandStorage,
-        fretProfile: config.nodeClass === 'server' ? 'core' : 'edge',
+        fretProfile: config.roles.overlayTier,
         relay: relayServer.enabled,
         // NOTE: unlike the control node, a strand node has no unauthorized-reservation budget,
         // so with the per-connection cap off any peer that reaches this node can hold one of
@@ -1027,9 +1033,11 @@ export class StrandInstanceManager {
           cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(config.network)
         }),
         arachnode: {
-          enableRingZulu: config.nodeClass === 'server'
+          // Follows `alwaysOn`, for the control node's reason (`cadre-node.ts`): the storage
+          // rings Ring Zulu hints at are unimplemented, so there is no second role to set.
+          enableRingZulu: config.roles.alwaysOn
         },
-        // One join catch-up per node. On a `'server'` node Optimystic's rebalance growth
+        // One join catch-up per node. On an always-on node Optimystic's rebalance growth
         // arm pushes a joiner every block whose cohort it entered, one request per block, and
         // it never hears of the peer-join catch-up's pushes, so each block would go twice. The
         // catch-up pushes every block to every peer it serves, the growth arm's targets

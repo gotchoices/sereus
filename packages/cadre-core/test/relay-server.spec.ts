@@ -5,6 +5,7 @@ import {
   PARTY_RELAY_RESERVATION_TTL_MS,
   resolveRelayServer
 } from '../src/relay-server.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * A party-run relay must forward without libp2p's 128 KiB / 2 min per-connection cap
@@ -28,6 +29,6 @@ describe('resolveRelayServer init', () => {
     ['an undefined key counts as unset', { reservations: { applyDefaultLimit: undefined } }, { reservations: defaults }],
     ['other top-level keys pass through as given', { hopTimeout: 5_000 }, { hopTimeout: 5_000, reservations: defaults }]
   ])('%s', (_label, relayServerInit, expected) => {
-    expect(resolveRelayServer({ relayServerInit }, 'server').init).toEqual(expected);
+    expect(resolveRelayServer({ relayServerInit }, NODE_ROLE_PRESETS.server).init).toEqual(expected);
   });
 });

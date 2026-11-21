@@ -5,6 +5,7 @@ import { signSchema } from '../src/schema-verification.js';
 import { DEFAULT_CONNECTION_MONITOR } from '../src/types.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 // Same doubles as strand-instance-manager-cluster-size.spec.ts: the assertions here
 // are purely about what reaches `createLibp2pNode`, so no real node or database is
@@ -105,7 +106,7 @@ describe('StrandInstanceManager network-addrs wiring', () => {
     return {
       strandRow,
       sAppConfig,
-      nodeClass: 'device',
+      roles: NODE_ROLE_PRESETS.device,
       defaultLatencyHint: 'interactive',
       ...overrides
     };

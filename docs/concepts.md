@@ -71,9 +71,9 @@ A write is a transaction that the nodes holding the affected blocks approve and 
 ## Glossary
 
 - **Address record**: a node's dialable addresses, public key and always-on declaration, signed with its identity key and stored in its own `CadrePeer` row. The party's other nodes find the node from it. See [The node's address record](cadre/node.md#the-nodes-address-record).
-- **Always on**: a machine's declaration that it stays running and reachable. A `server`-class node publishes it in its address record, and the party's other machines dial the machines that declare it first. See [Node classes](cadre/node.md#node-classes).
+- **Always on**: a machine's declaration that it stays running and reachable. A node whose `alwaysOn` node role is on publishes it in its address record, and the party's other machines dial the machines that declare it first. See [Node classes](cadre/node.md#node-classes).
 - **Anchor** (trusted-owner anchor): the owner keys a machine trusts out of band, stored on that machine and never replicated. The machine verifies replicated control rows against it. See [The trusted-owner anchor](cadre/control-security.md#the-trusted-owner-anchor).
-- **Arachnode**: Optimystic's subsystem for storage rings and for restoring blocks from other holders. It runs only on `server`-class nodes. See [Node classes](cadre/node.md#node-classes).
+- **Arachnode**: Optimystic's subsystem for storage rings and for restoring blocks from other holders. It runs only on nodes that declare themselves always on. See [Node classes](cadre/node.md#node-classes).
 - **Cadre**: the set of nodes one party runs. See [Adding and removing machines](cadre/membership.md).
 - **Cadre invitation**: an owner-signed credential (a `CadreInvite` row and its bundle) that admits one machine to a cadre. Any member machine can redeem it for the newcomer. See [Cadre invitations](cadre/membership.md#cadre-invitations).
 - **cadre-host**: the program that runs always-on nodes on a home machine, each started as a **hosted node** for a cadre whose owner is a phone. See [cadre-host design](hosting/cadre-host.md).
@@ -100,7 +100,9 @@ A write is a transaction that the nodes holding the affected blocks approve and 
 - **Member**: a party seated in a closed strand's membership tables. For a cadre, a **member machine** is a node with a live `CadrePeer` row that carries an owner's signature or a redeemed cadre invitation. See [Closed-strand membership](strands/membership.md).
 - **Membership key** (party key): one party's signing key for one closed strand, stored as a `StrandPartyKey` row. It seats the party's member rows and never leaves the party. See [Closed-strand member key handling](strands/keys.md#closed-strand-member-key-handling).
 - **Node** (cadre node): one running instance of `@serfab/cadre-core`. See [The cadre node](cadre/node.md).
-- **Node class**: what kind of machine a node runs on. `device` is a phone, a laptop or a browser running an app; `server` is an always-on node. FRET's names for the same split are `edge` and `core`. See [Node classes](cadre/node.md#node-classes).
+- **Node class**: what kind of machine a node runs on. `device` is a phone, a laptop or a browser running an app; `server` is an always-on node. The class only presets the node roles. See [Node classes](cadre/node.md#node-classes).
+
+- **Node role**: one of four decisions that together settle what a node does, each settable on its own: whether the machine is always on, its overlay resource tier (FRET's `edge` or `core`), whether it carries other subscribers' change notifications, and whether it holds the data of the strands it runs. The node class is the preset that supplies the roles a deployment does not set. See [Node classes](cadre/node.md#node-classes).
 - **Offline mode**: a strand setting under which a commit resolves once it is saved on the writing machine and is sent to the other members later. See [Offline mode](strands/writes.md#offline-mode).
 - **Open strand**: a strand with no membership rows and no read secret. Any node that can reach its network can read it. See [What a strand is](strands/lifecycle.md#what-a-strand-is).
 - **Optimystic**: the storage engine under every Sereus database: blocks, replication and transactions over libp2p. See [Architecture](architecture.md).

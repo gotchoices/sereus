@@ -28,6 +28,7 @@ import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
 import type { ListenTransportOptions } from './relay-addrs.js';
 import type { NodeClass, PublishedProfile } from './node-class.js';
+import type { NodeRoles } from './node-roles.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -390,8 +391,8 @@ export interface NetworkConfig {
   stunUrls?: string;
   /**
    * Enable circuit relay server - allows this node to relay connections for other peers.
-   * When undefined, defaults to true for `'server'` nodes (they typically have
-   * better connectivity and uptime), false for `'device'` nodes.
+   * When undefined, defaults to the resolved `roles.alwaysOn`: an always-on machine has the
+   * connectivity and uptime to be a relay, anything else does not.
    */
   enableRelay?: boolean;
   /**
@@ -845,6 +846,18 @@ export interface CadreNodeConfig {
   /** What kind of machine this node runs on ({@link NodeClass}): a device, or an always-on server. */
   nodeClass: NodeClass;
 
+  /**
+   * Per-role overrides of what {@link nodeClass} means — each of the four decisions the class
+   * would otherwise settle on its own, settable one at a time. A role left out takes the
+   * class's preset; a value outside a role's own set throws at construction rather than
+   * falling back to the preset. See {@link NodeRoles} for what each role does and
+   * `node-roles.ts` → `NODE_ROLE_PRESETS` for the two presets.
+   *
+   * `strandCohortMember: false` is refused at construction: the node that holds no strand
+   * blocks is not buildable yet (`strand-node-that-holds-no-blocks`).
+   */
+  roles?: Partial<NodeRoles>;
+
   /** Which strands to participate in */
   strandFilter?: StrandFilter;
 
@@ -859,8 +872,9 @@ export interface CadreNodeConfig {
    * The strand is still announced as `strand:discovered` (once) and stays in
    * `getDiscoveredStrands()` until an app claims it. A replica is always a joiner.
    *
-   * Default: `nodeClass === 'server'` — always-on machines host replicas, devices keep
-   * today's announce-only behaviour.
+   * Default: the resolved `roles.alwaysOn` — an always-on machine hosts replicas, anything
+   * else keeps the announce-only behaviour. An explicit value here still wins, so a phone can
+   * be told to host replicas and an always-on machine told not to.
    */
   hostUnclaimedStrands?: boolean;
 
@@ -1942,7 +1956,7 @@ export interface CadreNodeEvents {
    * `addStrand` has resolved).
    *
    * On a node that hosts storage replicas ({@link CadreNodeConfig.hostUnclaimedStrands},
-   * the default for `nodeClass: 'server'`) the event still fires once, and the node launches
+   * the default on an always-on node) the event still fires once, and the node launches
    * the strand as a replica right after it — so there `getStrands().has(id)` soon turns
    * true for a strand no app has claimed; an unclaimed instance has no `sAppInfo`. A
    * launch that fails is retried by the watcher without a second `strand:discovered`.

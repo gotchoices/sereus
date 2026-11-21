@@ -6,6 +6,7 @@ import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * **What this protects: the ARMING GATE of the revoked-peer enforcement.**
@@ -86,7 +87,7 @@ function createStartConfig(strandId: string, type: 'o' | 'c', overrides?: Partia
   return {
     strandRow,
     sAppConfig,
-    nodeClass: 'device',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     ...overrides
   };

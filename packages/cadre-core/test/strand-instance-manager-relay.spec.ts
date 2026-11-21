@@ -5,6 +5,7 @@ import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 import type { RelayReservationSupervisorOptions } from '../src/relay-reservation.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * The per-strand relay-reservation supervisors `buildStrandRuntime` wires over the
@@ -138,7 +139,7 @@ describe('StrandInstanceManager relay-reservation supervisors', () => {
     return {
       strandRow,
       sAppConfig,
-      nodeClass: 'device',
+      roles: NODE_ROLE_PRESETS.device,
       defaultLatencyHint: 'interactive',
       network: { listenAddrs: [], relayAddrs: [RELAY_1] },
       ...overrides

@@ -9,6 +9,7 @@ import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
 import type { StrandDatabase } from '../src/strand-database.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * **What this protects: the joining machine's first-sync write gate** —
@@ -87,7 +88,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   return {
     strandRow,
     sAppConfig,
-    nodeClass: 'device',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     firstSync: FAST_GATE,
     ...overrides

@@ -5,6 +5,7 @@ import { signSchema } from '../src/schema-verification.js';
 import { COHORT_READ_DEADLINE_MS, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE, STRAND_CLUSTER_POLICY, strandClusterPolicy } from '../src/types.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 // Same doubles as strand-instance-manager-hibernation.spec.ts: the assertions
 // here are purely about what reaches `createLibp2pNode`, so no real node or
@@ -66,7 +67,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     return {
       strandRow,
       sAppConfig,
-      nodeClass: 'device',
+      roles: NODE_ROLE_PRESETS.device,
       defaultLatencyHint: 'interactive',
       ...overrides
     };

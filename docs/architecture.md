@@ -137,7 +137,7 @@ A started node replicates the control database, stays connected to its siblings,
 
 Four choices shape a node:
 
-- **Node class.** `device` for an app that is connected some of the time, `server` for an always-on node. The class sets defaults: a `server` node runs a relay server, runs strands no local app has claimed, and is the peer other nodes always dial.
+- **Node class and roles.** `device` for an app that is connected some of the time, `server` for an always-on node. The class is only a preset for four decisions a deployment can set one at a time: whether the machine declares itself always on, its overlay resource tier, whether it carries other subscribers' change notifications, and whether it holds the data of the strands it runs. Declaring itself always on is what makes a node run a relay server, run strands no local app has claimed, and be the peer other nodes always dial.
 - **Strand filter.** Which of the party's strands this node may run: all, one sApp's, one strand, or none.
 - **Key material.** The node's identity key and the owner key live in a `KeyStore` the embedder supplies, which in a React Native app is the platform's secure store.
 - **Storage.** The embedder supplies a block store for the control database and one per strand. A few records the node keeps for itself, such as the anchor, are stored separately and never replicated.

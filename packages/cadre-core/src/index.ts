@@ -11,6 +11,16 @@ export {
   isPublishedProfile
 } from './node-class.js';
 
+// What a node DOES: the four separately-settable roles, the per-class presets, and the
+// resolution an embedder's `CadreNodeConfig.roles` goes through
+export {
+  type NodeRoles,
+  type OverlayTier,
+  type ReactivityRole,
+  NODE_ROLE_PRESETS,
+  resolveNodeRoles
+} from './node-roles.js';
+
 // Canonical JSON serialization (shared signing payload format)
 export { canonicalJson } from './canonical-json.js';
 

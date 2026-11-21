@@ -7,6 +7,7 @@ import { mintStrandId, mintPlaceholderStrandId } from '../src/strand-id.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * A strand's storage scope key is its strand id, used verbatim, and a strand row can
@@ -58,7 +59,7 @@ function createStartConfig(strandId: string, provider: (id: string) => IRawStora
     schema: testSchema,
     signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
   };
-  return { strandRow, sAppConfig, nodeClass: 'device', defaultLatencyHint: 'interactive', storage: { provider } };
+  return { strandRow, sAppConfig, roles: NODE_ROLE_PRESETS.device, defaultLatencyHint: 'interactive', storage: { provider } };
 }
 
 describe('strand scope key validation', () => {

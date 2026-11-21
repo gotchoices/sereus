@@ -5,6 +5,7 @@ import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * A strand instance OWNS one resolved raw storage for its lifetime.
@@ -94,7 +95,7 @@ function createStartConfig(strandId: string, provider: (id: string) => IRawStora
   return {
     strandRow: createStrandRow(strandId),
     sAppConfig: createSAppConfig(),
-    nodeClass: 'device',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     storage: { provider }
   };
@@ -192,7 +193,7 @@ describe('StrandInstanceManager storage ownership', () => {
     await manager.startStrand({
       strandRow: createStrandRow('s6'),
       sAppConfig: createSAppConfig(),
-      nodeClass: 'device',
+      roles: NODE_ROLE_PRESETS.device,
       defaultLatencyHint: 'interactive'
     });
 

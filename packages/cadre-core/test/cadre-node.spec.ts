@@ -120,6 +120,14 @@ describe('CadreNode', () => {
       const node = new CadreNode(config);
       expect(node.isRunning).toBe(false);
     });
+
+    // The role is in the type ahead of the Optimystic node that can honour it
+    // (`strand-node-that-holds-no-blocks`), so construction has to refuse it rather than
+    // accept a config and then run a node that holds blocks anyway.
+    it('refuses strandCohortMember: false', () => {
+      expect(() => new CadreNode(createConfig({ roles: { strandCohortMember: false } })))
+        .toThrow(/strandCohortMember/);
+    });
   });
 
   describe('start/stop lifecycle', () => {

@@ -235,7 +235,11 @@ With the option off, both postures are unchanged.
 - **Each watched table registers on every node build,** and every hibernation wake registers again. A cold-start registration carries one signature, a self-endorsement made with the strand node's peer key.
 - **While idle, each renewal tick reads the log tails of all the strand's watched tables in one read.** A machine that holds those blocks answers it from its own store.
 - **Registration renewals cost one request per watched table** whose registration is held by another machine.
-- **Every strand node built with the option is a core notification host, whatever its node class.** A `device`-class phone is therefore eligible to forward notifications to other subscribers, and renews at the core interval of 30 s. The `NOTE:` in `strand-reactivity.ts` names the revisit condition.
+- **A node whose [`reactivity` role](../cadre/node.md#node-classes) is `subscriber` is not a notification host, and inside a table's root group that costs latency.** Notifications for a table are rooted at the storage group of its log tail, so a member of that group that will not host declines the work and the watch service's tail poll delivers the change instead — every 30 s on a `forwarder` node, every 20 s on a `subscriber`. Both presets are `forwarder` today, so neither case below arises until a deployment sets the role.
+
+	**A subscriber asked to register.** It declines and names the group's forwarder members, and the asking node retries one of those. The exception is the first registration at that root: there it answers "no state" and names no alternative, so the asking node simply tries again on its next tick. A root group whose first-dialed member is a subscriber can therefore stay on the poll indefinitely.
+
+	**A commit a subscriber coordinated.** In a storage group of three or fewer, only the coordinating member keeps a full commit certificate, so no sibling announces in its place and that commit is announced to nobody. Subscribers see it on their next poll.
 
 ## Limits and accepted tradeoffs
 

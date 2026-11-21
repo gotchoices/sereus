@@ -5,6 +5,7 @@ import { StrandInstanceManager, type StartStrandConfig } from '../src/strand-ins
 import type { StrandRow } from '../src/types.js';
 import { signedSApp } from './signed-sapp.js';
 import { AppSchemaRefusedError } from '@serfab/quereus-plugin-sereus';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /** A schema the plugin refuses whatever the node holds: Sereus applies no seed rows to a strand. */
 const SEED_SCHEMA = `table Role (Name text primary key); seed Role (('admin'));`;
@@ -41,7 +42,7 @@ describe('claiming a hosted storage replica', () => {
 
     // The claim lands while the replica's runtime is still being built, so the attach must
     // wait for the build and act on the database it produced.
-    const launching = manager.startStrand({ strandRow, nodeClass: 'server', defaultLatencyHint: 'interactive' });
+    const launching = manager.startStrand({ strandRow, roles: NODE_ROLE_PRESETS.server, defaultLatencyHint: 'interactive' });
     const attaching = manager.attachSApp(strandRow.Id, sApp);
     const instance = await launching;
     const node = instance.libp2pNode;
@@ -69,7 +70,7 @@ describe('claiming a hosted storage replica', () => {
   ])('refuses a claim with a schema that can never apply on a %s replica, and the replica still resumes', async (_state, quiesceFirst) => {
     manager = new StrandInstanceManager();
     const strandRow: StrandRow = { Id: `replica-refused-${String(quiesceFirst)}`, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
-    const instance = await manager.startStrand({ strandRow, nodeClass: 'server', defaultLatencyHint: 'interactive' });
+    const instance = await manager.startStrand({ strandRow, roles: NODE_ROLE_PRESETS.server, defaultLatencyHint: 'interactive' });
     if (quiesceFirst) {
       await manager.quiesceStrand(strandRow.Id);
     }
@@ -97,7 +98,7 @@ describe('claiming a hosted storage replica', () => {
     const storage = new MemoryRawStorage();
     const privateKey = await generateKeyPair('Ed25519');
     const launch = (overrides: Partial<StartStrandConfig>): StartStrandConfig =>
-      ({ strandRow, nodeClass: 'server', defaultLatencyHint: 'interactive', storage: { provider: () => storage }, privateKey, ...overrides });
+      ({ strandRow, roles: NODE_ROLE_PRESETS.server, defaultLatencyHint: 'interactive', storage: { provider: () => storage }, privateKey, ...overrides });
 
     const founded = await manager.startStrand(launch({ sAppConfig: signedSApp(), founder: true }));
     await founded.database!.getDatabase().exec(`insert into App.Note (Id) values ('n1')`);

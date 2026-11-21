@@ -5,6 +5,7 @@ import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 // Mock the heavy runtime dependencies so quiesce/resume can be exercised without
 // standing up a real libp2p node or Quereus database. The real-node integration
@@ -69,7 +70,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   return {
     strandRow: createStrandRow(strandId),
     sAppConfig: createSAppConfig(),
-    nodeClass: 'device',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     ...overrides
   };

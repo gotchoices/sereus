@@ -41,20 +41,34 @@ A failed launch leaves nothing tracked: `getStrand(id)` returns `undefined`, and
 
 ## Node classes
 
-`nodeClass` is required and says what kind of machine this node runs on. `device` is a phone, a laptop or a browser tab running an app: connected some of the time, and running only the strands its app uses. `server` is an always-on node: a `cadre-cli` process on a server or a home machine, a cadre-host child, or a provider's container. The class has these effects and no others:
+`nodeClass` is required and says what kind of machine this node runs on. `device` is a phone, a laptop or a browser tab running an app: connected some of the time, and running only the strands its app uses. `server` is an always-on node: a `cadre-cli` process on a server or a home machine, a cadre-host child, or a provider's container.
 
-| What it affects | `device` | `server` |
+The class decides nothing by itself. It is the **preset** for four separate decisions — the node's **roles** — each of which a deployment can set on its own through the optional `roles` block:
+
+| Role | What it decides | `device` | `server` |
+|---|---|---|---|
+| `alwaysOn` | Whether this machine declares that it stays running and reachable | `false` | `true` |
+| `overlayTier` | The FRET resource tier of the control node and every strand node | `edge` | `core` |
+| `reactivity` | Whether the node may carry other subscribers' [change notifications](../strands/app-schema.md#change-notifications) | `forwarder` | `forwarder` |
+| `strandCohortMember` | Whether the node holds and signs the blocks of the strands it runs | `true` | `true` |
+
+A role left out of `roles` takes its preset's value, and a value outside a role's own set is refused when the node is constructed rather than resolving quietly to the preset. So `roles: { alwaysOn: true }` on a `device` changes that one decision and leaves the other three at the device defaults.
+
+Two of the four are the same under both presets today, for different reasons. `reactivity` is `forwarder` because that is what every node already does; whether a phone should forward is an open question that this option exists to let a deployment test. `strandCohortMember: false` is refused when the node is constructed: the role is in the configuration ahead of the Optimystic node that can run a strand while serving none of its blocks.
+
+### What always on turns on
+
+| What it affects | `alwaysOn: false` | `alwaysOn: true` |
 |---|---|---|
-| FRET profile of the control node and every strand node | `edge` | `core` |
 | Optimystic's Arachnode subsystem (ring membership, block restoration from other holders) | off | on |
 | Relay server, when `network.enableRelay` is unset | off | on |
 | Strands no local app has claimed, when `hostUnclaimedStrands` is unset | announced only | run as [storage replicas](#storage-replicas) |
 | How the party's other nodes dial it | up to the cohort's target degree | always |
 | In seeds and invitation replies | listed | listed as a preferred peer |
 
-The first four rows are local settings, and an option overrides two of them. The last two follow from what the node publishes in its [address record](#the-nodes-address-record): a `server` node declares that it is always on and a `device` node declares that it is not, and other nodes treat the always-on machines as the ones that stay reachable ([Cohort auto-connect](control-convergence.md#cohort-auto-connect)). That declaration is all the party's other machines read; the class itself is never replicated, and [the control schema](control-schema.md#limits-and-accepted-tradeoffs) describes the column that stores it.
+The first three are local settings, and `network.enableRelay` and `hostUnclaimedStrands` each override one of them. The last two follow from what the node publishes in its [address record](#the-nodes-address-record): the party's other machines read that declaration and treat the machines that make it as the ones that stay reachable ([Cohort auto-connect](control-convergence.md#cohort-auto-connect)). That declaration is all they read — neither the class nor any other role is replicated — and [the control schema](control-schema.md#limits-and-accepted-tradeoffs) describes the column that stores it.
 
-Both classes transact and store. The class does not decide whether a node stores data: every node keeps the blocks of the control database and of each strand it runs in whatever `storage.provider` returns ([Storage](#storage)).
+Every node transacts and stores today: it keeps the blocks of the control database and of each strand it runs in whatever `storage.provider` returns ([Storage](#storage)). `strandCohortMember` is the role that will change the strand half of that, once there is a node that can run a strand while serving none of its blocks; nothing else, class included, decides it.
 
 ## Strand filtering
 
@@ -73,7 +87,7 @@ Under an `sAppId` filter, a strand whose sApp id the node does not know yet is a
 
 ### Storage replicas
 
-Whether a node runs a strand its filter admits and no app on the machine has claimed is a separate option, `hostUnclaimedStrands`, which is on by default for the `server` class only.
+Whether a node runs a strand its filter admits and no app on the machine has claimed is a separate option, `hostUnclaimedStrands`, which is on by default on a node whose [`alwaysOn` role](#node-classes) is on.
 
 With it on, the node launches every admitted strand as a **storage replica**: the strand's own libp2p node, block store and `Strand` membership schema, with no sApp configuration and no `App` schema. A replica stores and serves the strand's blocks and runs nothing an app supplied. An always-on machine thereby keeps a copy of every strand of its party, so a lost phone loses nothing that had reached that machine.
 
@@ -83,7 +97,7 @@ With it on, the node launches every admitted strand as a **storage replica**: th
 - **An app on the same machine can claim a running replica.** `addStrand` or `foundStrand` applies the app's schema to the live database over the same libp2p node and store, so nothing is fetched again and the peer id and connections are kept.
 - **A strand joined from another party is hosted once the join is published party-wide** in the `JoinedStrand` table, and stopped when that row is removed ([What a joiner's node remembers](../strands/keys.md#what-a-joiners-node-remembers)).
 
-With it off, the node announces the strand and launches nothing until an app claims it. `cadre-cli` does not expose the option, so on a `server`-class `cadre-cli` node the strand filter is the only way to host fewer strands.
+With it off, the node announces the strand and launches nothing until an app claims it. `cadre-cli` does not expose the option, so on an always-on `cadre-cli` node the strand filter is the only way to host fewer strands.
 
 ## Configuration
 
@@ -92,11 +106,12 @@ With it off, the node announces the strand and launches nothing until an app cla
 | Group | Options | Default when omitted |
 |---|---|---|
 | [Party](membership.md) | `controlNetwork.partyId`, `.bootstrapNodes` | Required. Bootstrap addresses are dialed after the control database is up. |
+| [What the node is and does](#node-classes) | `nodeClass`, `roles` | The class is required; each role takes its preset's value |
 | [Identity](#node-key-material-and-the-keystore) | `keyStore`, `identityKeyId`, `privateKey` | A new key each start |
 | [Trust before first sync](control-security.md) | `trustedOwners`, `seedTrustPolicy`, `claim` | Empty in-memory anchor; `anchoredTrustPolicy()`; not [claimable](membership.md#claiming-a-node) |
 | [Node-local stores](#node-local-state) | `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`, `joinedStrands` | In memory, lost on exit |
 | [Block storage](#storage) | `storage.provider` | An in-memory store per network |
-| [Which strands run](#strand-filtering) | `strandFilter`, `hostUnclaimedStrands`, `strandWatchInterval` | `all`; on for `server`; 300 000 ms |
+| [Which strands run](#strand-filtering) | `strandFilter`, `hostUnclaimedStrands`, `strandWatchInterval` | `all`; on when always on; 300 000 ms |
 | [Schema policy](../strands/lifecycle.md) | `requireSignedSchemas` | `true`: an unsigned sApp schema is refused |
 | [Replication](control-replication.md#replication-cluster-size) | `strandClusterSize`, `strandBackfill`, `controlBackfill` | 4; on; on ([Catching up a new machine](control-replication.md#catching-up-a-new-machine)) |
 | [Joining a strand](../strands/formation.md) | `strandFirstSync` | Gate always on; timeouts from `strand-first-sync-gate.ts` |
@@ -154,7 +169,7 @@ One `network` block configures the control node and every strand node, because t
 | Listening | `listenAddrs` | Omitted: `/ip4/0.0.0.0/tcp/0`. `[]` means the node cannot listen. The control node binds each entry as written; each strand node binds the same entry with its port set to 0. |
 | Advertising | `appendAnnounceAddrs`, `announceAddrs`, `inviteAddressResolver` | Control node only. `appendAnnounceAddrs` adds an address. `announceAddrs` replaces the whole advertised set, including an address earned from a relay. The resolver changes only the addresses put in invitations. |
 | Being reached through a relay | `relayAddrs`, `requireRelay` | Each entry is a relay's dial address ending in its peer id. `requireRelay` defaults to `true`: `start()` fails if the first reservation fails. Set `false` on a node that must start with no network. |
-| Serving as a relay | `enableRelay`, `relayServerInit`, `unauthorizedRelayReservationCap` | On by default for `server`. The cap (default 8) limits reservations granted to peers not yet recognised as members. |
+| Serving as a relay | `enableRelay`, `relayServerInit`, `unauthorizedRelayReservationCap` | On by default when the node is always on. The cap (default 8) limits reservations granted to peers not yet recognised as members. |
 | Transports and crypto | `transports`, `defaultTransports`, `noiseCrypto` | Omitted: TCP and circuit relay, with WebSocket added when a listen entry names `/ws` and WebRTC when one names `/webrtc`. React Native and browsers must supply `transports`. |
 | WebRTC ICE | `stunUrls` | Comma-separated `stun:` URLs, replacing the ones derived from `relayAddrs` (each Sereus relay answers STUN on port 3478). Read only by a node that has a WebRTC transport. |
 | The link | `linkRoundTripMs`, `cohortQueryTimeoutMs`, `connectionMonitor` | 3500 ms; derived from it (7000 ms); a 30 s ping deadline at a 35 s interval. |

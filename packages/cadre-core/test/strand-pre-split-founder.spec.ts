@@ -15,6 +15,7 @@ import {
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import { signedSApp } from './signed-sapp.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * A closed strand whose founding Member/Manager were seated BEFORE the per-party identity
@@ -67,7 +68,7 @@ function launchConfig(f: Fixture, founder: boolean): StartStrandConfig {
   return {
     strandRow: f.strandRow,
     sAppConfig: f.sApp,
-    nodeClass: 'device',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     storage: { provider: () => f.storage },
     privateKey: f.transportKey,

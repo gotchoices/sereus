@@ -7,6 +7,7 @@ import { StrandDatabase } from '../src/strand-database.js';
 import { signSchema, SchemaVerificationError } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 describe('StrandInstanceManager', () => {
   let authorPrivateKey: string;
@@ -59,7 +60,7 @@ describe('StrandInstanceManager', () => {
     return {
       strandRow: createStrandRow(strandId),
       sAppConfig: createSAppConfig(),
-      nodeClass: 'device',
+      roles: NODE_ROLE_PRESETS.device,
       defaultLatencyHint: 'interactive',
       founder: true,
       ...overrides
