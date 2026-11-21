@@ -918,14 +918,16 @@ export {
 // which is the difference between a test that proves reachability and one that proves a
 // spelling.
 //
-// `DEFAULT_DIRECT_LISTEN_ADDR` is exported for the same reason: a host that APPENDS a listen
-// entry to an unset `network.listenAddrs` (cadre-cli adding `/webrtc` for `network.webrtc`) has
-// to carry the default direct listener forward with it, and that default has one home here.
+// The two listen-entry constants are exported for the same reason: a host that APPENDS a
+// `/webrtc` entry to an unset `network.listenAddrs` (cadre-cli, for `network.webrtc`) has to
+// carry the default direct listener forward with it, and the spelling of each entry has one
+// home beside the classifier that reads it.
 export {
   RelayReservationFailedError,
   UnbindableListenAddressError,
   RELAY_SEARCH_LISTEN_ADDR,
   DEFAULT_DIRECT_LISTEN_ADDR,
+  WEBRTC_LISTEN_ADDR,
   resolveListenAddrs
 } from './relay-addrs.js';
 export { strandNodeAddrs, type StrandNodeAddrs } from './strand-network-config.js';

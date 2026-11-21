@@ -9,19 +9,11 @@
  */
 
 import debug from 'debug';
-import { DEFAULT_DIRECT_LISTEN_ADDR, type CadreNodeConfig } from '@serfab/cadre-core';
+import { DEFAULT_DIRECT_LISTEN_ADDR, WEBRTC_LISTEN_ADDR, type CadreNodeConfig } from '@serfab/cadre-core';
 import { loadNodeWebrtcTransport, nodeDefaultTransports } from '@serfab/cadre-core/node-default-transports';
 import type { ResolvedConfig } from '../config/index.js';
 
 const log = debug('cadre:cli:node-network');
-
-/**
- * The bare WebRTC listen entry. It binds no socket: the transport registers libp2p's signalling
- * handler and derives its address from each relay reservation this node holds, which is why the
- * entry is worth adding to a machine that can only be reached through a relay and worth nothing
- * on one with a public address.
- */
-const WEBRTC_LISTEN_ADDR = '/webrtc';
 
 /**
  * Resolve `config.network` into the node's `network` block.
@@ -48,16 +40,17 @@ export async function resolveNodeNetwork(
   network: ResolvedConfig['network'],
 ): Promise<CadreNodeConfig['network']> {
   const { webrtc, ...core } = network ?? {};
+  const relayCount = (core.relayAddrs ?? []).length;
   if (webrtc !== true) {
     return { ...core, defaultTransports: nodeDefaultTransports };
   }
-  if ((core.relayAddrs ?? []).length === 0) {
+  if (relayCount === 0) {
     console.warn('⚠ network.webrtc is on but no relay is configured; WebRTC signalling runs over a relayed '
       + 'connection, so the node starts without it. Set network.relayAddrs (CADRE_RELAY_ADDRS) to use it.');
     return { ...core, defaultTransports: nodeDefaultTransports };
   }
   const webrtcTransport = await loadNodeWebrtcTransport();
-  log('WebRTC enabled over %d relay(s)', (core.relayAddrs ?? []).length);
+  log('WebRTC enabled over %d relay(s)', relayCount);
   return {
     ...core,
     listenAddrs: [...(core.listenAddrs ?? [DEFAULT_DIRECT_LISTEN_ADDR]), WEBRTC_LISTEN_ADDR],

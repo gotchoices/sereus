@@ -2,6 +2,8 @@
  * The listen addresses an edge app offers, for `EdgeNodePlatform.listenAddrs`.
  */
 
+import { WEBRTC_LISTEN_ADDR } from '../relay-addrs.js';
+
 /**
  * `['/webrtc']` when the node has a relay, `[]` otherwise: the `EdgeNodePlatform.listenAddrs` of
  * any app whose transports carry WebRTC (a browser tab, a phone). A `/webrtc` listener binds no
@@ -20,5 +22,5 @@
  * declarative WebRTC switch that sets the transport and the listen address together.
  */
 export function webrtcListenAddrs(relayAddrs: readonly string[]): string[] {
-	return relayAddrs.length > 0 ? ['/webrtc'] : [];
+	return relayAddrs.length > 0 ? [WEBRTC_LISTEN_ADDR] : [];
 }

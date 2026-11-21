@@ -85,6 +85,19 @@ export const DEFAULT_DIRECT_LISTEN_ADDR = '/ip4/0.0.0.0/tcp/0';
 export const RELAY_SEARCH_LISTEN_ADDR = '/p2p-circuit';
 
 /**
+ * The WebRTC listen entry, for every host that offers one: the edge apps
+ * (`edge-node/listen-addrs.ts`) and `cadre-cli`'s `network.webrtc`. One home for the
+ * spelling {@link listenTransportKind} classifies, like the two constants around it —
+ * a host that mis-spells it gets a refusal naming the transport instead of a listener.
+ *
+ * It binds no socket: the transport registers libp2p's signalling handler and derives
+ * this node's address from each relay reservation it holds, which is why the entry is
+ * worth adding to a machine reachable only through a relay and worth nothing on one with
+ * a public address.
+ */
+export const WEBRTC_LISTEN_ADDR = '/webrtc';
+
+/**
  * The circuit-listen multiaddr for each configured relay: `<relayAddr>/p2p-circuit`.
  * An entry that already carries `/p2p-circuit` is passed through unchanged.
  * Throws on an entry that is unparsable or names no relay peerId — this is
@@ -167,6 +180,11 @@ export interface ListenTransportOptions {
  * does not: it is read only by `network.defaultTransports`, and db-p2p knows no such key —
  * handing it one is the drift the strand builder already avoids for `relayAddrs`. One home for
  * that distinction rather than a correct spread at each site.
+ *
+ * NOTE: the allow-list is the destructuring, so a THIRD {@link ListenTransportOptions} field that
+ * is a db-p2p option has to be added here too or it is dropped in silence. Deliberate — the
+ * opposite default would leak a cadre-only field into db-p2p's options, which is the failure the
+ * function exists to prevent.
  */
 export function listenTransportNodeOptions({ wsPort }: ListenTransportOptions): { wsPort?: number } {
   return wsPort === undefined ? {} : { wsPort };
