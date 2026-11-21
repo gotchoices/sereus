@@ -30,9 +30,12 @@
  * REGISTRATION. The table is tagged in the sApp schema, and the scenario first checks that the
  * tag opened a network watch on every machine. That watch opened while the collection was still
  * empty, so nothing registers until a renewal tick (30 s) reads a committed tail. The scenario
- * commits a seed row and waits for every machine to register on its own, at nearly the same
- * moment — the first at a cold root after a proof of work (0.3-17 s on Node, optimystic
- * `bug-first-registration-proof-of-work-freezes-the-node-for-seconds`). Only then does each
+ * commits a seed row and waits for every machine to register on its own. Each machine's renewal
+ * timer runs on its own phase (it starts when that machine's watch opens), so they register at
+ * their OWN ticks rather than together: measured, one machine is registered as the seed commit
+ * resolves and the others follow up to 30 s later, which is what {@link REGISTRATION_BUDGET_MS}
+ * covers. The first registration at a cold root also pays a proof of work (0.3-17 s on Node,
+ * optimystic `bug-first-registration-proof-of-work-freezes-the-node-for-seconds`). Only then does each
  * machine open its app-level `Database.watch`, so the watch service's one wake for its first tail
  * read (`collection-watch.ts` module doc) has already fired and no measured round counts it.
  *
@@ -121,8 +124,9 @@ const COHORT_AGREEMENT_BUDGET_MS = 20_000;
 const RECORD_GOSSIP_SETTLE_MS = 10_000;
 
 /**
- * Bring-up (~6 libp2p nodes, ~4 s), the cohort-agreement and registration budgets, the settle, and
- * three rounds at the bound.
+ * Every budget below it, summed, with headroom: bring-up (~6 libp2p nodes, ~4 s), the schema-tag
+ * watch wait (10 s), the cohort-agreement and registration budgets, the settle, and three rounds at
+ * the bound — 239 s of worst case.
  */
 const TEST_TIMEOUT_MS = 270_000;
 
@@ -264,7 +268,13 @@ async function awaitSchemaTagWatches(machines: ReadonlyArray<StrandMachine>): Pr
  * 2026-11-21, there is no such window to move out of here: the machines already answer alike about
  * every one of the wait's probe coordinates within about 260 ms of the schema-tag watches opening,
  * and their answers do not change across the seed commit (sampled every 300 ms through it, in two
- * runs). The scenario still failed 1 of 11 runs with the wait in place, against 2 of 8 without it.
+ * runs). The scenario still failed 2 of 12 runs with the wait in place, against 2 of 8 without it.
+ *
+ * It also cannot cover the coordinate the failure turns on. It probes eight FIXED ring coordinates,
+ * while a notification is rooted at the log tail's own coordinate — which does not exist until the
+ * seed commit creates the tail, so no pre-commit wait can ask about it. A resolved wait therefore
+ * says the machines agree about the strand in general, never that they agree about the tail.
+ *
  * What the wait is worth is the failure it raises if that precondition ever stops holding: it names
  * the machines that disagree, instead of surfacing as the push assertion 30 s later. Remove it —
  * rather than keeping it — if the upstream report closes on a different cause.

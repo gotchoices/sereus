@@ -217,7 +217,7 @@ A notification tree is rooted at the machines that store a collection's log tail
 - **A machine in the tail's storage group is woken by its own storage,** before the push arrives. The notification that follows wakes nothing new.
 - **A table watched before its first commit registers at the first renewal tick after that commit,** up to 30 s later, because the watch service registers only once it has read a committed tail. Until then a commit reaches the watcher only through the tail read.
 - **The first registration at a root is slower than later ones.** It is a cold start, and if it backs off it retries at the next 30 s tick.
-- **Machines that register together are all admitted.** On a new strand every machine's watch opens at launch, so all of them register on the same renewal tick after the first commit.
+- **Machines that register together are all admitted,** because a root nobody has registered under yet holds the first registration that reaches it while the other members answer with their willingness. They do not usually register together, though: each machine's renewal timer starts when its own watch opens, so a strand's machines register at their own ticks — observed spread across most of one 30 s period on a three-machine strand.
 - **For up to 5 s after a machine registers, a commit can be pushed to nobody.** A registration is held by the one tail-storing machine it lands on and reaches the others in that storage group by gossip every 5 s. A commit announced only by a machine that has not heard of the registration waits for the 30 s tail read.
 
 ### What enabling exposes
