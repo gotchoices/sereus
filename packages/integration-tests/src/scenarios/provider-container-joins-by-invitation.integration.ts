@@ -148,7 +148,7 @@ describe('a provider container joins a cadre by invitation at an always-on membe
   async function createInvitationContainer(): Promise<RedactedContainer> {
     const created = await api.request<ProviderContainerResponse>('POST', '/containers', {
       join: { kind: 'invitation', invitation: encodedInvitation },
-      profile: 'storage',
+      nodeClass: 'server',
     });
     expect(created.status).toBe(201);
     if (!created.body.ok) throw new Error(`POST /containers refused: ${created.body.error.code}`);

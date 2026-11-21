@@ -27,7 +27,7 @@ graph LR
 
 A **party** is a person or organisation that takes part in shared databases. A party's **cadre** is the set of nodes it runs. A **node** is one running instance of `@serfab/cadre-core`: an app on a phone, a browser tab, a process on a home machine or a server. Each app embeds its own node, so two Sereus apps on one phone are two nodes of the cadre. The documents call a node that belongs to a cadre a member machine, or a machine.
 
-A node has a **profile**. A `transaction` node is an app that is connected some of the time. A `storage` node is always on.
+A node has a **class**, which says what kind of machine it runs on. A `device` node is an app on a phone, a laptop or a browser, connected some of the time. A `server` node is always on.
 
 ### The control network
 
@@ -70,9 +70,10 @@ A write is a transaction that the nodes holding the affected blocks approve and 
 
 ## Glossary
 
-- **Address record**: a node's dialable addresses, public key and profile, signed with its identity key and stored in its own `CadrePeer` row. The party's other nodes find the node from it. See [The node's address record](cadre/node.md#the-nodes-address-record).
+- **Address record**: a node's dialable addresses, public key and always-on declaration, signed with its identity key and stored in its own `CadrePeer` row. The party's other nodes find the node from it. See [The node's address record](cadre/node.md#the-nodes-address-record).
+- **Always on**: a machine's declaration that it stays running and reachable. A `server`-class node publishes it in its address record, and the party's other machines dial the machines that declare it first. See [Node classes](cadre/node.md#node-classes).
 - **Anchor** (trusted-owner anchor): the owner keys a machine trusts out of band, stored on that machine and never replicated. The machine verifies replicated control rows against it. See [The trusted-owner anchor](cadre/control-security.md#the-trusted-owner-anchor).
-- **Arachnode**: Optimystic's subsystem for storage rings and for restoring blocks from other holders. It runs only on `storage`-profile nodes. See [Node profiles](cadre/node.md#node-profiles).
+- **Arachnode**: Optimystic's subsystem for storage rings and for restoring blocks from other holders. It runs only on `server`-class nodes. See [Node classes](cadre/node.md#node-classes).
 - **Cadre**: the set of nodes one party runs. See [Adding and removing machines](cadre/membership.md).
 - **Cadre invitation**: an owner-signed credential (a `CadreInvite` row and its bundle) that admits one machine to a cadre. Any member machine can redeem it for the newcomer. See [Cadre invitations](cadre/membership.md#cadre-invitations).
 - **cadre-host**: the program that runs always-on nodes on a home machine, each started as a **hosted node** for a cadre whose owner is a phone. See [cadre-host design](hosting/cadre-host.md).
@@ -99,13 +100,13 @@ A write is a transaction that the nodes holding the affected blocks approve and 
 - **Member**: a party seated in a closed strand's membership tables. For a cadre, a **member machine** is a node with a live `CadrePeer` row that carries an owner's signature or a redeemed cadre invitation. See [Closed-strand membership](strands/membership.md).
 - **Membership key** (party key): one party's signing key for one closed strand, stored as a `StrandPartyKey` row. It seats the party's member rows and never leaves the party. See [Closed-strand member key handling](strands/keys.md#closed-strand-member-key-handling).
 - **Node** (cadre node): one running instance of `@serfab/cadre-core`. See [The cadre node](cadre/node.md).
+- **Node class**: what kind of machine a node runs on. `device` is a phone, a laptop or a browser running an app; `server` is an always-on node. FRET's names for the same split are `edge` and `core`. See [Node classes](cadre/node.md#node-classes).
 - **Offline mode**: a strand setting under which a commit resolves once it is saved on the writing machine and is sent to the other members later. See [Offline mode](strands/writes.md#offline-mode).
 - **Open strand**: a strand with no membership rows and no read secret. Any node that can reach its network can read it. See [What a strand is](strands/lifecycle.md#what-a-strand-is).
 - **Optimystic**: the storage engine under every Sereus database: blocks, replication and transactions over libp2p. See [Architecture](architecture.md).
 - **Owner grant**: an owner-signed credential (`OwnerGrant`) that lets its holder seat a new owner key. See [Owner grants](cadre/owner-keys.md#owner-grants).
 - **Owner key**: a signing key a person holds, whose signature authorizes changes to the control database. See [Owner keys](cadre/owner-keys.md).
 - **Party**: a person or organisation that takes part in strands. A party owns one cadre. See [The model](#the-model).
-- **Profile**: what kind of node this is. `transaction` is an app on a phone or in a browser, and `storage` is an always-on node. FRET's names for the same split are `edge` and `core`. See [Node profiles](cadre/node.md#node-profiles).
 - **Provider**: a service that rents out always-on nodes, such as one built on `@serfab/cadre-provider`. See [Provider-hosted nodes](hosting/provider.md).
 - **Quereus**: the SQL engine. Every Sereus schema is written in its declarative SQL. See [Writing an app schema](schema-guide.md).
 - **Read secret**: a closed strand's shared key (`Strand.MemberPrivateKey`), which formation gives to every joining party. Nothing uses it to encrypt data or to authenticate a peer. See [Closed-strand keys](strands/keys.md).

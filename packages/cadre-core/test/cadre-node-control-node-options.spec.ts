@@ -39,7 +39,7 @@ function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
       partyId: 'control-options-test-' + Math.random().toString(36).slice(2),
       bootstrapNodes: []
     },
-    profile: 'transaction',
+    nodeClass: 'device',
     ...overrides
   };
 }
@@ -402,16 +402,16 @@ describe('CadreNode control-network node options', () => {
     });
   });
 
-  describe('profile-derived options', () => {
-    it('storage profile maps to the core fret profile and enables Ring Zulu', () => {
-      const options = controlOptions(new CadreNode(createConfig({ profile: 'storage' })));
+  describe('node-class-derived options', () => {
+    it('a server maps to the core fret profile and enables Ring Zulu', () => {
+      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
 
       expect(options.fretProfile).toBe('core');
       expect(options.arachnode?.enableRingZulu).toBe(true);
     });
 
-    it('transaction profile maps to the edge fret profile and disables Ring Zulu', () => {
-      const options = controlOptions(new CadreNode(createConfig({ profile: 'transaction' })));
+    it('a device maps to the edge fret profile and disables Ring Zulu', () => {
+      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
 
       expect(options.fretProfile).toBe('edge');
       expect(options.arachnode?.enableRingZulu).toBe(false);
@@ -419,26 +419,26 @@ describe('CadreNode control-network node options', () => {
   });
 
   describe('relay', () => {
-    it('defaults to enabled for a storage-profile node', () => {
-      const options = controlOptions(new CadreNode(createConfig({ profile: 'storage' })));
+    it('defaults to enabled for a server node', () => {
+      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
 
       expect(options.relay).toBe(true);
     });
 
-    it('defaults to disabled for a transaction-profile node', () => {
-      const options = controlOptions(new CadreNode(createConfig({ profile: 'transaction' })));
+    it('defaults to disabled for a device', () => {
+      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
 
       expect(options.relay).toBe(false);
     });
 
-    it('an explicit false overrides the storage-profile default (?? not ||)', () => {
-      const options = controlOptions(new CadreNode(createConfig({ profile: 'storage', network: { enableRelay: false } })));
+    it('an explicit false overrides the server default (?? not ||)', () => {
+      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'server', network: { enableRelay: false } })));
 
       expect(options.relay).toBe(false);
     });
 
-    it('an explicit true overrides the transaction-profile default', () => {
-      const options = controlOptions(new CadreNode(createConfig({ profile: 'transaction', network: { enableRelay: true } })));
+    it('an explicit true overrides the device default', () => {
+      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'device', network: { enableRelay: true } })));
 
       expect(options.relay).toBe(true);
     });
@@ -446,8 +446,8 @@ describe('CadreNode control-network node options', () => {
     it('runs the server without libp2p\'s per-connection data/duration cap, and hands a disabled one no init', () => {
       // libp2p's default init caps every relayed connection at 128 KiB or 2 min, which
       // cut off every sync forwarded through a party's own always-on machine (#19).
-      const on = controlOptions(new CadreNode(createConfig({ profile: 'storage' })));
-      const off = controlOptions(new CadreNode(createConfig({ profile: 'transaction' })));
+      const on = controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
+      const off = controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
 
       expect(on.relayServerInit?.reservations?.applyDefaultLimit).toBe(false);
       expect(off).not.toHaveProperty('relayServerInit');

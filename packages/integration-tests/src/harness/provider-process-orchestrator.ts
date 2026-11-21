@@ -371,7 +371,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 			...scrubbedParentEnv(),
 			// Layer 2: the image's ENV block (Dockerfile), /data → volumeDir.
 			DATA_DIR: volumeDir,
-			CADRE_PROFILE: 'storage',
+			CADRE_NODE_CLASS: 'server',
 			CADRE_STORAGE_TYPE: 'file',
 			CADRE_STORAGE_PATH: join(volumeDir, 'storage'),
 			CADRE_LISTEN_ADDRS: '/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws',

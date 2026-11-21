@@ -5,7 +5,7 @@ import type { CliConfigFile } from '../src/config/types.js';
 
 const baseConfig: CliConfigFile = {
   controlNetwork: { partyId: 'party-1', bootstrapNodes: [] },
-  profile: 'storage',
+  nodeClass: 'server',
 };
 
 /**

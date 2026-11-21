@@ -43,7 +43,7 @@ describe('the removal\'s Keep switches', () => {
 			grants: [],
 		};
 		const machines: CadreMachine[] = [
-			{ peerId: 'peer-app', publicKey: 'abcdefgh-identity', isSelf: false, trusted: true, profile: 'transaction', lastPublishedAt: null, vouchedBy: 'lost-key' },
+			{ peerId: 'peer-app', publicKey: 'abcdefgh-identity', isSelf: false, trusted: true, alwaysOn: false, lastPublishedAt: null, vouchedBy: 'lost-key' },
 		];
 		const rows = dependentRows(plan, [ownerKey('key-named', 'YubiKey')], machines);
 

@@ -51,7 +51,7 @@ describe('owner grants: schema and ControlDatabase', () => {
         partyId: 'owner-grant-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
       // The anchor derives a grant-seated key from THIS pin, never from the OwnerKey table.
       trustedOwners: { pinnedKeys: [founder.publicKey] },
     });

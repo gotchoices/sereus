@@ -45,7 +45,7 @@ libp2p's relay server limits each relayed connection to 128 KiB or two minutes b
 
 ### A party's own always-on node is not deployed from here
 
-A headless cadre node (a drone) belongs to one party's cadre, so it is not shared infrastructure and `scripts/install` does not create one. Its Docker template ships with `@serfab/cadre-cli` in `packages/cadre-cli/docker/`; see the [cadre-cli README](../packages/cadre-cli/README.md). A storage-profile cadre node also runs a relay server by default; [`docs/network/relay.md`](../docs/network/relay.md) covers that.
+A headless cadre node (a drone) belongs to one party's cadre, so it is not shared infrastructure and `scripts/install` does not create one. Its Docker template ships with `@serfab/cadre-cli` in `packages/cadre-cli/docker/`; see the [cadre-cli README](../packages/cadre-cli/README.md). A `server`-class cadre node also runs a relay server by default; [`docs/network/relay.md`](../docs/network/relay.md) covers that.
 
 ## Limits and accepted tradeoffs
 

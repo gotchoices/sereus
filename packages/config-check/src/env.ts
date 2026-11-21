@@ -31,7 +31,7 @@ export interface OverrideResult {
 /**
  * The variable's value, or `undefined` when it is not specified. An empty or whitespace-only
  * value counts as not specified: a docker-compose default like cadre-cli's `${CADRE_ENABLE_RELAY:-}` must
- * leave the config file's value (or the profile default) alone, and a variable set that way is
+ * leave the config file's value (or the node-class default) alone, and a variable set that way is
  * not checked by name either.
  */
 export function specifiedEnv(value: string | undefined): string | undefined {

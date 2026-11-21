@@ -1,5 +1,5 @@
 import type { PrivateKey } from '@libp2p/interface';
-import type { NodeProfile, LatencyHint, StrandFilter, PushCredentials, StrandReactivityConfig } from '@serfab/cadre-core';
+import type { NodeClass, LatencyHint, StrandFilter, PushCredentials, StrandReactivityConfig } from '@serfab/cadre-core';
 
 /** The forms the `strandFilter` key may take in a config file. */
 export type StrandFilterConfig =
@@ -41,8 +41,8 @@ export interface CliConfig {
     bootstrapNodes: string[];
   };
 
-  /** Node profile: transaction or storage */
-  profile: NodeProfile;
+  /** What kind of machine this node runs on: a device or a server */
+  nodeClass: NodeClass;
 
   /** Strand filter configuration */
   strandFilter?: StrandFilterConfig;
@@ -55,7 +55,7 @@ export interface CliConfig {
    */
   strandReactivity?: StrandReactivityConfig;
 
-  /** Storage configuration (required for storage profile) */
+  /** Storage configuration (required for a server node) */
   storage?: {
     type: 'memory' | 'file';
     path?: string;
@@ -92,7 +92,7 @@ export interface CliConfig {
     relayAddrs?: string[];
     /**
      * Enable circuit relay server - allows this node to relay connections for other peers.
-     * Defaults to true for storage profile nodes, false for transaction profile.
+     * Defaults to true for server nodes, false for a device.
      */
     enableRelay?: boolean;
     /**
@@ -195,7 +195,7 @@ export type DeepPartial<T> = T extends readonly unknown[]
 
 /**
  * What a config file may contain on its own, before environment overrides fill it in.
- * Required keys (`controlNetwork`, `profile`, ...) are checked on the merged tree, not the
+ * Required keys (`controlNetwork`, `nodeClass`, ...) are checked on the merged tree, not the
  * file, because real deployments supply them through `CADRE_*` variables — so a writer that
  * produces a partial file types its output against this.
  */

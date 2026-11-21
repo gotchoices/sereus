@@ -345,7 +345,7 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 |---|---|---|
 | `controlNetwork.partyId` | `CADRE_PARTY_ID` | Required. The party's ID; a placeholder on a node waiting to be claimed |
 | `controlNetwork.bootstrapNodes` | `CADRE_BOOTSTRAP_NODES` | Required. Multiaddrs of the party's machines to dial at start; `[]` when there are none |
-| `profile` | `CADRE_PROFILE` | Required. `storage` for an always-on node, else `transaction` ([Node profiles](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-profiles)) |
+| `nodeClass` | `CADRE_NODE_CLASS` | Required. `server` for an always-on node, else `device` ([Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes)) |
 | `identity.keyFile` | `CADRE_KEY_FILE` | The node's private key file. Without it the node has a new peer ID on every start |
 | `nodeState.dir` | `CADRE_NODE_STATE_DIR` | Directory for the node's own durable files. Default: the config file's directory |
 | `storage.type`, `storage.path`, `storage.quotaBytes` | `CADRE_STORAGE_TYPE`, `CADRE_STORAGE_PATH`, `CADRE_STORAGE_QUOTA` | `file` or `memory`, the data directory that `file` requires, and a quota in bytes |
@@ -485,7 +485,7 @@ identity:
 controlNetwork:
   partyId: unclaimed
   bootstrapNodes: []
-profile: storage
+nodeClass: server
 claim:
   secretFile: /var/lib/cadre/claim.secret
 nodeState:
@@ -551,14 +551,14 @@ const config = await resolveConfig('cadre.yaml');
 const node = new CadreNode({
 	privateKey: config.privateKey,
 	controlNetwork: config.controlNetwork,
-	profile: config.profile,
+	nodeClass: config.nodeClass,
 	strandFilter: config.strandFilter,
 	network: { ...config.network, defaultTransports: nodeDefaultTransports },
 	hibernation: config.hibernation,
 	strandWatchInterval: config.strandWatchInterval,
 });
 
-const health = new HealthServer({ healthPort: 8080, metricsPort: 9090, profile: config.profile });
+const health = new HealthServer({ healthPort: 8080, metricsPort: 9090, nodeClass: config.nodeClass });
 health.attach(node);
 await health.start();
 

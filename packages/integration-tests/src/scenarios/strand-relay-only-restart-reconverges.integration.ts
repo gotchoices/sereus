@@ -101,7 +101,7 @@ import {
 	strandFretPeerAddrs,
 	summarizeConnectionPaths,
 } from '@serfab/cadre-core';
-import type { DurableSlot, SAppConfig, StrandInstance, StrandRow } from '@serfab/cadre-core';
+import type { DurableSlot, NodeClass, SAppConfig, StrandInstance, StrandRow } from '@serfab/cadre-core';
 import {
 	waitUntil,
 	controlNodeConfig,
@@ -181,17 +181,17 @@ interface PartyHome {
 	joinedKeys: InMemoryKeyStore;
 	/** Backs the strand network state, reopened per node; undefined = the in-memory default (the negative control). */
 	networkStateSlot: DurableSlot | undefined;
-	profile: 'storage' | 'transaction';
+	nodeClass: NodeClass;
 }
 
-function partyHome(partyId: string, key: PrivateKey, profile: PartyHome['profile'], persistentNetworkState: boolean): PartyHome {
+function partyHome(partyId: string, key: PrivateKey, nodeClass: PartyHome['nodeClass'], persistentNetworkState: boolean): PartyHome {
 	return {
 		partyId,
 		key,
 		storage: captureRawStorage(),
 		joinedKeys: new InMemoryKeyStore(),
 		networkStateSlot: persistentNetworkState ? memorySlot() : undefined,
-		profile,
+		nodeClass,
 	};
 }
 
@@ -200,7 +200,7 @@ async function startPartyNode(home: PartyHome, relay: DedicatedRelay): Promise<C
 	const node = new CadreNode(controlNodeConfig({
 		partyId: home.partyId,
 		privateKey: home.key,
-		profile: home.profile,
+		nodeClass: home.nodeClass,
 		enableRelay: false,
 		listenAddrs: [],
 		relayAddrs: [relay.dialAddr],
@@ -316,8 +316,8 @@ async function runInProcess(persistentNetworkState: boolean, oneSidedMemory = fa
 		const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 		relay = await startDedicatedRelay();
 
-		const aHome = partyHome(`restart-a-${runTag}`, await generateKeyPair('Ed25519'), 'storage', persistentNetworkState);
-		const bHome = partyHome(`restart-b-${runTag}`, await generateKeyPair('Ed25519'), 'transaction', persistentNetworkState);
+		const aHome = partyHome(`restart-a-${runTag}`, await generateKeyPair('Ed25519'), 'server', persistentNetworkState);
+		const bHome = partyHome(`restart-b-${runTag}`, await generateKeyPair('Ed25519'), 'device', persistentNetworkState);
 
 		// ── First incarnation: found, invite, form, attach (the blind-relay flow) ──
 		A = await startPartyNode(aHome, relay);
@@ -480,8 +480,8 @@ async function runTwoProcess(): Promise<void> {
 		const strandId = `strand-restart-${runTag}`;
 		const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 		relay = await startDedicatedRelay();
-		const aParty = { label: 'A', partyId: `restart-a-${runTag}`, stateDir: join(home, 'a'), profile: 'storage' } as const;
-		const bParty = { label: 'B', partyId: `restart-b-${runTag}`, stateDir: join(home, 'b'), profile: 'transaction' } as const;
+		const aParty = { label: 'A', partyId: `restart-a-${runTag}`, stateDir: join(home, 'a'), nodeClass: 'server' } as const;
+		const bParty = { label: 'B', partyId: `restart-b-${runTag}`, stateDir: join(home, 'b'), nodeClass: 'device' } as const;
 
 		// ── First incarnation ──
 		A = await startStrandRestartParty({ ...aParty, relayAddr: relay.dialAddr });

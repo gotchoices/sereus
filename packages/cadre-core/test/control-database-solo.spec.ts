@@ -56,13 +56,13 @@ function within<T>(label: string, ms: number, op: () => Promise<T>): Promise<T> 
 }
 
 describe('control database, cadre of one (no listen addr, no bootstrap peers)', () => {
-	for (const profile of ['transaction', 'storage'] as const) {
-		describe(`${profile} profile`, () => {
+	for (const nodeClass of ['device', 'server'] as const) {
+		describe(`a ${nodeClass}`, () => {
 			it('completes genesis, a read-back, a solo write, and a read-back of that write', async () => {
-				const partyId = freshPartyId(`solo-${profile}-write`);
+				const partyId = freshPartyId(`solo-${nodeClass}-write`);
 				const keyStore = new InMemoryKeyStore();
 				const storage = new MemoryRawStorage();
-				const node = new CadreNode(controlNodeConfig({ partyId, profile, keyStore, storage }));
+				const node = new CadreNode(controlNodeConfig({ partyId, nodeClass, keyStore, storage }));
 
 				try {
 					await within('node.start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
@@ -134,7 +134,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 		// backend-specific hydrate bug rather than widening this memory one.
 		const keyStore = new InMemoryKeyStore();
 		const storage = new MemoryRawStorage();
-		const config = () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
+		const config = () => controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage });
 
 		const first = new CadreNode(config());
 		let ownerPublicKey: string;

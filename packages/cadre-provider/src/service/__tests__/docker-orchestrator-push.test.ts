@@ -31,7 +31,7 @@ function captureDocker(): { docker: Docker; lastEnv: () => string[] } {
 const base: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
   partyId: 'party-1',
-  profile: 'storage',
+  nodeClass: 'server',
 };
 
 describe('DockerOrchestrator CADRE_PUSH injection', () => {

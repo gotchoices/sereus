@@ -41,7 +41,7 @@ function fakeNode(reach: CadreInvitationReach): FakeNode {
 
 function container(id: string, join: 'claim' | 'invitation' | undefined, status: RentedContainerStatus = 'creating', peerId?: string): RentedContainer {
 	const partyId = join === 'claim' ? 'unclaimed' : 'party-1';
-	return { id, partyId, profile: 'storage', status, createdAt: 0, updatedAt: 0, ...(join ? { join: { kind: join } } : {}), ...(peerId ? { peerId } : {}), tags: {} };
+	return { id, partyId, nodeClass: 'server', status, createdAt: 0, updatedAt: 0, ...(join ? { join: { kind: join } } : {}), ...(peerId ? { peerId } : {}), tags: {} };
 }
 
 type NodeCode = { code: string; peerId: string; multiaddrs: string[] };
@@ -107,7 +107,7 @@ describe('rentNode', () => {
 		const result = await rentNode(node, client, { onProgress: (step) => steps.push(step) });
 
 		expect(node.minted).toEqual([{ uses: 1, expiresInMs: RENTAL_INVITATION_TTL_MS }]);
-		expect(client.created).toEqual([{ join: { kind: 'invitation', invitation: 'sereus-invite:1.bundle' }, profile: 'storage' }]);
+		expect(client.created).toEqual([{ join: { kind: 'invitation', invitation: 'sereus-invite:1.bundle' }, nodeClass: 'server' }]);
 		expect(node.claimed).toEqual([]);
 		expect(client.codeRequests).toBe(0);
 		expect(result).toEqual({ containerId: 'ctr_1', join: 'invitation' });
@@ -122,7 +122,7 @@ describe('rentNode', () => {
 
 		const result = await rentNode(node, client, { nodeCodePollMs: 1, onProgress: (step) => steps.push(step) });
 
-		expect(client.created).toEqual([{ join: { kind: 'claim' }, profile: 'storage' }]);
+		expect(client.created).toEqual([{ join: { kind: 'claim' }, nodeClass: 'server' }]);
 		expect(client.codeRequests).toBe(2);
 		expect(node.claimed).toEqual([payload]);
 		expect(node.minted).toEqual([]);

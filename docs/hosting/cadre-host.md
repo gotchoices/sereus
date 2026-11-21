@@ -8,7 +8,7 @@ Related: [cadre-host management API](cadre-host-api.md) · [Provider-hosted node
 
 One machine runs the `cadre-host` service. The service is a manager: a loopback HTTP API, a web UI on the same listener, and a CLI that is a client of that API. It starts cadre nodes as child processes and reads each child's `/status` endpoint. It runs no `CadreNode` itself and joins no control network.
 
-The host runs one kind of node, the **hosted node**: a `cadre-cli` child in the `storage` profile, started by one join, which becomes a member of the cadre that claims it or admits it by invitation. Each has its own working directory, identity, ports and cadre.
+The host runs one kind of node, the **hosted node**: a `cadre-cli` child in the `server` node class, started by one join, which becomes a member of the cadre that claims it or admits it by invitation. Each has its own working directory, identity, ports and cadre.
 
 The host holds no owner key and never founds a cadre, because a machine that held an owner key could act as its owner without them present ([Owner keys](../cadre/owner-keys.md)). Every hosted node is a member of a cadre whose owner is a phone.
 

@@ -89,7 +89,7 @@ describe('FormationUsage joiner-consent signature matrix', () => {
         partyId: 'formation-consent-sig-' + rand(),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

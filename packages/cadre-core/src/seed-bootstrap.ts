@@ -28,7 +28,6 @@ import type {
   DroneInitResult,
   CadreInviteRow,
   OwnerGrantRow,
-  NodeProfile,
   PeerAddressRecord,
   DeviceTokenRecord,
   RevocationRow,
@@ -39,6 +38,7 @@ import { generateStampId, ownerKeyLabel } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { deviceTokenAddDigest } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
+import type { PublishedProfile } from './node-class.js';
 import {
   type SeedTrustPolicy,
   type SeedTrustDecision,
@@ -496,7 +496,7 @@ export class SeedBootstrapService {
     multiaddr: string;
     updatedAt: number;
     sig: string | null;
-    profile: NodeProfile | null;
+    profile: PublishedProfile | null;
   }, action: string, sign: OwnerSign | undefined): Promise<boolean> {
     const controlDatabase = this.requireControlDatabase();
     const ownerKey = this.requireOwnerSigner().publicKey;

@@ -28,7 +28,7 @@ A seed (`ControlNetworkSeed` in `packages/cadre-core/src/types.ts`) is an owner-
 - `peers`: one entry per live `CadrePeer` row, with the peer id, its dial addresses (empty for a machine with no listen address) and a `preferred` flag.
 - `signerKey` and `signature`: an owner key and its ed25519 signature over the SHA-256 digest of the canonical JSON of `{ partyId, peers }` (`seedDigest` in `seed-bootstrap.ts`).
 
-`preferred` marks the peers the receiver dials first: the machine that minted the seed, because it is the one most likely to be reachable at that moment, and every always-on machine (profile `storage`). It is a dial hint and grants nothing.
+`preferred` marks the peers the receiver dials first: the machine that minted the seed, because it is the one most likely to be reachable at that moment, and every machine whose `CadrePeer` row says it is always on. It is a dial hint and grants nothing.
 
 ### What a seed gives and does not give
 

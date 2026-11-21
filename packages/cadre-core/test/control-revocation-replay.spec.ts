@@ -65,7 +65,7 @@ import { signPeerRecord } from '../src/peer-record.js';
  * Legitimate re-adds mint a FRESH stamp per insert, so removal is stamp-retirement, not an
  * identity ban — the accept-side tests pin that too.
  *
- * Every test boots its OWN `CadreNode` (empty bootstrap, transaction profile) seeded with
+ * Every test boots its OWN `CadreNode` (empty bootstrap, a device) seeded with
  * one founding owner: these probes mutate the owner set and peer table, so a shared
  * database would leak state between them.
  *
@@ -453,7 +453,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
         partyId: 'revocation-replay-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

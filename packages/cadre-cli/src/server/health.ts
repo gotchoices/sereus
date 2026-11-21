@@ -72,8 +72,8 @@ export interface HealthServerOptions {
   healthPort?: number;
   /** Port for metrics endpoint (default: 9090) */
   metricsPort?: number;
-  /** Configured node profile (e.g. 'storage' or 'transaction'); surfaced in /status */
-  profile?: string;
+  /** Configured node class ('server' or 'device'); surfaced in /status */
+  nodeClass?: string;
   /**
    * Bearer token that gates `POST /seed`. When empty/undefined (the default),
    * the seed route is **not registered** — requests fall through to 404, so a
@@ -176,7 +176,7 @@ export interface HealthStatus {
     running: boolean;
     peerId: string | null;
     partyId: string;
-    profile: string;
+    nodeClass: string;
     strands: {
       total: number;
       /** Joining machines still waiting for the strand's data from another member. */
@@ -249,7 +249,7 @@ export class HealthServer {
     this.options = {
       healthPort: options.healthPort ?? 8080,
       metricsPort: options.metricsPort ?? 9090,
-      profile: options.profile ?? '',
+      nodeClass: options.nodeClass ?? '',
       seedToken: options.seedToken ?? '',
       claim: options.claim ?? (() => ({ secretConfigured: false })),
       invitation: options.invitation ?? (() => undefined),
@@ -321,7 +321,7 @@ export class HealthServer {
         peerId,
         // No node is attached to a node started removed; the marker names the party.
         partyId: this.node?.partyId ?? removal?.partyId ?? '',
-        profile: this.options.profile,
+        nodeClass: this.options.nodeClass,
         strands: { total: strands.size, syncing, active, idle, hibernating },
         connectionPaths,
         claim: claimState(claim),

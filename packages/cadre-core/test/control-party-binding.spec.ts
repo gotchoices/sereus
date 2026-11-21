@@ -27,7 +27,7 @@ import type { KeyPair } from './control-constraint-helpers.js';
  * is the party. The reader-side mirrors (`verifyCadrePeerVoucher`,
  * `verifyRevocationSigner`) are pinned in `peer-authorization.spec.ts`.
  *
- * One `CadreNode` per test (empty bootstrap, transaction profile), as
+ * One `CadreNode` per test (empty bootstrap, a device), as
  * `control-authorization-domain-separation.spec.ts` boots one.
  */
 
@@ -46,7 +46,7 @@ describe('CadreControl approvals are bound to the party', () => {
         partyId: 'party-binding-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

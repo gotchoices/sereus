@@ -111,7 +111,7 @@ On each run `StrandWatcher` reads the party's own `Strand` rows, the party's `Jo
 
 - **The app has registered an sApp config for it** (through `addStrand` or `foundStrand`): the node launches the strand.
 - **No config is registered:** the node emits `strand:discovered` once, so the app can decide whether to claim the strand with `addStrand`.
-- **No config, on a node that hosts unclaimed strands** (`hostUnclaimedStrands`, the default for the `storage` profile): the node also launches the strand as a **storage replica**. A replica runs the strand's network node, storage and `Strand` schema without the app's schema, so an always-on machine keeps a copy of every strand its party runs.
+- **No config, on a node that hosts unclaimed strands** (`hostUnclaimedStrands`, the default for the `server` node class): the node also launches the strand as a **storage replica**. A replica runs the strand's network node, storage and `Strand` schema without the app's schema, so an always-on machine keeps a copy of every strand its party runs.
 
 When a row disappears, the node stops that strand's instance and emits `strand:stopped`.
 

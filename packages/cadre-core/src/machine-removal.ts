@@ -11,6 +11,7 @@
 
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import { verifyPeerRecordSignature } from './peer-record.js';
+import { decodeAlwaysOn } from './node-class.js';
 import type {
   CadreInviteStatus,
   CadreInviteUsageRow,
@@ -54,7 +55,7 @@ export interface MachineListingInput {
 }
 
 /**
- * One entry per live `CadrePeer` row. `profile` and `lastPublishedAt` are reported only when
+ * One entry per live `CadrePeer` row. `alwaysOn` and `lastPublishedAt` are reported only when
  * the row's self-signature verifies under the key behind its peer id, as
  * `CadreNode.resolvePeerAddrs` judges the same record: no insert rule constrains `Profile`, and
  * an owner re-vouch may bump `UpdatedAt` without re-signing.
@@ -79,7 +80,7 @@ function describeMemberRow(input: MachineListingInput, row: CadrePeerRow): Cadre
     publicKey,
     isSelf: row.peerId === input.selfPeerId,
     trusted: input.trusted(row),
-    profile: selfPublished ? row.profile : null,
+    alwaysOn: selfPublished ? decodeAlwaysOn(row.profile) : null,
     lastPublishedAt: selfPublished ? row.updatedAt : null,
     vouchedBy: row.vouchOwner,
   };

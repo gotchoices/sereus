@@ -28,6 +28,6 @@ describe('resolveRelayServer init', () => {
     ['an undefined key counts as unset', { reservations: { applyDefaultLimit: undefined } }, { reservations: defaults }],
     ['other top-level keys pass through as given', { hopTimeout: 5_000 }, { hopTimeout: 5_000, reservations: defaults }]
   ])('%s', (_label, relayServerInit, expected) => {
-    expect(resolveRelayServer({ relayServerInit }, 'storage').init).toEqual(expected);
+    expect(resolveRelayServer({ relayServerInit }, 'server').init).toEqual(expected);
   });
 });

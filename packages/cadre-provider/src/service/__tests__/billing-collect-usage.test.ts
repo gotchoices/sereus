@@ -14,7 +14,7 @@ function runningContainer(overrides: Partial<Container> = {}): Container {
     id: 'ctr_1',
     customerId: 'cust-1',
     partyId: 'party-1',
-    profile: 'transaction',
+    nodeClass: 'device',
     status: 'running',
     dockerId: 'docker-1',
     healthEndpoint: 'http://localhost:8080/health',

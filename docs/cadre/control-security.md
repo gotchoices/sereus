@@ -157,7 +157,7 @@ The gate also refuses a connection whose transport closed while the decision was
 
 ## Relay reservations from non-members
 
-On a node that runs the circuit-relay server (`network.enableRelay`, on by default for the storage profile), a reservation request is decided separately from the connection it arrives on, at libp2p's `denyInboundRelayReservation` hook.
+On a node that runs the circuit-relay server (`network.enableRelay`, on by default for the `server` node class), a reservation request is decided separately from the connection it arrives on, at libp2p's `denyInboundRelayReservation` hook.
 
 A reservation is decided separately because closing a reserving peer's connection cannot be repaired from the relay's side. The reserving peer dials the relay, so closing that connection ends the reservation. A later outbound dial from the relay restores a data link but cannot give the remote peer a reservation, and for a peer that is reachable only through the relay the reservation is its address. Every genuine member passes through this state, because a node reserves at the end of its own `start()`, before its `CadrePeer` row has been written, let alone replicated.
 

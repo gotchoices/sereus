@@ -1,6 +1,16 @@
 // Core types
 export * from './types.js';
 
+// What kind of machine a node runs on, and the stored form of "is this machine always on"
+// the replicated `CadrePeer.Profile` column still holds
+export {
+  type NodeClass,
+  type PublishedProfile,
+  encodeAlwaysOn,
+  decodeAlwaysOn,
+  isPublishedProfile
+} from './node-class.js';
+
 // Canonical JSON serialization (shared signing payload format)
 export { canonicalJson } from './canonical-json.js';
 
@@ -597,10 +607,12 @@ export {
 // the backstop, redial and degree defaults the proactive reconcile routine reads.
 export {
   selectControlCohortDials,
+  controlCohortSiblingsOf,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
   CONTROL_COHORT_REDIAL_MS,
   type ControlCohortSelection,
+  type ControlCohortSibling,
   type ControlCohortReconcileResult
 } from './control-cohort.js';
 

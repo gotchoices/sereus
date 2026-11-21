@@ -13,8 +13,8 @@ Every scenario file has exactly one row. A change that adds, renames or removes 
 
 Terms used in the rows:
 
-- **Phone-shaped node**: no listen address, WebSocket and circuit-relay transports only, `transaction` profile (`buildPhoneOwner` in `harness/node-fixtures.ts`).
-- **Always-on member**: a `storage`-profile node that listens on a loopback address.
+- **Phone-shaped node**: no listen address, WebSocket and circuit-relay transports only, the `device` node class (`buildPhoneOwner` in `harness/node-fixtures.ts`).
+- **Always-on member**: a `server`-class node that listens on a loopback address.
 - **Relay-only node**: a node with no listen address, reachable only through its reservation on a relay.
 - **Dedicated relay**: `harness/dedicated-relay.ts`, a bare libp2p relay with no membership gate and no cadre protocols. It stands in for the relay container in `ops/docker/libp2p-infra`.
 - **Hand-dial**: the test dials one node at another itself, where the product would find the address through discovery.
@@ -97,7 +97,7 @@ The claim, invitation and provider scenarios start real `cadre-cli` child proces
 
 | Shape or situation | Scenario | Not covered |
 |---|---|---|
-| An always-on member and a `transaction`-profile node that only dials; one chat strand | `websocket-chat.integration.ts` | — |
+| An always-on member and a `device`-class node that only dials; one chat strand | `websocket-chat.integration.ts` | — |
 | Two machines; bursts and interleaved writes from both; a disconnect and reconnect | `convergence-stress.integration.ts` | Writes issued from both machines at the same instant |
 | Two machines; the second learns the strand's address from its sibling over the control network, no hand-dial | `strand-addr-seed-convergence.integration.ts` | Data replication over the resulting connection |
 | A machine enrolled after the strand has rows, with writes continuing during its enrollment | `strand-late-cadre-join.integration.ts` | A write forced into the gap between catch-up and replication (ticket `debt-late-join-catch-up-seam-is-never-forced`) |

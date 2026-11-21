@@ -14,6 +14,7 @@
 import debug from 'debug';
 import { requireFetch } from '../fetch-impl.js';
 import type { TokenSource } from './oauth.js';
+import type { NodeClass } from '../node-class.js';
 
 const log = debug('sereus:cadre:provider-client');
 
@@ -40,7 +41,7 @@ export interface RentedContainer {
 	id: string;
 	/** The cadre the container serves; a claim container's is the placeholder `unclaimed` until the claim is folded. */
 	partyId: string;
-	profile: 'storage' | 'transaction';
+	nodeClass: NodeClass;
 	status: RentedContainerStatus;
 	createdAt: number;
 	updatedAt: number;
@@ -73,8 +74,8 @@ export interface RentedContainerStatusReport {
 
 export interface CreateContainerBody {
 	join: ContainerJoinRequest;
-	/** Default `storage`. */
-	profile?: 'storage' | 'transaction';
+	/** Default `server`. */
+	nodeClass?: NodeClass;
 	tags?: Record<string, string>;
 }
 
@@ -219,7 +220,7 @@ function parseContainer(value: unknown): RentedContainer {
 	const container: RentedContainer = {
 		id: requireString(record.id, 'id'),
 		partyId: requireString(record.partyId, 'partyId'),
-		profile: record.profile === 'transaction' ? 'transaction' : 'storage',
+		nodeClass: record.nodeClass === 'device' ? 'device' : 'server',
 		status: requireStatus(record.status),
 		createdAt: parseIsoMs(record.createdAt, 'createdAt'),
 		updatedAt: parseIsoMs(record.updatedAt, 'updatedAt'),

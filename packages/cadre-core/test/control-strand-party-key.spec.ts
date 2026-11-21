@@ -19,7 +19,7 @@ import { expectConstraintFailure } from './control-constraint-helpers.js';
  * owner-signed row-bound insert, forbidden update, `'remove'`-tagged delete with a
  * mandatory same-transaction `Revocation` tombstone, and permanent stamp retirement.
  *
- * Boots one real CadreNode (empty bootstrap, transaction profile) the way
+ * Boots one real CadreNode (empty bootstrap, a device) the way
  * `control-authorization-binding.spec.ts` does, and drives both the real writers
  * (`insertStrandPartyKey` / `deleteStrandPartyKey` / `deleteStrand`) and raw SQL for
  * the attack paths. The node-level surface — publish-time mint, launch-time heal, the
@@ -104,7 +104,7 @@ describe('StrandPartyKey authorization (row-bound + single-use stamp)', () => {
         partyId: 'party-key-authz-' + rand(),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

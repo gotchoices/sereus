@@ -1,21 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import { selectControlCohortDials } from '../src/control-cohort.js';
-import type { CohortPeerRow } from '../src/strand-cohort.js';
-import type { NodeProfile } from '../src/types.js';
+import type { ControlCohortSibling } from '../src/control-cohort.js';
 
-function row(peerId: string, profile: NodeProfile | null): CohortPeerRow {
-  return { peerId, multiaddr: null, profile };
+function row(peerId: string, alwaysOn: boolean | null): ControlCohortSibling {
+  return { peerId, multiaddr: null, alwaysOn };
 }
 
 describe('selectControlCohortDials', () => {
   it('dials every always-on sibling past the degree cap and fills the rest up to it in peer id order', () => {
-    // A phone and a sibling that has not published a profile yet are both non-backbone.
+    // A phone and a sibling that has not published its class yet are both non-backbone.
     const siblings = [
-      row('phone-c', 'transaction'),
-      row('server-b', 'storage'),
+      row('phone-c', false),
+      row('server-b', true),
       row('unpublished-a', null),
-      row('server-a', 'storage'),
-      row('phone-b', 'transaction'),
+      row('server-a', true),
+      row('phone-b', false),
     ];
 
     const sel = selectControlCohortDials(siblings, 1);
@@ -26,8 +25,8 @@ describe('selectControlCohortDials', () => {
 
   it('is deterministic across input orderings (stable backbone + fill)', () => {
     const siblings = [
-      row('e', 'transaction'), row('a', 'storage'), row('d', null),
-      row('b', 'transaction'), row('f', 'storage'), row('c', 'transaction'),
+      row('e', false), row('a', true), row('d', null),
+      row('b', false), row('f', true), row('c', false),
     ];
 
     const a = selectControlCohortDials(siblings, 2);
@@ -38,7 +37,7 @@ describe('selectControlCohortDials', () => {
   });
 
   it('treats a negative targetDegree as zero (backbone-only)', () => {
-    const sel = selectControlCohortDials([row('server', 'storage'), row('phone', 'transaction')], -5);
+    const sel = selectControlCohortDials([row('server', true), row('phone', false)], -5);
     expect(sel.dials.map((d) => d.peerId)).toEqual(['server']);
     expect(sel.cappedNonBackbone).toBe(1);
   });

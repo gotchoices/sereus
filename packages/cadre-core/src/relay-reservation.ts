@@ -75,7 +75,7 @@
  *
  * ⚠️ WHY LIBP2P'S RELAY DISCOVERY IS SWITCHED OFF. Discovery does reach SOME
  * peers: every connected peer whose identify lists the relay-hop protocol, and a
- * storage-profile member's strand node runs the relay server in the same
+ * `'server'` member's strand node runs the relay server in the same
  * `/optimystic/strand-<id>/…` namespace as this node's strand node (control nodes
  * share `/optimystic/control-<partyId>/…` the same way). Discovery reserves on such
  * a peer as soon as it connects, and that takes one of the slots the configured

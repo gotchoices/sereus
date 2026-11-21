@@ -34,7 +34,7 @@ describe('POST /containers join.kind "claim"', () => {
     expect(requestOf({ join: { kind: 'claim' } })).toEqual({
       customerId: 'cust-1',
       partyId: UNCLAIMED_PARTY_ID,
-      profile: 'storage',
+      nodeClass: 'server',
       join: { kind: 'claim' },
     });
   });
@@ -50,7 +50,7 @@ describe('POST /containers join.kind "invitation"', () => {
     expect(requestOf({ join: { kind: 'invitation', invitation: `  ${invitation}\n` } }, UNDIALABLE)).toEqual({
       customerId: 'cust-1',
       partyId: TEST_INVITATION_PARTY,
-      profile: 'storage',
+      nodeClass: 'server',
       join: { kind: 'invitation', invitation },
     });
   });
@@ -85,7 +85,7 @@ describe('POST /containers join.kind "invitation"', () => {
 
 describe('POST /containers join shape', () => {
   it('refuses a body with no join, a join that is not an object, or one of another kind', () => {
-    expect(errorOf({ profile: 'storage' })).toContain('join is required');
+    expect(errorOf({ nodeClass: 'server' })).toContain('join is required');
     expect(errorOf({ join: 'claim' })).toContain('join is required');
     expect(errorOf({ join: { kind: 'seed' } })).toContain('join.kind must be "claim" or "invitation"');
   });

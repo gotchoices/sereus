@@ -97,7 +97,7 @@ describe('CadreNode — claiming a node whose first addresses never answer', () 
 		const secret = randomBytes(32).toString('base64url');
 		const claimable = new CadreNode({
 			controlNetwork: { partyId: 'unclaimed', bootstrapNodes: [] },
-			profile: 'transaction',
+			nodeClass: 'device',
 			storage: { provider: new MemoryRawStorage() },
 			network: { transports: [webSockets()], listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'] },
 			claim: { secret, record: async () => {} },
@@ -168,7 +168,7 @@ async function buildPhoneOwner(): Promise<PhoneOwner> {
 	const node = new CadreNode({
 		controlNetwork: { partyId: `dial-past-dead-${Math.random().toString(36).slice(2)}`, bootstrapNodes: [] },
 		privateKey: key,
-		profile: 'transaction',
+		nodeClass: 'device',
 		storage: { provider: new MemoryRawStorage() },
 		network: {
 			// The phone's posture: WebSockets only, nothing to listen on.

@@ -25,7 +25,7 @@ export type RuntimeResult =
 export interface ConfigSummary {
   config: string;
   partyId: string;
-  profile: string;
+  nodeClass: string;
   bootstrapNodes: number;
   strandFilter: unknown;
   hibernation: boolean;
@@ -39,7 +39,7 @@ export interface RuntimeLive {
   status: HealthStatus['status'];
   peerId: string | null;
   partyId: string;
-  profile: string;
+  nodeClass: string;
   multiaddrs: string[];
   strands: HealthStatus['node']['strands'];
   uptime: number;
@@ -133,7 +133,7 @@ export function buildStatusReport(
         status: s.status,
         peerId: s.peerId,
         partyId: s.node.partyId,
-        profile: s.node.profile,
+        nodeClass: s.node.nodeClass,
         multiaddrs: s.multiaddrs,
         strands: s.node.strands,
         uptime: s.uptime,
@@ -169,7 +169,7 @@ function formatConfigSection(config: ConfigSummary | null): string[] {
     'Configuration:',
     `  Config:          ${config.config}`,
     `  Party ID:        ${config.partyId}`,
-    `  Profile:         ${config.profile}`,
+    `  Node class:      ${config.nodeClass}`,
     `  Bootstrap Nodes: ${config.bootstrapNodes}`,
     `  Strand Filter:   ${JSON.stringify(config.strandFilter)}`,
     `  Hibernation:     ${config.hibernation ? 'enabled' : 'disabled'}`,
@@ -191,7 +191,7 @@ function formatRuntimeSection(runtime: RuntimeLive | RuntimeUnreachable): string
     `  Health:          ${runtime.status}`,
     `  Peer ID:         ${runtime.peerId ?? '(none)'}`,
     `  Party ID:        ${runtime.partyId}`,
-    `  Profile:         ${runtime.profile}`,
+    `  Node class:      ${runtime.nodeClass}`,
     `  Strands:         total=${s.total} syncing=${s.syncing} active=${s.active} idle=${s.idle} hibernating=${s.hibernating}`,
     ...formatRemoval(runtime),
     ...formatRedemption('Invitation:', runtime.invitation),

@@ -25,7 +25,7 @@ services:
       - CADRE_BOOTSTRAP_NODES=${CADRE_BOOTSTRAP_NODES:-}
       
       # Node configuration
-      - CADRE_PROFILE=${CADRE_PROFILE:-storage}
+      - CADRE_NODE_CLASS=${CADRE_NODE_CLASS:-server}
       - DATA_DIR=/data
       - CADRE_STORAGE_TYPE=file
       - CADRE_STORAGE_PATH=/data/storage

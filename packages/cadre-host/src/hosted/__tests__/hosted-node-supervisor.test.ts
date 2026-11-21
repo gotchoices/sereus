@@ -160,7 +160,7 @@ describe('HostedNodeSupervisor.reconcile', () => {
     h.advance(HOSTED_NODE_RESPAWN_HEALTHY_MS);
 
     await expect(h.supervisor.reconcile()).resolves.toEqual([view.id]);
-    expect(h.orch.createCalls[2]).toEqual({ containerId: view.id, partyId: 'party-P', profile: 'storage' });
+    expect(h.orch.createCalls[2]).toEqual({ containerId: view.id, partyId: 'party-P', nodeClass: 'server' });
   });
 
   it('leaves a running node alone', async () => {
@@ -302,7 +302,7 @@ describe('HostedNodeSupervisor.reconcile', () => {
     // A handle written by a join that has not yet flipped to unclaimed.
     // Respawning it here would race that join and strand the record.
     h.store.put({
-      id: 'hn_inflight', join: { kind: 'claim', secret: 's' }, partyId: 'unclaimed', profile: 'storage',
+      id: 'hn_inflight', join: { kind: 'claim', secret: 's' }, partyId: 'unclaimed', nodeClass: 'server',
       status: 'spawning', dockerId: 'dock_inflight',
       createdAt: new Date(START_MS).toISOString(), updatedAt: new Date(START_MS).toISOString(),
     });
@@ -315,7 +315,7 @@ describe('HostedNodeSupervisor.reconcile', () => {
   it('skips a record that has no orchestrator handle yet', async () => {
     const h = makeHarness();
     h.store.put({
-      id: 'hn_nohandle', join: { kind: 'claim', secret: 's' }, partyId: 'unclaimed', profile: 'storage',
+      id: 'hn_nohandle', join: { kind: 'claim', secret: 's' }, partyId: 'unclaimed', nodeClass: 'server',
       status: 'unclaimed',
       createdAt: new Date(START_MS).toISOString(), updatedAt: new Date(START_MS).toISOString(),
     });

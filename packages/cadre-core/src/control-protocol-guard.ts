@@ -187,7 +187,7 @@ export function controlProtocolClasses(partyId: string): ReadonlyMap<string, Con
 		['/libp2p/dcutr', 'transport'],
 		['/libp2p/autonat/1.0.0', 'transport'],
 		['/libp2p/circuit/relay/0.2.0/stop', 'transport'],
-		// Registered only while the relay server runs (the storage profile's default).
+		// Registered only while the relay server runs (a `'server'` node's default).
 		['/libp2p/circuit/relay/0.2.0/hop', 'transport'],
 		// Registered only when an embedder's `network.transports` includes WebRTC.
 		[WEBRTC_SIGNALING_PROTOCOL, 'transport'],

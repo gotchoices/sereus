@@ -193,7 +193,7 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			// ── Owner A: founded (genesis anchor), holds the control-DB blocks ────
 			const partyId = `stream-authz-${Date.now()}`;
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
+			A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true }));
 			await A.start();
 			await makeOwnOwner(A);
 
@@ -353,7 +353,7 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			// (`relayedRequestBudgetMs`) is 4.7 s rather than the default declaration's 28.5 s.
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(nodeConfig({
-				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, linkRoundTripMs: A_LINK_ROUND_TRIP_MS,
+				partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true, linkRoundTripMs: A_LINK_ROUND_TRIP_MS,
 			}));
 			await A.start();
 			await makeOwnOwner(A);

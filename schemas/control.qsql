@@ -415,11 +415,14 @@ declare schema CadreControl {
                                         -- can pollute.
         VouchUsage text null,           -- the CadreInviteUsage.UsageStampId that admitted this row; null on an
                                         -- owner-vouched row. A row carries exactly one proof: a signature or a usage.
-        Profile text null,              -- the machine's own node profile (cadre-core NodeProfile): 'transaction' is an
-                                        -- app (phone, browser), 'storage' an always-on node; null until it self-publishes.
-                                        -- Self-declared and covered by Sig. No insert rule constrains it: an owner could
-                                        -- only mislabel a machine it already has full authority over, and that machine's
-                                        -- next self-publish corrects it.
+        Profile text null,              -- whether the machine is always on: 'storage' yes, 'transaction' no; null until
+                                        -- it self-publishes. The two codes are a stored form only (cadre-core
+                                        -- node-class.ts), kept because a column rename cannot be migrated and a party's
+                                        -- machines update one at a time, so an older build would refuse a new value
+                                        -- replicated from an updated sibling (docs/cadre/control-schema.md -> "Schema
+                                        -- versions and migrations"). Self-declared and covered by Sig. No insert rule
+                                        -- constrains it: an owner could only mislabel a machine it already has full
+                                        -- authority over, and that machine's next self-publish corrects it.
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = new.StampId)
         ),
@@ -467,7 +470,7 @@ declare schema CadreControl {
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'remove', party_id(), old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
                 or exists (select 1 from committed.Revocation R where R.TableName = 'CadrePeer' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
-        -- A peer re-publishes its own addrs, profile and freshness under its own key (cadre-core
+        -- A peer re-publishes its own addrs, always-on code and freshness under its own key (cadre-core
         -- peer-record.ts); everything else is immutable and UpdatedAt must increase. Or an owner
         -- re-vouches the row over its current stamp, which also clears VouchUsage: the row then
         -- stands on the signature and its invitation is no longer consulted for it. The owner

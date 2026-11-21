@@ -212,7 +212,7 @@ describe('CadreNode.reserveRelays before start', () => {
   it('is fail-soft when there is no control node', async () => {
     const config: CadreNodeConfig = {
       controlNetwork: { partyId: 'relay-reservation-test', bootstrapNodes: [] },
-      profile: 'transaction'
+      nodeClass: 'device'
     };
     const node = new CadreNode(config);
     const state = await node.reserveRelays(['/ip4/127.0.0.1/tcp/1/p2p/anything']);
@@ -225,7 +225,7 @@ describe('CadreNode.reserveRelays before start', () => {
   it('treats an empty relay list as none without dialing or waiting', async () => {
     const config: CadreNodeConfig = {
       controlNetwork: { partyId: 'relay-reservation-test-empty', bootstrapNodes: [] },
-      profile: 'transaction'
+      nodeClass: 'device'
     };
     const node = new CadreNode(config);
     const started = Date.now();
@@ -1361,7 +1361,7 @@ describe('CadreNode relay reservation against a live relay', () => {
         bootstrapNodes: []
       },
       privateKey: await generateKeyPair('Ed25519'),
-      profile: 'transaction',
+      nodeClass: 'device',
       // The browser tab's posture: the BARE search listener, no `relayAddrs`.
       network: { listenAddrs: ['/p2p-circuit'] }
     });

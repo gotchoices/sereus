@@ -145,7 +145,7 @@ export async function mintSeed(
  * what `cadre start --seed` on the new machine checks its config against.
  */
 export function buildEnrollAddReport(minted: DroneInitResult, peerId: string, addrsGiven: boolean): EnrollAddReport {
-  // A re-run for a machine that has since published the `storage` profile finds it preferred in
+  // A re-run for a machine that has since published that it is always on finds it preferred in
   // its own seed; its addresses are not ones it can dial.
   const seedAddrs = minted.seed.peers
     .filter((peer) => peer.preferred && peer.peerId !== peerId)

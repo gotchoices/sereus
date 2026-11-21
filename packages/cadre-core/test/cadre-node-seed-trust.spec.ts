@@ -64,7 +64,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
         partyId: 'node-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
       seedTrustPolicy,
     });
   }

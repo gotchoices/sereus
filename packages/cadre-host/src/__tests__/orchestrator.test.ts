@@ -12,6 +12,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { NodeClass } from '@serfab/cadre-core';
 
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
 import { rotateOnDisk } from '../orchestrator/log-rotator.js';
@@ -115,11 +116,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
 }
 
-function makeRequest(containerId: string, opts: { profile?: 'storage' | 'transaction' } = {}) {
+function makeRequest(containerId: string, opts: { nodeClass?: NodeClass } = {}) {
   return {
     containerId,
     partyId: 'party-' + containerId,
-    profile: opts.profile ?? 'transaction' as 'storage' | 'transaction',
+    nodeClass: opts.nodeClass ?? 'device' as NodeClass,
   };
 }
 
@@ -242,7 +243,7 @@ describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
         ports: legacyPorts as NodePorts,
         spawnedAt: new Date(0).toISOString(),
         partyId: 'party-c1',
-        profile: 'transaction',
+        nodeClass: 'device',
       }],
     });
     const orch = makeOrchestrator({ rootDir });
@@ -910,7 +911,7 @@ describe('child survives orchestrator exit', () => {
       const request = {
         containerId: 'cross1',
         partyId: 'party-cross1',
-        profile: 'transaction',
+        nodeClass: 'device',
       };
       const payload = {
         rootDir,

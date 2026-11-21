@@ -4,7 +4,7 @@
  *
  * WHY THIS EXISTS SEPARATELY. Folding a scenario's private config literal onto this
  * builder is a change that PASSES ITS OWN TESTS while producing a different node: a
- * dropped `enableRelay` still boots, a defaulted `profile` still replicates, and the
+ * dropped `enableRelay` still boots, a defaulted `nodeClass` still replicates, and the
  * scenario goes on asserting something it no longer means to assert. The integration
  * suites cannot catch that — they are the thing being mislead. So the builder's output
  * is asserted directly here, field by field, and the folds have a guard instead of a
@@ -45,9 +45,9 @@ describe('controlNodeConfig', () => {
 	describe('defaults — what a scenario gets when it passes only a party id', () => {
 		const config = builtConfig({ partyId: 'p' });
 
-		it('is a non-relaying transaction node on a loopback WS listener, all strands, no hibernation', () => {
+		it('is a non-relaying device on a loopback WS listener, all strands, no hibernation', () => {
 			expect(config.controlNetwork).toEqual({ partyId: 'p', bootstrapNodes: [] });
-			expect(config.profile).toBe('transaction');
+			expect(config.nodeClass).toBe('device');
 			expect(config.strandFilter).toEqual({ mode: 'all' });
 			expect(config.network.listenAddrs).toEqual(['/ip4/127.0.0.1/tcp/0/ws']);
 			expect(config.hibernation).toEqual({ enabled: false });
@@ -63,7 +63,7 @@ describe('controlNodeConfig', () => {
 
 		it('omits every optional key rather than setting it undefined, so CadreNode defaults stand', () => {
 			// `enableRelay` unset is NOT `enableRelay: false` — CadreNode derives it from the
-			// profile. A builder that emitted the key with an undefined value would look the
+			// node class. A builder that emitted the key with an undefined value would look the
 			// same to a spread but read as "explicitly unset" to an `in` check.
 			for (const key of ['enableRelay', 'relayAddrs', 'unauthorizedRelayReservationCap',
 				'controlCohort', 'connectionGater'] as const) {
@@ -86,9 +86,9 @@ describe('controlNodeConfig', () => {
 		});
 
 		it('forwards enableRelay: false, which a truthiness test would silently drop', () => {
-			// The defect the private copies actually shipped: a storage-profile node asked to
+			// The defect the private copies actually shipped: a server node asked to
 			// stop relaying kept relaying, because `false` failed the copy's truthiness guard.
-			expect(builtConfig({ partyId: 'p', profile: 'storage', enableRelay: false }).network.enableRelay)
+			expect(builtConfig({ partyId: 'p', nodeClass: 'server', enableRelay: false }).network.enableRelay)
 				.toBe(false);
 			expect(builtConfig({ partyId: 'p', enableRelay: true }).network.enableRelay).toBe(true);
 		});
@@ -98,17 +98,17 @@ describe('controlNodeConfig', () => {
 				.network.unauthorizedRelayReservationCap).toBe(0);
 		});
 
-		it('forwards bootstrapNodes, profile, strandFilter, strandWatchMs and reconcileMs', () => {
+		it('forwards bootstrapNodes, nodeClass, strandFilter, strandWatchMs and reconcileMs', () => {
 			const config = builtConfig({
 				partyId: 'p',
 				bootstrapNodes: ['/ip4/1.2.3.4/tcp/1/ws/p2p/x'],
-				profile: 'storage',
+				nodeClass: 'server',
 				strandFilter: 'none',
 				strandWatchMs: 250,
 				reconcileMs: 2_000,
 			});
 			expect(config.controlNetwork.bootstrapNodes).toEqual(['/ip4/1.2.3.4/tcp/1/ws/p2p/x']);
-			expect(config.profile).toBe('storage');
+			expect(config.nodeClass).toBe('server');
 			expect(config.strandFilter).toEqual({ mode: 'none' });
 			expect(config.strandWatchInterval).toBe(250);
 			expect(config.network.controlCohort).toEqual({ reconcileMs: 2_000 });

@@ -52,7 +52,7 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 function nodeConfig(partyId, keyStore) {
 	return {
 		controlNetwork: { partyId, bootstrapNodes: [] },
-		profile: 'transaction',
+		nodeClass: 'device',
 		strandFilter: { mode: 'all' },
 		keyStore,
 		storage: { provider: () => new MemoryRawStorage() },
@@ -83,7 +83,7 @@ console.log('A is an owner:', await a.isOwner());
 The configuration fields, all described in `packages/cadre-core/src/types.ts` and in [Configuration](cadre/node.md#configuration):
 
 - **`controlNetwork.partyId`** names the party. The control database's storage is keyed by it, so an app generates it once and saves it. `bootstrapNodes` is empty because this node is the party's first.
-- **`profile: 'transaction'`** is the profile of an app's node.
+- **`nodeClass: 'device'`** says this node runs inside an app, connected some of the time. An always-on node sets `'server'`. See [Node classes](cadre/node.md#node-classes).
 - **`keyStore`** holds the node's identity key, which `start()` generates on first use, and the owner key in a slot of its own. `InMemoryKeyStore` forgets both at exit. A Node.js program that must keep them uses `FileKeyStore` from `@serfab/cadre-core/key-store-file`. See [Node key material and the KeyStore](cadre/node.md#node-key-material-and-the-keystore).
 - **`storage.provider`** is called once for the control database and once for each strand, with a scope key that is safe to use as a directory name. A Node.js program that must keep its data returns a `FileRawStorage` from `@optimystic/db-p2p-storage-fs` for each scope. See [Storage](cadre/node.md#storage).
 - **`network`** gives the node a WebSocket listener on the loopback interface, on a port the operating system picks. The circuit-relay transport lets a node dial through a relay; nothing here uses one.

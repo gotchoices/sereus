@@ -34,6 +34,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '@serfab/cadre-core';
+import type { NodeClass } from '@serfab/cadre-core';
 import {
 	waitUntil,
 	waitForCadrePeerConverged,
@@ -58,9 +59,9 @@ function nodeOn(
 	partyId: string,
 	privateKey: PrivateKey,
 	store: MemoryRawStorage,
-	profile: 'storage' | 'transaction',
+	nodeClass: NodeClass,
 ): CadreNode {
-	return new CadreNode(controlNodeConfig({ partyId, privateKey, profile, storageProvider: () => store }));
+	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: () => store }));
 }
 
 interface AloneRemoval {
@@ -101,13 +102,13 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 	const xPeerId = await randomPeerId();
 
 	// ── Phase 1: A + B up, X authorized, X converged on B ────────────────────
-	let A = nodeOn(partyId, aKey, storeA, 'storage');
+	let A = nodeOn(partyId, aKey, storeA, 'server');
 	let B: CadreNode | undefined;
 	try {
 		await A.start();
 		const ownerKey = await makeOwnOwner(A);
 
-		B = nodeOn(partyId, bKey, storeB, 'transaction');
+		B = nodeOn(partyId, bKey, storeB, 'device');
 		await B.start();
 		await A.authorizePeer(B.peerId!.toString());
 
@@ -163,7 +164,7 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 			`B should still cover A's drained writes after both nodes stop — ${formatBlockCoverageGap(postStopGap)}`,
 		).toBe(true);
 		B = undefined;
-		A = nodeOn(partyId, aKey, storeA, 'storage');
+		A = nodeOn(partyId, aKey, storeA, 'server');
 		await A.start();
 		// OwnerKey row survived on storeA — only the owner signer wiring is
 		// per-process. No re-insert.
@@ -221,7 +222,7 @@ describe('Control-DB delete-while-alone re-replication', () => {
 			ctx = await removeWhileAlone('reconnect');
 
 			// ── Phase 4: B comes back and reconnects ───────────────────────────────
-			B = nodeOn(ctx.partyId, ctx.bKey, ctx.storeB, 'transaction');
+			B = nodeOn(ctx.partyId, ctx.bKey, ctx.storeB, 'device');
 			await B.start();
 			await expectRemovalConverges(ctx, B);
 		} finally {
@@ -241,14 +242,14 @@ describe('Control-DB delete-while-alone re-replication', () => {
 			// the fresh process holds only the durable tombstone row. The first
 			// cohort growth after start must SWEEP it — nothing in memory points at it.
 			await ctx.A.stop();
-			ctx.A = nodeOn(ctx.partyId, ctx.aKey, ctx.storeA, 'storage');
+			ctx.A = nodeOn(ctx.partyId, ctx.aKey, ctx.storeA, 'server');
 			await ctx.A.start();
 			await ctx.A.useOwnerSigner(ctx.ownerKey.signer);
 			expect(await ctx.A.isMember(ctx.xPeerId)).toBe(false);
 			expect(ctx.A.getControlNode()!.getConnections().length).toBe(0);
 
 			// ── Phase 4: only now does B come back ─────────────────────────────────
-			B = nodeOn(ctx.partyId, ctx.bKey, ctx.storeB, 'transaction');
+			B = nodeOn(ctx.partyId, ctx.bKey, ctx.storeB, 'device');
 			await B.start();
 			await expectRemovalConverges(ctx, B);
 		} finally {

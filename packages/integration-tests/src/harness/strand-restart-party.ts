@@ -18,7 +18,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import type { SAppConfig, StrandAppSchemaState, StrandOfflineStatus, StrandStatus } from '@serfab/cadre-core';
+import type { NodeClass, SAppConfig, StrandAppSchemaState, StrandOfflineStatus, StrandStatus } from '@serfab/cadre-core';
 
 const CHILD_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'strand-restart-party.mjs');
 
@@ -136,7 +136,7 @@ export interface StrandRestartPartyOptions {
 	/** Everything the party keeps across a restart lives here; created by the child. */
 	stateDir: string;
 	relayAddr: string;
-	profile: 'storage' | 'transaction';
+	nodeClass: NodeClass;
 	/**
 	 * Offer offline mode on the party's strands, every strand starting in it
 	 * (`CadreNodeConfig.strandOffline` with `initialMode: 'offline'`), each journaling into a

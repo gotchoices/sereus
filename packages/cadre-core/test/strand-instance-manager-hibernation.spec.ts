@@ -69,7 +69,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   return {
     strandRow: createStrandRow(strandId),
     sAppConfig: createSAppConfig(),
-    profile: 'transaction',
+    nodeClass: 'device',
     defaultLatencyHint: 'interactive',
     ...overrides
   };

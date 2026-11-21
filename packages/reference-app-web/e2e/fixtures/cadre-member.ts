@@ -53,7 +53,7 @@ function memberTransports(): Libp2pTransports {
 }
 
 /**
- * An always-on member of its own party: `storage` profile on an ephemeral loopback WebSocket
+ * An always-on member of its own party: `nodeClass: 'server'` on an ephemeral loopback WebSocket
  * port, running no strand (the tab's chat strand is local to the tab, and nothing publishes a
  * strand into this party).
  */
@@ -61,7 +61,7 @@ function buildMemberConfig(privateKey: CadreNodeConfig['privateKey'], partyId: s
 	return {
 		privateKey,
 		controlNetwork: { partyId, bootstrapNodes: [] },
-		profile: 'storage',
+		nodeClass: 'server',
 		strandFilter: { mode: 'none' },
 		storage: { provider: () => new MemoryRawStorage() },
 		network: {

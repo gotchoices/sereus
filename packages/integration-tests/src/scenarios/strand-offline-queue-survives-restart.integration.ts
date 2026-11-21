@@ -109,8 +109,8 @@ async function runOfflineQueueSurvivesRestart(): Promise<void> {
 		const strandId = `strand-offline-${runTag}`;
 		const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 		relay = await startDedicatedRelay();
-		const aParty: PartyOptions = { label: 'A', partyId: `offline-a-${runTag}`, stateDir: join(home, 'a'), profile: 'storage' };
-		const bParty: PartyOptions = { label: 'B', partyId: `offline-b-${runTag}`, stateDir: join(home, 'b'), profile: 'transaction', offline: true };
+		const aParty: PartyOptions = { label: 'A', partyId: `offline-a-${runTag}`, stateDir: join(home, 'a'), nodeClass: 'server' };
+		const bParty: PartyOptions = { label: 'B', partyId: `offline-b-${runTag}`, stateDir: join(home, 'b'), nodeClass: 'device', offline: true };
 		const start = (party: PartyOptions): Promise<StrandRestartParty> => startStrandRestartParty({ ...party, relayAddr: relay!.dialAddr });
 		const aRow = { key: 'from-a', val: 'written-on-A' };
 		const bOnlineRow = { key: 'from-b-online', val: 'queued-on-B-with-A-up' };

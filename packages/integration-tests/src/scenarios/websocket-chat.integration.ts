@@ -2,8 +2,8 @@
  * WebSocket Chat smoke test.
  *
  * Two CadreNode instances in one process:
- *   • Drone  — storage profile, WebSocket listener on 127.0.0.1
- *   • Phone  — transaction profile, WebSocket dialer, no listener
+ *   • Drone  — a server node, WebSocket listener on 127.0.0.1
+ *   • Phone  — a device, WebSocket dialer, no listener
  *
  * Exercises the exact path the React Native app will take:
  *   1. Start both nodes (drone first, phone bootstraps from drone)
@@ -64,9 +64,9 @@ describe('WebSocket Chat (server-to-server)', () => {
   });
 
   it('should replicate a chat message over WebSocket', async () => {
-    // ── 1. Start the drone (storage profile, WS listener) ──────────────
+    // ── 1. Start the drone (a server node, WS listener) ────────────────
 
-    drone = new CadreNode(controlNodeConfig({ partyId: PARTY_ID, profile: 'storage', enableRelay: true }));
+    drone = new CadreNode(controlNodeConfig({ partyId: PARTY_ID, nodeClass: 'server', enableRelay: true }));
     await drone.start();
 
     // Extract the drone's actual multiaddr (with peer ID)
@@ -75,12 +75,12 @@ describe('WebSocket Chat (server-to-server)', () => {
     expect(droneAddrs.length).toBeGreaterThan(0);
     console.log('Drone listening on:', droneAddrs);
 
-    // ── 2. Start the phone (transaction profile, WS dialer) ────────────
+    // ── 2. Start the phone (a device, WS dialer) ───────────────────────
 
     phone = new CadreNode(controlNodeConfig({
       partyId: PARTY_ID,
       bootstrapNodes: droneAddrs,
-      profile: 'transaction',
+      nodeClass: 'device',
       listenAddrs: [],  // client-only
     }));
     await phone.start();

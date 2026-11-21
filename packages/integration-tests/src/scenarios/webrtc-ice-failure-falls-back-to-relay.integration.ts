@@ -233,7 +233,7 @@ async function formRelayOnlyPair(running: Running, transports: () => ReturnType<
   //    transport does. `enableRelay: false` because a phone relays for nobody.
   const phone = (partyId: string) => ({
     partyId,
-    profile: 'storage' as const,
+    nodeClass: 'server' as const,
     enableRelay: false,
     listenAddrs: ['/webrtc'],
     relayAddrs: [running.relay!.dialAddr],

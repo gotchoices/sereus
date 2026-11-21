@@ -59,7 +59,7 @@ describe('StrandInstanceManager', () => {
     return {
       strandRow: createStrandRow(strandId),
       sAppConfig: createSAppConfig(),
-      profile: 'transaction',
+      nodeClass: 'device',
       defaultLatencyHint: 'interactive',
       founder: true,
       ...overrides

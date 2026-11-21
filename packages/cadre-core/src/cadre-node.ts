@@ -138,8 +138,11 @@ import { StrandInstanceManager, liveStrandStatus } from './strand-instance-manag
 import { PeerJoinBackfill } from './peer-join-backfill.js';
 import { WebrtcUpgradeService } from './webrtc-upgrade.js';
 import { deriveCohortMembers } from './strand-cohort.js';
+import { encodeAlwaysOn } from './node-class.js';
+import type { PublishedProfile } from './node-class.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
+  controlCohortSiblingsOf,
   selectControlCohortDials,
   nextReconcileWakeMs,
   CLAIM_RESTART_REDIAL_STEP_MS,
@@ -820,7 +823,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Does this node's CONTROL libp2p run the circuit-relay server, and with which
-   * init? Resolved once from `network` and `profile` by the same function every
+   * init? Resolved once from `network` and `nodeClass` by the same function every
    * strand node's build uses (`relay-server.ts`). Read by
    * {@link buildControlNodeOptions} (which configures the server from it) and
    * the unauthorized budget above (whose TTL is the server's).
@@ -1304,10 +1307,10 @@ export class CadreNode implements SAppIdLookup {
 
   constructor(config: CadreNodeConfig) {
     this.config = config;
-    this.hostUnclaimedStrands = config.hostUnclaimedStrands ?? config.profile === 'storage';
+    this.hostUnclaimedStrands = config.hostUnclaimedStrands ?? config.nodeClass === 'server';
     this.strandManager = new StrandInstanceManager();
     this.enrollmentService = new EnrollmentService();
-    this.relayServer = resolveRelayServer(config.network, config.profile);
+    this.relayServer = resolveRelayServer(config.network, config.nodeClass);
     this.unauthorizedRelayReservations = new UnauthorizedReservationBudget(
       config.network?.unauthorizedRelayReservationCap,
       this.relayServer.init.reservations.reservationTtl
@@ -1610,7 +1613,7 @@ export class CadreNode implements SAppIdLookup {
       // node offering offline mode each running strand's machine tracker one control read
       // (`readPartyStrandPeers`: the strand's rows and the machine rows read fresh); the
       // reconciler's pass NOTE says what the pass costs. If that read ever shows in a phone's
-      // profile, refresh the trackers only on a `StrandPeer` or `Revocation` change and on a
+      // node class, refresh the trackers only on a `StrandPeer` or `Revocation` change and on a
       // `CadrePeer` row's appearance or disappearance, not on every heartbeat. A table this
       // `Database` has not yet touched hears local commits only (`table-change-watch.ts`):
       // `StrandPeer` is first read by the publish every strand launch makes, by the tracker's
@@ -2567,7 +2570,7 @@ export class CadreNode implements SAppIdLookup {
    * only caller in production is `createControlNode`.
    */
   private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
-    const { network, profile } = this.config;
+    const { network, nodeClass } = this.config;
     const identityKey = this.identityKey;
     // `network.relayAddrs` contributes the bare `/p2p-circuit` SEARCH entry, which
     // opens no connection — the reservation is driven explicitly at the END of
@@ -2593,7 +2596,7 @@ export class CadreNode implements SAppIdLookup {
       bootstrapNodes: [],
       networkName: this.controlNetworkName(),
       storage: controlStorageProvider,
-      fretProfile: profile === 'storage' ? 'core' : 'edge',
+      fretProfile: nodeClass === 'server' ? 'core' : 'edge',
       relay: this.relayServer.enabled,
       // Merged party-run defaults: no per-connection data/duration cap, a store sized for
       // one party's NAT'd machines. Strand nodes get the same init (`relay-server.ts`).
@@ -2622,7 +2625,7 @@ export class CadreNode implements SAppIdLookup {
         enrolledMachines: this.declaredEnrolledMachines,
         cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(network)
       }),
-      arachnode: { enableRingZulu: profile === 'storage' },
+      arachnode: { enableRingZulu: nodeClass === 'server' },
       // One join catch-up per node, for the strand node's reason (`strand-instance-manager.ts`,
       // at its `rebalance` option): Optimystic's rebalance growth arm would push a joining
       // member each control block again, one request per block. Every peer the growth arm
@@ -2850,7 +2853,7 @@ export class CadreNode implements SAppIdLookup {
    * RESERVE request, so it is never called on a node whose relay server is off.
    *
    * Refuses everyone, ahead of every admission below, while this node is waiting to be
-   * claimed ({@link isAwaitingClaim}): a storage-profile node runs the relay server by
+   * claimed ({@link isAwaitingClaim}): a `'server'` node runs the relay server by
    * default, and an unclaimed node on a public address must not become anyone's relay.
    * The empty-anchor admission in check 1 exists for a node that will be enrolled by
    * its siblings, which an unclaimed node has none of.
@@ -3105,7 +3108,7 @@ export class CadreNode implements SAppIdLookup {
       // the count of machines serving the network — the quantity
       // `resolveRepairYardstick` asks for. It is NOT that quantity for a strand, which
       // launches only on machines whose embedder registered its sApp config (see
-      // {@link addStrand}) plus storage-profile machines hosting it as a storage replica
+      // {@link addStrand}) plus always-on machines hosting it as a storage replica
       // ({@link CadreNodeConfig.hostUnclaimedStrands}) whose filter admits it — phones
       // serve only what their app claims — so this number must never be routed to a strand node:
       // over-declaring pins Optimystic's repair corroboration floor at two peers and a
@@ -3715,14 +3718,14 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Is `record` still the one to publish: signed less than half a heartbeat ago, with this
-   * node's profile, over the addresses it would publish now, and the signature the own row
+   * always-on claim, over the addresses it would publish now, and the signature the own row
    * holds? The age bound keeps a record that is not re-written fresh for resolvers: at most half
    * a heartbeat old here and re-stamped by the heartbeat within one more, so never older than
    * 1.5 heartbeats (11.25 min) against {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}. Cheap checks
    * first: the row comes from the membership view, the addresses from the app's resolver.
    */
   private async isCurrentSelfRecord(record: PeerAddressRecord): Promise<boolean> {
-    if (Date.now() - record.updatedAt >= DEFAULT_PEER_RECORD_HEARTBEAT_MS / 2 || record.profile !== this.config.profile) {
+    if (Date.now() - record.updatedAt >= DEFAULT_PEER_RECORD_HEARTBEAT_MS / 2 || record.profile !== this.publishedProfile()) {
       return false;
     }
     const row = await this.controlDatabase?.queryPeerRecord(record.peerId);
@@ -3819,9 +3822,19 @@ export class CadreNode implements SAppIdLookup {
     const updatedAt = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1);
     return signPeerRecord(
       this.partyId,
-      { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt, profile: this.config.profile },
+      { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt, profile: this.publishedProfile() },
       signingKey.privateKeyB64
     );
+  }
+
+  /**
+   * What this node publishes in its own `CadrePeer.Profile`: whether it is always on, in the
+   * stored form (`node-class.ts`). The column is the one place the old codes survive, because
+   * the control store is the one place backwards compatibility applies
+   * (`docs/cadre/control-schema.md` → "Schema versions and migrations").
+   */
+  private publishedProfile(): PublishedProfile {
+    return encodeAlwaysOn(this.config.nodeClass === 'server');
   }
 
   /**
@@ -4454,7 +4467,7 @@ export class CadreNode implements SAppIdLookup {
     // 2. Classify backbone (always-on) members and select a bounded dial set.
     const targetDegree = this.config.network?.controlCohort?.targetDegree
       ?? DEFAULT_CONTROL_COHORT_TARGET_DEGREE;
-    const { dials, cappedNonBackbone } = selectControlCohortDials(siblings, targetDegree);
+    const { dials, cappedNonBackbone } = selectControlCohortDials(controlCohortSiblingsOf(siblings), targetDegree);
     if (cappedNonBackbone > 0) {
       // Don't silently bound coverage — surface what the out-degree cap dropped.
       log('reconcileControlCohort: capped %d non-backbone sibling(s) at targetDegree=%d',
@@ -7726,7 +7739,7 @@ export class CadreNode implements SAppIdLookup {
       sAppConfig,
       storage: this.config.storage,
       network: this.config.network,
-      profile: this.config.profile,
+      nodeClass: this.config.nodeClass,
       defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
       privateKey: transportKey,
       bootstrapNodes,
@@ -9316,12 +9329,12 @@ export class CadreNode implements SAppIdLookup {
    * never reach here: {@link ControlDatabase.queryCadrePeers} excludes them, so a
    * revoked peer is not addressable either.
    *
-   * NOTE: answers the whole `CadrePeerRow`, past the fields declared; the integration
-   * harness (`owner-cli-node.ts`, `OwnerCliMemberRow.sig`) reads `sig` off it through the admin
-   * channel to tell a row another member seated from one the subject published itself. Narrow
-   * this to the declared fields only together with that reader.
+   * NOTE: answers the whole row. The integration harness (`owner-cli-node.ts`,
+   * `OwnerCliMemberRow.sig`) reads `sig` off it through the admin channel to tell a row
+   * another member seated from one the subject published itself. Narrow this to fewer fields
+   * only together with that reader.
    */
-  async listMembers(): Promise<CohortPeerRow[]> {
+  async listMembers(): Promise<CadrePeerRow[]> {
     if (!this.controlDatabase) {
       throw new Error('CadreNode must be started before listing members');
     }

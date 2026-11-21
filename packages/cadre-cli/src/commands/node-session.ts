@@ -105,7 +105,7 @@ export function oneShotNodeConfig(config: ResolvedConfig, partyId: string, stora
   return {
     privateKey: config.privateKey,
     controlNetwork: { ...config.controlNetwork, partyId },
-    profile: config.profile,
+    nodeClass: config.nodeClass,
     strandFilter: config.strandFilter,
     storage: storage.config,
     network: { ...config.network, defaultTransports: nodeDefaultTransports },

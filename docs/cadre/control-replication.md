@@ -87,7 +87,7 @@ Optimystic's cluster policy carries two size declarations with different jobs.
 
 **What it costs.** The same number feeds Optimystic's commit freshness rule: a local commit lets later reads of the block skip the cluster consult only when its approvals exceed half of `max(observed cluster, declared size)`. On a party of three or more with fewer than half its machines awake, a commit does not qualify, and the next read of each such block costs one cluster consult per read-repair window.
 
-**A strand declares nothing.** A strand runs only on machines whose app registered it, plus storage-profile machines that host it as a replica. The party's machine count overstates that, and overstating makes repair impossible. No authenticated count of the machines serving one strand exists, so every strand runs the base policy.
+**A strand declares nothing.** A strand runs only on machines whose app registered it, plus always-on machines that host it as a replica. The party's machine count overstates that, and overstating makes repair impossible. No authenticated count of the machines serving one strand exists, so every strand runs the base policy.
 
 ### The cluster policy
 

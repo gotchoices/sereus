@@ -123,12 +123,12 @@ describe('HostProcessOrchestrator child env scrub', () => {
     await orch.createContainer({
       containerId: 'child-1',
       partyId: 'party-1',
-      profile: 'storage',
+      nodeClass: 'server',
     });
     await orch.createContainer({
       containerId: 'child-2',
       partyId: 'party-2',
-      profile: 'storage',
+      nodeClass: 'server',
     });
 
     const seen1 = JSON.parse(await waitForFile(join(rootDir, 'child-1', 'env-seen.json')));
@@ -150,7 +150,7 @@ describe('HostProcessOrchestrator child env scrub', () => {
     await orch.createContainer({
       containerId: 'child-1',
       partyId: 'party-1',
-      profile: 'storage',
+      nodeClass: 'server',
     });
 
     const seen = JSON.parse(await waitForFile(join(rootDir, 'child-1', 'env-seen.json')));

@@ -105,7 +105,7 @@ describe('StrandInstanceManager network-addrs wiring', () => {
     return {
       strandRow,
       sAppConfig,
-      profile: 'transaction',
+      nodeClass: 'device',
       defaultLatencyHint: 'interactive',
       ...overrides
     };

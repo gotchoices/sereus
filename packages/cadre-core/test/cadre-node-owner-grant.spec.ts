@@ -74,7 +74,7 @@ describe('CadreNode owner grants', () => {
     const node = new CadreNode({
       controlNetwork: { partyId: member.node.partyId, bootstrapNodes: [] },
       privateKey: await generateKeyPair('Ed25519'),
-      profile: 'transaction'
+      nodeClass: 'device'
     });
     await node.start();
     return node;

@@ -40,7 +40,7 @@ import {
  * converged-tombstone-only shape a re-issue runs against — a re-issue files no delete, so
  * `RowIsGone` / `RevocationRecorded` are never involved.
  *
- * Every test boots its OWN `CadreNode` (empty bootstrap, transaction profile) seeded with
+ * Every test boots its OWN `CadreNode` (empty bootstrap, a device) seeded with
  * one founding owner, matching the replay spec's fixture.
  */
 
@@ -117,7 +117,7 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
         partyId: 'revocation-reissue-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

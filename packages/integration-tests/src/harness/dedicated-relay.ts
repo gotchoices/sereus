@@ -2,7 +2,7 @@
  * A DEDICATED, ungated circuit-relay server for scenarios — the loopback stand-in
  * for the standalone relay container `ops/docker/libp2p-infra` deploys
  * (`src/main.ts`, `SEREUS_ROLE=relay`). Distinct from the relay every
- * storage-profile `CadreNode` runs: this one is a bare libp2p node with NO
+ * server-class `CadreNode` runs: this one is a bare libp2p node with NO
  * membership gate and NO cadre protocols, so it relays for anyone and answers no
  * strand-addr RPC — exactly the posture of the deployed infrastructure relay.
  *

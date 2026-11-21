@@ -17,7 +17,7 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 	function makeNode(partyId: string, trustedOwners?: CadreNodeConfig['trustedOwners']): CadreNode {
 		return new CadreNode({
 			controlNetwork: { partyId, bootstrapNodes: [] },
-			profile: 'transaction',
+			nodeClass: 'device',
 			trustedOwners,
 		});
 	}
@@ -144,7 +144,7 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 		const pinned = getPublicKey(pinnedPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 		const node = new CadreNode({
 			controlNetwork: { partyId, bootstrapNodes: [] },
-			profile: 'transaction',
+			nodeClass: 'device',
 			trustedOwners: { store: injected, pinnedKeys: [pinned] },
 			claim: { secret: randomBytes(256, 'base64url') as string, record: async () => {} },
 		});

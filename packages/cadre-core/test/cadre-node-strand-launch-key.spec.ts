@@ -26,7 +26,7 @@ function createConfig(): CadreNodeConfig {
       partyId: 'launch-key-test-' + Math.random().toString(36).slice(2),
       bootstrapNodes: []
     },
-    profile: 'transaction'
+    nodeClass: 'device'
   };
 }
 

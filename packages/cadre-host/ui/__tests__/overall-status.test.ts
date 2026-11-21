@@ -8,7 +8,7 @@ function node(status: NodeInfo['status']): NodeInfo {
 		id: `n-${status}`,
 		dockerId: '',
 		partyId: 'p',
-		profile: 'storage',
+		nodeClass: 'server',
 		status,
 		spawnedAt: '',
 		workdir: '',

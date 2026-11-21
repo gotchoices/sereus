@@ -3,7 +3,7 @@
  */
 
 import type { ChildProcess } from 'node:child_process';
-import type { PushCredentials } from '@serfab/cadre-core';
+import type { NodeClass, PushCredentials } from '@serfab/cadre-core';
 import type { OrchestratorCreateRequest } from '@serfab/cadre-provider';
 
 /**
@@ -96,7 +96,7 @@ export interface Handle {
   ports: NodePorts;
   spawnedAt: string;
   partyId: string;
-  profile: 'storage' | 'transaction';
+  nodeClass: NodeClass;
   /** The public addresses the child was started announcing ({@link HostProcessConfig.announceAddrs}). */
   announcedAddrs: string[];
   /** Live ChildProcess reference; absent after re-attach via init(). */
@@ -112,7 +112,7 @@ export interface ManagedNodeInfo {
   /** Opaque dockerId (`pid:token`) — pass to stop/getStats/getLogs. */
   dockerId: string;
   partyId: string;
-  profile: 'storage' | 'transaction';
+  nodeClass: NodeClass;
   /** Runtime state derived from `Handle.alive`. */
   status: 'running' | 'stopped';
   spawnedAt: string;

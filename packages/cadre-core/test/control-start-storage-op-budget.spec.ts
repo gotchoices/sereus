@@ -227,7 +227,7 @@ describe('control database start, raw-storage operation budget', () => {
 		// cache over a warm store, which is what a device restart pays.
 		const inner = new MemoryRawStorage();
 		const config = () => controlNodeConfig({
-			partyId, profile: 'transaction', keyStore,
+			partyId, nodeClass: 'device', keyStore,
 			storage: new CountingRawStorage(inner, counter)
 		});
 

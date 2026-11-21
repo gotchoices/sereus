@@ -18,7 +18,7 @@
  * of `CliConfig`, and which `CADRE_*` variables can supply a missing key.
  */
 
-import type { ApnsCredentials, FcmCredentials, LatencyHint, NodeProfile, PushCredentials } from '@serfab/cadre-core';
+import type { ApnsCredentials, FcmCredentials, LatencyHint, NodeClass, PushCredentials } from '@serfab/cadre-core';
 import {
   type Checker,
   arrayOf,
@@ -174,7 +174,7 @@ const root = objectOf<CliConfig>(
   {
     identity,
     controlNetwork,
-    profile: oneOf<NodeProfile>({ transaction: true, storage: true }),
+    nodeClass: oneOf<NodeClass>({ device: true, server: true }),
     strandFilter,
     strandReactivity,
     storage,
@@ -186,7 +186,7 @@ const root = objectOf<CliConfig>(
     claim,
     owner,
   },
-  { required: ['controlNetwork', 'profile'] },
+  { required: ['controlNetwork', 'nodeClass'] },
 );
 
 // ---------------------------------------------------------------------------

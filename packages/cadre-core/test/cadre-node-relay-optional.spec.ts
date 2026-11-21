@@ -41,7 +41,7 @@ describe('CadreNode start() with network.requireRelay: false', () => {
     return new CadreNode({
       controlNetwork: { partyId: 'relay-optional-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
       privateKey: await generateKeyPair('Ed25519'),
-      profile: 'transaction',
+      nodeClass: 'device',
       strandFilter: { mode: 'none' },
       storage: { provider: () => new MemoryRawStorage() },
       network: { listenAddrs: [], relayAddrs, requireRelay: false }

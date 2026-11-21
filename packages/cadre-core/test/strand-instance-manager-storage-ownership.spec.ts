@@ -94,7 +94,7 @@ function createStartConfig(strandId: string, provider: (id: string) => IRawStora
   return {
     strandRow: createStrandRow(strandId),
     sAppConfig: createSAppConfig(),
-    profile: 'transaction',
+    nodeClass: 'device',
     defaultLatencyHint: 'interactive',
     storage: { provider }
   };
@@ -192,7 +192,7 @@ describe('StrandInstanceManager storage ownership', () => {
     await manager.startStrand({
       strandRow: createStrandRow('s6'),
       sAppConfig: createSAppConfig(),
-      profile: 'transaction',
+      nodeClass: 'device',
       defaultLatencyHint: 'interactive'
     });
 

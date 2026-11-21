@@ -138,7 +138,7 @@ describe('StrandInstanceManager relay-reservation supervisors', () => {
     return {
       strandRow,
       sAppConfig,
-      profile: 'transaction',
+      nodeClass: 'device',
       defaultLatencyHint: 'interactive',
       network: { listenAddrs: [], relayAddrs: [RELAY_1] },
       ...overrides

@@ -7,9 +7,9 @@ import type {
   StrandFilter,
   StrandInstance,
   StrandRow,
-  NodeProfile,
   LatencyHint
 } from '../src/types.js';
+import type { NodeClass } from '../src/node-class.js';
 
 describe('Types', () => {
   describe('CadreNodeConfig', () => {
@@ -19,11 +19,11 @@ describe('Types', () => {
           partyId: 'test-party-id',
           bootstrapNodes: []
         },
-        profile: 'transaction'
+        nodeClass: 'device'
       };
 
       expect(config.controlNetwork.partyId).toBe('test-party-id');
-      expect(config.profile).toBe('transaction');
+      expect(config.nodeClass).toBe('device');
       expect(config.strandFilter).toBeUndefined();
     });
 
@@ -35,7 +35,7 @@ describe('Types', () => {
           partyId: 'test-party-id',
           bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/QmTest']
         },
-        profile: 'storage',
+        nodeClass: 'server',
         strandFilter: { mode: 'all' },
         storage: {
           provider: () => new MemoryRawStorage(),
@@ -55,7 +55,7 @@ describe('Types', () => {
       };
 
       expect(config.privateKey).toBe(privateKey);
-      expect(config.profile).toBe('storage');
+      expect(config.nodeClass).toBe('server');
       expect(config.storage?.provider).toBeDefined();
       expect(config.hibernation?.enabled).toBe(true);
     });
@@ -135,13 +135,13 @@ describe('Types', () => {
     });
   });
 
-  describe('NodeProfile', () => {
-    it('should support transaction and storage profiles', () => {
-      const txProfile: NodeProfile = 'transaction';
-      const storageProfile: NodeProfile = 'storage';
+  describe('NodeClass', () => {
+    it('should support device and server classes', () => {
+      const device: NodeClass = 'device';
+      const server: NodeClass = 'server';
 
-      expect(txProfile).toBe('transaction');
-      expect(storageProfile).toBe('storage');
+      expect(device).toBe('device');
+      expect(server).toBe('server');
     });
   });
 

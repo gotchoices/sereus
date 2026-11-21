@@ -60,7 +60,7 @@ class FakeNodes implements NatNodeSource {
       id,
       dockerId: `1:${id}`,
       partyId: 'party',
-      profile: 'storage',
+      nodeClass: 'server',
       status,
       spawnedAt: '2026-01-01T00:00:00Z',
       workdir: `/w/${id}`,

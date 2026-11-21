@@ -30,7 +30,7 @@ describe('CadreNode admission while awaiting a claim', () => {
 
 	/** A started-looking node with an empty anchor, optionally waiting to be claimed. */
 	function wire(claim?: CadreNodeConfig['claim']): { node: CadreNode; anchor: MemoryTrustedOwnerStore; predicates: Predicates } {
-		const node = new CadreNode({ controlNetwork: { partyId: 'p', bootstrapNodes: [] }, profile: 'transaction', claim });
+		const node = new CadreNode({ controlNetwork: { partyId: 'p', bootstrapNodes: [] }, nodeClass: 'device', claim });
 		const anchor = new MemoryTrustedOwnerStore('p');
 		const internals = node as unknown as Record<string, unknown>;
 		internals._running = true;

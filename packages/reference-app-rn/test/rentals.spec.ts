@@ -20,7 +20,7 @@ function rental(overrides: Partial<Rental> = {}): Rental {
 }
 
 function container(overrides: Partial<RentedContainer> = {}): RentedContainer {
-	return { id: 'c1', partyId: 'party-a', profile: 'storage', status: 'running', createdAt: 1_000, updatedAt: 2_000, peerId: PEER_ID, tags: {}, ...overrides };
+	return { id: 'c1', partyId: 'party-a', nodeClass: 'server', status: 'running', createdAt: 1_000, updatedAt: 2_000, peerId: PEER_ID, tags: {}, ...overrides };
 }
 
 function live(report: Omit<RentedContainerStatusReport, 'container'> & { container?: Partial<RentedContainer> }): ContainerReading {

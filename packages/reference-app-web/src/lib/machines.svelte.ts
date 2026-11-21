@@ -227,16 +227,10 @@ function alreadyRemoved(machine: CadreMachine): MachinesNotice {
 // and `machine-removal.tsx`. If a third surface (cadre-host's UI) lists machines, move them into
 // cadre-core and import them everywhere.
 
-/** What a listed machine is, from the node profile it published; `Machine` until it publishes one. */
+/** What a listed machine is, from whether it published that it is always on; `Machine` until it publishes a record. */
 export function machineKind(machine: CadreMachine): string {
-	switch (machine.profile) {
-		case 'transaction':
-			return 'App';
-		case 'storage':
-			return 'Always-on node';
-		default:
-			return 'Machine';
-	}
+	if (machine.alwaysOn === null) return 'Machine';
+	return machine.alwaysOn ? 'Always-on node' : 'App';
 }
 
 /**

@@ -120,7 +120,7 @@ describe('control writes across members that declare different repair yardsticks
 		try {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'storage', enableRelay: true,
+				partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true,
 				enrolledMachines: await enrolledMachineStoreWith(partyId, A_REMEMBERED_MACHINES)
 			}));
 			await A.start();
@@ -128,7 +128,7 @@ describe('control writes across members that declare different repair yardsticks
 
 			const bKey = await generateKeyPair('Ed25519');
 			B = new CadreNode(controlNodeConfig({
-				partyId, privateKey: bKey, profile: 'transaction',
+				partyId, privateKey: bKey, nodeClass: 'device',
 				enrolledMachines: await enrolledMachineStoreWith(partyId, B_REMEMBERED_MACHINES)
 			}));
 			await B.start();

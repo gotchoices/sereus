@@ -21,7 +21,7 @@ import { registerErrorHandler } from '../error-handler.js';
 import { registerHostedNodesRoutes } from '../routes/hosted-nodes.js';
 
 const UNCLAIMED: HostedNodeView = {
-  id: 'hn_a', join: { kind: 'claim' }, partyId: 'unclaimed', profile: 'storage', status: 'unclaimed',
+  id: 'hn_a', join: { kind: 'claim' }, partyId: 'unclaimed', nodeClass: 'server', status: 'unclaimed',
   dockerId: '1:a', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
 };
 const JOINED: HostedNodeView = { ...UNCLAIMED, id: 'hn_b', status: 'joined', partyId: 'party-P', ownerKey: 'owner' };

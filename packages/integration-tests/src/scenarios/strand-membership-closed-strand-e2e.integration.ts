@@ -492,7 +492,7 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		founderNode = new CadreNode(controlNodeConfig({
 			partyId: `founder-${partyId}`,
 			storageProvider: founderCapture.provider,
-			profile: 'storage',
+			nodeClass: 'server',
 			enableRelay: true,
 			membershipReconciliation: false,
 			revocationSuspended: true,

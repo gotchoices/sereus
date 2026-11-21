@@ -58,7 +58,7 @@ const keyStore = new InMemoryKeyStore();
 const node = new CadreNode({
 	keyStore,
 	controlNetwork: { partyId: crypto.randomUUID(), bootstrapNodes: [] },
-	profile: 'transaction',
+	nodeClass: 'device',
 	storage: { provider: storeFor },
 });
 await node.start();
@@ -93,16 +93,16 @@ An app on a phone or in a browser does not construct `CadreNode` itself. It call
 | --- | --- |
 | `controlNetwork.partyId` | The party this node serves. The app mints it once, for example as a UUID, and reuses it on every start. |
 | `controlNetwork.bootstrapNodes` | Multiaddrs of the party's other machines to dial at start. Empty for the first machine. |
-| `profile` | `'transaction'` or `'storage'`; see [Profile](#profile). |
+| `nodeClass` | `'device'` or `'server'`; see [Node class](#node-class). |
 | `strandFilter` | Which of the party's strands this node runs; see [Strand filter](#strand-filter). |
 | `storage.provider` | Where blocks are kept; see [Storage provider](#storage-provider). |
 | `keyStore` | Where the node's identity key and other secrets are kept. With neither this nor `privateKey`, the node gets a new peer id on every start. `InMemoryKeyStore` is for tests; `FileKeyStore` from `@serfab/cadre-core/key-store-file` is the Node.js backend. |
 | `network` | Listen addresses, transports and relays. On Node.js the default listens on TCP. A browser or phone passes WebSocket and circuit-relay transports with `listenAddrs: []`. |
 | `requireSignedSchemas` | Default `true`: an sApp config without a valid author signature is refused. Set `false` only for development. |
 
-### Profile
+### Node class
 
-`profile` says what kind of machine this is. `'transaction'` is an app on a phone or in a browser, connected some of the time. `'storage'` is an always-on machine: it also runs a relay server by default and keeps a copy of every strand its `strandFilter` admits, including strands no app on that machine uses. Every node stores the data of the strands it runs, whatever its profile. See [Node profiles](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-profiles).
+`nodeClass` says what kind of machine this node runs on. `'device'` is a phone, a laptop or a browser tab running an app, connected some of the time. `'server'` is an always-on machine: it also runs a relay server by default and keeps a copy of every strand its `strandFilter` admits, including strands no app on that machine uses. Both classes transact and store: every node stores the data of the strands it runs. See [Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes).
 
 ### Strand filter
 
@@ -128,7 +128,7 @@ import { FileKeyStore } from '@serfab/cadre-core/key-store-file';
 const node = new CadreNode({
 	keyStore: new FileKeyStore('/var/lib/my-app/keys'),
 	controlNetwork: { partyId, bootstrapNodes: [] },
-	profile: 'storage',
+	nodeClass: 'server',
 	storage: { provider: (scope) => new FileRawStorage(`/var/lib/my-app/data/${scope}`) },
 });
 ```

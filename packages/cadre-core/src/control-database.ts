@@ -9,9 +9,11 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { createEmptyCollections } from '@serfab/quereus-plugin-sereus';
 import type { CollectionRegistrySource } from '@serfab/quereus-plugin-sereus';
-import type { StrandRow, StrandPeerRow, PendingStrandPartyKeyRow, SealedPendingPartyKey, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalWrites } from './types.js';
+import type { StrandRow, StrandPeerRow, PendingStrandPartyKeyRow, SealedPendingPartyKey, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalWrites } from './types.js';
 import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, CONTROL_SCHEMA_NAME, controlSchemaFileDeclaration } from './control-schema.js';
 import { refuseIncompatibleControlStore } from './control-schema-version.js';
+import { decodeAlwaysOn } from './node-class.js';
+import type { PublishedProfile } from './node-class.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, strandPeerRowFields, pendingStrandPartyKeyRowFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields, OwnerGrantSignedFields } from './control-authorization.js';
@@ -852,16 +854,16 @@ function errorChainMatches(error: unknown, pattern: RegExp): boolean {
  *
  * A peer is `preferred` when it is the minter, the one machine certain to be reachable by the
  * receiver at that moment, since it is delivering the seed or the reply, or an always-on
- * machine (`Profile = 'storage'`), the ones that stay dialable. Preference is a dial hint and
- * reads no `OwnerKey` row: owner keys are not machines, and a receiver derives trust from its
- * own anchor, never from this list. A `Profile` is self-declared and not checked here, so a
- * machine misdeclaring one costs the receiver a wasted dial at most.
+ * machine, the ones that stay dialable. Preference is a dial hint and reads no `OwnerKey` row:
+ * owner keys are not machines, and a receiver derives trust from its own anchor, never from
+ * this list. Being always on is self-declared and not checked here, so a machine misdeclaring
+ * it costs the receiver a wasted dial at most.
  */
 export function projectSeedPeers(rows: readonly CadrePeerRow[], minterPeerId: string): SeedPeer[] {
   return rows.map(({ peerId, multiaddr, profile }) => ({
     peerId,
     multiaddrs: multiaddr ? multiaddr.split(',') : [],
-    preferred: peerId === minterPeerId || profile === 'storage',
+    preferred: peerId === minterPeerId || decodeAlwaysOn(profile) === true,
   }));
 }
 
@@ -950,7 +952,7 @@ function cadrePeerRowOf(row: Record<string, SqlValue>): CadrePeerRow {
     publicKey: (row.PublicKey as string | null) ?? null,
     multiaddr: (row.Multiaddr as string | null) ?? null,
     updatedAt: (row.UpdatedAt as number | null) ?? 0,
-    profile: (row.Profile as NodeProfile | null) ?? null,
+    profile: (row.Profile as PublishedProfile | null) ?? null,
     sig: (row.Sig as string | null) ?? null,
     stampId: (row.StampId as string | null) ?? null,
     vouchOwner: (row.VouchOwner as string | null) ?? null,
@@ -3849,7 +3851,7 @@ export class ControlDatabase {
       multiaddr: string;
       updatedAt: number;
       sig: string | null;
-      profile: NodeProfile | null;
+      profile: PublishedProfile | null;
     },
     ownerKey: string,
     signMessage: ControlSign

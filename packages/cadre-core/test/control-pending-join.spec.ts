@@ -90,7 +90,7 @@ describe('pending joins (owner-signed JoinRequest; outcome rows keyed by its sta
         partyId: 'pending-join-' + rand(),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

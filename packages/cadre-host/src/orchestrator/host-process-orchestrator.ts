@@ -34,7 +34,7 @@ import {
 import { StateStore, type PersistedHandle, type PersistedState } from './state-store.js';
 import { isPidAlive } from './pid-liveness.js';
 import { assertPortFree, type PortBinding } from './port-probe.js';
-import type { PushCredentials } from '@serfab/cadre-core';
+import type { NodeClass, PushCredentials } from '@serfab/cadre-core';
 // The child's `cadre.json` is typed against the CLI's own config schema, so a key the CLI stops
 // accepting (or starts requiring) is a compile error here rather than a child that fails to start.
 import { strandFilterConfigFromText, type CliConfig } from '@serfab/cadre-cli';
@@ -208,7 +208,7 @@ export class HostProcessOrchestrator implements Orchestrator {
         ports: persisted.ports,
         spawnedAt: persisted.spawnedAt,
         partyId: persisted.partyId,
-        profile: persisted.profile,
+        nodeClass: persisted.nodeClass,
         announcedAddrs: persisted.announcedAddrs ?? [],
         alive: false,
       };
@@ -302,11 +302,10 @@ export class HostProcessOrchestrator implements Orchestrator {
       // node's worth of ports from a bounded range on every failed provision attempt.
       const identity = await ensureNodeIdentity(workdir);
       log('container %s identity peerId=%s', request.containerId, identity.peerId);
-      // Only storage-profile nodes participate in strands and thus fan out push
-      // wakes — a transaction-only node need not carry credentials. Resolved
-      // BEFORE the drop below, which keeps the drop → launch window synchronous
-      // (see restoreDroppedHandles).
-      const push = request.profile === 'storage' ? await this.resolvePush() : undefined;
+      // Only server nodes participate in strands and thus fan out push wakes — a
+      // device need not carry credentials. Resolved BEFORE the drop below, which
+      // keeps the drop → launch window synchronous (see restoreDroppedHandles).
+      const push = request.nodeClass === 'server' ? await this.resolvePush() : undefined;
       const extraEnv = joinEnv(request);
 
       // The last `await` on this path: checked as close to the drop as it can be.
@@ -324,7 +323,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       return this.launchChild({
         containerId: request.containerId,
         partyId: request.partyId,
-        profile: request.profile,
+        nodeClass: request.nodeClass,
         ports,
         buildConfig: () => this.buildChildConfig(request, workdir, push),
         extraArgs: ['--identity-file', identity.path],
@@ -459,7 +458,7 @@ export class HostProcessOrchestrator implements Orchestrator {
   private launchChild(opts: {
     containerId: string;
     partyId: string;
-    profile: 'storage' | 'transaction';
+    nodeClass: NodeClass;
     ports: NodePorts;
     buildConfig: (workdir: string) => CliConfig;
     extraArgs: string[];
@@ -574,7 +573,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       ports,
       spawnedAt: new Date().toISOString(),
       partyId: opts.partyId,
-      profile: opts.profile,
+      nodeClass: opts.nodeClass,
       announcedAddrs,
       child,
       alive: true,
@@ -892,7 +891,7 @@ export class HostProcessOrchestrator implements Orchestrator {
         // A hosted node is dialed (a claim) or dials the members its invitation names.
         bootstrapNodes: [],
       },
-      profile: req.profile,
+      nodeClass: req.nodeClass,
       // The request carries the filter as text (the provider hands the same text to
       // CADRE_STRAND_FILTER); the file form is `all`/`none` or the parsed JSON object, and a
       // filter the node would refuse fails here, before anything is spawned.
@@ -901,7 +900,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       // starts accepting one, pick one rule for both.
       strandFilter: req.strandFilter === undefined ? 'all' : strandFilterConfigFromText(req.strandFilter),
     };
-    if (req.profile === 'storage') {
+    if (req.nodeClass === 'server') {
       cfg.storage = {
         type: 'file',
         path: join(workdir, 'storage'),
@@ -947,7 +946,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       ports: h.ports,
       spawnedAt: h.spawnedAt,
       partyId: h.partyId,
-      profile: h.profile,
+      nodeClass: h.nodeClass,
       announcedAddrs: h.announcedAddrs,
     };
   }
@@ -958,7 +957,7 @@ function toNodeInfo(h: Handle): ManagedNodeInfo {
     id: h.containerId,
     dockerId: h.dockerId,
     partyId: h.partyId,
-    profile: h.profile,
+    nodeClass: h.nodeClass,
     status: h.alive ? 'running' : 'stopped',
     spawnedAt: h.spawnedAt,
     workdir: h.workdir,

@@ -19,11 +19,11 @@ import { WAKE_PROTOCOL } from '../src/strand-wake-protocol.js';
  */
 describe('control protocol guard', () => {
 	it('classes every protocol a control node serves with every conditional protocol on', async () => {
-		// Storage profile so the relay server's hop protocol is registered, plus the seed
+		// A server node, so the relay server's hop protocol is registered, plus the seed
 		// listener, which an embedder enables after start. A protocol added by a new handler or
 		// an Optimystic, FRET or libp2p upgrade fails this until someone declares its class.
 		const partyId = `guard-${Math.random().toString(36).slice(2)}`;
-		const node = new CadreNode({ controlNetwork: { partyId, bootstrapNodes: [] }, profile: 'storage' });
+		const node = new CadreNode({ controlNetwork: { partyId, bootstrapNodes: [] }, nodeClass: 'server' });
 		try {
 			await node.start();
 			await node.enableSeedListener();

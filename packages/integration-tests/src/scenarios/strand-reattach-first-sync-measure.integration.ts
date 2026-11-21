@@ -170,7 +170,7 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 
 		const aKey = await generateKeyPair('Ed25519');
 		A = new CadreNode(withCohortReadDeadline(controlNodeConfig({
-			partyId: `reattach-a-${runTag}`, privateKey: aKey, profile: 'storage', enableRelay: false,
+			partyId: `reattach-a-${runTag}`, privateKey: aKey, nodeClass: 'server', enableRelay: false,
 			listenAddrs: [], relayAddrs: [relay.dialAddr],
 		})));
 		await A.start();

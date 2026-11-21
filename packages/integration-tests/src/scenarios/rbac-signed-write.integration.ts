@@ -82,7 +82,7 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			const sAppConfig = createSignedSAppConfig(appLogic, '0.1.0');
 
 			// Two real CadreNodes over libp2p (Phase-2 pattern from strand-formation-e2e).
-			aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, profile: 'storage', enableRelay: true }));
+			aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, nodeClass: 'server', enableRelay: true }));
 			await aliceNode.start();
 
 			bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceNode.getMultiaddrs() }));

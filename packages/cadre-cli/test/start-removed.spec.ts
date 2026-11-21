@@ -45,7 +45,7 @@ describe('cadre start with a removal marker on record', () => {
     const configPath = join(dir, 'cadre.json');
     writeFileSync(configPath, JSON.stringify({
       controlNetwork: { partyId: PARTY_ID, bootstrapNodes: [] },
-      profile: 'storage',
+      nodeClass: 'server',
       network: { listenAddrs: [] },
     }));
     const removal = { partyId: PARTY_ID, stampId: 'stamp-1', signerKey: SIGNER_KEY, at: Date.parse('2026-10-01T00:00:00Z') };

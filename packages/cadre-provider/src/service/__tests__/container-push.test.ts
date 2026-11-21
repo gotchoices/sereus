@@ -39,7 +39,7 @@ function container(customerId: string): Container {
     id: `ctr_${customerId}`,
     customerId,
     partyId: `party-${customerId}`,
-    profile: 'storage',
+    nodeClass: 'server',
     status: 'pending',
     resources: {},
     tags: {},
@@ -49,7 +49,7 @@ function container(customerId: string): Container {
 }
 
 function request(customerId: string): CreateContainerRequest {
-  return { customerId, partyId: `party-${customerId}`, profile: 'storage', join: { kind: 'invitation', invitation: 'sereus-invite:1.x' } };
+  return { customerId, partyId: `party-${customerId}`, nodeClass: 'server', join: { kind: 'invitation', invitation: 'sereus-invite:1.x' } };
 }
 
 const pushConfig: ProviderPushConfig = {

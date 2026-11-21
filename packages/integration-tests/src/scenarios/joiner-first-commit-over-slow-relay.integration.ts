@@ -11,7 +11,7 @@
  * The schema reproduces the app's shape with nothing app-specific in it:
  * - several tables, most of which the founder never writes (the app has 17);
  * - the joiner's first act writes three tables in ONE transaction: a seat, its key, and its
- *   profile -- two of which the founder already wrote to;
+ *   node class -- two of which the founder already wrote to;
  * - a constraint on the key reads a table nobody has written (`Revocation`), as an
  *   authorization check does.
  *

@@ -154,7 +154,7 @@
 			<div class="page-header">
 				<div>
 					<h2><code>{id}</code></h2>
-					<p class="muted">Hosted node · {node?.profile ?? 'storage'} profile</p>
+					<p class="muted">Hosted node · Node class: {node?.nodeClass ?? 'server'}</p>
 				</div>
 				{#if node}
 					<span class={`badge ${node.status === 'running' ? 'ok' : 'err'}`}>{node.status}</span>

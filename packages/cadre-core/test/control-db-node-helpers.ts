@@ -30,7 +30,8 @@ import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import type { InMemoryKeyStore } from '../src/key-store.js';
 import { signPeerRecord } from '../src/peer-record.js';
 import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH } from '../src/types.js';
-import type { CadreNodeConfig, NetworkConfig, NodeProfile, RawStorageProvider } from '../src/types.js';
+import type { CadreNodeConfig, NetworkConfig, RawStorageProvider } from '../src/types.js';
+import type { NodeClass } from '../src/node-class.js';
 
 /**
  * Run `op` with a hard deadline that *fails the test* naming the operation:
@@ -115,7 +116,7 @@ export function createControlNode(partyId: string, storage: IRawStorage, private
 
 export interface ControlNodeConfigOpts {
 	partyId: string;
-	profile: NodeProfile;
+	nodeClass: NodeClass;
 	keyStore: InMemoryKeyStore;
 	/**
 	 * A single `IRawStorage` instance (control node and any strand node then
@@ -150,7 +151,7 @@ export function controlNodeConfig(opts: ControlNodeConfigOpts): CadreNodeConfig 
 			partyId: opts.partyId,
 			bootstrapNodes: []
 		},
-		profile: opts.profile,
+		nodeClass: opts.nodeClass,
 		storage: { provider: opts.storage },
 		network: {
 			transports: opts.transports ?? [webSockets()],

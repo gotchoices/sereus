@@ -35,7 +35,7 @@ describe('GET /api/status', () => {
           id: 'alice',
           dockerId: '1234:abc',
           partyId: 'party-alice',
-          profile: 'storage',
+          nodeClass: 'server',
           status: 'running',
           spawnedAt: '2025-01-01T00:00:00Z',
           workdir: '/tmp/alice',

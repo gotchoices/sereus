@@ -104,7 +104,7 @@ describe('CadreNode.redeemCadreInvitation', () => {
     const device = new CadreNode({
       controlNetwork: { partyId: member.node.partyId, bootstrapNodes: [] },
       privateKey: deviceKey,
-      profile: 'transaction'
+      nodeClass: 'device'
     });
     try {
       const { invitation } = await member.node.createCadreInvitation();

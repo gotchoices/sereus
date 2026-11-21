@@ -86,7 +86,7 @@ function createStartConfig(strandId: string, type: 'o' | 'c', overrides?: Partia
   return {
     strandRow,
     sAppConfig,
-    profile: 'transaction',
+    nodeClass: 'device',
     defaultLatencyHint: 'interactive',
     ...overrides
   };
@@ -146,7 +146,7 @@ describe('StrandInstanceManager revoked-peer enforcement arming', () => {
     expect(lastNodeOptions().connectionGater).toBe(mocks.composedGater);
   });
 
-  it('composes over NO base gater too (the storage-profile default has none)', async () => {
+  it('composes over NO base gater too (the server default has none)', async () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('rev-nobase', 'c'));
 

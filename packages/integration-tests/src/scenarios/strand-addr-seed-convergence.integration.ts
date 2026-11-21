@@ -84,7 +84,7 @@ describe('E2E strand-addr seed convergence', () => {
 			// own CadrePeer row is B's RPC target and what flips B `networked` (see
 			// file header). Genesis ALONE so the lone OwnerKey commits with no collision.
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'server' }));
 			await A.start();
 			const { publicKey: aOwnerPub } = await makeOwnOwner(A);
 			const aPeerId = A.peerId!.toString();

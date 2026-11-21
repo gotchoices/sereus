@@ -235,7 +235,7 @@ async function measureSoloStrand(): Promise<RunCost> {
 		return storage;
 	};
 
-	const node = new CadreNode(controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage: provider }));
+	const node = new CadreNode(controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage: provider }));
 	try {
 		await within('start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
 		// The control start must not have touched the counted storage — a provider

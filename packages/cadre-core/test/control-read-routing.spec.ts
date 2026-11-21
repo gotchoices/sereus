@@ -61,7 +61,7 @@ describe('ControlDatabase — read routing', () => {
 
 		node = new CadreNode({
 			controlNetwork: { partyId: 'read-routing-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
-			profile: 'transaction'
+			nodeClass: 'device'
 		});
 		await node.start();
 

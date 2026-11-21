@@ -67,7 +67,7 @@ function launchConfig(f: Fixture, founder: boolean): StartStrandConfig {
   return {
     strandRow: f.strandRow,
     sAppConfig: f.sApp,
-    profile: 'transaction',
+    nodeClass: 'device',
     defaultLatencyHint: 'interactive',
     storage: { provider: () => f.storage },
     privateKey: f.transportKey,

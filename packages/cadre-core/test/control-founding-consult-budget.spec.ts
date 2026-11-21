@@ -45,7 +45,7 @@ import {
  * the idle reconcile pass measure 0: a consult there means a control read reached a block this
  * node does not hold. If any figure moves, find out why before re-pinning.
  *
- * **Phases**, on one solo `CadreNode` (`profile: 'transaction'`, one `MemoryRawStorage`
+ * **Phases**, on one solo `CadreNode` (`nodeClass: 'device'`, one `MemoryRawStorage`
  * per storage id), each measured from a zeroed counter: cold `start()`; genesis
  * (`ensureOwnerKey` with a generated owner key and `useOwnerSigner` to wire it, the
  * production calls); `foundStrand`, with the
@@ -563,7 +563,7 @@ function soloNode(): CadreNode {
 	return new CadreNode({
 		...controlNodeConfig({
 			partyId: freshPartyId(SCOPE),
-			profile: 'transaction',
+			nodeClass: 'device',
 			keyStore: new InMemoryKeyStore(),
 			storage: memoryStorageProvider(),
 			// Belt and braces: disarming self-registration already leaves the schedule unbuilt.

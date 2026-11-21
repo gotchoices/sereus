@@ -52,8 +52,8 @@
  * a dedicated loopback relay; parties A and B, each ONE `CadreNode` with
  * `listenAddrs: []` and `enableRelay: false` (a phone relays for nobody and can accept
  * nothing), so every byte between them is relayed. A founds a closed strand on the
- * real chat schema and B, a stranger, forms and joins. A is always `profile:
- * 'transaction'`; B's profile is what config 2 varies.
+ * real chat schema and B, a stranger, forms and joins. A is always `nodeClass:
+ * 'device'`; B's node class is what config 2 varies.
  *
  * A's `relayAddrs` name a counting TCP proxy in front of the relay's WebSocket port
  * (`harness/counting-proxy.ts`), so "exchanges" are A's link only, and A carries a
@@ -94,7 +94,7 @@ import {
 	strandMemberKeyPair,
 	summarizeConnectionPaths,
 } from '@serfab/cadre-core';
-import type { StrandRow } from '@serfab/cadre-core';
+import type { NodeClass, StrandRow } from '@serfab/cadre-core';
 import {
 	waitUntil,
 	sleep,
@@ -118,8 +118,8 @@ const MEASURE = process.env.RELAY_RRT_MEASURE === '1';
 interface MeasureConfig {
 	/** One line for the run header — what this configuration is for. */
 	readonly measures: string;
-	/** The joining party's profile. A is always `transaction`. */
-	readonly bProfile: 'transaction' | 'storage';
+	/** The joining party's node class. A is always a `device`. */
+	readonly bNodeClass: NodeClass;
 	/** Route A's relay link through the counting proxy? Required for `delayMs`. */
 	readonly proxy: boolean;
 	/** One-way delay injected on A's link, each direction (so 2× per round trip). */
@@ -137,20 +137,20 @@ interface MeasureConfig {
  */
 const CONFIGS: Record<string, MeasureConfig> = {
 	config1: {
-		measures: 'per-operation cost of a relayed two-party strand, both parties transaction',
-		bProfile: 'transaction', proxy: true, delayMs: 0, reps: 5, pairs: false
+		measures: 'per-operation cost of a relayed two-party strand, both parties devices',
+		bNodeClass: 'device', proxy: true, delayMs: 0, reps: 5, pairs: false
 	},
 	delayed: {
 		measures: 'the same, with 150 ms each way on A\'s link — what a phone on a real link pays per round trip',
-		bProfile: 'transaction', proxy: true, delayMs: 150, reps: 3, pairs: false
+		bNodeClass: 'device', proxy: true, delayMs: 150, reps: 3, pairs: false
 	},
 	config2: {
-		measures: 'a storage-profile joiner, off the proxy, with concurrent insert pairs — the torn-write case',
-		bProfile: 'storage', proxy: false, delayMs: 0, reps: 4, pairs: true
+		measures: 'a server-class joiner, off the proxy, with concurrent insert pairs — the torn-write case',
+		bNodeClass: 'server', proxy: false, delayMs: 0, reps: 4, pairs: true
 	},
 	control: {
-		measures: 'the control for config2: the same concurrent pairs with both parties transaction',
-		bProfile: 'transaction', proxy: false, delayMs: 0, reps: 4, pairs: true
+		measures: 'the control for config2: the same concurrent pairs with both parties devices',
+		bNodeClass: 'device', proxy: false, delayMs: 0, reps: 4, pairs: true
 	},
 };
 
@@ -355,16 +355,16 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 			? relay.dialAddr
 			: relay.dialAddr.replace(`/tcp/${relayPort}/`, `/tcp/${proxy.port}/`);
 		say('%s', config.measures);
-		say('relay real port %d, proxy port %s, delay %d ms, B profile %s, reps %d, pairs %s, strand %s',
+		say('relay real port %d, proxy port %s, delay %d ms, B node class %s, reps %d, pairs %s, strand %s',
 			relayPort, proxy === undefined ? 'none' : String(proxy.port),
-			config.delayMs, config.bProfile, config.reps, config.pairs, strandId);
+			config.delayMs, config.bNodeClass, config.reps, config.pairs, strandId);
 
 		// ── A: founder, relay-only, its link instrumented ────────────────────
 		const aKey = await generateKeyPair('Ed25519');
 		A = new CadreNode(controlNodeConfig({
 			partyId: `rrt-a-${runTag}`,
 			privateKey: aKey,
-			profile: 'transaction',
+			nodeClass: 'device',
 			enableRelay: false,
 			listenAddrs: [],
 			relayAddrs: [aRelayAddr],
@@ -383,12 +383,12 @@ async function measureRun(label: string, config: MeasureConfig): Promise<void> {
 			strandId, expiresAtMs: Date.now() + 365 * 24 * 3600_000, totalUses: 1,
 		});
 
-		// ── B: the joiner, straight to the relay, profile per config ─────────
+		// ── B: the joiner, straight to the relay, node class per config ──────
 		const bKey = await generateKeyPair('Ed25519');
 		B = new CadreNode(controlNodeConfig({
 			partyId: `rrt-b-${runTag}`,
 			privateKey: bKey,
-			profile: config.bProfile,
+			nodeClass: config.bNodeClass,
 			enableRelay: false,
 			listenAddrs: [],
 			relayAddrs: [relay.dialAddr],

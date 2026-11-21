@@ -30,7 +30,7 @@ function startConfig(strandRow: StrandRow, founder: boolean, partyMemberPrivateK
   return {
     strandRow,
     sAppConfig: signedSApp(),
-    profile: 'transaction',
+    nodeClass: 'device',
     defaultLatencyHint: 'interactive',
     founder,
     partyMemberPrivateKey,

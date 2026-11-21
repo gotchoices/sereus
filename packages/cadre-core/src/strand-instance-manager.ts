@@ -39,7 +39,6 @@ import type {
   StorageConfig,
   NetworkConfig,
   LatencyHint,
-  NodeProfile,
   SAppConfig,
   SAppInfo,
   RawStorageProvider,
@@ -49,6 +48,7 @@ import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPoli
 import { strandNodeAddrs } from './strand-network-config.js';
 import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer } from './relay-server.js';
+import type { NodeClass } from './node-class.js';
 import { strandCohortTopicOption, type StrandReactivityConfig } from './strand-reactivity.js';
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
 import { strandRedialTimings, superviseStrandPeerRedial, type StrandPeerRedial } from './strand-peer-redial.js';
@@ -143,7 +143,7 @@ export interface StartStrandConfig {
   sAppConfig?: SAppConfig;
   storage?: StorageConfig;
   network?: NetworkConfig;
-  profile: NodeProfile;
+  nodeClass: NodeClass;
   defaultLatencyHint: LatencyHint;
   privateKey?: PrivateKey;
   /** Cohort-derived discovery seed (multiaddr strings). Defaults to [] when omitted. */
@@ -527,7 +527,7 @@ export class StrandInstanceManager {
   /**
    * Retained launch config per strand, captured in `startStrand` and cleared in
    * `stopStrand`. `resumeStrand` reuses it to rebuild a quiesced strand's runtime
-   * without the caller re-threading storage/network/profile/key/sApp config.
+   * without the caller re-threading storage/network/node-class/key/sApp config.
    */
   private launchConfigs: Map<string, StartStrandConfig> = new Map();
   /**
@@ -850,7 +850,7 @@ export class StrandInstanceManager {
    * Build (or rebuild) the libp2p node + StrandDatabase for an instance and
    * attach them, transitioning it to `active`. Shared by `startStrand` (fresh
    * launch) and `resumeStrand` (rehydrating a quiesced instance). Reads all
-   * volatile inputs (bootstrapNodes, servingMachines, network, profile,
+   * volatile inputs (bootstrapNodes, servingMachines, network, nodeClass,
    * privateKey, sApp config) from `config`, so the caller controls the
    * cohort-derived values. Storage is the
    * one input it does NOT re-read from `config`: that belongs to the instance and
@@ -886,7 +886,7 @@ export class StrandInstanceManager {
 
     // Whether this node runs the circuit-relay server, and its init — the same
     // resolution the control node takes from the same config (`relay-server.ts`).
-    const relayServer = resolveRelayServer(config.network, config.profile);
+    const relayServer = resolveRelayServer(config.network, config.nodeClass);
     // The strand-node VIEW of the machine's one `NetworkConfig`, not the control
     // node's resolution: fixed direct listen ports become ephemeral (two nodes cannot
     // bind one port), the announce config is dropped (it names the control node's
@@ -998,7 +998,7 @@ export class StrandInstanceManager {
         // this way, the row needs a proof that the id it states is the machine's own.
         ...(partyMachines && { isNetworkMember: (peerId: string) => !partyMachines.removed().has(peerId) }),
         storage: strandStorage,
-        fretProfile: config.profile === 'storage' ? 'core' : 'edge',
+        fretProfile: config.nodeClass === 'server' ? 'core' : 'edge',
         relay: relayServer.enabled,
         // NOTE: unlike the control node, a strand node has no unauthorized-reservation budget,
         // so with the per-connection cap off any peer that reaches this node can hold one of
@@ -1024,9 +1024,9 @@ export class StrandInstanceManager {
           cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(config.network)
         }),
         arachnode: {
-          enableRingZulu: config.profile === 'storage'
+          enableRingZulu: config.nodeClass === 'server'
         },
-        // One join catch-up per node. On a storage-profile node Optimystic's rebalance growth
+        // One join catch-up per node. On a `'server'` node Optimystic's rebalance growth
         // arm pushes a joiner every block whose cohort it entered, one request per block, and
         // it never hears of the peer-join catch-up's pushes, so each block would go twice. The
         // catch-up pushes every block to every peer it serves, the growth arm's targets

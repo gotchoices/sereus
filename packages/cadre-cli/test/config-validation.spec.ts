@@ -18,7 +18,7 @@ const EXAMPLE_CONFIG = resolve(dirname(fileURLToPath(import.meta.url)), '../exam
 
 const VALID = {
   controlNetwork: { partyId: 'party-1', bootstrapNodes: [] },
-  profile: 'storage',
+  nodeClass: 'server',
   storage: { type: 'memory' },
 };
 
@@ -86,6 +86,6 @@ describe('config file validation', () => {
 
   // The CLI must never reject its own shipped configs.
   it('accepts the shipped example.cadre.yaml with no environment', async () => {
-    await expect(loadValidatedConfig(EXAMPLE_CONFIG, {})).resolves.toMatchObject({ profile: 'storage' });
+    await expect(loadValidatedConfig(EXAMPLE_CONFIG, {})).resolves.toMatchObject({ nodeClass: 'server' });
   });
 });

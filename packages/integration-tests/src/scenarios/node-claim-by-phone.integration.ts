@@ -9,7 +9,7 @@
  *   with a proof of that one-time secret, and while it waits it admits a stranger's
  *   connection and nothing else on it.
  * - **Phone-shaped claimant** — an in-process `CadreNode` with `listenAddrs: []`, WebSocket
- *   and circuit-relay transports only, `profile: 'transaction'`, owner genesis run on
+ *   and circuit-relay transports only, `nodeClass: 'device'`, owner genesis run on
  *   itself: the claimant of `cadre-host-join-by-qr.integration.ts`.
  * - **The QR payload** — the node's peer id and addresses, read here from its `/status`, plus
  *   the secret. cadre-host's join flow will show these as a QR code
@@ -37,7 +37,7 @@
  *
  * The child is spawned directly, not through cadre-host's `HostProcessOrchestrator`: that
  * orchestrator has no way to hand a child a claim secret yet (`cadre-host-hosted-nodes-join-by-qr`
- * adds one). It runs the `storage` profile, as cadre-host's nodes do, binds `/ws` on loopback
+ * adds one). It runs as a server, as cadre-host's nodes do, binds `/ws` on loopback
  * only, and keeps its identity file, file storage and node-state directory in one workdir, so
  * step 6 restarts the same node. Its loopback admin channel (`--admin-port`) is the only window
  * onto its authorized set from outside the process.
@@ -130,7 +130,7 @@ async function prepareClaimableNode(workdir: string, partyId: string, claimSecre
   const configPath = join(workdir, 'cadre.json');
   const config: CliConfigFile = {
     controlNetwork: { partyId, bootstrapNodes: [] },
-    profile: 'storage',
+    nodeClass: 'server',
     storage: { type: 'file', path: join(workdir, 'storage') },
     network: { listenAddrs: [`/ip4/127.0.0.1/tcp/${ports.ws}/ws`] },
     hibernation: { enabled: false },

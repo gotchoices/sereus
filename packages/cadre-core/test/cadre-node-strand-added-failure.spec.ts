@@ -26,7 +26,7 @@ function createConfig(): CadreNodeConfig {
       partyId: 'strand-added-failure-test-' + Math.random().toString(36).slice(2),
       bootstrapNodes: []
     },
-    profile: 'transaction'
+    nodeClass: 'device'
   };
 }
 
@@ -168,10 +168,10 @@ describe('CadreNode.handleStrandAdded failure propagation', () => {
 
 describe('CadreNode.handleStrandAdded storage replica', () => {
   it('announces an unclaimed strand once across failed replica launches, and launches it without an sApp config', async () => {
-    // A storage-profile node hosts unclaimed strands as storage replicas. A failed replica
+    // A server node hosts unclaimed strands as storage replicas. A failed replica
     // launch rejects so the watcher retries it (forgetStrand + backoff), and every retry
     // re-enters the no-config branch — which must not re-announce the strand.
-    const node = new CadreNode({ ...createConfig(), profile: 'storage' });
+    const node = new CadreNode({ ...createConfig(), nodeClass: 'server' });
     (node as unknown as { identityKey: unknown }).identityKey = await generateKeyPair('Ed25519');
     const launches: StartStrandConfig[] = [];
     (node as unknown as { strandManager: unknown }).strandManager = {

@@ -58,7 +58,7 @@ function createStartConfig(strandId: string, provider: (id: string) => IRawStora
     schema: testSchema,
     signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
   };
-  return { strandRow, sAppConfig, profile: 'transaction', defaultLatencyHint: 'interactive', storage: { provider } };
+  return { strandRow, sAppConfig, nodeClass: 'device', defaultLatencyHint: 'interactive', storage: { provider } };
 }
 
 describe('strand scope key validation', () => {

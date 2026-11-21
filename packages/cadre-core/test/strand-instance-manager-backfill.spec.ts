@@ -82,7 +82,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   return {
     strandRow,
     sAppConfig,
-    profile: 'transaction',
+    nodeClass: 'device',
     defaultLatencyHint: 'interactive',
     storage: { provider: fakeStorage() },
     ...overrides

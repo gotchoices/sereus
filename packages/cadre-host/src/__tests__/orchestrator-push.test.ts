@@ -29,8 +29,8 @@ setInterval(() => {}, 1 << 30);
 
 const FCM = { projectId: 'proj', clientEmail: 'svc@proj.iam', privateKey: 'FCM-SECRET-PEM' };
 const APNS = { keyId: 'KID', teamId: 'TEAM', bundleId: 'com.example.app', privateKey: 'APNS-SECRET-P8', production: false };
-/** A storage node — the one profile whose spawn carries push. */
-const NODE = { containerId: 'n1', partyId: 'p', profile: 'storage' as const };
+/** A server node — the one node class whose spawn carries push. */
+const NODE = { containerId: 'n1', partyId: 'p', nodeClass: 'server' as const };
 
 let tmpRoot: string;
 let scriptPath: string;
@@ -124,15 +124,15 @@ describe('HostProcessOrchestrator push injection', () => {
     expect((cfg2.push as PushCredentials).fcm).toBeUndefined();
   });
 
-  it('injects push for a storage-profile managed node but not a transaction node', async () => {
+  it('injects push for a server managed node but not for a device', async () => {
     const rootDir = join(tmpRoot, 'f');
     const orch = makeOrchestrator(rootDir, async () => ({ fcm: FCM, apns: APNS, cooldownMs: 1000 }));
     await orch.init();
 
-    await orch.createContainer({ containerId: 'storage-1', partyId: 'p', profile: 'storage' });
-    expect(readChildConfig(rootDir, 'storage-1').push).toEqual({ fcm: FCM, apns: APNS, cooldownMs: 1000 });
+    await orch.createContainer({ containerId: 'server-1', partyId: 'p', nodeClass: 'server' });
+    expect(readChildConfig(rootDir, 'server-1').push).toEqual({ fcm: FCM, apns: APNS, cooldownMs: 1000 });
 
-    await orch.createContainer({ containerId: 'txn-1', partyId: 'p', profile: 'transaction' });
-    expect(readChildConfig(rootDir, 'txn-1').push).toBeUndefined();
+    await orch.createContainer({ containerId: 'device-1', partyId: 'p', nodeClass: 'device' });
+    expect(readChildConfig(rootDir, 'device-1').push).toBeUndefined();
   });
 });

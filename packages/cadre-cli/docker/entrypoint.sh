@@ -63,7 +63,7 @@ controlNetwork:
   partyId: "${CADRE_PARTY_ID}"
 $(bootstrap_nodes_yaml)
 
-profile: ${CADRE_PROFILE:-storage}
+nodeClass: ${CADRE_NODE_CLASS:-server}
 
 storage:
   type: ${CADRE_STORAGE_TYPE:-file}

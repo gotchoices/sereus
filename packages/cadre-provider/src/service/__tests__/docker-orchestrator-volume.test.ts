@@ -8,7 +8,7 @@ import { daemonStubs, type DaemonStubs } from './fake-docker.js';
 const request: OrchestratorCreateRequest = {
   containerId: 'ctr_vol',
   partyId: 'party-1',
-  profile: 'storage',
+  nodeClass: 'server',
 };
 
 const volumeName = volumeNameFor(request.containerId);

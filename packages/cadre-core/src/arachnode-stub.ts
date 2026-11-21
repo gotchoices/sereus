@@ -1,5 +1,6 @@
 import debug from 'debug';
-import type { NodeProfile, ArachnodeConfig } from './types.js';
+import type { ArachnodeConfig } from './types.js';
+import type { NodeClass } from './node-class.js';
 
 const log = debug('sereus:cadre:arachnode');
 
@@ -31,15 +32,15 @@ export interface RingConfig {
  * This is a stub that will be replaced when arachnode is fully implemented.
  */
 export class ArachnodeStub {
-  private readonly profile: NodeProfile;
+  private readonly nodeClass: NodeClass;
   private readonly config: ArachnodeConfig;
   private ringConfig?: RingConfig;
   private running = false;
 
-  constructor(profile: NodeProfile, config: ArachnodeConfig) {
-    this.profile = profile;
+  constructor(nodeClass: NodeClass, config: ArachnodeConfig) {
+    this.nodeClass = nodeClass;
     this.config = config;
-    log('ArachnodeStub created for profile=%s, config=%o', profile, config);
+    log('ArachnodeStub created for nodeClass=%s, config=%o', nodeClass, config);
   }
 
   /**
@@ -54,8 +55,8 @@ export class ArachnodeStub {
       // Stub: In real implementation, would register with transaction verification network
     }
 
-    // Storage nodes join storage rings
-    if (this.profile === 'storage' && this.config.storageRing) {
+    // Always-on nodes join storage rings
+    if (this.nodeClass === 'server' && this.config.storageRing) {
       const { ring, partition = 0 } = this.config.storageRing;
       
       log('Joining storage ring %d, partition %d', ring, partition);
@@ -146,14 +147,14 @@ export class ArachnodeStub {
  * Create an arachnode instance for a strand
  */
 export function createArachnodeStub(
-  profile: NodeProfile, 
+  nodeClass: NodeClass, 
   config?: Partial<ArachnodeConfig>
 ): ArachnodeStub {
   const fullConfig: ArachnodeConfig = {
     enableRingZulu: config?.enableRingZulu ?? true,
-    storageRing: profile === 'storage' ? (config?.storageRing ?? { ring: 0 }) : undefined
+    storageRing: nodeClass === 'server' ? (config?.storageRing ?? { ring: 0 }) : undefined
   };
   
-  return new ArachnodeStub(profile, fullConfig);
+  return new ArachnodeStub(nodeClass, fullConfig);
 }
 

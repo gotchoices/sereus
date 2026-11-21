@@ -218,7 +218,7 @@ describe('E2E push-wake over the control network', () => {
 			// identity — so S never self-publishes an addr-bearing CadrePeer row that would
 			// pollute Rx's strand-resume cohort seed, exactly as scenario 4). Genesis ALONE
 			// before forming a cohort so the lone OwnerKey commits with no collision.
-			S = new CadreNode(controlNodeConfig({ partyId, profile: 'storage' }));
+			S = new CadreNode(controlNodeConfig({ partyId, nodeClass: 'server' }));
 			await S.start();
 			const { publicKey: sOwnerPub } = await makeOwnOwner(S);
 			const sPeerId = S.peerId!.toString();
@@ -300,9 +300,9 @@ describe('E2E push-wake over the control network', () => {
 
 			// Relay L: dedicated transport infra AND the party's SOLE owner + storage
 			// hub. Genesis ALONE (cohort {L}, before S/Rx connect) so its lone OwnerKey
-			// commits with no shared-owner collision. Storage profile so it holds the
+			// commits with no shared-owner collision. A server node so it holds the
 			// CadrePeer blocks the readers pull.
-			L = new CadreNode(controlNodeConfig({ partyId, profile: 'storage', enableRelay: true }));
+			L = new CadreNode(controlNodeConfig({ partyId, nodeClass: 'server', enableRelay: true }));
 			await L.start();
 			const { publicKey: lOwnerPub } = await makeOwnOwner(L);
 			const lAddrs = controlAddrs(L);
@@ -584,12 +584,12 @@ describe('E2E push-wake over the control network', () => {
 			const partyId = `pushwake-repl-${Date.now()}`;
 			const strandId = `strand-repl-${Date.now()}`;
 
-			// Owner A: the single genesis owner + sole control-DB writer. Storage
-			// profile so it holds the CadrePeer blocks the readers pull. Its owner keypair
+			// Owner A: the single genesis owner + sole control-DB writer. A server node
+			// so it holds the CadrePeer blocks the readers pull. Its owner keypair
 			// is enrolled explicitly (independent of the node's ephemeral identity). Genesis
 			// BEFORE forming a cohort so its lone OwnerKey commits without a shared-owner
 			// collision. NOT a relay (see the design note) — direct dials keep the cohort stable.
-			A = new CadreNode(controlNodeConfig({ partyId, profile: 'storage' }));
+			A = new CadreNode(controlNodeConfig({ partyId, nodeClass: 'server' }));
 			await A.start();
 			const { publicKey: aOwnerPub } = await makeOwnOwner(A);
 			const aAddrs = controlAddrs(A);

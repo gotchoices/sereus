@@ -28,7 +28,8 @@
 
 import { digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
 import { controlAuthorizationFields } from './control-authorization.js';
-import type { NodeProfile, PeerAddressRecord, PeerResolveTrustPolicy } from './types.js';
+import type { PeerAddressRecord, PeerResolveTrustPolicy } from './types.js';
+import type { PublishedProfile } from './node-class.js';
 
 /**
  * Default freshness ceiling for resolved peer-address records (15 minutes).
@@ -57,10 +58,10 @@ const SIGNALING_PREFIX = '/p2p-circuit';
  * @param peerId - base58btc libp2p peer id (the row key)
  * @param multiaddr - the comma-joined `Multiaddr` string EXACTLY as stored
  * @param updatedAt - epoch-ms freshness stamp
- * @param profile - the publisher's node profile; null signs as `''`, as the constraint coalesces it
+ * @param profile - whether the publisher is always on, stored form; null signs as `''`, as the constraint coalesces it
  */
 export function peerRecordSignedPayload(
-  partyId: string, peerId: string, multiaddr: string, updatedAt: number, profile: NodeProfile | null
+  partyId: string, peerId: string, multiaddr: string, updatedAt: number, profile: PublishedProfile | null
 ): string {
   const fields = controlAuthorizationFields('CadreControl.CadrePeer', 'publish', partyId, [peerId, multiaddr, String(updatedAt), profile ?? '']);
   return digest(fields, 'sha256', 'base64url') as string;

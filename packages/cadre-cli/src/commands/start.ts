@@ -243,7 +243,7 @@ interface HealthServerFlags {
  */
 async function startHealthServer(
   flags: HealthServerFlags,
-  profile: string,
+  nodeClass: string,
   node: CadreNode | undefined,
   facts: Pick<HealthServerOptions, 'claim' | 'invitation' | 'ownerGrant' | 'removal'>,
 ): Promise<HealthServer | null> {
@@ -256,7 +256,7 @@ async function startHealthServer(
   // distinct from CADRE_STARTUP_TOKEN (PID-verify / admin-channel bearer).
   const seedToken = commandEnv('CADRE_SEED_TOKEN') ?? '';
 
-  const healthServer = new HealthServer({ healthPort, metricsPort, profile, seedToken, ...facts });
+  const healthServer = new HealthServer({ healthPort, metricsPort, nodeClass, seedToken, ...facts });
   if (node) healthServer.attach(node);
   await healthServer.start();
   console.log(`✓ Health server on port ${healthServer.healthBoundPort}, metrics on port ${healthServer.metricsBoundPort}`);
@@ -409,7 +409,7 @@ export const startCommand = new Command('start')
         removal: () => removal,
       };
       if (removal) {
-        const healthServer = await startHealthServer(options, config.profile, undefined, statusFacts);
+        const healthServer = await startHealthServer(options, config.nodeClass, undefined, statusFacts);
         return await serveRemoved(removal, config.nodeStateDir, healthServer);
       }
       const noteRemoval = (reported: CadreRemoval): void => { removal = reported; };
@@ -438,7 +438,7 @@ export const startCommand = new Command('start')
       // starts removed. If that exit is ever seen, skip those steps once `removal` is set.
       stopWhenRemoved(node, config.nodeStateDir, noteRemoval);
 
-      const healthServer = await startHealthServer(options, config.profile, node, statusFacts);
+      const healthServer = await startHealthServer(options, config.nodeClass, node, statusFacts);
 
       // The admin channel is created after owner init below; declared here
       // so graceful shutdown can close it.

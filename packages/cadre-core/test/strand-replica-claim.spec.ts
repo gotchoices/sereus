@@ -15,7 +15,7 @@ const NOT_NULL_ADDED_SCHEMA = 'table Note (Id text primary key, At text not null
  * **What this protects: claiming a strand this node already hosts as a storage replica**
  * (`StrandInstanceManager.attachSApp`, called by `CadreNode` before any founding).
  *
- * A storage-profile node runs unclaimed strands with no sApp config: the `Strand` schema,
+ * A server node runs unclaimed strands with no sApp config: the `Strand` schema,
  * no `App` tables. When an app on the same machine claims one — including as its founder,
  * after a restart where the watcher's replica launch won the race — the running replica
  * must gain the app's tables over the SAME node and store, and a founding that follows must
@@ -41,7 +41,7 @@ describe('claiming a hosted storage replica', () => {
 
     // The claim lands while the replica's runtime is still being built, so the attach must
     // wait for the build and act on the database it produced.
-    const launching = manager.startStrand({ strandRow, profile: 'storage', defaultLatencyHint: 'interactive' });
+    const launching = manager.startStrand({ strandRow, nodeClass: 'server', defaultLatencyHint: 'interactive' });
     const attaching = manager.attachSApp(strandRow.Id, sApp);
     const instance = await launching;
     const node = instance.libp2pNode;
@@ -69,7 +69,7 @@ describe('claiming a hosted storage replica', () => {
   ])('refuses a claim with a schema that can never apply on a %s replica, and the replica still resumes', async (_state, quiesceFirst) => {
     manager = new StrandInstanceManager();
     const strandRow: StrandRow = { Id: `replica-refused-${String(quiesceFirst)}`, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
-    const instance = await manager.startStrand({ strandRow, profile: 'storage', defaultLatencyHint: 'interactive' });
+    const instance = await manager.startStrand({ strandRow, nodeClass: 'server', defaultLatencyHint: 'interactive' });
     if (quiesceFirst) {
       await manager.quiesceStrand(strandRow.Id);
     }
@@ -97,7 +97,7 @@ describe('claiming a hosted storage replica', () => {
     const storage = new MemoryRawStorage();
     const privateKey = await generateKeyPair('Ed25519');
     const launch = (overrides: Partial<StartStrandConfig>): StartStrandConfig =>
-      ({ strandRow, profile: 'storage', defaultLatencyHint: 'interactive', storage: { provider: () => storage }, privateKey, ...overrides });
+      ({ strandRow, nodeClass: 'server', defaultLatencyHint: 'interactive', storage: { provider: () => storage }, privateKey, ...overrides });
 
     const founded = await manager.startStrand(launch({ sAppConfig: signedSApp(), founder: true }));
     await founded.database!.getDatabase().exec(`insert into App.Note (Id) values ('n1')`);

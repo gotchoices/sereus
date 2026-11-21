@@ -6,7 +6,7 @@ Related: [Running a node in a React Native app](react-native.md) · [in a browse
 
 ## What each app demonstrates
 
-All three start one node with the `transaction` profile, join their party's control network, and run a chat strand whose tables they read and write with SQL. Each has a chat screen and a screen for the node and the cadre (Settings on the phone apps; Home and Cadre in the browser).
+All three start one node in the `device` class, join their party's control network, and run a chat strand whose tables they read and write with SQL. Each has a chat screen and a screen for the node and the cadre (Settings on the phone apps; Home and Cadre in the browser).
 
 | App | Runtime | Node entry point | Storage | Shows |
 |---|---|---|---|---|
@@ -128,7 +128,7 @@ When a linked request arrives whose reply scheme matches a saved permission, the
 
 **Devices and nodes** lists the cadre's machines and lets an owner remove one ([Removing a machine](../cadre/removing-machines.md)). Sources: `src/machines-section.tsx`, `src/machine-removal.tsx` and `src/machines.ts`; `src/lib/machines.svelte.ts` and `src/Machines.svelte` in the browser.
 
-Each row comes from `CadreNode.listMachines` and shows four things: whether the machine is an app or an always-on node, from the node profile it published; when it was last seen, from its last self-signed record, which a running machine renews periodically; the first eight characters of its identity key, the fingerprint form cadre-host shows; and "Not trusted here" when the row no longer passes this node's own membership check, for example after the owner key that approved it was removed.
+Each row comes from `CadreNode.listMachines` and shows four things: whether the machine is always on, which is unknown until that machine has published its own record; when it was last seen, from its last self-signed record, which a running machine renews periodically; the first eight characters of its identity key, the fingerprint form cadre-host shows; and "Not trusted here" when the row no longer passes this node's own membership check, for example after the owner key that approved it was removed.
 
 The list is read when the section appears, after each change made on the screen, and on **Refresh**. It is not polled.
 

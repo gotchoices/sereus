@@ -25,8 +25,8 @@ controlNetwork:
     - "/dns4/bootstrap.example.com/tcp/4001/p2p/12D3KooW..."
     - "/ip4/192.168.1.100/tcp/4001/p2p/12D3KooW..."
 
-# Node profile: 'transaction' (mobile/edge) or 'storage' (server)
-profile: storage
+# Node class: 'device' (mobile/edge) or 'server' (always-on machine)
+nodeClass: server
 
 # Strand filtering (optional, defaults to 'all')
 # Options: 'all', 'none', { sAppId: "..." }, { strandId: "..." }
@@ -65,7 +65,7 @@ strandFilter: all
 # claim:
 #   secretFile: /var/lib/cadre/claim.secret
 
-# Storage configuration (for storage profile)
+# Storage configuration (for a server node)
 storage:
   type: file
   path: ./data
@@ -114,7 +114,7 @@ network:
   # relayAddrs:
   #   - "/dns4/relay.example.com/tcp/4001/p2p/12D3KooW..."
   # Enable circuit relay server - allows this node to relay connections for other peers.
-  # Defaults to true for storage profile nodes, false for transaction profile.
+  # Defaults to true for server nodes, false for a device.
   # enableRelay: true
 
 # Hibernation settings

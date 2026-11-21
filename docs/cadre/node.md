@@ -11,7 +11,7 @@ A started node runs one libp2p node for the party's control network, under the n
 The node's duties, each with the document that owns the mechanism:
 
 1. **Replicates the whole control database** ([Control database replication](control-replication.md)).
-2. **Stays connected to the party's other nodes**, dialing every storage-profile node and a bounded number of the others ([Cohort auto-connect](control-convergence.md#cohort-auto-connect), [Cold-start retry](control-convergence.md#cold-start-retry)).
+2. **Stays connected to the party's other nodes**, dialing every always-on node and a bounded number of the others ([Cohort auto-connect](control-convergence.md#cohort-auto-connect), [Cold-start retry](control-convergence.md#cold-start-retry)).
 3. **Decides who may connect and what they may ask for** ([The connection gate](control-security.md#the-connection-gate), [Per-stream protocol guard](control-security.md#per-stream-protocol-guard)).
 4. **Verifies control rows against owner keys it trusts out of band** ([The trusted-owner anchor](control-security.md#the-trusted-owner-anchor)).
 5. **Publishes its own signed address record**, so the party's other nodes can find it from its peer id ([The node's address record](#the-nodes-address-record)).
@@ -23,7 +23,7 @@ The node's duties, each with the document that owns the mechanism:
 
 ### The node's address record
 
-`CadreNode.registerSelf` writes this node's dialable addresses, public key, profile and a timestamp to its own `CadrePeer` row, signed with the identity key. The node publishes again when its addresses change and on a heartbeat of half the record's 15-minute maximum age (`peer-record.ts`). A node that holds no owner key cannot insert its own row: it waits for the row an owner or the admitting member wrote to arrive by replication, and refreshes it from then on.
+`CadreNode.registerSelf` writes this node's dialable addresses, public key, whether it is always on and a timestamp to its own `CadrePeer` row, signed with the identity key. The node publishes again when its addresses change and on a heartbeat of half the record's 15-minute maximum age (`peer-record.ts`). A node that holds no owner key cannot insert its own row: it waits for the row an owner or the admitting member wrote to arrive by replication, and refreshes it from then on.
 
 `CadreNode.resolvePeerAddrs(peerId)` returns another node's addresses only if the stored public key matches the peer id, the signature verifies, the record is fresh and the caller's trust policy accepts it; otherwise it returns an empty list.
 
@@ -39,11 +39,11 @@ A failed launch leaves nothing tracked: `getStrand(id)` returns `undefined`, and
 
 `CadreNode.getStrand(id)` and `getStrands()` return a `StrandInstance` per running strand, whose fields the [API guide](../api.md) describes. Its `status` values are explained in [States](../strands/hibernation.md#states), and its `sAppInfo` is absent on a [storage replica](#storage-replicas).
 
-## Node profiles
+## Node classes
 
-`profile` is required. `transaction` is an app on a phone or in a browser: connected some of the time, and running only the strands its app uses. `storage` is an always-on node on a server or a home machine. The profile has these effects and no others:
+`nodeClass` is required and says what kind of machine this node runs on. `device` is a phone, a laptop or a browser tab running an app: connected some of the time, and running only the strands its app uses. `server` is an always-on node: a `cadre-cli` process on a server or a home machine, a cadre-host child, or a provider's container. The class has these effects and no others:
 
-| What it affects | `transaction` | `storage` |
+| What it affects | `device` | `server` |
 |---|---|---|
 | FRET profile of the control node and every strand node | `edge` | `core` |
 | Optimystic's Arachnode subsystem (ring membership, block restoration from other holders) | off | on |
@@ -52,9 +52,9 @@ A failed launch leaves nothing tracked: `getStrand(id)` returns `undefined`, and
 | How the party's other nodes dial it | up to the cohort's target degree | always |
 | In seeds and invitation replies | listed | listed as a preferred peer |
 
-The first four rows are local settings, and an option overrides two of them. The last two follow from the node publishing its profile in its [address record](#the-nodes-address-record): other nodes treat storage-profile machines as the ones that stay reachable ([Cohort auto-connect](control-convergence.md#cohort-auto-connect)).
+The first four rows are local settings, and an option overrides two of them. The last two follow from what the node publishes in its [address record](#the-nodes-address-record): a `server` node declares that it is always on and a `device` node declares that it is not, and other nodes treat the always-on machines as the ones that stay reachable ([Cohort auto-connect](control-convergence.md#cohort-auto-connect)). That declaration is all the party's other machines read; the class itself is never replicated, and [the control schema](control-schema.md#limits-and-accepted-tradeoffs) describes the column that stores it.
 
-The profile does not decide whether a node stores data: every node keeps the blocks of the control database and of each strand it runs in whatever `storage.provider` returns ([Storage](#storage)).
+Both classes transact and store. The class does not decide whether a node stores data: every node keeps the blocks of the control database and of each strand it runs in whatever `storage.provider` returns ([Storage](#storage)).
 
 ## Strand filtering
 
@@ -73,7 +73,7 @@ Under an `sAppId` filter, a strand whose sApp id the node does not know yet is a
 
 ### Storage replicas
 
-Whether a node runs a strand its filter admits and no app on the machine has claimed is a separate option, `hostUnclaimedStrands`, which is on by default for the `storage` profile only.
+Whether a node runs a strand its filter admits and no app on the machine has claimed is a separate option, `hostUnclaimedStrands`, which is on by default for the `server` class only.
 
 With it on, the node launches every admitted strand as a **storage replica**: the strand's own libp2p node, block store and `Strand` membership schema, with no sApp configuration and no `App` schema. A replica stores and serves the strand's blocks and runs nothing an app supplied. An always-on machine thereby keeps a copy of every strand of its party, so a lost phone loses nothing that had reached that machine.
 
@@ -83,11 +83,11 @@ With it on, the node launches every admitted strand as a **storage replica**: th
 - **An app on the same machine can claim a running replica.** `addStrand` or `foundStrand` applies the app's schema to the live database over the same libp2p node and store, so nothing is fetched again and the peer id and connections are kept.
 - **A strand joined from another party is hosted once the join is published party-wide** in the `JoinedStrand` table, and stopped when that row is removed ([What a joiner's node remembers](../strands/keys.md#what-a-joiners-node-remembers)).
 
-With it off, the node announces the strand and launches nothing until an app claims it. `cadre-cli` does not expose the option, so on a storage-profile `cadre-cli` node the strand filter is the only way to host fewer strands.
+With it off, the node announces the strand and launches nothing until an app claims it. `cadre-cli` does not expose the option, so on a `server`-class `cadre-cli` node the strand filter is the only way to host fewer strands.
 
 ## Configuration
 
-`CadreNodeConfig` and `NetworkConfig` in [`packages/cadre-core/src/types.ts`](../../packages/cadre-core/src/types.ts) are the reference: each option's comment states its contract. This section lists the groups a reader sets and their defaults; each group's name links to the document that describes it. Three options are required: `controlNetwork.partyId`, `controlNetwork.bootstrapNodes` (which may be empty) and `profile`.
+`CadreNodeConfig` and `NetworkConfig` in [`packages/cadre-core/src/types.ts`](../../packages/cadre-core/src/types.ts) are the reference: each option's comment states its contract. This section lists the groups a reader sets and their defaults; each group's name links to the document that describes it. Three options are required: `controlNetwork.partyId`, `controlNetwork.bootstrapNodes` (which may be empty) and `nodeClass`.
 
 | Group | Options | Default when omitted |
 |---|---|---|
@@ -96,7 +96,7 @@ With it off, the node announces the strand and launches nothing until an app cla
 | [Trust before first sync](control-security.md) | `trustedOwners`, `seedTrustPolicy`, `claim` | Empty in-memory anchor; `anchoredTrustPolicy()`; not [claimable](membership.md#claiming-a-node) |
 | [Node-local stores](#node-local-state) | `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`, `joinedStrands` | In memory, lost on exit |
 | [Block storage](#storage) | `storage.provider` | An in-memory store per network |
-| [Which strands run](#strand-filtering) | `strandFilter`, `hostUnclaimedStrands`, `strandWatchInterval` | `all`; on for `storage`; 300 000 ms |
+| [Which strands run](#strand-filtering) | `strandFilter`, `hostUnclaimedStrands`, `strandWatchInterval` | `all`; on for `server`; 300 000 ms |
 | [Schema policy](../strands/lifecycle.md) | `requireSignedSchemas` | `true`: an unsigned sApp schema is refused |
 | [Replication](control-replication.md#replication-cluster-size) | `strandClusterSize`, `strandBackfill`, `controlBackfill` | 4; on; on ([Catching up a new machine](control-replication.md#catching-up-a-new-machine)) |
 | [Joining a strand](../strands/formation.md) | `strandFirstSync` | Gate always on; timeouts from `strand-first-sync-gate.ts` |
@@ -134,7 +134,7 @@ const provider = (scope: string): FileRawStorage => {
 const node = new CadreNode({
 	keyStore: new FileKeyStore(stateDir),
 	controlNetwork: { partyId, bootstrapNodes: [] },
-	profile: 'storage',
+	nodeClass: 'server',
 	storage: { provider },
 	network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'], defaultTransports: nodeDefaultTransports },
 	trustedOwners: { store: await FileTrustedOwnerStore.open(stateDir, partyId), pinnedKeys: [ownerKey] },
@@ -154,7 +154,7 @@ One `network` block configures the control node and every strand node, because t
 | Listening | `listenAddrs` | Omitted: `/ip4/0.0.0.0/tcp/0`. `[]` means the node cannot listen. The control node binds each entry as written; each strand node binds the same entry with its port set to 0. |
 | Advertising | `appendAnnounceAddrs`, `announceAddrs`, `inviteAddressResolver` | Control node only. `appendAnnounceAddrs` adds an address. `announceAddrs` replaces the whole advertised set, including an address earned from a relay. The resolver changes only the addresses put in invitations. |
 | Being reached through a relay | `relayAddrs`, `requireRelay` | Each entry is a relay's dial address ending in its peer id. `requireRelay` defaults to `true`: `start()` fails if the first reservation fails. Set `false` on a node that must start with no network. |
-| Serving as a relay | `enableRelay`, `relayServerInit`, `unauthorizedRelayReservationCap` | On by default for `storage`. The cap (default 8) limits reservations granted to peers not yet recognised as members. |
+| Serving as a relay | `enableRelay`, `relayServerInit`, `unauthorizedRelayReservationCap` | On by default for `server`. The cap (default 8) limits reservations granted to peers not yet recognised as members. |
 | Transports and crypto | `transports`, `defaultTransports`, `noiseCrypto` | Omitted: TCP and circuit relay, with WebSocket added when a listen entry names `/ws`. React Native and browsers must supply `transports`. |
 | The link | `linkRoundTripMs`, `cohortQueryTimeoutMs`, `connectionMonitor` | 3500 ms; derived from it (7000 ms); a 30 s ping deadline at a 35 s interval. |
 | Admission | `connectionGater` | Composed with the node's own gates: a deny from either side denies. |
@@ -341,7 +341,7 @@ const node = await edge.start({ partyId, bootstrapAddrs: [], relayAddrs });
 
 - **Runs transitions one at a time.** Start, stop, restart, join and dissolve each open or close the stores the others use, so they run in call order. A second start joins the one in progress.
 - **Cleans up a failed start.** It closes everything the start opened and reports `failed`, and the next call starts afresh.
-- **Builds the configuration** (`buildEdgeNodeConfig`): `transaction` profile, every strand admitted, the identity from the key store, durable node-local stores, and no hibernation timer, because the app's lifecycle code hibernates strands when it goes to the background.
+- **Builds the configuration** (`buildEdgeNodeConfig`): the `device` class, every strand admitted, the identity from the key store, durable node-local stores, and no hibernation timer, because the app's lifecycle code hibernates strands when it goes to the background.
 - **Sets the network for a device that cannot accept connections.** It listens on nothing unless the platform names an address. Relays go through `network.relayAddrs` with `requireRelay: false`, so the control node and every strand node reserve on them and the node still starts when the relay is unreachable.
 - **Settles the owner key, within a bound.** On a party the app founded it seats the founding owner key (`runOwnerGenesis`); on a party it joined it wires the owner slot's key only if the party lists it (`wireJoinedOwnerKey`). The start waits at most 60 seconds for either step by default and then succeeds without it.
 - **Remembers the last start**, so the app's launch code, or a push wake into a killed process, can start the node unattended. A node the user stopped stays stopped.
@@ -364,9 +364,9 @@ The React Native kit's `createPhoneNode` (`@serfab/cadre-rn/phone-node`) is the 
 
 ## Limits and accepted tradeoffs
 
-- **Storage quotas are not enforced.** `storage.quotaBytes` is accepted and nothing reads it, so a storage-profile node stores every strand its filter admits. This is acceptable while a party has a handful of strands; if always-on nodes come to host hundreds, the options are per-strand quotas or a narrower default filter (ticket `5-quota-enforcement`).
-- **cadre-core configures no storage rings.** The storage profile switches Optimystic's Arachnode subsystem on with its defaults and passes it no ring or capacity settings. Where cadre-core's own join catch-up runs, it turns Optimystic's rebalance reaction off, so a node stays in the ring it started in (ticket `5-ring-zulu-storage-rings`).
-- **A published profile is unverified.** Other nodes use it only to choose whom to dial first, so a false declaration costs only wasted dials.
+- **Storage quotas are not enforced.** `storage.quotaBytes` is accepted and nothing reads it, so a `server`-class node stores every strand its filter admits. This is acceptable while a party has a handful of strands; if always-on nodes come to host hundreds, the options are per-strand quotas or a narrower default filter (ticket `5-quota-enforcement`).
+- **cadre-core configures no storage rings.** The `server` class switches Optimystic's Arachnode subsystem on with its defaults and passes it no ring or capacity settings. Where cadre-core's own join catch-up runs, it turns Optimystic's rebalance reaction off, so a node stays in the ring it started in (ticket `5-ring-zulu-storage-rings`).
+- **A machine's published always-on declaration is unverified.** Other nodes use it only to choose whom to dial first, so a false declaration costs only wasted dials.
 - **The single-store provider form has not been run end to end.** Every provider in this repository returns a store per scope. One `IRawStorage` shared by all scopes is exercised only with in-memory stores, which are never cached (ticket `debt-shared-store-provider-never-exercised-end-to-end`).
 - **Node-local records are written by one process at a time.** Each save replaces the whole record, and writes are ordered only within a process, so two processes sharing one slot for one party overwrite each other's entries. Every backend here gives each node its own directory or database, except for two browser tabs on one origin.
 - **A long party id can exceed a file-name limit.** The control scope key is twice the party id's UTF-8 length plus eight characters, so a party id over about 120 bytes passes the 255-byte limit on one path component. Party ids are UUIDs; if long ids appear, the key should hash the party id.

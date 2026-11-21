@@ -32,7 +32,7 @@ import { expectConstraintFailure } from './control-constraint-helpers.js';
  * pre-existing owner, `update` is forbidden outright, and `MinOneOwner` floors the
  * table at one row.
  *
- * Every test boots its OWN `CadreNode` (empty bootstrap, transaction profile) seeded
+ * Every test boots its OWN `CadreNode` (empty bootstrap, a device) seeded
  * with one founding owner: these attacks mutate the owner set — one of them emptied it
  * pre-fix — so a shared database would leak state between probes.
  */
@@ -184,7 +184,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
         partyId: 'ownerkey-authz-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

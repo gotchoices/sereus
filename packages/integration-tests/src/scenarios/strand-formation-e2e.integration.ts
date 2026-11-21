@@ -401,7 +401,7 @@ describe('E2E Strand Formation', () => {
 			try {
 				const partyId = `lifecycle-${Date.now()}`;
 
-				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, profile: 'storage', enableRelay: true }));
+				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, nodeClass: 'server', enableRelay: true }));
 				await aliceNode.start();
 
 				const aliceAddrs = aliceNode.getMultiaddrs();
@@ -530,7 +530,7 @@ describe('E2E Strand Formation', () => {
 			try {
 				const partyId = `multi-${Date.now()}`;
 
-				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, profile: 'storage', enableRelay: true }));
+				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, nodeClass: 'server', enableRelay: true }));
 				await aliceNode.start();
 
 				bobNode = new CadreNode(controlNodeConfig({ partyId: `bob-${partyId}`, bootstrapNodes: aliceNode.getMultiaddrs() }));
@@ -650,7 +650,7 @@ describe('E2E Strand Formation', () => {
 				const partyId = `three-${Date.now()}`;
 
 				// Alice (responder)
-				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, profile: 'storage', enableRelay: true }));
+				aliceNode = new CadreNode(controlNodeConfig({ partyId: `alice-${partyId}`, nodeClass: 'server', enableRelay: true }));
 				await aliceNode.start();
 
 				const aliceAddrs = aliceNode.getMultiaddrs();

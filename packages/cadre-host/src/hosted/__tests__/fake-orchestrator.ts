@@ -12,6 +12,7 @@
  * cannot make a failing hosted-node test go green by relaxing the fake.
  */
 
+import type { NodeClass } from '@serfab/cadre-core';
 import type {
   Orchestrator,
   OrchestratorCreateResult,
@@ -28,7 +29,7 @@ function sleep(ms: number): Promise<void> {
 interface FakeChild {
   containerId: string;
   partyId: string;
-  profile: 'storage' | 'transaction';
+  nodeClass: NodeClass;
   running: boolean;
   /** The ports a re-spawn comes back on (the real `reusedNodePorts`). */
   ports: NodePorts;
@@ -123,7 +124,7 @@ export class FakeOrchestrator implements Orchestrator {
     this.children.set(dockerId, {
       containerId: request.containerId,
       partyId: request.partyId,
-      profile: request.profile,
+      nodeClass: request.nodeClass,
       running: true,
       ports,
     });
@@ -253,7 +254,7 @@ function toNodeInfo(dockerId: string, child: FakeChild): ManagedNodeInfo {
     id: child.containerId,
     dockerId,
     partyId: child.partyId,
-    profile: child.profile,
+    nodeClass: child.nodeClass,
     status: child.running ? 'running' : 'stopped',
     spawnedAt: new Date(0).toISOString(),
     workdir: `/fake/${child.containerId}`,

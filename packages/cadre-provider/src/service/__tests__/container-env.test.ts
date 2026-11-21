@@ -10,7 +10,7 @@ import { daemonStubs } from './fake-docker.js';
 const base: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
   partyId: 'party-1',
-  profile: 'storage',
+  nodeClass: 'server',
 };
 
 describe('buildNodeEnv', () => {
@@ -19,7 +19,7 @@ describe('buildNodeEnv', () => {
 
     expect(env).toEqual([
       'CADRE_PARTY_ID=party-1',
-      'CADRE_PROFILE=storage',
+      'CADRE_NODE_CLASS=server',
       'CADRE_HEALTH_PORT=8080',
       'CADRE_METRICS_PORT=9090',
       'CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws',

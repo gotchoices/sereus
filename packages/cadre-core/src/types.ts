@@ -27,6 +27,7 @@ import type { RedemptionAddressOutcome } from './member-redemption.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
 import type { ListenTransportOptions } from './relay-addrs.js';
+import type { NodeClass, PublishedProfile } from './node-class.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -67,11 +68,6 @@ export interface Libp2pNodeWithRepo extends Libp2p {
    */
   reportBlockHeld?: (blockId: string, rev: number, peerId: string) => Promise<void>;
 }
-
-/**
- * Node profile determines storage participation
- */
-export type NodeProfile = 'transaction' | 'storage';
 
 /**
  * Strand filter configuration - determines which strands this node participates in
@@ -199,7 +195,7 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
 export type RawStorageProvider = IRawStorage | ((scope: string) => IRawStorage);
 
 /**
- * Storage configuration for storage profile nodes
+ * Storage configuration for a node that stores blocks
  */
 export interface StorageConfig {
   /**
@@ -376,8 +372,8 @@ export interface NetworkConfig {
   requireRelay?: boolean;
   /**
    * Enable circuit relay server - allows this node to relay connections for other peers.
-   * When undefined, defaults to true for storage profile nodes (they typically have
-   * better connectivity and uptime), false for transaction profile nodes.
+   * When undefined, defaults to true for `'server'` nodes (they typically have
+   * better connectivity and uptime), false for `'device'` nodes.
    */
   enableRelay?: boolean;
   /**
@@ -828,8 +824,8 @@ export interface CadreNodeConfig {
   /** Control network connection settings */
   controlNetwork: ControlNetworkConfig;
 
-  /** Node profile: transaction-only or storage */
-  profile: NodeProfile;
+  /** What kind of machine this node runs on ({@link NodeClass}): a device, or an always-on server. */
+  nodeClass: NodeClass;
 
   /** Which strands to participate in */
   strandFilter?: StrandFilter;
@@ -845,12 +841,12 @@ export interface CadreNodeConfig {
    * The strand is still announced as `strand:discovered` (once) and stays in
    * `getDiscoveredStrands()` until an app claims it. A replica is always a joiner.
    *
-   * Default: `profile === 'storage'` — always-on machines host replicas, phones
-   * (`'transaction'`) keep today's announce-only behaviour.
+   * Default: `nodeClass === 'server'` — always-on machines host replicas, devices keep
+   * today's announce-only behaviour.
    */
   hostUnclaimedStrands?: boolean;
 
-  /** Storage configuration (only for storage profile) */
+  /** Storage configuration (only for a node that stores blocks) */
   storage?: StorageConfig;
 
   /** Network configuration */
@@ -1745,9 +1741,9 @@ export interface StrandFormationDisclosure {
  * Arachnode ring participation stub - will be implemented when arachnode is built
  */
 export interface ArachnodeConfig {
-  /** Enable Arachnode subsystem (Ring Zulu + storage rings). Storage-profile only. */
+  /** Enable Arachnode subsystem (Ring Zulu + storage rings). `'server'` nodes only. */
   enableRingZulu: boolean;
-  /** Storage ring participation (storage profile only) */
+  /** Storage ring participation (`'server'` nodes only) */
   storageRing?: {
     /** Which ring to participate in based on capacity */
     ring: number;
@@ -1928,7 +1924,7 @@ export interface CadreNodeEvents {
    * `addStrand` has resolved).
    *
    * On a node that hosts storage replicas ({@link CadreNodeConfig.hostUnclaimedStrands},
-   * the default for `profile: 'storage'`) the event still fires once, and the node launches
+   * the default for `nodeClass: 'server'`) the event still fires once, and the node launches
    * the strand as a replica right after it — so there `getStrands().has(id)` soon turns
    * true for a strand no app has claimed; an unclaimed instance has no `sAppInfo`. A
    * launch that fails is retried by the watcher without a second `strand:discovered`.
@@ -2029,11 +2025,11 @@ export interface PeerAddressRecord {
   /** epoch ms — freshness; strictly increasing per peer. */
   updatedAt: number;
   /**
-   * The publisher's own {@link CadreNodeConfig.profile}: `'transaction'` is an app (phone,
-   * browser), `'storage'` an always-on node. Null on a row the machine has not yet
-   * self-published (an owner or an invitation seated it).
+   * Whether the publisher is always on, in the stored form the column holds
+   * ({@link PublishedProfile}: `'storage'` yes, `'transaction'` no). Null on a row the machine
+   * has not yet self-published (an owner or an invitation seated it).
    */
-  profile: NodeProfile | null;
+  profile: PublishedProfile | null;
   /** ed25519 self-signature over the signed payload, base64url. */
   sig: string;
 }
@@ -2062,8 +2058,8 @@ export interface CadrePeerRow {
   multiaddr: string | null;
   /** The machine's freshness stamp (epoch ms); 0 when it has never self-published. */
   updatedAt: number;
-  /** The machine's self-declared node profile; null until it self-publishes. */
-  profile: NodeProfile | null;
+  /** Whether the machine declared itself always on, stored form; null until it self-publishes. */
+  profile: PublishedProfile | null;
   /** The machine's self-signature over its address record (`peerRecordSignedPayload`); null until it self-publishes. */
   sig: string | null;
   /** Single-use anti-replay nonce the voucher signature, or the usage row, is bound to. */
@@ -2205,7 +2201,7 @@ export interface OwnerGrantChain {
  * One machine of the cadre as `CadreNode.listMachines` reports it: a live `CadrePeer` row. An
  * owner key is not a machine; `CadreNode.listOwnerKeys` lists those.
  *
- * `profile` and `lastPublishedAt` are the machine's own claim only when the row's
+ * `alwaysOn` and `lastPublishedAt` are the machine's own claim only when the row's
  * self-signature verifies; both are null otherwise, so an owner re-vouch that bumped
  * `UpdatedAt` without re-signing, or a row the machine never published, reports nothing
  * rather than someone else's stamp.
@@ -2218,9 +2214,9 @@ export interface CadreMachine {
   isSelf: boolean;
   /** Passes this node's authorized-membership predicate now (`CadreNode.listAuthorizedMembers`; always false for self, which that set excludes). */
   trusted: boolean;
-  /** The machine's self-published node profile; null until it publishes, or when its signature does not verify. */
-  profile: NodeProfile | null;
-  /** `UpdatedAt` of its self-signed record, re-stamped while it runs; null on the same terms as `profile`. */
+  /** Whether the machine says it is always on; null until it publishes, or when its signature does not verify. */
+  alwaysOn: boolean | null;
+  /** `UpdatedAt` of its self-signed record, re-stamped while it runs; null on the same terms as `alwaysOn`. */
   lastPublishedAt: number | null;
   /** `CadrePeer.VouchOwner`: the owner key that vouched it, or the issuer of the invitation that admitted it. */
   vouchedBy: string | null;
@@ -2727,7 +2723,7 @@ export interface SeedPeer {
   multiaddrs: string[];
   /**
    * Dial this peer first: the machine that minted the seed (or answered the redemption) and
-   * every always-on machine (`CadrePeer.Profile = 'storage'`). A dial hint only — it grants
+   * every machine that published itself as always on. A dial hint only — it grants
    * nothing, and says nothing about owner keys (`projectSeedPeers`).
    */
   preferred: boolean;

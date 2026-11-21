@@ -4,7 +4,7 @@ import { CadreNode } from '../src/cadre-node.js';
 
 /**
  * Exercises the idempotent genesis path used by `cadre-cli start --owner`.
- * Boots a real CadreNode (empty bootstrap, transaction profile — no network
+ * Boots a real CadreNode (empty bootstrap, a device — no network
  * peers required) and drives `ControlDatabase.ensureOwnerKey` directly.
  *
  * Scope: this is the **listening** cadre-of-one — default transports (TCP) and
@@ -25,7 +25,7 @@ describe('ControlDatabase genesis (ensureOwnerKey)', () => {
         partyId: 'genesis-test-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
 
     try {
@@ -61,7 +61,7 @@ describe('ControlDatabase genesis (ensureOwnerKey)', () => {
         partyId: 'genesis-test-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
 
     try {

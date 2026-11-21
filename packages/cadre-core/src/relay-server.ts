@@ -17,7 +17,8 @@
  */
 
 import type { CircuitRelayServerInit, ServerReservationStoreInit } from '@libp2p/circuit-relay-v2';
-import type { NetworkConfig, NodeProfile } from './types.js';
+import type { NetworkConfig } from './types.js';
+import type { NodeClass } from './node-class.js';
 
 /**
  * Default size of a party-run relay's reservation store, raised from libp2p's 15.
@@ -71,20 +72,20 @@ export interface ResolvedRelayServer {
 }
 
 /**
- * Resolve the relay server for a node built from `network` with `profile`.
+ * Resolve the relay server for a node built from `network` with `nodeClass`.
  *
- * `enabled`: an explicit `network.enableRelay` wins; otherwise storage-profile nodes run
- * the server (they are the machines with the connectivity and uptime to be a relay).
+ * `enabled`: an explicit `network.enableRelay` wins; otherwise `'server'` nodes run the
+ * server (they are the machines with the connectivity and uptime to be a relay).
  *
  * `init`: MERGED, not replaced. `reservations` is merged key by key over the party-run
  * defaults, so a caller who sets only `maxReservations` does not silently get the data
  * limit back; every other top-level key is taken from the caller as given. A key set to
  * `undefined` counts as unset, so the default beneath it holds.
  */
-export function resolveRelayServer(network: NetworkConfig | undefined, profile: NodeProfile): ResolvedRelayServer {
+export function resolveRelayServer(network: NetworkConfig | undefined, nodeClass: NodeClass): ResolvedRelayServer {
   const override = network?.relayServerInit;
   return {
-    enabled: network?.enableRelay ?? (profile === 'storage'),
+    enabled: network?.enableRelay ?? (nodeClass === 'server'),
     init: {
       ...override,
       reservations: { ...PARTY_RELAY_RESERVATION_DEFAULTS, ...definedEntries(override?.reservations) }

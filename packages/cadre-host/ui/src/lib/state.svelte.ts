@@ -14,6 +14,9 @@ import { deriveOverallStatus } from './overall-status.js';
 
 export type ContainerStatus = 'running' | 'stopped';
 
+/** Mirror of cadre-core's `NodeClass`: what kind of machine a node runs on. */
+export type NodeClass = 'device' | 'server';
+
 export type DirectReachability = 'reachable' | 'unreachable' | 'unknown' | 'cgnat';
 export type NodeVerdict = 'mapped' | 'manual' | 'direct' | 'unreachable';
 
@@ -21,7 +24,7 @@ export interface NodeInfo {
 	id: string;
 	dockerId: string;
 	partyId: string;
-	profile: 'storage' | 'transaction';
+	nodeClass: NodeClass;
 	status: ContainerStatus;
 	spawnedAt: string;
 	workdir: string;
@@ -142,7 +145,7 @@ export interface StatusResponse {
 		id: string;
 		partyId: string;
 		status: ContainerStatus;
-		profile: 'storage' | 'transaction';
+		nodeClass: NodeClass;
 	}>;
 	connectivity: NatStatusSnapshot;
 	update?: { available?: string; lastChecked?: string };
@@ -289,7 +292,7 @@ export async function refreshStatus(): Promise<void> {
 				id: n.id,
 				dockerId: '',
 				partyId: n.partyId,
-				profile: n.profile,
+				nodeClass: n.nodeClass,
 				status: n.status,
 				spawnedAt: '',
 				workdir: '',

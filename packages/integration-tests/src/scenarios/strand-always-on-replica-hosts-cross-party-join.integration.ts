@@ -11,14 +11,14 @@
  *
  * ── Topology ──
  *
- *   HOST     — its own party, sole owner, storage profile. Founds an OPEN strand and
+ *   HOST     — its own party, sole owner, a server node. Founds an OPEN strand and
  *              publishes a formation invitation bound to it (as in
  *              `strand-formation-cross-party-seed`).
- *   PHONE    — the joiner party's genesis owner, `profile: 'transaction'` (the reference
+ *   PHONE    — the joiner party's genesis owner, `nodeClass: 'device'` (the reference
  *              React Native deployment: the phone founds the party and enrolls its
  *              always-on machine). Redeems the invitation, claims the strand with the
  *              app's config, and writes rows.
- *   ALWAYS-ON — the joiner party's second machine, `profile: 'storage'`,
+ *   ALWAYS-ON — the joiner party's second machine, `nodeClass: 'server'`,
  *              `hostUnclaimedStrands: true`, enrolled by the phone. Never calls
  *              `formStrand` or `addStrand`.
  *
@@ -156,7 +156,7 @@ interface Host {
 async function startHost(runTag: number, handles: Handles): Promise<Host> {
 	const key = await generateKeyPair('Ed25519');
 	const node = new CadreNode(controlNodeConfig({
-		partyId: `host-${runTag}`, privateKey: key, profile: 'storage', enableRelay: true,
+		partyId: `host-${runTag}`, privateKey: key, nodeClass: 'server', enableRelay: true,
 	}));
 	handles.host = node;
 	await node.start();
@@ -191,7 +191,7 @@ async function startPhone(runTag: number, capture: RawStorageCapture, handles: H
 	// Kept by the test so step 2 can read that publication drained the local record.
 	const joinedStore = new KeyStoreJoinedStrandStore(new InMemoryKeyStore(), partyId);
 	const node = new CadreNode(controlNodeConfig({
-		partyId, privateKey: key, profile: 'transaction',
+		partyId, privateKey: key, nodeClass: 'device',
 		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.provider,
 		reconcileMs: PHONE_RECONCILE_PARKED_MS, joinedStrandStore: joinedStore,
 	}));
@@ -236,7 +236,7 @@ async function enrollAlwaysOn(
 	await phone.node.authorizePeer(peerId);
 	const vouchedAt = (await phone.node.getControlDatabase()!.queryPeerRecord(peerId))!.updatedAt;
 	const node = new CadreNode(controlNodeConfig({
-		partyId: phone.partyId, privateKey: key, profile: 'storage', hostUnclaimedStrands: true,
+		partyId: phone.partyId, privateKey: key, nodeClass: 'server', hostUnclaimedStrands: true,
 		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.provider,
 		pinnedOwnerKeys: [phone.publicKey],
 	}));

@@ -38,6 +38,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '@serfab/cadre-core';
+import type { NodeClass } from '@serfab/cadre-core';
 import {
 	waitForCadrePeerConverged,
 	connectControlNodes,
@@ -58,9 +59,9 @@ function nodeOn(
 	partyId: string,
 	privateKey: PrivateKey,
 	capture: RawStorageCapture,
-	profile: 'storage' | 'transaction',
+	nodeClass: NodeClass,
 ): CadreNode {
-	return new CadreNode(controlNodeConfig({ partyId, privateKey, profile, storageProvider: capture.provider }));
+	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: capture.provider }));
 }
 
 /** The joiner's control store, from its capture — the store the restarted node reads. */
@@ -82,14 +83,14 @@ describe('Control-network peer-join block catch-up', () => {
 
 		// ── Phase 1: founder A up alone — its genesis writes the collection headers
 		// with a cohort of one, which is exactly the single-holder state under test.
-		let A: CadreNode | undefined = nodeOn(partyId, aKey, captureA, 'storage');
+		let A: CadreNode | undefined = nodeOn(partyId, aKey, captureA, 'server');
 		let B: CadreNode | undefined;
 		try {
 			await A.start();
 			const ownerKey = await makeOwnOwner(A);
 
 			// ── Phase 2: B joins; a third peer X is authorized and converges onto B ──
-			B = nodeOn(partyId, bKey, captureB, 'transaction');
+			B = nodeOn(partyId, bKey, captureB, 'device');
 			await B.start();
 			// Vouch B BEFORE the dial so A's inbound gate admits it — and so A's
 			// push-time membership gate authorizes the catch-up push to it.
@@ -123,7 +124,7 @@ describe('Control-network peer-join block catch-up', () => {
 			await A.stop();
 			A = undefined;
 
-			B = nodeOn(partyId, bKey, captureB, 'transaction');
+			B = nodeOn(partyId, bKey, captureB, 'device');
 			await B.start();
 			expect(B.getControlNode()!.getConnections().length).toBe(0);
 

@@ -79,7 +79,7 @@ describe('ControlDatabase — local write lock', () => {
 
 		node = new CadreNode({
 			controlNetwork: { partyId: 'write-lock-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
-			profile: 'transaction'
+			nodeClass: 'device'
 		});
 		await node.start();
 

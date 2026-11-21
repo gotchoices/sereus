@@ -32,7 +32,7 @@ export interface EnvMapping {
 export const ENV_MAPPINGS = {
   CADRE_PARTY_ID: { path: 'controlNetwork.partyId', kind: 'string' },
   CADRE_BOOTSTRAP_NODES: { path: 'controlNetwork.bootstrapNodes', kind: 'list' },
-  CADRE_PROFILE: { path: 'profile', kind: 'string' },
+  CADRE_NODE_CLASS: { path: 'nodeClass', kind: 'string' },
   CADRE_KEY_FILE: { path: 'identity.keyFile', kind: 'string' },
   CADRE_STORAGE_PATH: { path: 'storage.path', kind: 'string' },
   CADRE_STORAGE_TYPE: { path: 'storage.type', kind: 'string' },

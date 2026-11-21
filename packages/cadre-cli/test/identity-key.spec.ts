@@ -216,7 +216,7 @@ describe('resolveConfig identity block', () => {
     writeFileSync(configPath, JSON.stringify({
       ...(identity ? { identity } : {}),
       controlNetwork: { partyId: 'test-party', bootstrapNodes: [] },
-      profile: 'storage',
+      nodeClass: 'server',
       storage: { type: 'memory' },
     }));
     return configPath;
@@ -312,7 +312,7 @@ describe('resolveConfig identity block', () => {
     writeFileSync(configPath, JSON.stringify({
       identity: '/some/path.key',
       controlNetwork: { partyId: 'test-party', bootstrapNodes: [] },
-      profile: 'storage',
+      nodeClass: 'server',
       storage: { type: 'memory' },
     }));
 
@@ -394,7 +394,7 @@ describe('resolveConfig nodeStateDir', () => {
     const configPath = join(dir, 'cadre.json');
     writeFileSync(configPath, JSON.stringify({
       controlNetwork: { partyId: 'test-party', bootstrapNodes: [] },
-      profile: 'storage',
+      nodeClass: 'server',
       storage: { type: 'memory' },
       ...(nodeStateDir ? { nodeState: { dir: nodeStateDir } } : {}),
     }));

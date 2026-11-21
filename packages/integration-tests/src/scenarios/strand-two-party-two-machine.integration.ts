@@ -392,7 +392,7 @@ describe('Two parties × two machines, one strand across all four', () => {
 			const returning = new CadreNode(controlNodeConfig({
 				partyId: partyA.partyId,
 				privateKey: a1.key,
-				profile: 'transaction',
+				nodeClass: 'device',
 				storageProvider: captures.a1.provider,
 				pinnedOwnerKeys: [partyA.ownerPublicKey],
 				bootstrapNodes: a0Addrs,

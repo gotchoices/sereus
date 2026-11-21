@@ -27,7 +27,7 @@ export function createConfig(bootstrapNodes: string[] = [], extra: Partial<Cadre
       partyId: 'membership-gate-test-' + Math.random().toString(36).slice(2),
       bootstrapNodes
     },
-    profile: 'transaction',
+    nodeClass: 'device',
     ...extra
   };
 }

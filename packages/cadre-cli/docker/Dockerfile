@@ -123,7 +123,7 @@ USER cadre
 
 # Set default environment variables
 ENV DATA_DIR=/data \
-    CADRE_PROFILE=storage \
+    CADRE_NODE_CLASS=server \
     CADRE_STORAGE_TYPE=file \
     CADRE_STORAGE_PATH=/data/storage \
     CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws \

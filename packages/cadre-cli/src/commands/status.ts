@@ -67,7 +67,7 @@ async function loadConfigSummary(configPath: string, json: boolean): Promise<Con
     return {
       config: configPath,
       partyId: config.controlNetwork.partyId,
-      profile: config.profile,
+      nodeClass: config.nodeClass,
       bootstrapNodes: config.controlNetwork.bootstrapNodes.length,
       strandFilter: config.strandFilter ?? 'all',
       hibernation: config.hibernation?.enabled ?? false,

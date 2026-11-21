@@ -2,7 +2,7 @@
  * Boot the A/B/C control-network trio the "reconcile as sole connector"
  * scenarios share:
  *
- *         A  (storage profile, own owner, listens on ws, NO relay)
+ *         A  (a server, own owner, listens on ws, NO relay)
  *        / \
  *       /   \   B and C both cold-start via applySeed (the production path)
  *      B     C  C listens on ws
@@ -285,9 +285,9 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	const gateB = peerDialGate();
 	gateB.deny(cPeerId);
 
-	// ── 1. A: owner + storage (holds the CadrePeer blocks). No relay: every node
+	// ── 1. A: owner + server (holds the CadrePeer blocks). No relay: every node
 	//        here is directly dialable over loopback ws.
-	const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
+	const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'server' }));
 	handles.A = A;
 	await atStage('A starts', () => A.start());
 	const { publicKey: aOwnerKey } = await atStage('A becomes its own owner', () => makeOwnOwner(A));
@@ -320,7 +320,7 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 		() => A.getControlDatabase()!.queryPeerRecord(bPeerId)))!.updatedAt;
 
 	const B = new CadreNode(controlNodeConfig({
-		partyId, privateKey: bKey, profile: 'transaction',
+		partyId, privateKey: bKey, nodeClass: 'device',
 		listenAddrs: [], reconcileMs: reconcileMsB, pinnedOwnerKeys: [aOwnerKey],
 		connectionGater: gateB.gater
 	}));
@@ -374,7 +374,7 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	// ── 3. C starts, still unauthorized. At this instant nothing anywhere has told
 	//        B that C exists, so this checkpoint is non-racy.
 	const C = new CadreNode(controlNodeConfig({
-		partyId, privateKey: cKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey]
+		partyId, privateKey: cKey, nodeClass: 'device', pinnedOwnerKeys: [aOwnerKey]
 	}));
 	handles.C = C;
 	await atStage('C starts', () => C.start());

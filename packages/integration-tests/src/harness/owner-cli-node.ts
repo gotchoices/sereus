@@ -122,7 +122,7 @@ function launchOwnerChild(
 	const configPath = join(opts.workdir, 'cadre.json');
 	const config: CliConfigFile = {
 		controlNetwork: { partyId: opts.partyId, bootstrapNodes: [] },
-		profile: 'storage',
+		nodeClass: 'server',
 		storage: { type: 'file', path: join(opts.workdir, 'storage') },
 		network: { listenAddrs: opts.listenAddrs ?? DEFAULT_LISTEN_ADDRS },
 	};

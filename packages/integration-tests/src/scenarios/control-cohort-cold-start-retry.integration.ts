@@ -29,7 +29,7 @@
  * scenario exists to recover from would not settle into "no connection".
  *
  * Two details make the proof unambiguous:
- *  - B listens on NOTHING (`listenAddrs: []`, the client-only profile an RN/phone
+ *  - B listens on NOTHING (`listenAddrs: []`, the client-only shape an RN/phone
  *    node uses). A therefore cannot dial B, so the connection that eventually
  *    exists can only be one B dialed.
  *  - The assertion checks `direction === 'outbound'` on B's side as well.
@@ -105,7 +105,7 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 				denyInboundEncryptedConnection: (peerId) => refusingB && peerId.toString() === bPeerId
 			};
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', connectionGater: refuseB }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'server', connectionGater: refuseB }));
 			await A.start();
 			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 			const aPeer = A.peerId!;
@@ -116,7 +116,7 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			// ladder a failed cold-start dial climbs, so the cold-start branch runs
 			// several times inside the convergence window.
 			B = new CadreNode(controlNodeConfig({
-				partyId, privateKey: bKey, profile: 'transaction', listenAddrs: [], reconcileMs: 2_000
+				partyId, privateKey: bKey, nodeClass: 'device', listenAddrs: [], reconcileMs: 2_000
 			}));
 			await B.start();
 

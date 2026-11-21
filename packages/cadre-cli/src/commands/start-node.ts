@@ -86,9 +86,9 @@ function buildNodeConfig(
     enrolledMachines: { store: stores.enrolledMachineStore },
     strandNetworkState: { store: stores.strandNetworkStateStore },
     controlNetwork: { ...config.controlNetwork, partyId },
-    profile: config.profile,
-    // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a storage-profile
-    // CLI node (every cadre-host donated node included) hosts a replica of every strand its
+    nodeClass: config.nodeClass,
+    // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a server CLI node
+    // (every cadre-host donated node included) hosts a replica of every strand its
     // party publishes; the only opt-out here is `strandFilter`. If an operator needs
     // announce-only on an always-on node, surface the field in the CLI config.
     strandFilter: config.strandFilter,

@@ -93,7 +93,7 @@ describe('cadre invitations: schema and ControlDatabase', () => {
         partyId: 'cadre-invite-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
       // The reader judges an invitation-admitted row against THIS anchor, never the OwnerKey table.
       trustedOwners: { pinnedKeys: [founder.publicKey] },
     });
@@ -445,7 +445,7 @@ describe('cadre invitations: liveness (hasLiveCadreInvite)', () => {
         partyId: 'cadre-invite-live-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
     db = node.getControlDatabase()!;

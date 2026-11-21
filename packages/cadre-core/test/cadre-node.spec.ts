@@ -32,7 +32,7 @@ describe('CadreNode', () => {
         partyId: 'test-party-' + Math.random().toString(36).slice(2),
         bootstrapNodes: []
       },
-      profile: 'transaction',
+      nodeClass: 'device',
       ...overrides
     };
   }
@@ -110,7 +110,7 @@ describe('CadreNode', () => {
 
     it('should create a node with full config', () => {
       const config = createConfig({
-        profile: 'storage',
+        nodeClass: 'server',
         strandFilter: { mode: 'all' },
         storage: { provider: () => new MemoryRawStorage() },
         hibernation: { enabled: true, defaultLatencyHint: 'interactive' },

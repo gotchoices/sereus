@@ -69,8 +69,8 @@ export interface HostedNode {
    * invitation's party from the start.
    */
   partyId: string;
-  /** Hosted nodes run the `storage` profile: they participate in strands and are dialable. */
-  profile: 'storage';
+  /** Hosted nodes are `server` nodes: always on, so they participate in strands and are dialable. */
+  nodeClass: 'server';
   status: HostedNodeStatus;
   /** Orchestrator handle (opaque `pid:token`), set once the child is spawned. */
   dockerId?: string;

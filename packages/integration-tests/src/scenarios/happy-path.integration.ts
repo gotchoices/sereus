@@ -65,7 +65,7 @@ describe('Happy Path - Cadre bring-up & intra-cadre control records', () => {
     const alice = await network.createParty({
       name: 'alice-business',
       droneCount: 2,
-      droneProfile: 'storage'
+      droneNodeClass: 'server'
     });
 
     expect(alice.ownerNode).toBeDefined();

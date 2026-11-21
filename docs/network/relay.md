@@ -8,7 +8,7 @@ Related: [How a strand's nodes find each other](strand-addressing.md) · [Deadli
 
 Relay support has two halves, and only one of them makes a node reachable.
 
-- A **relay server** forwards connections for other nodes. `network.enableRelay` turns it on. A storage-profile node runs one unless the option is `false`; a transaction-profile node does not unless it is `true`.
+- A **relay server** forwards connections for other nodes. `network.enableRelay` turns it on. A `server`-class node runs one unless the option is `false`; a `device`-class node does not unless it is `true`.
 - A **relay reservation** is a slot a node holds on a relay server. While the node holds the slot it has a `/p2p-circuit` address, of the form `<relay address>/p2p/<relay peer id>/p2p-circuit/p2p/<node peer id>`, that other machines can dial.
 
 A node that cannot accept connections is reachable only while it holds a reservation. Running a relay server does nothing for the node's own reachability.
@@ -149,7 +149,7 @@ Before each retry against a relay, a strand supervisor first tells that relay wh
 There are two kinds of relay.
 
 - A **dedicated relay** is the container in `ops/docker/libp2p-infra`. It has no membership check and relays for anyone who reaches it.
-- A **party-run relay** is any node of a party whose relay server is on, which by default is every storage-profile machine. It is the party's own infrastructure. It relays for the party's nodes: the control nodes of the party's machines and the strand nodes those machines run.
+- A **party-run relay** is any node of a party whose relay server is on, which by default is every `server`-class machine. It is the party's own infrastructure. It relays for the party's nodes: the control nodes of the party's machines and the strand nodes those machines run.
 
 A phone, a browser tab or any other machine behind NAT can therefore hold its reservations on its party's own always-on machine, by naming that machine in `relayAddrs`, and the party's other machines can reach it through that relay. A party-run relay does not replace a dedicated one, for two reasons:
 
@@ -181,7 +181,7 @@ The dedicated relay container follows the same policy with its own values. Its s
 
 ### Relay servers on strand nodes
 
-A storage-profile machine's strand nodes run a relay server with the same settings. They have no budget for unknown peers, because a strand's peers come from other parties by design, so any peer that reaches a strand node's relay server is bounded only by `maxReservations`. A closed strand's node refuses a reservation from a peer whose membership was revoked (`strand-revocation-enforcer.ts`).
+A `server`-class machine's strand nodes run a relay server with the same settings. They have no budget for unknown peers, because a strand's peers come from other parties by design, so any peer that reaches a strand node's relay server is bounded only by `maxReservations`. A closed strand's node refuses a reservation from a peer whose membership was revoked (`strand-revocation-enforcer.ts`).
 
 ## Direct connections over WebRTC
 

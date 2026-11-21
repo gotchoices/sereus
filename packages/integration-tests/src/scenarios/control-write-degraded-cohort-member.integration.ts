@@ -963,7 +963,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 
 		// Unlike the isolation scenario, ALL THREE nodes listen (the harness default):
 		// cluster fan-out must be able to dial every cohort member directly.
-		A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
+		A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'server' }));
 		// Watch before start(): the boot-time self-publish is itself a background control
 		// write, and losing it is exactly the class this watch exists for. An abandonment
 		// during boot is reported by the FIRST case's afterEach, the earliest check there is.
@@ -982,8 +982,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			{ timeoutMs: 20_000, intervalMs: 250, description: 'A self-registers a CadrePeer row with addrs' }
 		);
 
-		B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey] }));
-		C = new CadreNode(controlNodeConfig({ partyId, privateKey: cKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey] }));
+		B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, nodeClass: 'device', pinnedOwnerKeys: [aOwnerKey] }));
+		C = new CadreNode(controlNodeConfig({ partyId, privateKey: cKey, nodeClass: 'device', pinnedOwnerKeys: [aOwnerKey] }));
 		watchAbandonedWrites('B', B);
 		watchAbandonedWrites('C', C);
 		await B.start();

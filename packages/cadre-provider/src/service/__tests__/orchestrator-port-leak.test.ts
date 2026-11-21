@@ -9,7 +9,7 @@ import { daemonStubs } from './fake-docker.js';
 const request: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
   partyId: 'party-1',
-  profile: 'transaction',
+  nodeClass: 'device',
 };
 
 /** Private surface we read to prove ports were freed back to the allocator. */

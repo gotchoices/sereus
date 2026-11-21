@@ -21,7 +21,7 @@ const HEALTH: HealthStatus = {
     running: true,
     peerId: '12D3KooWLivePeer',
     partyId: 'party-live',
-    profile: 'transaction',
+    nodeClass: 'device',
     strands: { total: 4, syncing: 1, active: 1, idle: 1, hibernating: 1 },
     connectionPaths: {
       total: 0,
@@ -47,7 +47,7 @@ const HEALTH: HealthStatus = {
 const CONFIG: ConfigSummary = {
   config: 'cadre.yaml',
   partyId: 'party-live',
-  profile: 'transaction',
+  nodeClass: 'device',
   bootstrapNodes: 2,
   strandFilter: 'all',
   hibernation: false,
@@ -109,7 +109,7 @@ describe('buildStatusReport', () => {
       expect(report.runtime.multiaddrs).toEqual(HEALTH.multiaddrs);
       expect(report.runtime.strands).toEqual({ total: 4, syncing: 1, active: 1, idle: 1, hibernating: 1 });
       expect(report.runtime.partyId).toBe('party-live');
-      expect(report.runtime.profile).toBe('transaction');
+      expect(report.runtime.nodeClass).toBe('device');
     }
   });
 

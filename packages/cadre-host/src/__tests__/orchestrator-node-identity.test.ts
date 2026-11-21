@@ -95,7 +95,7 @@ describe('HostProcessOrchestrator node identity', () => {
     await orch.createContainer({
       containerId: 'hosted-1',
       partyId: 'party-P',
-      profile: 'storage',
+      nodeClass: 'server',
     });
 
     const workdir = join(rootDir, 'hosted-1');
@@ -113,7 +113,7 @@ describe('HostProcessOrchestrator node identity', () => {
     const first = await orch.createContainer({
       containerId: 'hosted-2',
       partyId: 'party-P',
-      profile: 'storage',
+      nodeClass: 'server',
     });
     const workdir = join(rootDir, 'hosted-2');
     await waitForFile(join(workdir, 'identity-arg.txt'));
@@ -125,7 +125,7 @@ describe('HostProcessOrchestrator node identity', () => {
     await orch.createContainer({
       containerId: 'hosted-2',
       partyId: 'party-P',
-      profile: 'storage',
+      nodeClass: 'server',
     });
 
     const after = loadIdentity(join(workdir, 'identity.key')).peerId;
@@ -140,7 +140,7 @@ describe('HostProcessOrchestrator node identity', () => {
     const created = await orch.createContainer({
       containerId: 'hosted-3',
       partyId: 'party-P',
-      profile: 'storage',
+      nodeClass: 'server',
     });
     const identityPath = join(rootDir, 'hosted-3', 'identity.key');
     await waitForFile(identityPath);
@@ -166,7 +166,7 @@ describe('HostProcessOrchestrator node identity', () => {
 
     const request = {
       partyId: 'party-P',
-      profile: 'storage' as const,
+      nodeClass: 'server' as const,
     };
     await expect(orch.createContainer({ ...request, containerId: 'hosted-bad' })).rejects.toThrow();
 

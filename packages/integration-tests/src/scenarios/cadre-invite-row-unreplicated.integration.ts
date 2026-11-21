@@ -7,7 +7,7 @@
  * - **A**, the owner, on a loopback WebSocket listen address, so M's FRET evicts it once it
  *   stops. A test connection gater (`peerDialGate({ inbound: true })`) lets the scenario cut
  *   A off from M in both directions.
- * - **M**, a storage-profile member admitted by A (`addDrone` plus seed delivery), pinning A's
+ * - **M**, a server-class member admitted by A (`addDrone` plus seed delivery), pinning A's
  *   owner key.
  * - **P**, a phone-shaped device with no pinned key.
  *
@@ -63,7 +63,7 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 		try {
 			// ── A founds the cadre; M is admitted the owner-online way and converges ──
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none', connectionGater: gateA.gater,
+				partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none', connectionGater: gateA.gater,
 				storageProvider: captureA.provider,
 			}));
 			await A.start();

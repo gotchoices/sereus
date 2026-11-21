@@ -52,7 +52,7 @@ async function withNode(body: (node: CadreNode) => Promise<void>): Promise<void>
   const node = new CadreNode({
     privateKey: identity,
     controlNetwork: { partyId, bootstrapNodes: [] },
-    profile: 'storage',
+    nodeClass: 'server',
     strandFilter: { mode: 'none' },
     storage: { provider },
     network: { listenAddrs: [] },

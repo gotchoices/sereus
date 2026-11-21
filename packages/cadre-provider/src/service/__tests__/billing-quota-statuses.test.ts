@@ -22,7 +22,7 @@ function container(id: string, status: ContainerStatus): Container {
     id,
     customerId: 'cust-1',
     partyId: 'party-1',
-    profile: 'transaction',
+    nodeClass: 'device',
     status,
     resources: {},
     tags: {},

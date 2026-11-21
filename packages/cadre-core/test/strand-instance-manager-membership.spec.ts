@@ -137,7 +137,7 @@ function createStartConfig(strandId: string, type: 'o' | 'c', overrides?: Partia
   return {
     strandRow,
     sAppConfig,
-    profile: 'transaction',
+    nodeClass: 'device',
     defaultLatencyHint: 'interactive',
     ...overrides,
   };

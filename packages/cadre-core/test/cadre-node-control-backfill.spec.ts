@@ -44,7 +44,7 @@ const PARTY_ID = 'ctrl-backfill-party';
 function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
   return {
     controlNetwork: { partyId: PARTY_ID, bootstrapNodes: [] },
-    profile: 'transaction',
+    nodeClass: 'device',
     // A MemoryRawStorage passes through `wrapStorageWithCache` unwrapped, so these
     // tests leave nothing registered in the process-wide cache pool.
     storage: { provider: () => new MemoryRawStorage() },

@@ -53,7 +53,7 @@ export interface EdgeNodeConfigInputs extends EdgeNodeOptions {
 }
 
 /**
- * The edge node's config: transaction profile (Ring Zulu only, intermittent connectivity), no
+ * The edge node's config: the `'device'` node class (Ring Zulu only, intermittent connectivity), no
  * listen address unless the platform names one, reachability through the configured relays (if
  * any) but never a hard requirement for one, every strand the control network lists, and no
  * automatic hibernation (the app's lifecycle runner hibernates on background), and offline mode
@@ -71,7 +71,7 @@ export function buildEdgeNodeConfig(inputs: EdgeNodeConfigInputs): CadreNodeConf
 			partyId: inputs.partyId,
 			bootstrapNodes: inputs.bootstrapAddrs,
 		},
-		profile: 'transaction',
+		nodeClass: 'device',
 		storage: {
 			provider: inputs.storageProvider,
 		},

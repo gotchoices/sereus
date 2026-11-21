@@ -175,7 +175,7 @@ describe('discovered strands survive a late subscriber', () => {
 		// Same key store ⇒ same libp2p identity across the restart, so the stored row's
 		// `FounderPeerId` is still this device's own —
 		// the phone case, where the strand being re-attached is one it founded itself.
-		const config = (): CadreNodeConfig => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
+		const config = (): CadreNodeConfig => controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage });
 
 		const first = new CadreNode(config());
 		try {
@@ -246,7 +246,7 @@ describe('discovered strands survive a late subscriber', () => {
 			return storage(scope);
 		};
 		const config = (partyId: string): CadreNodeConfig =>
-			controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage: recordingStorage });
+			controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage: recordingStorage });
 
 		const a = new CadreNode(config(partyA));
 		try {
@@ -459,7 +459,7 @@ describe('discovered strands survive a late subscriber', () => {
 function bareWatcher(tag: string): BareHarness {
 	const node = new CadreNode({
 		controlNetwork: { partyId: freshPartyId(`discovered-${tag}`), bootstrapNodes: [] },
-		profile: 'transaction'
+		nodeClass: 'device'
 	});
 	const row: StrandRow = { Id: strandId(tag), MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
 	const rows: StrandRow[] = [row];

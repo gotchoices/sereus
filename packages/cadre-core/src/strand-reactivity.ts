@@ -32,9 +32,9 @@ export interface StrandReactivityConfig {
  * `cohortTopic.host.minSigs` governs it; the tiers below the root keep db-p2p's defaults.
  *
  * NOTE: with no `host.profile`, db-p2p builds every host as core (forwarder-eligible, 30 s
- * renewal), a `'transaction'` phone included — it does not follow `fretProfile`. If phone-side
- * forwarding load shows up, pass `host: { profile: edgeProfile() }` for transaction nodes, after
- * confirming an edge host still serves its part of a tail block's root group.
+ * renewal), a device included — it does not follow `fretProfile`. If phone-side forwarding load
+ * shows up, pass `host: { profile: edgeProfile() }` for `'device'` nodes, after confirming an
+ * edge host still serves its part of a tail block's root group.
  */
 export function strandCohortTopicOption(
   config: StrandReactivityConfig | undefined,

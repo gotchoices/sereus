@@ -40,7 +40,7 @@ async function bootOwnerNode(): Promise<BootedNode> {
       partyId: 'peer-record-' + Math.random().toString(36).slice(2),
       bootstrapNodes: [],
     },
-    profile: 'transaction',
+    nodeClass: 'device',
     privateKey: libp2pKey,
   });
   await node.start();

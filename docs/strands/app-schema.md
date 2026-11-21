@@ -235,7 +235,7 @@ With the option off, both postures are unchanged.
 - **Each watched table registers on every node build,** and every hibernation wake registers again. A cold-start registration carries one signature, a self-endorsement made with the strand node's peer key.
 - **While idle, each renewal tick reads the log tails of all the strand's watched tables in one read.** A machine that holds those blocks answers it from its own store.
 - **Registration renewals cost one request per watched table** whose registration is held by another machine.
-- **Every strand node built with the option is a core notification host, whatever its profile.** A `transaction`-profile phone is therefore eligible to forward notifications to other subscribers, and renews at the core interval of 30 s. The `NOTE:` in `strand-reactivity.ts` names the revisit condition.
+- **Every strand node built with the option is a core notification host, whatever its node class.** A `device`-class phone is therefore eligible to forward notifications to other subscribers, and renews at the core interval of 30 s. The `NOTE:` in `strand-reactivity.ts` names the revisit condition.
 
 ## Limits and accepted tradeoffs
 

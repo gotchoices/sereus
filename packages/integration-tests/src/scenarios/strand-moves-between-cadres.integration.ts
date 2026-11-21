@@ -6,7 +6,7 @@
  * machine starts hosting it.
  *
  * Machines:
- * - **N**, the app's one node: `transaction` profile, one identity key for its whole life, one
+ * - **N**, the app's one node: a device, one identity key for its whole life, one
  *   owner key for its whole life (the kit's owner slot: it founds B and later owns A — one key,
  *   several cadres), its joined-strand records in one key store both incarnations share (the
  *   phone kit's secure store). It founds party B as its own owner, then is stopped, and a node
@@ -52,7 +52,7 @@ import {
 	CadreNode, InMemoryKeyStore, KeyStoreJoinedStrandStore, MemoryStrandNetworkStateStore,
 	adoptStrandBundle, decodeOwnerGrant, exportStrandBundle,
 	generateStrandMemberKey, strandMemberKeyPair,
-	type SAppConfig, type StrandBundle,
+	type NodeClass, type SAppConfig, type StrandBundle,
 } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, createSignedSAppConfig, makeOwnOwner, createTestOwnerKey, waitUntil, captureRawStorage, sameListenAddr,
@@ -125,7 +125,7 @@ interface AppNodeOptions {
  */
 function buildAppNode(home: AppHome, partyId: string, options: AppNodeOptions = {}): CadreNode {
 	return new CadreNode(controlNodeConfig({
-		partyId, privateKey: home.key, profile: 'transaction', strandWatchMs: STRAND_WATCH_MS,
+		partyId, privateKey: home.key, nodeClass: 'device', strandWatchMs: STRAND_WATCH_MS,
 		storageProvider: home.storage.provider,
 		joinedStrandStore: new KeyStoreJoinedStrandStore(home.secureStore, partyId),
 		strandNetworkStateStore: new MemoryStrandNetworkStateStore(partyId),
@@ -136,9 +136,9 @@ function buildAppNode(home: AppHome, partyId: string, options: AppNodeOptions = 
 }
 
 /** A one-machine party whose node is its own owner: P, and the stranger Q. */
-async function startOwnParty(partyId: string, profile: 'storage' | 'transaction', started: CadreNode[]): Promise<CadreNode> {
+async function startOwnParty(partyId: string, nodeClass: NodeClass, started: CadreNode[]): Promise<CadreNode> {
 	const key = await generateKeyPair('Ed25519');
-	const node = new CadreNode(controlNodeConfig({ partyId, privateKey: key, profile }));
+	const node = new CadreNode(controlNodeConfig({ partyId, privateKey: key, nodeClass }));
 	started.push(node);
 	await node.start();
 	await makeOwnOwner(node);
@@ -272,7 +272,7 @@ async function startPartyA(
 ): Promise<{ M: InviteMember; encoded: string }> {
 	const oKey = await generateKeyPair('Ed25519');
 	const oPeerId = peerIdFromPrivateKey(oKey).toString();
-	const O = new CadreNode(controlNodeConfig({ partyId, privateKey: oKey, profile: 'transaction', strandFilter: 'none', listenAddrs: [] }));
+	const O = new CadreNode(controlNodeConfig({ partyId, privateKey: oKey, nodeClass: 'device', strandFilter: 'none', listenAddrs: [] }));
 	started.push(O);
 	await O.start();
 	const { publicKey: oOwnerKey } = await makeOwnOwner(O);
@@ -401,7 +401,7 @@ describe('E2E an app\'s strands move between cadres', () => {
 			started.push(nB);
 			await nB.start();
 			await makeOwnOwner(nB, undefined, home.owner);
-			const P = await startOwnParty(`strand-move-p-${runTag}`, 'storage', started);
+			const P = await startOwnParty(`strand-move-p-${runTag}`, 'server', started);
 
 			const sMemberPrivateKey = await generateStrandMemberKey();
 			const invitedS = await foundWithInvitation(nB, S, SAPP_S, sApp, { type: 'c', memberPrivateKey: sMemberPrivateKey }, 2);
@@ -453,7 +453,7 @@ describe('E2E an app\'s strands move between cadres', () => {
 			const mSPeerId = await expectReplicaOnM(M, mStorage, home.storage, S);
 			await expectReplicaOnM(M, mStorage, home.storage, T);
 
-			const Q = await startOwnParty(`strand-move-q-${runTag}`, 'transaction', started);
+			const Q = await startOwnParty(`strand-move-q-${runTag}`, 'device', started);
 			const formedByQ = await Q.formStrand(Q.decodeInvitation(invitedS.envelope), { partyId: Q.partyId, purpose: 'the moved invitation' });
 			expect(formedByQ.strandId).toBe(S);
 			expect(formedByQ.membershipInvite, 'S is closed, so the redemption carries a membership invitation').toBeDefined();

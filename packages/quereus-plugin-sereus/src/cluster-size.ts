@@ -273,7 +273,7 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * The control network derives one from the party's enrolled machines
  * ({@link controlClusterPolicy}), which is exact there because every enrolled machine runs the
  * control node. A strand has no equivalent count: it launches only on machines whose embedder
- * registered its sApp config, plus storage-profile machines that host unclaimed strands as
+ * registered its sApp config, plus server machines that host unclaimed strands as
  * storage replicas (cadre-core's `CadreNodeConfig.hostUnclaimedStrands`) and whose strand filter
  * admits it. Phones serve only what their app claims, so reusing the party count over-declares, which is worse than
  * declaring nothing, because at a yardstick of three or more the corroboration floor is pinned
@@ -481,7 +481,7 @@ export function resolveStrandClusterSize(configured?: number): number {
  * machine runs the control node by construction: there, enrolled IS serving
  * ({@link controlClusterPolicy}, fed by cadre-core's `enrolled-machine-store.ts`). A STRAND does
  * not — it launches only on machines whose embedder registered its sApp config
- * (`CadreNode.addStrand`), plus storage-profile machines hosting it as a storage replica
+ * (`CadreNode.addStrand`), plus server machines hosting it as a storage replica
  * (`CadreNodeConfig.hostUnclaimedStrands`) whose strand filter admits it. A closed strand
  * claimed by two phones of a three-phone party is served by two, and declaring three would be
  * exactly the unsafe over-declaration above. No

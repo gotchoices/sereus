@@ -3,7 +3,7 @@
  * Allows swapping between Docker, Kubernetes, etc.
  */
 
-import type { ContainerJoin, ContainerResources } from '../types.js';
+import type { ContainerJoin, ContainerResources, NodeClass } from '../types.js';
 import type { PushCredentials } from '../config/types.js';
 
 /** Container creation request for orchestrator */
@@ -12,8 +12,8 @@ export interface OrchestratorCreateRequest {
   containerId: string;
   /** Party ID for control network */
   partyId: string;
-  /** Node profile */
-  profile: 'storage' | 'transaction';
+  /** What kind of machine the node runs on. */
+  nodeClass: NodeClass;
   /** Resource limits */
   resources?: ContainerResources;
   /** Strand filter */

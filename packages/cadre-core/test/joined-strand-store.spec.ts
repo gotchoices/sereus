@@ -222,7 +222,7 @@ describe('CadreNode remembers strands joined from another party', () => {
 		const partyId = freshPartyId('joined-strand-restart');
 		const keyStore = new InMemoryKeyStore();
 		const storage = memoryStorageProvider();
-		const config = () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
+		const config = () => controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage });
 		const strandId = `joined-${Math.random().toString(36).slice(2)}`;
 
 		const first = new CadreNode(config());

@@ -858,7 +858,7 @@ describe('SeedBootstrapService Helper Methods', () => {
           partyId: 'test-party-' + Math.random().toString(36).slice(2),
           bootstrapNodes: []
         },
-        profile: 'transaction'
+        nodeClass: 'device'
       });
 
       try {
@@ -940,7 +940,7 @@ describe('SeedBootstrapService Helper Methods', () => {
           partyId: 'test-party-' + Math.random().toString(36).slice(2),
           bootstrapNodes: []
         },
-        profile: 'transaction'
+        nodeClass: 'device'
       });
 
       try {
@@ -1003,7 +1003,7 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
         bootstrapNodes: [],
       },
       privateKey: nodeKey,
-      profile: 'transaction',
+      nodeClass: 'device',
     });
 
     try {
@@ -1074,7 +1074,7 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
         bootstrapNodes: [],
       },
       privateKey: nodeKey,
-      profile: 'transaction',
+      nodeClass: 'device',
     });
 
     try {

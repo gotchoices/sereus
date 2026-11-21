@@ -71,7 +71,7 @@ function memoizingProvider(): { provider: (scope: string) => IRawStorage; scopes
 function nodeForParty(partyId: string, provider: (scope: string) => IRawStorage): CadreNode {
 	const config: CadreNodeConfig = {
 		controlNetwork: { partyId, bootstrapNodes: [] },
-		profile: 'transaction',
+		nodeClass: 'device',
 		storage: { provider }
 	};
 	const node = new CadreNode(config);
