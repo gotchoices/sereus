@@ -91,7 +91,7 @@ export const WAKE_DIAL_ATTEMPTS = 2;
  * `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` in `peer-dial.ts`, though not the same
  * count: that one is sized to fit several dead addresses ahead of a working one,
  * while a wake target is expected to be awake and reachable on its first or second
- * address. Two whole attempts so a reachable peer whose signaling address is stale
+ * address. Two whole attempts so a reachable peer whose relayed address is stale
  * still gets a genuine try at its direct one; a peer needing longer than that is
  * not "asleep and reachable", which is the only case a wake is for. The last
  * attempt inside the budget gets whatever remains of it, so the call returns at
@@ -330,14 +330,14 @@ export interface DialWakeOptions {
  * Throws if no address is dialable — with an error naming EVERY candidate and
  * why it failed, not merely the last one ({@link tryAddrsInTurn}). That
  * distinction is not cosmetic: with only the last candidate's message the
- * failure that mattered (usually the signaling address, tried first) is
+ * failure that mattered (usually the relayed address, tried first) is
  * invisible outside a debug log, and the surfaced message points at whichever
  * address happened to be tried last.
  *
  * The candidate loop is deliberately explicit rather than one
  * `dialProtocol(addrs)` call. libp2p sorts any multi-address dial with
  * `defaultAddressSorter`, whose `circuitRelayAddressesLast` pass would demote
- * exactly the signaling address this ordering puts first — silently inverting
+ * exactly the relayed address this ordering puts first — silently inverting
  * it, with no per-dial sorter override to opt out of. For the same reason this
  * does not use `dialPeerAddrs`, which puts relayed addresses last.
  *

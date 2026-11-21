@@ -111,12 +111,12 @@ describe('peer-record resolution layer (real control DB)', () => {
     await booted.node.stop();
   });
 
-  it('publishes a self-signed, freshness-stamped record and resolves it back (signaling-first)', async () => {
+  it('publishes a self-signed, freshness-stamped record and resolves it back (relayed-first)', async () => {
     const { node, peerId, publicKeyB64 } = booted;
     const sig = circuitAddr(peerId);
     const direct = '/ip4/1.2.3.4/tcp/4001';
     // Push synthetic addrs so the published set is deterministic (and includes a
-    // /p2p-circuit signaling addr without needing a live relay).
+    // relayed /p2p-circuit addr without needing a live relay).
     node.setInviteAddresses([direct, sig]);
 
     await node.registerSelf();
@@ -135,13 +135,13 @@ describe('peer-record resolution layer (real control DB)', () => {
     // sibling can end up with a list `libp2p.dial` refuses.
     expect(new Set(stored!.addrs)).toEqual(new Set([sig, `${direct}/p2p/${peerId}`]));
 
-    // Resolution returns the addrs signaling-first, every one ending in the
+    // Resolution returns the addrs relayed-first, every one ending in the
     // target's own /p2p/<peerId>.
     const resolved = (await node.resolvePeerAddrs(peerId)).map((m) => m.toString());
     expect(resolved).toEqual([sig, `${direct}/p2p/${peerId}`]);
     expect(resolved.every((a) => a.endsWith(`/p2p/${peerId}`))).toBe(true);
 
-    // signalingOnly returns only the /p2p-circuit addr.
+    // signalingOnly returns only the addr reaching through the relay.
     const signalingOnly = (await node.resolvePeerAddrs(peerId, { signalingOnly: true })).map((m) => m.toString());
     expect(signalingOnly).toEqual([sig]);
   }, 60_000);
@@ -159,7 +159,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     );
 
     const resolved = (await node.resolvePeerAddrs(peerId)).map((m) => m.toString());
-    // signaling-first, uniformly suffixed
+    // relayed-first, uniformly suffixed
     expect(resolved[0]).toContain('/p2p-circuit');
     expect(new Set(resolved)).toEqual(new Set([circuitAddr(peerId), `${direct}/p2p/${peerId}`]));
   }, 60_000);

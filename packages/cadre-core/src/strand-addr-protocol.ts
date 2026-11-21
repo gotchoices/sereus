@@ -81,9 +81,10 @@ function addrlessResponse(status: StrandAddrStatus, strandId: string): StrandAdd
  */
 export interface StrandAddrServiceOptions {
   /**
-   * The local strand instance's dialable strand-network multiaddrs, ordered
-   * signaling-first. Returns `[]` when the strand is not running / has no live
-   * node (hibernating, quiescing, or never participated). Kept injectable so the
+   * The local strand instance's dialable strand-network multiaddrs, relayed first
+   * and WebRTC last ({@link orderRelayedFirst}). Returns `[]` when the strand is
+   * not running / has no live node (hibernating, quiescing, or never
+   * participated). Kept injectable so the
    * decision logic is unit-testable without a full node.
    */
   getStrandMultiaddrs(strandId: string): string[];
@@ -218,7 +219,7 @@ export class StrandAddrService {
    * - Request carrying a `delegatePeerId` → recorded via
    *   {@link StrandAddrServiceOptions.onDelegateAnnounce} before the lookup.
    * - Strand not running locally → `ok` with empty `multiaddrs` (`getStrandMultiaddrs` → `[]`).
-   * - Running strand → `ok` with the strand's live, signaling-first multiaddrs.
+   * - Running strand → `ok` with the strand's live multiaddrs, relayed first and WebRTC last.
    *
    * A throwing lookup propagates; {@link handleStream} answers it `unavailable`.
    */
@@ -568,8 +569,8 @@ async function sendStrandAddr(
   signal: AbortSignal,
 ): Promise<StrandAddrResponse> {
   // `runOnLimitedConnection: true`: the sibling may be reachable only over a
-  // circuit-relay connection (the signaling-first addr), which libp2p marks
-  // "limited". The exchange is a single tiny request→response well within the
+  // circuit-relay connection (the relayed addr the ordering tries first), which
+  // libp2p marks "limited". The exchange is a single tiny request→response well within the
   // relay's data/duration cap, so opening it on the limited connection is safe
   // and is the whole point of dialing over the relay.
   const rawStream = await node.dialProtocol(target, protocolId, { runOnLimitedConnection: true, signal });

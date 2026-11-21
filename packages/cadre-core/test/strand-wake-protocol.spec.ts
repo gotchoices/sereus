@@ -313,7 +313,7 @@ describe('dialWake — sender round-trip against a live receiver', () => {
   it('names EVERY candidate and its cause when they all fail', async () => {
     // The misdirection this replaces: each failure went to a debug log and only
     // `lastError` was thrown, so a two-address wake reported the address tried
-    // LAST while the interesting failure (the signaling addr, tried first) was
+    // LAST while the interesting failure (the relayed addr, tried first) was
     // invisible. An entire fix-stage ticket was written about the wrong address.
     const node = dialing(async (addr) => {
       throw new Error(`unreachable via ${addr.toString()}`);
@@ -327,8 +327,31 @@ describe('dialWake — sender round-trip against a live receiver', () => {
     // Both candidates, each with its own cause — not only whichever was last.
     expect(err.message).toContain(`${circuit.toString()} — unreachable via ${circuit.toString()}`);
     expect(err.message).toContain(`${direct.toString()} — unreachable via ${direct.toString()}`);
-    // …and in candidate order, so the signaling addr reads first.
+    // …and in candidate order, so the relayed addr reads first.
     expect(err.message.indexOf(circuit.toString())).toBeLessThan(err.message.indexOf(direct.toString()));
+  });
+
+  it('tries a WebRTC addr last, and still keeps the relayed addr ahead of the direct one', async () => {
+    // A WebRTC addr opens only if ICE finds a path between the two networks and otherwise
+    // answers nothing for about 23 s, so it must not take one of the two attempts
+    // (`WAKE_DIAL_ATTEMPTS`) ahead of an addr that fails fast. Everything else keeps the order
+    // the caller gave — the relayed addr stays ahead of the direct one here, where
+    // `directBeforeRelayed` would have inverted them: a hibernating, NAT'd machine is usually
+    // reachable at no other address than its relay.
+    const tried: string[] = [];
+    const node = dialing(async (addr) => {
+      tried.push(addr.toString());
+      throw new Error('unreachable');
+    });
+
+    const circuit = multiaddr('/ip4/9.9.9.9/tcp/4001/p2p-circuit');
+    const webrtc = multiaddr('/ip4/9.9.9.9/tcp/4001/p2p-circuit/webrtc');
+    const direct = multiaddr('/ip4/10.255.0.1/tcp/4001/ws');
+
+    // The order a machine listening on `/webrtc` reports: the WebRTC addr leads.
+    await dialWakeError(dialWake(node, [webrtc, circuit, direct], { strandId: 's' }));
+
+    expect(tried).toEqual([circuit.toString(), direct.toString(), webrtc.toString()]);
   });
 
   it('carries the FIRST failure as the cause of the aggregated error', async () => {

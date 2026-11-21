@@ -365,7 +365,7 @@ function addressesOfFirst(members: readonly string[], peerId: string | null): st
  * freshly-RPC'd sibling answers and the addresses the strand's formation carried. The
  * caller passes the FRESHER source as `primary`, so a stale entry can only ever be
  * appended, never promoted ahead of a current one, and each source keeps whatever
- * signaling-first ordering it arrived with.
+ * relayed-first ordering it arrived with.
  */
 function unionAddrs(primary: readonly string[], extra: readonly string[]): string[] {
   if (extra.length === 0) {
@@ -3581,12 +3581,13 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Publish (or refresh) this node's own signed `CadrePeer` address record so
-   * other members can resolve its current signaling/relay multiaddrs from its
+   * other members can resolve its current relayed and direct multiaddrs from its
    * PeerId alone. Public, awaitable, and idempotent.
    *
    * - Builds a `PeerAddressRecord` from the node's current dialable addrs
-   *   (signaling/`p2p-circuit` first), signed with the ed25519 key behind its
-   *   PeerId (the resolved node identity from `keyStore`/`config.privateKey`).
+   *   ({@link collectSelfAddrs}: relayed first, WebRTC last), signed with the
+   *   ed25519 key behind its PeerId (the resolved node identity from
+   *   `keyStore`/`config.privateKey`).
    * - If the row already exists: a self-signed UPDATE bumping `UpdatedAt`.
    * - If not, and the node is its own owner: an owner-signed INSERT that
    *   also carries the self-signature. That INSERT is idempotent, so if an owner
@@ -4118,8 +4119,9 @@ export class CadreNode implements SAppIdLookup {
    *   4. freshness — rejected once older than `maxAgeMs` (never a dead relay
    *      reservation),
    *   5. the pluggable trust gate (`opts.trustPolicy`).
-   * Survivors are returned signaling (`/p2p-circuit`) first, filtered to
-   * signaling-only when requested, as parsed `Multiaddr`s (unparsable addrs
+   * Survivors are returned in {@link orderRelayedFirst} order — plain relayed,
+   * then direct, then WebRTC — filtered to the addresses reaching through a relay
+   * when `signalingOnly` is set, as parsed `Multiaddr`s (unparsable addrs
    * dropped). Any gate failure yields an empty array rather than throwing.
    *
    * Every returned address is normalized to terminate in `/p2p/<peerId>` — see

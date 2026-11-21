@@ -442,7 +442,7 @@ declare schema CadreControl {
     table CadrePeer (
         PeerId text primary key,
         PublicKey text null,            -- ed25519 (base64url) behind PeerId; null if not ed25519
-        Multiaddr text,                 -- comma-joined current addrs (signaling / p2p-circuit first)
+        Multiaddr text,                 -- comma-joined current addrs (relayed first, WebRTC last)
         UpdatedAt int null,             -- epoch ms; strictly increases per self-update
         Sig text null,                  -- self-signature over the 'publish' digest; null until self-published
         StampId text unique,

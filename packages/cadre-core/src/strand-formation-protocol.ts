@@ -213,7 +213,7 @@ type ApprovedResultMessage = FormationResultMessage & { approved: true };
 /**
  * Normalize a strand-address list arriving from — or heading to — the wire: keep only
  * parsable multiaddr strings, drop duplicates, and cap at {@link MAX_STRAND_ADDRS}.
- * Order is preserved, so the responder's signaling-first ordering survives.
+ * Order is preserved, so the responder's relayed-first ordering survives.
  *
  * Applied on BOTH sides on purpose. The responder bounds what it sends; the initiator
  * bounds what it stores, because a peer is free to ignore the cap. A malformed entry is

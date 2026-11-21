@@ -283,7 +283,7 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
     ]);
     // Keyed by each sibling's STRAND transport peer id — never its control one,
     // which names a different libp2p node entirely. Group order follows the RPC
-    // union, which `collectStrandAddrs` puts signaling-first — so sib2's relayed
+    // union, which `collectStrandAddrs` puts relayed-first — so sib2's relayed
     // address leads even though sib1 was asked first.
     expect(strand.merges).toEqual([
       { peerId: sib2Strand, addrs: [sib2Addr] },

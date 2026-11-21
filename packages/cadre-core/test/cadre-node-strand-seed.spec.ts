@@ -135,7 +135,7 @@ describe('CadreNode.resolveCohortSeed', () => {
     expect(dialed).toEqual([]);
   });
 
-  it('unions strand addrs from connected, running siblings (signaling-first) and ignores control addrs', async () => {
+  it('unions strand addrs from connected, running siblings (relayed-first) and ignores control addrs', async () => {
     const [self, sib1, sib2] = await Promise.all([freshPeerId(), freshPeerId(), freshPeerId()]);
     const node = new CadreNode(createConfig());
     injectSeed(node, {
@@ -155,7 +155,7 @@ describe('CadreNode.resolveCohortSeed', () => {
 
     const seed = await resolveSeed(node, 'strand-x');
 
-    // Deduped union, /p2p-circuit signaling addr ordered first.
+    // Deduped union, the relayed addr ordered first.
     expect(seed).toEqual([
       '/ip4/9.9.9.9/tcp/9/p2p-circuit',
       '/ip4/10.0.0.1/tcp/5/p2p/strand',

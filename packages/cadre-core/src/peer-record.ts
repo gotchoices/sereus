@@ -183,8 +183,18 @@ export function orderRelayedFirst(addrs: readonly string[]): string[] {
  * `SeedBootstrapService.getRelayAddress`, which both ask this of their own announced addresses.
  */
 export function firstRelayedAddr(addrs: readonly string[]): string | null {
-  const throughRelay = addrs.filter((addr) => addr.includes('/p2p-circuit/') && isSignalingAddr(addr));
-  return orderRelayedFirst(throughRelay)[0] ?? null;
+  const usable = addrs.filter((addr) => isSignalingAddr(addr) && continuesPastItsHop(addr));
+  return orderRelayedFirst(usable)[0] ?? null;
+}
+
+/**
+ * True if something follows the relay hop, which is what names a destination for whoever
+ * receives the address. Not derivable from {@link addrKindOf}: a `…/p2p-circuit` ending AT its
+ * hop and a `…/p2p-circuit/p2p/<dst>` are both `relayed`, and only the second is of any use in
+ * a seed. Both `getRelayAddress` copies applied this same test before they shared this function.
+ */
+function continuesPastItsHop(addr: string): boolean {
+  return addr.includes('/p2p-circuit/');
 }
 
 /**

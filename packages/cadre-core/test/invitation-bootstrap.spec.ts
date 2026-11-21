@@ -91,7 +91,8 @@ describe('cadre invitation addresses', () => {
 	it('fills the cap with a machine\'s relayed addresses before its WebRTC ones', async () => {
 		// A WebRTC address connects only if ICE finds a path between the two networks, and
 		// otherwise answers nothing for about 23 s — so under the cap that keeps an invitation
-		// inside one QR code it must not take a relayed address's place.
+		// inside one QR code it must not take a relayed address's place. The sibling's two slots
+		// both go to addresses that connect without ICE.
 		const relays = await Promise.all([0, 1].map(newPeerId));
 		const issuer = await newPeerId();
 		const sibling = await newPeerId();
@@ -107,8 +108,6 @@ describe('cadre invitation addresses', () => {
 			webrtc(relays[0]!, issuer), webrtc(relays[1]!, issuer),
 			relayed(relays[0]!, sibling), relayed(relays[1]!, sibling),
 		]);
-		// The sibling's two slots both went to addresses that connect without ICE.
-		expect(members.filter((addr) => addr.includes('/webrtc/'))).toHaveLength(2);
 	});
 
 	it('counts a WebRTC address as reaching from anywhere, since its relay carries signalling from any network', async () => {

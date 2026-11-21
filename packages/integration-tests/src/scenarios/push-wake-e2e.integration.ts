@@ -12,8 +12,8 @@
  *   - libp2p 3.x half-close (`stream.close()` write-EOF, read end open for the ack),
  *   - multi-chunk length-prefixed JSON framing,
  *   - `pushWake`'s composition with `resolvePeerAddrs` (binding + self-sig +
- *     freshness + trust + signaling-first), and
- *   - the circuit-relay (signaling-first) dial to a NAT'd receiver.
+ *     freshness + trust + relayed-first), and
+ *   - the circuit-relay (relayed-first) dial to a NAT'd receiver.
  *
  * Four scenarios, each booting fresh nodes in a try/finally:
  *   1. Happy path — direct dial of a hibernating member, wake accepted.
@@ -81,7 +81,7 @@
  * deterministic rather than discovery-timing dependent.
  *
  * Scenario 2 — NAT receiver is NOT hibernated, by design. Scenario 2's unique
- * subject is the SENDER reaching a NAT'd peer: the signaling-first resolve and the
+ * subject is the SENDER reaching a NAT'd peer: the relayed-first resolve and the
  * relayed dial over a libp2p "limited" (circuit) connection. (That dial used to
  * fail outright with `LimitedConnectionError`, until `strand-wake-protocol.ts`
  * started passing `runOnLimitedConnection` on the wake dial.) The full
@@ -137,7 +137,7 @@ table Data (
  * Owner-signed INSERT of the receiver's own self-signed `CadrePeer` record
  * into `ownerNode`'s control DB, exactly as the receiver would self-publish —
  * so `ownerNode.resolvePeerAddrs(rxPeerId)` passes its binding + self-sig +
- * freshness gates and dials the supplied addrs (signaling/relay first).
+ * freshness gates and dials the supplied addrs (relayed first).
  *
  * This reaches `SeedBootstrapService` DIRECTLY, below every `CadreNode`
  * membership wrapper, and needs NO follow-up gate refresh: the write notifies
@@ -290,7 +290,7 @@ describe('E2E push-wake over the control network', () => {
 	// relay mesh would be the unstable link), no full-mesh-over-relay flakiness. Rx's
 	// deterministic circuit address is CONSTRUCTED before it starts, so the
 	// address-record write lands inside the `{L, S}` window.
-	it("delivers a wake to a NAT'd receiver over a circuit-relay (signaling-first) dial", async () => {
+	it("delivers a wake to a NAT'd receiver over a circuit-relay (relayed-first) dial", async () => {
 		let L: CadreNode | undefined;
 		let S: CadreNode | undefined;
 		let Rx: CadreNode | undefined;
@@ -330,7 +330,7 @@ describe('E2E push-wake over the control network', () => {
 			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isAuthorizedMember(S)` passes.
 			//   • Rx's self-signed address record (`seedReceiverRecord` — one owner insert
 			//     carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes. The synthetic
-			//     direct addr is kept for two reasons: signaling-first ordering (circuit sorts
+			//     direct addr is kept for two reasons: relayed-first ordering (circuit sorts
 			//     ahead of direct) stays observable, and it is written WITHOUT a `/p2p/` suffix
 			//     while the circuit addr has one — the mixed list `libp2p.dial` refuses, so the
 			//     resolver's normalization is pinned end-to-end here and not only in unit tests.
@@ -339,7 +339,7 @@ describe('E2E push-wake over the control network', () => {
 			await seedReceiverRecord(partyId, L, rxPeerId, rxKey, [rxCircuitAddr, syntheticDirect]);
 
 			// Converge S on Rx's sibling-written record (pull-on-read) and assert the circuit
-			// addr sorts FIRST — the signaling-first ordering the in-memory unit tests can
+			// addr sorts FIRST — the relayed-first ordering the in-memory unit tests can
 			// only stub. This runs BEFORE Rx starts: the record is independent of Rx being live.
 			await waitForCrossNodeControlSync(
 				S.getControlDatabase()!,

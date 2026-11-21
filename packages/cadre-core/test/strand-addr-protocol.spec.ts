@@ -277,7 +277,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
     } as unknown as Libp2p;
   }
 
-  it('unions and dedupes addrs across siblings (signaling-first)', async () => {
+  it('unions and dedupes addrs across siblings (relayed-first)', async () => {
     const [self, sib1, sib2] = await Promise.all([freshPeerId(), freshPeerId(), freshPeerId()]);
     const replies = new Map<string, string[]>([
       [sib1, ['/ip4/1.1.1.1/tcp/1', '/ip4/9.9.9.9/tcp/9/p2p-circuit']],
@@ -287,7 +287,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
 
     const { addrs: result } = await collectStrandAddrs(node, [{ peerId: sib1 }, { peerId: sib2 }], 'strand-x');
 
-    // Deduped union, with the /p2p-circuit signaling addr ordered first.
+    // Deduped union, with the relayed addr ordered first.
     expect(result).toEqual([
       '/ip4/9.9.9.9/tcp/9/p2p-circuit',
       '/ip4/1.1.1.1/tcp/1',

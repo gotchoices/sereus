@@ -2037,7 +2037,7 @@ export interface CadreNodeEvents {
  *
  * This is the logical shape of a `CadreControl.CadrePeer` row. A node publishes
  * its own record (signing with the ed25519 key behind its PeerId); any node can
- * resolve another member's current signaling/relay multiaddrs from only its
+ * resolve another member's current relayed and direct multiaddrs from only its
  * PeerId by reading the record, re-verifying the self-signature against
  * `publicKey`, checking freshness, and applying a trust gate.
  *
@@ -2052,7 +2052,7 @@ export interface PeerAddressRecord {
   peerId: string;
   /** ed25519 public key (base64url) whose libp2p identity IS `peerId`. */
   publicKey: string;
-  /** Current dialable multiaddrs, signaling (`/p2p-circuit`) first. */
+  /** Current dialable multiaddrs, relayed first and WebRTC last (`orderRelayedFirst` in `peer-record.ts`). */
   addrs: string[];
   /** epoch ms — freshness; strictly increasing per peer. */
   updatedAt: number;
@@ -2940,8 +2940,9 @@ export interface StrandAddrResponse {
   /** Echoes the requested strand id; always empty on an `unavailable` reply. */
   strandId: string;
   /**
-   * Dialable strand-network multiaddr strings (signaling/`p2p-circuit` first);
-   * empty unless `status` is `ok` and the responder runs that strand.
+   * Dialable strand-network multiaddr strings, relayed first and WebRTC last
+   * (`orderRelayedFirst` in `peer-record.ts`); empty unless `status` is `ok` and
+   * the responder runs that strand.
    */
   multiaddrs: string[];
 }
@@ -3030,7 +3031,11 @@ export interface CreateCadreInvitationOptions {
  * closed?". A minting machine that is itself always on can therefore read `issuer-only`.
  */
 export type CadreInvitationReach =
-  /** Another machine has a relayed (`/p2p-circuit`), public-name or public-IP WebSocket address. */
+  /**
+   * Another machine has a relayed (`/p2p-circuit`), public-name or public-IP WebSocket address.
+   * A WebRTC address counts: its relay carries the signalling from any network. Whether ICE then
+   * finds a path is a separate matter this does not judge — see `cadreInvitationReach`.
+   */
   | 'anywhere'
   /** Other machines are named, but only at private or loopback addresses: works on their network only. */
   | 'local-network'
