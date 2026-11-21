@@ -170,6 +170,9 @@ const SCHEMA_INIT_RETRY_DELAYS_MS: readonly number[] = [250, 500, 1_000, 2_000];
  *   {@link reportsIndeterminateCommit}, not here;
  * - `cancel` — a failed attempt's own cancel that could not discharge the pend it left behind —
  *   is neither claimed here nor vetoed there, so it falls through unmatched and is not retried.
+ *   Per LINK, not per chain: a cancel aggregate carrying a `get`/`pend` one below it is still
+ *   claimed on that lower link, which is right for the same reason the lower link alone is
+ *   (nothing committed at either phase) and is what the text matcher this replaced also did.
  *
  * What still fails CLOSED is the error not arriving: a future wrapper that drops `cause` takes
  * every link below it with it, so no typed claim matches and the write is simply not retried.
@@ -230,10 +233,20 @@ export function isUncommittedTransactorAggregate(links: readonly Error[]): boole
  * which claim would otherwise have taken it: an indeterminate commit anywhere in the chain costs a
  * retry we could have had instead of risking a re-run over a write that landed.
  *
- * Fails CLOSED in the only direction that matters: this veto and every typed claim the write
+ * Fails CLOSED in the only direction that matters: this veto and every TYPED claim the write
  * classifier makes rest on the same `instanceof`, so a chain this cannot see (a wrapper that
- * dropped `cause`, a second loaded copy of `@optimystic/db-core`) is a chain no claim can see
- * either, and nothing is retried for the veto to have to stop.
+ * dropped `cause`, a second loaded copy of `@optimystic/db-core`) is a chain no typed claim can
+ * see either, and nothing is retried for the veto to have to stop.
+ *
+ * NOTE: that symmetry holds for every claim matched by type, which is all of them in the default
+ * and lost-update policies. Schema init adds one matched by TEXT
+ * ({@link isSelfCoordinationGraceRefusal}), and a commit aggregate raised OVER that refusal embeds
+ * it as the aggregate's own `; root: …` tail — so a chain that kept the text and lost the typed
+ * link would be claimed with this veto blind, where the text veto this replaced declined it. Fine
+ * today: every wrapper between the transactor and `applyControlSchema` passes the inner error as
+ * `cause` (Quereus' DDL, module-create and failed-apply wrappers all do). Revisit if one stops, or
+ * if the default policy ever grows a text matcher of its own — either way the veto then needs a
+ * text arm beside the typed one.
  */
 function reportsIndeterminateCommit(links: readonly Error[]): boolean {
 	return links.some(link => link instanceof PeersIncompleteError && link.phase === 'commit');

@@ -15,18 +15,13 @@
  * job, and a scenario asserting on their answer should call them instead.
  */
 export function errorChainText(error: unknown): string {
-	const parts: string[] = [];
-	const seen = new Set<unknown>();
-	let current: unknown = error;
-	while (current != null && !seen.has(current)) {
-		seen.add(current);
-		if (current instanceof Error) {
-			parts.push(current.message);
-			current = current.cause;
-		} else {
-			parts.push(String(current));
-			break;
-		}
+	const links = errorChainLinks(error);
+	const parts = links.map((link) => link.message);
+	// The walk stops at the first link that is not an `Error`; name it anyway, so a rejection with
+	// a string reason still appears in a diff.
+	const tail = links.length > 0 ? links[links.length - 1].cause : error;
+	if (tail != null && !(tail instanceof Error)) {
+		parts.push(String(tail));
 	}
 	return parts.join(' | ');
 }
@@ -35,8 +30,9 @@ export function errorChainText(error: unknown): string {
  * `error` and every `cause` below it as OBJECTS, outermost first — for an assertion about which
  * typed error a chain carries, where {@link errorChainText} only answers what it says.
  *
- * Same walk, same cycle guard; it stops at a non-`Error` link, which can carry no further `cause`
- * worth trusting. The production classifiers have their own chain walk (`causeChain` in
+ * The one walk both helpers use, so they can never disagree on where a chain ends: it stops at a
+ * repeat (a `cause` pointing back at an ancestor) and at a non-`Error` link, which can carry no
+ * further `cause` worth trusting. The production classifiers have their own chain walk (`causeChain` in
  * `cadre-core/src/control-retry.ts`) and a scenario asking "is this retriable?" should still call
  * the classifier rather than re-deciding from these links.
  */
