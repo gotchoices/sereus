@@ -29,7 +29,12 @@ const FOUNDED_SCHEMAS = ['Strand', 'App'] as const;
  * We only need the methods this composition actually uses.
  */
 interface CollectionFactory {
-	registerLibp2pNode(networkName: string, node: Libp2p, coordinatedRepo: IRepo): void;
+	/**
+	 * `coordinatedRepo` is optional upstream, and left out for a client node (`NodeOptions.servesBlocks:
+	 * false`), which holds no blocks: the transactor the factory then builds has no local store and
+	 * sends every read and write to a remote coordinator.
+	 */
+	registerLibp2pNode(networkName: string, node: Libp2p, coordinatedRepo?: IRepo): void;
 	/**
 	 * Register the reachability gate for the transactor under `key` (`${transactor}:${keyNetwork}`),
 	 * replacing the node's own, which the network transactor registers unless one is here first.
@@ -321,15 +326,29 @@ export async function composeStrand(
 		// transactor with no injected node — every real path needs a node.
 		if (resolvedTransactor !== 'test' || options.libp2pNode) {
 			let node: Libp2p;
-			let coordinatedRepo: IRepo;
+			// Absent for an injected client node, which holds no blocks and so coordinates none.
+			let coordinatedRepo: IRepo | undefined;
 
 			if (options.libp2pNode) {
 				node = options.libp2pNode;
-				if (!options.coordinatedRepo) {
-					throw new Error('coordinatedRepo is required when libp2pNode is provided');
+				// `servesBlocks === false` and nothing weaker: a node built by something other than
+				// `createLibp2pNode` declares neither field, and `!node.servesBlocks` would read it as a
+				// client and compose a remote-only transactor over it.
+				const isClient = (node as Libp2pNodeWithRepo).servesBlocks === false;
+				if (isClient && options.coordinatedRepo) {
+					// A client holds no blocks, so this repo can only be another machine's: writing
+					// through it would land the strand's blocks on a machine the strand does not
+					// think holds any.
+					throw new Error('coordinatedRepo must not be provided with a client libp2pNode (servesBlocks: false)');
+				}
+				if (!isClient && !options.coordinatedRepo) {
+					// Kept rather than letting the factory default the repo off the node: a serving node
+					// that reaches here without its repo was built wrong, and a remote-only transactor
+					// over it would read and write correctly while storing nothing.
+					throw new Error('coordinatedRepo is required when a block-serving libp2pNode is provided');
 				}
 				coordinatedRepo = options.coordinatedRepo;
-				log('Using injected libp2p node');
+				log('Using injected libp2p node (client=%s)', isClient);
 			} else {
 				// NOTE: this path takes the frozen policy whole, so it takes COHORT_READ_DEADLINE_MS
 				// with no way to override it — `StrandConnectionOptions` has no counterpart to
