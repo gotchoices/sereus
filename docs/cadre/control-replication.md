@@ -165,7 +165,7 @@ The default policy retries:
 
 ### What is never retried, and why
 
-- **A rejection.** No matcher claims a constraint or authorization failure, or a shortfall that counts a rejection. Presenting it again would present a spent signature to a cluster that already refused it.
+- **A rejection.** Nothing in the classifier claims a constraint or authorization failure, or a shortfall that counts a rejection. Presenting it again would present a spent signature to a cluster that already refused it. The shortfall's vote count is read off the error, so this holds however the cluster words the failure.
 - **An indeterminate commit.** The "some peers did not complete" error is also raised from the commit phase, where the write may have committed with only the reply lost. Running the body again would turn a success into a constraint failure. The classifier tells the phases apart by the error's text, so a rewording upstream disables the retry and never makes it unsafe.
 - **A write that may be partly stored.** A spent sync retry budget (which is also how contention on a block ends), a torn write not marked final and a partial commit are declined by type.
 - **A lost update, by default.** A body that signs over a row it read outside the lock would present a record the other writer has already superseded.

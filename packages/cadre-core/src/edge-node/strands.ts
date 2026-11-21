@@ -2,11 +2,10 @@
  * Strand helpers every edge app needs around a running node, from sereus-chat's bring-up.
  */
 
-import { PromiseShortfallError } from '@optimystic/db-core';
 import { StrandAwaitingFirstSyncError } from '../strand-first-sync-gate.js';
 import type { CadreNode } from '../cadre-node.js';
 import type { StrandConfig, StrandInstance } from '../types.js';
-import { causeChain } from '../control-retry.js';
+import { causeChain, reportsUnansweredShortfall } from '../control-retry.js';
 
 /** Default patience for {@link attachStrandWhenWritable}: generous enough that running out means something is wrong. */
 export const DEFAULT_STRAND_PATIENCE_MS = 240_000;
@@ -61,27 +60,30 @@ export async function retryAfterRestart<T>(
 }
 
 /**
- * Optimystic's cluster coordinator reporting a write too few of the cohort answered —
- * `PromiseShortfallError` with nobody having voted no. Transient right after a node restarts alone:
- * its cohort has not reconnected yet, and a lone node's own refusal to write by itself carries
- * `approvals: 1, rejections: 0` like any silent-cohort shortfall (`CoordinatorRepo.refuseSoloPend`),
- * so it is claimed here too.
+ * Optimystic's cluster coordinator reporting a write too few of the cohort answered. Transient right
+ * after a node restarts alone: its cohort has not reconnected yet. A lone node's own refusal to
+ * write by itself is claimed too — `CoordinatorRepo.refuseSoloPend` builds the shortfall with
+ * `approvals: 1, rejections: 0`, a zero rejection count like any silent-cohort shortfall, and
+ * `soloRefused` naming why, which nothing here branches on.
  *
- * The same typed test the control write uses (`isUnansweredShortfall` in `control-write-retry.ts`),
- * and deliberately so — the two policies must not drift apart on which shortfall is worth
- * re-presenting. Matching the class rather than the sentence changes this helper's reach in two
- * ways, both intended:
+ * The SAME predicate the control-write classifier claims the shortfall with
+ * ({@link reportsUnansweredShortfall}), so the funnel every control write passes through and this
+ * helper cannot drift apart on which shortfall is worth re-presenting. What this helper does NOT
+ * share is that funnel's commit-phase veto: it wraps an app's own write, with no transactor
+ * aggregate around it to read a phase off.
  *
- * - it reaches ANY DEPTH. The old text match read `describeThrown(err)`, which is the top-level
- *   `message` alone, so a shortfall under any wrapper — which is every shortfall reaching an app
- *   through SQL — was silently not retried. The first writes after a lone restart, which this
- *   helper exists for, are exactly the wrapped ones.
- * - it no longer claims a shortfall carrying a REJECTION (a member voted no, and no backoff changes
- *   that), nor a non-`Error` throw, which can carry no typed link at all — and claiming one on its
- *   text would spend 12 s of sleep before the identical failure.
+ * Matching the class rather than the sentence NARROWS this helper, deliberately. A shortfall
+ * carrying a REJECTION is no longer claimed (a member voted no, and no backoff changes that), nor is
+ * a non-`Error` throw, which can carry no typed link at all — and this helper sleeps 3 s between
+ * five attempts, so claiming one on its text would spend 12 s before the identical failure.
  *
- * `soloRefused` names why a lone node refused, and is deliberately not branched on.
+ * It does not measurably widen the reach, despite now walking the chain: the old match read
+ * `describeThrown(err)`, the top-level `message` alone, but every wrapper between the raise site and
+ * an app interpolates the inner message into its own, so the sentence was visible there anyway.
+ * Reaching the typed link at any depth is what makes the claim independent of that — an upstream
+ * rewording, or a wrapper that summarises instead of interpolating, no longer silently disables the
+ * retry.
  */
 function isTransientWriteFailure(err: unknown): boolean {
-	return causeChain(err).some(link => link instanceof PromiseShortfallError && link.rejections === 0);
+	return reportsUnansweredShortfall(causeChain(err));
 }

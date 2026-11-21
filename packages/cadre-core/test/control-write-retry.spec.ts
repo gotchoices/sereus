@@ -400,11 +400,14 @@ describe('isRetriableControlWriteFailure', () => {
 	/**
 	 * A lone node refusing to write by itself: `CoordinatorRepo.refuseSoloPend` builds the shortfall
 	 * with its own approval and nobody voting no, so it is claimed like any silent-cohort shortfall.
-	 * `soloRefused` names why, and nothing branches on it — asserted across all three reasons so a
-	 * future branch on one of them has to change this case.
+	 * `soloRefused` names why, and nothing branches on it — asserted across EVERY reason, keyed off
+	 * the upstream union so a reason added there fails to compile here rather than going unasserted.
 	 */
 	it('retries a lone node\'s own refusal to write alone, whatever reason it names', () => {
-		for (const soloRefused of ['absent-members', 'awaiting-bootstrap', 'unrouted'] as const) {
+		const everyReason: Record<SoloRefusalReason, true> =
+			{ 'absent-members': true, 'awaiting-bootstrap': true, 'unrouted': true };
+
+		for (const soloRefused of Object.keys(everyReason) as SoloRefusalReason[]) {
 			expect(isRetriableControlWriteFailure(
 				nested(shortfall({ approvals: 1, peerCount: 3, needed: 3, soloRefused })))).toBe(true);
 		}

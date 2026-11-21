@@ -1,5 +1,5 @@
 import debug from 'debug';
-import { isCohortUnreachableRead } from '@optimystic/db-core';
+import { isCohortUnreachableRead, PromiseShortfallError } from '@optimystic/db-core';
 import { unwrapError } from '@quereus/quereus';
 
 const log = debug('sereus:cadre:control-db');
@@ -316,6 +316,37 @@ export function causeChain(error: unknown): Error[] {
  */
 export function reportsUnreachableCohort(links: readonly Error[]): boolean {
 	return links.some(link => isCohortUnreachableRead(link));
+}
+
+/**
+ * Does any link of the `cause` chain report the cluster coordinator's super-majority shortfall with
+ * NOBODY having voted no — a `PromiseShortfallError` whose `rejections` is zero? The promise round
+ * reached no verdict (too few approvals to pass, too few rejections to count as a rejection), so the
+ * cohort was simply not all there, and a moment later it may be.
+ *
+ * The one shortfall test both write policies share — the control-write classifier
+ * (`isRetriableControlWriteFailure`) and the edge node's `retryAfterRestart` — so the funnel every
+ * local control write passes through and the helper an app wraps its first writes in cannot
+ * disagree on which shortfall is worth re-presenting.
+ *
+ * A non-zero `rejections` is deliberately excluded: a member actually voted no (that branch carries
+ * `membership-not-admitted` rejections), and no backoff changes that answer — re-presenting it would
+ * re-present a spent signature to a cohort that already refused it.
+ *
+ * Matched by TYPE, which upstream's own comment on the class asks consumers to prefer over its
+ * sentence. Every wrapper between the raise site and either caller keeps the error on `cause` — the
+ * optimystic plugin's `rewrapAsQueryError`, Quereus' statement-execution rewrap, its module-create
+ * wrapper and its DDL wrapper — so the claim reaches any depth. NOTE: an error built by a second
+ * loaded copy of `@optimystic/db-core`, or one rebuilt as a plain `Error` from its text, fails
+ * `instanceof` and is not claimed — the same fail-closed direction
+ * {@link reportsUnreachableCohort} already accepts.
+ *
+ * This says only that the round went unanswered. WHERE that leaves the write is the caller's: the
+ * control-write funnel still vetoes a shortfall carried by a commit-phase batch, because a commit
+ * may have landed with only the reply lost.
+ */
+export function reportsUnansweredShortfall(links: readonly Error[]): boolean {
+	return links.some(link => link instanceof PromiseShortfallError && link.rejections === 0);
 }
 
 /**

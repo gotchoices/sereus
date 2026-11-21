@@ -75,7 +75,8 @@ describe('retryAfterRestart', () => {
 	/**
 	 * Every shortfall an app meets through SQL arrives under a wrapper (the optimystic plugin's
 	 * rewrap, Quereus' own), and the first writes after a lone restart — what this helper exists for
-	 * — are exactly those. The old match read the top-level message alone, so it never saw one.
+	 * — are exactly those. The wrapper below interpolates the inner message as the real ones do, so
+	 * what this pins is that the claim no longer DEPENDS on that: the typed link is found at depth.
 	 */
 	it('retries a shortfall delivered under a wrapper', async () => {
 		const wrapped = () => new Error('Query failed: Failed to get super-majority', { cause: superMajority() });
