@@ -5270,6 +5270,7 @@ __metadata:
     "@libp2p/peer-id": "npm:^6.0.15"
     "@libp2p/ping": "npm:3.1.13"
     "@libp2p/tcp": "npm:^11.0.28"
+    "@libp2p/webrtc": "npm:6.0.33"
     "@libp2p/websockets": "npm:^10.1.21"
     "@multiformats/multiaddr": "npm:^13.0.3"
     "@noble/curves": "npm:^2.0.1"

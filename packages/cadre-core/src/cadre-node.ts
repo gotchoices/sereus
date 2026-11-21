@@ -3252,6 +3252,15 @@ export class CadreNode implements SAppIdLookup {
    * and dial each peer once — what `@libp2p/bootstrap` would have done had the node been
    * built with them. Best-effort: a failed dial is logged, and the connection manager and
    * FRET reconnect from the address book as they do for any known peer.
+   *
+   * NOTE: this dials by peer id, so libp2p's own address sorter picks the order rather than
+   * `peer-dial.ts` → `directBeforeRelayed`. A `/p2p-circuit/webrtc` address in a bootstrap
+   * peer's record therefore sorts AHEAD of the plain relayed one (libp2p's
+   * `circuitRelayAddressesLast` counts only an exact `Circuit` match as relayed) and can cost
+   * this peer one ICE timeout, about 23 s, before the relayed address is tried. Left as it is
+   * because nothing waits on this pass — `start()` voids it, and a peer it misses is reconnected
+   * from the address book. Dial by address (`dialPeerAddrs`) if bootstrap peers ever start
+   * publishing WebRTC addresses and the timing of their first connection matters.
    */
   private async dialControlBootstrapPeers(): Promise<void> {
     const node = this.controlNode;

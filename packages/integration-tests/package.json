@@ -16,6 +16,7 @@
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@libp2p/tcp": "^11.0.28",
+    "@libp2p/webrtc": "6.0.33",
     "@types/debug": "^4.1.12",
     "@types/node": "^25.0.10",
     "@vitest/coverage-v8": "^4.0.17",

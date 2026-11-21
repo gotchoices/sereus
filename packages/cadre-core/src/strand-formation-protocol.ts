@@ -29,7 +29,7 @@ import { verifyFormationConsent } from './peer-authorization.js';
 // seed-bootstrap imports neither this protocol nor the manager/solicitation layers,
 // so this import introduces no cycle.
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
-import { trailingPeerId } from './peer-dial.js';
+import { addrKind, trailingPeerId } from './peer-dial.js';
 import {
   formationDeadlines,
   resolveProvisionTimeoutMs,
@@ -819,19 +819,25 @@ const formationConnectionUsers = new WeakMap<Connection, number>();
  * dialed past its deadline. A late rejection is the abort itself, or reaches the caller through
  * the awaited copy, so the handler below only stops it being reported as unhandled.
  *
- * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget. Its
- * per-address limit (`addressDialTimeout`: ten link round trips plus two admission decisions, as
- * `optimysticDialLimits` states it) is longer than `dialTimeoutMs` (`formationDeadlines().dialMs`:
- * five round trips plus one decision) at every declaration, so it never cuts off an address
- * inside this dial. An address that hangs without answering (a black-holed relay host) uses the
- * whole budget, and the join moves on to the party's next machine
- * ({@link dialFormationByMachine}) rather than to this machine's next address; an address that is
- * refused fails fast and still hands over to the next. A budget per address here would overrun
- * the session or shrink the await-response budget ({@link formationDeadlines}). If joins through a
- * hung first address are seen in practice, give each address a sub-budget or dial them in parallel.
- * The same dial can also be joined to another dial of the responder in flight (the queue keys
- * jobs by peer id — see `peer-dial.ts` → `dialAddr`), which then holds this one on that job's
- * address; the remedy, when that is seen, is the same per-address dial.
+ * NOTE: libp2p tries `addrs` one after another, and they all share this one dial budget — so
+ * ONE address that hangs without answering costs the whole budget, and the join moves on to the
+ * party's next machine ({@link dialFormationByMachine}) rather than to this machine's next
+ * address. (Its per-address limit, `addressDialTimeout` — ten link round trips plus two
+ * admission decisions, as `optimysticDialLimits` states it — is longer than `dialTimeoutMs`
+ * (`formationDeadlines().dialMs`: five round trips plus one decision) at every declaration, so
+ * it never cuts an address off inside this dial. An address that is REFUSED fails fast and
+ * hands over to the next one normally.)
+ *
+ * The WebRTC case of that is handled: {@link withoutWebrtcAddrs} drops an address whose
+ * connection waits on ICE before the list gets here. What is NOT handled is a black-holed relay
+ * host — a relayed address whose relay accepts the TCP connection and then answers nothing. Such
+ * an address still takes the whole budget and the join never reaches this machine's other
+ * relays. A budget per address here would overrun the session or shrink the await-response
+ * budget ({@link formationDeadlines}), so the remedy, if that is seen in practice, is to dial the
+ * addresses in parallel or give each its own sub-budget carved out of this one. The same dial
+ * can also be joined to another dial of the responder in flight (the queue keys jobs by peer id
+ * — see `peer-dial.ts` → `dialAddr`), which then holds this one on that job's address; same
+ * remedy.
  */
 function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: string, dialTimeoutMs: number): Promise<FormationChannel> {
   return withDeadline(dialTimeoutMs, 'Formation dial-connect', async (signal) => {
@@ -863,7 +869,7 @@ function openFormationStream(node: Libp2p, addrs: Multiaddr[], protocolId: strin
  */
 async function dialFormationChannel(node: Libp2p, addrs: Multiaddr[], protocolId: string, signal: AbortSignal): Promise<FormationChannel> {
   const heldBefore = new Set(node.getConnections().map((connection) => connection.id));
-  const connection = await node.dial(addrs, { signal });
+  const connection = await node.dial(withoutWebrtcAddrs(addrs), { signal });
   useFormationConnection(connection, heldBefore.has(connection.id));
   try {
     signal.throwIfAborted();
@@ -873,6 +879,36 @@ async function dialFormationChannel(node: Libp2p, addrs: Multiaddr[], protocolId
     void releaseFormationConnection(connection);
     throw error;
   }
+}
+
+/**
+ * `addrs` without the ones that need a WebRTC session after the relay hop (`peer-dial.ts` →
+ * {@link addrKind}), unless they are all there is.
+ *
+ * Formation needs ONE stream and somebody is waiting on it, so it dials relayed
+ * (`docs/network/relay.md` → "Direct connections over WebRTC"); the bulk strand traffic is what
+ * a direct connection is worth having for, and the strand nodes negotiate that separately. A
+ * responder that listens on `/webrtc` publishes two addresses per relay — the plain relayed one
+ * and a WebRTC one signalled through the same relay — and where ICE cannot connect between the
+ * two networks the WebRTC one answers nothing for about 23 s, longer than the whole dial budget
+ * (gotchoices/sereus#61).
+ *
+ * The addresses are FILTERED rather than reordered because libp2p re-sorts whatever list it is
+ * given (`defaultAddressSorter`), and its `circuitRelayAddressesLast` recognises only an exact
+ * `Circuit` match — so it would put the WebRTC address back in front of the relayed one.
+ *
+ * A responder whose every address is a WebRTC one keeps them: filtering would leave nothing to
+ * dial, and an ICE path that does exist (two machines on one network) still forms the strand.
+ */
+function withoutWebrtcAddrs(addrs: Multiaddr[]): Multiaddr[] {
+  const dialable = addrs.filter((addr) => addrKind(addr) !== 'webrtc');
+  if (dialable.length === 0) {
+    return addrs;
+  }
+  if (dialable.length < addrs.length) {
+    log('formation dial: leaving out %d WebRTC address(es); a relayed address is what the join waits on', addrs.length - dialable.length);
+  }
+  return dialable;
 }
 
 function abandonLateChannel({ stream, connection }: FormationChannel): void {

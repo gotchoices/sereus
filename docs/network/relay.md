@@ -183,6 +183,18 @@ The dedicated relay container follows the same policy with its own values. Its s
 
 A storage-profile machine's strand nodes run a relay server with the same settings. They have no budget for unknown peers, because a strand's peers come from other parties by design, so any peer that reaches a strand node's relay server is bounded only by `maxReservations`. A closed strand's node refuses a reservation from a peer whose membership was revoked (`strand-revocation-enforcer.ts`).
 
+## Direct connections over WebRTC
+
+A node that listens on `/webrtc` is reachable two ways through each relay it holds a slot on: at the plain relayed address, and at a WebRTC one whose signalling the same relay carries (`<relay address>/p2p/<relay peer id>/p2p-circuit/webrtc/p2p/<node peer id>`). A WebRTC connection opens only if ICE — WebRTC's connectivity check, run over each side's own interface addresses plus whatever a [STUN server](../../ops/docs/ice-servers.md) reports as its address outside its NAT — finds a path between the two networks. Sereus runs no TURN server, so between two networks that allow no direct path there is no path to find, and the attempt answers nothing until the WebRTC stack gives up, about 23 s later.
+
+**A dial whose result something is waiting for goes through the relay. WebRTC is an extra, attempted separately.** Where the dial order is ours to choose, a WebRTC address is therefore tried only after everything else, or left out:
+
+- **Dials by address** (the control-cohort reconcile pass, seed delivery, a strand peer redial) try every direct address, then every relayed one, then every WebRTC one. A WebRTC address stays in the list, so a peer whose only address is a WebRTC one is still dialed; it just no longer takes the time the relayed address needed. The order is applied one address per dial in `peer-dial.ts`, because libp2p re-sorts any list given to a single dial, and its own sorter puts a `/p2p-circuit/webrtc` address *before* the plain relayed one.
+- **Formation** (a joiner's dial of an inviting machine) leaves WebRTC addresses out whenever that machine published any other address. Formation needs one short-lived stream, so a direct connection would make nothing faster. Reordering is not an option here: the whole list goes to libp2p as one dial, which re-sorts it.
+- **Dials by peer id** cannot be ordered from here — libp2p's sorter picks, and it picks the WebRTC address first. Two paths dial that way: the once-per-start dial of configured bootstrap peers, which nothing waits for, and `@optimystic/db-p2p`'s strand-peer dials, which forward no address sorter.
+
+An open relayed connection is never handed back to a dial of a WebRTC address, so an attempt to replace it can go ahead. This is the rule libp2p applies as well.
+
 ## Limits and accepted tradeoffs
 
 - **A `cadre-host` node behind carrier-grade NAT cannot be reached from outside its network.** The host gives its nodes no relay, and neither UPnP nor a port forward helps under carrier-grade NAT. See [NAT and DDNS](../hosting/cadre-host.md#nat-and-ddns) (ticket `feat-cadre-host-children-reserve-on-a-relay`).

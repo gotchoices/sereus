@@ -87,6 +87,19 @@ export interface ControlNodeOpts {
   linkRoundTripMs?: number;
   listenAddrs?: string[];
   /**
+   * Becomes `network.transports` verbatim, replacing the {@link wsTransports} pair every
+   * control node otherwise gets. For a scenario that needs a transport beyond WebSockets and
+   * circuit relay — the WebRTC ones pass `[...wsTransports(), webRTC(...)]`. Keep the
+   * circuit-relay transport in whatever list you pass: every harness node reaches a relayed
+   * address through it, and `relayAddrs` cannot be filled without it.
+   *
+   * Setting this also means `cadre-core` derives no transport options from `listenAddrs`
+   * (`relay-addrs.ts` → `resolveTransportOptions` returns `{}` once an embedder supplies
+   * transports), which is what lets a scenario listen on an address the default transports
+   * would refuse, such as `/webrtc`.
+   */
+  transports?: Libp2pTransports;
+  /**
    * Relay servers to reserve a `/p2p-circuit` slot through — the FAIL-FAST route:
    * `relay-addrs.ts` gives the control node a bare `/p2p-circuit` search listener
    * and `CadreNode.start()` drives the reservation after control-DB bring-up,
@@ -279,7 +292,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
     ...(opts.enrolledMachines ? { enrolledMachines: { store: opts.enrolledMachines } } : {}),
     network: {
-      transports: wsTransports(),
+      transports: opts.transports ?? wsTransports(),
       listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
       ...(opts.relayAddrs ? { relayAddrs: opts.relayAddrs } : {}),
       // Forwarded on `!== undefined`, not on truthiness: `false` is a meaningful
