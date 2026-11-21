@@ -28,10 +28,11 @@ export interface EdgeNodePlatform {
 	transports?: (relayAddrs: readonly string[]) => Libp2pTransports;
 	/**
 	 * Listen addresses besides the bare `/p2p-circuit` entry cadre-core adds for a named relay
-	 * (`relay-addrs.ts` → `resolveListenAddrs`). Default `[]`: an edge device cannot accept a
-	 * connection, so the only address it has is the one a relay reservation earns it. A browser
-	 * tab returns `['/webrtc']` when it has relays, so a relayed connection can upgrade to a direct
-	 * one.
+	 * (`relay-addrs.ts` → `resolveListenAddrs`). Default `[]`: an edge device binds no socket, so
+	 * the only address it then has is the one a relay reservation earns it. An app whose transports
+	 * carry WebRTC — a browser tab, a phone — passes `webrtcListenAddrs`, which names `/webrtc`
+	 * when the app has a relay: a peer can then open a direct connection to it, and a relayed
+	 * connection can upgrade to a direct one.
 	 */
 	listenAddrs?: (relayAddrs: readonly string[]) => string[];
 	/**

@@ -102,9 +102,10 @@ function joinEnv(request: HostedSpawnRequest): Record<string, string> | undefine
  *
  * The WebSocket entry is what lets a phone reach the child. A phone's node carries
  * WebSocket, circuit-relay and WebRTC transports but no TCP
- * (`reference-app-rn/src/phone-node-config.ts`), and it listens on nothing, so the
- * phone has to be the one that dials. Naming a `/ws` address is all the child needs:
- * cadre-core adds the WebSocket transport for any listen entry that names one
+ * (`reference-app-rn/src/cadre-phone.ts`), and it has no TCP or WebSocket listener, so
+ * the phone has to be the one that dials (its `/webrtc` address needs a relay reservation
+ * and the WebRTC transport, which a child does not carry). Naming a `/ws` address is all
+ * the child needs: cadre-core adds the WebSocket transport for any listen entry that names one
  * (`resolveTransportOptions` in `cadre-core/src/relay-addrs.ts`).
  */
 export function childListenAddrs(ports: Pick<NodePorts, 'p2p' | 'ws'>): string[] {

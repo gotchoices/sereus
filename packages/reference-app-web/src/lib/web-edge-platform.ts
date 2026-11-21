@@ -10,6 +10,7 @@
 import {
 	createEdgeNode,
 	lazyRawStorage,
+	webrtcListenAddrs,
 	type EdgeNode,
 	type EdgeNodeStorage,
 	type NodeLocalKv,
@@ -33,7 +34,7 @@ export function createWebEdgeNode(): EdgeNode {
 		keyStore: nodeLocalKeyStore(openNodeLocal),
 		storage: webEdgeStorage(nodeLocalKv(openNodeLocal)),
 		transports,
-		listenAddrs,
+		listenAddrs: webrtcListenAddrs,
 		// libp2p's browser default denies dialing plain-WebSocket, private and loopback
 		// addresses, which blocks this dev/reference surface from dialing a local or unsecured
 		// peer: an out-of-band invitation pointing at a `127.0.0.1/.../ws` responder, or the
@@ -69,11 +70,3 @@ function transports(relayAddrs: readonly string[]): Libp2pTransports {
 	return [webSockets(), circuitRelayTransport(), webRTC({ rtcConfiguration: { iceServers } }), webRTCDirect()];
 }
 
-/**
- * With a relay named, `/webrtc` so a relayed connection can upgrade to a direct one; cadre-core
- * adds the bare `/p2p-circuit` entry for the relay itself. Without one, the solo posture: a tab
- * can accept no connection.
- */
-function listenAddrs(relayAddrs: readonly string[]): string[] {
-	return relayAddrs.length > 0 ? ['/webrtc'] : [];
-}

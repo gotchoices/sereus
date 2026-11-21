@@ -115,6 +115,7 @@ Passed to `createPhoneNode` and fixed for the app's lifetime. `PhoneNodePlatform
 | `leveldb` | required | rn-leveldb's two constructors and its `destroyDB`, as under [First run](#first-run). |
 | `names` | `DEFAULT_PHONE_NODE_NAMES` | Database prefix, node-local database name and record keys. Renaming one orphans installed phones' records. |
 | `transports` | WebSockets and circuit relay | A function of the relay addresses. An app with WebRTC adds `webRTC({ rtcConfiguration: { iceServers: resolveStunServers(relayAddrs) } })`. |
+| `listenAddrs` | `[]` (accepts nothing but a relayed connection) | A function of the relay addresses. An app with WebRTC passes the kit's `webrtcListenAddrs`, which names `/webrtc` whenever the phone has a relay, so a peer can open a direct connection to it. |
 | `noiseCrypto` | libp2p-noise's JavaScript crypto | `{ build, defaultMode }`; see [Noise crypto](#noise-crypto). |
 | `allowPrivateDial` | `true` | Dial loopback, private and plain `ws://` addresses, which libp2p's React Native connection gater refuses. |
 | `ownerGenesisTimeoutMs` | 60 s | Bound on settling the owner key at a start or a join. |

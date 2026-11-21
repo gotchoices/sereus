@@ -42,6 +42,7 @@ export {
 	type OwnerGenesisOptions,
 	type OwnerGenesisResult,
 } from './config.js';
+export { webrtcListenAddrs } from './listen-addrs.js';
 export { attachStrandWhenWritable, DEFAULT_STRAND_PATIENCE_MS, retryAfterRestart } from './strands.js';
 export { StrandsNeedOwnerJoinError, type PendingStrandMove, type StrandMoveOutcome } from './strand-move.js';
 export { isOwnerGrant, type JoinCredential } from './join-credential.js';
