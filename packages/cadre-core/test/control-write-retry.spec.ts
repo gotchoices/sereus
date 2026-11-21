@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
 	BlockUnavailableError,
 	CoordinatorPartialCommitError,
+	PromiseShortfallError,
 	SyncRetryExhaustedError,
 	SyncRevisionStalledError,
 	TornActionError,
+	type SoloRefusalReason,
 	type WriteDurability,
 } from '@optimystic/db-core';
 import { ConcurrentModificationError, PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
@@ -52,10 +54,14 @@ import type { ControlRetryAbandonment } from '../src/control-retry.js';
  * The real failure arrives as `QuereusError` → `Error` → `Error`, with the recognisable
  * message potentially at any depth — so every classifier case here asserts through a
  * three-level `cause` chain with decoy text on the outer layers, not a flat message.
+ *
+ * Takes a message for the text-classified cases, or a built error for the type-classified ones —
+ * the delivery is the same either way, and only what sits at the bottom of the chain differs.
  */
-function nested(message: string): Error {
+function nested(failure: string | Error): Error {
+	const inner = typeof failure === 'string' ? new Error(failure) : failure;
 	return new Error('Runtime error during write', {
-		cause: new Error('control write failed', { cause: new Error(message) }),
+		cause: new Error('control write failed', { cause: inner }),
 	});
 }
 
@@ -64,6 +70,9 @@ function immediatePacing(overrides: ControlWriteRetryOptions = {}): ControlWrite
 	return { sleep: () => Promise.resolve(), now: () => 0, ...overrides };
 }
 
+/** The DDL text {@link ddlFailure} and {@link ddlChain} both report a failure of. */
+const FAILING_DDL = 'create table CadreControl.FormationUsage (Token text not null, UsageStampId text not null)';
+
 /**
  * One `create table` of the control DDL failing, as Quereus' migration loop reports it:
  * `Failed to execute DDL: <ddl>\nError: <cause message>`, with the cause preserved on the
@@ -71,9 +80,53 @@ function immediatePacing(overrides: ControlWriteRetryOptions = {}): ControlWrite
  * `quereus/src/runtime/emit/schema-declarative.ts`). The classifier walks the chain, so it
  * sees the inner message either way — the outer text is here so the schema-init cases below
  * fail against the surface a real startup actually produces.
+ *
+ * TEXT only: the returned string reaches the classifier with no typed link below it, which is what
+ * the cases genuinely about text want (the self-coordination refusal, whose matcher stays textual).
+ * {@link ddlChain} is the same surface as a real chain, for the cases classified by type.
  */
 function ddlFailure(causeMessage: string): string {
-	return `Failed to execute DDL: create table CadreControl.FormationUsage (Token text not null, UsageStampId text not null)\nError: ${causeMessage}`;
+	return `Failed to execute DDL: ${FAILING_DDL}\nError: ${causeMessage}`;
+}
+
+/**
+ * The same startup surface as {@link ddlFailure}, but as a real `cause` CHAIN rather than text — for
+ * the failures classified by TYPE, which need the typed link to survive the wrappers rather than
+ * only its sentence.
+ *
+ * Mirrors what the wrappers really build, each of which passes the inner error as `cause`: Quereus'
+ * DDL wrapper (`Failed to execute DDL: <ddl>\nError: <inner>`, `runBatchedMigrationLoop` in
+ * `quereus/src/runtime/emit/schema-declarative.ts`) over, optionally, its module-create wrapper
+ * (`Module '<m>' create failed for table '<T>'`, `quereus/src/schema/manager.ts`) over the failure.
+ */
+function ddlChain(inner: Error, options: { readonly viaModuleCreate?: boolean } = {}): QuereusError {
+	const wrapped = options.viaModuleCreate
+		? new QuereusError(`Module 'optimystic' create failed for table 'FormationUsage': ${inner.message}`,
+			StatusCode.ERROR, inner)
+		: inner;
+	return new QuereusError(`Failed to execute DDL: ${FAILING_DDL}\nError: ${wrapped.message}`, StatusCode.ERROR, wrapped);
+}
+
+/**
+ * The cluster coordinator's super-majority shortfall, as the real upstream class. Claimed by TYPE
+ * with a zero rejection count, so a fixture has to be the class — the sentence it composes is
+ * byte-identical to the literals these cases used to carry, which is why the `toMatch` assertions
+ * elsewhere in the tree still hold.
+ *
+ * `silentPeers` is not read by the classifier; one id stands in for the members whose vote the round
+ * did not count.
+ */
+function shortfall(
+	facts: { approvals: number; peerCount: number; needed: number; rejections?: number; soloRefused?: SoloRefusalReason },
+): PromiseShortfallError {
+	return new PromiseShortfallError({
+		approvals: facts.approvals,
+		rejections: facts.rejections ?? 0,
+		peerCount: facts.peerCount,
+		needed: facts.needed,
+		silentPeers: ['12D3KooWSilentMember'],
+		...(facts.soloRefused === undefined ? {} : { soloRefused: facts.soloRefused }),
+	});
 }
 
 /**
@@ -145,36 +198,42 @@ const CANCEL_DISCHARGE_AGGREGATE =
 const SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT =
 	'sync for collection default/cadrecontrol/CadrePeer exhausted 10 retries: pending conflict: '
 	+ 'block(s) held by unresolved rival action(s) f7cM8wOiFkZ4O_bOrXFVQQ';
-const SUPER_MAJORITY_NONE_ANSWERED =
-	'Failed to get super-majority: 0/3 approvals (needed 3, 0 rejections)';
-const SUPER_MAJORITY_PARTIAL =
-	'Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)';
-const SUPER_MAJORITY_REJECTED =
-	'Failed to get super-majority: 2/3 approvals (needed 3, 1 rejections)';
 /**
- * The shortfall exactly as a THREE-node party raises it — the shape that makes a third
- * node's join fragile. A control transaction there needs 2 of 2 remaining peers to answer,
- * so ONE flaky peer response is fatal where a two-node party would have tolerated it.
- * Transcribed from a failing run of the since-deleted `provider-seed-accepted` scenario,
- * recorded in `tickets/implement/29.3-third-node-join-ddl-init.md`.
- *
- * A RECONSTRUCTION, and knowingly a partial one: the transcription kept this inner sentence
- * but elided the surrounding transactor aggregate, which is where the `[block:`/`[blocks:`
- * token that decides retriability lives (see the two aggregate forms below). Attempts to
- * re-capture it saw only `Missing block` deaths, so the elided segment is still unrecorded.
+ * The approval facts of the three-machine party's shortfall, which is what a cadre's control writes
+ * actually meet: unanimity (`ceil(3 × 0.75) = 3`), and a round that heard nobody vote no. Zero
+ * approvals is the round that heard nothing at all; two is the one where only the silent member's
+ * vote was missing.
  */
-const SUPER_MAJORITY_THIRD_NODE_JOIN =
-	'Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
+const NONE_ANSWERED_FACTS = { approvals: 0, peerCount: 3, needed: 3 } as const;
+const PARTIALLY_ANSWERED_FACTS = { approvals: 2, peerCount: 3, needed: 3 } as const;
+/** The same round with one member voting NO — a verdict, not a silence, so never re-presented. */
+const REJECTED_FACTS = { approvals: 2, peerCount: 3, needed: 3, rejections: 1 } as const;
+/**
+ * The approval facts a THREE-node party's shortfall carries — the shape that makes a third node's
+ * join fragile. A control transaction there needs 2 of the 2 remaining peers to answer, so ONE
+ * flaky peer response is fatal where a two-node party would have tolerated it. Transcribed from a
+ * failing run of the since-deleted `provider-seed-accepted` scenario, recorded in
+ * `tickets/implement/29.3-third-node-join-ddl-init.md`.
+ *
+ * The transcription kept the shortfall sentence but elided the surrounding transactor aggregate,
+ * which is where the `[block:`/`[blocks:` token that decides retriability lives (see the two
+ * aggregate forms below). Attempts to re-capture it saw only `Missing block` deaths, so the elided
+ * segment is still unrecorded — which is why the aggregate cases pair both tokens rather than
+ * asserting the one a real joining node carries.
+ */
+const THIRD_NODE_JOIN_FACTS = { approvals: 1, peerCount: 2, needed: 2 } as const;
 /**
  * How a pend's shortfall reached this classifier before Optimystic 1.20.0: inline, as one batch's
  * `cause=` inside a transactor aggregate, with the same text repeated as the aggregate's `root:`.
- * From 1.20.0 the coordinator returns a pend's shortfall and the writer raises it on its own (the
- * bare-sentence cases above), while a commit's still arrives this way ({@link
- * SUPER_MAJORITY_IN_COMMIT_AGGREGATE}) — so the identical sentence can arrive from either phase, and
- * only the bracket token tells them apart.
+ * From 1.20.0 the coordinator returns a pend's shortfall and the writer raises it as the real class
+ * on its own, while a commit's still arrives this way ({@link SUPER_MAJORITY_IN_COMMIT_AGGREGATE}) —
+ * so the identical sentence can arrive from either phase, and only the bracket token tells them
+ * apart.
  *
- * This pend-phase form is retried twice over: `isUncommittedTransactorAggregate` claims it on
- * `[block:`, and `isUnansweredSuperMajorityShortfall` claims the inline sentence.
+ * Still a message LITERAL: the transactor's aggregate is a bare `Error` and classified by its text.
+ * The cases that use it chain a real {@link shortfall} below the literal, so each holds for the same
+ * reason it will once the aggregate itself is typed
+ * (`debt-control-retry-matches-the-transactor-aggregate-by-phase`).
  */
 const SUPER_MAJORITY_IN_PEND_AGGREGATE =
 	'Some peers did not complete: 12D3KooWa[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections), 12D3KooWb[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=The stream has been reset; root: Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
@@ -282,26 +341,73 @@ describe('isRetriableControlWriteFailure', () => {
 	 * the chain looks transient.
 	 */
 	it('never retries a chain that reports a commit-phase batch at ANY level', () => {
-		const chained = (outer: string, inner: string): Error =>
-			new Error(outer, { cause: new Error(inner) });
+		// Fresh each time: the second arm hangs a `cause` off the link itself.
+		const retriableLinks = (): Error[] => [new Error(TRANSACTOR_AGGREGATE), shortfall(NONE_ANSWERED_FACTS)];
 
-		for (const retriable of [TRANSACTOR_AGGREGATE, SUPER_MAJORITY_NONE_ANSWERED]) {
+		for (const retriable of retriableLinks()) {
 			// The control: on its own, each of these IS retried.
-			expect(isRetriableControlWriteFailure(new Error(retriable))).toBe(true);
+			expect(isRetriableControlWriteFailure(retriable)).toBe(true);
+		}
+		for (const retriable of retriableLinks()) {
+			retriable.cause = new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE);
+			expect(isRetriableControlWriteFailure(retriable)).toBe(false);
+		}
+		for (const retriable of retriableLinks()) {
 			expect(isRetriableControlWriteFailure(
-				chained(retriable, TRANSACTOR_AGGREGATE_COMMIT_PHASE))).toBe(false);
-			expect(isRetriableControlWriteFailure(
-				chained(TRANSACTOR_AGGREGATE_COMMIT_PHASE, retriable))).toBe(false);
+				new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, { cause: retriable }))).toBe(false);
 		}
 	});
 
 	it('retries a super-majority shortfall with ZERO rejections, at any approval count', () => {
-		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_NONE_ANSWERED))).toBe(true);
-		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_PARTIAL))).toBe(true);
+		expect(isRetriableControlWriteFailure(nested(shortfall(NONE_ANSWERED_FACTS)))).toBe(true);
+		expect(isRetriableControlWriteFailure(nested(shortfall(PARTIALLY_ANSWERED_FACTS)))).toBe(true);
 	});
 
 	it('never retries a super-majority shortfall carrying a rejection — somebody voted no', () => {
-		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_REJECTED))).toBe(false);
+		expect(isRetriableControlWriteFailure(nested(shortfall(REJECTED_FACTS)))).toBe(false);
+	});
+
+	/**
+	 * The claim is by TYPE, so the same sentence as plain text is NOT claimed — the assertion that
+	 * reddens if a text fallback for the shortfall ever creeps back. `control-read-retry.spec.ts`
+	 * pins the equivalent for `BlockUnavailableError`.
+	 *
+	 * Asserted bare and through the DDL wrapper, because text is all a rebuilt-from-its-message
+	 * shortfall could ever offer at either depth.
+	 */
+	it('never retries the shortfall sentence as plain text — the claim is by type', () => {
+		const sentence = shortfall(NONE_ANSWERED_FACTS).message;
+		expect(isRetriableControlWriteFailure(nested(sentence))).toBe(false);
+		expect(isRetriableControlWriteFailure(nested(ddlFailure(sentence)))).toBe(false);
+	});
+
+	/**
+	 * The typed link is claimed wherever it sits on the chain, including under the wrappers a real
+	 * startup prints — which is what the old text match could not see past, since it read the top
+	 * message alone. Bare is the shape measured live on 2026-10-28 (a single-link chain).
+	 */
+	it('retries a shortfall at any depth of the cause chain', () => {
+		for (const delivered of [
+			shortfall(THIRD_NODE_JOIN_FACTS),
+			viaQuereus(shortfall(THIRD_NODE_JOIN_FACTS)),
+			ddlChain(shortfall(THIRD_NODE_JOIN_FACTS)),
+			ddlChain(shortfall(THIRD_NODE_JOIN_FACTS), { viaModuleCreate: true }),
+		]) {
+			expect(isRetriableControlWriteFailure(delivered)).toBe(true);
+		}
+	});
+
+	/**
+	 * A lone node refusing to write by itself: `CoordinatorRepo.refuseSoloPend` builds the shortfall
+	 * with its own approval and nobody voting no, so it is claimed like any silent-cohort shortfall.
+	 * `soloRefused` names why, and nothing branches on it — asserted across all three reasons so a
+	 * future branch on one of them has to change this case.
+	 */
+	it('retries a lone node\'s own refusal to write alone, whatever reason it names', () => {
+		for (const soloRefused of ['absent-members', 'awaiting-bootstrap', 'unrouted'] as const) {
+			expect(isRetriableControlWriteFailure(
+				nested(shortfall({ approvals: 1, peerCount: 3, needed: 3, soloRefused })))).toBe(true);
+		}
 	});
 
 	/**
@@ -336,7 +442,7 @@ describe('isRetriableControlWriteFailure', () => {
 	 * execute DDL:` wrapper a joining node actually prints.
 	 *
 	 * Which token a real joining node carries is still UNCAPTURED (see
-	 * {@link SUPER_MAJORITY_THIRD_NODE_JOIN}). If a capture ever arrives and it is `[blocks:`,
+	 * {@link THIRD_NODE_JOIN_FACTS}). If a capture ever arrives and it is `[blocks:`,
 	 * the second half of this case is the proof that the retry never engages for it.
 	 */
 	it('separates the pend- and commit-phase forms of the SAME super-majority shortfall', () => {
@@ -347,6 +453,28 @@ describe('isRetriableControlWriteFailure', () => {
 			nested(ddlFailure(SUPER_MAJORITY_IN_PEND_AGGREGATE)))).toBe(true);
 		expect(isRetriableControlWriteFailure(
 			nested(ddlFailure(SUPER_MAJORITY_IN_COMMIT_AGGREGATE)))).toBe(false);
+	});
+
+	/**
+	 * The same pend/commit split over a TYPED shortfall chained below the aggregate — the shape the
+	 * wire really carries, since the aggregate embeds its cause's text and keeps the cause itself.
+	 * A commit-phase no-response stays vetoed however clearly the shortfall below it says the cohort
+	 * was silent.
+	 *
+	 * The commit arm is the seam between this change and the next one: here the aggregate is a
+	 * message literal and the TEXT veto fires; once the aggregate is typed too
+	 * (`debt-control-retry-matches-the-transactor-aggregate-by-phase`) the typed veto fires on the
+	 * same chain. Same assertion either way, which is what makes it the case that must keep holding
+	 * across that change.
+	 */
+	it('keeps the pend/commit split over a typed shortfall chained below the aggregate', () => {
+		const underPendPhase = new Error(SUPER_MAJORITY_IN_PEND_AGGREGATE, { cause: shortfall(THIRD_NODE_JOIN_FACTS) });
+		const underCommitPhase = new Error(SUPER_MAJORITY_IN_COMMIT_AGGREGATE, { cause: shortfall(THIRD_NODE_JOIN_FACTS) });
+
+		expect(isRetriableControlWriteFailure(underPendPhase)).toBe(true);
+		expect(isRetriableControlWriteFailure(ddlChain(underPendPhase))).toBe(true);
+		expect(isRetriableControlWriteFailure(underCommitPhase)).toBe(false);
+		expect(isRetriableControlWriteFailure(ddlChain(underCommitPhase))).toBe(false);
 	});
 
 	/**
@@ -467,27 +595,27 @@ describe('isRetriableSchemaInitFailure', () => {
 	 * Widened, not replaced: every verdict the default classifier reaches, this one reaches too.
 	 * Driven from the same table so a future edit to either list cannot silently diverge.
 	 */
-	it('agrees with the default classifier on every other message', () => {
+	it('agrees with the default classifier on every other failure', () => {
 		const retriable = [
 			TRANSACTOR_AGGREGATE,
-			SUPER_MAJORITY_NONE_ANSWERED,
-			SUPER_MAJORITY_PARTIAL,
+			shortfall(NONE_ANSWERED_FACTS),
+			shortfall(PARTIALLY_ANSWERED_FACTS),
 			SUPER_MAJORITY_IN_PEND_AGGREGATE,
 		];
 		const notRetriable = [
 			TRANSACTOR_AGGREGATE_NO_DETAILS,
-			SUPER_MAJORITY_REJECTED,
+			shortfall(REJECTED_FACTS),
 			MISSING_BLOCK,
 			'UNIQUE constraint failed: FormationUsage.UsageStampId',
 			'CHECK constraint failed: Authorized',
 		];
-		for (const message of retriable) {
-			expect(isRetriableControlWriteFailure(nested(message))).toBe(true);
-			expect(isRetriableSchemaInitFailure(nested(message))).toBe(true);
+		for (const failure of retriable) {
+			expect(isRetriableControlWriteFailure(nested(failure))).toBe(true);
+			expect(isRetriableSchemaInitFailure(nested(failure))).toBe(true);
 		}
-		for (const message of notRetriable) {
-			expect(isRetriableControlWriteFailure(nested(message))).toBe(false);
-			expect(isRetriableSchemaInitFailure(nested(message))).toBe(false);
+		for (const failure of notRetriable) {
+			expect(isRetriableControlWriteFailure(nested(failure))).toBe(false);
+			expect(isRetriableSchemaInitFailure(nested(failure))).toBe(false);
 		}
 	});
 
@@ -595,26 +723,26 @@ describe('isRetriableLostUpdateFailure', () => {
 		}
 	});
 
-	it('agrees with the default classifier on every other message', () => {
+	it('agrees with the default classifier on every other failure', () => {
 		const retriable = [
 			TRANSACTOR_AGGREGATE,
-			SUPER_MAJORITY_NONE_ANSWERED,
-			SUPER_MAJORITY_PARTIAL,
+			shortfall(NONE_ANSWERED_FACTS),
+			shortfall(PARTIALLY_ANSWERED_FACTS),
 			SUPER_MAJORITY_IN_PEND_AGGREGATE,
 		];
 		const notRetriable = [
 			TRANSACTOR_AGGREGATE_NO_DETAILS,
-			SUPER_MAJORITY_REJECTED,
+			shortfall(REJECTED_FACTS),
 			MISSING_BLOCK,
 			SELF_COORDINATION_BLOCKED,
 			'UNIQUE constraint failed: CadrePeer.PeerId',
 			'CHECK constraint failed: AuthorizedUpdate',
 		];
-		for (const message of retriable) {
-			expect(isRetriableLostUpdateFailure(nested(message))).toBe(true);
+		for (const failure of retriable) {
+			expect(isRetriableLostUpdateFailure(nested(failure))).toBe(true);
 		}
-		for (const message of notRetriable) {
-			expect(isRetriableLostUpdateFailure(nested(message))).toBe(false);
+		for (const failure of notRetriable) {
+			expect(isRetriableLostUpdateFailure(nested(failure))).toBe(false);
 		}
 	});
 });
@@ -758,7 +886,7 @@ describe('retryControlWrite', () => {
 		try {
 			await retryControlWrite(async () => {
 				runs++;
-				const error = nested(SUPER_MAJORITY_NONE_ANSWERED);
+				const error = nested(shortfall(NONE_ANSWERED_FACTS));
 				errors.push(error);
 				throw error;
 			}, immediatePacing());
@@ -1158,19 +1286,21 @@ function schemaInitHarness(exec: (sql: string) => Promise<void>): SchemaInitHarn
  */
 describe('ControlDatabase.applyControlSchema — transient-failure retry', () => {
 	/**
-	 * Driven from both faces of the shortfall: the bare sentence, and the pend-phase aggregate
-	 * that actually carries it on the wire. The aggregate form is the one that matters — the
-	 * bare form would still be retried even if a real joining node never produced it.
+	 * Driven from both faces of the shortfall: the typed error the coordinator raises, and the
+	 * pend-phase aggregate that carries its sentence inline. The typed one goes through the real
+	 * wrapper chain ({@link ddlChain}), since the claim depends on the link surviving the wrappers;
+	 * the aggregate is still text, so it goes through {@link ddlFailure}.
 	 */
 	it('re-presents the whole DDL after a third-node-join super-majority shortfall', async () => {
-		for (const causeMessage of [SUPER_MAJORITY_THIRD_NODE_JOIN, SUPER_MAJORITY_IN_PEND_AGGREGATE]) {
+		const failures = [ddlChain(shortfall(THIRD_NODE_JOIN_FACTS)), nested(ddlFailure(SUPER_MAJORITY_IN_PEND_AGGREGATE))];
+		for (const failure of failures) {
 			let runs = 0;
 			const executed: string[] = [];
 			const harness = schemaInitHarness(async (sql) => {
 				runs++;
 				executed.push(sql);
 				if (runs === 1) {
-					throw nested(ddlFailure(causeMessage));
+					throw failure;
 				}
 			});
 
@@ -1269,7 +1399,7 @@ describe('ControlDatabase.applyControlSchema — transient-failure retry', () =>
 	it('surfaces the last error unchanged once the attempt budget is spent', async () => {
 		const thrown: Error[] = [];
 		const harness = schemaInitHarness(async () => {
-			const failure = nested(ddlFailure(SUPER_MAJORITY_THIRD_NODE_JOIN));
+			const failure = ddlChain(shortfall(THIRD_NODE_JOIN_FACTS));
 			thrown.push(failure);
 			throw failure;
 		});

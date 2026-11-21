@@ -1,4 +1,4 @@
-import { CoordinatorPartialCommitError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
+import { CoordinatorPartialCommitError, PromiseShortfallError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
 import { ConcurrentModificationError, PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import { causeChain, chainMessages, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
@@ -19,7 +19,8 @@ import type { ControlRetryOptions } from './control-retry.js';
  * write rolls back, nothing half-commits) and effective (the next write commits in ~1 s).
  *
  * A write somebody actually REJECTED is never retried on the strength of the rejection itself —
- * no matcher here claims a rejection message, at any phase, because re-presenting one would
+ * nothing here claims a rejection, at any phase (the shortfall claim reads the vote count for
+ * exactly this reason), because re-presenting one would
  * re-present a spent signature against a cohort that already said no. Rejections are re-presented
  * anyway when they arrive inside the transactor's promise-phase `[block:` aggregate, which
  * {@link isUncommittedTransactorAggregate} claims on the WRAPPER alone, whatever the cause inside
@@ -157,29 +158,6 @@ const SINGLE_BLOCK_BATCH_TOKEN = '[block:';
  * (`commitBlocks`) formats, and the marker of an outcome too indeterminate to retry.
  */
 const COMMIT_BATCH_TOKEN = '[blocks:';
-
-/**
- * The cluster coordinator's super-majority shortfall (`PromiseShortfallError`, db-core), matched
- * ONLY with a ZERO rejection count. The same message with a non-zero count means a member actually
- * voted no (that branch carries `membership-not-admitted` rejections), and retrying it would
- * re-present a spent signature to a cohort that already refused it. A pend's shortfall reaches this
- * funnel as that error on its own, before any commit, so re-presenting it is safe; a commit's
- * arrives inside the `[blocks:` aggregate, which {@link reportsIndeterminateCommit} vetoes (both
- * seen live in `control-write-degraded-cohort-member`).
- *
- * NOTE: matched by TEXT although the error is typed. Upstream keeps this sentence byte for byte as a
- * downstream contract, so the regex is stable; moving to `instanceof PromiseShortfallError` with
- * `rejections === 0` is backlog `debt-control-write-retry-matches-the-shortfall-by-type`.
- *
- * This regex itself never matches a decisive rejection (`ValidatorRejectionError`, `Transaction
- * rejected by validators`) — that text carries no `Failed to get super-majority:` prefix. But the
- * composite classifier is not this matcher alone: a rejection raised while promises are still
- * being collected reaches this repo wrapped in the transactor's `Some peers did not complete:
- * …[block:…]` aggregate, and {@link isUncommittedTransactorAggregate} matches that wrapper on its
- * own, whatever the cause inside it says — see the accepted-tradeoff `NOTE:` there.
- */
-const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
-	/Failed to get super-majority: \d+\/\d+ approvals \(needed \d+, 0 rejections\)/;
 
 /**
  * Is this a transactor aggregate from a phase where nothing can have committed yet?
@@ -351,9 +329,28 @@ function isFinalTornWrite(link: Error): boolean {
 	return link instanceof TornActionError && link.final === true;
 }
 
-/** The coordinator's shortfall, raised pre-commit, with nobody having voted no. */
-function isUnansweredSuperMajorityShortfall(message: string): boolean {
-	return SUPER_MAJORITY_SHORTFALL_UNANSWERED.test(message);
+/**
+ * The cluster coordinator's super-majority shortfall with NOBODY having voted no: the promise round
+ * reached no verdict — too few approvals to pass and too few rejections to count as a rejection — so
+ * the cohort was simply not all there, and a moment later it may be.
+ *
+ * A non-zero `rejections` is excluded because it means a member actually voted no (that branch
+ * carries `membership-not-admitted` rejections), and no backoff changes that answer: re-presenting
+ * it would re-present a spent signature to a cohort that already refused it.
+ *
+ * A pend's shortfall reaches this funnel on its own, before any commit, so re-presenting it is safe;
+ * a commit's arrives inside the `[blocks:` aggregate, which {@link reportsIndeterminateCommit}
+ * vetoes (both seen live in `control-write-degraded-cohort-member`).
+ *
+ * Matched by TYPE, and upstream's own comment on the class says to prefer that over its sentence.
+ * Every wrapper between the raise site and this funnel keeps the error on `cause` — the optimystic
+ * plugin's `rewrapAsQueryError`, Quereus' module-create wrapper, its DDL wrapper and its
+ * failed-apply rewrap — so the claim reaches any depth. NOTE: an error built by a second loaded copy
+ * of `@optimystic/db-core` fails `instanceof` and is then not claimed, the same fail-closed
+ * direction {@link reportsUnreachableCohort} and {@link isFinalTornWrite} already accept.
+ */
+function isUnansweredShortfall(link: Error): boolean {
+	return link instanceof PromiseShortfallError && link.rejections === 0;
 }
 
 /**
@@ -418,7 +415,8 @@ function isSelfCoordinationGraceRefusal(message: string): boolean {
  * else. The observed one-shot failure was `registerSelf()` racing a connection still forming:
  * a read/pend-phase transactor aggregate with `cause=The stream has been reset`. When none of
  * the cohort answers the read at all, that failure arrives typed instead, and is claimed by
- * type in {@link matchesRetriableFailure} ({@link reportsUnreachableCohort}), not here.
+ * type in {@link matchesRetriableFailure} ({@link reportsUnreachableCohort}), not here — as is
+ * the coordinator's super-majority shortfall ({@link isUnansweredShortfall}).
  *
  * Deliberately NOT matched: every constraint / authorization failure
  * (`CHECK constraint failed:`, `UNIQUE constraint failed:`) — those reach the same funnel
@@ -427,7 +425,6 @@ function isSelfCoordinationGraceRefusal(message: string): boolean {
  */
 const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[] = [
 	isUncommittedTransactorAggregate,
-	isUnansweredSuperMajorityShortfall,
 ];
 
 /**
@@ -475,28 +472,29 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * Did this control write fail because the cluster cohort did not ANSWER — i.e. is
  * re-presenting the SAME signed write a moment later the right response?
  *
- * Classifies the transient cases by MESSAGE, walking the `cause` chain with the shared
- * {@link chainMessages} (Quereus' own `unwrapError` underneath) — the transactor and the
- * coordinator both throw bare `Error`s, not recognisable by type. By the time one reaches
- * `ControlDatabase` it is wrapped in a `QuereusError` (the real chain is `QuereusError` → `Error`
- * → `Error`), so the match must work at any depth. Anything that is not an `Error` is never
- * retried.
+ * Classifies the remaining text case by MESSAGE, walking the `cause` chain with the shared
+ * {@link chainMessages} (Quereus' own `unwrapError` underneath) — the transactor still throws its
+ * aggregate as a bare `Error`, not recognisable by type. By the time one reaches `ControlDatabase`
+ * it is wrapped in a `QuereusError` (the real chain is `QuereusError` → `Error` → `Error`), so the
+ * match must work at any depth. Anything that is not an `Error` is never retried.
  *
  * Two vetoes run over the whole chain before any matcher: {@link reportsPossiblyStoredWrite}
  * (by type — a spent sync budget, a non-final torn write, a partial commit) and
  * {@link reportsIndeterminateCommit} (by text — a commit-phase batch). A chain either veto flags,
- * at any level, is never retried on the strength of some other level looking transient. Two typed
+ * at any level, is never retried on the strength of some other level looking transient. Three typed
  * failures are claimed as retriable: a block read the cohort could not answer
- * ({@link reportsUnreachableCohort}, shared with the read classifier) and a final torn write
- * ({@link isFinalTornWrite}).
+ * ({@link reportsUnreachableCohort}, shared with the read classifier), a final torn write
+ * ({@link isFinalTornWrite}) and an unanswered super-majority shortfall
+ * ({@link isUnansweredShortfall}).
  *
- * NOTE: this depends on engine/transactor error TEXT. The messages producible without a
- * network are driven from the REAL engine in `control-formation-seat-budget.spec.ts`, so
- * a rewording reddens a spec rather than silently disabling the retry. The RETRIABLE failures
- * need a real multi-node cluster to produce; the degraded-cohort scenario
- * (`control-write-degraded-cohort-member.integration.ts`) asserts this classifier against the
- * super-majority shortfall from a real silent member, and absorbs a real stream reset end to end
- * (on Optimystic 1.20.0 the reset fails the write's read as an unanswered block, claimed by type).
+ * NOTE: the transactor aggregate's arms — the claim and the commit-phase veto — still depend on
+ * engine/transactor error TEXT. The messages producible without a network are driven from the REAL
+ * engine in `control-formation-seat-budget.spec.ts`, so a rewording reddens a spec rather than
+ * silently disabling the retry. The RETRIABLE failures need a real multi-node cluster to produce;
+ * the degraded-cohort scenario (`control-write-degraded-cohort-member.integration.ts`) asserts this
+ * classifier against the super-majority shortfall from a real silent member, and absorbs a real
+ * stream reset end to end (on Optimystic 1.20.0 the reset fails the write's read as an unanswered
+ * block, claimed by type).
  */
 export function isRetriableControlWriteFailure(error: unknown): boolean {
 	return matchesRetriableFailure(error, RETRIABLE_CONTROL_WRITE_MATCHERS);
@@ -528,7 +526,8 @@ export function isRetriableLostUpdateFailure(error: unknown): boolean {
  * Shared body of the three classifiers: walk the `cause` chain, let
  * {@link reportsPossiblyStoredWrite} and then {@link reportsIndeterminateCommit} veto it, then claim
  * a block read the cohort could not answer ({@link reportsUnreachableCohort}), a final torn write
- * ({@link isFinalTornWrite}) or any link `claimsLink` names, then ask `matchers`. The vetoes run
+ * ({@link isFinalTornWrite}), an unanswered super-majority shortfall
+ * ({@link isUnansweredShortfall}) or any link `claimsLink` names, then ask `matchers`. The vetoes run
  * BEFORE any claim for every policy — a chain reporting a possibly-stored write or a commit-phase
  * batch is never retried, however transient some other level looks, and a final torn write or a
  * lost update carried by a partial commit is still declined because a sibling collection landed.
@@ -562,7 +561,7 @@ function matchesRetriableFailure(
 	// not. A refresh that already saved a sibling collection arrives as
 	// `CoordinatorPartialCommitError`, which the veto above declines.
 	if (reportsUnreachableCohort(links)
-		|| links.some(link => isFinalTornWrite(link) || claimsLink?.(link) === true)) {
+		|| links.some(link => isFinalTornWrite(link) || isUnansweredShortfall(link) || claimsLink?.(link) === true)) {
 		return true;
 	}
 	return messages.some(message => matchers.some(matches => matches(message)));

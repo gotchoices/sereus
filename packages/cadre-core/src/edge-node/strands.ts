@@ -2,10 +2,11 @@
  * Strand helpers every edge app needs around a running node, from sereus-chat's bring-up.
  */
 
+import { PromiseShortfallError } from '@optimystic/db-core';
 import { StrandAwaitingFirstSyncError } from '../strand-first-sync-gate.js';
 import type { CadreNode } from '../cadre-node.js';
 import type { StrandConfig, StrandInstance } from '../types.js';
-import { describeThrown } from '../describe-thrown.js';
+import { causeChain } from '../control-retry.js';
 
 /** Default patience for {@link attachStrandWhenWritable}: generous enough that running out means something is wrong. */
 export const DEFAULT_STRAND_PATIENCE_MS = 240_000;
@@ -38,16 +39,6 @@ export async function attachStrandWhenWritable(
 }
 
 /**
- * Optimystic's cluster coordinator reports a write that could not gather enough approvals this
- * way. It is transient right after a node restarts alone: its cohort has not reconnected yet.
- *
- * NOTE: matched on the message. Optimystic 1.20.0 raises this failure as `PromiseShortfallError` and
- * keeps the sentence unchanged as a contract, so the match holds; moving to the type is the second arm
- * of backlog `debt-control-write-retry-matches-the-shortfall-by-type`.
- */
-const SUPER_MAJORITY_FAILURE = /Failed to get super-majority/i;
-
-/**
  * Run a write, retrying only on the transient super-majority failure the first writes after a lone
  * restart hit (v1.9 release notes): `attempts` tries, `delayMs` apart. Any other error, and the
  * last attempt's, propagates.
@@ -69,6 +60,28 @@ export async function retryAfterRestart<T>(
 	}
 }
 
+/**
+ * Optimystic's cluster coordinator reporting a write too few of the cohort answered —
+ * `PromiseShortfallError` with nobody having voted no. Transient right after a node restarts alone:
+ * its cohort has not reconnected yet, and a lone node's own refusal to write by itself carries
+ * `approvals: 1, rejections: 0` like any silent-cohort shortfall (`CoordinatorRepo.refuseSoloPend`),
+ * so it is claimed here too.
+ *
+ * The same typed test the control write uses (`isUnansweredShortfall` in `control-write-retry.ts`),
+ * and deliberately so — the two policies must not drift apart on which shortfall is worth
+ * re-presenting. Matching the class rather than the sentence changes this helper's reach in two
+ * ways, both intended:
+ *
+ * - it reaches ANY DEPTH. The old text match read `describeThrown(err)`, which is the top-level
+ *   `message` alone, so a shortfall under any wrapper — which is every shortfall reaching an app
+ *   through SQL — was silently not retried. The first writes after a lone restart, which this
+ *   helper exists for, are exactly the wrapped ones.
+ * - it no longer claims a shortfall carrying a REJECTION (a member voted no, and no backoff changes
+ *   that), nor a non-`Error` throw, which can carry no typed link at all — and claiming one on its
+ *   text would spend 12 s of sleep before the identical failure.
+ *
+ * `soloRefused` names why a lone node refused, and is deliberately not branched on.
+ */
 function isTransientWriteFailure(err: unknown): boolean {
-	return SUPER_MAJORITY_FAILURE.test(describeThrown(err));
+	return causeChain(err).some(link => link instanceof PromiseShortfallError && link.rejections === 0);
 }
