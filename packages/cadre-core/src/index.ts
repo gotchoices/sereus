@@ -571,7 +571,7 @@ export {
   verifyPeerRecordSignature,
   isPeerRecordFresh,
   isSignalingAddr,
-  orderSignalingFirst,
+  orderRelayedFirst,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS

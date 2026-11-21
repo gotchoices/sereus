@@ -26,8 +26,10 @@
  * key), and its binding to `peerId` is checked separately at resolve time.
  */
 
+import { multiaddr } from '@multiformats/multiaddr';
 import { digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
 import { controlAuthorizationFields } from './control-authorization.js';
+import { addrKindOfComponents, type AddrKind } from './peer-dial.js';
 import type { PeerAddressRecord, PeerResolveTrustPolicy } from './types.js';
 import type { PublishedProfile } from './node-class.js';
 
@@ -44,9 +46,6 @@ export const DEFAULT_PEER_RECORD_MAX_AGE_MS = 15 * 60 * 1000;
  * ceiling, so a record is refreshed well before it can go stale.
  */
 export const DEFAULT_PEER_RECORD_HEARTBEAT_MS = DEFAULT_PEER_RECORD_MAX_AGE_MS / 2;
-
-/** The signaling/relay prefix a WebRTC (or any relayed) dial path consumes. */
-const SIGNALING_PREFIX = '/p2p-circuit';
 
 /**
  * Build the base64url SHA-256 digest that the self-signature covers. Mirrors the
@@ -73,7 +72,7 @@ export function peerRecordSignedPayload(
  * preserved and is the order signed over).
  *
  * @param partyId - the party whose `CadrePeer` table the record is published into
- * @param fields - the record fields to sign (signaling addr first by convention)
+ * @param fields - the record fields to sign (relayed addr first by convention; see {@link orderRelayedFirst})
  * @param privateKeyB64 - base64url ed25519 seed (see `ed25519KeyPairFromLibp2p`)
  */
 export function signPeerRecord(
@@ -126,21 +125,66 @@ export function isPeerRecordFresh(updatedAt: number, maxAgeMs: number, now: numb
   return now - updatedAt <= maxAgeMs;
 }
 
-/** True if `addr` is a `/p2p-circuit` signaling/relay multiaddr. */
-export function isSignalingAddr(addr: string): boolean {
-  return addr.includes(SIGNALING_PREFIX);
+/**
+ * The {@link AddrKind} of a STORED address string, or `undefined` when it does not parse as a
+ * multiaddr. A stored record's `addrs` are whatever its publisher signed, so an entry that does
+ * not parse is an ordinary possibility and the answer, not an error worth logging; every caller
+ * below either groups it with the direct addresses or drops it.
+ */
+function addrKindOf(addr: string): AddrKind | undefined {
+  try {
+    return addrKindOfComponents(multiaddr(addr).getComponents());
+  } catch {
+    return undefined;
+  }
 }
 
 /**
- * Return `addrs` with signaling (`/p2p-circuit`) addrs first, otherwise stable.
- * Used to present the WebRTC dial input ahead of direct addrs. Does NOT mutate
- * the input and must not be used before signature verification (verification
+ * True if `addr` reaches its peer through a relay hop — either shape: the plain relayed address
+ * a reservation publishes, or the WebRTC one whose signalling the same relay carries. An address
+ * that does not parse is not one.
+ */
+export function isSignalingAddr(addr: string): boolean {
+  const kind = addrKindOf(addr);
+  return kind === 'relayed' || kind === 'webrtc';
+}
+
+/**
+ * Return `addrs` in three groups, each keeping its given order: every plain relayed address,
+ * then every direct one (and any entry that does not parse, which every caller drops or ignores
+ * downstream), then every WebRTC one.
+ *
+ * This is the order a machine's published `CadrePeer` record carries and the order every resolve
+ * of another machine's record hands a dial, so it is where the rule in `docs/network/relay.md` →
+ * "Direct connections over WebRTC" is applied to a whole address list: an address that needs ICE
+ * after its relay hop ranks BELOW the plain relayed address published beside it, because it
+ * answers nothing for about 23 s when ICE cannot connect. The relayed address leads because a
+ * NAT'd machine is reachable at no other address at all.
+ *
+ * Does NOT mutate the input and must not be used before signature verification (verification
  * uses the original on-record order).
  */
-export function orderSignalingFirst(addrs: string[]): string[] {
-  const signaling = addrs.filter(isSignalingAddr);
-  const rest = addrs.filter(a => !isSignalingAddr(a));
-  return [...signaling, ...rest];
+export function orderRelayedFirst(addrs: readonly string[]): string[] {
+  const byKind: Record<AddrKind, string[]> = { relayed: [], direct: [], webrtc: [] };
+  for (const addr of addrs) {
+    byKind[addrKindOf(addr) ?? 'direct'].push(addr);
+  }
+  return [...byKind.relayed, ...byKind.direct, ...byKind.webrtc];
+}
+
+/**
+ * The one address of `addrs` that a seed should carry for this machine, or `null` when it holds
+ * no relay reservation: the first address that reaches through a relay, taken in
+ * {@link orderRelayedFirst} order, so the plain relayed address wins and a WebRTC one is named
+ * only when there is no plain relayed address at all.
+ *
+ * An address that ends AT its hop (`…/p2p-circuit`, naming no destination) is skipped: it is no
+ * use to whoever receives the seed. Shared by `CadreNode.getRelayAddress` and
+ * `SeedBootstrapService.getRelayAddress`, which both ask this of their own announced addresses.
+ */
+export function firstRelayedAddr(addrs: readonly string[]): string | null {
+  const throughRelay = addrs.filter((addr) => addr.includes('/p2p-circuit/') && isSignalingAddr(addr));
+  return orderRelayedFirst(throughRelay)[0] ?? null;
 }
 
 /**

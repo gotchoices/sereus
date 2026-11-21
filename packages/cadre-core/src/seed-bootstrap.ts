@@ -38,6 +38,7 @@ import { generateStampId, ownerKeyLabel } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import { deviceTokenAddDigest } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
+import { firstRelayedAddr } from './peer-record.js';
 import type { PublishedProfile } from './node-class.js';
 import {
   type SeedTrustPolicy,
@@ -1263,20 +1264,16 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Get this node's circuit relay address for inclusion in seeds.
-   * Returns null if no relay address is available.
+   * This node's one relayed address for a seed, or null when it holds no reservation:
+   * {@link firstRelayedAddr} of its announced addresses, so the plain relayed address
+   * is named ahead of a WebRTC one that needs ICE after the same relay hop.
    */
   async getRelayAddress(): Promise<string | null> {
     if (!this.libp2pNode) {
       return null;
     }
 
-    const addrs = this.libp2pNode.getMultiaddrs();
-
-    // Find a circuit relay address
-    const relayAddr = addrs.find(addr => addr.toString().includes('/p2p-circuit/'));
-
-    return relayAddr?.toString() ?? null;
+    return firstRelayedAddr(this.libp2pNode.getMultiaddrs().map(addr => addr.toString()));
   }
 
   /**

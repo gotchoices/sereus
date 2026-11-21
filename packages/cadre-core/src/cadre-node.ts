@@ -122,8 +122,9 @@ import {
   signPeerRecord,
   verifyPeerRecordSignature,
   isPeerRecordFresh,
-  orderSignalingFirst,
+  orderRelayedFirst,
   isSignalingAddr,
+  firstRelayedAddr,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -3948,16 +3949,17 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Collect this node's current dialable addresses for publication, signaling
-   * (`/p2p-circuit`) first. Prefers the best invite/NAT-resolved set and folds
-   * in the relay/signaling address (the WebRTC dial input) when not already
-   * present.
+   * Collect this node's current dialable addresses for publication, ranked by
+   * {@link orderRelayedFirst}: the plain relayed addresses, then the direct ones,
+   * then any that needs ICE after its relay hop. Prefers the best
+   * invite/NAT-resolved set and folds in this node's relayed address
+   * ({@link getRelayAddress}) when not already present.
    */
   private async collectSelfAddrs(): Promise<string[]> {
     const resolved = await this.resolveInviteAddresses();
     const relay = await this.getRelayAddress();
     const merged = relay && !resolved.includes(relay) ? [...resolved, relay] : resolved;
-    return orderSignalingFirst([...new Set(merged)]);
+    return orderRelayedFirst([...new Set(merged)]);
   }
 
   /**
@@ -4182,11 +4184,11 @@ export class CadreNode implements SAppIdLookup {
       return null;
     }
 
-    // Order signaling-first (the on-record order was what we verified above),
-    // optionally restrict to signaling addrs, then parse — dropping any addr
-    // that does not parse as a multiaddr — and finally normalize every survivor
-    // onto `/p2p/<peerId>` so no caller ever sees a mixed list.
-    let addrs = orderSignalingFirst(record.addrs);
+    // Order relayed-first, WebRTC last (the on-record order was what we verified
+    // above), optionally restrict to the addresses that reach through a relay, then
+    // parse — dropping any addr that does not parse as a multiaddr — and finally
+    // normalize every survivor onto `/p2p/<peerId>` so no caller ever sees a mixed list.
+    let addrs = orderRelayedFirst(record.addrs);
     if (opts.signalingOnly) {
       addrs = addrs.filter(isSignalingAddr);
     }
@@ -8516,8 +8518,8 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * The local strand instance's dialable strand-network multiaddrs for the
-   * strand-addr RPC, ordered signaling-first (reusing the control node's
-   * {@link orderSignalingFirst}). Returns `[]` when the strand is not running
+   * strand-addr RPC, ordered relayed-first and WebRTC last (reusing the control
+   * node's {@link orderRelayedFirst}). Returns `[]` when the strand is not running
    * locally or has no live libp2p node (hibernating / quiescing / never
    * participated) — a node only answers for a strand it is actively meshing,
    * regardless of the strand's mode. A `bootstrap`-mode first node still has a
@@ -8550,7 +8552,7 @@ export class CadreNode implements SAppIdLookup {
         addrs.push(bound.toString());
       }
     }
-    return orderSignalingFirst(addrs);
+    return orderRelayedFirst(addrs);
   }
 
   /**
@@ -9699,7 +9701,7 @@ export class CadreNode implements SAppIdLookup {
    * Push-wake a hibernating cadre peer over the control network.
    *
    * Resolves the target's signed control-network address from its `CadrePeer`
-   * record (via {@link resolvePeerAddrs}, signaling/relay first — so a NAT'd peer
+   * record (via {@link resolvePeerAddrs}, relayed first — so a NAT'd peer
    * is reachable through its circuit-relay address), dials `WAKE_PROTOCOL`, sends
    * the {@link WakeRequest}, and returns the peer's {@link WakeAck}. The receiver
    * only resumes a strand it already participates in; it acks once it has decided,
@@ -10910,17 +10912,16 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Get this node's circuit relay address for inclusion in seeds.
-   * Returns null if no relay address is available.
+   * This node's one relayed address for a seed, or null when it holds no reservation:
+   * {@link firstRelayedAddr} of its announced addresses, so the plain relayed address
+   * is named ahead of a WebRTC one that needs ICE after the same relay hop.
    */
   async getRelayAddress(): Promise<string | null> {
     if (!this.controlNode) {
       return null;
     }
 
-    const addrs = this.controlNode.getMultiaddrs();
-    const relayAddr = addrs.find(addr => addr.toString().includes('/p2p-circuit/'));
-    return relayAddr?.toString() ?? null;
+    return firstRelayedAddr(this.controlNode.getMultiaddrs().map(addr => addr.toString()));
   }
 
   // ============================================================================

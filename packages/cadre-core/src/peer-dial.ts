@@ -128,7 +128,16 @@ export type AddrKind = 'direct' | 'relayed' | 'webrtc';
  * dial; add it here if one is ever configured.
  */
 export function addrKind(addr: Multiaddr): AddrKind {
-	const components = addr.getComponents();
+	return addrKindOfComponents(addr.getComponents());
+}
+
+/**
+ * {@link addrKind} for a caller that holds the components already, so the one rule above is
+ * answered in one place rather than re-derived from a second `p2p-circuit` test. Taken by
+ * `node-claim-payload.ts`, which parses an address once and asks several questions of the same
+ * components, and by `peer-record.ts`, which parses a stored string to ask this one.
+ */
+export function addrKindOfComponents(components: readonly Component[]): AddrKind {
 	let lastCircuit = -1;
 	for (let i = 0; i < components.length; i++) {
 		if (components[i].name === 'p2p-circuit') lastCircuit = i;
@@ -605,6 +614,22 @@ export async function tryAddrsInTurn<T>(
 export function directBeforeRelayed(addrs: readonly Multiaddr[]): Multiaddr[] {
 	const byKind: readonly AddrKind[] = ['direct', 'relayed', 'webrtc'];
 	return byKind.flatMap((kind) => addrs.filter((addr) => addrKind(addr) === kind));
+}
+
+/**
+ * `addrs` with every `webrtc` address moved to the end, everything else keeping the order the
+ * caller gave. {@link directBeforeRelayed} applies both of its rules; this applies only the
+ * WebRTC one, for a caller whose own order of the rest must be preserved.
+ *
+ * `dialWake` (`strand-wake-protocol.ts`) is that caller: it wants the relayed address FIRST (a
+ * hibernating machine is usually reachable only through its relay, so its direct addresses
+ * blackhole), which is the order `CadreNode.resolvePeerAddrs` hands it. What it must not do is
+ * spend one of its two whole attempts (`WAKE_DIAL_ATTEMPTS`) on an address that answers nothing
+ * for about 23 s when ICE cannot connect.
+ */
+export function webrtcLast(addrs: readonly Multiaddr[]): Multiaddr[] {
+	const needsIce = (addr: Multiaddr): boolean => addrKind(addr) === 'webrtc';
+	return [...addrs.filter((addr) => !needsIce(addr)), ...addrs.filter(needsIce)];
 }
 
 /** `addrs` without those that relay through `dialer` itself, each dropped one logged. */

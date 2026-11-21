@@ -17,9 +17,10 @@ import type { CadreInvitationReach } from './types.js';
  * NOTE: a cadre invitation, which may be carried in a QR code, is capped harder
  * ({@link CADRE_INVITATION_MAX_ADDRS}); an open strand invitation keeps these caps. If open
  * invitations are ever carried in a QR code too, cap them the same way.
- * NOTE: for an open strand invitation the per-machine cap keeps the record's order (relay first,
- * then direct addresses as the machine published them, loopback included); a cadre invitation
- * ranks them first. If an open invitation's sibling is seen to have its reachable address cut,
+ * NOTE: for an open strand invitation the per-machine cap keeps the record's order (relayed
+ * first, then direct addresses as the machine published them, loopback included, then any that
+ * needs ICE after its relay hop — `orderRelayedFirst` in `peer-record.ts`); a cadre invitation
+ * ranks them itself. If an open invitation's sibling is seen to have its reachable address cut,
  * rank the same way.
  */
 export const INVITATION_SIBLING_MACHINES = 3;
@@ -32,6 +33,11 @@ export const INVITATION_ADDRS_PER_SIBLING = 4;
  * and direct WebSocket addresses alternating, against 2,331 bytes in the largest QR code at
  * error-correction level M (2,953 at L). Each further address costs about 170 characters, each
  * further owner key about 60.
+ *
+ * What the cap drops first follows from {@link PHONE_DIAL_RANK}: a machine's WebRTC address
+ * goes before its plain relayed one, because a WebRTC address connects only if ICE finds a path
+ * between the two networks — the case an invitation exists to cover is the one where it does
+ * not.
  */
 export const CADRE_INVITATION_MAX_ADDRS = 6;
 
@@ -43,7 +49,7 @@ export interface InvitationSibling {
 	peerId: string;
 	/** The record's `UpdatedAt`: when the machine last published its addresses. */
 	updatedAt: number;
-	/** Relay (signaling) addresses first, each ending in `/p2p/<peerId>`. */
+	/** As the machine's record carries them — relayed first, WebRTC last — each ending in `/p2p/<peerId>`. */
 	addrs: string[];
 }
 
@@ -75,7 +81,18 @@ export function selectInvitationSiblingAddrs(
  * NOTE: accepted tradeoff — with two or more other machines, only the best two addresses of
  * each survive, connected machines first, so a reachable address of a sibling can be cut. Size
  * was weighed over completeness, so the text fits a QR code; revisit if redemptions are seen
- * failing for want of a sibling address the record held.
+ * failing for want of a sibling address the record held. The decision stands; what has changed
+ * since it was taken is which address the cap cuts — {@link PHONE_DIAL_RANK} now ranks a
+ * machine's WebRTC address below its plain relayed one, so the cap drops the WebRTC address
+ * first and a machine offering WebRTC no longer fills half an invitation with addresses that
+ * connect only when ICE finds a path.
+ *
+ * NOTE: the ranking is per machine, and the machines keep their own order (the minting one, then
+ * siblings by how likely each is to be up), so the minting machine's WebRTC address can still
+ * sit ahead of a sibling's relayed one. A redeemer dials the list in order, so when the minting
+ * machine is down that costs about 23 s before the siblings are tried. Left as is because the
+ * machine order carries information an address-kind sort would discard; if redemptions are seen
+ * paying that, interleave every machine's relayed addresses ahead of any WebRTC one.
  */
 export function selectCadreInvitationMembers(
 	own: readonly string[],
@@ -89,14 +106,25 @@ export function selectCadreInvitationMembers(
 	].slice(0, CADRE_INVITATION_MAX_ADDRS);
 }
 
-/** Order in which a phone is likeliest to reach an address: from anywhere, on its network, on that machine, not at all. */
-const PHONE_DIAL_RANK: Record<DialAddressKind, number> = { relay: 0, name: 0, public: 0, private: 1, loopback: 2 };
+/**
+ * How widely a phone can reach an address: from anywhere, from anywhere when ICE finds a path,
+ * on its own network, on that machine alone, not at all.
+ *
+ * `webrtc` sits between the kinds that reach from anywhere and the LAN-only ones on that one
+ * axis: the relay carries its signalling from any network, but the connection opens only if ICE
+ * finds a path between the two networks, which is less than always and more than one network
+ * only. See `docs/network/relay.md` → "Direct connections over WebRTC".
+ */
+const PHONE_DIAL_RANK: Record<DialAddressKind, number> = { relay: 0, name: 0, public: 0, webrtc: 1, private: 2, loopback: 3 };
+
+/** Rank of an address no phone can dial at all (plain TCP), so it sorts behind every classified kind. */
+const PHONE_DIAL_RANK_UNREACHABLE = Math.max(...Object.values(PHONE_DIAL_RANK)) + 1;
 
 /** `addrs` best first for a phone dialing them ({@link PHONE_DIAL_RANK}), ties in their given order; one a phone cannot dial (plain TCP) last. */
 function rankForPhone(addrs: readonly string[]): string[] {
 	const rankOf = (addr: string): number => {
 		const kind = classifyDialAddress(addr);
-		return kind === undefined ? 3 : PHONE_DIAL_RANK[kind];
+		return kind === undefined ? PHONE_DIAL_RANK_UNREACHABLE : PHONE_DIAL_RANK[kind];
 	};
 	return addrs.map((addr) => ({ addr, rank: rankOf(addr) })).sort((a, b) => a.rank - b.rank).map(({ addr }) => addr);
 }
@@ -106,6 +134,12 @@ function rankForPhone(addrs: readonly string[]): string[] {
  * than `issuerPeerId`: in the app flows the minting app is the one closed or in the background
  * when the other app redeems, and two apps on one phone cannot reach each other. An address
  * names its machine by its last `/p2p/`.
+ *
+ * The three answers are about network scope, so a WebRTC address counts as `anywhere` alongside
+ * `relay`, `name` and `public`: it is not a local-network address, and its relay carries its
+ * signalling from any network. Whether ICE then finds a path is a separate matter this does not
+ * judge — and since {@link PHONE_DIAL_RANK} ranks a WebRTC address below the plain relayed one,
+ * such an address takes a slot only once every relayed address of that machine already has one.
  */
 export function cadreInvitationReach(members: readonly string[], issuerPeerId: string): CadreInvitationReach {
 	const others = members.flatMap((addr) => {
@@ -113,6 +147,6 @@ export function cadreInvitationReach(members: readonly string[], issuerPeerId: s
 		// Classified, so it parses and `destinationPeerIdOf` cannot throw.
 		return kind === undefined || destinationPeerIdOf(addr) === issuerPeerId ? [] : [kind];
 	});
-	if (others.some((kind) => kind === 'relay' || kind === 'name' || kind === 'public')) return 'anywhere';
+	if (others.some((kind) => kind === 'relay' || kind === 'webrtc' || kind === 'name' || kind === 'public')) return 'anywhere';
 	return others.length > 0 ? 'local-network' : 'issuer-only';
 }

@@ -2585,7 +2585,11 @@ export interface ResolveOpts {
    * {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}.
    */
   maxAgeMs?: number;
-  /** Return only `/p2p-circuit` signaling addrs (the WebRTC dial input). */
+  /**
+   * Return only the addresses that reach the peer through a relay hop — the plain relayed
+   * shape and the WebRTC one alike ({@link isSignalingAddr}). The survivors keep the
+   * relayed-first, WebRTC-last order every resolve applies.
+   */
   signalingOnly?: boolean;
   /**
    * Pluggable trust gate, evaluated after signature + freshness pass. Defaults

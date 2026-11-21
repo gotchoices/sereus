@@ -22,9 +22,23 @@ function direct(peerId: string, port: number): string {
 	return `/ip4/192.168.1.20/tcp/${port}/ws/p2p/${peerId}`;
 }
 
+/** The WebRTC address the same relay carries the signalling for: a relay hop, then ICE. */
+function webrtc(relay: string, peerId: string): string {
+	return `/ip4/203.0.113.10/tcp/443/wss/p2p/${relay}/p2p-circuit/webrtc/p2p/${peerId}`;
+}
+
 /** A machine reachable only through relays: the longest addresses, which ranking puts first. */
 function relayedOnly(relays: readonly string[], peerId: string): string[] {
 	return relays.map((relay) => relayed(relay, peerId));
+}
+
+/**
+ * What a machine listening on `/webrtc` publishes for each relay it holds a slot on, in the
+ * order it reports them: `webrtcListenAddrs` puts the `/webrtc` entry ahead of the relay's own
+ * `/p2p-circuit` one, so the WebRTC address of each relay arrives first.
+ */
+function webrtcAndRelayed(relays: readonly string[], peerId: string): string[] {
+	return relays.flatMap((relay) => [webrtc(relay, peerId), relayed(relay, peerId)]);
 }
 
 describe('cadre invitation addresses', () => {
@@ -72,6 +86,37 @@ describe('cadre invitation addresses', () => {
 		const members = selectCadreInvitationMembers(own, [{ peerId: sibling, updatedAt: 0, addrs: siblingAddrs }], new Set());
 
 		expect(members).toEqual([relayed(relay, issuer), direct(issuer, 4001), direct(issuer, 4002), direct(issuer, 4003), relayed(relay, sibling), direct(sibling, 4001)]);
+	});
+
+	it('fills the cap with a machine\'s relayed addresses before its WebRTC ones', async () => {
+		// A WebRTC address connects only if ICE finds a path between the two networks, and
+		// otherwise answers nothing for about 23 s — so under the cap that keeps an invitation
+		// inside one QR code it must not take a relayed address's place.
+		const relays = await Promise.all([0, 1].map(newPeerId));
+		const issuer = await newPeerId();
+		const sibling = await newPeerId();
+
+		const members = selectCadreInvitationMembers(
+			webrtcAndRelayed(relays, issuer),
+			[{ peerId: sibling, updatedAt: 0, addrs: webrtcAndRelayed(relays, sibling) }],
+			new Set()
+		);
+
+		expect(members).toEqual([
+			relayed(relays[0]!, issuer), relayed(relays[1]!, issuer),
+			webrtc(relays[0]!, issuer), webrtc(relays[1]!, issuer),
+			relayed(relays[0]!, sibling), relayed(relays[1]!, sibling),
+		]);
+		// The sibling's two slots both went to addresses that connect without ICE.
+		expect(members.filter((addr) => addr.includes('/webrtc/'))).toHaveLength(2);
+	});
+
+	it('counts a WebRTC address as reaching from anywhere, since its relay carries signalling from any network', async () => {
+		const issuer = await newPeerId();
+		const other = await newPeerId();
+		const relay = await newPeerId();
+
+		expect(cadreInvitationReach([direct(issuer, 4001), webrtc(relay, other)], issuer)).toBe('anywhere');
 	});
 
 	it('judges reach on the other machines only: anywhere, local network, or the issuer alone', async () => {
