@@ -73,6 +73,8 @@ The record is `StrandCommitDurability` (`packages/cadre-core/src/strand-commit-d
 
 A lone founder's commits are all reported not held elsewhere and followed, until a member joins and takes the copies. That is correct: nobody else has them.
 
+On a [machine that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks) no commit is followed. Its write is coordinated by a serving machine, and the record of what that commit still lacks, and the event when the last copy lands, live on that machine and never reach the client. So `strand:commit-held` never fires on a client, and the plugin's report names the coordinating machine as the one that recorded the commit. A client's commit is held by at least one other machine by construction, since the client holds none of it.
+
 ### When there is no record
 
 `commitDurability(tx)` returns `undefined` for a commit that wrote nothing (an `insert or ignore` that ignored, an update that matched no rows), one made before this database was built, and one more than 256 commits back. An app treats each of these as "nothing new to mark".
@@ -93,6 +95,8 @@ In offline mode it is also `undefined` for a transaction that is still queued, a
 In offline mode a strand commit resolves as soon as the transaction is saved on this machine. The strand's members get it later, in order, once they can be reached. Outside offline mode a commit resolves once the cluster members it can reach take it, which is this machine alone when no member is connected.
 
 The queue belongs to Optimystic's Quereus plugin (its README, "Offline mode"; design in Optimystic's `docs/offline-sync.md`). Sereus composes it into [the strand connection](#the-strand-connection) and [the cadre node](#on-a-cadre-node), and [the edge node](#on-the-edge-node) supplies the journal on the phone and in the browser.
+
+On a [machine that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks) a queued transaction waits for a serving machine: the node's own reachability gate reads its empty cluster as closed, so nothing is committed alone. No read is served from a local copy there either, because there is none; a read with no serving machine reachable fails, retryably.
 
 ### What a local acknowledgement promises
 
@@ -162,7 +166,7 @@ A queued transaction stays `queued` with `waitingFor: 'cohort'` while this machi
 
 The reason: a machine that has never connected to another machine of its party does not know it as a member of the strand's network, so Optimystic's own gate would let it commit a queued transaction alone. cadre-core composes that gate with what the control database knows (`strand-party-machines.ts`) and registers the result with the strand connection as `StrandConnectionOptions.cohortReachability`. The queue and the offline live-read path both ask it.
 
-- **Which machines count.** A machine with a `CadreControl.StrandPeer` row for the strand ([Binding the party's machines](membership.md#binding-the-partys-machines)) and a live `CadrePeer` row this node trusts. A machine writes its `StrandPeer` row when it runs the strand, so one whose strand filter or app keeps it off the strand never counts.
+- **Which machines count.** A machine with a `CadreControl.StrandPeer` row for the strand ([Binding the party's machines](membership.md#binding-the-partys-machines)) and a live `CadrePeer` row this node trusts. A machine writes its `StrandPeer` row when it runs the strand, so one whose strand filter or app keeps it off the strand never counts, and neither does a [machine that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks), which writes no row because it is in no cluster.
 - **Alone in the cluster, not merely unconnected to one machine.** With one of the party's machines connected and another blocked, the block's cluster has two members, the commit runs, and nothing waits. The same holds when another party's member is connected. A cluster that names nobody but this machine, or whose lookup fails, waits.
 - **The machines are redialed.** The strand node's redial (`strand-peer-redial.ts`) dials these machines at the addresses the strand-address protocol put in its address book ([How a strand's nodes find each other](../network/strand-addressing.md)), so a blocked port that opens is reached even if no connection was ever made to it.
 - **A long wait blocks other writes.** Membership writes are refused while the queue holds transactions, and an `App` schema apply may wait for the queue.

@@ -31,11 +31,24 @@ import type { NodeClass, PublishedProfile } from './node-class.js';
 import type { NodeRoles } from './node-roles.js';
 
 /**
- * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
- * createLibp2pNode after node creation (not surfaced on the base Libp2p type).
+ * Extended Libp2p node with the attachments db-p2p's createLibp2pNode adds after node
+ * creation (not surfaced on the base Libp2p type).
  */
 export interface Libp2pNodeWithRepo extends Libp2p {
-  coordinatedRepo: IRepo;
+  /**
+   * The repo this node coordinates writes to its own blocks through. Optional because a
+   * **client** node (`servesBlocks: false`, built for a strand on a node whose
+   * `strandCohortMember` role is off) stores no blocks and so carries none; the control node
+   * always has one, and `createControlNode` throws if it does not.
+   */
+  coordinatedRepo?: IRepo;
+  /**
+   * Whether this node stores blocks for its network (Optimystic's `NodeOptions.servesBlocks`,
+   * echoed on the built node). `false` on a client. Optional for the same reason as
+   * `keyNetwork` below: upstream declares it, but a node built by anything other than
+   * `createLibp2pNode` declares neither attachment, so read it `=== false`, never `!servesBlocks`.
+   */
+  servesBlocks?: boolean;
   /**
    * The node's key-addressed peer network, attached by db-p2p's factory alongside
    * `coordinatedRepo` (`libp2p-node-base.ts`). Optional deliberately: the base
@@ -853,8 +866,9 @@ export interface CadreNodeConfig {
    * construction rather than falling back to the preset. See {@link NodeRoles} for what each role does and
    * `node-roles.ts` → `NODE_ROLE_PRESETS` for the two presets.
    *
-   * `strandCohortMember: false` is refused at construction: the node that holds no strand
-   * blocks is not buildable yet (`strand-node-that-holds-no-blocks`).
+   * `strandCohortMember: false` runs every strand as a client that stores none of its blocks
+   * (`docs/cadre/node.md` → "Node classes"); together with an explicit {@link hostUnclaimedStrands}
+   * `true` it is refused at construction, since a replica that stores nothing is a contradiction.
    */
   roles?: Partial<NodeRoles>;
 
@@ -872,9 +886,12 @@ export interface CadreNodeConfig {
    * The strand is still announced as `strand:discovered` (once) and stays in
    * `getDiscoveredStrands()` until an app claims it. A replica is always a joiner.
    *
-   * Default: the resolved `roles.alwaysOn` — an always-on machine hosts replicas, anything
-   * else keeps the announce-only behaviour. An explicit value here still wins, so a phone can
-   * be told to host replicas and an always-on machine told not to.
+   * Default: the resolved `roles.alwaysOn` on a node that holds strand blocks — an always-on
+   * machine hosts replicas, anything else keeps the announce-only behaviour — and `false` on a
+   * node whose `strandCohortMember` role is off, which can store nothing for a replica to
+   * serve. An explicit value here still wins, so a phone can be told to host replicas and an
+   * always-on machine told not to; an explicit `true` with `strandCohortMember: false` is
+   * refused at construction (`node-roles.ts` → `resolveHostUnclaimedStrands`).
    */
   hostUnclaimedStrands?: boolean;
 

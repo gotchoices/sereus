@@ -229,7 +229,7 @@ import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, listenT
 import { selfAddressesChanged } from './self-address-update.js';
 import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer, type ResolvedRelayServer } from './relay-server.js';
-import { resolveNodeRoles, type NodeRoles } from './node-roles.js';
+import { resolveHostUnclaimedStrands, resolveNodeRoles, type NodeRoles } from './node-roles.js';
 import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
 import {
   superviseRelayReservation,
@@ -719,7 +719,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Whether an unclaimed strand the filter admits is launched as a storage replica
    * ({@link CadreNodeConfig.hostUnclaimedStrands}), resolved once from the config over the
-   * {@link roles} default (`alwaysOn`).
+   * {@link roles} default (`resolveHostUnclaimedStrands`: `alwaysOn`, on a node that holds strand
+   * blocks).
    *
    * NOTE: a replica host stores every admitted strand of its party with no quota (Arachnode
    * quotas are unimplemented). Fine at a party's handful of strands; if always-on nodes come
@@ -1321,15 +1322,7 @@ export class CadreNode implements SAppIdLookup {
   constructor(config: CadreNodeConfig) {
     this.config = config;
     this.roles = resolveNodeRoles(config.nodeClass, config.roles);
-    if (!this.roles.strandCohortMember) {
-      throw new Error(
-        'roles.strandCohortMember: false is not supported yet — running a strand without holding and signing '
-        + 'its blocks needs an Optimystic node that serves none, which does not exist yet '
-        + '(strand-node-that-holds-no-blocks). Leave the role unset, or keep the strand off this machine with '
-        + 'strandFilter.'
-      );
-    }
-    this.hostUnclaimedStrands = config.hostUnclaimedStrands ?? this.roles.alwaysOn;
+    this.hostUnclaimedStrands = resolveHostUnclaimedStrands(config.hostUnclaimedStrands, this.roles);
     this.strandManager = new StrandInstanceManager();
     this.enrollmentService = new EnrollmentService();
     this.relayServer = resolveRelayServer(config.network, this.roles);

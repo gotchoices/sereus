@@ -54,7 +54,7 @@ The class decides nothing by itself. It is the **preset** for four separate deci
 
 A role left out of `roles` takes its preset's value. A misspelled role name, or a value outside a role's own set, is refused when the node is constructed rather than resolving quietly to the preset. So `roles: { alwaysOn: true }` on a `device` changes that one decision and leaves the other three at the device defaults.
 
-Two of the four are the same under both presets today, for different reasons. `reactivity` is `forwarder` because that is what every node already does; whether a phone should forward is an open question that this option exists to let a deployment test. `strandCohortMember: false` is refused when the node is constructed: the role is in the configuration ahead of the Optimystic node that can run a strand while serving none of its blocks.
+Two of the four are the same under both presets, for different reasons. `reactivity` is `forwarder` because that is what every node already does; whether a phone should forward is an open question that this option exists to let a deployment test. `strandCohortMember` is `true` because a machine that stores what it uses is the right default for a party's handful of strands; `false` is for a strand too large for every machine to store, such as a vote with thousands of phones ([A node that holds no strand blocks](#a-node-that-holds-no-strand-blocks)).
 
 ### What always on turns on
 
@@ -62,13 +62,30 @@ Two of the four are the same under both presets today, for different reasons. `r
 |---|---|---|
 | Optimystic's Arachnode subsystem (ring membership, block restoration from other holders) | off | on |
 | Relay server, when `network.enableRelay` is unset | off | on |
-| Strands no local app has claimed, when `hostUnclaimedStrands` is unset | announced only | run as [storage replicas](#storage-replicas) |
+| Strands no local app has claimed, when `hostUnclaimedStrands` is unset | announced only | run as [storage replicas](#storage-replicas), unless the node holds no strand blocks |
 | How the party's other nodes dial it | up to the cohort's target degree | always |
 | In seeds and invitation replies | listed | listed as a preferred peer |
 
 The first three are local settings, and `network.enableRelay` and `hostUnclaimedStrands` each override one of them. The last two follow from what the node publishes in its [address record](#the-nodes-address-record): the party's other machines read that declaration and treat the machines that make it as the ones that stay reachable ([Cohort auto-connect](control-convergence.md#cohort-auto-connect)). That declaration is all they read — neither the class nor any other role is replicated — and [the control schema](control-schema.md#limits-and-accepted-tradeoffs) describes the column that stores it.
 
-Every node transacts and stores today: it keeps the blocks of the control database and of each strand it runs in whatever `storage.provider` returns ([Storage](#storage)). `strandCohortMember` is the role that will change the strand half of that, once there is a node that can run a strand while serving none of its blocks; nothing else, class included, decides it.
+Every node stores the control database: it keeps its blocks in whatever `storage.provider` returns ([Storage](#storage)). Whether it also stores the blocks of each strand it runs is `strandCohortMember`'s decision alone; nothing else, class included, decides it.
+
+### A node that holds no strand blocks
+
+With `strandCohortMember: false`, every strand node the machine builds is an Optimystic **client** (`servesBlocks: false`). It runs the strand — reads, writes, membership, change notifications — and stores none of its blocks: it asks `storage.provider` for no per-strand store, and its reads and writes go to a coordinator among the strand's serving machines. The control network is unchanged: it always replicates to every machine of the party, so a machine can read its own party's state with nothing reachable.
+
+What keeps a client out of the strand's clusters is what it does not register. A client offers none of Optimystic's four storage protocols, so every other machine classifies it from its identify list as not serving and leaves it out of every cluster, and the client classifies itself the same way. A sleeping phone is therefore never on the path of another machine's save, which is what a strand with thousands of phones needs. Optimystic's `docs/internals.md` → "Client nodes" is the reference for what such a node builds, what it ignores and what a write costs.
+
+What follows for the strand's other mechanisms:
+
+- **No first-sync gate.** A client's database is published as soon as it opens: it is in no cluster, so a write with no serving machine reachable fails rather than committing alone, and there is no fork to prevent ([Joining: no writes before the first sync](../strands/formation.md#joining-no-writes-before-the-first-sync)).
+- **No `StrandPeer` row.** The party's row set means "the machines that serve this strand", which a serving sibling's offline queue waits for; a client's row would hold that queue forever. [Binding the party's machines](../strands/membership.md#binding-the-partys-machines) says what the missing row costs, including the open defect that a party key replacement cannot bind a client under the new key.
+- **No block catch-up and no storage replicas.** A client has no blocks to push to a newly connected peer, and `hostUnclaimedStrands` defaults to `false` on it whatever `alwaysOn` says; an explicit `true` beside the role is refused when the node is constructed, since a replica that stores nothing is a contradiction.
+- **Commits are never followed to full replication.** The record of a client's commit lives on the machine that coordinated it, so `strand:commit-held` never fires on a client ([A commit's durability](../strands/writes.md#a-commits-durability)).
+- **Change notifications are received, never originated.** A client applies no commits, so it announces none; it still registers watches and forwards under its `reactivity` role, and a watch's wake can lag one round of cohort gossip until its registration reaches the machine that announces a commit.
+- **Membership is unchanged.** A client seats its own binding in a closed strand and keeps the revoked-peer gate, whose reads of the strand's membership rows are remote.
+
+A client cannot open a strand's database with no serving machine reachable, and cannot found a strand alone; what a launch does then is in [lifecycle.md → Limits and accepted tradeoffs](../strands/lifecycle.md#limits-and-accepted-tradeoffs), with the limits a client's strand runs under.
 
 ## Strand filtering
 
@@ -87,7 +104,7 @@ Under an `sAppId` filter, a strand whose sApp id the node does not know yet is a
 
 ### Storage replicas
 
-Whether a node runs a strand its filter admits and no app on the machine has claimed is a separate option, `hostUnclaimedStrands`, which is on by default on a node whose [`alwaysOn` role](#node-classes) is on.
+Whether a node runs a strand its filter admits and no app on the machine has claimed is a separate option, `hostUnclaimedStrands`, which is on by default on a node whose [`alwaysOn` role](#node-classes) is on. On a [node that holds no strand blocks](#a-node-that-holds-no-strand-blocks) it is off by default and an explicit `true` is refused, since a replica stores and serves blocks.
 
 With it on, the node launches every admitted strand as a **storage replica**: the strand's own libp2p node, block store and `Strand` membership schema, with no sApp configuration and no `App` schema. A replica stores and serves the strand's blocks and runs nothing an app supplied. An always-on machine thereby keeps a copy of every strand of its party, so a lost phone loses nothing that had reached that machine.
 

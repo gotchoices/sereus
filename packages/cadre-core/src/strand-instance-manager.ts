@@ -147,14 +147,10 @@ export interface StartStrandConfig {
   /**
    * What this node does, resolved once by the owning {@link CadreNode} (`node-roles.ts`).
    * Retained with the launch config, so a strand woken from hibernation is rebuilt with the
-   * same roles. Read here for the FRET tier, Ring Zulu, the relay-server default and the
-   * cohort-topic host profile.
-   *
-   * NOTE: `strandCohortMember` is read by nothing here — `CadreNode`'s constructor refuses
-   * `false`, so every launch that comes through a node has it `true`. An embedder driving this
-   * manager directly is past that refusal and would get a block-holding node either way. When
-   * the Optimystic node that serves no blocks lands (`strand-node-that-holds-no-blocks`), THIS
-   * is the site that has to read the role, and the refusal there can go.
+   * same roles. Read here for the FRET tier, Ring Zulu, the relay-server default, the
+   * cohort-topic host profile, and — `strandCohortMember` — whether the strand node stores
+   * the strand's blocks or is built as a client that reads and writes through the machines
+   * that do (`buildStrandRuntime`; `startStrand` resolves no store for a client).
    */
   roles: NodeRoles;
   defaultLatencyHint: LatencyHint;
@@ -781,9 +777,19 @@ export class StrandInstanceManager {
     // function is provided, it is called with the strandId to create strand-specific
     // storage (e.g. strand-isolated directories). A provider that throws therefore
     // fails the launch alongside the schema-signature check, leaving nothing tracked.
-    const strandStorage = resolveStrandStorage(config.storage?.provider, strandId);
+    //
+    // Never on a client (`roles.strandCohortMember: false`, built so in `buildStrandRuntime`):
+    // it stores no blocks, and the provider call itself has a side effect — a per-strand
+    // database on a phone, a per-strand directory on a node — so it is not made. Nothing is
+    // recorded in `strandStorages`, and every reader of that map (the join catch-up, the
+    // first-join test, the storage dispose) already handles the absent store.
+    const strandStorage = config.roles.strandCohortMember
+      ? resolveStrandStorage(config.storage?.provider, strandId)
+      : undefined;
     if (strandStorage) {
       log('Strand %s using provided storage provider', strandId);
+    } else if (!config.roles.strandCohortMember) {
+      log('Strand %s runs as a client: no store is resolved, its blocks live on the serving machines', strandId);
     }
 
     // Determine latency hint: sApp config > default
@@ -882,6 +888,12 @@ export class StrandInstanceManager {
     // surface later inside a path that logs and carries on. `link-budget.ts`.
     resolveLinkRoundTripMs(config.network?.linkRoundTripMs);
 
+    // Whether this strand node stores and signs the strand's blocks, or is a CLIENT that reads
+    // and writes through the machines that do (`NodeRoles.strandCohortMember`). The one place
+    // the role is turned into a node: everything below that differs on a client follows from
+    // this binding, and `startStrand` resolved no store for one, so `strandStorage` is undefined
+    // there and `backfillArms` is false with it.
+    const servesBlocks = config.roles.strandCohortMember;
     // The store the instance OWNS (resolved once in `startStrand`), not a fresh
     // resolution: a rebuild must reach the same backend through the same warm cache.
     const strandStorage = this.strandStorages.get(strandId);
@@ -1012,6 +1024,14 @@ export class StrandInstanceManager {
         // sibling recorded is never read as removed. If a peer is ever seen left out of cohorts
         // this way, the row needs a proof that the id it states is the machine's own.
         ...(partyMachines && { isNetworkMember: (peerId: string) => !partyMachines.removed().has(peerId) }),
+        // A client registers none of the four storage protocol services, so every other machine
+        // classifies it from its identify list as not serving and leaves it out of every cohort,
+        // its own view of itself included; its reads and writes go to a coordinator among the
+        // strand's serving machines (`../optimystic/docs/internals.md` → "Client nodes"). The
+        // serving-only options Optimystic would ignore on a client stay off it below: `storage`
+        // is undefined here on a client (`startStrand`), `arachnode` is behind this flag, and
+        // `rebalance` is behind `backfillArms`, which the absent store already made false.
+        servesBlocks,
         storage: strandStorage,
         fretProfile: config.roles.overlayTier,
         relay: relayServer.enabled,
@@ -1038,11 +1058,14 @@ export class StrandInstanceManager {
           servingMachines: config.servingMachines,
           cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(config.network)
         }),
-        arachnode: {
-          // Follows `alwaysOn`, for the control node's reason (`cadre-node.ts`): the storage
-          // rings Ring Zulu hints at are unimplemented, so there is no second role to set.
-          enableRingZulu: config.roles.alwaysOn
-        },
+        // A client builds no Arachnode at all, so the option is not stated for one.
+        ...(servesBlocks && {
+          arachnode: {
+            // Follows `alwaysOn`, for the control node's reason (`cadre-node.ts`): the storage
+            // rings Ring Zulu hints at are unimplemented, so there is no second role to set.
+            enableRingZulu: config.roles.alwaysOn
+          }
+        }),
         // One join catch-up per node. On an always-on node Optimystic's rebalance growth
         // arm pushes a joiner every block whose cohort it entered, one request per block, and
         // it never hears of the peer-join catch-up's pushes, so each block would go twice. The
@@ -1116,7 +1139,17 @@ export class StrandInstanceManager {
       // The seam defers it while a write could fork the party and retries it on cohort
       // growth and from every membership reconciler pass, so a refusal here is not final.
       // Written for open strands too: their row is what a sibling's offline queue waits for.
-      if (config.partyPeers) {
+      //
+      // NOT written by a client. The row set means "the machines that serve this strand"
+      // (`strand-party-machines.ts`): a serving sibling's offline queue waits for every machine
+      // with a row that it is alone in a cohort without, and a client is in no cohort, so a
+      // client's row would hold that queue forever. What the missing row costs is stated in
+      // docs/strands/membership.md → "Binding the party's machines": no sibling can look up a
+      // client's strand address, and — the open defect `client-locked-out-of-closed-strand-after-party-key-replacement`
+      // — a party key rotation binds the peer ids it reads from these rows, so a client is never
+      // bound under the new key and is denied once the old key leaves. The row needs a column
+      // saying whether the machine serves, not a third `CadrePeer.Profile` value (`node-class.ts`).
+      if (config.partyPeers && servesBlocks) {
         void config.partyPeers.publishOwn(node.peerId.toString()).catch((error) => {
           log('Strand %s: publishing this machine\'s StrandPeer row threw (retried later): %o', strandId, error);
         });
@@ -1200,6 +1233,9 @@ export class StrandInstanceManager {
       // peer-join-backfill.ts for the strand-side argument (and why the control
       // network, which DOES gate, is different).
       //
+      // Never on a client: it holds no blocks to push, and `startStrand` resolved it no store,
+      // which is what `backfillArms` reads.
+      //
       // NOTE: cost is one PeerJoinBackfill object + one `peer:identify` listener
       // per running strand — linear in strand count, negligible at the handful a
       // device or host runs today. If a node ever hosts strands by the hundred,
@@ -1281,6 +1317,9 @@ export class StrandInstanceManager {
    * (`cohort-unreachable`): that attempt's database is closed and the node keeps running. Any
    * other failure throws, with the attempt's database left with its gate for
    * {@link releaseRuntime} to close.
+   *
+   * A client node's database (`roles.strandCohortMember: false`) is published as soon as it
+   * initializes, like a founder's: see the first-sync decision below.
    */
   private async buildStrandDatabase(
     instance: StrandInstance,
@@ -1298,6 +1337,7 @@ export class StrandInstanceManager {
       strandId,
       sAppConfig: config.sAppConfig,
       libp2pNode: node,
+      // Absent on a client, which coordinates no writes; the database then connects without one.
       coordinatedRepo: node.coordinatedRepo,
       // Founder bootstrap inputs: the strand's type drives which membership rows
       // are written, and the PARTY's own key (partyMemberPrivateKey, resolved by the
@@ -1376,7 +1416,18 @@ export class StrandInstanceManager {
     if (awaitPush) {
       log('Strand %s: first join over an empty store; waiting for a member\'s push before the first sync probe', strandId);
     }
-    const synced = config.founder === true || (!awaitPush && await gate.probeOnce());
+    // A client is treated as synced, like a founder. The gate stops a joining machine inventing a
+    // collection while it is the whole cohort for every block; a client is in no cohort, so a
+    // write with no serving machine reachable resolves no coordinator and fails instead of
+    // committing locally — there is no fork to prevent. Gating it would also be wrong in itself:
+    // its probe reads would be remote reads repeated on the backstop (it has no storage change
+    // feed to wake it), and while the database was withheld the app could neither write nor
+    // queue. So on a client `addStrand` resolving means the database is open, not that a member
+    // has been reached: the first read or write fails, retryably, until a serving machine is
+    // reachable (docs/strands/formation.md → "Joining: no writes before the first sync"). The
+    // gate object stays as the handle `releaseRuntime` closes the database through.
+    const client = !config.roles.strandCohortMember;
+    const synced = config.founder === true || client || (!awaitPush && await gate.probeOnce());
     timing('[buildStrandRuntime:%s] first-sync probe: %dms', strandId, Math.round(performance.now() - t0));
     if (this.firstSyncGates.get(strandId) !== gate) {
       // A stop released the runtime during the probe and closed this database through its gate.
@@ -1533,7 +1584,8 @@ export class StrandInstanceManager {
   private async retryUnreachableJoin(instance: StrandInstance): Promise<void> {
     const strandId = instance.strandId;
     const config = this.launchConfigs.get(strandId);
-    // Every strand node is built by `buildStrandRuntime`, as a node with its coordinated repo.
+    // Every strand node is built by `buildStrandRuntime`, as a node carrying db-p2p's attachments
+    // (a client's without a coordinated repo).
     const node = instance.libp2pNode as Libp2pNodeWithRepo | undefined;
     if (!config || !node || !this.isCurrentRuntime(instance, node) || instance.database
       || this.firstSyncGates.has(strandId) || this.isQuiescing(strandId)) {

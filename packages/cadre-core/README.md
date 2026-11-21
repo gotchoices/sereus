@@ -103,7 +103,7 @@ An app on a phone or in a browser does not construct `CadreNode` itself. It call
 
 ### Node class and roles
 
-`nodeClass` says what kind of machine this node runs on. `'device'` is a phone, a laptop or a browser tab running an app, connected some of the time. `'server'` is an always-on machine: it also runs a relay server by default and keeps a copy of every strand its `strandFilter` admits, including strands no app on that machine uses. Every node transacts and stores: every node stores the data of the strands it runs.
+`nodeClass` says what kind of machine this node runs on. `'device'` is a phone, a laptop or a browser tab running an app, connected some of the time. `'server'` is an always-on machine: it also runs a relay server by default and keeps a copy of every strand its `strandFilter` admits, including strands no app on that machine uses. Under either preset a node stores the data of the strands it runs; the `strandCohortMember` role below is what changes that.
 
 The class is only the preset for four decisions, the node's **roles**, which `roles` sets one at a time:
 
@@ -116,7 +116,9 @@ roles: {
 }
 ```
 
-A role left out takes its preset's value (`device`: `false`, `'edge'`, `'forwarder'`, `true`; `server`: `true`, `'core'`, `'forwarder'`, `true`). A misspelled role name, or a value outside a role's own set, throws. `strandCohortMember: false` is refused for now. `NODE_ROLE_PRESETS` and `resolveNodeRoles` are exported for a program that wants to show an operator what a config resolves to. See [Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes).
+A role left out takes its preset's value (`device`: `false`, `'edge'`, `'forwarder'`, `true`; `server`: `true`, `'core'`, `'forwarder'`, `true`). A misspelled role name, or a value outside a role's own set, throws. `NODE_ROLE_PRESETS` and `resolveNodeRoles` are exported for a program that wants to show an operator what a config resolves to. See [Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes).
+
+`strandCohortMember: false` makes the node a **client** of every strand it runs: it reads and writes the strand through the machines that store it, asks `storage.provider` for no per-strand store, and is left out of every cluster, so it is never on the path of another machine's save. It cannot host storage replicas, so `hostUnclaimedStrands` defaults to `false` on it and an explicit `true` throws naming both settings. A client needs a serving machine reachable to open or found a strand. See [A node that holds no strand blocks](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#a-node-that-holds-no-strand-blocks).
 
 ### Strand filter
 

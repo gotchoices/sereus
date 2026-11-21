@@ -75,12 +75,41 @@ export interface NodeRoles {
 	 * Does this node hold and sign blocks for the strands it runs?
 	 *
 	 * Strands only: the control network always replicates to every party member, which is what
-	 * lets any machine read the whole control database. `false` is the shape a very large strand
-	 * needs — a vote with thousands of phones, where every phone transacting is wanted and every
-	 * phone storing is not — and is refused at `CadreNode` construction until Optimystic can
-	 * build a node that serves no blocks (`strand-node-that-holds-no-blocks`).
+	 * lets any machine read the whole control database. `false` builds each strand node as an
+	 * Optimystic **client** (`NodeOptions.servesBlocks: false`): it runs the strand — reads,
+	 * writes, membership, change notifications — but stores none of its blocks, asks the
+	 * embedder's storage provider for no per-strand store, and is in no cohort, so its reads
+	 * and writes go to the strand's serving machines and a sleeping phone is never on the path
+	 * of another machine's save. The shape a very large strand needs. Read in one place,
+	 * `StrandInstanceManager.buildStrandRuntime`; what follows from it is in `docs/cadre/node.md`
+	 * → "Node classes". Contradicts `hostUnclaimedStrands: true` ({@link resolveHostUnclaimedStrands}).
 	 */
 	strandCohortMember: boolean;
+}
+
+/**
+ * Whether a node runs the admitted strands no app has claimed as storage replicas
+ * (`CadreNodeConfig.hostUnclaimedStrands`): the explicit setting, else `alwaysOn` on a node that
+ * holds strand blocks and `false` on one that does not.
+ *
+ * A replica's whole job is to store and serve a strand, so a node with `strandCohortMember:
+ * false` cannot be one. The default therefore comes out `false` on such a node whatever
+ * `alwaysOn` says — an always-on dashboard node that holds no blocks is a plausible deployment
+ * and must not be refused for a setting it never made — and an EXPLICIT `true` beside
+ * `strandCohortMember: false` throws naming both, because the embedder asked for two things that
+ * cannot both hold.
+ */
+export function resolveHostUnclaimedStrands(explicit: boolean | undefined, roles: NodeRoles): boolean {
+	if (explicit === undefined) {
+		return roles.alwaysOn && roles.strandCohortMember;
+	}
+	if (explicit && !roles.strandCohortMember) {
+		throw new Error(
+			'hostUnclaimedStrands: true contradicts roles.strandCohortMember: false — a storage replica stores and '
+			+ 'serves a strand\'s blocks, which a node that holds none cannot do. Drop one of the two.'
+		);
+	}
+	return explicit;
 }
 
 /**

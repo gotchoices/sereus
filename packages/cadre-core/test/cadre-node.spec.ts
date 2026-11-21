@@ -121,12 +121,17 @@ describe('CadreNode', () => {
       expect(node.isRunning).toBe(false);
     });
 
-    // The role is in the type ahead of the Optimystic node that can honour it
-    // (`strand-node-that-holds-no-blocks`), so construction has to refuse it rather than
-    // accept a config and then run a node that holds blocks anyway.
-    it('refuses strandCohortMember: false', () => {
-      expect(() => new CadreNode(createConfig({ roles: { strandCohortMember: false } })))
-        .toThrow(/strandCohortMember/);
+    // A node that holds no strand blocks runs every strand as a client; what it cannot be is a
+    // storage replica host, which stores and serves blocks. The default comes out false even on an
+    // always-on node (`resolveHostUnclaimedStrands`), so only the explicit contradiction throws.
+    it('constructs with strandCohortMember: false, on a server too', () => {
+      expect(() => new CadreNode(createConfig({ roles: { strandCohortMember: false } }))).not.toThrow();
+      expect(() => new CadreNode(createConfig({ nodeClass: 'server', roles: { strandCohortMember: false } }))).not.toThrow();
+    });
+
+    it('refuses an explicit hostUnclaimedStrands: true beside strandCohortMember: false, naming both', () => {
+      expect(() => new CadreNode(createConfig({ hostUnclaimedStrands: true, roles: { strandCohortMember: false } })))
+        .toThrow(/hostUnclaimedStrands.*strandCohortMember/);
     });
   });
 

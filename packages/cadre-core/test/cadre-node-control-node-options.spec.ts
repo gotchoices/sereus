@@ -416,6 +416,17 @@ describe('CadreNode control-network node options', () => {
       expect(options.fretProfile).toBe('edge');
       expect(options.arachnode?.enableRingZulu).toBe(false);
     });
+
+    // The one role that must never reach the control node: a client control node could not read
+    // its own party's state with nothing reachable, which is the promise the control network
+    // exists to keep. The breach would be silent — `createControlNode` would throw on the missing
+    // repo only at start() — so the mapping is pinned here, where every other option of the
+    // control node is.
+    it('never builds the control node as a client, whatever strandCohortMember says', () => {
+      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'server', roles: { strandCohortMember: false } })));
+
+      expect(options.servesBlocks).toBeUndefined();
+    });
   });
 
   describe('relay', () => {

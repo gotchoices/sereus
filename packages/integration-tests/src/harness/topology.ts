@@ -31,7 +31,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '@serfab/cadre-core';
-import type { NodeClass, RawStorageProvider, StrandReactivityConfig } from '@serfab/cadre-core';
+import type { NodeClass, NodeRoles, RawStorageProvider, StrandReactivityConfig } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectControlNodes, hasOutboundTo, stopStartedNodes
 } from './node-fixtures.js';
@@ -56,6 +56,8 @@ const COHORT_BARRIER_TIMEOUT_MS = 30_000;
 export interface TopologyMachineSpec {
 	/** Default: machine 0 (the owner) 'server', every other machine 'device'. */
 	nodeClass?: NodeClass;
+	/** Per-role overrides of the class's presets — see `ControlNodeOpts.roles` in `node-fixtures.ts`. */
+	roles?: Partial<NodeRoles>;
 	/** Per-machine raw-storage capture (block-store-probe scenarios). */
 	storageProvider?: RawStorageProvider;
 	strandWatchMs?: number;
@@ -184,6 +186,7 @@ function machineConfig(
 		partyId,
 		privateKey: key,
 		nodeClass: machine.nodeClass ?? (index === 0 ? 'server' : 'device'),
+		...(machine.roles !== undefined ? { roles: machine.roles } : {}),
 		...(machine.storageProvider ? { storageProvider: machine.storageProvider } : {}),
 		...((machine.strandWatchMs ?? spec.strandWatchMs) !== undefined
 			? { strandWatchMs: machine.strandWatchMs ?? spec.strandWatchMs } : {}),

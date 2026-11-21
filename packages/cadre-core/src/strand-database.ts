@@ -31,8 +31,12 @@ export interface StrandDatabaseConfig extends StrandCommitListeners {
   sAppConfig?: SAppConfig;
   /** Libp2p node for the strand network */
   libp2pNode: Libp2p;
-  /** Coordinated repo from the libp2p node */
-  coordinatedRepo: IRepo;
+  /**
+   * Coordinated repo from the libp2p node. Absent for a client node (`servesBlocks: false`),
+   * which stores no blocks and so coordinates no writes; the composition then builds a
+   * transactor that sends every read and write to a remote coordinator.
+   */
+  coordinatedRepo?: IRepo;
   /**
    * Strand type (`'o'` open / `'c'` closed) from the control-network strand row.
    * Drives the founder bootstrap: open strands get a `Header` only; closed strands
@@ -182,7 +186,8 @@ export class StrandDatabase {
     const connection = {
       strandId: sid,
       libp2pNode: this.config.libp2pNode,
-      coordinatedRepo: this.config.coordinatedRepo,
+      // Only when the node has one: the composition refuses a repo offered with a client node.
+      ...(this.config.coordinatedRepo && { coordinatedRepo: this.config.coordinatedRepo }),
       enableCache: true,
       offline,
       ...(cohortReachability && { cohortReachability }),

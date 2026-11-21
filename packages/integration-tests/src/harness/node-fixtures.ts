@@ -22,6 +22,7 @@ import type {
   EnrolledMachineStore,
   JoinedStrandStore,
   NodeClass,
+  NodeRoles,
   RawStorageProvider,
   SAppConfig,
   StrandNetworkStateStore,
@@ -70,6 +71,12 @@ export interface ControlNodeOpts {
    */
   schemaPath?: string;
   nodeClass?: NodeClass;
+  /**
+   * Becomes `roles` verbatim: per-role overrides of what {@link nodeClass} presets
+   * (`CadreNodeConfig.roles`). `{ strandCohortMember: false }` makes a client machine, whose
+   * strand nodes store none of a strand's blocks and read and write through the machines that do.
+   */
+  roles?: Partial<NodeRoles>;
   /**
    * Run the circuit-relay server? Left unset this is NOT off — `CadreNode`
    * defaults it to the node's `alwaysOn` role, which the `server` class presets on, so a
@@ -270,6 +277,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
       ...(opts.schemaPath !== undefined ? { schemaPath: opts.schemaPath } : {}),
     },
     nodeClass: opts.nodeClass ?? 'device',
+    ...(opts.roles !== undefined ? { roles: opts.roles } : {}),
     strandFilter: { mode: opts.strandFilter ?? 'all' },
     hostUnclaimedStrands: opts.hostUnclaimedStrands ?? false,
     storage: {

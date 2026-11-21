@@ -220,7 +220,7 @@ After it has tried the invitation's machines in turn, `formStrand` throws one of
 
 ### Why
 
-A machine with no strand peer connected is the whole cluster for every block, so a write to a table it does not hold creates that table's collection, as a founder's does. When the joiner then connects, two independently created histories share one collection id. Optimystic keeps one or never reconciles them, and the joiner's rows are lost although each write reported success.
+A machine that stores blocks and has no strand peer connected is the whole cluster for every block, so a write to a table it does not hold creates that table's collection, as a founder's does. When the joiner then connects, two independently created histories share one collection id. Optimystic keeps one or never reconciles them, and the joiner's rows are lost although each write reported success.
 
 Optimystic cannot tell a founder from a joiner, but a cadre-core launch knows whether it is founding. The founder writes the `Header`; every other machine can only receive it from a peer, so "no local Header" means "never synced". The `Header` alone is not enough, because it is one collection and reaches a joiner ahead of the others. The rule covers the membership tables too, since the node itself writes membership rows as soon as the database is available.
 
@@ -233,10 +233,11 @@ The first-sync gate (`strand-first-sync-gate.ts`) enforces the rule on every lau
 - **A machine that already holds the tables is not gated.** A founder, and normally a restart or a wake from hibernation, passes the first probe, so a machine that has synced before keeps writing while offline. A machine that left soon after its first sync can hold less than it read, and is gated again.
 - **The founder supplies every table**, including the ones its founding transaction does not write ([Empty collections for every other table](membership.md#empty-collections-for-every-other-table)). A joiner's first write to a table then appends to the founder's collection.
 - **An unreachable seed defers the database, not the launch.** Optimystic will not rule a block absent while any configured seed peer is unanswered, so a joiner in that state cannot build its database. The launch stays up as `'syncing'` and retries the build every 5 seconds.
+- **A machine that holds no strand blocks is not gated.** It is in no cluster, so a write with no serving machine reachable resolves no coordinator and fails instead of creating a collection; there is no fork to prevent. Gating it would also be wrong in itself: its probe reads would be remote reads repeated on the backstop, and a withheld database keeps the app from queuing. Its database is published as soon as it opens ([A node that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks)).
 
 ### What the app sees
 
-- **`addStrand` resolves once the strand is writable,** so an app can write as soon as the call returns. The wait is bounded by `CadreNodeConfig.strandFirstSync.timeoutMs`, 6 minutes by default.
+- **`addStrand` resolves once the strand is writable,** so an app can write as soon as the call returns. The wait is bounded by `CadreNodeConfig.strandFirstSync.timeoutMs`, 6 minutes by default. On a machine that holds no strand blocks it resolves as soon as the database is open, which does not mean a member has been reached: the first read or write fails, retryably, until a serving machine is reachable.
 - **On timeout it rejects with `StrandAwaitingFirstSyncError` and the launch stays up.** Calling `addStrand` again, awaiting `CadreNode.whenStrandWritable(strandId)`, or listening for `strand:writable` continues the wait.
 - **`addStrand({ …, awaitFirstSync: false })` returns the `'syncing'` instance at once,** for a caller that connects its own peers first.
 - **The gate cannot be disabled.** A machine whose store already holds the tables is never gated, so the gate blocks nothing that would work without it.

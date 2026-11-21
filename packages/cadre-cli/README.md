@@ -381,7 +381,7 @@ roles:                      # optional, and so is every role in it
 [Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes) says what each role decides, what the presets are, and what `alwaysOn` turns on. `cadre status` prints the resolved roles beside the class, so an operator sees what the node is doing and not only which roles were overridden.
 
 - **A misspelled role, or a value outside a role's own set, stops the node**, in the same report as the rest of the file's problems, rather than falling back to the preset.
-- **`strandCohortMember: false` is refused when the node starts.** The role is in the configuration ahead of the node that can run a strand while serving none of its blocks; keep such a strand off the machine with `strandFilter` instead.
+- **`strandCohortMember: false` runs every strand as a client**: the node reads and writes each strand through the machines that store it, keeps no strand data under `storage.path`, and is in no strand's cluster. It then hosts no storage replicas, so a strand no app on the machine has claimed is only announced. A client needs a serving machine reachable to open a strand. See [A node that holds no strand blocks](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#a-node-that-holds-no-strand-blocks).
 
 ### Listen and announce addresses
 
