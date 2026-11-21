@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NODE_ROLE_PRESETS, resolveNodeRoles, type NodeRoles } from '../src/node-roles.js';
+import { NODE_ROLE_PRESETS, resolveHostUnclaimedStrands, resolveNodeRoles, type NodeRoles } from '../src/node-roles.js';
 import type { NodeClass } from '../src/node-class.js';
 
 /**
@@ -58,5 +58,28 @@ describe('resolveNodeRoles', () => {
 
   it('an unknown node class throws rather than resolving to nothing', () => {
     expect(() => resolveNodeRoles('drone' as unknown as NodeClass)).toThrow(/Unknown nodeClass/);
+  });
+});
+
+/**
+ * The storage-replica default and its one refusal. A replica stores and serves a strand, so a
+ * node that holds no strand blocks defaults to hosting none whatever `alwaysOn` says, and only an
+ * EXPLICIT `true` beside that role is a contradiction worth throwing on.
+ */
+describe('resolveHostUnclaimedStrands', () => {
+  it.each<[string, boolean | undefined, NodeClass, Partial<NodeRoles>, boolean]>([
+    ['unset on a server', undefined, 'server', {}, true],
+    ['unset on a device', undefined, 'device', {}, false],
+    ['unset on a server that holds no strand blocks', undefined, 'server', { strandCohortMember: false }, false],
+    ['explicit false on a server', false, 'server', {}, false],
+    ['explicit true on a device', true, 'device', {}, true],
+    ['explicit false on a node that holds no strand blocks', false, 'server', { strandCohortMember: false }, false]
+  ])('%s', (_label, explicit, nodeClass, overrides, expected) => {
+    expect(resolveHostUnclaimedStrands(explicit, resolveNodeRoles(nodeClass, overrides))).toBe(expected);
+  });
+
+  it('refuses an explicit true on a node that holds no strand blocks, naming both settings', () => {
+    expect(() => resolveHostUnclaimedStrands(true, resolveNodeRoles('server', { strandCohortMember: false })))
+      .toThrow(/hostUnclaimedStrands.*strandCohortMember/);
   });
 });

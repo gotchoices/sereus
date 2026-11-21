@@ -43,13 +43,6 @@ export interface Libp2pNodeWithRepo extends Libp2p {
    */
   coordinatedRepo?: IRepo;
   /**
-   * Whether this node stores blocks for its network (Optimystic's `NodeOptions.servesBlocks`,
-   * echoed on the built node). `false` on a client. Optional for the same reason as
-   * `keyNetwork` below: upstream declares it, but a node built by anything other than
-   * `createLibp2pNode` declares neither attachment, so read it `=== false`, never `!servesBlocks`.
-   */
-  servesBlocks?: boolean;
-  /**
    * The node's key-addressed peer network, attached by db-p2p's factory alongside
    * `coordinatedRepo` (`libp2p-node-base.ts`). Optional deliberately: the base
    * factory always assigns it, but it is not part of the upstream node type, so

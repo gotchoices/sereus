@@ -121,17 +121,12 @@ describe('CadreNode', () => {
       expect(node.isRunning).toBe(false);
     });
 
-    // A node that holds no strand blocks runs every strand as a client; what it cannot be is a
-    // storage replica host, which stores and serves blocks. The default comes out false even on an
-    // always-on node (`resolveHostUnclaimedStrands`), so only the explicit contradiction throws.
+    // A node that holds no strand blocks runs every strand as a client, so the role is accepted on
+    // either class; a server's replica-host default comes out false under it rather than refused
+    // (`resolveHostUnclaimedStrands`, pinned in `node-roles.spec.ts`).
     it('constructs with strandCohortMember: false, on a server too', () => {
       expect(() => new CadreNode(createConfig({ roles: { strandCohortMember: false } }))).not.toThrow();
       expect(() => new CadreNode(createConfig({ nodeClass: 'server', roles: { strandCohortMember: false } }))).not.toThrow();
-    });
-
-    it('refuses an explicit hostUnclaimedStrands: true beside strandCohortMember: false, naming both', () => {
-      expect(() => new CadreNode(createConfig({ hostUnclaimedStrands: true, roles: { strandCohortMember: false } })))
-        .toThrow(/hostUnclaimedStrands.*strandCohortMember/);
     });
   });
 
