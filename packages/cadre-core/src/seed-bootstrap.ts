@@ -1188,7 +1188,7 @@ export class SeedBootstrapService {
    * A connection to `peerId` for {@link deliverSeed}, from {@link dialPeerAddrs}: one already
    * open without relay limits, or one dialed from `addrs` — each address on
    * `dialBudget.perAddressMs`, the whole peer within `dialBudget.totalMs`, direct addresses
-   * before relayed ones and the given order otherwise.
+   * first, then relayed, then WebRTC, and the given order within each group.
    *
    * @throws {PeerUnreachableError} when no connection formed, with the dial's error as `cause`.
    */

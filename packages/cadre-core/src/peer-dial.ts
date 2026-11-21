@@ -390,6 +390,12 @@ function boundPeer(addr: Multiaddr, label: string): PeerId | undefined {
  * reaches a `webrtc` address only once every relayed one has been tried
  * ({@link directBeforeRelayed}).
  *
+ * NOTE: a WebRTC address is published beside the plain relayed address of the same relay, so a
+ * peer never offers one alone and a caller that wants any connection still gets the open relayed
+ * one for the relayed address. If a peer whose ONLY address is a WebRTC one ever appears, a dial
+ * of it will not reuse an open relayed connection and will pay the ICE timeout instead; hand the
+ * open connection back for a `webrtc` address too if that is seen.
+ *
  * Returned as the `Connection` it is on a real node. A double that reports an open connection
  * must supply what its caller uses of one.
  */

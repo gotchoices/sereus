@@ -42,6 +42,6 @@ The address it prints must be that machine's public IP address. Docker's port ma
 
 A TURN server relays traffic when two peers cannot find a direct path. The circuit relay already does that: when a WebRTC upgrade fails, the connection stays on the relay.
 
-A failed ICE negotiation costs a join nothing either, even though it takes about 23 s to give up: nothing a caller waits for is ever dialed at a WebRTC address while another address is untried. See [Direct connections over WebRTC](../../docs/network/relay.md#direct-connections-over-webrtc).
+A failed ICE negotiation costs a join almost nothing either, even though it takes about 23 s to give up: the dials a formation or a cohort pass waits on go relayed and leave the WebRTC address for last. The sites that keep their caller's address order still spend one attempt on it — see [Direct connections over WebRTC](../../docs/network/relay.md#direct-connections-over-webrtc) and that page's limits.
 
 This holds only while the relay runs without libp2p's per-connection limit, which is the default (`RELAY_APPLY_DEFAULT_LIMIT` empty or `false`). With the limit on, the relay resets each relayed connection after 128 KiB or two minutes, so a failed upgrade leaves no path that database traffic can use. See [Relay limits](../docker/libp2p-infra/README.md#relay-limits).
