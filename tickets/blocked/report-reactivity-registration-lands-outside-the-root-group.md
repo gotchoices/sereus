@@ -1,4 +1,4 @@
-description: In the first second of a strand's life the machines briefly disagree about which of them is responsible for a table's changes, and a machine that asks to be notified in that moment is recorded by the wrong machine — so for about a minute and a half nobody tells it when the table changes. The fix belongs in Optimystic, which agents here may not edit, so a person has to carry this report over.
+description: A machine that asks to be notified about a table's changes in the first second of a strand's life is recorded by the wrong machine, so for about a minute and a half nobody tells it when the table changes. The fix belongs in Optimystic, which agents here may not edit, so a person has to carry this report over.
 architecture: docs/strands/app-schema.md#what-a-watcher-sees
 files:
   - packages/integration-tests/src/scenarios/strand-reactivity-wakes-watchers.integration.ts (where it was measured)
@@ -13,6 +13,8 @@ difficulty: easy
 ----
 
 # Human action: report to Optimystic that a change subscription can be recorded by a machine that is not responsible for the table
+
+> **Read the 2026-11-21 addendum at the end of this ticket before the sections below.** They explain the mis-registration by machines that have not finished classifying each other; a later measurement contradicts that explanation for the window in question. The defect itself — a registration recorded where no announcer can see it, for about 90 s — is unchanged and still worth reporting.
 
 ## Why this is a human's call, not an agent's
 
@@ -66,3 +68,17 @@ Alternatives considered, and why they are second choices:
 **What happens if nothing is done.** No data is lost and no commit is missed: the watch service's 30 s tail read still bounds how stale a watcher's view can be, which is what the Sereus scenario observes as a late wake. The cost is that for ~90 s after a machine's first registration, change notifications can reach nobody, so an app watching a table right after a machine joins sees 30 s latency rather than tens of milliseconds. Sereus's scenario assertion stays a coin flip until its own ticket makes the measurement deterministic.
 
 **Reversibility.** High. The recommended change is a comparison and a re-register on a path that already retries; it adds no wire field and no state. If it proves noisy (a re-register per tick on a genuinely churning ring) it can be gated on a changed `cohortEpoch` or dropped.
+
+## Added 2026-11-21 by `strand-reactivity-scenario-waits-for-a-settled-cohort-view`: the machines agree about who serves, and the mis-registration still happens
+
+The Sereus-side ticket added a wait that holds the seed commit until every machine answers the same serving cohort for eight fixed ring coordinates, on two consecutive polls (`waitForCohortAgreement` in `packages/integration-tests/src/harness/control-cohort.ts`). Three things came out of running it, and they narrow this report:
+
+- **There is no pre-commit disagreement to wait for.** The wait resolves about 260 ms after the schema-tag watches open, in every run measured. The machines have classified each other by then.
+- **Their answers do not move across the seed commit.** Sampled every 300 ms from before the commit to 1.2 s after it, in two instrumented runs, all three machines answered identically for six coordinates and the answers never changed.
+- **The failure survives anyway.** With the wait in place the scenario's push assertion failed 1 of 11 isolated runs (it failed 2 of 4 on 2026-11-20 and 0 of 4 on 2026-11-21 without it). The failing run's registration pattern is this report's: one machine registered 0 ms after the seed commit, it was the machine outside the tail group, and it received no notification in round 1.
+
+So the window is not one in which the machines disagree about **who serves the network** — measured, they agree before the commit and keep agreeing through it. Whatever differs is specific to the **tail's own root coordinate**: either `servingCohortAt` answers differently at a coordinate derived from a tail that has just been written than the stable coordinates do, or the registration is made against a tail the commit then rotates and its root coordinate moves with it. This report's mechanism section attributes the mis-registration to a `servingCohortAt` whose inputs are still arriving; that attribution should be re-checked against these two candidates before the proposed change is designed, because the recommended fix (re-validate the handle's `cohortMembers` against a fresh read) repairs a moved view but not a registration placed at the wrong coordinate.
+
+This also retires one of the rejected alternatives above: "delay a first registration until the membership view has settled" is not merely a guess — on this topology the membership view is already settled when the bad registration is made.
+
+The evidence is in `tickets/.logs/reactivity-probe.diag1.log` and `.diag3.log` (the per-coordinate samples), `reactivity-settled.timing.log` (the failing run, with the wait's resolve time), and `reactivity-settled.run1.log` … `run8.log`. The probe that produced the per-coordinate samples was temporary and has been removed from the scenario.

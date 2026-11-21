@@ -35,6 +35,11 @@
  * cached — only `findCoordinator` is — so polling one fixed key stays live and needs no
  * cache-busting key rotation.
  *
+ * ONE EXCEPTION. {@link waitForCohortAgreement} asks about SEVERAL keys, and not because
+ * one is unrepresentative: it needs the selection to VARY between coordinates, which is
+ * exactly what the bound above denies. Its own doc carries that argument; do not read this
+ * paragraph as covering it.
+ *
  * RESTORE ORDERING. {@link observeControlCohorts} patches
  * `Libp2pKeyPeerNetwork.prototype.findCluster`, wrapping whatever is installed at the
  * time — as do `forceFullCohort` and `pinCoordinator`. All three must be restored in
@@ -141,9 +146,11 @@ export async function readControlCohort(
 	return members;
 }
 
-/** The one place {@link CONTROL_COHORT_PROBE_KEY} is asked about. */
-async function probeCohort(keyNetwork: Libp2pKeyPeerNetwork): Promise<string[]> {
-	return Object.keys(await keyNetwork.findCluster(CONTROL_COHORT_PROBE_KEY));
+/** The one place a probe key is asked about; {@link CONTROL_COHORT_PROBE_KEY} unless one is named. */
+async function probeCohort(
+	keyNetwork: Libp2pKeyPeerNetwork, key: RoutingKey = CONTROL_COHORT_PROBE_KEY
+): Promise<string[]> {
+	return Object.keys(await keyNetwork.findCluster(key));
 }
 
 /**
@@ -248,6 +255,169 @@ export async function waitForControlCohort(
 		...options,
 		label: `party ${party.name} node ${node.peerId}`
 	});
+}
+
+/** One node whose cohort view is compared with the others', and the name failures print for it. */
+export interface CohortViewer {
+	libp2p: Libp2p;
+	/** Traceable to a machine ("p[0]", "party alpha machine 2") — it names this node in failures. */
+	label: string;
+}
+
+/**
+ * The keys {@link waitForCohortAgreement} asks about. SEVERAL, unlike the rest of this module, and
+ * the count is load-bearing — see that function's "WHY SEVERAL KEYS". Minted the same sanctioned
+ * way as {@link CONTROL_COHORT_PROBE_KEY}; the strings are arbitrary, only their number and their
+ * fixedness matter. Treat as immutable: a wait compares successive polls of exactly these
+ * coordinates.
+ */
+const COHORT_AGREEMENT_PROBE_KEYS: ReadonlyArray<RoutingKey> = Array.from(
+	{ length: 8 }, (_, index) => routingKeyForBlock(`sereus-cohort-agreement-probe-${index}`));
+
+/** Peer ids rendered as the callers' machine labels where one matches, so failures stay readable. */
+function namedCohort(members: ReadonlyArray<string>, viewers: ReadonlyArray<CohortViewer>): string {
+	if (members.length === 0) return 'none';
+	return members
+		.map((id) => viewers.find((viewer) => viewer.libp2p.peerId.toString() === id)?.label ?? id)
+		.join('+');
+}
+
+/** One probe key's reading: the set each node answered, in `viewers` order, each sorted. */
+type ProbeReading = string[][];
+
+/** The set every node answered for one probe key, or undefined where any two of them differed. */
+function agreementOf(reading: ProbeReading): string[] | undefined {
+	const first = reading[0];
+	if (first === undefined) return undefined;
+	const signature = first.join(',');
+	return reading.every((members) => members.join(',') === signature) ? first : undefined;
+}
+
+/**
+ * Why {@link waitForCohortAgreement}'s last poll did not satisfy it, in the terms its reader needs:
+ * which nodes disagreed about which probe key, and what each of them answered.
+ */
+function describeAgreementGap(readings: ProbeReading[], viewers: ReadonlyArray<CohortViewer>): string {
+	if (readings.length === 0) return 'no probe key was read';
+	const agreed = readings.map(agreementOf);
+	const disagreedAt = agreed.findIndex((members) => members === undefined);
+	if (disagreedAt >= 0) {
+		const reading = readings[disagreedAt]!;
+		return `the nodes disagree about probe key ${disagreedAt} — `
+			+ viewers.map((viewer, index) =>
+				`${viewer.label}: ${namedCohort(reading[index] ?? [], viewers)}`).join('; ');
+	}
+	const selections = agreed as string[][];
+	const rendered = selections.map((members) => namedCohort(members, viewers)).join(', ');
+	if (selections.some((members) => members.length === 0)) {
+		return 'the nodes agree about every probe key, but on an EMPTY cohort for at least one of '
+			+ `them — none of them has classified anybody as serving yet (agreed: ${rendered})`;
+	}
+	return `the nodes agreed on this poll but not on the one before it (agreed selections: ${rendered})`;
+}
+
+/**
+ * Poll until every node in `viewers` answers the same cohort as every other node for each of
+ * {@link COHORT_AGREEMENT_PROBE_KEYS}, on two consecutive polls.
+ *
+ * WHAT THIS WAITS FOR, AND WHO WANTS IT. A node's cohort is assembled live from the membership
+ * verdict it holds for each peer — `assembleServingCohort` in Optimystic's `libp2p-key-network.ts`
+ * keeps only peers verdicted `serves` — so in the seconds after a network's nodes connect every
+ * node's answer is correct and still moving. A scenario that measures WHERE something is PLACED
+ * (which machines a write or a subscription is handed to) is measuring that answer and must not
+ * start while the nodes still answer it differently. A scenario that needs only reachability wants
+ * {@link waitForCohortOn}, which is cheaper and resolves sooner.
+ *
+ * AGREEMENT, NOT SIZE. What is waited for is that the nodes answer the SAME thing, never that they
+ * answer a particular number of members. A network where some node is in nobody's cohort is a
+ * consistent network and satisfies this wait: every node then places a block in the same place.
+ * The one exception is an EMPTY cohort, which says nobody has been classified yet rather than
+ * saying who serves, so agreement on one does not count.
+ *
+ * WHY SEVERAL KEYS, which is NOT the reason the file header gives for its one key. The header's
+ * bound — below the configured breadth, closest-k is simply every serving peer — does not hold on,
+ * say, three strand machines at breadth two, where a cohort is a two-member SELECTION. A node that
+ * has classified only two peers answers that same pair at EVERY coordinate, and at a coordinate
+ * whose true nearest two are that pair it agrees with the fully-informed nodes, so a single key
+ * would accept it. Across several fixed keys the fully-informed nodes' selections vary with the
+ * coordinate while an under-informed node's cannot, so it has to disagree at one of them.
+ *
+ * STILL A PROXY, for two reasons: a verdict can move after the wait resolves, and a disagreement
+ * could in principle hide at coordinates none of these keys hash to. A resolved wait is a narrowed
+ * window, not a settled network — a scenario whose assertion depends on it should say so.
+ *
+ * TWICE IN A ROW, because a view that is still moving can have every node coincide for a single
+ * poll on its way through, and a one-poll test would be caught mid-flight.
+ *
+ * Throws IMMEDIATELY — never after a timeout — for fewer than two nodes, which would otherwise
+ * "agree" with itself. On timeout, throws naming what the last poll saw, so the failure reads as
+ * which nodes disagreed about which key rather than as a generic convergence timeout. Starts and
+ * stops nothing, so a caller whose wait throws still owns its nodes' teardown.
+ */
+export async function waitForCohortAgreement(
+	viewers: ReadonlyArray<CohortViewer>, options: WaitOptions = {}
+): Promise<void> {
+	// Validate BEFORE polling: one node agrees with itself on its second poll, so the wait would
+	// pass without having tested anything rather than failing where the mistake is.
+	if (viewers.length < 2) {
+		throw new Error(
+			'waitForCohortAgreement: agreement is between nodes, so it needs at least two; given '
+			+ `${viewers.length} (${viewers.map((viewer) => viewer.label).join(', ') || 'none'})`);
+	}
+
+	// Resolve up front so a missing attachment throws here rather than being swallowed by the poll
+	// loop (which treats a throwing condition as "not yet").
+	const keyNetworks = viewers.map((viewer) => resolveKeyNetwork(viewer.libp2p, viewer.label));
+	const {
+		timeoutMs = DEFAULT_COHORT_TIMEOUT_MS,
+		intervalMs = DEFAULT_COHORT_INTERVAL_MS,
+		description = `${viewers.length} nodes to answer every probe key alike`
+	} = options;
+
+	let readings: ProbeReading[] = [];
+	// Set only while the PREVIOUS poll satisfied the condition, so "twice in a row" is a comparison
+	// and not a count.
+	let heldSignature: string | undefined;
+	// `waitUntil` reports only a generic timeout for a condition that always threw, which would read
+	// as a network that never converged. Carry the last failure into the message and the cause.
+	let lastError: unknown;
+	const startedAt = Date.now();
+	try {
+		await waitUntil(async () => {
+			try {
+				readings = await Promise.all(COHORT_AGREEMENT_PROBE_KEYS.map(async (key) =>
+					Promise.all(keyNetworks.map(async (keyNetwork) =>
+						(await probeCohort(keyNetwork, key)).sort()))));
+			} catch (error) {
+				lastError = error;
+				heldSignature = undefined;
+				return false;
+			}
+			lastError = undefined;
+			const agreed = readings.map(agreementOf);
+			// An empty cohort is not an answer about who serves — nobody has been classified — so
+			// agreement on one is agreement about nothing.
+			if (agreed.some((members) => members === undefined || members.length === 0)) {
+				heldSignature = undefined;
+				return false;
+			}
+			const selections = agreed as string[][];
+			const signature = selections.map((members) => members.join(',')).join('|');
+			const heldSincePreviousPoll = heldSignature === signature;
+			heldSignature = signature;
+			return heldSincePreviousPoll;
+		}, { timeoutMs, intervalMs, description });
+	} catch (error) {
+		// `waitUntil`'s generic message omits the views, which are the whole point of this failure.
+		throw new Error(
+			`waitForCohortAgreement: ${viewers.length} nodes did not settle on one view of each other `
+			+ `within ${timeoutMs}ms (waited ${Date.now() - startedAt}ms): `
+			+ describeAgreementGap(readings, viewers)
+			+ (lastError ? `; every poll FAILED, last error: ${String(lastError)}` : ''),
+			{ cause: error });
+	}
+	log('cohort agreement across %d probe keys after %dms',
+		COHORT_AGREEMENT_PROBE_KEYS.length, Date.now() - startedAt);
 }
 
 export interface ControlCohortObserverHandle {
