@@ -114,6 +114,7 @@ describe('buildStatusReport', () => {
       expect(report.runtime.strands).toEqual({ total: 4, syncing: 1, active: 1, idle: 1, hibernating: 1 });
       expect(report.runtime.partyId).toBe('party-live');
       expect(report.runtime.nodeClass).toBe('device');
+      expect(report.runtime.roles).toEqual(HEALTH.node.roles);
     }
   });
 
@@ -148,6 +149,7 @@ describe('formatStatusReport', () => {
     expect(text).toContain('12D3KooWLivePeer');
     expect(text).toContain('/ip4/10.0.0.5/tcp/4001');
     expect(text).toContain('total=4 syncing=1 active=1 idle=1 hibernating=1');
+    expect(text).toContain('alwaysOn=true overlayTier=edge reactivity=forwarder strandCohortMember=true');
   });
 
   it('renders a clearly-labeled "not reachable" line (never "Running: false") when unreachable', async () => {

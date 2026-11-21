@@ -117,16 +117,23 @@ describe('config file validation', () => {
   });
 
   /**
-   * A misspelled role is the one that matters: cadre-core refuses it when the node is
-   * constructed, but only after everything else has been accepted, so an operator should hear it
-   * from the file's own report, with the role it probably meant.
+   * The one variable per role, and the dotted path and kind each one writes — plain strings in
+   * `ENV_MAPPINGS` that no type checks, so a typo there ships a documented variable that only
+   * refuses to start. `false` over a `server` is in here because it must beat the class preset
+   * rather than read as "not set", which is the shape an operator sets on a machine that is
+   * reachable only some of the time.
    */
-  it('rejects a misspelled role, naming the key and the role it probably meant', async () => {
-    const configPath = writeConfig({ ...VALID, roles: { alwaysOne: true } });
+  it('takes each role from its CADRE_ROLE_* variable, a false included', async () => {
+    const configPath = writeConfig(VALID);
 
-    const message = await rejection(loadValidatedConfig(configPath, {}));
-
-    expect(message).toContain("unknown key roles.alwaysOne (did you mean 'alwaysOn'?)");
+    await expect(loadValidatedConfig(configPath, {
+      CADRE_ROLE_ALWAYS_ON: 'false',
+      CADRE_ROLE_OVERLAY_TIER: 'edge',
+      CADRE_ROLE_REACTIVITY: 'subscriber',
+      CADRE_ROLE_STRAND_COHORT_MEMBER: 'true',
+    })).resolves.toMatchObject({
+      roles: { alwaysOn: false, overlayTier: 'edge', reactivity: 'subscriber', strandCohortMember: true },
+    });
   });
 
   // The CLI must never reject its own shipped configs.

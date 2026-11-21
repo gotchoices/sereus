@@ -393,7 +393,7 @@ roles:                      # optional, and so is every role in it
 | `network.relayAddrs` | `CADRE_RELAY_ADDRS` | Circuit relays to reserve a slot on, each a dial address ending in the relay's peer ID |
 | `network.webrtc` | `CADRE_WEBRTC` | Offer a WebRTC address as well, so peers reaching this node through a relay can go direct. Needs a relay. Default: off |
 | `network.stunUrls` | `CADRE_STUN_URLS` | Comma-separated `stun:` URLs for `network.webrtc`, replacing the ones derived from the relays |
-| `network.enableRelay` | `CADRE_ENABLE_RELAY` | Run a circuit-relay server. Default: on for `nodeClass: server`, off for `nodeClass: device` |
+| `network.enableRelay` | `CADRE_ENABLE_RELAY` | Run a circuit-relay server. Default: the `alwaysOn` role, so on for a `server` and off for a `device` unless [`roles`](#node-roles) says otherwise |
 
 Three more keys have no variable: `network.unauthorizedRelayReservationCap` (default `8`), `network.linkRoundTripMs` (default `3500`; set the same value on every machine of a party) and `network.cohortQueryTimeoutMs` (default: two link round trips). [Configuration](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#configuration) and [Deadlines and the link budget](https://github.com/gotchoices/sereus/blob/master/docs/network/deadlines.md) say what they govern.
 

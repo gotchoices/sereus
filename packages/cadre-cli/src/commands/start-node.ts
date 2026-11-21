@@ -90,10 +90,11 @@ async function buildNodeConfig(
     controlNetwork: { ...config.controlNetwork, partyId },
     nodeClass: config.nodeClass,
     roles: config.roles,
-    // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a server CLI node
-    // (every cadre-host donated node included) hosts a replica of every strand its
-    // party publishes; the only opt-out here is `strandFilter`. If an operator needs
-    // announce-only on an always-on node, surface the field in the CLI config.
+    // NOTE: `hostUnclaimedStrands` is left to cadre-core's default — the `alwaysOn` role — so a
+    // server CLI node (every cadre-host donated node included) hosts a replica of every strand
+    // its party publishes. `roles.alwaysOn: false` turns that off along with everything else
+    // always-on brings; `strandFilter` is the only opt-out that keeps the node always-on. If an
+    // operator needs announce-only on an always-on node, surface the field in the CLI config.
     strandFilter: config.strandFilter,
     strandReactivity: config.strandReactivity,
     storage: storage.config,
