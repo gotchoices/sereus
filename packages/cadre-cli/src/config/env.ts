@@ -41,6 +41,11 @@ export const ENV_MAPPINGS = {
   CADRE_ANNOUNCE_ADDRS: { path: 'network.announceAddrs', kind: 'list' },
   CADRE_APPEND_ANNOUNCE_ADDRS: { path: 'network.appendAnnounceAddrs', kind: 'list' },
   CADRE_RELAY_ADDRS: { path: 'network.relayAddrs', kind: 'list' },
+  CADRE_WEBRTC: { path: 'network.webrtc', kind: 'boolean' },
+  // A comma-separated list of `stun:` URLs, kept as ONE string: `resolveStunServers` in
+  // cadre-core splits it, so the apps' `VITE_STUN_URLS` / `EXPO_PUBLIC_STUN_URLS` and this
+  // variable take the same spelling.
+  CADRE_STUN_URLS: { path: 'network.stunUrls', kind: 'string' },
   CADRE_ENABLE_RELAY: { path: 'network.enableRelay', kind: 'boolean' },
   CADRE_HIBERNATION_ENABLED: { path: 'hibernation.enabled', kind: 'boolean' },
   CADRE_LATENCY_HINT: { path: 'hibernation.defaultLatencyHint', kind: 'string' },

@@ -371,6 +371,24 @@ export interface NetworkConfig {
    */
   requireRelay?: boolean;
   /**
+   * STUN servers for this node's WebRTC transport, as a comma-separated list of `stun:`
+   * URLs, overriding the ones derived from {@link relayAddrs}. Read on the path that derives
+   * a transport list here — a Node host's `/webrtc` listen entry (`relay-addrs.ts` →
+   * `resolveTransportOptions`), which is `cadre-cli`'s `network.webrtc`. The phone and browser
+   * apps build their own transports, so they call `resolveStunServers` (`relay-stun.ts`)
+   * themselves with the same spelling, from `EXPO_PUBLIC_STUN_URLS` / `VITE_STUN_URLS`.
+   *
+   * Omitted, each relay in {@link relayAddrs} supplies one `stun:<relay host>:3478`, since
+   * a Sereus relay answers STUN on that fixed port. Set this for a relay that answers STUN
+   * somewhere else, or to point ICE at a STUN server that is not a relay. An empty or
+   * whitespace-only value falls back to the relays, so a launcher passing an unset variable
+   * through changes nothing.
+   *
+   * Ignored by a node with no WebRTC transport, which is every node that neither supplies
+   * {@link transports} carrying one nor asks for a `/webrtc` listen entry.
+   */
+  stunUrls?: string;
+  /**
    * Enable circuit relay server - allows this node to relay connections for other peers.
    * When undefined, defaults to true for `'server'` nodes (they typically have
    * better connectivity and uptime), false for `'device'` nodes.

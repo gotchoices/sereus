@@ -155,14 +155,15 @@ One `network` block configures the control node and every strand node, because t
 | Advertising | `appendAnnounceAddrs`, `announceAddrs`, `inviteAddressResolver` | Control node only. `appendAnnounceAddrs` adds an address. `announceAddrs` replaces the whole advertised set, including an address earned from a relay. The resolver changes only the addresses put in invitations. |
 | Being reached through a relay | `relayAddrs`, `requireRelay` | Each entry is a relay's dial address ending in its peer id. `requireRelay` defaults to `true`: `start()` fails if the first reservation fails. Set `false` on a node that must start with no network. |
 | Serving as a relay | `enableRelay`, `relayServerInit`, `unauthorizedRelayReservationCap` | On by default for `server`. The cap (default 8) limits reservations granted to peers not yet recognised as members. |
-| Transports and crypto | `transports`, `defaultTransports`, `noiseCrypto` | Omitted: TCP and circuit relay, with WebSocket added when a listen entry names `/ws`. React Native and browsers must supply `transports`. |
+| Transports and crypto | `transports`, `defaultTransports`, `noiseCrypto` | Omitted: TCP and circuit relay, with WebSocket added when a listen entry names `/ws` and WebRTC when one names `/webrtc`. React Native and browsers must supply `transports`. |
+| WebRTC ICE | `stunUrls` | Comma-separated `stun:` URLs, replacing the ones derived from `relayAddrs` (each Sereus relay answers STUN on port 3478). Read only by a node that has a WebRTC transport. |
 | The link | `linkRoundTripMs`, `cohortQueryTimeoutMs`, `connectionMonitor` | 3500 ms; derived from it (7000 ms); a 30 s ping deadline at a 35 s interval. |
 | Admission | `connectionGater` | Composed with the node's own gates: a deny from either side denies. |
 | Control cohort | `controlCohort` | Target degree 6; a reconcile pass at least every 120 000 ms. |
 
 `linkRoundTripMs` is a declaration about the link, not a timeout. Every dial and reservation deadline is derived from it, and every machine of a party should declare the same value ([Dial budgets are counted in round trips, not milliseconds](../network/deadlines.md#dial-budgets-are-counted-in-round-trips-not-milliseconds)).
 
-A Node.js host that sets `relayAddrs` should also pass `defaultTransports: nodeDefaultTransports` from `@serfab/cadre-core/node-default-transports`; [Reservations are requested explicitly](../network/relay.md#reservations-are-requested-explicitly) gives the reason.
+A Node.js host that sets `relayAddrs` should also pass `defaultTransports: nodeDefaultTransports` from `@serfab/cadre-core/node-default-transports`; [Reservations are requested explicitly](../network/relay.md#reservations-are-requested-explicitly) gives the reason. That subpath is also the only thing that can give a Node host WebRTC, which is why a `/webrtc` listen entry is accepted only from a node that passed `defaultTransports`, and why the host loads the transport itself through `loadNodeWebrtcTransport` ([Direct connections over WebRTC](../network/relay.md#direct-connections-over-webrtc)).
 
 ### Configuration errors that fail `start()`
 
@@ -171,7 +172,7 @@ A Node.js host that sets `relayAddrs` should also pass `defaultTransports: nodeD
 - **Both `keyStore` and `privateKey` set**, or a key store that refuses the identity read ([Identity resolution order](#identity-resolution-order)).
 - **`claim` beside `trustedOwners.pinnedKeys` or `seedTrustPolicy`.** A node has one source of trust at cold start.
 - **An injected node-local store opened for a different party** than `controlNetwork.partyId`.
-- **A malformed `relayAddrs`, `announceAddrs` or `appendAnnounceAddrs` entry**, or a listen address no configured transport can bind (`/quic-v1`, `/webrtc`, `/webtransport` without a matching `transports` entry).
+- **A malformed `relayAddrs`, `announceAddrs` or `appendAnnounceAddrs` entry**, or a listen address no configured transport can bind: `/quic-v1` or `/webtransport` without a matching `transports` entry, and `/webrtc` on a node that passed neither `transports` nor `defaultTransports` (a `cadre-cli` node asks for it with `network.webrtc` instead).
 - **A `linkRoundTripMs` that is not a finite number above zero.**
 - **A relay in `relayAddrs` that grants no reservation** (`RelayReservationFailedError`), unless `requireRelay` is `false`.
 

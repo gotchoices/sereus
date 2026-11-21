@@ -75,6 +75,21 @@ describe('config file validation', () => {
     expect(message).not.toContain(configPath);
   });
 
+  /**
+   * `network.webrtc` is the only way to ask for WebRTC, because asking for it means a
+   * transport and a set of ICE servers as well as a listen entry, and only the flag brings
+   * all three. A hand-written entry would be accepted by cadre-core — the CLI always passes
+   * `defaultTransports` — and then bind nothing at all.
+   */
+  it('rejects a hand-written /webrtc listen address, naming the setting that replaces it', async () => {
+    const configPath = writeConfig({ ...VALID, network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001', '/webrtc'] } });
+
+    const message = await rejection(loadValidatedConfig(configPath, {}));
+
+    expect(message).toContain('network.listenAddrs names a WebRTC address (/webrtc)');
+    expect(message).toContain('network.webrtc: true');
+  });
+
   it('reports every problem in one error rather than stopping at the first', async () => {
     const configPath = writeConfig({ ...VALID, hibernation: { enabled: 'yes' }, network: { listenAddr: [] } });
 

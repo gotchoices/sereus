@@ -917,10 +917,15 @@ export {
 // reference apps) can assert on the resulting SHAPE rather than on its own field names,
 // which is the difference between a test that proves reachability and one that proves a
 // spelling.
+//
+// `DEFAULT_DIRECT_LISTEN_ADDR` is exported for the same reason: a host that APPENDS a listen
+// entry to an unset `network.listenAddrs` (cadre-cli adding `/webrtc` for `network.webrtc`) has
+// to carry the default direct listener forward with it, and that default has one home here.
 export {
   RelayReservationFailedError,
   UnbindableListenAddressError,
   RELAY_SEARCH_LISTEN_ADDR,
+  DEFAULT_DIRECT_LISTEN_ADDR,
   resolveListenAddrs
 } from './relay-addrs.js';
 export { strandNodeAddrs, type StrandNodeAddrs } from './strand-network-config.js';

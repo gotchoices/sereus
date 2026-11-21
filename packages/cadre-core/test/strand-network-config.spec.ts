@@ -329,6 +329,26 @@ describe('strandNodeAddrs transport derivation', () => {
       .toBeUndefined();
   });
 
+  /**
+   * A Node host's `/webrtc` entry has to reach the strand node too, or the machine's
+   * strand nodes stay relay-only while its control node goes direct. It names no port, so
+   * the ephemeral-port rewrite leaves it byte-for-byte, and it is not a circuit entry, so
+   * naming a relay does not replace it.
+   */
+  it('carries a /webrtc entry and its ICE servers through to a strand node', () => {
+    const relay = `/dns4/relay.example.org/tcp/4011/ws/p2p/${RELAY}`;
+
+    expect(strandNodeAddrs({
+      defaultTransports: () => [],
+      listenAddrs: ['/ip4/0.0.0.0/tcp/4001', '/webrtc'],
+      relayAddrs: [relay]
+    })).toEqual({
+      listenAddrs: ['/ip4/0.0.0.0/tcp/0', '/webrtc', '/p2p-circuit'],
+      webrtcIceServers: [{ urls: 'stun:relay.example.org:3478' }],
+      relayAddrs: [relay]
+    });
+  });
+
   it('refuses a listen address no default transport can bind, on this path too', () => {
     expect(() => strandNodeAddrs({ listenAddrs: ['/ip4/0.0.0.0/udp/4001/quic-v1'] }))
       .toThrow(/no transport for/);

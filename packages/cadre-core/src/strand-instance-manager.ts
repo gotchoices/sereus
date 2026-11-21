@@ -46,6 +46,7 @@ import type {
 } from './types.js';
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
 import { strandNodeAddrs } from './strand-network-config.js';
+import { listenTransportNodeOptions } from './relay-addrs.js';
 import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer } from './relay-server.js';
 import type { NodeClass } from './node-class.js';
@@ -898,8 +899,10 @@ export class StrandInstanceManager {
     // `strand-network-config.ts` for all three, and `relay-reservation.ts`.
     //
     // `relayAddrs` is destructured OFF: it is not a `createLibp2pNode` option, and
-    // spreading it would hand db-p2p a key it does not know.
-    const { relayAddrs: relayDialAddrs = [], ...addrOptions } = strandNodeAddrs(config.network);
+    // spreading it would hand db-p2p a key it does not know. `listenTransports` is split out
+    // for the same reason — `wsPort` is db-p2p's switch but the WebRTC ICE servers beside it
+    // are read only by `network.defaultTransports` (`listenTransportNodeOptions` drops them).
+    const { relayAddrs: relayDialAddrs = [], listenAddrs, ...listenTransports } = strandNodeAddrs(config.network);
 
     // Bound once, before anything is built — so, like the round-trip check above, a
     // rejected clusterSize fails the build with nothing to release. The breadth is also
@@ -1059,7 +1062,7 @@ export class StrandInstanceManager {
         // that fills the bare `/p2p-circuit` slots: otherwise a cohort seed running the relay
         // server takes one as soon as it connects (`relay-reservation.ts`, "WHY LIBP2P'S
         // RELAY DISCOVERY IS SWITCHED OFF").
-        ...nodeTransportsOption(config.network, addrOptions, relayDialAddrs.length > 0),
+        ...nodeTransportsOption(config.network, listenTransports, relayDialAddrs.length > 0),
         ...(config.network?.noiseCrypto && { noiseCrypto: config.network.noiseCrypto }),
         // Unconditional, and the same default the control node takes: every node of
         // every party runs the monitor over its connection to a slow phone, so the
@@ -1081,7 +1084,8 @@ export class StrandInstanceManager {
         // supervisor below fills. That is what gives a NAT'd strand node a reachable relay
         // slot — and works against a party-run relay because the launch path announced
         // this strand's derived peerId to it first (delegate admission; see cadre-node.ts).
-        ...addrOptions,
+        ...(listenAddrs && { listenAddrs }),
+        ...listenTransportNodeOptions(listenTransports),
         // The raw configured gater (open strands), or the revocation-composed
         // gater plus the fail-closed per-stream revoked-peer gate (closed
         // strands) — resolved above, before the try.

@@ -187,6 +187,19 @@ A `server`-class machine's strand nodes run a relay server with the same setting
 
 A node that listens on `/webrtc` is reachable two ways through each relay it holds a slot on: at the plain relayed address, and at a WebRTC one whose signalling the same relay carries (`<relay address>/p2p/<relay peer id>/p2p-circuit/webrtc/p2p/<node peer id>`). A WebRTC connection opens only if ICE — WebRTC's connectivity check, run over each side's own interface addresses plus whatever a [STUN server](../../ops/docs/ice-servers.md) reports as its address outside its NAT — finds a path between the two networks. Sereus runs no TURN server, so between two networks that allow no direct path there is no path to find, and the attempt answers nothing until the WebRTC stack gives up, about 23 s later.
 
+### Which nodes offer a WebRTC address
+
+A node needs two things: the WebRTC transport, and a `/webrtc` listen entry. Neither is derivable from the other — a transport factory is opaque, so nothing can infer the entry from it — so a node that has one and not the other either advertises an address nothing claims or stays relay-only.
+
+| Node kind | Offers a WebRTC address |
+| --- | --- |
+| Phone and browser apps (`createEdgeNode`) | Whenever the app has a relay. The app passes the transport, and `webrtcListenAddrs` supplies the entry. |
+| `cadre-cli` node | Only with `network.webrtc: true` and a relay. Off by default; see its [README](../../packages/cadre-cli/README.md#direct-connections-over-webrtc) for the platforms the native binary covers. |
+| `cadre-host` hosted nodes | No — no reservation, so no signalling path (see [Node kinds](#node-kinds); ticket `feat-cadre-host-children-reserve-on-a-relay`). |
+| `cadre-provider` tenant containers | No — directly dialable, so there is nothing to improve on. |
+
+A Node host's transport cannot be a static import: `@libp2p/webrtc`'s Node build loads a `node-datachannel` native addon as its module is evaluated, which fails on a platform with no prebuilt binary for it. So `@serfab/cadre-core/node-default-transports` loads it on demand, on the branch that asked for it, and a node with the setting off loads nothing. A machine whose only reachability is a relay is the case the setting is for; one with a public or forwarded address gains nothing from it.
+
 **A dial whose result something is waiting for goes through the relay. WebRTC is an extra, attempted separately.** That holds at the sites that choose the order of a peer's whole address list; a site that keeps the order its caller gave still tries a WebRTC address on the same terms as a relayed one (see the limits below).
 
 - **Dials by address** (the control-cohort reconcile pass, seed delivery, a strand peer redial) try every direct address, then every relayed one, then every WebRTC one. A WebRTC address stays in the list, so a peer whose only address is a WebRTC one is still dialed; it just no longer takes the time the relayed address needed. The order is applied one address per dial in `peer-dial.ts`, because libp2p re-sorts any list given to a single dial, and its own sorter puts a `/p2p-circuit/webrtc` address *before* the plain relayed one.

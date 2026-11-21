@@ -365,13 +365,23 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 | `network.appendAnnounceAddrs` | `CADRE_APPEND_ANNOUNCE_ADDRS` | Addresses to advertise as well: how to publish a forwarded or public address |
 | `network.announceAddrs` | `CADRE_ANNOUNCE_ADDRS` | Addresses to advertise instead of all others, a relay address included |
 | `network.relayAddrs` | `CADRE_RELAY_ADDRS` | Circuit relays to reserve a slot on, each a dial address ending in the relay's peer ID |
-| `network.enableRelay` | `CADRE_ENABLE_RELAY` | Run a circuit-relay server. Default: on for `storage`, off for `transaction` |
+| `network.webrtc` | `CADRE_WEBRTC` | Offer a WebRTC address as well, so peers reaching this node through a relay can go direct. Needs a relay. Default: off |
+| `network.stunUrls` | `CADRE_STUN_URLS` | Comma-separated `stun:` URLs for `network.webrtc`, replacing the ones derived from the relays |
+| `network.enableRelay` | `CADRE_ENABLE_RELAY` | Run a circuit-relay server. Default: on for `nodeClass: server`, off for `nodeClass: device` |
 
 Three more keys have no variable: `network.unauthorizedRelayReservationCap` (default `8`), `network.linkRoundTripMs` (default `3500`; set the same value on every machine of a party) and `network.cohortQueryTimeoutMs` (default: two link round trips). [Configuration](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#configuration) and [Deadlines and the link budget](https://github.com/gotchoices/sereus/blob/master/docs/network/deadlines.md) say what they govern.
 
-- **Bindable transports.** A config file can bind TCP and WebSocket (`/ws`, `/wss`) addresses only.
+- **Bindable transports.** A config file can bind TCP and WebSocket (`/ws`, `/wss`) addresses only. WebRTC has `network.webrtc` instead; a `/webrtc` entry written into `listenAddrs` is refused, since the flag is what also supplies the transport and the ICE servers.
 - **Relays.** Name a relay in `relayAddrs`, not as a `/p2p-circuit` listen address. When no named relay grants a reservation on the first attempt, the start fails ([Relays](https://github.com/gotchoices/sereus/blob/master/docs/network/relay.md)).
 - **Strand nodes.** The configured ports and announce addresses belong to the machine's control node. Each strand's node binds an OS-assigned port, so a forwarded port does not reach it.
+
+### Direct connections over WebRTC
+
+`network.webrtc: true` gives the node a WebRTC address alongside its relayed one, so a peer that reached it through a relay can move the connection onto a direct path and take those bytes off the relay ([Direct connections over WebRTC](https://github.com/gotchoices/sereus/blob/master/docs/network/relay.md#direct-connections-over-webrtc)). It is worth turning on for a machine behind NAT that other machines can only reach through a relay, and worth nothing on one with a public or forwarded address, which peers already dial directly.
+
+It needs `network.relayAddrs`: WebRTC's connection setup is signalled over the relayed connection, so with no relay the node logs one line at start and runs unchanged. Off is the default, including in the Docker image.
+
+**Platform support.** The transport is `@libp2p/webrtc`, which loads a `node-datachannel` native binary. Prebuilt binaries ship for Linux x64 and arm64 (both glibc and musl, so Alpine is covered), macOS x64 and arm64, and Windows x64 and arm64. An install never fails for want of one — the binaries are optional dependencies filtered by platform — but on a platform with no binary (32-bit ARM, for instance) a node with `network.webrtc: true` fails at start with an error naming `node-datachannel` and the platform. With the flag off, nothing WebRTC-related is loaded at all, so such a platform is unaffected.
 
 ### Strand change notifications
 

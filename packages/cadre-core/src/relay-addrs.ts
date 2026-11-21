@@ -58,6 +58,7 @@
 
 import { multiaddr, type Component } from '@multiformats/multiaddr';
 import { circuitRelayTargetOrThrow } from './delegate-admission.js';
+import { resolveStunServers, type StunServer } from './relay-stun.js';
 import type { NetworkConfig } from './types.js';
 import type { RelayReservationState } from './relay-reservation.js';
 
@@ -143,6 +144,32 @@ export interface ListenTransportOptions {
    * {@link WS_TRANSPORT_SWITCH_PORT}.
    */
   wsPort?: number;
+  /**
+   * Present when some listen entry names `/webrtc` — the switch that makes
+   * `nodeDefaultTransports` add `@libp2p/webrtc`'s transport
+   * (`node-default-transports.ts`). Unlike {@link wsPort} the value is real: it is the
+   * ICE servers that transport needs, derived once here from `network.relayAddrs` and
+   * `network.stunUrls` (`relay-stun.ts` → `resolveStunServers`), so the factory reads one
+   * field instead of re-deriving them from a `NetworkConfig` it is not given.
+   *
+   * May be EMPTY, and an empty array is still the switch: WebRTC with no STUN server
+   * offers host and LAN candidates only, which is enough between two machines on one
+   * network. Absent is the only "no WebRTC" answer.
+   */
+  webrtcIceServers?: StunServer[];
+}
+
+/**
+ * The subset of a resolved {@link ListenTransportOptions} that is a `createLibp2pNode` option,
+ * for the two sites that spread it into one (`cadre-node.ts`, `strand-instance-manager.ts`).
+ *
+ * `wsPort` is db-p2p's own switch, so it goes through. {@link ListenTransportOptions.webrtcIceServers}
+ * does not: it is read only by `network.defaultTransports`, and db-p2p knows no such key —
+ * handing it one is the drift the strand builder already avoids for `relayAddrs`. One home for
+ * that distinction rather than a correct spread at each site.
+ */
+export function listenTransportNodeOptions({ wsPort }: ListenTransportOptions): { wsPort?: number } {
+  return wsPort === undefined ? {} : { wsPort };
 }
 
 /**
@@ -199,11 +226,18 @@ const WS_TRANSPORT_SWITCH_PORT = 0;
  *   case where cadre passes the transport list itself (`node-transports.ts`, to switch
  *   relay discovery off); when the embedder gave none, that list comes from
  *   `network.defaultTransports`, which reads the same switch.
- * - **Everything else is REFUSED.** Deriving `/quic-v1`, `/webrtc` or `/webtransport`
- *   would mean importing transport packages into every `cadre-core` consumer including
- *   the React Native and browser bundles (against the cross-platform rule in
- *   `AGENTS.md`) and duplicating policy `libp2p-node.ts` owns. So name the address, name
- *   the transport it needs, and refuse to start — matching how `network.relayAddrs` and
+ * - **WebRTC is derived ONLY for a node that passed `network.defaultTransports`.** That
+ *   field is a Node host's injected transport list
+ *   (`@serfab/cadre-core/node-default-transports`), and it is the only thing in this repo
+ *   that can supply `@libp2p/webrtc`'s Node build — whose module graph loads
+ *   `node-datachannel`'s native addon, so this file's graph, which every React Native and
+ *   browser bundle reaches, must not import it. Without that field a `/webrtc` entry is
+ *   refused exactly as before.
+ * - **Everything else is REFUSED.** Deriving `/quic-v1` or `/webtransport` would mean
+ *   importing transport packages into every `cadre-core` consumer including the React
+ *   Native and browser bundles (against the cross-platform rule in `AGENTS.md`) and
+ *   duplicating policy `libp2p-node.ts` owns. So name the address, name the transport it
+ *   needs, and refuse to start — matching how `network.relayAddrs` and
  *   `network.announceAddrs` already treat an operator typo.
  *
  * Returns `{}` unconditionally when `network.transports` is set: a programmatic embedder
@@ -227,7 +261,8 @@ const WS_TRANSPORT_SWITCH_PORT = 0;
  *   {@link resolveListenAddrs}, or the strand derivation, after any per-node rewriting —
  *   so the check reads what this node will actually bind.
  * @throws {UnbindableListenAddressError} when a listen entry names a transport outside
- *   {tcp, ws/wss, p2p-circuit}.
+ *   {tcp, ws/wss, p2p-circuit}, or names `/webrtc` on a node that passed no
+ *   `network.defaultTransports`.
  */
 export function resolveTransportOptions(
   network: NetworkConfig | undefined,
@@ -237,11 +272,21 @@ export function resolveTransportOptions(
     return {};
   }
   const kinds = (listenAddrs ?? []).map((addr) => [addr, listenTransportKind(addr)] as const);
-  const unsupported = kinds.filter(([, kind]) => kind === 'unsupported').map(([addr]) => addr);
+  // A `/webrtc` entry is bindable only through an injected default transport list, so
+  // without one it joins the refusal rather than being accepted and silently unbound.
+  const webrtcBindable = network?.defaultTransports !== undefined;
+  const unsupported = kinds
+    .filter(([, kind]) => kind === 'unsupported' || (kind === 'webrtc' && !webrtcBindable))
+    .map(([addr]) => addr);
   if (unsupported.length > 0) {
     throw new UnbindableListenAddressError(unsupported);
   }
-  return kinds.some(([, kind]) => kind === 'websockets') ? { wsPort: WS_TRANSPORT_SWITCH_PORT } : {};
+  return {
+    ...(kinds.some(([, kind]) => kind === 'websockets') && { wsPort: WS_TRANSPORT_SWITCH_PORT }),
+    ...(kinds.some(([, kind]) => kind === 'webrtc') && {
+      webrtcIceServers: resolveStunServers(network?.relayAddrs ?? [], network?.stunUrls)
+    })
+  };
 }
 
 /**
@@ -249,6 +294,10 @@ export function resolveTransportOptions(
  * default transports can bind. Names each offending address alongside the libp2p
  * transport package it would need — what the operator has without this is a node that
  * starts and silently never listens there.
+ *
+ * A `/webrtc` entry reaches this only on a node that passed no
+ * `network.defaultTransports`, so it gets the extra sentence naming the setting that
+ * does supply WebRTC on a Node host.
  */
 export class UnbindableListenAddressError extends Error {
   constructor(readonly listenAddrs: readonly string[]) {
@@ -256,7 +305,10 @@ export class UnbindableListenAddressError extends Error {
       'network.listenAddrs names an address this node has no transport for: ' +
       `${listenAddrs.map((a) => `${a} — ${unbindableReason(a)}`).join('; ')}. ` +
       'Default transports bind TCP (including /unix/<path>), WebSocket (/ws, /wss) and circuit-relay addresses only. ' +
-      'Either drop the address, or supply the transport programmatically via network.transports.'
+      'Either drop the address, or supply the transport programmatically via network.transports.' +
+      (listenAddrs.some((a) => listenTransportKind(a) === 'webrtc')
+        ? ' A /webrtc listener needs a Node host that passes network.defaultTransports (cadre-cli: network.webrtc).'
+        : '')
     );
     this.name = 'UnbindableListenAddressError';
   }
@@ -275,7 +327,7 @@ export class UnbindableListenAddressError extends Error {
  * (`strand-network-config.ts`): libp2p reports a bad listen addr itself, and this check
  * must only ever ADD a denial.
  */
-function listenTransportKind(listenAddr: string): 'tcp' | 'websockets' | 'circuit' | 'ignored' | 'unsupported' {
+function listenTransportKind(listenAddr: string): 'tcp' | 'websockets' | 'webrtc' | 'circuit' | 'ignored' | 'unsupported' {
   let stack: readonly string[];
   try {
     stack = transportStack(listenAddr);
@@ -293,6 +345,14 @@ function listenTransportKind(listenAddr: string): 'tcp' | 'websockets' | 'circui
   }
   if (outermost === 'ws' || outermost === 'wss') {
     return 'websockets';
+  }
+  // Read from the outermost component like every other kind here, so `/webrtc` and a
+  // `…/p2p-circuit/webrtc` entry classify alike — they need the same transport, and the
+  // relayed form is the shape libp2p itself derives for a `/webrtc` listener once the
+  // reservation lands. `/webrtc-direct` is deliberately NOT this kind: it is a separate
+  // libp2p transport (`webRTCDirect`) that nothing here supplies.
+  if (outermost === 'webrtc') {
+    return 'webrtc';
   }
   // Only a BARE tcp or unix stack is TCP. `@libp2p/tcp` binds both — its `listenFilter`
   // accepts an exact TCP match OR a `/unix/<path>` address (a named pipe on Windows) —

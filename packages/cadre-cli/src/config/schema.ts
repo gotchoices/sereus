@@ -120,17 +120,39 @@ const storage = refine(
       : value,
 );
 
-const network = objectOf<Block<'network'>>({
-  listenAddrs: arrayOf(stringValue),
-  announceAddrs: arrayOf(stringValue),
-  appendAnnounceAddrs: arrayOf(stringValue),
-  relayAddrs: arrayOf(stringValue),
-  enableRelay: booleanValue,
-  // 0 is meaningful: refuse every unauthorized reservation.
-  unauthorizedRelayReservationCap: nonNegativeInteger,
-  cohortQueryTimeoutMs: finiteNumber,
-  linkRoundTripMs: finiteNumber,
-});
+const network = refine(
+  objectOf<Block<'network'>>({
+    listenAddrs: arrayOf(stringValue),
+    announceAddrs: arrayOf(stringValue),
+    appendAnnounceAddrs: arrayOf(stringValue),
+    relayAddrs: arrayOf(stringValue),
+    webrtc: booleanValue,
+    stunUrls: stringValue,
+    enableRelay: booleanValue,
+    // 0 is meaningful: refuse every unauthorized reservation.
+    unauthorizedRelayReservationCap: nonNegativeInteger,
+    cohortQueryTimeoutMs: finiteNumber,
+    linkRoundTripMs: finiteNumber,
+  }),
+  // Cross-field: `network.webrtc` is the one way to ask for WebRTC, because asking for it
+  // means a transport and a set of ICE servers as well as a listen entry, and only the flag
+  // brings all three. A hand-written entry would otherwise be accepted by cadre-core (the
+  // node passes `defaultTransports`) and then bind nothing, which is the silent-listener
+  // failure `resolveTransportOptions` exists to prevent.
+  (value, keyPath, ctx) => {
+    // Segment-wise, not substring: `/webrtc-direct` is a different libp2p transport that no
+    // setting here supplies, so it stays with cadre-core's refusal, which names its package.
+    const handWritten = (value.listenAddrs ?? []).filter((addr) => addr.split('/').includes('webrtc'));
+    return handWritten.length === 0
+      ? value
+      : ctx.fail(
+        `${keyPath}.listenAddrs`,
+        `${keyPath}.listenAddrs names a WebRTC address (${handWritten.join(', ')}), which cannot be `
+        + `configured as a listen address. Set ${keyPath}.webrtc: true instead — it adds the listener, `
+        + `the transport and the ICE servers together, and needs ${keyPath}.relayAddrs for signalling.`,
+      );
+  },
+);
 
 const hibernation = objectOf<Block<'hibernation'>>(
   {

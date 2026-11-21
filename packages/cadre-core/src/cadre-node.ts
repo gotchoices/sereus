@@ -224,7 +224,7 @@ import {
   relaysNotRefusing,
   type CircuitRelayTarget
 } from './delegate-admission.js';
-import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, RelayReservationFailedError } from './relay-addrs.js';
+import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, listenTransportNodeOptions, RelayReservationFailedError } from './relay-addrs.js';
 import { selfAddressesChanged } from './self-address-update.js';
 import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer, type ResolvedRelayServer } from './relay-server.js';
@@ -2381,8 +2381,9 @@ export class CadreNode implements SAppIdLookup {
    * Arm the control node's background WebRTC upgrade: whenever a machine identifies over a
    * relayed connection and publishes a WebRTC address, dial it once and let new streams move to
    * the direct connection (`webrtc-upgrade.ts`). The service is inert on a node whose embedder
-   * passed no WebRTC transport, which is every Node.js host; it matters on the phones and
-   * browser tabs that have one.
+   * passed no WebRTC transport: the phones and browser tabs always have one, and a Node host
+   * has one when it asked for it (`cadre-cli`'s `network.webrtc`, which resolves to a `/webrtc`
+   * listen entry — see `node-default-transports.ts`).
    *
    * Who this can reach is narrower than the connection gate, and not by anything here: the
    * trigger is `peer:identify`, and Optimystic gives each control node an identify protocol id
@@ -2667,8 +2668,10 @@ export class CadreNode implements SAppIdLookup {
       // `{}` when `network.transports` is set, since the embedder owns transport policy
       // then. Spread NEXT to `transports` because the two answer the same question, and a
       // no-op whenever a list is passed there — with `relayAddrs` set that list comes from
-      // `network.defaultTransports` when the embedder gave none, on the same switch.
-      ...transportOptions,
+      // `network.defaultTransports` when the embedder gave none, on the same switch. The
+      // resolution's WebRTC half is not a db-p2p option and is dropped here
+      // (`listenTransportNodeOptions`); `nodeTransportsOption` above is what reads it.
+      ...listenTransportNodeOptions(transportOptions),
       // Configured `listenAddrs`, plus the bare `/p2p-circuit` search listener when
       // `network.relayAddrs` is set — that listener registers the pending reservation
       // `driveControlRelayReservation` fills after bring-up.

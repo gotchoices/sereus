@@ -258,6 +258,62 @@ describe('resolveTransportOptions', () => {
     });
   });
 
+  /**
+   * WebRTC is the one transport cadre DERIVES conditionally: only a Node host that
+   * injected the default transport list (`network.defaultTransports`, which is
+   * `@serfab/cadre-core/node-default-transports`) can supply `@libp2p/webrtc`'s Node
+   * build, because its graph loads `node-datachannel`'s native addon and this module's
+   * graph reaches every React Native and browser bundle. So the same listen entry is
+   * accepted on one node kind and refused on another, and the value carried out is the
+   * ICE servers rather than a bare switch.
+   */
+  describe('WebRTC is derived only for a node with an injected default transport list', () => {
+    /** Presence is all that is read; the list is never built here. */
+    const defaultTransports: NetworkConfig['defaultTransports'] = () => [];
+    const relay = (host: string): string => `/dns4/${host}/tcp/4011/ws/p2p/${RELAY}`;
+
+    it('carries the ICE servers derived from relayAddrs when a listen entry names /webrtc', () => {
+      expect(resolveTransportOptions(
+        { defaultTransports, relayAddrs: [relay('a.example.org')] },
+        [RELAY_SEARCH_LISTEN_ADDR, '/webrtc']
+      )).toEqual({ webrtcIceServers: [{ urls: 'stun:a.example.org:3478' }] });
+    });
+
+    it('carries the stunUrls override instead, for a relay that answers STUN elsewhere', () => {
+      expect(resolveTransportOptions(
+        { defaultTransports, relayAddrs: [relay('a.example.org')], stunUrls: 'stun:stun.example.net:3479' },
+        ['/webrtc']
+      )).toEqual({ webrtcIceServers: [{ urls: 'stun:stun.example.net:3479' }] });
+    });
+
+    /**
+     * Absence is the only "no WebRTC" answer, so an empty set has to stay PRESENT: ICE with
+     * no STUN server still offers host and LAN candidates, which is enough between two
+     * machines on one network.
+     */
+    it('carries an empty set rather than omitting the field when no STUN server is known', () => {
+      expect(resolveTransportOptions({ defaultTransports }, ['/webrtc']))
+        .toEqual({ webrtcIceServers: [] });
+    });
+
+    /** The relayed form libp2p derives for a `/webrtc` listener needs the same transport. */
+    it('reads the outermost component, so a relayed /p2p-circuit/webrtc entry counts too', () => {
+      expect(resolveTransportOptions({ defaultTransports }, [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit/webrtc`]))
+        .toEqual({ webrtcIceServers: [] });
+    });
+
+    it('refuses the same entry on a node that injected no list, pointing at the setting that does', () => {
+      expect(() => resolveTransportOptions({ relayAddrs: [relay('a.example.org')] }, ['/webrtc']))
+        .toThrow(/network\.webrtc/);
+    });
+
+    /** `/webrtc-direct` is `webRTCDirect`, a different transport nothing here supplies. */
+    it('does not accept /webrtc-direct, which no default list carries', () => {
+      expect(() => resolveTransportOptions({ defaultTransports }, ['/ip4/0.0.0.0/udp/4001/webrtc-direct']))
+        .toThrow(/needs @libp2p\/webrtc/);
+    });
+  });
+
   describe('the default transports are enough', () => {
     it('adds nothing for TCP, circuit-relay, or no listen entries at all', () => {
       expect(resolveTransportOptions(undefined, ['/ip4/0.0.0.0/tcp/4001'])).toEqual({});
