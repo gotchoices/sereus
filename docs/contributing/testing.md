@@ -63,6 +63,20 @@ On Windows, start every Vitest run from a working directory whose drive letter i
 
 Each package's global setup refuses such a run and prints the path to start from (`assertUppercaseDriveLetter` in `test-harness/working-directory.ts`). In Git Bash, `cd /c/projects/sereus` gives the uppercase form; in PowerShell, `Set-Location 'C:\projects\sereus'` does.
 
+### Windows: one sibling under two path spellings
+
+The same failure as the rule above, from the other direction: one file loaded twice because two path strings lead to it. A junction stores the exact string it was created with, and Windows compares paths without regard to case, so `C:\Projects\optimystic\packages\db-core` and `C:\Projects\Optimystic\packages\db-core` are one directory under two spellings.
+
+Node keys its module cache by the resolved string and keeps whichever spelling the junction stored, so a package reached under both is loaded twice. The two copies share no classes. Every `instanceof` across them is false, and an error thrown by one is not recognised by code that imported the other — which reads as a bug in this repository rather than in the install.
+
+The two spellings come from two installs. Yarn writes this repository's junctions with the `link:` paths in the root `package.json`'s `resolutions` (`../optimystic`), while a sibling's own install writes its nested links relative to its own checkout (`C:\Projects\Optimystic`). Those nested links are inside the sibling and not ours to change. A spelling that disagrees with the disk is harmless as long as every junction agrees with every other one, so the check compares them against each other rather than against the disk.
+
+Each package's global setup refuses such a run before anything is loaded (`assertOneSpellingPerLinkedPackage` in `test-harness/linked-package-spellings.ts`), naming each package, each spelling, each junction holding it, and the sibling checkout when one is involved. The remedy is to make every junction for that package store one spelling:
+
+- **Only this repository's own junctions disagree:** repoint the odd ones out. Delete each non-recursively and recreate it against the spelling the others use; [tickets/rules/sibling-repos.md](../../tickets/rules/sibling-repos.md) says why a recursive delete is never used near these.
+- **A junction inside a sibling checkout disagrees:** repoint this repository's junctions to the spelling the sibling uses, or rename the sibling's folder to match the `resolutions` paths, after which its owner reinstalls it because its nested links still store the old spelling. Never write in the sibling.
+- **`yarn install` is not the remedy.** It rewrites every junction from `resolutions`, so they agree with each other and may still disagree with the nested links a sibling's own install wrote.
+
 ### A stale-build abort means stop
 
 Every guarded suite aborts in global setup when a package it runs from `dist` has sources newer than its build. See [Stale-build guard](gates.md#stale-build-guard) for what is compared.

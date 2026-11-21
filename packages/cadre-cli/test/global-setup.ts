@@ -27,6 +27,7 @@
  */
 
 import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-freshness.js';
+import { assertOneSpellingPerLinkedPackage } from '../../../test-harness/linked-package-spellings.js';
 import { assertUppercaseDriveLetter } from '../../../test-harness/working-directory.js';
 
 /**
@@ -56,5 +57,6 @@ export const TARGETS: BuildTarget[] = [
 
 export default function setup(): void {
   assertUppercaseDriveLetter();
+  assertOneSpellingPerLinkedPackage(TARGETS, import.meta.url);
   assertBuildFresh(TARGETS, import.meta.url);
 }
