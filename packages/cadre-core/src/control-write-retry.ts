@@ -1,4 +1,4 @@
-import { CoordinatorPartialCommitError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
+import { CoordinatorPartialCommitError, PeersIncompleteError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
 import { ConcurrentModificationError, PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
 import { causeChain, chainMessages, reportsUnansweredShortfall, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
@@ -22,8 +22,8 @@ import type { ControlRetryOptions } from './control-retry.js';
  * nothing here claims a rejection, at any phase (the shortfall claim reads the vote count for
  * exactly this reason), because re-presenting one would re-present a spent signature against a
  * cohort that already said no. Rejections are re-presented anyway when they arrive inside the
- * transactor's promise-phase `[block:` aggregate, which {@link isUncommittedTransactorAggregate}
- * claims on the WRAPPER alone, whatever the cause inside says. Safe because nothing has committed
+ * transactor's promise-phase aggregate, which {@link isUncommittedTransactorAggregate}
+ * claims on the PHASE alone, whatever the cause inside says. Safe because nothing has committed
  * at that phase, and deliberately kept — one of the remaining promise-phase rejections is exactly
  * the kind a re-presentation fixes. See the accepted-tradeoff `NOTE:` there for which, and why no
  * blanket rejection veto is wanted.
@@ -144,33 +144,19 @@ const CONTROL_WRITE_RETRY_DELAYS_MS: readonly number[] = [250, 1_000];
  */
 const SCHEMA_INIT_RETRY_DELAYS_MS: readonly number[] = [250, 500, 1_000, 2_000];
 
-/** The network transactor's aggregate, raised when some cohort peers gave no usable answer. */
-const TRANSACTOR_AGGREGATE = /Some peers did not complete:/;
-
 /**
- * How the aggregate's per-batch details name a SINGLE-block batch — the shape both the block
- * read (`get`) and phase 1 (`pend`) format, and the only shape safe to re-present.
- */
-const SINGLE_BLOCK_BATCH_TOKEN = '[block:';
-
-/**
- * How the aggregate's per-batch details name a MULTI-block batch — the shape phase 2
- * (`commitBlocks`) formats, and the marker of an outcome too indeterminate to retry.
- */
-const COMMIT_BATCH_TOKEN = '[blocks:';
-
-/**
- * Is this a transactor aggregate from a phase where nothing can have committed yet?
+ * Does any link of the `cause` chain report a transactor aggregate from a phase where nothing can
+ * have committed yet?
  *
- * The transactor raises `Some peers did not complete:` from three sites
- * (`db-core/src/transactor/network-transactor.ts`), and only two of them are safe to
- * re-present:
+ * `NetworkTransactor` composes one `PeersIncompleteError` for all four of its operations and says
+ * which in `phase` (`db-core/src/transactor/peers-incomplete-error.ts`). Only two of the four are
+ * safe to re-present:
  *
  * - `get` (a block read, which a write body also performs) and `pend` (phase 1) fail before
  *   anything commits, so the write is known not to have landed. `get` raises it only when a
  *   coordinator answered and left a block out; a block nobody answered for fails typed
  *   instead, which {@link matchesRetriableFailure} claims ({@link reportsUnreachableCohort});
- * - `commitBlocks` (phase 2) is REACHABLE here and NOT safe. `commitBlock` throws the
+ * - `commit` (phase 2) is REACHABLE here and NOT safe. `commitBlock` throws the
  *   aggregate when a header/tail commit got NO response at all — precisely the transient
  *   class this retry targets — and that escapes `commit()`, survives `TransactorSource`'s
  *   cancel-and-rethrow (cancel reaches PENDING actions only; a peer that already committed
@@ -180,34 +166,20 @@ const COMMIT_BATCH_TOKEN = '[blocks:';
  *   the commit may have completed with only the response lost. Re-running the write body over
  *   a write that landed turns a success into a constraint failure (e.g.
  *   `UNIQUE constraint failed: CadrePeer.PeerId`). Surfacing the transient error instead lets
- *   the caller re-read committed state and decide. Commit-phase messages are vetoed by
- *   {@link reportsIndeterminateCommit}, not here.
+ *   the caller re-read committed state and decide. The commit phase is vetoed by
+ *   {@link reportsIndeterminateCommit}, not here;
+ * - `cancel` — a failed attempt's own cancel that could not discharge the pend it left behind —
+ *   is neither claimed here nor vetoed there, so it falls through unmatched and is not retried.
  *
- * The `cause` chain does not discriminate the phases — a commit-phase aggregate carries the
- * same stream-reset/dial error a pend-phase one does. The per-batch DETAIL text does: `get`
- * and `pend` format `<peerId>[block:<id>](<status>)`, `commitBlocks` formats
- * `<peerId>[blocks:<count>](<status>)`. `[block:` cannot occur inside `[blocks:`, so the two
- * tokens are disjoint and separate the phases.
- *
- * NOTE: the discriminator is a formatting detail of another repo. If Optimystic ever reformats
- * those per-batch details, this fails CLOSED — the aggregate stops matching and control writes
- * simply stop being retried, silently losing the absorption rather than doing anything unsafe.
- * The guard is `control-write-degraded-cohort-member.integration.ts`, which asserts the `[block:`
- * token on any live aggregate a degraded case produces; if it reddens there, an upstream reformat
- * is the first thing to check. NOTE: on Optimystic 1.20.0 none of its cases produced this form
- * (2026-10-28: the injected reset failed the write's read typed, and a pend's shortfall arrives on
- * its own), so the guard can pass without seeing it; if the form is ever needed live again, inject
- * the reset at the pend's batch rather than the read's.
- *
- * NOTE: the discriminator is the prefix AND the token within ONE message — never relax it to
- * "contains `[block:`". Beyond the `get` and `pend` sites above, Optimystic renders `[block:` in
- * one further place — a third formatter, outside the aggregate's three sites — `dischargeCancel`
- * (`Cancel of action <id> did not discharge <n> block(s): …`), which does not raise the
- * `Some peers did not complete:` prefix; only the conjunction keeps a cancel fault from
- * classifying as a retriable get/pend (checked against optimystic `c56c2bd4`, 2026-09-16).
+ * What still fails CLOSED is the error not arriving: a future wrapper that drops `cause` takes
+ * every link below it with it, so no typed claim matches and the write is simply not retried.
+ * `control-write-degraded-cohort-member.integration.ts` turns that into a red assertion on a live
+ * aggregate; NOTE: on Optimystic 1.20.0 none of its cases produced an aggregate at all (2026-10-28:
+ * the injected reset failed the write's read typed, and a pend's shortfall arrives on its own), so
+ * that guard can pass without ever seeing one.
  *
  * NOTE: accepted tradeoff — a REJECTION raised while promises are still being collected reaches
- * this repo wrapped in this same aggregate, and this matcher claims it on the wrapper alone,
+ * this repo wrapped in this same aggregate, and this matcher claims it on the phase alone,
  * whatever the cause inside says. That re-presents such a rejection up to two more times inside
  * the 10 s budget. Kept deliberately, and re-decided on 2026-09-17 against the current upstream
  * behaviour rather than inherited:
@@ -233,36 +205,38 @@ const COMMIT_BATCH_TOKEN = '[blocks:';
  *
  * Revisit if a re-presentation ever becomes expensive relative to what it buys — a rejection class
  * that costs a full cohort round-trip to re-present, or a write body whose reads are no longer
- * cheap — or when upstream offers a typed refusal surface to classify on instead of this text
- * (`../optimystic/tickets/backlog/debt-a-downstream-repo-classifies-retries-by-parsing-our-error-text`).
+ * cheap — or when upstream offers a typed refusal surface to classify the rejection itself on.
  * Contention is no longer the reason to revisit.
  *
- * An aggregate whose details came out EMPTY (possible when `formatBatchStatuses` has no
- * batches to format) carries neither token, matches nothing here, and is not retried — an
- * unattributable failure is not a proven non-commit.
+ * An aggregate whose per-peer details came out EMPTY (possible when `formatBatchStatuses` has no
+ * batches to format) is claimed like any other: `phase` is on the error whether or not a batch
+ * formatted, and `get`/`pend` is itself the proof that nothing committed.
  *
- * Exported for the READ classifier (`control-read-retry.ts`), which reuses it verbatim: a
- * `get` batch formats the same single-block `[block:` token, and a read can never produce
- * the commit-phase `[blocks:` shape at all.
+ * Exported for the READ classifier (`control-read-retry.ts`), which reuses it verbatim, `pend`
+ * included: a control read presents no transaction, so it cannot produce a `pend` aggregate at
+ * all — claiming that phase there is unreachable rather than unsafe, and one shared predicate is
+ * one thing to keep correct instead of two.
  */
-export function isUncommittedTransactorAggregate(message: string): boolean {
-	return TRANSACTOR_AGGREGATE.test(message) && message.includes(SINGLE_BLOCK_BATCH_TOKEN);
+export function isUncommittedTransactorAggregate(links: readonly Error[]): boolean {
+	return links.some(link => link instanceof PeersIncompleteError
+		&& (link.phase === 'get' || link.phase === 'pend'));
 }
 
 /**
- * Does ANY message in the failure's `cause` chain describe a commit-phase batch — i.e. an
- * outcome nobody can call committed or not?
+ * Does any link of the failure's `cause` chain report a COMMIT-phase transactor aggregate — i.e.
+ * an outcome nobody can call committed or not?
  *
- * Vetoes the whole chain rather than the one message carrying the token, and vetoes it
- * regardless of which matcher would otherwise have claimed it. The narrower per-message rule
- * would already catch every shape the transactor is known to build (a commit-phase aggregate
- * emits `[blocks:` for every batch it formats, and embeds its cause's message inline as
- * `root: …`, so both tokens land in one string) — but "known to build" is an argument about
- * another repo's error assembly, and this way an indeterminate commit anywhere in the chain
- * costs a retry we could have had instead of risking a re-run over a write that landed.
+ * Vetoes the whole chain rather than the one link carrying the phase, and vetoes it regardless of
+ * which claim would otherwise have taken it: an indeterminate commit anywhere in the chain costs a
+ * retry we could have had instead of risking a re-run over a write that landed.
+ *
+ * Fails CLOSED in the only direction that matters: this veto and every typed claim the write
+ * classifier makes rest on the same `instanceof`, so a chain this cannot see (a wrapper that
+ * dropped `cause`, a second loaded copy of `@optimystic/db-core`) is a chain no claim can see
+ * either, and nothing is retried for the veto to have to stop.
  */
-function reportsIndeterminateCommit(messages: readonly string[]): boolean {
-	return messages.some(message => message.includes(COMMIT_BATCH_TOKEN));
+function reportsIndeterminateCommit(links: readonly Error[]): boolean {
+	return links.some(link => link instanceof PeersIncompleteError && link.phase === 'commit');
 }
 
 /**
@@ -278,13 +252,13 @@ function reportsIndeterminateCommit(messages: readonly string[]): boolean {
  *   same transaction is already durable, and re-running the whole body would apply it twice.
  *
  * Every one of these embeds text from elsewhere in its message (a responder's refusal, the
- * underlying failure), which can carry the pend-phase aggregate's prefix and `[block:` token —
- * so this veto runs before any text matcher.
+ * underlying failure), and upstream may chain that failure on `cause` besides — so this veto runs
+ * before any claim.
  *
  * Matched by TYPE: each survives the bridge's and Quereus' rewraps on `cause`. An error built by a
  * second loaded copy of `@optimystic/db-core` (or of the plugin, for `PartialCommitError`) fails
- * `instanceof`, and then this veto does not fire — falling back to the text classifiers, which is
- * how these failures were classified before the veto existed. The asymmetry with
+ * `instanceof`, and then this veto does not fire — but neither does any claim against that same
+ * copy, so nothing is retried for it to have to stop. The asymmetry with
  * {@link isFinalTornWrite} is deliberate: there, a missed `instanceof` means no retry, which is the
  * safe side. No text fallback parses `TornActionError`'s closing sentence, since upstream says its
  * wording is for log lines only.
@@ -375,8 +349,8 @@ function isLostUpdate(link: Error): boolean {
  * `cause`. It now rethrows through `rewrapAsQueryError`, which keeps `cause`
  * (`quereus-plugin-optimystic/src/optimystic-module.ts`); whether every Quereus wrapper above it on
  * the schema-init path keeps it too has not been checked, and the text still arrives either way.
- * Like every matcher here this fails CLOSED — a rewording upstream stops the retry engaging, it
- * never makes it unsafe.
+ * This matcher — the module's only one — fails CLOSED: a rewording upstream stops the retry
+ * engaging, it never makes it unsafe.
  */
 const SELF_COORDINATION_GRACE_REFUSAL =
 	/Self-coordination blocked: grace-period-not-elapsed\. No coordinator available for key\./;
@@ -387,35 +361,43 @@ function isSelfCoordinationGraceRefusal(message: string): boolean {
 }
 
 /**
- * The error messages that mean "the cohort did not answer AND nothing committed", and nothing
- * else. The observed one-shot failure was `registerSelf()` racing a connection still forming:
- * a read/pend-phase transactor aggregate with `cause=The stream has been reset`. When none of
- * the cohort answers the read at all, that failure arrives typed instead, and is claimed by
- * type in {@link matchesRetriableFailure} ({@link reportsUnreachableCohort}), not here — as is
- * the coordinator's super-majority shortfall ({@link reportsUnansweredShortfall}).
+ * The error messages the DEFAULT write policy claims: none. Every failure it re-presents is now
+ * claimed by TYPE in {@link matchesRetriableFailure} — the transactor's get/pend aggregate
+ * ({@link isUncommittedTransactorAggregate}), a block read the cohort could not answer
+ * ({@link reportsUnreachableCohort}), an unanswered super-majority shortfall
+ * ({@link reportsUnansweredShortfall}) and a final torn write ({@link isFinalTornWrite}) — and so
+ * are both vetoes.
  *
- * Deliberately NOT matched: every constraint / authorization failure
+ * Kept empty rather than deleted for two reasons: it is what {@link RETRIABLE_SCHEMA_INIT_MATCHERS}
+ * spreads, so the "widened, not replaced" relation between the two policies stays expressed in
+ * code; and a future text matcher has one obvious home. The only text matcher left in this module
+ * is the schema-init self-coordination refusal, which comes from `@optimystic/db-p2p`, not from the
+ * transactor.
+ *
+ * Deliberately NOT matched, here or anywhere: every constraint / authorization failure
  * (`CHECK constraint failed:`, `UNIQUE constraint failed:`) — those reach the same funnel
  * and must be retried zero times: the cohort REFUSED the write, so re-presenting it
  * re-presents a spent signature and can never commit.
  */
-const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[] = [
-	isUncommittedTransactorAggregate,
-];
+const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[] = [];
 
 /**
- * The above PLUS the self-coordination grace refusal — the classifier for schema init ONLY
- * ({@link SCHEMA_INIT_RETRY_POLICY}), deliberately not folded into the list above.
+ * The (currently empty) default list PLUS the self-coordination grace refusal — the classifier for
+ * schema init ONLY ({@link SCHEMA_INIT_RETRY_POLICY}), deliberately not folded into the list above.
  *
  * Why this class is safe HERE and not everywhere: a write refused at coordinator SELECTION never
  * reached a peer, so re-presenting it is a proven non-commit. But `findCoordinator` is also
  * reached from `NetworkTransactor.commitBlock` during PHASE 2 (`resolveCoordinator`,
  * `db-core/src/transactor/network-transactor.ts`), and `commit()` commits the header block before
  * the rest — so a general control write refused there can be refused AFTER something already
- * committed. Worse, that error carries no `[blocks:` batch token, so
- * {@link reportsIndeterminateCommit} would not veto it, and re-running an insert body over a write
- * that landed is exactly the `UNIQUE constraint failed: CadrePeer.PeerId` failure that veto exists
- * to prevent.
+ * committed. Worse, it is thrown from the batch assembly OUTSIDE the `try` that composes the
+ * commit-phase aggregate (`batchesForPayload`, `db-core/src/transactor/network-transactor.ts`), so
+ * it normally arrives with no aggregate around it at all and
+ * {@link reportsIndeterminateCommit} has nothing to veto on — and re-running an insert body over a
+ * write that landed is exactly the `UNIQUE constraint failed: CadrePeer.PeerId` failure that veto
+ * exists to prevent. (The one path where the veto does fire is the per-block retry's
+ * re-resolution inside `processBatches`, where such a throw becomes the commit aggregate's root
+ * cause.)
  *
  * Schema init does not have that problem: `apply schema` is a diff rather than a replay, and a
  * failed apply is taken back whole — Quereus unwinds every step it ran and verifies the catalog
@@ -448,29 +430,26 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * Did this control write fail because the cluster cohort did not ANSWER — i.e. is
  * re-presenting the SAME signed write a moment later the right response?
  *
- * Classifies the remaining text case by MESSAGE, walking the `cause` chain with the shared
- * {@link chainMessages} (Quereus' own `unwrapError` underneath) — the transactor still throws its
- * aggregate as a bare `Error`, not recognisable by type. By the time one reaches `ControlDatabase`
- * it is wrapped in a `QuereusError` (the real chain is `QuereusError` → `Error` → `Error`), so the
- * match must work at any depth. Anything that is not an `Error` is never retried.
+ * Classifies entirely by TYPE, over the `cause` chain — by the time a failure reaches
+ * `ControlDatabase` it is wrapped in a `QuereusError` (the real chain is `QuereusError` → `Error`
+ * → `Error`), so every claim and veto must work at any depth. Anything that is not an `Error` is
+ * never retried.
  *
- * Two vetoes run over the whole chain before any matcher: {@link reportsPossiblyStoredWrite}
- * (by type — a spent sync budget, a non-final torn write, a partial commit) and
- * {@link reportsIndeterminateCommit} (by text — a commit-phase batch). A chain either veto flags,
- * at any level, is never retried on the strength of some other level looking transient. Three typed
- * failures are claimed as retriable: a block read the cohort could not answer
- * ({@link reportsUnreachableCohort}, shared with the read classifier), an unanswered super-majority
- * shortfall ({@link reportsUnansweredShortfall}, shared with the edge node's `retryAfterRestart`)
- * and a final torn write ({@link isFinalTornWrite}).
+ * Two vetoes run over the whole chain before any claim: {@link reportsPossiblyStoredWrite}
+ * (a spent sync budget, a non-final torn write, a partial commit) and
+ * {@link reportsIndeterminateCommit} (a commit-phase transactor aggregate). A chain either veto
+ * flags, at any level, is never retried on the strength of some other level looking transient.
+ * Four failures are claimed as retriable: the transactor's get/pend aggregate
+ * ({@link isUncommittedTransactorAggregate}, shared with the read classifier), a block read the
+ * cohort could not answer ({@link reportsUnreachableCohort}, also shared with it), an unanswered
+ * super-majority shortfall ({@link reportsUnansweredShortfall}, shared with the edge node's
+ * `retryAfterRestart`) and a final torn write ({@link isFinalTornWrite}).
  *
- * NOTE: the transactor aggregate's arms — the claim and the commit-phase veto — still depend on
- * engine/transactor error TEXT. The messages producible without a network are driven from the REAL
- * engine in `control-formation-seat-budget.spec.ts`, so a rewording reddens a spec rather than
- * silently disabling the retry. The RETRIABLE failures need a real multi-node cluster to produce;
- * the degraded-cohort scenario (`control-write-degraded-cohort-member.integration.ts`) asserts this
- * classifier against the super-majority shortfall from a real silent member, and absorbs a real
- * stream reset end to end (on Optimystic 1.20.0 the reset fails the write's read as an unanswered
- * block, claimed by type).
+ * The RETRIABLE failures need a real multi-node cluster to produce, so the unit cases build the
+ * upstream classes directly; the degraded-cohort scenario
+ * (`control-write-degraded-cohort-member.integration.ts`) asserts this classifier against the
+ * super-majority shortfall from a real silent member, and absorbs a real stream reset end to end
+ * (on Optimystic 1.20.0 the reset fails the write's read as an unanswered block, claimed by type).
  */
 export function isRetriableControlWriteFailure(error: unknown): boolean {
 	return matchesRetriableFailure(error, RETRIABLE_CONTROL_WRITE_MATCHERS);
@@ -501,7 +480,8 @@ export function isRetriableLostUpdateFailure(error: unknown): boolean {
 /**
  * Shared body of the three classifiers: walk the `cause` chain, let
  * {@link reportsPossiblyStoredWrite} and then {@link reportsIndeterminateCommit} veto it, then claim
- * a block read the cohort could not answer ({@link reportsUnreachableCohort}), an unanswered
+ * a get/pend transactor aggregate ({@link isUncommittedTransactorAggregate}), a block read the
+ * cohort could not answer ({@link reportsUnreachableCohort}), an unanswered
  * super-majority shortfall ({@link reportsUnansweredShortfall}), a final torn write
  * ({@link isFinalTornWrite}) or any link `claimsLink` names, then ask `matchers`. The vetoes run
  * BEFORE any claim for every policy — a chain reporting a possibly-stored write or a commit-phase
@@ -510,10 +490,10 @@ export function isRetriableLostUpdateFailure(error: unknown): boolean {
  * `claimsLink` is the one typed claim a policy may add; it sits here beside the shared typed claims
  * so the vetoes stay in one place above all of them.
  *
- * The two shared typed claims are predicates over the WHOLE chain and the policy's own is per link,
- * which is why the one `some` below carries only the latter. The shortfall claim being shared with
- * the edge node is what keeps the two write policies from drifting on it; where a shortfall leaves
- * the write is still decided here, by the commit-phase veto above.
+ * The three shared typed claims are predicates over the WHOLE chain and the policy's own is per
+ * link, which is why the one `some` below carries only the latter. The shortfall claim being shared
+ * with the edge node is what keeps the two write policies from drifting on it; where a shortfall
+ * leaves the write is still decided here, by the commit-phase veto above.
  */
 function matchesRetriableFailure(
 	error: unknown,
@@ -524,28 +504,25 @@ function matchesRetriableFailure(
 		return false;
 	}
 	const links = causeChain(error);
-	if (reportsPossiblyStoredWrite(links)) {
-		return false;
-	}
-	const messages = chainMessages(error);
-	if (reportsIndeterminateCommit(messages)) {
+	if (reportsPossiblyStoredWrite(links) || reportsIndeterminateCommit(links)) {
 		return false;
 	}
 	// NOTE: an unanswered read can fail AFTER this write's log entry is stored: the refresh between
 	// commit attempts reads the collection's log ends, and finishing the write's own entry
 	// (`Collection.completeOwnEntry`) asks `getStatus` when no attempt is retained at the entry's
 	// revision (a forked lineage — both commit paths retain the failed attempt before refreshing).
-	// Either throw escapes the refresh loop unwrapped. Claimed anyway, because the `[block:`
-	// aggregate those same reads raise is already claimed by the text matcher, so the typed form
-	// adds no new case: the re-run is a new transaction whose body re-reads the blocks, so it diffs
-	// to nothing or fails on `UNIQUE` where the earlier write landed, and writes it once where it did
-	// not. A refresh that already saved a sibling collection arrives as
-	// `CoordinatorPartialCommitError`, which the veto above declines.
-	if (reportsUnreachableCohort(links) || reportsUnansweredShortfall(links)
+	// Either throw escapes the refresh loop unwrapped. Claimed anyway, because the get/pend
+	// aggregate those same reads raise is already claimed beside it, so this adds no new case: the
+	// re-run is a new transaction whose body re-reads the blocks, so it diffs to nothing or fails on
+	// `UNIQUE` where the earlier write landed, and writes it once where it did not. A refresh that
+	// already saved a sibling collection arrives as `CoordinatorPartialCommitError`, which the veto
+	// above declines.
+	if (isUncommittedTransactorAggregate(links) || reportsUnreachableCohort(links)
+		|| reportsUnansweredShortfall(links)
 		|| links.some(link => isFinalTornWrite(link) || claimsLink?.(link) === true)) {
 		return true;
 	}
-	return messages.some(message => matchers.some(matches => matches(message)));
+	return chainMessages(error).some(message => matchers.some(matches => matches(message)));
 }
 
 /**

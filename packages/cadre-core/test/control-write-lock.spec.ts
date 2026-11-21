@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
+import { PeersIncompleteError } from '@optimystic/db-core';
 import { ConcurrentModificationError } from '@optimystic/quereus-plugin-optimystic';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
@@ -51,15 +52,15 @@ function retryPacingSlot(db: ControlDatabase): { controlWriteRetryPacing: Contro
 }
 
 /**
- * An error text `isRetriableControlWriteFailure` classifies as transient — the transactor's
- * "the cohort did not answer" aggregate, in its read/pend-phase shape (per-batch details name
- * a SINGLE block, `[block:<id>]`; the commit-phase `[blocks:<count>]` shape is deliberately
- * NOT retried). A literal here (rather than a real cluster failure) because these tests pin
- * LOCK interaction, not classification; the classifier table lives in
- * `control-write-retry.spec.ts`.
+ * A failure `isRetriableControlWriteFailure` classifies as transient — the transactor's
+ * "the cohort did not answer" aggregate from the block-read phase, where nothing can have
+ * committed (`phase: 'commit'` is deliberately NOT retried). Minimal per-peer details here
+ * (rather than a real cluster failure) because these tests pin LOCK interaction, not
+ * classification; the classifier table lives in `control-write-retry.spec.ts`.
  */
 function transientClusterFailure(): Error {
-	return new Error('Some peers did not complete: 12D3KooWpeer[block:blk-1](no-response) cause=The stream has been reset; root: The stream has been reset');
+	return PeersIncompleteError.peersDidNotComplete('get',
+		'12D3KooWpeer[block:blk-1](no-response)', new Error('The stream has been reset'));
 }
 
 describe('ControlDatabase — local write lock', () => {

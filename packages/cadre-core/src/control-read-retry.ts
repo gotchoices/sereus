@@ -1,5 +1,5 @@
 import { BlockUnavailableError } from '@optimystic/db-core';
-import { causeChain, chainMessages, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
+import { causeChain, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 import { isUncommittedTransactorAggregate } from './control-write-retry.js';
 
@@ -26,8 +26,8 @@ import { isUncommittedTransactorAggregate } from './control-write-retry.js';
  * (`quereus-plugin-optimystic/src/optimystic-module.ts`), which keeps the typed
  * `BlockUnavailableError` on `cause`, and Quereus wraps that as
  * `Error during query on table '<T>': …`, again preserving `cause`
- * (`quereus/src/runtime/emit/scan.ts`). The transactor's aggregate is matched by TEXT, since
- * upstream raises it as a plain `Error`. Every matcher fails CLOSED — an upstream rewording or
+ * (`quereus/src/runtime/emit/scan.ts`). The transactor's aggregate is matched by type too — it
+ * arrives as a `PeersIncompleteError` naming the phase it came from. Both matchers fail CLOSED:
  * a lost `cause` stops the retry engaging, it never makes it unsafe.
  */
 
@@ -95,25 +95,25 @@ export type ControlReadRetryOptions = ControlRetryOptions;
  *
  * Two classes, both meaning "the cluster could not be ASKED properly just now":
  *
- * - the transactor's read-phase aggregate (`Some peers did not complete: …[block:…]`),
- *   reused verbatim from the write classifier — a `get` batch formats the single-block
- *   `[block:` token, and a read can never produce the commit-phase `[blocks:` token, so
- *   the write side's indeterminate-commit veto has nothing to veto here (a read commits
- *   nothing and re-running it is always safe);
+ * - the transactor's read-phase aggregate ({@link isUncommittedTransactorAggregate}),
+ *   reused verbatim from the write classifier — including its `pend` arm, which a read
+ *   cannot produce at all because it presents no transaction, so claiming that phase here
+ *   is unreachable rather than unsafe and one shared predicate is one thing to keep
+ *   correct. The write side's indeterminate-commit veto likewise has nothing to veto here
+ *   (a read commits nothing and re-running it is always safe);
  * - a block read the cohort could not answer ({@link reportsUnreachableCohort}, the
  *   predicate the write classifier shares — see it for the reasons and the measured
  *   exclusions).
  *
- * The aggregate is matched by message at any depth of the `cause` chain (`chainMessages`),
- * the unavailability by type on the same chain. Anything that is not an `Error` is never
- * retried, and anything unmatched is not retried either.
+ * Both are matched by TYPE, over one walk of the `cause` chain. Anything that is not an
+ * `Error` is never retried, and anything unmatched is not retried either.
  */
 export function isRetriableControlReadFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) {
 		return false;
 	}
-	return reportsUnreachableCohort(causeChain(error))
-		|| chainMessages(error).some(isUncommittedTransactorAggregate);
+	const links = causeChain(error);
+	return reportsUnreachableCohort(links) || isUncommittedTransactorAggregate(links);
 }
 
 /**

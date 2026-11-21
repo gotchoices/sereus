@@ -32,6 +32,25 @@ export function errorChainText(error: unknown): string {
 }
 
 /**
+ * `error` and every `cause` below it as OBJECTS, outermost first — for an assertion about which
+ * typed error a chain carries, where {@link errorChainText} only answers what it says.
+ *
+ * Same walk, same cycle guard; it stops at a non-`Error` link, which can carry no further `cause`
+ * worth trusting. The production classifiers have their own chain walk (`causeChain` in
+ * `cadre-core/src/control-retry.ts`) and a scenario asking "is this retriable?" should still call
+ * the classifier rather than re-deciding from these links.
+ */
+export function errorChainLinks(error: unknown): Error[] {
+	const links: Error[] = [];
+	let current: unknown = error;
+	while (current instanceof Error && !links.includes(current)) {
+		links.push(current);
+		current = current.cause;
+	}
+	return links;
+}
+
+/**
  * Every settled outcome of a race, in order, rejections carrying their full chain — an
  * assertion-failure message that names WHAT each writer was told rather than just the shape
  * of the status array.

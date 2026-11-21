@@ -233,9 +233,10 @@ function notifyAbandoned(
 }
 
 /**
- * Every message in the failure's `cause` chain — the substrate both retry classifiers match
- * their text matchers against (the transactor's aggregate and the coordinator's shortfall are
- * plain `Error`s, recognisable only by text); every wrap on the way out of optimystic and
+ * Every message in the failure's `cause` chain — the substrate for the matchers that have only
+ * TEXT to work with: the schema-init self-coordination refusal (`control-write-retry.ts`, whose
+ * `NOTE:` says why) and `ControlDatabase`'s own message probes. Both retry classifiers claim their
+ * failures by TYPE over {@link causeChain} instead. Every wrap on the way out of optimystic and
  * Quereus embeds the inner message, so the text of the deepest failure is visible at every level.
  *
  * `unwrapError` declares its `message` as `string`, but it follows `.cause` without checking

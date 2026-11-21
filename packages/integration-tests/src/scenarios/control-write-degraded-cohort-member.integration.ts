@@ -106,6 +106,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Stream, Connection } from '@libp2p/interface';
 import type { Libp2p } from 'libp2p';
+import { PeersIncompleteError } from '@optimystic/db-core';
 import { resolveLinkDeadlines } from '@optimystic/db-p2p';
 import type { ClusterRequest, ClusterService } from '@optimystic/db-p2p';
 import {
@@ -113,7 +114,8 @@ import {
 } from '@serfab/cadre-core';
 import type { Ed25519KeyPair, PeerAddressRecord } from '@serfab/cadre-core';
 import {
-	waitUntil, sleep, forceFullCohort, pinCoordinator, controlNodeConfig, makeOwnOwner, randomPeerId, errorChainText
+	waitUntil, sleep, forceFullCohort, pinCoordinator, controlNodeConfig, makeOwnOwner, randomPeerId,
+	errorChainText, errorChainLinks
 } from '../harness/index.js';
 import type { ForcedCohortHandle, PinnedCoordinatorHandle } from '../harness/index.js';
 import type { ControlRetryAbandonment } from '@serfab/cadre-core';
@@ -418,23 +420,23 @@ async function timedSettle<T>(label: string, ms: number, op: () => Promise<T>):
 }
 
 /**
- * Guard on the classifier's phase discriminator, against the LIVE message: when
- * a failure carries the transactor's `Some peers did not complete:` aggregate,
- * that aggregate must name at least one single-block batch (`[block:`) — the
- * token `isRetriableControlWriteFailure` requires before it re-presents a
- * write. The shortfall SENTENCE itself is phase-blind (`cluster-coordinator.ts`
- * raises it identically from pend, cancel and commit), so the batch token is
- * the only segment that decides retriability; an upstream reformat of the
- * per-batch details silently disables the retry, and this turns that into a
- * red assertion here instead. (`/\[block:/` cannot match inside `[blocks:` —
- * the colon position separates the tokens.)
+ * Guard on the classifier's phase discriminator, against the LIVE failure: when a chain SAYS it
+ * carries the transactor's `Some peers did not complete:` aggregate, it must also carry a
+ * `PeersIncompleteError` link, because `phase` on that error is the only thing
+ * `isRetriableControlWriteFailure` reads to decide whether the write may be re-presented.
+ *
+ * The risk this covers is a wrapper between the transactor and the control-write funnel that drops
+ * `cause`: the sentence still arrives embedded in the wrapper's message, the typed link does not,
+ * and the retry then silently stops engaging. Every wrapper on the real path keeps `cause` today;
+ * this turns a future one that does not into a red assertion here.
  */
-function expectAggregateCarriesBatchToken(chain: string): void {
-	if (/Some peers did not complete:/.test(chain)) {
-		expect(chain,
-			'transactor aggregate carries no [block: batch token — the narrowed classifier would never retry this shape'
-		).toMatch(/\[block:/);
+function expectAggregateCarriesTypedLink(error: unknown): void {
+	if (!/Some peers did not complete:/.test(errorChainText(error))) {
+		return;
 	}
+	expect(errorChainLinks(error).some(link => link instanceof PeersIncompleteError),
+		'the chain reports a transactor aggregate but carries no PeersIncompleteError link — a wrapper has dropped `cause` and the classifier can no longer read the phase'
+	).toBe(true);
 }
 
 // ── Control-write retry log capture ───────────────────────────────────────────
@@ -1188,7 +1190,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// the log assertions below pin.)
 			expect(isRetriableControlWriteFailure(outcome.error),
 				'the live degraded-cohort failure no longer classifies as retriable — a reworded upstream message has silently disabled the control-write retry').toBe(true);
-			expectAggregateCarriesBatchToken(chain);
+			expectAggregateCarriesTypedLink(outcome.error);
 
 			// Lower bound: an instant failure means the response-deadline path was
 			// never exercised. Upper bound: the transaction budget held (see
@@ -1319,7 +1321,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// a second attempt while C stalls (rationale on the authorize case).
 			expect(isRetriableControlWriteFailure(outcome.error),
 				'the live DELETE failure no longer classifies as retriable — a reworded upstream message has silently disabled the control-write retry').toBe(true);
-			expectAggregateCarriesBatchToken(chain);
+			expectAggregateCarriesTypedLink(outcome.error);
 			// Scoped to the DELETE's own `peer-remove` label — same rationale as the
 			// authorize case (background writes can fail fast inside this window).
 			const removeLines = retryLog.lines().filter((l) => l.includes('[peer-remove]'));
