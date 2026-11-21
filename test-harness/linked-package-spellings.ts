@@ -2,40 +2,26 @@
  * Refuses a test run that would load one linked package twice.
  *
  * A **spelling** is the exact path string a junction stores for the directory it
- * points at. Windows compares paths without regard to case, so two junctions can
- * point at one directory and store different strings for it:
- * `C:\Projects\optimystic\packages\db-core` and
- * `C:\Projects\Optimystic\packages\db-core` are one directory under two
- * spellings.
+ * points at; Windows compares paths without regard to case, so two junctions can
+ * point at one directory and store different strings for it. What that costs, how
+ * two installs come to disagree, and what to do about it are in the doc named
+ * below — this comment carries only what the code itself rests on.
  *
- * Node keys its module cache by the resolved path string, and the resolution it
- * performs keeps whatever spelling the junction stored. `fs.realpathSync` behaves
- * the same way; only `fs.realpathSync.native` corrects a path to the directory's
- * own spelling on disk. The whole check rests on that one difference. So a
- * package reached under two spellings is loaded twice, and the two copies share
- * nothing: each has its own classes, so every `instanceof` across the boundary is
- * false. That is not a subtle degradation — `isCohortUnreachableRead` in
- * `packages/cadre-core/src/control-read-retry.ts` stopped recognising a
- * `BlockUnavailableError` the plugin had just thrown, which reads as a bug in
- * this repository's retry logic rather than in the install.
+ * The one fact it rests on: Node's resolution keeps whatever spelling a junction
+ * stored, and `fs.realpathSync` behaves the same way. Only
+ * `fs.realpathSync.native` corrects a path to the directory's own spelling on
+ * disk. Measured on this checkout during `linked-sibling-loaded-under-two-path-spellings`.
  *
- * The disagreement arises between this repository's `resolutions` and a sibling's
- * own install. Yarn writes this repository's junctions with the `link:` paths from
- * the root `package.json` (`../optimystic`), while a sibling's own install writes
- * its nested links relative to its own checkout (`C:\Projects\Optimystic`). Those
- * nested links are inside the sibling and not ours to change
- * (`tickets/rules/sibling-repos.md`).
- *
- * Spellings are compared against *each other*, never against the disk. A spelling
- * that disagrees with the disk but is used everywhere loads one copy and is
- * harmless, and refusing it would stop every suite on such a machine for no
- * reason. There is likewise no platform branch: on a case-sensitive filesystem
- * the spellings simply agree. The check also passes trivially where `resolutions`
- * carries no `link:` entries (`yarn check:published`), because then nothing
- * resolves as linked.
+ * Spellings are therefore compared against *each other*, never against the disk:
+ * a spelling that disagrees with the disk but is used everywhere loads one copy
+ * and is harmless, and refusing it would stop every suite on such a machine for
+ * no reason. There is likewise no platform branch — on a case-sensitive filesystem the
+ * spellings simply agree — and no `link:` entries in `resolutions` means nothing
+ * resolves as linked, so the check passes trivially under `yarn check:published`.
  *
  * This module reads only `lstat`, `readlink`, `realpath` and `package.json`. It
- * writes nothing, in this repository or in a sibling.
+ * writes nothing, in this repository or in a sibling
+ * (`tickets/rules/sibling-repos.md`).
  *
  * Wiring: each consuming package calls `assertOneSpellingPerLinkedPackage` from
  * its own vitest `globalSetup`, between `assertUppercaseDriveLetter()` and
@@ -51,8 +37,9 @@
  * NOTE: `scripts/check-stale-build-guard-wiring.mjs` gates the `build-freshness`
  * import, not this call, so deleting only the
  * `assertOneSpellingPerLinkedPackage` line from one setup module fails nothing —
- * equally true of `assertUppercaseDriveLetter` today. If a third such setup check
- * appears, gate the set of setup checks rather than that one import specifier.
+ * equally true of `assertUppercaseDriveLetter` today, which makes two ungated
+ * checks. If a third ungated setup check appears, gate the set of setup checks
+ * rather than that one import specifier.
  *
  * See docs/contributing/testing.md → "Windows: one sibling under two path spellings".
  */
@@ -124,6 +111,16 @@ export function assertOneSpellingPerLinkedPackage(targets: readonly BuildTarget[
  * *its* imports from its own directory rather than from the suite's — and that is
  * how the repo-root junctions enter a reference app's run at all, since the app's
  * own `node_modules` answers first for anything it carries itself.
+ *
+ * NOTE: a workspace package is a seed, never a candidate, so the walk does not
+ * follow workspace-to-workspace edges: a suite whose `TARGETS` omit a workspace
+ * package it loads only transitively would not consult that package's own
+ * `node_modules`. Harmless today — no workspace keeps its own scoped junctions
+ * except the three reference apps, which list what they load — and the
+ * `@serfab/*` junctions of one repository are all written by one `yarn install`,
+ * so they cannot disagree with each other the way two installs' do. If a
+ * package-local copy ever appears somewhere a suite's own `TARGETS` do not name,
+ * seed every workspace root rather than only the listed ones.
  */
 function seedContexts(targets: readonly BuildTarget[], linkedNames: readonly string[], setupUrl: string): LoadingContext[] {
 	// Eager, and deliberately unguarded, as in `assertBuildFresh`: a call site
@@ -199,6 +196,12 @@ function recordSpelling(found: SpellingIndex, packageName: string, resolved: str
  * `C:\Projects\Quereus\packages\quereus`, where the only matches for that name
  * are JSDoc examples — and the walk reports a disagreement for an import nothing
  * performs.
+ *
+ * `devDependencies` are deliberately not among the maps read: what a discovered
+ * context loads at run time is its runtime imports, and a dependency it needs
+ * only to build or test itself is never reached through it. The one package whose
+ * dev dependencies do get loaded is the suite's own, and those are covered by the
+ * suite directory's seed, whose `node_modules` chain runs through that package.
  */
 function declaredCandidates(dir: string, linkedNames: readonly string[]): string[] {
 	const manifest = readPackageJson(join(dir, 'package.json'));
