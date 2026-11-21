@@ -60,16 +60,48 @@ const kitPeers = Object.keys(
  */
 function withCadreMetro(config, { projectRoot, linkedRoots = [] }) {
 	const { resolver } = config;
-	config.watchFolders = [...(config.watchFolders ?? []), ...linkedRoots];
+	const roots = linkedRoots.map(realDirectoryPath);
+	config.watchFolders = [...(config.watchFolders ?? []), ...roots];
 	resolver.unstable_enableSymlinks = true;
 	resolver.nodeModulesPaths = [
 		...(resolver.nodeModulesPaths ?? []),
 		path.join(projectRoot, 'node_modules'),
-		...linkedRoots.map((root) => path.join(root, 'node_modules')),
+		...roots.map((root) => path.join(root, 'node_modules')),
 	];
 	resolver.extraNodeModules = { ...nodeBuiltinAliases(), ...(resolver.extraNodeModules ?? {}) };
 	resolver.resolveRequest = cadreResolveRequest(resolver.resolveRequest ?? null, projectRoot);
 	return config;
+}
+
+/**
+ * A watched root as the filesystem spells it. An app names its linked roots by relative
+ * path (`../../../optimystic`), which keeps whatever letters were typed; the junction a
+ * package manager writes for a linked package instead holds the real directory, with the
+ * letters the disk uses (`C:\Projects\Optimystic`).
+ *
+ * Metro resolves a symlink by reading its target as a string and looking that string up in
+ * the file map it crawled from the watched roots, without asking the filesystem to
+ * canonicalise it, and that lookup compares segments literally. So on a case-insensitive
+ * filesystem a root whose letters differ from the disk's puts every package linked under it
+ * outside every watched root, and the bundle fails with "Unable to resolve module <name>"
+ * naming an importer that has nothing wrong with it.
+ *
+ * A path that does not resolve is returned unchanged: a sibling checkout the app names but
+ * that is absent is not an error (the apps' metro.config.js says why), and Metro ignores a
+ * watch folder that is not there.
+ *
+ * @param {string} root
+ * @returns {string}
+ */
+function realDirectoryPath(root) {
+	try {
+		return fs.realpathSync.native(root);
+	} catch (error) {
+		if (/** @type {{ code?: unknown }} */ (error)?.code === 'ENOENT') {
+			return root;
+		}
+		throw error;
+	}
 }
 
 /**

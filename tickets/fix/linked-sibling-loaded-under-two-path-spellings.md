@@ -21,6 +21,8 @@ Node keys its module cache by the resolved path string, and resolving a junction
 
 Both passed (27 of 27) after only Sereus's own `node_modules/@optimystic/*` junctions were repointed at `C:\Projects\Optimystic\packages\*`. That repointing is still in place on the maintainer's machine; the next `yarn install` recreates the lowercase junctions and brings the failures back.
 
+Metro met the same two spellings and is already fixed: `withCadreMetro` resolves each `linkedRoots` entry to the directory on disk, because the app named `../../../optimystic` while the repointed junctions led to `C:\Projects\Optimystic` and the Android export then could not resolve `@optimystic/db-core` at all. Whatever this ticket settles on, that resolution step stays correct: it is about the app's own spelling of a root, not about which spelling the junctions hold.
+
 ## Expected behaviour
 
 A test run in which any linked sibling package resolves to two different path strings refuses to start, from each package's global setup, beside `assertUppercaseDriveLetter`. The message names the two spellings and the fix: make the sibling folder's spelling match the `resolutions` paths (rename the folder; if the sibling's own nested links then still hold the old spelling, that sibling's owner reinstalls it), or repoint Sereus's junctions.

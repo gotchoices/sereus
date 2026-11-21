@@ -144,6 +144,8 @@ It keeps what the incoming config already set. It does not set condition names o
 
 An app whose packages are linked from local checkouts (a monorepo root, sibling repositories) passes them as `linkedRoots`, which lets Metro follow a symlink out of the project. Without them the bundle fails with "Unable to resolve module" for the linked package.
 
+Each root is resolved to the directory it names on disk before being watched, because Metro reads a symlink's target as a string and looks that string up in the file map it crawled from the watched roots, comparing path segments literally. An app may therefore name a root however the filesystem accepts it — through a link, or on a case-insensitive filesystem with letters the directory does not use.
+
 ### Node built-in aliases
 
 Metro follows every import in the graph, including ones behind runtime checks that never pass on a phone, so each Node built-in that libp2p imports must resolve to something. The kit maps each under both its bare name and its `node:` name. Metro consults these only after every `node_modules` lookup fails.
