@@ -216,6 +216,43 @@ export interface StrandPlatform {
 }
 
 /**
+ * Whether a node stores none of its network's blocks — a client node, built
+ * `NodeOptions.servesBlocks: false`, which registers no storage protocol service and so is left out
+ * of every cohort, including its own view of itself.
+ *
+ * Tested `=== false` and nothing weaker: a node built by something other than `createLibp2pNode`
+ * declares neither attachment, and `!node.servesBlocks` would read it as a client and compose a
+ * remote-only transactor over it.
+ */
+function isClientNode(node: Libp2p): boolean {
+	return (node as Libp2pNodeWithRepo).servesBlocks === false;
+}
+
+/**
+ * The repo to register an injected node's coordinated writes under, and the refusal of the two
+ * pairings that cannot be composed. `undefined` for a client node, which holds no blocks and so
+ * coordinates none: the transactor Optimystic then builds has no local store and sends every read
+ * and write to a remote coordinator.
+ */
+function injectedNodeRepo(node: Libp2p, coordinatedRepo: IRepo | undefined): IRepo | undefined {
+	if (isClientNode(node)) {
+		// A client holds no blocks, so a repo offered for one can only be another machine's: writing
+		// through it would land the strand's blocks on a machine the strand does not think holds any.
+		if (coordinatedRepo) {
+			throw new Error('coordinatedRepo must not be provided with a client libp2pNode (servesBlocks: false)');
+		}
+		return undefined;
+	}
+	// Refused rather than left to the factory's `node.coordinatedRepo` default: a serving node that
+	// reaches here without its repo was built wrong, and a remote-only transactor over it would read
+	// and write correctly while storing nothing — the bug this check exists to catch.
+	if (!coordinatedRepo) {
+		throw new Error('coordinatedRepo is required when a block-serving libp2pNode is provided');
+	}
+	return coordinatedRepo;
+}
+
+/**
  * Connect a Quereus `Database` to a Sereus strand. This is the single shared
  * SQL-surface composition: `connectToStrand` (Node), `connectToStrandBrowser`
  * (browser), and `cadre-core`'s `StrandDatabase` all flow through here, so the
@@ -331,24 +368,8 @@ export async function composeStrand(
 
 			if (options.libp2pNode) {
 				node = options.libp2pNode;
-				// `servesBlocks === false` and nothing weaker: a node built by something other than
-				// `createLibp2pNode` declares neither field, and `!node.servesBlocks` would read it as a
-				// client and compose a remote-only transactor over it.
-				const isClient = (node as Libp2pNodeWithRepo).servesBlocks === false;
-				if (isClient && options.coordinatedRepo) {
-					// A client holds no blocks, so this repo can only be another machine's: writing
-					// through it would land the strand's blocks on a machine the strand does not
-					// think holds any.
-					throw new Error('coordinatedRepo must not be provided with a client libp2pNode (servesBlocks: false)');
-				}
-				if (!isClient && !options.coordinatedRepo) {
-					// Kept rather than letting the factory default the repo off the node: a serving node
-					// that reaches here without its repo was built wrong, and a remote-only transactor
-					// over it would read and write correctly while storing nothing.
-					throw new Error('coordinatedRepo is required when a block-serving libp2pNode is provided');
-				}
-				coordinatedRepo = options.coordinatedRepo;
-				log('Using injected libp2p node (client=%s)', isClient);
+				coordinatedRepo = injectedNodeRepo(node, options.coordinatedRepo);
+				log('Using injected libp2p node (client=%s)', isClientNode(node));
 			} else {
 				// NOTE: this path takes the frozen policy whole, so it takes COHORT_READ_DEADLINE_MS
 				// with no way to override it — `StrandConnectionOptions` has no counterpart to
