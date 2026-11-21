@@ -65,6 +65,18 @@ async function pollUntil(condition: () => boolean | Promise<boolean>, what: stri
   }
 }
 
+/**
+ * Wait until `member` is alone again: no control connection, and no other peer in the cohort
+ * above. A node that stops is shed in about a tenth of a second, but a control write that
+ * starts inside that window assembles a cohort of two and then spends its whole budget on the
+ * peer that is already gone, and is abandoned (docs/network/deadlines.md → "What a silent
+ * member costs a control write"). Every test here that stopped a node therefore waits before
+ * the next one writes.
+ */
+async function waitUntilAlone(member: CadreNode): Promise<void> {
+  await pollUntil(() => member.getControlConnectionCount() === 0 && othersInControlCohort(member).length === 0, 'the member to be alone');
+}
+
 describe('CadreNode owner grants', () => {
   /** The owner that mints, and the member machine every holder below redeems at. */
   let member: SelfOwnerNode;
@@ -149,6 +161,7 @@ describe('CadreNode owner grants', () => {
       expect((await member.node.listOwnerGrants()).find((status) => status.grant.key === grant.grant.key)).toMatchObject({ live: false, usesRecorded: 1 });
     } finally {
       await holder.stop();
+      await waitUntilAlone(member.node);
     }
   }, 90_000);
 
@@ -190,6 +203,7 @@ describe('CadreNode owner grants', () => {
       expect(await gate.admitInboundControlConnection('12D3KooWStrangerWithNoRowAnywhere')).toBe('admit-provisionally');
     } finally {
       await joiner.stop();
+      await waitUntilAlone(member.node);
     }
   }, 120_000);
 
@@ -197,7 +211,7 @@ describe('CadreNode owner grants', () => {
     // The joiner above left the member with another member in its snapshot and, once its
     // connection is gone, none: the add-while-alone rule. The grant minted below is a control
     // write, so the joiner must also be out of the member's cohort, or the write waits on it.
-    await pollUntil(() => member.node.getControlConnectionCount() === 0 && othersInControlCohort(member.node).length === 0, 'the member to be alone');
+    await waitUntilAlone(member.node);
     const { grant } = await member.node.createOwnerGrant();
     const signer = countingSigner(softwareOwnerSigner(freshKeyPair().privateKey));
 
