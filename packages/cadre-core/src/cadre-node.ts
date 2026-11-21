@@ -1612,8 +1612,8 @@ export class CadreNode implements SAppIdLookup {
       // strand's loop runs one confirming pass per heartbeat of any party machine, and on a
       // node offering offline mode each running strand's machine tracker one control read
       // (`readPartyStrandPeers`: the strand's rows and the machine rows read fresh); the
-      // reconciler's pass NOTE says what the pass costs. If that read ever shows in a phone's
-      // node class, refresh the trackers only on a `StrandPeer` or `Revocation` change and on a
+      // reconciler's pass NOTE says what the pass costs. If that read ever shows up in a phone's
+      // CPU profile, refresh the trackers only on a `StrandPeer` or `Revocation` change and on a
       // `CadrePeer` row's appearance or disappearance, not on every heartbeat. A table this
       // `Database` has not yet touched hears local commits only (`table-change-watch.ts`):
       // `StrandPeer` is first read by the publish every strand launch makes, by the tracker's
@@ -3718,7 +3718,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Is `record` still the one to publish: signed less than half a heartbeat ago, with this
-   * always-on claim, over the addresses it would publish now, and the signature the own row
+   * node's own always-on claim, over the addresses it would publish now, and the signature the own row
    * holds? The age bound keeps a record that is not re-written fresh for resolvers: at most half
    * a heartbeat old here and re-stamped by the heartbeat within one more, so never older than
    * 1.5 heartbeats (11.25 min) against {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}. Cheap checks

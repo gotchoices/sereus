@@ -588,7 +588,7 @@ The container record holds the claim secret or the invitation bundle, so that a 
 
 ### The node image ships with the provider
 
-Upgrade `docker.image` with the provider service, from the same release. The provider tells each container what kind of machine it runs on with `CADRE_NODE_CLASS`; a node image older than that variable does not recognise it, and nothing maps the name it used before. Run a matched pair, or containers start without a node class.
+Upgrade `docker.image` with the provider service, from the same release. The provider tells each container what kind of machine it runs on with `CADRE_NODE_CLASS`, and an image that does not know that variable ignores it: the node comes up as an always-on `server`, which is every image's own default, so a `nodeClass: "device"` request is lost with no error anywhere. Run a matched pair.
 
 ### Stuck provisions
 

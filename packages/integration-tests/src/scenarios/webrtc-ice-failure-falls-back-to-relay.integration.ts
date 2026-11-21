@@ -231,6 +231,13 @@ async function formRelayOnlyPair(running: Running, transports: () => ReturnType<
 
   // ── Both parties: relay-only, and listening on /webrtc as a phone with the
   //    transport does. `enableRelay: false` because a phone relays for nobody.
+  //
+  // NOTE: the class is `'server'`, not `'device'`, although this stands for a phone — it was
+  // the always-on code before the class rename and the value was kept, because `'device'`
+  // would also build every node here with FRET's `edge` profile and switch
+  // `hostUnclaimedStrands` off, which this scenario has never run under. What it asserts is
+  // ICE failure falling back to the relay, which the class does not reach. If it is made a
+  // `'device'`, re-run it and check the fallback timings before trusting the result.
   const phone = (partyId: string) => ({
     partyId,
     nodeClass: 'server' as const,
