@@ -52,7 +52,7 @@ The class decides nothing by itself. It is the **preset** for four separate deci
 | `reactivity` | Whether the node may carry other subscribers' [change notifications](../strands/app-schema.md#change-notifications) | `forwarder` | `forwarder` |
 | `strandCohortMember` | Whether the node holds and signs the blocks of the strands it runs | `true` | `true` |
 
-A role left out of `roles` takes its preset's value, and a value outside a role's own set is refused when the node is constructed rather than resolving quietly to the preset. So `roles: { alwaysOn: true }` on a `device` changes that one decision and leaves the other three at the device defaults.
+A role left out of `roles` takes its preset's value. A misspelled role name, or a value outside a role's own set, is refused when the node is constructed rather than resolving quietly to the preset. So `roles: { alwaysOn: true }` on a `device` changes that one decision and leaves the other three at the device defaults.
 
 Two of the four are the same under both presets today, for different reasons. `reactivity` is `forwarder` because that is what every node already does; whether a phone should forward is an open question that this option exists to let a deployment test. `strandCohortMember: false` is refused when the node is constructed: the role is in the configuration ahead of the Optimystic node that can run a strand while serving none of its blocks.
 

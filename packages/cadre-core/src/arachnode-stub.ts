@@ -145,6 +145,13 @@ export class ArachnodeStub {
 
 /**
  * Create an arachnode instance for a strand
+ *
+ * NOTE: the node class, not the `alwaysOn` node role every other behaviour now follows
+ * (`node-roles.ts`). Nothing in this repo calls this, and the storage rings it hands out are
+ * unimplemented (`backlog/later/5-ring-zulu-storage-rings`), so the divergence reaches nobody —
+ * but it means a `device` told `roles: { alwaysOn: true }` joins the real Ring Zulu and would
+ * still be given no storage ring here. Take `NodeRoles` instead of a class when the rings are
+ * built; the signature is exported, so that is a breaking change rather than a rename.
  */
 export function createArachnodeStub(
   nodeClass: NodeClass, 

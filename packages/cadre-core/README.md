@@ -116,7 +116,7 @@ roles: {
 }
 ```
 
-A role left out takes its preset's value (`device`: `false`, `'edge'`, `'forwarder'`, `true`; `server`: `true`, `'core'`, `'forwarder'`, `true`), and a value outside a role's own set throws. `strandCohortMember: false` is refused for now. `NODE_ROLE_PRESETS` and `resolveNodeRoles` are exported for a program that wants to show an operator what a config resolves to. See [Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes).
+A role left out takes its preset's value (`device`: `false`, `'edge'`, `'forwarder'`, `true`; `server`: `true`, `'core'`, `'forwarder'`, `true`). A misspelled role name, or a value outside a role's own set, throws. `strandCohortMember: false` is refused for now. `NODE_ROLE_PRESETS` and `resolveNodeRoles` are exported for a program that wants to show an operator what a config resolves to. See [Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes).
 
 ### Strand filter
 

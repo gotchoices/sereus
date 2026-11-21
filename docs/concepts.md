@@ -101,7 +101,6 @@ A write is a transaction that the nodes holding the affected blocks approve and 
 - **Membership key** (party key): one party's signing key for one closed strand, stored as a `StrandPartyKey` row. It seats the party's member rows and never leaves the party. See [Closed-strand member key handling](strands/keys.md#closed-strand-member-key-handling).
 - **Node** (cadre node): one running instance of `@serfab/cadre-core`. See [The cadre node](cadre/node.md).
 - **Node class**: what kind of machine a node runs on. `device` is a phone, a laptop or a browser running an app; `server` is an always-on node. The class only presets the node roles. See [Node classes](cadre/node.md#node-classes).
-
 - **Node role**: one of four decisions that together settle what a node does, each settable on its own: whether the machine is always on, its overlay resource tier (FRET's `edge` or `core`), whether it carries other subscribers' change notifications, and whether it holds the data of the strands it runs. The node class is the preset that supplies the roles a deployment does not set. See [Node classes](cadre/node.md#node-classes).
 - **Offline mode**: a strand setting under which a commit resolves once it is saved on the writing machine and is sent to the other members later. See [Offline mode](strands/writes.md#offline-mode).
 - **Open strand**: a strand with no membership rows and no read secret. Any node that can reach its network can read it. See [What a strand is](strands/lifecycle.md#what-a-strand-is).

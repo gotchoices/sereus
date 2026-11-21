@@ -849,8 +849,8 @@ export interface CadreNodeConfig {
   /**
    * Per-role overrides of what {@link nodeClass} means — each of the four decisions the class
    * would otherwise settle on its own, settable one at a time. A role left out takes the
-   * class's preset; a value outside a role's own set throws at construction rather than
-   * falling back to the preset. See {@link NodeRoles} for what each role does and
+   * class's preset; a misnamed role, or a value outside a role's own set, throws at
+   * construction rather than falling back to the preset. See {@link NodeRoles} for what each role does and
    * `node-roles.ts` → `NODE_ROLE_PRESETS` for the two presets.
    *
    * `strandCohortMember: false` is refused at construction: the node that holds no strand

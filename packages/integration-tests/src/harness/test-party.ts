@@ -7,7 +7,7 @@
 
 import debug from 'debug';
 import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
-import { ControlDatabase, CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH } from '@serfab/cadre-core';
+import { ControlDatabase, CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, NODE_ROLE_PRESETS } from '@serfab/cadre-core';
 import type { NodeClass } from '@serfab/cadre-core';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
@@ -41,7 +41,9 @@ async function createTestNode(
     bootstrapNodes,
     networkName,
     storage: () => new MemoryRawStorage(),
-    fretProfile: nodeClass === 'server' ? 'core' : 'edge',
+    // The class's own `overlayTier` role, not a second copy of the mapping: a bare harness node
+    // must take the tier `CadreNode` would have given it (`cadre-core/src/node-roles.ts`).
+    fretProfile: NODE_ROLE_PRESETS[nodeClass].overlayTier,
     // These are CONTROL-network nodes (networkName `control-<partyId>`), so they must
     // match what CadreNode configures for its control node: a narrower cohort here
     // would leave a party member dependent on read repair, which cannot converge at a

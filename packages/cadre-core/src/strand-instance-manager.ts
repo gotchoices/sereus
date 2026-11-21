@@ -149,6 +149,12 @@ export interface StartStrandConfig {
    * Retained with the launch config, so a strand woken from hibernation is rebuilt with the
    * same roles. Read here for the FRET tier, Ring Zulu, the relay-server default and the
    * cohort-topic host profile.
+   *
+   * NOTE: `strandCohortMember` is read by nothing here — `CadreNode`'s constructor refuses
+   * `false`, so every launch that comes through a node has it `true`. An embedder driving this
+   * manager directly is past that refusal and would get a block-holding node either way. When
+   * the Optimystic node that serves no blocks lands (`strand-node-that-holds-no-blocks`), THIS
+   * is the site that has to read the role, and the refusal there can go.
    */
   roles: NodeRoles;
   defaultLatencyHint: LatencyHint;

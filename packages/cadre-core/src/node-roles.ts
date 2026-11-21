@@ -9,12 +9,17 @@
  * the strands it runs. Bundling them into the class meant every consumer mapped the class
  * itself, in its own place, with its own reasoning.
  *
- * This module is the only place a node class is turned into behaviour: a reader that wants
- * behaviour reads the resolved {@link NodeRoles} instead of comparing `nodeClass` to a literal.
- * The one site still deriving behaviour from the class itself is `arachnode-stub.ts`, a stub
- * with no callers whose storage rings are unimplemented —
+ * Inside cadre-core this module is the only place a node class is turned into behaviour: a
+ * reader that wants behaviour reads the resolved {@link NodeRoles} instead of comparing
+ * `nodeClass` to a literal. The one site still deriving behaviour from the class itself is
+ * `arachnode-stub.ts`, a stub with no callers whose storage rings are unimplemented —
  * `backlog/later/5-ring-zulu-storage-rings` owns it. (`provider/client.ts` also names the two
  * values, to narrow an untrusted field of an HTTP response; that is parsing, not behaviour.)
+ *
+ * Outside cadre-core, cadre-host's orchestrator reads the class to decide what to PROVISION for
+ * a child — push credentials and a file store — before any node exists, which is its own
+ * decision and not a node role. Anything that configures a node, the integration-test harness
+ * included, reads {@link NODE_ROLE_PRESETS} rather than mapping the class again.
  *
  * See `docs/cadre/node.md` → "Node classes".
  */
@@ -88,7 +93,7 @@ export interface NodeRoles {
  * question — `feat-decide-phone-reactivity-role-by-simulation` — and this setting is what lets
  * it be answered by configuring a simulation rather than by changing code.
  */
-export const NODE_ROLE_PRESETS: Record<NodeClass, NodeRoles> = {
+export const NODE_ROLE_PRESETS: Readonly<Record<NodeClass, Readonly<NodeRoles>>> = {
 	device: { alwaysOn: false, overlayTier: 'edge', reactivity: 'forwarder', strandCohortMember: true },
 	server: { alwaysOn: true, overlayTier: 'core', reactivity: 'forwarder', strandCohortMember: true }
 };
@@ -97,20 +102,32 @@ const OVERLAY_TIERS: readonly OverlayTier[] = ['edge', 'core'];
 const REACTIVITY_ROLES: readonly ReactivityRole[] = ['forwarder', 'subscriber'];
 
 /**
+ * Every role name, as a record so a role added to {@link NodeRoles} without a line here is a
+ * type error rather than a key {@link refuseUnknownRoles} then rejects as a typo.
+ */
+const ROLE_NAMES: Record<keyof NodeRoles, true> = {
+	alwaysOn: true,
+	overlayTier: true,
+	reactivity: true,
+	strandCohortMember: true
+};
+
+/**
  * The roles a node built with `nodeClass` runs, with `overrides` applied over its preset.
  *
  * A role the caller leaves out (absent, or present as `undefined`) takes the preset's value.
- * A role the caller sets to anything outside its own set THROWS rather than falling back to the
- * preset: these values reach here from a config file or an environment variable by way of a
- * JavaScript embedder, where a typo resolving silently to the preset would leave a node quietly
- * doing the opposite of what was asked for.
+ * A role the caller MISNAMES, or sets to anything outside its own set, THROWS rather than
+ * falling back to the preset: these values reach here from a config file or an environment
+ * variable by way of a JavaScript embedder, where a typo resolving silently to the preset would
+ * leave a node quietly doing the opposite of what was asked for.
  */
 export function resolveNodeRoles(nodeClass: NodeClass, overrides?: Partial<NodeRoles>): NodeRoles {
-	const preset: NodeRoles | undefined = NODE_ROLE_PRESETS[nodeClass];
+	const preset: Readonly<NodeRoles> | undefined = NODE_ROLE_PRESETS[nodeClass];
 	if (preset === undefined) {
 		throw new Error(`Unknown nodeClass ${describeValue(nodeClass)}: expected 'device' or 'server'.`);
 	}
 	const given: Partial<NodeRoles> = overrides ?? {};
+	refuseUnknownRoles(given);
 	return {
 		alwaysOn: given.alwaysOn === undefined
 			? preset.alwaysOn
@@ -125,6 +142,23 @@ export function resolveNodeRoles(nodeClass: NodeClass, overrides?: Partial<NodeR
 			? preset.strandCohortMember
 			: checkedBoolean('strandCohortMember', given.strandCohortMember)
 	};
+}
+
+/**
+ * Throw on a key of `given` that names no role. A misspelled role would otherwise resolve to the
+ * preset in silence — the same failure a bad role VALUE is rejected for, and the likelier of the
+ * two, since a key has no small set of right answers to land in by accident. TypeScript refuses
+ * one in an object literal, so this is for the JavaScript embedder and the config file behind it.
+ */
+function refuseUnknownRoles(given: Partial<NodeRoles>): void {
+	// A lookup rather than `Object.hasOwn` (an ES2022 builtin this package's ES2020 emit target
+	// does not down-level) and rather than `in` (which would accept `toString` as a role).
+	const unknown = Object.keys(given).filter(key => ROLE_NAMES[key as keyof NodeRoles] !== true);
+	if (unknown.length > 0) {
+		throw new Error(
+			`Unknown roles ${unknown.map(key => `'${key}'`).join(', ')}: expected one of ${Object.keys(ROLE_NAMES).map(role => `'${role}'`).join(', ')}.`
+		);
+	}
 }
 
 /** `value` as a boolean role, else a throw naming the role. `unknown` because a JavaScript caller's value is. */

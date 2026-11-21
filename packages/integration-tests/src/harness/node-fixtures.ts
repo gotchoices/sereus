@@ -72,9 +72,9 @@ export interface ControlNodeOpts {
   nodeClass?: NodeClass;
   /**
    * Run the circuit-relay server? Left unset this is NOT off — `CadreNode`
-   * defaults it to `nodeClass === 'server'`, so a server node relays unless a
-   * scenario says otherwise. Pass `false` explicitly for a server node that
-   * takes no reservations.
+   * defaults it to the node's `alwaysOn` role, which the `server` class presets on, so a
+   * server node relays unless a scenario says otherwise. Pass `false` explicitly for a server
+   * node that takes no reservations.
    */
   enableRelay?: boolean;
   /**
@@ -121,8 +121,8 @@ export interface ControlNodeOpts {
   /**
    * Launch a storage replica of every unclaimed strand the filter admits
    * (`CadreNodeConfig.hostUnclaimedStrands`). Default `false` here, unlike production's
-   * `nodeClass === 'server'`: a harness server node stands for "holds control blocks", and
-   * scenarios assert which machines run a strand.
+   * `alwaysOn` role: a harness server node stands for "holds control blocks", and scenarios
+   * assert which machines run a strand.
    */
   hostUnclaimedStrands?: boolean;
   /**
