@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
-import { decideWebrtcUpgrade, type WebrtcUpgradeInputs } from '../src/webrtc-upgrade.js';
+import {
+	WEBRTC_UPGRADE_BACKOFF_MS,
+	WEBRTC_UPGRADE_MAX_BACKOFF_MS,
+	decideWebrtcUpgrade,
+	nextWebrtcUpgradeBackoffMs,
+	type WebrtcUpgradeInputs
+} from '../src/webrtc-upgrade.js';
 
 /**
  * `decideWebrtcUpgrade`: whether one `peer:identify` over a relayed connection becomes a
@@ -51,26 +57,21 @@ describe('decideWebrtcUpgrade', () => {
 		['a relay-only peer publishing a WebRTC address', {}, true],
 		// Two relays, so two relayed connections and still nothing direct: upgrade.
 		['two relayed connections to the peer', { openConnections: ['relayed', 'relayed'] as const }, true],
-		// Nothing to upgrade: no relay-carried connection to the peer, or none at all (the
-		// connection closed between the identify and this judgement).
-		['only a direct connection', { openConnections: ['direct'] as const }, false],
+		// Nothing to upgrade: the connection closed between the identify and this judgement.
 		['no connection left', { openConnections: [] as const }, false],
 		// A WebRTC connection IS the upgraded state, so it is not a trigger either.
 		['an established WebRTC connection', { openConnections: ['webrtc'] as const }, false],
-		// Already upgraded, or reachable directly anyway, with the relayed connection still open.
+		// Reachable directly anyway, with the relayed connection still open.
 		['a direct connection already open beside the relayed one', { openConnections: ['relayed', 'direct'] as const }, false],
-		['a WebRTC connection already open beside the relayed one', { openConnections: ['relayed', 'webrtc'] as const }, false],
 		// A dialer needs the WebRTC transport, not an address of its own, so advertising none
 		// does not stop this side dialing — only the remote's address matters here.
 		['the remote publishing no WebRTC address', { remoteAddrs: [relayedAddr(RELAY), lanAddr] }, false],
-		['the remote publishing no address at all', { remoteAddrs: [] }, false],
 		// The tie-break. Both advertise one, so exactly one side dials: the lower peer id.
 		['both advertising one, this side lower', { localAdvertisesWebrtc: true, localPeerId: LOWER, remotePeerId: HIGHER }, true],
-		['both advertising one, this side higher', { localAdvertisesWebrtc: true, localPeerId: HIGHER, remotePeerId: LOWER }, false],
-		// The backoff. A peer that reconnects over the relay inside its wait is not re-attempted;
-		// one whose wait has expired is.
-		['a wait still running', { backoffUntilMs: NOW + 1 }, false],
+		// The backoff's boundary: the wait is over at the instant it expires, not after it.
 		['a wait that has just expired', { backoffUntilMs: NOW }, true],
+		// Every remaining declining case is a row of the reason table below, which asserts the
+		// same `attempt: false` plus the reason, so it is not repeated here.
 	] as const)('%s: attempt=%o', (_name, overrides, attempt) => {
 		expect(decideWebrtcUpgrade({ ...baseline, ...overrides }).attempt).toBe(attempt);
 	});
@@ -97,5 +98,30 @@ describe('decideWebrtcUpgrade', () => {
 		// the ICE cost for a peer no direct path reaches at all.
 		expect(decision.attempt).toBe(true);
 		expect(decision.attempt === true && decision.addr.toString()).toBe(webrtcAddr(RELAY_2).toString());
+	});
+});
+
+/**
+ * The ladder behind the `in-backoff` deadline above. Pinned because its ceiling is the only
+ * thing stopping a peer no direct path reaches from being re-attempted forever at a cost that
+ * stays constant — and because `Math.min` is the kind of clamp an edit silently turns into a
+ * `Math.max`.
+ */
+describe('nextWebrtcUpgradeBackoffMs', () => {
+	it('starts at the first wait, doubles, and holds at the ceiling', () => {
+		expect(nextWebrtcUpgradeBackoffMs()).toBe(WEBRTC_UPGRADE_BACKOFF_MS);
+		expect(nextWebrtcUpgradeBackoffMs(WEBRTC_UPGRADE_BACKOFF_MS)).toBe(2 * WEBRTC_UPGRADE_BACKOFF_MS);
+
+		// Climb from the first wait and assert the ladder never overshoots, reaches the ceiling,
+		// and then stays there however many more failures the peer collects.
+		let wait = nextWebrtcUpgradeBackoffMs();
+		for (let failure = 0; failure < 20; failure++) {
+			const next = nextWebrtcUpgradeBackoffMs(wait);
+			expect(next).toBeGreaterThanOrEqual(wait);
+			expect(next).toBeLessThanOrEqual(WEBRTC_UPGRADE_MAX_BACKOFF_MS);
+			wait = next;
+		}
+		expect(wait).toBe(WEBRTC_UPGRADE_MAX_BACKOFF_MS);
+		expect(nextWebrtcUpgradeBackoffMs(WEBRTC_UPGRADE_MAX_BACKOFF_MS)).toBe(WEBRTC_UPGRADE_MAX_BACKOFF_MS);
 	});
 });

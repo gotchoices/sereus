@@ -165,20 +165,14 @@ function expectNothingOverWebrtc(node: Libp2p, label: string): void {
 }
 
 /**
- * Whether `node` holds a connection to `remotePeerId` whose data path is WebRTC. Read through
- * `summarizeConnectionPaths`, so the classification is cadre-core's own: a successful upgrade
- * keeps the relay's signalling prefix in the connection's remote address
- * (`…/p2p-circuit/webrtc/p2p/…`) and is nevertheless direct.
+ * Whether `node` holds a connection to `remotePeerId` on `transport`. Read through
+ * `summarizeConnectionPaths`, so the classification is cadre-core's own — which matters for
+ * `webrtc`: a successful upgrade keeps the relay's signalling prefix in the connection's remote
+ * address (`…/p2p-circuit/webrtc/p2p/…`) and is nevertheless direct.
  */
-function hasWebrtcTo(node: Libp2p, remotePeerId: string): boolean {
+function holdsTransportTo(node: Libp2p, remotePeerId: string, transport: 'webrtc' | 'circuit-relay'): boolean {
   return summarizeConnectionPaths(node.getConnections()).paths
-    .some((path) => path.peerId === remotePeerId && path.transport === 'webrtc');
-}
-
-/** Whether `node` still holds a relay-carried connection to `remotePeerId`. */
-function hasRelayedTo(node: Libp2p, remotePeerId: string): boolean {
-  return summarizeConnectionPaths(node.getConnections()).paths
-    .some((path) => path.peerId === remotePeerId && path.transport === 'circuit-relay');
+    .some((path) => path.peerId === remotePeerId && path.transport === transport);
 }
 
 /** Every connection `node` holds, as `<transport> <addr>` lines, for an assertion message. */
@@ -376,14 +370,17 @@ describe('E2E two relay-only parties listening on /webrtc (gotchoices/sereus#61)
       // strand dial goes relayed-first. So a WebRTC connection here can only have come from
       // cadre-core's own background upgrade.
       await timed('the strand connections upgrade to WebRTC', () => waitUntil(
-        () => hasWebrtcTo(pair.aStrandNode, bStrandPeerId) && hasWebrtcTo(pair.bStrandNode, aStrandPeerId),
+        () => holdsTransportTo(pair.aStrandNode, bStrandPeerId, 'webrtc')
+          && holdsTransportTo(pair.bStrandNode, aStrandPeerId, 'webrtc'),
         { ...GATE, description: "each party's strand node holds a WebRTC connection to the other" },
       ));
 
       // The relayed connection is left open beside it, deliberately: closing it would race the
       // streams already on it, and new streams prefer the direct connection by themselves.
-      expect(hasRelayedTo(pair.aStrandNode, bStrandPeerId), `A strand: ${describeConnections(pair.aStrandNode)}`).toBe(true);
-      expect(hasRelayedTo(pair.bStrandNode, aStrandPeerId), `B strand: ${describeConnections(pair.bStrandNode)}`).toBe(true);
+      expect(holdsTransportTo(pair.aStrandNode, bStrandPeerId, 'circuit-relay'),
+        `A strand: ${describeConnections(pair.aStrandNode)}`).toBe(true);
+      expect(holdsTransportTo(pair.bStrandNode, aStrandPeerId, 'circuit-relay'),
+        `B strand: ${describeConnections(pair.bStrandNode)}`).toBe(true);
 
       // ── The strand still works with the direct connection in place ────────
       await expectRowReplicates(pair.bDb, pair.aDb, 'from-b', 'written-on-B', "B's row reaches A after the upgrade");

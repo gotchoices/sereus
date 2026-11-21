@@ -20,6 +20,12 @@
  * new connection AND for every identify-push, so a peer that only gains its WebRTC address later
  * (its relay reservation landed after the connection opened) is re-evaluated when it pushes.
  *
+ * NOTE: those two are the ONLY re-evaluations — libp2p runs identify per new connection and on a
+ * push, never on a timer — so a direct connection that drops while the relayed one beside it
+ * survives is not replaced until that peer reconnects or pushes addresses
+ * (`docs/network/relay.md` → "Limits and accepted tradeoffs"). Add `connection:close` as a
+ * second trigger if peers are seen stuck relayed after a direct connection dropped.
+ *
  * It also decides the reach of the whole service, since Optimystic names each node's identify
  * protocol after the network it serves. Two parties' STRAND nodes share one namespace
  * (`/optimystic/strand-<strandId>/id/1.0.0`) and identify each other, which is where this matters
@@ -83,8 +89,8 @@
  *
  * ## Backoff
  *
- * Per remote peer per node, in memory: {@link WEBRTC_UPGRADE_BACKOFF_MS} after a failure,
- * doubling to {@link WEBRTC_UPGRADE_MAX_BACKOFF_MS}, cleared by a success. Two networks that
+ * Per remote peer per node, in memory: the ladder {@link nextWebrtcUpgradeBackoffMs} states,
+ * cleared by a success. Two networks that
  * allow no direct path between them fail every single time, and each attempt costs relay
  * signalling plus ICE gathering, which wakes a phone's radio. Nothing is persisted: a restart
  * starting over is one attempt per peer, which is what a restart should try anyway.
@@ -118,6 +124,20 @@ export const WEBRTC_UPGRADE_BACKOFF_MS = 60_000;
 
 /** Ceiling the per-peer wait doubles up to. */
 export const WEBRTC_UPGRADE_MAX_BACKOFF_MS = 30 * 60_000;
+
+/**
+ * The wait one peer's NEXT failure puts in force, given the wait its previous failure applied
+ * (absent for a peer with no failure on record): {@link WEBRTC_UPGRADE_BACKOFF_MS}, doubling to
+ * {@link WEBRTC_UPGRADE_MAX_BACKOFF_MS} and held there.
+ *
+ * Pure and separate from the map that holds it, for the same reason {@link decideWebrtcUpgrade}
+ * is: the ladder is a rule, and `decideWebrtcUpgrade` only ever sees the deadline it produced.
+ */
+export function nextWebrtcUpgradeBackoffMs(previousWaitMs?: number): number {
+	return previousWaitMs === undefined
+		? WEBRTC_UPGRADE_BACKOFF_MS
+		: Math.min(previousWaitMs * 2, WEBRTC_UPGRADE_MAX_BACKOFF_MS);
+}
 
 /** Why {@link decideWebrtcUpgrade} declined to attempt an upgrade. */
 export type WebrtcUpgradeSkipReason =
@@ -197,7 +217,7 @@ export function decideWebrtcUpgrade(inputs: WebrtcUpgradeInputs): WebrtcUpgradeD
  * node has STARTED, which is when the transport registers the protocol — both of cadre-core's
  * install sites run after `createLibp2pNode` has started the node.
  */
-export function canDialWebrtc(node: Libp2p): boolean {
+function canDialWebrtc(node: Libp2p): boolean {
 	// Read structurally, like the node slices in `peer-dial.ts` and `relay-reservation.ts`: a node
 	// that reports no protocol list is treated as having no WebRTC transport, which leaves the
 	// service inert. That is the fail-safe answer, and it is what lets the unit specs build small
@@ -263,9 +283,14 @@ export class WebrtcUpgradeService {
 		}
 		this.listening = true;
 		this.deps.node.addEventListener('peer:identify', this.onIdentify);
-		void this.considerConnectedPeers().then((judged) => {
-			log('[%s] started (%d peer(s) already connected)', this.deps.label, judged);
-		});
+		// Logged rather than left to float: nothing awaits this pass, so a throw from the node
+		// slices it reads would otherwise surface as an unhandled rejection — the same reason
+		// {@link consider} catches its own.
+		void this.considerConnectedPeers().then(
+			(judged) => log('[%s] started (%d peer(s) already connected)', this.deps.label, judged),
+			(err) => log('[%s] started, but judging the peers already connected threw: %s',
+				this.deps.label, describeThrown(err))
+		);
 	}
 
 	/**
@@ -407,10 +432,7 @@ export class WebrtcUpgradeService {
 
 	/** Start or double this peer's wait, and return the wait now in force. */
 	private noteFailure(remote: string): number {
-		const previous = this.backoff.get(remote)?.waitMs;
-		const waitMs = previous === undefined
-			? WEBRTC_UPGRADE_BACKOFF_MS
-			: Math.min(previous * 2, WEBRTC_UPGRADE_MAX_BACKOFF_MS);
+		const waitMs = nextWebrtcUpgradeBackoffMs(this.backoff.get(remote)?.waitMs);
 		this.backoff.set(remote, { waitMs, untilMs: Date.now() + waitMs });
 		return waitMs;
 	}
