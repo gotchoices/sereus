@@ -875,6 +875,24 @@ describe('Restart recovery (init)', () => {
 });
 
 /**
+ * How long the spawner helper below gets to finish.
+ *
+ * The helper is a cold Node process whose first act is to import the built
+ * orchestrator, and that module's graph reaches `@serfab/cadre-provider` and
+ * `@serfab/cadre-cli` — through the latter, all of `@serfab/cadre-core`. That
+ * import dominates the helper's run and has nothing to do with the detachment
+ * under test: importing the orchestrator module alone measures ~9 s on an idle
+ * machine, and `@serfab/cadre-core` alone over 11 s while the rest of this
+ * suite runs beside it (the 54-file run spends ~440 s importing in total). So
+ * this budget is sized off module loading with room for several times the idle
+ * cost, not off anything the test asserts. A real detachment failure is a
+ * non-zero exit, a missing JSON line, or a dead grandchild — never a slow
+ * spawn, which is why an exhausted budget is reported as its own failure
+ * rather than as "exited non-zero".
+ */
+const SPAWNER_TIMEOUT_MS = 90_000;
+
+/**
  * The orchestrator must spawn children that survive the spawning process
  * itself exiting. The same-process restart test below does not exercise
  * this — both orchestrators live in the same vitest worker, so the
@@ -926,8 +944,15 @@ describe('child survives orchestrator exit', () => {
       // it to exit. The orchestrator's grandchild should survive.
       const result = spawnSync(process.execPath, [helperPath, JSON.stringify(payload)], {
         encoding: 'utf8',
-        timeout: 15000,
+        timeout: SPAWNER_TIMEOUT_MS,
       });
+      // `spawnSync` reports its own timeout as a killed child: `status` null,
+      // `signal` SIGTERM and an ETIMEDOUT `error`. Name that case, or it reads
+      // as a silent non-zero exit with no stderr to explain it.
+      expect(
+        result.error,
+        `helper did not finish within ${SPAWNER_TIMEOUT_MS} ms (signal=${result.signal}): ${result.error?.message ?? ''}`,
+      ).toBeUndefined();
       expect(result.status, `helper exited non-zero: stderr=${result.stderr}`).toBe(0);
 
       const jsonLine = result.stdout
@@ -962,9 +987,11 @@ describe('child survives orchestrator exit', () => {
         try { rmSync(handle.workdir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
       }
     },
-    // The helper spawn alone budgets 15 s; the surrounding waits add ~0.8 s
-    // more. Under the 5 s default the test could never reach its own timeout.
-    30_000,
+    // The helper spawn alone budgets `SPAWNER_TIMEOUT_MS`; the surrounding
+    // waits add ~0.8 s more. Stay above that sum so an exhausted spawn budget
+    // fails with its own message instead of as a bare vitest timeout, and so
+    // the 5 s default cannot cut the test off before it reaches either.
+    SPAWNER_TIMEOUT_MS + 30_000,
   );
 });
 
