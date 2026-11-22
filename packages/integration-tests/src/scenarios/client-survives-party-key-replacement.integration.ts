@@ -4,12 +4,28 @@
  * its membership key in that strand (`docs/strands/keys.md` → "Replacing the party's key").
  *
  * This is the end-to-end proof of `client-locked-out-of-closed-strand-after-party-key-replacement`.
- * Before the two tickets that precede this one a client published no `StrandPeer` row, so the
- * replacement driver — which binds the strand peer ids it reads from those rows — never bound the
- * client under the new key. The serving machines then refused the client's streams the moment the
- * old key left, and nothing recovered it. No unit layer reproduces that: the refusal is the
- * revoked-peer gate on the serving machines, derived from replicated membership rows and applied to
- * real libp2p streams.
+ * The defect: a client the replacement driver does not bind under the new key is refused by the
+ * serving machines the moment the old key leaves, and cannot write the binding that would recover
+ * it. No unit layer reproduces that: the refusal is the revoked-peer gate on the serving machines,
+ * derived from replicated membership rows and applied to real libp2p streams.
+ *
+ * What the run distinguishes, measured in this ticket's review by breaking the fix on a scratch
+ * build rather than by inspection:
+ *
+ * - With this machine's `StrandPeer` row never published at all, the run fails at step 1 — A1 never
+ *   holds four rows.
+ * - With the row published but the binder blind to it (clients dropped from `PartyStrandPeers.live`),
+ *   the run fails at step 3: A4 is missing from the new key's bindings, and its rebuilt membership
+ *   loop never latches done, because a client with no binding cannot write its own.
+ * - Steps 4 and 5 are then the positive half: a bound client is still served and still writing once
+ *   the old key has gone, and the removed machine is not.
+ *
+ * One correction to how the defect was first filed, since this file is where someone will look it
+ * up: a client's row was not missing outright before the fix. Only the bring-up publish was behind
+ * the serving role; the membership reconciler's own step 6 publishes the row whatever the role
+ * (`strand-membership-reconciler.ts`), so a client's row did arrive — as `role: null`, the only
+ * form the row then had — once its first reconciler pass ran. The lockout therefore needed the
+ * removal to land before that pass, and the published role is what the offline queue needs besides.
  *
  * ── The machines ──
  *
@@ -51,9 +67,8 @@
  *      remaining machine — A4 included — is bound under it, and A3 is bound only under the old one.
  *      A4's own strand then switches to the new key and its rebuilt membership loop latches done.
  *   4. After the old key's departure has replicated to A1 and A2 (read from their cut of A3), A4 is
- *      still served by one of them, and a second row A4 writes reaches A2. This is the step that
- *      failed before the fix: without a binding under the new key the serving machines refuse the
- *      client's streams the moment the old key leaves.
+ *      still served by one of them, and a second row A4 writes reaches A2: the behaviour the defect
+ *      took away. A broken build never reaches this step, failing at 1 or 3 above instead.
  *   5. A3 is cut, in both directions of evidence: no connection from A1 or A2, and it never
  *      converges on the second row while A2's paired read of the same row succeeds.
  *
@@ -131,7 +146,7 @@ const RECONCILE_POLL_MS = 2_000;
 /** The control cohort's reconcile backstop, which is what replicates the swap to the other machines inside the gates. */
 const CONTROL_RECONCILE_MS = 2_000;
 
-/** Eight libp2p nodes (a control node and a strand node per machine) plus one replacement, sized by `harness/topology.ts`'s rule of thumb with the gates on top; measured at 29 to 34 s. */
+/** Eight libp2p nodes (a control node and a strand node per machine), sized by `harness/topology.ts`'s rule of thumb with the gates on top; measured at 30 to 50 s. */
 const TEST_TIMEOUT_MS = 600_000;
 
 /** The harness's knobs every machine of the party gets. */
@@ -179,6 +194,15 @@ async function expectStrandPeerRoles({ owner, a1, a2, a3, a4, strandId }: PartyO
  * The strand's rows just after the driver ran on A1: the new key is the party's one seat and its
  * manager, every remaining machine is bound under it — the client as much as the servers — and A3
  * is left bound under a key that is no longer a member.
+ *
+ * NOTE: one read, taken the moment `removeMachine` resolves, with no gate behind it. A broken-fix
+ * run in this ticket's review saw A3's binding under the old key missing from it once, which this
+ * assertion would report as the removal having cleared a deny record. Two candidates if it ever
+ * flakes on an unmodified build: a networked scan of `Strand.MemberPeer` answering from a view
+ * older than the rotation's own writes, or the reconciler's step 5 clearing a removed machine's
+ * binding in a pass that still runs under the old key after the swap cleared the pending row
+ * (`strand-membership-reconciler.ts` → `clearRemovedMachines`). Seven runs on the unmodified build
+ * have not reproduced it; gate the read before chasing anything else.
  */
 async function expectRowsOnNewKey({ a1, a2, a3, a4, oldMemberKey }: PartyOnStrand, newMemberKey: string): Promise<void> {
 	expect(new Set(await memberKeys(a1.db))).toEqual(new Set([newMemberKey]));
