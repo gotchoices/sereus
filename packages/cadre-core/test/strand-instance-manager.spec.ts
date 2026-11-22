@@ -141,6 +141,31 @@ describe('StrandInstanceManager', () => {
       }
     }, 30000);
 
+    it('keeps a founding client with no serving machine syncing on its running node, retrying only the database', async () => {
+      // A client (`strandCohortMember: false`) stores none of the strand's blocks, so its own
+      // cluster is empty and every block its launch touches — the schema catalog it opens first,
+      // then a founder's bootstrap rows — falls through to `findCoordinator`, which can resolve
+      // nobody: a node that serves no storage never coordinates a key, however isolated it is,
+      // so founding alone is not open to it either. That throws
+      // Optimystic's `FindCoordinatorError`, not the `cohort-unreachable` the seed case above
+      // raises, and the launch must wait the same way rather than failing.
+      const manager = new StrandInstanceManager();
+      const config = createStartConfig('client-founded-strand', {
+        roles: { ...NODE_ROLE_PRESETS.device, strandCohortMember: false }
+      });
+
+      const instance = await manager.startStrand(config);
+
+      try {
+        expect(instance.status).toBe('syncing');
+        expect(instance.database).toBeUndefined();
+        expect(instance.libp2pNode?.status).toBe('started');
+        expect(manager.isAwaitingFirstSync('client-founded-strand')).toBe(true);
+      } finally {
+        await manager.stopAll();
+      }
+    }, 30000);
+
     it('should return existing instance if already running', async () => {
       const manager = new StrandInstanceManager();
       const config = createStartConfig('test-strand-2');

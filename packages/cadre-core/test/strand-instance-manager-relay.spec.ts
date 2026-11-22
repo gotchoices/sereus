@@ -86,11 +86,8 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-// `createLibp2pNode` is stubbed and every other export stays REAL, as in the backfill, membership
-// and revocation specs: cadre-core derives its dial limits from `resolveLinkDeadlines`
-// (`optimysticDialLimits`) and tells a launch that reached no machine from a real failure by
-// `instanceof FindCoordinatorError` (`control-read-retry.ts`). A narrowed mock breaks such a match
-// with an error naming the missing export rather than the cause.
+// Partial mock: only `createLibp2pNode` is stubbed (see the backfill spec for why
+// the rest of db-p2p stays real).
 vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };

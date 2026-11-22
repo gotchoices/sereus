@@ -172,6 +172,14 @@ export function isCohortUnreachableRead(error: unknown): boolean {
  * non-`Error`, a text-only copy of the message, and an error built by a second loaded copy of
  * `@optimystic/db-p2p` (which `instanceof` cannot recognise) all answer false, and the caller
  * throws as it did before this existed.
+ *
+ * NOTE: matching the class rather than `.code` is the deliberate call, and the one code it
+ * admits against its own upstream advice is `SELF_COORDINATION_BLOCKED`, whose comment says
+ * retrying is unlikely to help. It costs a launch that hits it a `'syncing'` runtime retrying
+ * every 5 s instead of a watcher rebuild on a doubling delay, and only a SERVING node can hit
+ * it at all (a client is never a candidate coordinator, so it gets `NO_COORDINATOR_AVAILABLE`).
+ * Narrow this to `.code` if a config switch for self-coordination is ever passed from Sereus, or
+ * if a partition verdict is ever made from something that does not heal on its own.
  */
 export function isNoCoordinatorResolved(error: unknown): boolean {
 	return causeChain(error).some(link => link instanceof FindCoordinatorError);

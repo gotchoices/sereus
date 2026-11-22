@@ -29,10 +29,11 @@
  * is then dialed to both servers by hand, so the scenario's claims do not ride on seed timing.
  *
  * The SECOND test reverses that order: the client opens the strand with no serving machine running
- * it at all. A client's own cohort is empty by construction, so the schema-catalog write of its
- * launch resolves no coordinator — and the launch must WAIT rather than fail, keeping its runtime
- * up and retrying the database phase alone, which is what a joining storage replica whose seed is
- * silent already gets (`docs/strands/lifecycle.md` → "Retries").
+ * it at all. A client's own cohort is empty by construction, so every block its launch touches
+ * resolves no coordinator, starting with the schema catalog it opens — and the launch must WAIT
+ * rather than fail, keeping its runtime up and retrying the database phase alone, which is what a
+ * joining storage replica whose seed is silent already gets
+ * (`docs/strands/lifecycle.md` → "A launch with nobody to answer waits").
  *
  * LIMIT THIS SCENARIO STATES: at the default strand cluster size (4) every block lives on both
  * serving machines, so "both hold it" and "the client holds nothing" are both exact. Nothing here
@@ -74,11 +75,11 @@ const SERVER_BLOCK_FLOOR = 4;
 
 /**
  * How long the second test gives the deferred database build to succeed once a serving machine is
- * reachable. Several periods of `StrandInstanceManager`'s retry timer (5 s, not exported), plus an
- * in-flight attempt's own coordinator-lookup window — not the number of retries, which is what the
- * cadre-core unit suite pins.
+ * reachable. Several periods of `StrandInstanceManager`'s retry timer (a fixed 5 s, not exported),
+ * plus an in-flight attempt's own coordinator-lookup window — not the number of retries, which is
+ * what the cadre-core unit suite pins.
  */
-const RETRY_LADDER_BUDGET_MS = 60_000;
+const DEFERRED_BUILD_BUDGET_MS = 60_000;
 
 /** Every machine's strand node plus its control node: six libp2p nodes, each with a converge wait. */
 const TEST_TIMEOUT_MS = 180_000;
@@ -313,7 +314,7 @@ describe('A strand node that holds no blocks', () => {
 			// Several retry periods: the build is retried on a timer, and an attempt that started
 			// just before the dial spends its own coordinator-lookup window before the next one.
 			await waitUntil(() => clientStrand.database !== undefined, {
-				timeoutMs: RETRY_LADDER_BUDGET_MS, intervalMs: 250,
+				timeoutMs: DEFERRED_BUILD_BUDGET_MS, intervalMs: 250,
 				description: "the client's deferred database build reaches a serving machine",
 			});
 			expect(client.node.getStrand(strandId), 'the same instance: nothing was torn down and relaunched').toBe(clientStrand);

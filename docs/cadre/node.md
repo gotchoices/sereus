@@ -85,7 +85,7 @@ What follows for the strand's other mechanisms:
 - **Change notifications are received, never originated.** A client applies no commits, so it announces none; it still registers watches and forwards under its `reactivity` role, and a watch's wake can lag one round of cohort gossip until its registration reaches the machine that announces a commit.
 - **Membership is unchanged, but a client hears of a removal late.** A client seats its own binding in a closed strand and keeps the revoked-peer gate, reading the membership rows remotely. That gate is woken by a change its own storage takes in, which a client has none of, so a removal made elsewhere reaches it only on the gate's backstop.
 
-A client cannot open a strand's database with no serving machine reachable, and cannot found a strand alone; what a launch does then is in [lifecycle.md → Limits and accepted tradeoffs](../strands/lifecycle.md#limits-and-accepted-tradeoffs), with the limits a client's strand runs under.
+A client cannot open a strand's database with no serving machine reachable, and cannot found a strand alone; such a launch waits and retries instead of failing ([A launch with nobody to answer waits](../strands/lifecycle.md#a-launch-with-nobody-to-answer-waits)).
 
 ## Strand filtering
 

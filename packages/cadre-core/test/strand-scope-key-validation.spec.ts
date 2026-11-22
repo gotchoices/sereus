@@ -20,7 +20,7 @@ import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
  *
  * The mocks follow `strand-instance-manager-storage-ownership.spec.ts`:
  * `createLibp2pNode` and `StrandDatabase` are doubles, so no real libp2p node or
- * Quereus database starts.
+ * Quereus database starts, and every other db-p2p export stays real.
  */
 const mocks = vi.hoisted(() => {
   const stop = vi.fn(async () => {});
@@ -34,7 +34,12 @@ const mocks = vi.hoisted(() => {
   return { stop, close, initialize, createLibp2pNode, StrandDatabase };
 });
 
-vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
+// Partial mock: only `createLibp2pNode` is stubbed (see the backfill spec for why
+// the rest of db-p2p stays real).
+vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
+});
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
 const testSchema = 'table Test (id text primary key);';

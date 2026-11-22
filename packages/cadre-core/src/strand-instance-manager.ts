@@ -1570,8 +1570,10 @@ export class StrandInstanceManager {
    *   and fail the same way. Normally a founder has no seed (no sibling runs the strand yet) and
    *   commits alone, so this is the founder given one.
    * - **A client** (`roles.strandCohortMember: false`) with no serving machine reachable. Its own
-   *   cohort is empty by construction, so the schema-catalog write — and a client founder's
-   *   membership writes — fall through to `findCoordinator`, which resolves nobody at all.
+   *   cohort is empty by construction, so every block its launch touches falls through to
+   *   `findCoordinator`, which resolves nobody at all: the schema catalog it opens first, and a
+   *   client founder's membership writes. A node that serves no storage never coordinates a key,
+   *   however isolated it is, so founding alone is not open to it either.
    *
    * Deferring gives every one of them the contract the first-sync gate gives a joiner that did
    * build: the strand stays tracked, {@link whenWritable} waits and rejects with the retryable
@@ -2591,7 +2593,9 @@ export class StrandInstanceManager {
       // (see the build's end in `buildStrandRuntime`).
       instance.lastActivity = new Date();
       instance.status = 'active';
-      log('Strand %s is now writable: Strand.Header held', strandId);
+      // No reason given here: the gate logs what its probe found when it opens, and a database
+      // published by a deferred build held no Header at all — it had nobody to read one from.
+      log('Strand %s is now writable', strandId);
     }
     const waiters = this.writableWaiters.get(strandId);
     if (waiters) {
