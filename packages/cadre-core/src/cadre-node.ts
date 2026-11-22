@@ -6809,8 +6809,9 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * The party's other machines known to hold `strandId` (each has written its `StrandPeer` row for
-   * it) with no open connection from this node's strand node: what a queued transaction reporting
+   * The party's other machines known to STORE `strandId` (each has a `StrandPeer` row for it whose
+   * role says it serves; a client's row is read and skipped) with no open connection from this
+   * node's strand node: what a queued transaction reporting
    * `waitingFor: 'cohort'` may be waiting for, by control peer id (`listMachines`, `removeMachine`)
    * and strand peer id (docs/strands/writes.md → "Waiting for the party's own machines"). Empty on a
    * strand not running here, and on a node offering no offline mode. Nothing releases the wait on

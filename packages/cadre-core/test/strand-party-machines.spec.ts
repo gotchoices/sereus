@@ -116,11 +116,20 @@ describe('StrandPartyMachines', () => {
     await tracker.settled();
     expect(tracker.machines()).toEqual([NODE]);
     expect([...tracker.removed()].sort()).toEqual(['gone-phone', 'gone-server']);
+    expect(changes).toHaveBeenCalledTimes(1);
 
-    // A client arriving or leaving changes neither set, so nothing is announced a second time.
+    // A client LEAVING the live set changes neither answer, so nothing is announced.
     tracker.refresh();
     source.answer([NODE], ['gone-server', 'gone-phone']);
     await settle();
+    expect(tracker.machines()).toEqual([NODE]);
+    expect(changes).toHaveBeenCalledTimes(1);
+
+    // Nor does a client ARRIVING: a row reaching the party must not wake the gate.
+    tracker.refresh();
+    source.answer([NODE, CLIENT], ['gone-server', 'gone-phone']);
+    await settle();
+    expect(tracker.machines()).toEqual([NODE]);
     expect(changes).toHaveBeenCalledTimes(1);
   });
 

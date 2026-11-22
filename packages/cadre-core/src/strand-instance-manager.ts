@@ -1508,7 +1508,8 @@ export class StrandInstanceManager {
   }
 
   /**
-   * The party's other machines known to hold `strandId` with no open connection from its strand
+   * The party's other machines known to STORE `strandId` ({@link StrandPartyMachines.machines},
+   * clients already dropped) with no open connection from its strand
    * node: what an offline queue reporting `waitingFor: 'cohort'` may be waiting for
    * (`docs/strands/writes.md` → "Waiting for the party's own machines"). Empty for a strand not tracked
    * or not running here, and on a launch that tracks no party machines.
