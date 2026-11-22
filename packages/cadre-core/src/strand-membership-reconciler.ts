@@ -1074,7 +1074,12 @@ export class StrandMembershipReconciler {
     return false;
   }
 
-  /** Step 6: re-attempt this machine's own `StrandPeer` row; the seam contains its failures and remembers success. */
+  /**
+   * Step 6: re-attempt this machine's own `StrandPeer` row; the seam contains its failures and
+   * remembers success. Bring-up writes the row for every machine, client or serving, so this is
+   * the retry of a write deferred or refused there, never a first attempt a role could have
+   * skipped.
+   */
   private async publishOwnStrandPeer(): Promise<void> {
     const peerId = this.deps.getOwnPeerId();
     if (!this.deps.partyPeers || !peerId) return;

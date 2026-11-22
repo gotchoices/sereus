@@ -1144,18 +1144,15 @@ export class StrandInstanceManager {
       // database (`StrandPeer`): a background write that never fails or delays the launch.
       // The seam defers it while a write could fork the party and retries it on cohort
       // growth and from every membership reconciler pass, so a refusal here is not final.
-      // Written for open strands too: their row is what a sibling's offline queue waits for.
       //
-      // NOT written by a client. The row set means "the machines that serve this strand"
-      // (`strand-party-machines.ts`): a serving sibling's offline queue waits for every machine
-      // with a row that it is alone in a cohort without, and a client is in no cohort, so a
-      // client's row would hold that queue forever. What the missing row costs is stated in
-      // docs/strands/membership.md → "Binding the party's machines": no sibling can look up a
-      // client's strand address, and — the open defect `client-locked-out-of-closed-strand-after-party-key-replacement`
-      // — a party key rotation binds the peer ids it reads from these rows, so a client is never
-      // bound under the new key and is denied once the old key leaves. The row needs a column
-      // saying whether the machine serves, not a third `CadrePeer.Profile` value (`node-class.ts`).
-      if (config.partyPeers && servesBlocks) {
+      // Written by EVERY machine, client or serving, and for an open strand as well as a closed
+      // one: in a closed strand the row is how a sibling and the party key replacement bind this
+      // machine, which a client needs as much as a server, and an open strand's row is what a
+      // sibling's offline queue waits for (docs/strands/membership.md → "Binding the party's
+      // machines"). Whether this machine serves is the row's role column, which
+      // `CadreNode.publishStrandPeer` fills from the node's own role; the one reader that must
+      // skip a client filters on it (`strand-party-machines.ts`).
+      if (config.partyPeers) {
         void config.partyPeers.publishOwn(node.peerId.toString()).catch((error) => {
           log('Strand %s: publishing this machine\'s StrandPeer row threw (retried later): %o', strandId, error);
         });

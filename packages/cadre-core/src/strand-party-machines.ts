@@ -1,5 +1,5 @@
 /**
- * The party's other machines known to hold one strand, and the offline queue's gate that waits
+ * The party's other machines known to STORE one strand, and the offline queue's gate that waits
  * for them (`docs/strands/writes.md` → Waiting for the party's own machines).
  *
  * Why. Optimystic's own reachability gate (`KeyNetworkCohortReachability` in db-p2p) knows only
@@ -8,8 +8,14 @@
  * the gate answers "genuinely alone" and a queued transaction is committed by this machine
  * alone. The party's control database knows better: every machine that runs the strand has
  * written a `CadreControl.StrandPeer` row for it (`strand-party-peers.ts`), so the machines a
- * queued transaction must not be committed without are the live, trusted machines with such a
- * row.
+ * queued transaction must not be committed without are the live, trusted machines whose row
+ * says they serve the strand.
+ *
+ * A client's row is read and skipped ({@link PartyStrandPeer.serves} false). A client stores no
+ * blocks and is in no cluster, so this machine can never stop being "alone in the cohort"
+ * without it, and a transaction that waited for one would wait forever. That is the only reader
+ * of the role: every other reader of the row set binds machines, and a client needs its binding
+ * like any other machine.
  *
  * What it does. {@link StrandPartyMachines} keeps the last good read of those machines, read
  * through the launch's `PartyStrandPeerSource` at bring-up and again whenever the control
@@ -41,8 +47,9 @@ export interface StrandPartyMachinesDeps {
 }
 
 /**
- * The party's other machines known to hold one strand, from the last good read of the control
- * database. Built per runtime build, before the strand's node, and stopped with the runtime.
+ * The party's other machines known to store one strand, from the last good read of the control
+ * database — the live machines whose `StrandPeer` row says they serve it, clients dropped.
+ * Built per runtime build, before the strand's node, and stopped with the runtime.
  *
  * NOTE: a machine that stops running the strand but stays in the cadre (its filter changed, its
  * app was removed, `stopStrand`) keeps its `StrandPeer` row, so it keeps counting here until it
@@ -99,7 +106,7 @@ export class StrandPartyMachines {
     return this.firstRead;
   }
 
-  /** The last good read's live machines; empty before one. */
+  /** The last good read's live SERVING machines; empty before one. */
   machines(): readonly PartyStrandPeer[] {
     return this.last;
   }
@@ -114,7 +121,11 @@ export class StrandPartyMachines {
     return this.failed;
   }
 
-  /** Called only when the live machines or the removed ids change. Returns an idempotent unsubscribe. */
+  /**
+   * Called only when the serving machines or the removed ids change. Returns an idempotent
+   * unsubscribe. A client's row arriving changes neither and wakes nobody, which is right: the
+   * gate's answer cannot turn on it.
+   */
   onChange(listener: () => void): () => void {
     if (this.stopped) {
       return () => undefined;
@@ -146,12 +157,16 @@ export class StrandPartyMachines {
       return;
     }
     this.failed = false;
-    if (this.stopped || (sameMachines(this.last, peers.live) && sameIds(this.lastRemoved, peers.removed))) {
+    // Clients out (module doc): everything downstream of `machines()` — the composed gate, the
+    // unreached-machines report, a commit's awaited machines, the redial loop's party machines —
+    // then sees serving machines only.
+    const serving = peers.live.filter((peer) => peer.serves);
+    if (this.stopped || (sameMachines(this.last, serving) && sameIds(this.lastRemoved, peers.removed))) {
       return;
     }
-    this.last = peers.live;
+    this.last = serving;
     this.lastRemoved = new Set(peers.removed);
-    log('strand %s: the party has %d other machine(s) holding the strand and %d removed', this.deps.label, peers.live.length, peers.removed.length);
+    log('strand %s: the party has %d other machine(s) holding the strand and %d removed', this.deps.label, serving.length, peers.removed.length);
     for (const { listener } of [...this.listeners]) {
       try {
         listener();

@@ -21,8 +21,11 @@
  *   4. After that traffic, neither serving machine names the client in a cohort or picks it as a
  *      coordinator, and the client itself picks a serving machine.
  *   5. The client reads a message a serving machine wrote.
- *   6. The client published no `StrandPeer` row: the party's row set keeps meaning "the machines
- *      that serve this strand", which is what a serving sibling's offline queue waits for.
+ *   6. All three machines published a `StrandPeer` row, and the client's row is marked `client`
+ *      while the two serving rows carry no role. The row set is the party's machines that RUN the
+ *      strand, and the role is what tells a serving sibling's offline queue which of them it may
+ *      wait for. A client publishes its row at bring-up on an open strand like this one, where no
+ *      membership loop runs to write it later.
  *
  * The two serving machines come up through `joinStrandOn` (full mesh, cohort barrier at 2). The
  * client is launched after them, so a serving machine is reachable from the start. Its strand node
@@ -153,13 +156,13 @@ async function pickCoordinator(node: StrandNode, label: string): Promise<string>
 	return (await node.keyNetwork.findCoordinator(CONTROL_COHORT_PROBE_KEY)).toString();
 }
 
-/** Every strand peer id with a `StrandPeer` row for `strandId`, as `reader`'s control database holds them. */
-async function strandPeerRowIds(reader: TopologyMachine, strandId: string): Promise<string[]> {
+/** Every `StrandPeer` row for `strandId` as `reader`'s control database holds them: strand peer id to role. */
+async function strandPeerRoles(reader: TopologyMachine, strandId: string): Promise<Map<string, string | null>> {
 	const control = reader.node.getControlDatabase();
 	if (!control) {
 		throw new Error(`${reader.party}[${reader.index}]: no control database`);
 	}
-	return (await control.queryStrandPeers(strandId)).map((row) => row.strandPeerId);
+	return new Map((await control.queryStrandPeers(strandId)).map((row) => [row.strandPeerId, row.role]));
 }
 
 interface Machines {
@@ -259,14 +262,19 @@ describe('A strand node that holds no blocks', () => {
 				{ Id: 'msg-server-1', ParticipantId: 'server-0' },
 			]);
 
-			// ── 6. The client published no StrandPeer row ──
-			await waitUntil(async () => (await strandPeerRowIds(servers[0], strandId)).length >= 2, {
+			// ── 6. Every machine published a StrandPeer row, the client's marked `client` ──
+			await waitUntil(async () => (await strandPeerRoles(servers[0], strandId)).size >= 3, {
 				timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250,
-				description: 'both serving machines have published their StrandPeer rows',
+				description: 'all three machines have published their StrandPeer rows',
 			});
-			const rows = await strandPeerRowIds(servers[0], strandId);
-			expect(new Set(rows), 'the row set is exactly the machines that serve the strand').toEqual(new Set(serverPeerIds));
-			expect(await strandPeerRowIds(client, strandId)).not.toContain(clientPeerId);
+			const roles = await strandPeerRoles(servers[0], strandId);
+			expect(new Set(roles.keys()), 'the row set is every machine that runs the strand').toEqual(new Set([...serverPeerIds, clientPeerId]));
+			expect(roles.get(clientPeerId), "the client's row says it stores none of the strand").toBe('client');
+			for (const [i, peerId] of serverPeerIds.entries()) {
+				expect(roles.get(peerId), `server ${i}'s row carries no role, which means it serves`).toBeNull();
+			}
+			// The client reads its own row back, so its write reached its own control database too.
+			expect([...(await strandPeerRoles(client, strandId)).keys()]).toContain(clientPeerId);
 		} finally {
 			await topology.stop();
 		}

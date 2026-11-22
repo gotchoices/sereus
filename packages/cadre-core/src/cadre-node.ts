@@ -10733,6 +10733,14 @@ export class CadreNode implements SAppIdLookup {
    * the party-machine watch and the next reconciler pass. Written regardless of whether this machine holds the party's
    * member key: a storage replica is bound by its siblings. A node on an ephemeral identity
    * cannot sign the row and writes nothing. Never rejects.
+   *
+   * The row's role is this node's own: null when it serves the blocks of the strands it runs,
+   * `'client'` when it runs them without storing any (`NodeRoles.strandCohortMember`). Read here
+   * rather than carried through {@link deferredStrandPeerWrites}, which stores the strand peer id
+   * alone, because the role cannot change while the node runs. A row already in the party keeps
+   * the role it was written with, since the row is immutable; `ControlDatabase.insertStrandPeer`
+   * logs the mismatch when a reconfigured machine publishes a different one
+   * (`docs/strands/membership.md` → "Limits and accepted tradeoffs").
    */
   private async publishStrandPeer(strandId: string, strandPeerId: string): Promise<void> {
     if (this.strandPeerRowsHeld.has(strandId) || !this._running || !this.controlDatabase) {
@@ -10749,12 +10757,11 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     try {
-      // role: null, the serving machine's. Only a serving machine reaches this: StrandInstanceManager
-      // publishes a row for a strand node only when the node serves the strand's blocks.
-      const written = await this.controlDatabase.insertStrandPeer({ strandId, strandPeerId, role: null }, ed25519MessageSigner(signingKey.privateKeyB64));
+      const role = this.roles.strandCohortMember ? null : 'client';
+      const written = await this.controlDatabase.insertStrandPeer({ strandId, strandPeerId, role }, ed25519MessageSigner(signingKey.privateKeyB64));
       this.strandPeerRowsHeld.add(strandId);
       this.deferredStrandPeerWrites.delete(strandId);
-      log('StrandPeer row for strand %s %s (this machine is %s there)', strandId, written ? 'written' : 'already present', strandPeerId);
+      log('StrandPeer row for strand %s %s (this machine is %s there, %s)', strandId, written ? 'written' : 'already present', strandPeerId, role ?? 'serving');
     } catch (error) {
       this.deferredStrandPeerWrites.set(strandId, strandPeerId);
       log('StrandPeer row for strand %s refused (this machine\'s own CadrePeer row may not be here yet); retried on cohort growth and by the next membership pass: %o', strandId, error);

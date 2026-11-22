@@ -8,7 +8,7 @@ import type { PartyStrandPeer } from '../src/strand-party-peers.js';
 
 const SELF = 'self-strand';
 // The control and strand ids differ: a durability report names peers by their strand id.
-const A: PartyStrandPeer = { peerId: 'a-control', strandPeerId: 'a-strand' };
+const A: PartyStrandPeer = { peerId: 'a-control', strandPeerId: 'a-strand', serves: true };
 
 function report(overall: WriteDurability | undefined): SqlCommitDurability {
   return { transactionId: 'tx', durability: { collections: new Map(), overall }, tables: new Map(), followed: true };

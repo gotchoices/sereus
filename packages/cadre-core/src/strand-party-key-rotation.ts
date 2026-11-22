@@ -55,7 +55,11 @@
  *    step 3; step 4 is skipped, since K is no manager, and step 5 is K's self-signed leave alone.
  * 3. **Bind under K'**: this machine's own strand peer id and every live sibling's, each
  *    `registerMemberPeer(K', id)` (insert-if-absent). Self-signed by K', so this step also runs
- *    after K has left.
+ *    after K has left. Every live machine, whether it stores the strand's blocks or runs it as a
+ *    client: a machine left unbound here is refused by the party's serving machines once K leaves
+ *    and cannot write its own binding to recover (`docs/strands/membership.md` → "Binding the
+ *    party's machines"). The one machine this can miss is one whose `StrandPeer` row has not
+ *    reached this node yet; a sibling's membership loop binds it under K' when the row arrives.
  * 4. **Promote K'**: `addManager(K, K')`, when K is a manager. After the bindings, so a key that
  *    was seated but never bound cannot exist beyond step 2.
  * 5. **K steps down**: `removeManager`'s resign branch signed by K (K' now stands, so the sole
