@@ -38,13 +38,12 @@
  * whether it gets them is a race: the drop cycle below can reset the founder's leg while the
  * commit is in flight, and then the promise round counts one approval out of two with the founder
  * silent, so the commit is refused, nothing is saved, and the app is told. The arm accepts either
- * end of that race and pins each one: a commit whose rows must outlive the joiner, or exactly that
- * refusal — a `PromiseShortfallError` over both members with no rejection and the founder's strand
- * node named silent. The deadline that fires on the founder's queued answer is
- * `blocked/decide-link-deadlines-from-measured-response-time`; the arm records which way the race
- * fell rather than requiring either. First sync on this arm measured 151 s to 239 s over five runs
- * on 2026-11-21. Every step's duration and every node's peer id are logged, so a run's
- * `DEBUG=optimystic:db-p2p:*` log can be read against them.
+ * end of that race and pins each one: a commit whose rows must outlive the joiner, or exactly the
+ * refusal `expectFounderSilentShortfall` holds it to. The deadline that fires on the founder's
+ * queued answer is `blocked/decide-link-deadlines-from-measured-response-time`; the arm records
+ * which way the race fell rather than requiring either. First sync on this arm measured 147 s to
+ * 239 s over seven runs on 2026-11-21. Every step's duration and every node's peer id are logged,
+ * so a run's `DEBUG=optimystic:db-p2p:*` log can be read against them.
  *
  * Why the strand nodes keep losing each other on that link: an outbound frame waits 10 to 22 s in
  * its socket's queue, so a liveness ping can outlast the pinging node's 30 s deadline, and its
@@ -151,11 +150,11 @@ const YEAR_MS = 365 * 24 * 3600_000;
 /**
  * Generous on purpose: the arm reports how long each step took; a gate only bounds a hang.
  *
- * NOTE: the frame-capped arm's first sync measured 151 s to 239 s over five runs on 2026-11-21,
- * so the margin here is about 2.5x, not the order of magnitude the 45 s figure this NOTE used to
- * carry implied. If one times out here, look at the drop cycle (the connection monitor's aborts,
- * see the header) and the saturated link before raising this: the constant is not where that cost
- * lives.
+ * NOTE: against the frame-capped arm's measured first sync (the header carries the range) the
+ * margin here is about 2.5x, not the order of magnitude it looks like. If one times out here,
+ * measure a series and look at the drop cycle (the connection monitor's aborts, see the header)
+ * and the saturated link before raising this: the constant is not where that cost lives, and a
+ * higher gate only hides how long the link took.
  */
 const FIRST_SYNC_MS = 600_000;
 const CONVERGE = { timeoutMs: 180_000, intervalMs: 500 } as const;
@@ -300,12 +299,11 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
  *
  * Any other failure is re-thrown, `refusalAccepted` or not: the only outcome this arm trades the
  * commit for is the refusal {@link expectFounderSilentShortfall} pins, and a failure of a different
- * kind is news. The typed error is matched over the whole `cause` chain because every layer between
- * the cohort and `exec` rewraps it (the optimystic Quereus plugin, then Quereus' own statement
- * rewrap), each keeping `cause` — the same chain walk the production classifiers use
- * (`reportsUnansweredShortfall` in `cadre-core/src/control-retry.ts`). `instanceof` holds here
- * because `@optimystic/db-core` resolves to one copy for the plugin and for this package alike;
- * if that ever stops being true the class check fails closed, re-throwing a refusal this arm would
+ * kind is news. Claimed by TYPE over the whole `cause` chain ({@link errorChainLinks} says why a
+ * chain walk is needed), as upstream's own comment on the class asks and as the production
+ * classifier `reportsUnansweredShortfall` does. `instanceof` holds here because
+ * `@optimystic/db-core` resolves to one copy for the plugin and for this package alike; if that
+ * ever stops being true the class check fails closed, re-throwing a refusal this arm would
  * otherwise have accepted, which is the safe direction.
  */
 async function execOrShortfall(db: Database, sql: string, refusalAccepted: boolean): Promise<PromiseShortfallError | undefined> {
@@ -337,6 +335,12 @@ function describeShortfall(shortfall: PromiseShortfallError): string {
  * joiner itself as silent, a member that actually rejected the write, or a lone coordinator's
  * refusal to write alone (`soloRefused`) are each a different defect, and none of them is what the
  * drop cycle does here.
+ *
+ * NOTE: that nothing was saved is Optimystic's contract for this refusal, not something the arm
+ * checks — it ends here rather than reading the founder back. A negative read is only as good as
+ * how long it waits, and a hold-down on this arm would re-introduce the flapping the arm exists to
+ * remove. If a refusal whose rows reached the founder anyway is ever suspected, read the founder in
+ * a scenario built for it rather than widening this one.
  */
 function expectFounderSilentShortfall(shortfall: PromiseShortfallError, founderStrandPeer: PeerId): void {
 	expect({
@@ -677,19 +681,12 @@ describe("a joiner's first transaction over a relayed link", () => {
 	}, 1_800_000);
 
 	// Whether this commit gets both approvals is a race, so the arm takes either end of it and pins
-	// each: 7 of 11 recorded runs on Optimystic 1.29.0 committed, 4 were refused. The refusal is
-	// always the same shape — `PromiseShortfallError`, 1 of 2 approvals needed 2, no rejection, the
-	// founder's strand node silent, nothing saved — which is what `expectFounderSilentShortfall`
-	// holds it to; the deadline that gives up on the founder's queued answer is
-	// `blocked/decide-link-deadlines-from-measured-response-time`, not this repo's to fix. The arm
-	// was `it.fails` while the refusal was the usual outcome; it stopped being that, which is why
-	// the arm no longer requires it. A commit that reports success while the founder never sees the
-	// rows still fails the arm, which is the phone defect this scenario was written for.
-	//
-	// NOTE: this arm's first sync measured 151 s to 239 s (five runs, 2026-11-21) against the 600 s
-	// `FIRST_SYNC_MS` gate — fine today, with about 2.5x of margin. If a run ever times out there,
-	// measure a series before raising the constant: the cost is in the drop cycle and the saturated
-	// link, and a higher gate only hides how long the link took.
+	// each: 7 of 13 recorded runs on Optimystic 1.29.0 committed, 6 were refused, and every refusal
+	// had the one shape `expectFounderSilentShortfall` holds it to. The deadline that gives up on
+	// the founder's queued answer is `blocked/decide-link-deadlines-from-measured-response-time`,
+	// not this repo's to fix, so this arm is not the signal for whether that landed — the phone arm
+	// under that ticket's "How to confirm" is. A commit that reports success while the founder never
+	// sees the rows still fails the arm, which is the phone defect this scenario was written for.
 	it('commits with its rows outliving the joiner, or is refused by name, on a 20 ms frame cap with a 70%-busy event loop', async () => {
 		await runJoinerFirstCommit({ latency: { delayMs: 20, mode: 'serial' }, eventLoopBusy: 0.7, refusalAccepted: true });
 	}, 1_800_000);
