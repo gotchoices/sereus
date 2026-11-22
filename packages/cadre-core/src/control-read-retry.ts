@@ -1,4 +1,5 @@
 import { BlockUnavailableError } from '@optimystic/db-core';
+import { FindCoordinatorError } from '@optimystic/db-p2p';
 import { causeChain, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 import { isUncommittedTransactorAggregate } from './control-write-retry.js';
@@ -141,6 +142,39 @@ export function isRetriableControlReadFailure(error: unknown): boolean {
 export function isCohortUnreachableRead(error: unknown): boolean {
 	return causeChain(error).some(link =>
 		link instanceof BlockUnavailableError && link.reason === 'cohort-unreachable');
+}
+
+/**
+ * Did this failure mean no coordinator could be resolved for a block AT ALL — a
+ * `FindCoordinatorError` anywhere on the `cause` chain?
+ *
+ * The sibling of {@link isCohortUnreachableRead} for the failure shape a machine that stores
+ * none of a strand's blocks produces. Such a node's `findCluster` returns an EMPTY cohort, so
+ * every block falls through to `findCoordinator`, which waits out its bounded retry window and
+ * throws `FindCoordinatorError` — code `NO_NETWORK_COORDINATOR` when the only peers it saw were
+ * unconfirmed or serve another network, `NO_COORDINATOR_AVAILABLE` otherwise.
+ *
+ * Matched by CLASS, so all four of `FIND_COORDINATOR_ERROR_CODES` match, not only the two a
+ * client produces. That is the intent, not laxity: every code means "no coordinator was
+ * resolved", NONE of them means "the block does not exist", and the one reader
+ * (`StrandInstanceManager.buildStrandDatabase`) waits for a machine that can answer in every
+ * case. The two self-coordination codes reach a Sereus node only from a detected partition or
+ * suspicious cohort shrinkage — Sereus never switches self-coordination off by config — and
+ * waiting is the right answer there too.
+ *
+ * Not a retry classifier, and deliberately NOT folded into {@link isCohortUnreachableRead}:
+ * that predicate's other reader, `ControlDatabase.queryRevokedStamps`, reads an unmatched block
+ * as "no revocations known", so admitting a new class of failure there would widen a
+ * security-relevant default. One predicate per reader is what keeps that default where it was.
+ *
+ * The walk is over the same {@link causeChain}, because `StrandDatabase.initialize` runs the
+ * failure through Quereus's `db.exec`, which may wrap it. Fails CLOSED the same way: a
+ * non-`Error`, a text-only copy of the message, and an error built by a second loaded copy of
+ * `@optimystic/db-p2p` (which `instanceof` cannot recognise) all answer false, and the caller
+ * throws as it did before this existed.
+ */
+export function isNoCoordinatorResolved(error: unknown): boolean {
+	return causeChain(error).some(link => link instanceof FindCoordinatorError);
 }
 
 /**

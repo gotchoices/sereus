@@ -54,15 +54,15 @@ import { strandCohortTopicOption, type StrandReactivityConfig } from './strand-r
 import { superviseRelayReservation, type RelayReservationSupervisor } from './relay-reservation.js';
 import { strandRedialTimings, superviseStrandPeerRedial, type StrandPeerRedial } from './strand-peer-redial.js';
 import { groupAddrsByPeerId } from './peer-addr-book.js';
-import { isCohortUnreachableRead } from './control-read-retry.js';
+import { isCohortUnreachableRead, isNoCoordinatorResolved } from './control-read-retry.js';
 import { declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, resolveLinkRoundTripMs, webrtcUpgradeDialBudgetMs } from './link-budget.js';
 import { describeThrown } from './describe-thrown.js';
 
 const log = debug('sereus:cadre:strand-manager');
 
 /**
- * How often a joining launch that could not build its database, because no seed peer had
- * answered, retries the build on its running libp2p node
+ * How often a launch that could not build its database, because no machine that can answer for
+ * the strand's blocks was reachable, retries the build on its running libp2p node
  * (`StrandInstanceManager.deferUnreachableJoin`). Each attempt composes a fresh database and
  * re-reads the schema catalog over the network, so it is spaced well above the first-sync
  * gate's probe cadence.
@@ -75,10 +75,15 @@ export const UNREACHABLE_JOIN_RETRY_MS = 5_000;
 
 /**
  * How one database build of a runtime ended ({@link StrandInstanceManager.buildStrandDatabase}):
- * published or held by the first-sync gate; failed only because no seed peer has answered yet;
- * or overtaken by a release of the runtime it was building on.
+ * published or held by the first-sync gate; failed only because no machine that can answer for
+ * the strand's blocks was reachable yet; or overtaken by a release of the runtime it was
+ * building on.
+ *
+ * `'awaiting-peer'` rather than "awaiting seed": the peer a launch waits for is a seed for a
+ * joining storage replica, but for a client (`roles.strandCohortMember: false`) it is any
+ * serving machine, which it may reach by a dial rather than through a seed.
  */
-type StrandDatabaseBuild = 'built' | 'awaiting-seed' | 'released';
+type StrandDatabaseBuild = 'built' | 'awaiting-peer' | 'released';
 
 const timing = debug('sereus:cadre:timing');
 
@@ -664,7 +669,8 @@ export class StrandInstanceManager {
   private transitions: Map<string, RuntimeTransition> = new Map();
   /**
    * The pending database retry per strand id of a launch whose database could not be built
-   * because no seed peer had answered yet ({@link deferUnreachableJoin}). Cleared by
+   * because no machine that can answer for the strand's blocks was reachable yet
+   * ({@link deferUnreachableJoin}). Cleared by
    * {@link releaseRuntime}, so a stop or a quiesce cancels it.
    */
   private unreachableJoinRetries: Map<string, unknown> = new Map();
@@ -875,9 +881,9 @@ export class StrandInstanceManager {
    * one input it does NOT re-read from `config`: that belongs to the instance and
    * comes from `strandStorages`.
    *
-   * A database that cannot be built because no seed peer has answered yet does not fail the
-   * build: the runtime comes up `'syncing'` without it and the database phase alone is
-   * retried on the same node ({@link deferUnreachableJoin}).
+   * A database that cannot be built because no machine that can answer for the strand's blocks
+   * was reachable does not fail the build: the runtime comes up `'syncing'` without it and the
+   * database phase alone is retried on the same node ({@link deferUnreachableJoin}).
    */
   private async buildStrandRuntime(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
     const strandId = instance.strandId;
@@ -1287,7 +1293,7 @@ export class StrandInstanceManager {
       // No `lastActivity` stamp: bringing a runtime up is not activity. A check-in marks
       // activity before its resume and must see only what landed while the strand was up.
       instance.status = liveStrandStatus(instance);
-      if (databaseBuild === 'awaiting-seed') {
+      if (databaseBuild === 'awaiting-peer') {
         // Armed only now that the build is over: a retry firing mid-build would find the
         // build in flight.
         this.deferUnreachableJoin(instance);
@@ -1313,9 +1319,9 @@ export class StrandInstanceManager {
    * {@link buildStrandRuntime} and again by each {@link retryUnreachableJoin}, with a new
    * StrandDatabase per attempt.
    *
-   * Returns `'awaiting-seed'` when initialize failed only because no seed peer has answered
-   * (`cohort-unreachable`): that attempt's database is closed and the node keeps running. Any
-   * other failure throws, with the attempt's database left with its gate for
+   * Returns `'awaiting-peer'` when initialize failed only because no machine that can answer for
+   * the strand's blocks was reachable: that attempt's database is closed and the node keeps
+   * running. Any other failure throws, with the attempt's database left with its gate for
    * {@link releaseRuntime} to close.
    *
    * A client node's database (`roles.strandCohortMember: false`) is published as soon as it
@@ -1377,14 +1383,20 @@ export class StrandInstanceManager {
     try {
       await strandDb.initialize();
     } catch (error) {
-      if (!isCohortUnreachableRead(error)) {
+      // The two shapes of "nobody who can answer for this strand's blocks is reachable yet": a
+      // cohort member that could not be asked (a joining replica whose seed is silent, a founder
+      // whose cohort is), and no coordinator resolvable at all (a client, whose own cohort is
+      // empty by construction, so every block falls through to `findCoordinator`). Any other
+      // failure — a schema that cannot apply here, a refused signature — fails the launch, which
+      // is what matching one error class by type each buys over reading the message.
+      if (!isCohortUnreachableRead(error) && !isNoCoordinatorResolved(error)) {
         throw error;
       }
       await this.discardDatabaseAttempt(strandId, gate);
-      log('Strand %s: no seed peer has answered yet, so this joiner cannot build its database (%s); ' +
-        'its runtime stays up and the build is retried every %dms',
+      log('Strand %s: no machine that can answer for this strand is reachable yet, so this launch ' +
+        'cannot build its database (%s); its runtime stays up and the build is retried every %dms',
         strandId, describeThrown(error), UNREACHABLE_JOIN_RETRY_MS);
-      return 'awaiting-seed';
+      return 'awaiting-peer';
     }
     timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
     if (this.firstSyncGates.get(strandId) !== gate) {
@@ -1544,22 +1556,29 @@ export class StrandInstanceManager {
   }
 
   /**
-   * Keep a launch `'syncing'` when its database could not be built because no seed peer has
-   * answered yet, and retry the database build every {@link UNREACHABLE_JOIN_RETRY_MS} on the
-   * runtime already up.
+   * Keep a launch `'syncing'` when its database could not be built because no machine that can
+   * answer for the strand's blocks was reachable, and retry the database build every
+   * {@link UNREACHABLE_JOIN_RETRY_MS} on the runtime already up. Which launches reach here and
+   * why waiting beats refusing: `docs/strands/lifecycle.md` → "A launch with nobody to answer
+   * waits". What makes each of them unable to build:
    *
-   * Optimystic (since 1.11.0) will not rule a block never-created while any of a node's
-   * `bootstrapNodes` is unheard, so a joiner alone with an unreachable seed cannot build even
-   * the schema catalog: `strandDb.initialize()` fails with `cohort-unreachable`. A founder
-   * given a seed is refused the same way (normally it has none: no sibling runs the strand yet). Refusing is
-   * right (building it alone would fork the catalog), but failing the launch would drop the
-   * strand until the watcher relaunched it, and `addStrand` would reject with a raw Optimystic
-   * error. Deferring gives a joiner the same contract the first-sync gate gives one that did
+   * - **A joining storage replica whose seed is silent.** Optimystic (since 1.11.0) will not rule
+   *   a block never-created while any of a node's `bootstrapNodes` is unheard, so a joiner alone
+   *   with an unreachable seed cannot build even the schema catalog: `strandDb.initialize()` fails
+   *   `cohort-unreachable`.
+   * - **A founder whose cohort is unreachable.** Its membership writes run inside `initialize()`
+   *   and fail the same way. Normally a founder has no seed (no sibling runs the strand yet) and
+   *   commits alone, so this is the founder given one.
+   * - **A client** (`roles.strandCohortMember: false`) with no serving machine reachable. Its own
+   *   cohort is empty by construction, so the schema-catalog write — and a client founder's
+   *   membership writes — fall through to `findCoordinator`, which resolves nobody at all.
+   *
+   * Deferring gives every one of them the contract the first-sync gate gives a joiner that did
    * build: the strand stays tracked, {@link whenWritable} waits and rejects with the retryable
-   * `StrandAwaitingFirstSyncError`, and the launch proceeds once a seed peer answers.
+   * `StrandAwaitingFirstSyncError`, and the launch proceeds once a machine answers.
    *
-   * The libp2p node, its connections and the background loops stay up meanwhile. A seed peer
-   * can answer just after the schema read gave up on it — on a slow link it connects and its
+   * The libp2p node, its connections and the background loops stay up meanwhile. A peer can
+   * answer just after the schema read gave up on it — on a slow link it connects and its
    * peer-join backfill delivers the whole store — and the retry then builds the database, and
    * runs the first-sync probe, while that peer is still connected.
    */
@@ -1577,7 +1596,7 @@ export class StrandInstanceManager {
    * One retry scheduled by {@link deferUnreachableJoin}: the database phase again, on the
    * runtime still attached. Skipped when the strand was stopped or released since — a quiesce
    * releases it and the resume after rebuilds the whole runtime — or already has a database.
-   * A failure other than an unanswered seed releases the runtime and marks the strand
+   * A failure other than an unreachable machine releases the runtime and marks the strand
    * `'error'`, as a failed resume does, unless it is a refusal of a claim's schema the replica
    * can fall back from ({@link buildJoinDatabaseOrReplica}).
    */
@@ -1606,10 +1625,11 @@ export class StrandInstanceManager {
       });
       instance.status = 'error';
       instance.error = describeThrown(error);
-      log('Strand %s: building the database of a joiner that was waiting for a seed peer failed: %s', strandId, instance.error);
+      log('Strand %s: building the database of a launch that was waiting for a reachable machine failed: %s',
+        strandId, instance.error);
       return;
     }
-    if (build === 'awaiting-seed' && this.isCurrentRuntime(instance, node) && !this.isQuiescing(strandId)) {
+    if (build === 'awaiting-peer' && this.isCurrentRuntime(instance, node) && !this.isQuiescing(strandId)) {
       this.deferUnreachableJoin(instance);
     }
   }
@@ -2467,7 +2487,8 @@ export class StrandInstanceManager {
    * Whether `strandId` is launched but still waiting for its first sync — a joiner whose
    * runtime is up while its database is withheld (status `'syncing'`, or `'idle'` after
    * the hibernation manager's idle timer fired on it), including one whose database build
-   * waits for a seed peer to answer ({@link deferUnreachableJoin}). `false` for a writable,
+   * waits for a machine that can answer for the strand to be reachable
+   * ({@link deferUnreachableJoin}). `false` for a writable,
    * quiesced, or untracked strand. The predicate {@link whenWritable}'s callers gate on.
    */
   isAwaitingFirstSync(strandId: string): boolean {

@@ -96,7 +96,7 @@ In offline mode a strand commit resolves as soon as the transaction is saved on 
 
 The queue belongs to Optimystic's Quereus plugin (its README, "Offline mode"; design in Optimystic's `docs/offline-sync.md`). Sereus composes it into [the strand connection](#the-strand-connection) and [the cadre node](#on-a-cadre-node), and [the edge node](#on-the-edge-node) supplies the journal on the phone and in the browser.
 
-On a [machine that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks) a queued transaction waits for a serving machine: the node's own reachability gate reads its empty cluster as closed, so nothing is committed alone. No read is served from a local copy there either, because there is none; a read with no serving machine reachable fails, retryably.
+On a [machine that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks) a queued transaction waits for a serving machine: the node's own reachability gate reads its empty cluster as closed, so nothing is committed alone. No read is served from a local copy there either, because there is none; a read with no serving machine reachable fails, retryably. A launch on such a machine that could not open its database has no queue at all — the queue is made per database build, so there is nothing to write into until the launch gets one ([A launch with nobody to answer waits](lifecycle.md#a-launch-with-nobody-to-answer-waits)).
 
 ### What a local acknowledgement promises
 

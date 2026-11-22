@@ -125,7 +125,22 @@ The watcher runs 100 ms after it starts and then whenever `CadreControl.Strand` 
 
 - **A failed launch** is retried after a delay that starts at 5 seconds, doubles per failure, and stops growing at 5 minutes. Each failed attempt emits `strand:error`. Attempts never stop, because the usual cause is a network or storage fault that can last a long time.
 - **A failed read** of the control tables is retried after a delay that grows from 5 to 60 seconds. A table's change subscription starts at its first successful read, so without this retry a machine whose first read failed would hear nothing until the backstop.
+- **A launch with nobody to answer for the strand's blocks** keeps its runtime up and retries only the database phase, rather than failing ([A launch with nobody to answer waits](#a-launch-with-nobody-to-answer-waits)).
 - **A launch that can never succeed** is not retried: an invalid strand id, or an app schema that cannot apply to the tables the strand holds ([A schema that can never apply here is not retried](app-schema.md#a-schema-that-can-never-apply-here-is-not-retried)).
+
+#### A launch with nobody to answer waits
+
+A launch whose database cannot be built because no machine that can answer for the strand's blocks is reachable does not fail. The strand's network node, its connections and its background loops stay up, the instance reports `'syncing'` with no database, and the database phase alone is retried every 5 seconds on that same node. Failing instead would drop the strand until the watcher rebuilt the whole runtime on the doubling delay above, and `addStrand` would reject with a raw Optimystic error rather than the retryable one below.
+
+Three launches reach this state, for the same reason in three shapes:
+
+- **A joining machine whose seed peer has not answered.** Optimystic will not rule a block absent while a configured seed peer is unanswered, so such a machine cannot build even the schema catalog ([Joining: no writes before the first sync](formation.md#joining-no-writes-before-the-first-sync)).
+- **A founder whose cluster is unreachable.** Its membership writes run inside the same database open, and fail the same way. Normally a founder has no seed peer and commits alone, so this is a founder that was given one.
+- **A machine that holds no strand blocks, with no serving machine reachable.** Its own cluster is empty, so every write its launch makes — the schema catalog, and a founding machine's membership rows — resolves no coordinator at all ([A node that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks)).
+
+Founding waits rather than being refused, because [founding is safe to repeat](#founding-is-safe-to-repeat): each attempt opens a fresh database and re-runs the bootstrap, which skips the rows already written. A party whose only machine holds no strand blocks therefore retries for as long as it has no serving machine. That is what the state means — one appearing fixes it — and refusing would be a per-machine rule a party works around by founding from a different machine, which is the better deployment anyway: the always-on machine founds the strand and the phones run it as clients.
+
+What the app sees is the contract a gated joiner gets. `addStrand` waits, because the instance has no database, and rejects with the retryable `StrandAwaitingFirstSyncError` after `CadreNodeConfig.strandFirstSync.timeoutMs`. Nothing is torn down, and the same call made again once a machine is reachable completes the attach.
 
 ### What a launch does
 

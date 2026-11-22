@@ -25,10 +25,14 @@
  *      that serve this strand", which is what a serving sibling's offline queue waits for.
  *
  * The two serving machines come up through `joinStrandOn` (full mesh, cohort barrier at 2). The
- * client is launched after them, so a serving machine is reachable from its launch seed: a client
- * cannot open the strand database with no serving machine reachable (ticket
- * `client-strand-waits-for-a-serving-machine` owns what happens then). Its strand node is then
- * dialed to both servers by hand, so the scenario's claims do not ride on seed timing.
+ * client is launched after them, so a serving machine is reachable from the start. Its strand node
+ * is then dialed to both servers by hand, so the scenario's claims do not ride on seed timing.
+ *
+ * The SECOND test reverses that order: the client opens the strand with no serving machine running
+ * it at all. A client's own cohort is empty by construction, so the schema-catalog write of its
+ * launch resolves no coordinator — and the launch must WAIT rather than fail, keeping its runtime
+ * up and retrying the database phase alone, which is what a joining storage replica whose seed is
+ * silent already gets (`docs/strands/lifecycle.md` → "Retries").
  *
  * LIMIT THIS SCENARIO STATES: at the default strand cluster size (4) every block lives on both
  * serving machines, so "both hold it" and "the client holds nothing" are both exact. Nothing here
@@ -68,10 +72,23 @@ const CONVERGE_BUDGET_MS = 30_000;
  */
 const SERVER_BLOCK_FLOOR = 4;
 
+/**
+ * How long the second test gives the deferred database build to succeed once a serving machine is
+ * reachable. Several periods of `StrandInstanceManager`'s retry timer (5 s, not exported), plus an
+ * in-flight attempt's own coordinator-lookup window — not the number of retries, which is what the
+ * cadre-core unit suite pins.
+ */
+const RETRY_LADDER_BUDGET_MS = 60_000;
+
 /** Every machine's strand node plus its control node: six libp2p nodes, each with a converge wait. */
 const TEST_TIMEOUT_MS = 180_000;
 
 const PARTY = 'A';
+
+/** The same open-strand row `joinStrandOn` launches its members from, for a client's own launch. */
+function openStrandRow(strandId: string): StrandRow {
+	return { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
+}
 
 /**
  * The slice of db-p2p's node attachments this scenario reads. `servesBlocks` and `coordinatedRepo`
@@ -180,8 +197,7 @@ describe('A strand node that holds no blocks', () => {
 		try {
 			const strandId = `strand-client-${Date.now()}`;
 			const sApp = createSignedSAppConfig(await loadChatSimpleSchema(), '1.0.0');
-			// The same open-strand row `joinStrandOn` launches its members from, for the client's launch.
-			const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
+			const strandRow = openStrandRow(strandId);
 
 			// ── The two serving machines found and join the strand, meshed, each seeing the other ──
 			const [founderStrand, secondStrand] = await joinStrandOn({
@@ -250,6 +266,65 @@ describe('A strand node that holds no blocks', () => {
 			const rows = await strandPeerRowIds(servers[0], strandId);
 			expect(new Set(rows), 'the row set is exactly the machines that serve the strand').toEqual(new Set(serverPeerIds));
 			expect(await strandPeerRowIds(client, strandId)).not.toContain(clientPeerId);
+		} finally {
+			await topology.stop();
+		}
+	}, TEST_TIMEOUT_MS);
+
+	/**
+	 * The reproduction of `client-strand-waits-for-a-serving-machine`: before it, this launch threw
+	 * out of `addStrand` and the whole strand was dropped until `StrandWatcher` rebuilt it from
+	 * scratch on a doubling delay capped at five minutes.
+	 *
+	 * The client opens the strand while NO machine runs it. Its own cohort is empty, so the
+	 * schema-catalog write falls through to `findCoordinator`, which resolves nobody. What must
+	 * happen instead of a failed launch: the runtime stays up `'syncing'` with no database, the
+	 * database phase alone is retried on the SAME libp2p node, and the strand becomes writable once
+	 * a serving machine is reachable. The same-instance, same-node assertions after the wait are
+	 * what separate "the deferred database build finished" from "the watcher relaunched the strand".
+	 */
+	it('keeps a client up and retries its database until a serving machine is reachable', async () => {
+		const { topology, servers, client } = await bootMachines();
+		try {
+			const strandId = `strand-client-waits-${Date.now()}`;
+			const sApp = createSignedSAppConfig(await loadChatSimpleSchema(), '1.0.0');
+			const strandRow = openStrandRow(strandId);
+
+			// ── The client opens the strand with nobody serving it ──
+			// `awaitFirstSync: false` so the call returns the gated instance instead of spending
+			// `strandFirstSync.timeoutMs` on the `StrandAwaitingFirstSyncError` an app would get.
+			const clientStrand = await client.node.addStrand({ strandRow, sAppConfig: sApp, awaitFirstSync: false });
+			expect(clientStrand.status, 'the launch stayed up rather than failing').toBe('syncing');
+			expect(clientStrand.database, 'no coordinator could be resolved to write the schema catalog through').toBeUndefined();
+			const clientNode = strandNodeOf(clientStrand, 'client');
+			expect(clientNode.status, 'the strand node is running, so a serving machine can be reached through it').toBe('started');
+			expect(clientNode.servesBlocks, 'the strand node was built as an Optimystic client').toBe(false);
+
+			// ── The serving machines come up and are dialed, as a seed answering late would do ──
+			const [founderStrand, secondStrand] = await joinStrandOn({
+				strandId, sAppConfig: sApp, members: servers, timeoutMs: CONVERGE_BUDGET_MS,
+			});
+			const serverNodes = [strandNodeOf(founderStrand!, 'server 0'), strandNodeOf(secondStrand!, 'server 1')] as const;
+			for (const [i, server] of serverNodes.entries()) {
+				await connectStrandNodes(clientNode, 'client', server, `server ${i}`, CONVERGE_BUDGET_MS);
+			}
+
+			// ── The deferred database build finds them, on the runtime that never went down ──
+			// Several retry periods: the build is retried on a timer, and an attempt that started
+			// just before the dial spends its own coordinator-lookup window before the next one.
+			await waitUntil(() => clientStrand.database !== undefined, {
+				timeoutMs: RETRY_LADDER_BUDGET_MS, intervalMs: 250,
+				description: "the client's deferred database build reaches a serving machine",
+			});
+			expect(client.node.getStrand(strandId), 'the same instance: nothing was torn down and relaunched').toBe(clientStrand);
+			expect(clientStrand.libp2pNode, 'the same strand node: only the database phase was retried').toBe(clientNode);
+			expect(clientStrand.status, 'a client is treated as synced, so its database is published at once').toBe('active');
+
+			// ── And the strand is writable: the client's write commits through a serving machine ──
+			await insertParticipantAndMessage(databaseOf(clientStrand, 'client'), 'client', 'msg-waited-1');
+			const seenOnServer = await awaitMessage(databaseOf(secondStrand!, 'server 1'), 'msg-waited-1',
+				"server 1 reads the message the client wrote once it had somewhere to send it");
+			expect(seenOnServer).toEqual([{ Id: 'msg-waited-1', ParticipantId: 'client' }]);
 		} finally {
 			await topology.stop();
 		}
