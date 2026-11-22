@@ -19,7 +19,8 @@ import type { StrandNetworkStateStore } from './strand-network-state.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
-import type { CadreInviteSignedFields, OwnerGrantSignedFields, RevocableTable } from './control-authorization.js';
+import type { CadreInviteSignedFields, OwnerGrantSignedFields, RevocableTable, StrandPeerRole } from './control-authorization.js';
+export type { StrandPeerRole } from './control-authorization.js';
 import type { FoundingInvite } from './control-database.js';
 import type { CadreInvitation } from './cadre-invite-protocol.js';
 import type { OwnerGrantBundle } from './owner-grant-protocol.js';
@@ -2510,14 +2511,6 @@ export interface OwnerGrantRedemptionResult {
   alreadyOwner: boolean;
   seatedStampId: string;
 }
-
-/**
- * What a machine states about its part in one strand on its `CadreControl.StrandPeer` row.
- * `'client'`: it runs the strand without storing any of its blocks (`NodeRoles.strandCohortMember`
- * off). A serving machine states no role (`null` on the row), which is also what every row written
- * before the column existed means.
- */
-export type StrandPeerRole = 'client';
 
 /**
  * One `CadreControl.StrandPeer` row: a machine's own signed statement of the peer id it uses

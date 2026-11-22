@@ -156,7 +156,7 @@ A version that needs existing rows rewritten would add a new table and a pass th
 2. Raise `CONTROL_SCHEMA_VERSION`. The tag in `schemas/control.qsql` is a literal and must match. Every change to the declared schema raises the version, including additive ones. A comment-only edit does not.
 3. Copy `schemas/control.qsql` to `packages/cadre-core/test/fixtures/control-schema/v<N>.qsql` for the new version. A fixture is never edited once a release has shipped it.
 4. Run `control-schema-versions.spec.ts`. It requires a fixture for every version from the baseline to the build's, and fails on any `unmigratable` statement between consecutive fixtures.
-5. If the change alters the arguments of a signed digest, keep the old form verifiable. Stored rows were signed over it, so readers accept the old form for rows whose new fields are null, and writers sign the new form. Record the change in that spec's `CHANGED_DIGESTS` list.
+5. If the change alters the arguments of a signed digest, keep the old form verifiable. Stored rows were signed over it, so readers accept the old form for rows whose new fields are null, and writers sign the new form only for a row that sets one of them. A writer that signed the new form over a row with those fields null would make every machine still on the older release drop that row. Record the change in that spec's `CHANGED_DIGESTS` list.
 
 ### The start-time check
 

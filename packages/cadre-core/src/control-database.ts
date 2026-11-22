@@ -584,13 +584,25 @@ function pendingPartyKeyOfRow(row: Record<string, SqlValue>): PendingStrandParty
 /** The columns every `StrandPeer` read takes, as {@link strandPeerRowOf} maps them. */
 const STRAND_PEER_COLUMNS = 'StrandId, PeerId, StrandPeerId, Role, Sig';
 
-/** A stored `StrandPeer` row as {@link StrandPeerRow}; a row written before the `Role` column existed reads as a serving machine's. */
+/**
+ * A stored `StrandPeer.Role` as this build knows it. Null, and a row written before the column
+ * existed, read as a serving machine's. A value this build does not know also reads as null, and
+ * the row then fails {@link verifyStrandPeerRow}, whose digest omits a null role, and is dropped:
+ * a reader acts only on roles it knows, as a version-4 reader drops a row marked `'client'`. Such
+ * a value reaches a store only from a machine that bypassed its own `KnownStrandPeerRole` check,
+ * or from a later schema version that adds one.
+ */
+function strandPeerRoleOf(value: SqlValue): StrandPeerRole | null {
+  return value === 'client' ? value : null;
+}
+
+/** A stored `StrandPeer` row as {@link StrandPeerRow}. */
 function strandPeerRowOf(row: Record<string, SqlValue>): StrandPeerRow {
   return {
     strandId: row.StrandId as string,
     peerId: row.PeerId as string,
     strandPeerId: row.StrandPeerId as string,
-    role: (row.Role as StrandPeerRole | null) ?? null,
+    role: strandPeerRoleOf(row.Role),
     sig: row.Sig as string,
   };
 }
@@ -3553,7 +3565,7 @@ export class ControlDatabase {
    *   control peer id. A callback for the reason {@link updateSelfPeerRecord} takes one: this
    *   class holds no private key.
    */
-  async insertStrandPeer(row: { strandId: string; strandPeerId: string; role: StrandPeerRole | null }, sign: ControlSign): Promise<boolean> {
+  async insertStrandPeer(row: Omit<StrandPeerSignedFields, 'peerId'>, sign: ControlSign): Promise<boolean> {
     this.ensureInitialized();
     const peerId = this.config.libp2pNode.peerId.toString();
     const fields: StrandPeerSignedFields = { strandId: row.strandId, peerId, strandPeerId: row.strandPeerId, role: row.role };

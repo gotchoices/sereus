@@ -27,11 +27,8 @@
  *
  * This module deliberately has no Quereus / Optimystic / libp2p imports so the
  * lightweight verifiers (`peer-authorization.ts`, consumed by the offline
- * `cadre enroll register` check) can use it without pulling in the runtime. Its one
- * import is type-only and erased.
+ * `cadre enroll register` check) can use it without pulling in the runtime.
  */
-
-import type { StrandPeerRole } from './types.js';
 
 /**
  * Names of the CadreControl tables, in schema order. The single list: the
@@ -207,6 +204,14 @@ export function ownerGrantRowFields(row: OwnerGrantSignedFields): string[] {
     row.stampId,
   ];
 }
+
+/**
+ * What a machine states about its part in one strand on its `CadreControl.StrandPeer` row.
+ * `'client'`: it runs the strand without storing any of its blocks (`NodeRoles.strandCohortMember`
+ * off). A serving machine states no role (`null` on the row), which is also what every row written
+ * before the column existed means. The schema's `KnownStrandPeerRole` check admits the same values.
+ */
+export type StrandPeerRole = 'client';
 
 /**
  * The `StrandPeer` columns its `'add'` signature binds, in the schema's order. Structurally
