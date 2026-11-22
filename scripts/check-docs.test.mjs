@@ -94,3 +94,16 @@ test('a directory index must name every file in its directory, and only those', 
 	assert.match(stale.stderr, /no entry for .*b\.integration\.ts/);
 	assert.match(stale.stderr, /names gone\.integration\.ts, which is not in/);
 });
+
+test('a link into a submodule is refused even with the target present on disk', () => {
+	// The main checkout has the submodule populated, which is how these links shipped: `existsSync`
+	// is satisfied there, while a fresh worktree gets an empty directory and GitHub serves nothing.
+	const result = run({
+		'.gitmodules': '[submodule "rules"]\n\tpath = vendor/rules\n\turl = https://example.invalid/rules.git\n',
+		'vendor/rules/guide.md': '# Guide\n',
+		'README.md': '# Root\n\n[the guide](vendor/rules/guide.md)\n\n[the submodule](vendor/rules/)\n',
+	});
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /README\.md:3: link into the "rules" submodule: vendor\/rules\/guide\.md/);
+	assert.match(result.stderr, /README\.md:5: link into the "rules" submodule: vendor\/rules\//);
+});

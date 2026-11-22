@@ -36,7 +36,7 @@ The integration suite runs one file at a time, because scenarios bind real ports
 
 ## What a ticket stage must run
 
-The stage rules are owned by [tess/agent-rules/tickets.md](../../tess/agent-rules/tickets.md). This table restates what they require, as root commands:
+The stage rules are owned by [tess/agent-rules/tickets.md](https://github.com/gotchoices/tess/blob/main/agent-rules/tickets.md). This table restates what they require, as root commands:
 
 | Stage | Owes before handing off |
 |---|---|
@@ -106,11 +106,11 @@ A failing test is never skipped, commented out or loosened to get a green run. I
 1. Look for the test in `tickets/.pre-existing-known.md`. An entry marked `in-flight` or `blocked` is tracked by the ticket it names: say in the handoff that the failure is known and continue. An entry marked `one-off` was diagnosed without a ticket: follow the check its record describes, and report only if the failure is back.
 2. Otherwise write `tickets/.pre-existing-error.md` with the command, the failing test and the error, and finish the ticket. The runner triages it afterwards.
 
-[tess/agent-rules/tickets.md](../../tess/agent-rules/tickets.md) has the full procedure.
+[tess/agent-rules/tickets.md](https://github.com/gotchoices/tess/blob/main/agent-rules/tickets.md) has the full procedure.
 
 ### Scratch worktrees and clones
 
-To check a fresh install by hand, add the worktree or clone beside this repository, so that `../optimystic` and `../quereus` resolve for the root `resolutions`. For most purposes `yarn check:published` is the safer scratch copy, because it removes the links before it deletes anything.
+To check a fresh install by hand, add the worktree or clone beside this repository, so that `../optimystic` and `../quereus` resolve for the root `resolutions`. For most purposes `yarn check:published` is the safer scratch copy, because it removes the links before it deletes anything. A worktree carries no submodule contents: `tess/` is created empty there, which is why documentation may not link into it ([Documentation](gates.md#documentation)).
 
 Never delete such a checkout recursively while its `node_modules` holds `link:` junctions; [tickets/rules/sibling-repos.md](../../tickets/rules/sibling-repos.md) states the rule and what it protects. To remove one, find the junctions by walking the tree without following reparse points, unlink each with a non-recursive delete (`[System.IO.Directory]::Delete(<link>, $false)` in PowerShell), and only then remove the directory. If that is not possible, leave the checkout in place and say so in the ticket.
 
@@ -120,7 +120,7 @@ Scenarios live in `packages/integration-tests/src/scenarios` and run real nodes 
 
 ### The default is no new test
 
-A ticket adds a test when the test reproduces the bug being fixed, at the lowest layer that reproduces it, or when it pins a named rule on logic with real branching. It does not add one for wiring, constants, or anything a type, a lint rule or a check script already enforces. A change that owes no test ships with none, and a reviewer removes tests that fail this bar. The rule is owned by "Tests must pay for themselves" in [tess/agent-rules/tickets.md](../../tess/agent-rules/tickets.md). Before writing a scenario, check [topology-coverage.md](topology-coverage.md) for one that already boots the shape.
+A ticket adds a test when the test reproduces the bug being fixed, at the lowest layer that reproduces it, or when it pins a named rule on logic with real branching. It does not add one for wiring, constants, or anything a type, a lint rule or a check script already enforces. A change that owes no test ships with none, and a reviewer removes tests that fail this bar. The rule is owned by "Tests must pay for themselves" in [tess/agent-rules/tickets.md](https://github.com/gotchoices/tess/blob/main/agent-rules/tickets.md). Before writing a scenario, check [topology-coverage.md](topology-coverage.md) for one that already boots the shape.
 
 ### Asserting a quantity that has to travel between machines
 
