@@ -57,6 +57,7 @@ import {
 	readBlockIndex,
 	awaitBlockCoverage,
 	readCohort,
+	strandPeerRoles,
 	waitForCohortOn,
 	waitUntil,
 	CONTROL_COHORT_PROBE_KEY,
@@ -154,15 +155,6 @@ async function pickCoordinator(node: StrandNode, label: string): Promise<string>
 		throw new Error(`${label}: strand node carries no keyNetwork attachment`);
 	}
 	return (await node.keyNetwork.findCoordinator(CONTROL_COHORT_PROBE_KEY)).toString();
-}
-
-/** Every `StrandPeer` row for `strandId` as `reader`'s control database holds them: strand peer id to role. */
-async function strandPeerRoles(reader: TopologyMachine, strandId: string): Promise<Map<string, string | null>> {
-	const control = reader.node.getControlDatabase();
-	if (!control) {
-		throw new Error(`${reader.party}[${reader.index}]: no control database`);
-	}
-	return new Map((await control.queryStrandPeers(strandId)).map((row) => [row.strandPeerId, row.role]));
 }
 
 interface Machines {
@@ -263,18 +255,18 @@ describe('A strand node that holds no blocks', () => {
 			]);
 
 			// ── 6. Every machine published a StrandPeer row, the client's marked `client` ──
-			await waitUntil(async () => (await strandPeerRoles(servers[0], strandId)).size >= 3, {
+			await waitUntil(async () => (await strandPeerRoles(servers[0].node, strandId, 'server 0')).size >= 3, {
 				timeoutMs: CONVERGE_BUDGET_MS, intervalMs: 250,
 				description: 'all three machines have published their StrandPeer rows',
 			});
-			const roles = await strandPeerRoles(servers[0], strandId);
+			const roles = await strandPeerRoles(servers[0].node, strandId, 'server 0');
 			expect(new Set(roles.keys()), 'the row set is every machine that runs the strand').toEqual(new Set([...serverPeerIds, clientPeerId]));
 			expect(roles.get(clientPeerId), "the client's row says it stores none of the strand").toBe('client');
 			for (const [i, peerId] of serverPeerIds.entries()) {
 				expect(roles.get(peerId), `server ${i}'s row carries no role, which means it serves`).toBeNull();
 			}
 			// The client reads its own row back, so its write reached its own control database too.
-			expect([...(await strandPeerRoles(client, strandId)).keys()]).toContain(clientPeerId);
+			expect([...(await strandPeerRoles(client.node, strandId, 'client')).keys()]).toContain(clientPeerId);
 		} finally {
 			await topology.stop();
 		}

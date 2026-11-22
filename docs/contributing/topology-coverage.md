@@ -103,7 +103,7 @@ The claim, invitation and provider scenarios start real `cadre-cli` child proces
 | A machine enrolled after the strand has rows, with writes continuing during its enrollment | `strand-late-cadre-join.integration.ts` | A write forced into the gap between catch-up and replication (ticket `debt-late-join-catch-up-seam-is-never-forced`) |
 | An always-on storage replica without the app; the phone is lost and a replacement phone joins | `strand-always-on-replica-survives-phone-loss.integration.ts` | A closed strand |
 | Three machines on a strand with cluster size 2, so each block is on two of them; change notifications | `strand-reactivity-wakes-watchers.integration.ts` | — |
-| Two always-on members and a `device` whose `strandCohortMember` role is off; the chat schema; the client writes and reads through the two serving machines, which hold every block, and is in nobody's cluster; and a client opened with none of them running the strand, which waits and becomes writable | `strand-client-node-holds-no-blocks.integration.ts` | The client's strand node is hand-dialed to the servers; a closed strand |
+| Two always-on members and a `device` whose `strandCohortMember` role is off; the chat schema; the client writes and reads through the two serving machines, which hold every block, and is in nobody's cluster; and a client opened with none of them running the strand, which waits and becomes writable | `strand-client-node-holds-no-blocks.integration.ts` | The client's strand node is hand-dialed to the servers; the strand is open, so no membership rows and no party key |
 | Two machines; the strand is removed party-wide and the sibling stops its instance | `strand-unpublish-sibling-convergence.integration.ts` | Closed strands; a removal committed while alone; the remover running the strand itself |
 
 ## Strands across parties: forming and joining
@@ -131,6 +131,7 @@ The claim, invitation and provider scenarios start real `cadre-cli` child proces
 | 2×2 joined by formation, every membership row written by the runtime; removal; a rejoin attempt after removal | `strand-party-removal-via-formation-e2e.integration.ts` | Relayed connections; discovery beyond the pair formation seeds (the rest is hand-dialed) |
 | A three-machine party and a one-machine party on a closed strand the first founded; a machine is removed with the always-on replica online, and with it offline | `machine-removal-rotates-party-key.integration.ts` | Relayed connections; a machine that returns after a key replacement it missed |
 | The same removal in a strand the other party manages; a fresh invitation seats the new key | `party-key-rotation-across-parties.integration.ts` | Relayed connections; the replica offline during the removal |
+| One party of three serving machines and a `device` whose `strandCohortMember` role is off, on a closed strand the owner founded; one serving machine is removed, and the client is bound under the replacement key and keeps writing | `client-survives-party-key-replacement.integration.ts` | Relayed connections; a client whose `StrandPeer` row reaches the remover only after the replacement; the client's own refusal of the removed machine, which the run drives rather than waits for |
 
 ## Relay and reachability
 
