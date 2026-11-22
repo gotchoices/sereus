@@ -242,7 +242,6 @@ Notes on reading them:
 **What it checks.** `yarn check:docs` runs `scripts/check-docs.mjs`, and `yarn lint` runs it after ESLint. It reads every Markdown file that git tracks, or would track because it is not ignored, except the files under `tickets/` and `tess/` and the generated `.release-notes.pending.md`. It checks three things.
 
 - **Links resolve.** A relative link must name a file or directory that exists. A `#fragment` on a Markdown target must match a heading in that file, or an explicit `<a id>`. Fragments follow GitHub's rule: lowercase, punctuation removed, spaces to hyphens, and `-1`, `-2` appended to a repeated heading. Links inside fenced code are not checked.
-- **No link into a submodule.** A link that resolves to a path declared in `.gitmodules`, or to anything under it, fails even when the file is on disk. A submodule's directory is empty in a fresh worktree, so such a link breaks `yarn check:published`, and GitHub serves nothing under the parent repository's path for a submodule, so it is a dead link for every reader on the web. Link the submodule's own repository URL instead, on its branch rather than the pinned commit, so the link tracks the current contents and survives a submodule bump.
 - **Size budgets hold.** Fenced code is not counted. Headings and table rows count toward the document total.
 - **Directory indexes are complete.** A document listed in `INDEXES` in the script promises one entry for each file in a directory. Every file there must be named in the document, and every such name in the document must be a file there.
 
@@ -253,6 +252,8 @@ Notes on reading them:
 | A table cell | 50 |
 
 A link of the form `https://github.com/gotchoices/sereus/blob/master/…` (or `tree/master`) is checked as a local path. Package READMEs are published to npm, where relative links out of the package are dead, so they link to `docs/` by that URL.
+
+A link that resolves to a path declared in `.gitmodules`, or to anything under it, fails the link check even when the file is on disk. A submodule's directory is empty in a fresh worktree, so such a link breaks `yarn check:published`, and GitHub serves nothing under the parent repository's path for a submodule, so it is dead for every reader on the web. Link the submodule's own repository URL instead, on its branch rather than the commit the submodule is pinned to, so the link tracks the rules currently in force and survives a submodule bump.
 
 The budgets exist because a document read at the start of every task is paid for on every task, and because a list item that carries ten claims hides nine of them. A document over its limit is split by topic. A paragraph over its limit becomes several, or a headed section.
 

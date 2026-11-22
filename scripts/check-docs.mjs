@@ -123,7 +123,7 @@ function submodules() {
 	if (!existsSync(join(rootDir, '.gitmodules'))) return submodulePathsCache;
 	let out;
 	try {
-		out = execFileSync('git', ['config', '--file', '.gitmodules', '--get-regexp', String.raw`^submodule\..*\.path$`], {
+		out = execFileSync('git', ['config', '--file', '.gitmodules', '--get-regexp', '-z', String.raw`^submodule\..*\.path$`], {
 			cwd: rootDir,
 			encoding: 'utf8',
 		});
@@ -133,9 +133,12 @@ function submodules() {
 		if (error.status !== 1) throw error;
 		return submodulePathsCache;
 	}
-	for (const line of out.split('\n').filter(Boolean)) {
-		const [key, path] = line.split(' ');
-		submodulePathsCache.push({ name: key.slice('submodule.'.length, -'.path'.length), path });
+	// `-z` prints each match as `key\nvalue\0`, so a space in either the submodule's name or its
+	// path cannot be mistaken for the separator.
+	for (const record of out.split('\0').filter(Boolean)) {
+		const newline = record.indexOf('\n');
+		const key = record.slice(0, newline);
+		submodulePathsCache.push({ name: key.slice('submodule.'.length, -'.path'.length), path: record.slice(newline + 1) });
 	}
 	return submodulePathsCache;
 }
