@@ -2512,9 +2512,18 @@ export interface OwnerGrantRedemptionResult {
 }
 
 /**
+ * What a machine states about its part in one strand on its `CadreControl.StrandPeer` row.
+ * `'client'`: it runs the strand without storing any of its blocks (`NodeRoles.strandCohortMember`
+ * off). A serving machine states no role (`null` on the row), which is also what every row written
+ * before the column existed means.
+ */
+export type StrandPeerRole = 'client';
+
+/**
  * One `CadreControl.StrandPeer` row: a machine's own signed statement of the peer id it uses
- * in one strand. {@link ControlDatabase.queryStrandPeers} returns only rows whose `sig`
- * verifies; whether `peerId` is a live or removed machine is its caller's question.
+ * in one strand, and of whether it serves the strand. {@link ControlDatabase.queryStrandPeers}
+ * returns only rows whose `sig` verifies; whether `peerId` is a live or removed machine is its
+ * caller's question.
  */
 export interface StrandPeerRow {
   strandId: string;
@@ -2522,7 +2531,9 @@ export interface StrandPeerRow {
   peerId: string;
   /** That machine's peer id in the strand's own network (`strandTransportKey`). */
   strandPeerId: string;
-  /** The machine's signature over the `'add'` digest (`strandPeerAddDigest`). */
+  /** `'client'` when the machine stores none of the strand, null when it serves it. Fixed when the row is written. */
+  role: StrandPeerRole | null;
+  /** The machine's signature over the `'add'` digest (`strandPeerAddDigest`), in the form `role` selects. */
   sig: string;
 }
 

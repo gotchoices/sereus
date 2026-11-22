@@ -10,7 +10,7 @@ import { Parser } from '@quereus/quereus';
  * docs/cadre/control-schema.md → "Schema versions and migrations", enforced by
  * `control-schema-versions.spec.ts`.
  */
-export const CONTROL_SCHEMA_VERSION = 4;
+export const CONTROL_SCHEMA_VERSION = 5;
 
 /**
  * The first control schema version whose fixture is kept, and the oldest a store can be
@@ -600,12 +600,25 @@ declare schema CadreControl {
         )
     ) with context (OwnerKey text null, Signature text);
 
-    -- Each machine's own signed statement of the peer id it uses in one strand. That id derives from
-    -- the machine's private identity seed (cadre-core strandTransportKey), so no other machine can
-    -- compute it, and a machine removal needs it to tell the removed machine's Strand.MemberPeer
-    -- binding from its siblings'. A row is a permanent fact: the derivation is deterministic, and a
-    -- removed machine's rows are how its orphaned bindings stay attributed to it. So no stamp, no
-    -- tombstone and no delete, and no Revocation.RowIsGone branch.
+    -- Each machine's own signed statement of the peer id it uses in one strand, and of whether it
+    -- serves that strand (Role). The id derives from the machine's private identity seed (cadre-core
+    -- strandTransportKey), so no other machine can compute it, and a machine removal needs it to tell
+    -- the removed machine's Strand.MemberPeer binding from its siblings'. A row is a permanent fact:
+    -- the derivation is deterministic, and a removed machine's rows are how its orphaned bindings
+    -- stay attributed to it. So no stamp, no tombstone and no delete, and no Revocation.RowIsGone
+    -- branch. Being immutable, the row fixes the role at the machine's first publish for the strand.
+    -- Role: null means the machine serves the strand, that is, stores its blocks, because that is
+    -- what every row written before the column existed meant; 'client' means it runs the strand
+    -- without storing any of it (docs/concepts.md). Per strand rather than per machine, because a
+    -- node's strandCohortMember role is a node setting and nothing stops one node from being
+    -- reconfigured between strands.
+    -- Two signed forms, because the framed digest is injective over its field list. A row with Role
+    -- null is signed over (StrandId, PeerId, StrandPeerId), exactly as under version 4, so a serving
+    -- machine's row is byte-identical to one written then and a machine still on version 4 verifies
+    -- it. A row with Role set is signed over those three and Role; a version-4 machine verifies it
+    -- against the three-field form, fails, and drops it, which leaves that machine where it was
+    -- before the client had a row. One digest over coalesce(Role, '') would instead change the form
+    -- every serving machine signs, and a version-4 reader would then drop every new serving row.
     -- The check defers (it has a subquery), so a CadrePeer row written in the same transaction
     -- counts. A node that does not hold the machine's CadrePeer row yet refuses the insert, and the
     -- writer tries again later. The check runs only on the node that takes the insert, and it cannot
@@ -616,11 +629,16 @@ declare schema CadreControl {
         StrandId text,              -- a Strand.Id or JoinedStrand.Id
         PeerId text,                -- the machine's control peer id (CadrePeer.PeerId)
         StrandPeerId text,          -- that machine's peer id in the strand's own network
-        Sig text,                   -- the machine's signature over the 'add' digest
+        Role text null,             -- null: the machine serves the strand; 'client': it stores none of it
+        Sig text,                   -- the machine's signature over the 'add' digest, in the form Role selects
         primary key (StrandId, PeerId),
         constraint Immutable check on update, delete (false),
+        constraint KnownStrandPeerRole check (new.Role is null or new.Role = 'client'),
         constraint Authorized check on insert (
-            exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and verify(digest('CadreControl.StrandPeer', 'add', party_id(), new.StrandId, new.PeerId, new.StrandPeerId), new.Sig, P.PublicKey, 'ed25519'))
+            exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and (
+                (new.Role is null and verify(digest('CadreControl.StrandPeer', 'add', party_id(), new.StrandId, new.PeerId, new.StrandPeerId), new.Sig, P.PublicKey, 'ed25519'))
+                or (new.Role is not null and verify(digest('CadreControl.StrandPeer', 'add', party_id(), new.StrandId, new.PeerId, new.StrandPeerId, new.Role), new.Sig, P.PublicKey, 'ed25519'))
+            ))
         )
     );
 

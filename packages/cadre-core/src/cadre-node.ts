@@ -10749,7 +10749,9 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     try {
-      const written = await this.controlDatabase.insertStrandPeer({ strandId, strandPeerId }, ed25519MessageSigner(signingKey.privateKeyB64));
+      // role: null, the serving machine's. Only a serving machine reaches this: StrandInstanceManager
+      // publishes a row for a strand node only when the node serves the strand's blocks.
+      const written = await this.controlDatabase.insertStrandPeer({ strandId, strandPeerId, role: null }, ed25519MessageSigner(signingKey.privateKeyB64));
       this.strandPeerRowsHeld.add(strandId);
       this.deferredStrandPeerWrites.delete(strandId);
       log('StrandPeer row for strand %s %s (this machine is %s there)', strandId, written ? 'written' : 'already present', strandPeerId);

@@ -22,7 +22,7 @@ Every table is replicated to every node of the party. The table groups related t
 | `Strand` | The party's own strands: id, open or closed, a closed strand's read secret, and the owner key and machine that founded it. | `publishStrand` and `unpublishStrand`. The machine that answers a formation seats a row when the invitation is not bound to a strand. | The strand watcher on every machine, which starts and stops strand instances. |
 | `StrandPartyKey` | The party's own membership private key for one closed strand. | `publishStrand` for a closed strand; `unpublishStrand` removes it with the strand row; a key rotation replaces it. | A node signing strand membership rows as the party. |
 | `PendingStrandPartyKey` | The key the party's membership in one closed strand is moving to during a rotation, sealed to the machines that remain. | `removeMachine`, in the transaction that removes the machine. The rotation deletes the row when it finishes. | The remaining machines, which finish the rotation. |
-| `StrandPeer` | Each machine's signed statement of the peer id it uses in one strand. | Each machine, at every strand launch and resume. | The reconciler that binds the party's machines in a closed strand; machine removal; the offline write queue. |
+| `StrandPeer` | Each machine's signed statement of the peer id it uses in one strand, and of whether it serves the strand or runs it as a client. | Each machine, at every strand launch and resume. | The reconciler that binds the party's machines in a closed strand; machine removal; the offline write queue. |
 | `JoinedStrand` | Strands the party joined from another party: id, type and a closed strand's read secret. | Owner nodes, which publish a join after recording it on the machine. Removed by `forgetJoinedStrand`. | The strand watcher on every machine. |
 | `JoinRequest` | A join the party asked for through another party's invitation: the invitation, the disclosure and a deadline. | `requestJoin` and `dismissPendingJoin`. | The pending-join retry loop on every owner node; `listPendingJoins`. |
 | `JoinSuccess`, `JoinFailure` | The outcome of one `JoinRequest`, keyed by the request's stamp. | The owner node whose retry loop finished the join (`ControlDatabase.recordJoinOutcome`). | `listPendingJoins`; the retry loop. |
@@ -74,7 +74,7 @@ Formation consent is narrower. It seats only an open strand with no read secret,
 
 ### A machine's own signature
 
-A machine signs what only it can know with its identity key: its address record and always-on declaration in `CadrePeer`, its push token in `DeviceToken`, its strand peer id in `StrandPeer`. The check verifies against the `PublicKey` stored in the machine's `CadrePeer` row. The schema cannot confirm that this key is the one behind `PeerId`, so readers derive the key from the peer id and verify again.
+A machine signs what only it can know with its identity key: its address record and always-on declaration in `CadrePeer`, its push token in `DeviceToken`, its strand peer id in `StrandPeer`. The check verifies against the `PublicKey` stored in the machine's `CadrePeer` row. The schema cannot confirm that this key is the one behind `PeerId`, so readers derive the key from the peer id and verify again. A `StrandPeer` row is signed over its role when it has one and over the three older fields when it has none, so rows from before version 5 still verify.
 
 ## Party binding
 

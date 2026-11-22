@@ -32,7 +32,12 @@ const FIXTURE_NAME = /^v(\d+)\.qsql$/;
  * version that changed it. A stored row's signature was made over the old form, so each entry's
  * comment names where the old form is still verified for rows written before the change.
  */
-const CHANGED_DIGESTS: ReadonlyArray<{ readonly version: number; readonly table: string; readonly action: string }> = [];
+const CHANGED_DIGESTS: ReadonlyArray<{ readonly version: number; readonly table: string; readonly action: string }> = [
+	// v5 added a second form, over Role too, for a row that states one. A row with Role null keeps the
+	// three-field form every earlier row was signed over; `StrandPeer.Authorized` and
+	// `strandPeerRowFields` (control-authorization.ts) still verify it.
+	{ version: 5, table: 'StrandPeer', action: 'add' },
+];
 
 /** Every fixture's text by version, line endings as LF so the variants below can anchor on them. */
 async function readFixtures(): Promise<Map<number, string>> {

@@ -9,7 +9,7 @@ import type { CadreMachine, RevocationRow, StrandPeerRow } from '../src/types.js
  */
 
 function row(peerId: string, strandPeerId: string): StrandPeerRow {
-  return { strandId: 'strand', peerId, strandPeerId, sig: 'sig' };
+  return { strandId: 'strand', peerId, strandPeerId, role: null, sig: 'sig' };
 }
 
 function machine(peerId: string, trusted: boolean): CadreMachine {
