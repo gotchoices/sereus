@@ -140,6 +140,8 @@ function freshPartyId(tag) {
 function controlNodeConfig({ partyId, profile, keyStore, storage }) {
 	return {
 		keyStore,
+		// A Node process on a desktop or server, as the reference CLI declares it.
+		nodeClass: 'server',
 		controlNetwork: { partyId, bootstrapNodes: [] },
 		profile,
 		storage: { provider: storage },
@@ -328,6 +330,7 @@ async function restartAndReRead() {
 
 const SCHEMA = 'table Note (Id text primary key);';
 const VERSION = '1.0.0';
+const SCHEMA_VERSION = 1;
 
 const strandId = (tag) => `warm-${tag}-${Math.random().toString(36).slice(2)}`;
 
@@ -341,7 +344,8 @@ const strandId = (tag) => `warm-${tag}-${Math.random().toString(36).slice(2)}`;
  */
 async function signedSApp() {
 	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(await generateKeyPair('Ed25519'));
-	return { id: publicKeyB64, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, privateKeyB64) };
+	const signed = { version: VERSION, schemaVersion: SCHEMA_VERSION, schema: SCHEMA };
+	return { id: publicKeyB64, ...signed, signature: signSchema(signed, privateKeyB64) };
 }
 
 /**
