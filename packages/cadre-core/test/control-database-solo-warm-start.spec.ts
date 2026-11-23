@@ -72,8 +72,27 @@ import type { CadreNodeConfig, StrandInstance, StrandRow } from '../src/types.js
  * case change, change them in both rather than inventing new ones.
  */
 
-/** Per-operation budget. Every operation here answers from local rows; this only catches hangs. */
+/**
+ * Per-operation budget for the reads and the single-row writes: `hasOwnerKey`, `getOwnerKeys`,
+ * `queryCadrePeers`, `queryRevokedStamps` and the strand-member select answer from local rows,
+ * and `registerSelf`, `removePeer` and a blackhole peer's enrolment cost one commit each. This
+ * only catches hangs.
+ *
+ * NOT for `ensureOwnerKey`, which does real durable work — see {@link GENESIS_TIMEOUT_MS}.
+ */
 const OP_TIMEOUT_MS = 15_000;
+/**
+ * `ensureOwnerKey` on a party with no owner key founds the party: it gives all 35 control
+ * collections their empty history, which is 37 durable commits and 74 fsyncs before the owner row
+ * is even inserted (NOTE on `ControlDatabase.commitEmptyControlCollections`), ~2 s on
+ * `FileRawStorage` idle. Bounding that with {@link OP_TIMEOUT_MS} made it a throughput measurement
+ * wearing a hang detector's clothes — green at 8 ms per fsync, red at 100 ms with nothing wrong,
+ * which is what failed under outside CPU load (`tickets/.pre-existing-known.md`). So it gets the
+ * bound the PRODUCT gives the same step, `DEFAULT_OWNER_GENESIS_TIMEOUT_MS` in
+ * `src/edge-node/config.ts`: a test bound tighter than that reports a failure the product would
+ * not. Still bounded, and 28× the measured idle cost, so a genuine hang fails here.
+ */
+const GENESIS_TIMEOUT_MS = 60_000;
 /** `start()`/`stop()` bring libp2p up and down — a looser budget, still bounded. */
 const LIFECYCLE_TIMEOUT_MS = 30_000;
 /**
@@ -138,7 +157,7 @@ async function foundCohort(node: CadreNode, siblingCount: number): Promise<{
 }> {
 	const owner = await createOwnerKey(new InMemoryKeyStore());
 	const db = node.getControlDatabase()!;
-	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(owner.publicKey))).toBe(true);
+	expect(await within('ensureOwnerKey() (genesis)', GENESIS_TIMEOUT_MS, () => db.ensureOwnerKey(owner.publicKey))).toBe(true);
 	await node.useOwnerSigner(owner);
 	expect(await within('registerSelf() (genesis)', OP_TIMEOUT_MS, () => node.registerSelf())).toBe('inserted');
 
@@ -369,7 +388,7 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				// read must not have left the control DB in a state that refuses the
 				// owner-key write it never saw coming.
 				const owner = await createOwnerKey(new InMemoryKeyStore());
-				expect(await within('ensureOwnerKey() (post-addStrand)', OP_TIMEOUT_MS,
+				expect(await within('ensureOwnerKey() (post-addStrand)', GENESIS_TIMEOUT_MS,
 					() => db.ensureOwnerKey(owner.publicKey))).toBe(true);
 				await node.useOwnerSigner(owner);
 				expect(await within('registerSelf() (post-addStrand)', OP_TIMEOUT_MS, () => node.registerSelf()))

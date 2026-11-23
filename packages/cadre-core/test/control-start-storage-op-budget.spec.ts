@@ -8,7 +8,7 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
 
 /**
  * **What this protects: the NUMBER of raw-storage operations a control-database
- * start performs.**
+ * start and a party's founding perform.**
  *
  * Bringing `ControlDatabase` up is neither CPU- nor network-bound. Its duration is
  * (operations issued against `IRawStorage`) × (what one such operation costs on the
@@ -48,17 +48,29 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * safe. If a run ever comes out a few operations off rather than wildly over, that
  * non-determinism is itself the finding; do not paper over it by widening the budget.
  *
+ * Three phases: the cold start, the warm restart, and {@link GENESIS} — founding the party, which
+ * is 16× the cold start on its own and was unbudgeted here until 2026-11-23, when its growth
+ * surfaced as two flaky hang detectors elsewhere instead of as a number.
+ *
  * Companions: `control-database-solo.spec.ts` (same cadre-of-one shape, asserting
  * behaviour rather than cost), `control-database-solo-warm-start.spec.ts` (the
  * file-backed warm start, whose per-operation deadlines are hang detectors — this
  * spec is the reason they should not have to be widened), and
- * `control-founding-consult-budget.spec.ts` (the other half of the cost: cohort
+ * `control-founding-consult-budget.spec.ts` (the other half of founding's cost: cohort
  * consults and commits, which happen above the write-through cache and never reach
- * the storage counted here — including the genesis this spec leaves unbudgeted).
+ * the storage counted here).
  */
 
 /** `start()`/`stop()` bring libp2p up and down; a bounded budget, only a hang detector. */
 const LIFECYCLE_TIMEOUT_MS = 30_000;
+/**
+ * Founding the party is neither a lifecycle call nor a local-row read: it makes 37 durable
+ * commits ({@link GENESIS}). Bounded where the PRODUCT bounds the same step,
+ * `DEFAULT_OWNER_GENESIS_TIMEOUT_MS` in `src/edge-node/config.ts` — the reasoning is spelled out
+ * on `control-database-solo-warm-start.spec.ts`'s `GENESIS_TIMEOUT_MS`, where a 15 s bound on this
+ * call was failing under outside load. Only a hang detector; the COUNTS are what this spec asserts.
+ */
+const GENESIS_TIMEOUT_MS = 60_000;
 
 /** `within` scoped to this spec's failure label: `storage-op-budget control op <label> …`. */
 const within = scopedWithin('storage-op-budget');
@@ -73,9 +85,12 @@ const within = scopedWithin('storage-op-budget');
  * assertion below therefore also embeds the breakdown in its own message, so a FAILURE is
  * self-diagnosing (which method grew, over how many blocks) without a re-run.
  *
- * When a change moves a number, update BOTH the measurement and its date here — a budget
+ * When a change moves a number, update BOTH the measurement and its date — a budget
  * with no provenance cannot tell the next reader whether the count grew or the budget was
- * always wrong.
+ * always wrong. Each {@link Budget} carries its own date and substrate, because the phases were
+ * not all measured at the same time or against the same Optimystic.
+ *
+ * The date the COLD and WARM figures were last taken.
  */
 const MEASURED_ON = '2026-11-03';
 /**
@@ -91,6 +106,15 @@ const MEASURED_ON = '2026-11-03';
  * grew by the blocks of its two tables and one stamp tree alone.
  */
 const BASELINE_UPSTREAM = 'optimystic fe7069f0';
+/**
+ * The substrate the GENESIS figures were measured against — an npm release rather than an
+ * `../optimystic` commit like {@link BASELINE_UPSTREAM}, because on the day they were taken the
+ * linked sibling checkout was mid-change and this suite would not start against it, so they come
+ * from a `yarn check:published` worktree. Kept as its own constant rather than folded into
+ * {@link BASELINE_UPSTREAM}: one constant naming two different substrates could not tell the next
+ * reader which phase moved against what.
+ */
+const GENESIS_UPSTREAM = 'npm optimystic 1.29.1';
 /**
  * Cold: first-ever start against empty storage — 19 control tables and 3 indexes
  * created. 63 operations over 38 blocks: 21 genuine writes over 3 blocks, one
@@ -116,8 +140,17 @@ const BASELINE_UPSTREAM = 'optimystic fe7069f0';
  * among them, were not measured one at a time; nothing else moved), 63 over 38 with the 19-table
  * schema at optimystic fe7069f0 (2026-11-03; three more `getMetadata` blocks; nothing else moved). The same batched start measured 88 uncached on 2026-09-14 (57 of them `getMetadata`), so a
  * run near 90 that is mostly `getMetadata` means the cache has left the path.
+ *
+ * Observed at 65 over the same 38 blocks against {@link GENESIS_UPSTREAM} on 2026-11-23 — the run
+ * that took the genesis figures, in a `yarn check:published` worktree. Two operations above the 63
+ * at {@link BASELINE_UPSTREAM}, comfortably inside the budget; WHICH two was not determined,
+ * because the linked checkout could not be started that day. The figure above is deliberately left
+ * at its own substrate rather than restated against another.
  */
-const COLD: Budget = { ops: 63, blocks: 38, opBudget: 73, blockBudget: 42 };
+const COLD: Budget = {
+	ops: 63, blocks: 38, opBudget: 73, blockBudget: 42,
+	measuredOn: MEASURED_ON, upstream: BASELINE_UPSTREAM
+};
 /**
  * Warm: a second start against the store the cold one left behind — the catalog
  * hydrates instead of the schema being applied. 13 operations over 3 blocks: a
@@ -148,11 +181,45 @@ const COLD: Budget = { ops: 63, blocks: 38, opBudget: 73, blockBudget: 42 };
  * the 19-table schema at {@link BASELINE_UPSTREAM} (2026-11-03). 13 is still a cold cache: the 3-op signature the
  * tripwire names is a SHARED storage instance, which reads the catalog once and nothing else.
  */
-const WARM: Budget = { ops: 13, blocks: 3, opBudget: 17, blockBudget: 5 };
+const WARM: Budget = {
+	ops: 13, blocks: 3, opBudget: 17, blockBudget: 5,
+	measuredOn: MEASURED_ON, upstream: BASELINE_UPSTREAM
+};
+/**
+ * Genesis: `ensureOwnerKey` on a party that has none. It gives all 35 control collections (19
+ * tables, 3 indexes, 13 `unique` columns) their empty history and then inserts the founding
+ * `OwnerKey` row — 37 durable commits, one collection at a time. 1,010 operations over 105
+ * distinct blocks, plus 183 `flush` barriers.
+ *
+ * Budgeted here because nothing else notices this cost as a NUMBER. It surfaced instead as two
+ * flaky hang detectors in `control-database-solo-warm-start.spec.ts` once the step had grown from
+ * 750–820 ms (2026-10-20) to 2.0–2.9 s on `FileRawStorage`, which is the failure mode the head
+ * comment describes: wall clock stays green on an idle machine while the device-facing behaviour
+ * gets worse. The counts are deterministic — byte-identical across six runs, and the same over
+ * `MemoryRawStorage` and `FileRawStorage` — which is what makes a budget this close safe.
+ *
+ * **The barrier arm is not optional padding here.** On disk the barriers ARE the cost: `flush`
+ * 183× took 1.4–1.5 s of a 2.1 s run, two per commit, while every non-barrier method together
+ * took under 40 ms. A change that doubled the fsyncs per commit without writing one extra block
+ * would double the genesis on a phone and pass an operations-only budget untouched.
+ *
+ * This is also the phase a batched-commit API would collapse — the request is
+ * `blocked/report-control-genesis-commits-one-collection-at-a-time`, and the lever it asks for is
+ * fewer commits, not cheaper ones (issuing the syncs concurrently was measured and does not help;
+ * see the NOTE on `syncInventedCollections` in `@serfab/quereus-plugin-sereus`). When it lands and
+ * is adopted, every figure here drops a long way at once; the FLOORS in
+ * {@link expectWithinBudget} are what make that drop announce itself instead of leaving stale
+ * headroom behind.
+ */
+const GENESIS: Budget = {
+	ops: 1010, blocks: 105, opBudget: 1100, blockBudget: 115,
+	barriers: { measured: 183, budget: 200 },
+	measuredOn: '2026-11-23', upstream: GENESIS_UPSTREAM
+};
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {
-	/** Operations the phase issued when it was measured, on {@link MEASURED_ON}. */
+	/** Operations the phase issued when it was measured. */
 	ops: number;
 	/** Distinct blocks it touched when it was measured. */
 	blocks: number;
@@ -160,6 +227,18 @@ interface Budget {
 	opBudget: number;
 	/** Ceiling for distinct blocks; a run above it means new persistent structures. */
 	blockBudget: number;
+	/**
+	 * Durability barriers the phase issued, and the ceiling above them. Omitted for a phase that
+	 * issues none worth pinning — a start commits nothing, so its barrier count is noise, while
+	 * {@link GENESIS} pays two per commit and that is where its wall clock goes.
+	 * `OpSnapshot.barriers` is deliberately outside {@link ops}, so a phase that pays barriers
+	 * needs this arm or a change in them is invisible to the budget.
+	 */
+	barriers?: { measured: number; budget: number };
+	/** The date these figures were measured. */
+	measuredOn: string;
+	/** The substrate they were measured against — {@link BASELINE_UPSTREAM} or {@link GENESIS_UPSTREAM}. */
+	upstream: string;
 }
 
 // `StorageOpCounter`, `CountingRawStorage` and the formatters live in
@@ -182,11 +261,11 @@ interface Budget {
  * `--reporter=verbose` to learn that.
  */
 function expectWithinBudget(phase: string, snapshot: OpSnapshot, budget: Budget): void {
-	const provenance = `measured ${budget.ops} ops over ${budget.blocks} distinct blocks on ${MEASURED_ON} at ${BASELINE_UPSTREAM}`;
+	const provenance = `measured ${budget.ops} ops over ${budget.blocks} distinct blocks on ${budget.measuredOn} at ${budget.upstream}`;
 	const breakdown = `This run, calls/distinct-blocks by method: ${formatBreakdown(snapshot)}.`;
 	expect(
 		snapshot.total,
-		`${phase} start issued ${snapshot.total} raw-storage operations, over the budget of ${budget.opBudget} (${provenance}). `
+		`${phase} issued ${snapshot.total} raw-storage operations, over the budget of ${budget.opBudget} (${provenance}). `
 		+ 'Start duration is operations × per-operation storage latency, so this is a real slowdown on a loaded disk or a phone. '
 		+ 'This fires FIRST when a control table is added too — check the distinct-block budget below before reading it as pure slowdown. '
 		+ 'A count about double the measurement, mostly repeated getMetadata reads, means the write-through cache (cached-storage.ts in @serfab/quereus-plugin-sereus) has left the path. '
@@ -195,7 +274,7 @@ function expectWithinBudget(phase: string, snapshot: OpSnapshot, budget: Budget)
 
 	expect(
 		snapshot.distinctBlocks,
-		`${phase} start touched ${snapshot.distinctBlocks} distinct blocks, over the budget of ${budget.blockBudget} (${provenance}). `
+		`${phase} touched ${snapshot.distinctBlocks} distinct blocks, over the budget of ${budget.blockBudget} (${provenance}). `
 		+ 'More distinct blocks means new persistent structures, not more redundancy — check what was added rather than widening the total budget. '
 		+ `The total-operation budget above will have fired on the same cause; widen both deliberately or neither. ${breakdown}`
 	).toBeLessThanOrEqual(budget.blockBudget);
@@ -205,14 +284,46 @@ function expectWithinBudget(phase: string, snapshot: OpSnapshot, budget: Budget)
 	const floor = Math.floor(budget.ops / 2);
 	expect(
 		snapshot.total,
-		`${phase} start issued only ${snapshot.total} raw-storage operations, far below the ${provenance}. `
+		`${phase} issued only ${snapshot.total} raw-storage operations, far below the ${provenance}. `
 		+ 'Either this spec is no longer measuring the real storage path (check that the node is still given this storage), '
 		+ `or the amplification genuinely improved — in which case re-measure and TIGHTEN the budget rather than leaving the headroom. ${breakdown}`
 	).toBeGreaterThan(floor);
+
+	if (budget.barriers) expectBarriersWithinBudget(phase, snapshot, budget.barriers, breakdown);
+}
+
+/**
+ * The barrier arm, for a phase whose wall clock is barriers rather than block operations
+ * ({@link Budget.barriers}). Two-sided for the same two reasons the operation arms are, and the
+ * floor matters more here than anywhere else in the spec: the whole point of asking Optimystic to
+ * commit several collections as one transaction is to delete most of these, so the improvement we
+ * are waiting for is precisely what this floor catches and makes someone re-measure.
+ */
+function expectBarriersWithinBudget(
+	phase: string,
+	snapshot: OpSnapshot,
+	barriers: { measured: number; budget: number },
+	breakdown: string
+): void {
+	const issued = snapshot.barriers.reduce((sum, m) => sum + m.calls, 0);
+	expect(
+		issued,
+		`${phase} issued ${issued} durability barriers, over the budget of ${barriers.budget} (measured ${barriers.measured}). `
+		+ 'A barrier touches no block, so the operation budgets above cannot see this: on disk two fsyncs per commit are two thirds '
+		+ 'of this phase, and a change that added one per commit would slow a phone down while every other assertion here passed. '
+		+ `Check what began committing more often, or committing in smaller pieces, before widening this. ${breakdown}`
+	).toBeLessThanOrEqual(barriers.budget);
+
+	expect(
+		issued,
+		`${phase} issued only ${issued} durability barriers, far below the ${barriers.measured} measured. `
+		+ 'If commits were batched (blocked/report-control-genesis-commits-one-collection-at-a-time), this is the improvement we asked for: '
+		+ `re-measure every figure for this phase and TIGHTEN it. Otherwise the writes are no longer being made durable. ${breakdown}`
+	).toBeGreaterThan(Math.floor(barriers.measured / 2));
 }
 
 describe('control database start, raw-storage operation budget', () => {
-	it('stays within its operation budget on a cold start and on a warm restart', async () => {
+	it('stays within its operation budget on a cold start, a warm restart and genesis', async () => {
 		const partyId = freshPartyId('storage-op-budget');
 		const keyStore = new InMemoryKeyStore();
 		const counter = new StorageOpCounter();
@@ -235,6 +346,7 @@ describe('control database start, raw-storage operation budget', () => {
 		const first = new CadreNode(config());
 		let ownerPublicKey: string;
 		let cold: OpSnapshot;
+		let genesis: OpSnapshot;
 		try {
 			counter.reset();
 			await within('first.start() (cold)', LIFECYCLE_TIMEOUT_MS, () => first.start());
@@ -242,15 +354,22 @@ describe('control database start, raw-storage operation budget', () => {
 			cold = counter.snapshot();
 			console.log(formatSnapshot('storage-op-budget', 'cold start', cold));
 
-			// Genesis AFTER the snapshot, so it costs the cold budget nothing. Its
-			// purpose is the warm run below: without a written row, a warm start that
-			// silently came up on an empty database would be indistinguishable from one
-			// that hydrated, and the warm budget would be measuring the wrong path.
+			// --- Genesis: founding the party, its own phase ----------------------------
+			// Genesis sits after the cold snapshot so it costs the COLD budget nothing —
+			// it is a founding write, not part of coming up — and it is counted on its
+			// own because it is by far the most expensive thing this spec drives (1,010
+			// operations against the cold start's 63). It serves the warm run below too:
+			// without a written row, a warm start that silently came up on an empty
+			// database would be indistinguishable from one that hydrated, and the warm
+			// budget would be measuring the wrong path.
 			ownerPublicKey = (await createOwnerKey(new InMemoryKeyStore())).publicKey;
 			const db = first.getControlDatabase();
 			expect(db).not.toBeNull();
-			expect(await within('ensureOwnerKey() (genesis)', LIFECYCLE_TIMEOUT_MS, () => db!.ensureOwnerKey(ownerPublicKey)))
+			counter.reset();
+			expect(await within('ensureOwnerKey() (genesis)', GENESIS_TIMEOUT_MS, () => db!.ensureOwnerKey(ownerPublicKey)))
 				.toBe(true);
+			genesis = counter.snapshot();
+			console.log(formatSnapshot('storage-op-budget', 'genesis', genesis));
 		} finally {
 			await within('first.stop()', LIFECYCLE_TIMEOUT_MS, () => first.stop());
 		}
@@ -278,7 +397,8 @@ describe('control database start, raw-storage operation budget', () => {
 			await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
 		}
 
-		expectWithinBudget('cold', cold, COLD);
-		expectWithinBudget('warm', warm, WARM);
+		expectWithinBudget('cold start', cold, COLD);
+		expectWithinBudget('warm start', warm, WARM);
+		expectWithinBudget('genesis', genesis, GENESIS);
 	}, 180_000);
 });

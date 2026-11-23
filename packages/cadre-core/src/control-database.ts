@@ -2075,14 +2075,27 @@ export class ControlDatabase {
    * machine, possibly alone, where committing one would be exactly the fork genesis avoids.
    *
    * NOTE: one `sync()` per collection, in sequence: 35 collections for today's schema (19 tables,
-   * 3 indexes, 13 `unique` columns), 32 when this was measured. Measured 2026-10-20 on a lone `CadreNode` over the network
-   * transactor (started, then `ensureOwnerKey` alone, 3 runs each): 64–105 ms in memory and
-   * 750–820 ms on `FileRawStorage`, about 25 ms per collection on disk, roughly 1/75 of the edge
-   * node's 60 s `DEFAULT_OWNER_GENESIS_TIMEOUT_MS`. Under the whole cadre-core suite's load (151
-   * geneses) it took a median of 159 ms and at most 4.6 s. If genesis latency starts to matter
-   * (phone flash under launch contention runs 50–90 ms per storage operation, see the NOTE in
-   * `initialize`), ask Optimystic for an API that commits them as one batch, the one strand
-   * founding would use too; do not build a private batching path.
+   * 3 indexes, 13 `unique` columns). Measured 2026-11-23 against npm Optimystic 1.29.1 on a lone
+   * `CadreNode` over the network transactor (started, then `ensureOwnerKey` alone, 6 runs each):
+   * 1,010 raw-storage operations over 105 distinct blocks, plus 183 `flush` durability barriers —
+   * byte-identical run to run and the same on either backend — taking 2.0–2.9 s on `FileRawStorage`
+   * and 0.1–0.35 s in memory, so about 1/25 of the edge node's 60 s
+   * `DEFAULT_OWNER_GENESIS_TIMEOUT_MS`. The counts are budgeted by
+   * `control-start-storage-op-budget.spec.ts`'s genesis phase.
+   *
+   * On disk the cost is the BARRIERS, not the writes: of a 2.1 s run, `flush` 183× cost 1.4–1.5 s
+   * and every non-barrier method together under 40 ms. 74 of those barriers — one at pend and one
+   * at commit, for each of the 37 commits this step makes — are two thirds of the whole step; the
+   * other 109 are the per-block shortfall-ledger flushes, which coalesce behind an already-sealed
+   * commit and are nearly free. So the lever is FEWER COMMITS rather than cheaper ones: ask
+   * Optimystic for an API that commits several collections as one transaction, the one strand
+   * founding would use too (requested in
+   * `blocked/report-control-genesis-commits-one-collection-at-a-time`); do not build a private
+   * batching path. Issuing the syncs concurrently instead was measured and does not help — the
+   * file store's write group serializes them (NOTE on `syncInventedCollections` in
+   * `@serfab/quereus-plugin-sereus`'s `empty-collections.ts`). Genesis latency matters most where
+   * each storage operation is dear: phone flash under launch contention runs 50–90 ms per
+   * operation (see the NOTE in `initialize`).
    */
   private async commitEmptyControlCollections(): Promise<void> {
     const t0 = performance.now();

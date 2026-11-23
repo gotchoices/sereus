@@ -109,6 +109,15 @@ function mainCollectionId(table: TableSchema): CollectionId {
 	return (uri.startsWith('tree://') ? uri.slice('tree://'.length) : uri) as CollectionId;
 }
 
+/**
+ * NOTE: the sequential `await` is not the bottleneck — do not re-try making these concurrent.
+ * Measured 2026-11-23 against npm Optimystic 1.29.1, founding a control database's 35
+ * collections over `FileRawStorage`: issuing every `sync()` together and awaiting them as one
+ * `Promise.all` took 1,701/1,967/2,568 ms against 2,004/2,103/2,170 ms sequential, which is no
+ * improvement — the file store's write group serializes the syncs regardless. The cost is the two
+ * durability barriers each commit pays, so the only lever is committing several collections as one
+ * transaction (NOTE on `ControlDatabase.commitEmptyControlCollections`).
+ */
 async function syncInventedCollections(
 	registry: ReadonlyMap<CollectionId, Collection<unknown>>,
 	excludedMainIds: readonly CollectionId[]
