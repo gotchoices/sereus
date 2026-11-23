@@ -20,7 +20,7 @@
  *    `p-timeout` stayed unseen until the device boot audit of 2026-09-16 reported
  *    `DOMException` missing: `p-timeout` is not listed, keeps its code in `index.js` with no
  *    `dist`, and has further copies under `../optimystic/packages/db-p2p/node_modules` and
- *    `../Fret/packages/fret/node_modules`.
+ *    `../fret/packages/fret/node_modules`.
  *  - A global reached through a computed property name (`globalThis[name]`) is invisible
  *    to it.
  *  - It reads comments and string literals too, and cannot tell them from code. Several

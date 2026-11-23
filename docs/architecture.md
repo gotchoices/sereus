@@ -81,7 +81,7 @@ graph TD
     QPS --> O["@optimystic/*<br/>(../optimystic)"]
     CORE --> Q
     CORE --> O
-    O --> F["p2p-fret<br/>(../Fret)"]
+    O --> F["p2p-fret<br/>(../fret)"]
     O --> LIBP2P
 ```
 
@@ -93,7 +93,7 @@ Three facts in this graph are easy to get wrong:
 
 ### Sibling repositories
 
-Quereus, Optimystic and FRET are separate projects. The root `package.json` links `@quereus/quereus` and every `@optimystic/*` package to checkouts beside this repository, `../quereus` and `../optimystic`, through its `resolutions` block. `p2p-fret` is a dependency of `@optimystic/db-p2p`, not of any package here; a local Optimystic checkout links it from `../Fret`.
+Quereus, Optimystic and FRET are separate projects. The root `package.json` links `@quereus/quereus` and every `@optimystic/*` package to checkouts beside this repository, `../quereus` and `../optimystic`, through its `resolutions` block. `p2p-fret` is a dependency of `@optimystic/db-p2p`, not of any package here; a local Optimystic checkout links it from `../fret`.
 
 The Optimystic packages used are `db-core`, `db-p2p` (which builds each libp2p node and the network transactor), the two Quereus plugins `quereus-plugin-optimystic` and `quereus-plugin-crypto`, and one storage backend per platform: `db-p2p-storage-fs`, `-web`, `-rn` and `-ns`. The sibling checkouts are read-only from this repository; [Testing](contributing/testing.md) gives the rules.
 

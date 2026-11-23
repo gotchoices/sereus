@@ -45,7 +45,7 @@
  *  - FRET dials addressed ring members it is not connected to: when a neighbour
  *    departs (`announceOnDeparture` — the edge scenario's sever of A triggers it
  *    within a millisecond), when new peers appear, after bootstrap, and on
- *    stabilization (`../Fret/packages/fret/src/service/fret-service.ts`).
+ *    stabilization (`../fret/packages/fret/src/service/fret-service.ts`).
  *
  * Both are intended; in production B SHOULD reach C through them. Measured
  * 2026-09-16 with a dial stack logged in B's gater: 3 of 9 edge-scenario runs

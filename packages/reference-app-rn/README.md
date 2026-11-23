@@ -26,7 +26,7 @@ A chat app for Android and iOS that runs a Sereus cadre node on the phone, built
 	└── Fret/
 	```
 
-	The root `package.json` links the `@optimystic/*` and `@quereus/quereus` packages from `../optimystic` and `../quereus`, and Optimystic links `p2p-fret` from `../Fret`. `metro.config.js` names all three as linked roots, so Metro can follow those links. Without `../Fret` a local bundle fails with "Unable to resolve module p2p-fret".
+	The root `package.json` links the `@optimystic/*` and `@quereus/quereus` packages from `../optimystic` and `../quereus`, and Optimystic links `p2p-fret` from `../fret`. `metro.config.js` names all three as linked roots, so Metro can follow those links. Without `../fret` a local bundle fails with "Unable to resolve module p2p-fret".
 
 - An EAS build does not use the sibling checkouts: `scripts/eas-build-pre-install.sh` removes the links before install, and the packages come from npm.
 

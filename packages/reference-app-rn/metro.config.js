@@ -6,7 +6,7 @@ const { getDefaultConfig } = require('expo/metro-config');
 const { withCadreMetro } = require('@serfab/cadre-rn/metro');
 const path = require('path');
 
-// optimystic/db-p2p portals `p2p-fret` (the FRET DHT) from the sibling ../Fret monorepo,
+// optimystic/db-p2p portals `p2p-fret` (the FRET DHT) from the sibling ../fret monorepo,
 // so Metro must be allowed to follow that symlink out to Fret's real path or the release
 // bundle fails with "Unable to resolve module p2p-fret". On EAS the portal resolutions are
 // stripped (see scripts/eas-build-pre-install.sh) and p2p-fret comes from npm, so, exactly
@@ -19,7 +19,7 @@ const path = require('path');
 const workspaceRoot = path.resolve(__dirname, '../..');
 const optimysticRoot = path.resolve(__dirname, '../../../optimystic');
 const quereusRoot = path.resolve(__dirname, '../../../quereus');
-const fretRoot = path.resolve(__dirname, '../../../Fret');
+const fretRoot = path.resolve(__dirname, '../../../fret');
 
 // NOTE: accepted tradeoff — whole repo roots are watched, tickets/ and docs/
 // included; no resolver.blockList. Measured 2026-09-16: a write outside the bundle's
