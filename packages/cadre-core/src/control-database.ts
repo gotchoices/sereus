@@ -2084,10 +2084,13 @@ export class ControlDatabase {
    * `control-start-storage-op-budget.spec.ts`'s genesis phase.
    *
    * On disk the cost is the BARRIERS, not the writes: of a 2.1 s run, `flush` 183× cost 1.4–1.5 s
-   * and every non-barrier method together under 40 ms. 74 of those barriers — one at pend and one
-   * at commit, for each of the 37 commits this step makes — are two thirds of the whole step; the
-   * other 109 are the per-block shortfall-ledger flushes, which coalesce behind an already-sealed
-   * commit and are nearly free. So the lever is FEWER COMMITS rather than cheaper ones: ask
+   * and every non-barrier method together under 40 ms. Genesis makes 36 commits — the 35 here, one
+   * per collection, plus the owner-key insert; it is the `saveCommitProof` figure in that spec's
+   * printed breakdown, and `control-founding-consult-budget.spec.ts` pins the same 36 from above
+   * the cache — and writes 109 blocks over 105 distinct ones, so the 183 barriers
+   * are two per commit (pend and commit) plus roughly one per block written. The per-commit pair
+   * is what costs: the per-block flushes coalesce behind an already-sealed commit and are nearly
+   * free. So the lever is FEWER COMMITS rather than cheaper ones: ask
    * Optimystic for an API that commits several collections as one transaction, the one strand
    * founding would use too (requested in
    * `blocked/report-control-genesis-commits-one-collection-at-a-time`); do not build a private

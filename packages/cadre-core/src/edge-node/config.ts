@@ -136,6 +136,12 @@ export type OwnerGenesisResult = 'enrolled' | 'member' | 'failed' | 'timed-out';
  * for its owner step, which runs control reads and one control write, before it goes on without
  * it. Not derived from the link, since a start that waited out a stalled write (about 84 s, see
  * `docs/network/deadlines.md`) would be a start the user gave up on.
+ *
+ * On the founding start the owner step is far more than that one write: `ensureOwnerKey` gives
+ * every control collection its empty history first, which is ~2 s on file-backed storage and
+ * grows with the control schema's table count (NOTE on
+ * `ControlDatabase.commitEmptyControlCollections`). Two specs take their own genesis bound from
+ * this constant rather than inventing a tighter one, so a change here moves what they allow.
  */
 // eslint-disable-next-line no-restricted-syntax -- cuts off by design: a start goes on without its owner step rather than wait out a stalled control write; see docs/network/deadlines.md → "Deadlines over Optimystic's reads and commits"
 export const DEFAULT_OWNER_GENESIS_TIMEOUT_MS = 60_000;

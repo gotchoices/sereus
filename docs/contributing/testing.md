@@ -122,6 +122,12 @@ Scenarios live in `packages/integration-tests/src/scenarios` and run real nodes 
 
 A ticket adds a test when the test reproduces the bug being fixed, at the lowest layer that reproduces it, or when it pins a named rule on logic with real branching. It does not add one for wiring, constants, or anything a type, a lint rule or a check script already enforces. A change that owes no test ships with none, and a reviewer removes tests that fail this bar. The rule is owned by "Tests must pay for themselves" in [tess/agent-rules/tickets.md](https://github.com/gotchoices/tess/blob/main/agent-rules/tickets.md). Before writing a scenario, check [topology-coverage.md](topology-coverage.md) for one that already boots the shape.
 
+### A per-step deadline is a hang detector, not a budget
+
+A deadline around one call (`within`, `withinOp`) exists to turn a hang into a named failure. Set it from the slowest honest run of that call on the slowest storage the product supports, never from an idle developer machine: a bound chosen there measures throughput, so it passes at one storage latency and fails at another with nothing wrong, and reports a hang that is not happening.
+
+Where the product already bounds the step, the spec takes that constant rather than inventing a tighter one — founding a party is bounded by `DEFAULT_OWNER_GENESIS_TIMEOUT_MS`, so the specs that found a party use it, and a bound tighter than the product's would fail a step the product accepts. The cost itself belongs in a counted budget over storage operations, where a growth fails as a number instead of as a timeout.
+
 ### Asserting a quantity that has to travel between machines
 
 Assert a value that has to reach a second machine through a bounded wait, `waitUntil` from `harness/wait-utils.ts`, never through an immediate read.

@@ -82,15 +82,17 @@ import type { CadreNodeConfig, StrandInstance, StrandRow } from '../src/types.js
  */
 const OP_TIMEOUT_MS = 15_000;
 /**
- * `ensureOwnerKey` on a party with no owner key founds the party: it gives all 35 control
- * collections their empty history, which is 37 durable commits and 74 fsyncs before the owner row
- * is even inserted (NOTE on `ControlDatabase.commitEmptyControlCollections`), ~2 s on
- * `FileRawStorage` idle. Bounding that with {@link OP_TIMEOUT_MS} made it a throughput measurement
- * wearing a hang detector's clothes — green at 8 ms per fsync, red at 100 ms with nothing wrong,
- * which is what failed under outside CPU load (`tickets/.pre-existing-known.md`). So it gets the
- * bound the PRODUCT gives the same step, `DEFAULT_OWNER_GENESIS_TIMEOUT_MS` in
- * `src/edge-node/config.ts`: a test bound tighter than that reports a failure the product would
- * not. Still bounded, and 28× the measured idle cost, so a genuine hang fails here.
+ * `ensureOwnerKey` on a party with no owner key founds the party: all 35 control collections get
+ * their empty history, one durable commit each, before the owner row is inserted — 36 commits and
+ * 183 fsyncs counting that insert's own, about 2 s on `FileRawStorage` on an idle machine (NOTE on
+ * `ControlDatabase.commitEmptyControlCollections`, which holds the measurements). Under
+ * {@link OP_TIMEOUT_MS} that bound measured throughput instead of detecting a hang: it passed at
+ * 8 ms per fsync and failed at 100 ms with nothing wrong, which is what failed under outside CPU
+ * load (`tickets/.pre-existing-known.md`). So it gets the bound the PRODUCT allows its owner step,
+ * which this call is the bulk of: `DEFAULT_OWNER_GENESIS_TIMEOUT_MS` in `src/edge-node/config.ts`.
+ * A test bound tighter than that reports a failure the product would not. Still bounded, at 20–30×
+ * the measured idle cost, so a genuine hang fails here. The rule this follows:
+ * `docs/contributing/testing.md` → "A per-step deadline is a hang detector, not a budget".
  */
 const GENESIS_TIMEOUT_MS = 60_000;
 /** `start()`/`stop()` bring libp2p up and down — a looser budget, still bounded. */

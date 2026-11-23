@@ -64,7 +64,7 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
 /** `start()`/`stop()` bring libp2p up and down; a bounded budget, only a hang detector. */
 const LIFECYCLE_TIMEOUT_MS = 30_000;
 /**
- * Founding the party is neither a lifecycle call nor a local-row read: it makes 37 durable
+ * Founding the party is neither a lifecycle call nor a local-row read: it makes 36 durable
  * commits ({@link GENESIS}). Bounded where the PRODUCT bounds the same step,
  * `DEFAULT_OWNER_GENESIS_TIMEOUT_MS` in `src/edge-node/config.ts` — the reasoning is spelled out
  * on `control-database-solo-warm-start.spec.ts`'s `GENESIS_TIMEOUT_MS`, where a 15 s bound on this
@@ -188,8 +188,9 @@ const WARM: Budget = {
 /**
  * Genesis: `ensureOwnerKey` on a party that has none. It gives all 35 control collections (19
  * tables, 3 indexes, 13 `unique` columns) their empty history and then inserts the founding
- * `OwnerKey` row — 37 durable commits, one collection at a time. 1,010 operations over 105
- * distinct blocks, plus 183 `flush` barriers.
+ * `OwnerKey` row — one collection at a time, 35 durable commits plus the insert's, 36 in all (the
+ * `saveCommitProof` count in the breakdown below is that figure). 1,010 operations over 105
+ * distinct blocks, plus 183 barriers, every one of them a `flush`.
  *
  * Budgeted here because nothing else notices this cost as a NUMBER. It surfaced instead as two
  * flaky hang detectors in `control-database-solo-warm-start.spec.ts` once the step had grown from
@@ -199,8 +200,8 @@ const WARM: Budget = {
  * `MemoryRawStorage` and `FileRawStorage` — which is what makes a budget this close safe.
  *
  * **The barrier arm is not optional padding here.** On disk the barriers ARE the cost: `flush`
- * 183× took 1.4–1.5 s of a 2.1 s run, two per commit, while every non-barrier method together
- * took under 40 ms. A change that doubled the fsyncs per commit without writing one extra block
+ * 183× took 1.4–1.5 s of a 2.1 s run — two per commit, plus roughly one per block written — while
+ * every non-barrier method together took under 40 ms. A change that doubled the fsyncs per commit without writing one extra block
  * would double the genesis on a phone and pass an operations-only budget untouched.
  *
  * This is also the phase a batched-commit API would collapse — the request is
@@ -228,11 +229,12 @@ interface Budget {
 	/** Ceiling for distinct blocks; a run above it means new persistent structures. */
 	blockBudget: number;
 	/**
-	 * Durability barriers the phase issued, and the ceiling above them. Omitted for a phase that
-	 * issues none worth pinning — a start commits nothing, so its barrier count is noise, while
-	 * {@link GENESIS} pays two per commit and that is where its wall clock goes.
-	 * `OpSnapshot.barriers` is deliberately outside {@link ops}, so a phase that pays barriers
-	 * needs this arm or a change in them is invisible to the budget.
+	 * Durability barriers the phase issued (`flush` and `whenDurable` together), and the ceiling
+	 * above them. Omitted for a phase whose barriers are not where its cost is — a start issues a
+	 * handful (5 on the cold phase, 2026-11-23) against {@link GENESIS}'s 183, two per commit,
+	 * which is where genesis's wall clock goes. `OpSnapshot.barriers` is deliberately outside
+	 * {@link ops}, so a phase that pays barriers needs this arm or a change in them is invisible
+	 * to the budget.
 	 */
 	barriers?: { measured: number; budget: number };
 	/** The date these figures were measured. */
@@ -266,7 +268,7 @@ function expectWithinBudget(phase: string, snapshot: OpSnapshot, budget: Budget)
 	expect(
 		snapshot.total,
 		`${phase} issued ${snapshot.total} raw-storage operations, over the budget of ${budget.opBudget} (${provenance}). `
-		+ 'Start duration is operations × per-operation storage latency, so this is a real slowdown on a loaded disk or a phone. '
+		+ 'Duration is operations × per-operation storage latency, whichever phase this is, so this is a real slowdown on a loaded disk or a phone. '
 		+ 'This fires FIRST when a control table is added too — check the distinct-block budget below before reading it as pure slowdown. '
 		+ 'A count about double the measurement, mostly repeated getMetadata reads, means the write-through cache (cached-storage.ts in @serfab/quereus-plugin-sereus) has left the path. '
 		+ `History in tickets/complete/optimystic-block-read-amplification-on-control-start.md. ${breakdown}`

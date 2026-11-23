@@ -57,7 +57,18 @@ import { startSilentServer, type SilentServer } from './silent-server.js';
  * guard that the dial path is armed.
  */
 
-/** Per-operation budget. All reads/writes answer from local rows; this only catches hangs. */
+/**
+ * Per-operation budget. Every read and single-row write here answers from local rows; this only
+ * catches hangs.
+ *
+ * `ensureOwnerKey` is the exception and keeps this bound anyway: founding the party is 36 durable
+ * commits (NOTE on `ControlDatabase.commitEmptyControlCollections`), which is 2.0–2.9 s on
+ * file-backed storage but 0.1–0.35 s over the `MemoryRawStorage` every node here uses. That is
+ * 40–150× inside this bound, where the file-backed
+ * `control-database-solo-warm-start.spec.ts` was close enough to it to fail under outside CPU load
+ * and needed its own `GENESIS_TIMEOUT_MS`. If this spec ever moves to file storage, it needs that
+ * bound too.
+ */
 const OP_TIMEOUT_MS = 15_000;
 /**
  * What ONE dead sibling costs the reconcile pass here — every node in this spec

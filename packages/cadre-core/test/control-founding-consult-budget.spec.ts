@@ -72,8 +72,10 @@ import {
  * run ever comes out a few consults off, that non-determinism is itself the finding — find
  * the block that moved; do not widen a budget over it.
  *
- * Companions: `control-start-storage-op-budget.spec.ts` (the storage half of a control
- * start — it snapshots before genesis, so genesis is budgeted only here) and
+ * Companions: `control-start-storage-op-budget.spec.ts` (the storage half of a control start,
+ * and of genesis: since 2026-11-23 it counts genesis as a phase of its own in raw-storage
+ * operations and durability barriers, where this spec counts the same step's consults and
+ * commits) and
  * `strand-solo-write-budget.spec.ts` (the storage half of a solo strand).
  */
 
@@ -82,7 +84,11 @@ const SCOPE = 'consult-budget';
 /** `start()`/`stop()`/`foundStrand()` bring libp2p nodes up and down; bounded hang detectors. */
 const LIFECYCLE_TIMEOUT_MS = 60_000;
 
-/** A single control read or write; a hang detector. */
+/**
+ * A single control read or write; a hang detector. `ensureOwnerKey` founds the party and costs 36
+ * durable commits rather than one, and keeps this bound for the reason the same call keeps it in
+ * `control-database-offline-peers.spec.ts`: over `MemoryRawStorage` that is 0.1–0.35 s.
+ */
 const OP_TIMEOUT_MS = 30_000;
 
 /** `within` scoped to this spec's failure label: `consult-budget control op <label> …`. */
