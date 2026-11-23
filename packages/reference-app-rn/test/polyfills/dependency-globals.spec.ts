@@ -244,10 +244,13 @@ describe('globals our dependencies read', () => {
 	/** The polyfills ship in @serfab/cadre-rn; this is the copy Metro bundles for this app. */
 	let polyfillsDir: string;
 
+	// The scan reads every dependency file once: about 3 s warm, but past the 10 s default on the
+	// first run over a freshly installed tree, as in `check:published`'s worktree, where the file
+	// cache is cold. The bound only keeps a genuine hang from stalling the run.
 	beforeAll(() => {
 		polyfillsDir = join(resolvePackageDir('@serfab/cadre-rn'), 'polyfills');
 		result = scan([...Object.keys(PROVIDED), ...Object.keys(WATCHED), ...SENTINELS]);
-	});
+	}, 60_000);
 
 	it('scans something', () => {
 		expect(result.fileCount).toBeGreaterThan(0);

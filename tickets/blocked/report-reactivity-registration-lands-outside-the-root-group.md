@@ -1,4 +1,4 @@
-description: A machine that asks to be notified about a table's changes in the first second of a strand's life is recorded by the wrong machine, so for about a minute and a half nobody tells it when the table changes. Filed in Optimystic 2026-11-22 as `fix/reactivity-registration-held-outside-the-tail-root-group` (optimystic `32c2b236`); this ticket waits for that fix to ship, then re-measures the scenario.
+description: A machine that registers for a table's change notifications right after the commit that creates its log tail could be recorded by the wrong machine and get no pushes. Optimystic 1.29.1 repairs it at the next check, which cut the scenario's failures from about 1 run in 6 to 1 in 12; the remaining case waits on Optimystic backlog `debt-a-peer-read-as-refusing-may-only-be-unidentified`.
 architecture: docs/strands/app-schema.md#what-a-watcher-sees
 files:
   - packages/integration-tests/src/scenarios/strand-reactivity-wakes-watchers.integration.ts (where it was measured)
@@ -12,7 +12,9 @@ files:
 difficulty: easy
 ----
 
-> **Filed 2026-11-22** as Optimystic `tickets/fix/reactivity-registration-held-outside-the-tail-root-group.md` (`32c2b236`), at the maintainer's request. When an Optimystic release carries the fix: adopt it, run the scenario 12 times isolated, and close this ticket if none fails; until then the scenario's push assertion can fail about 1 run in 6, as `tickets/.pre-existing-known.md` records.
+> **Filed 2026-11-22** as Optimystic `fix/reactivity-registration-held-outside-the-tail-root-group` (`32c2b236`); **shipped in Optimystic 1.29.1**. A watcher now compares where its registration landed with a fresh read of the tail's root group, right after registering and on each watch check, and registers again when they differ. A repeated registration reads the group live.
+>
+> **Measured 2026-11-23 on npm 1.29.1** (`check:published` worktree at `7891e369`): the scenario passed 11 of 12 isolated runs. The one failure is the same assertion, `round 1 (p[0] commits), watcher p[1] outside the tail group`. That matches the residual the 1.29.1 notes name: the members a registration names come from the admitting machine's own view, which can be up to one gossip interval old, so a repair can land in the same wrong place until the next watch check. Upstream holds the likely cause as backlog `debt-a-peer-read-as-refusing-may-only-be-unidentified` (a peer read as not serving before its identify lands). This ticket stays blocked on that: when an Optimystic release carries it, adopt it and re-measure 12 runs.
 
 # Human action: report to Optimystic that a change subscription can be recorded by a machine that is not responsible for the table
 
