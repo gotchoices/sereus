@@ -930,9 +930,9 @@ export interface RelayReservationSupervisor {
    * awaiting caller is never left hanging.
    */
   readonly firstAttempt: Promise<void>;
-  /** True while a drive is in flight. */
+  /** True while a drive OR a renewal is in flight — the two are serialized, never concurrent. */
   readonly driving: boolean;
-  /** Epoch ms of the next scheduled tick; `null` while a drive is running. */
+  /** Epoch ms of the next scheduled tick; `null` while a drive or a renewal is running. */
   readonly retryAtMs: number | null;
   /** Reason the last drive produced no reservation; `null` once one is held. */
   readonly lastError: string | null;
@@ -1289,14 +1289,19 @@ class RelayReservationLoop implements RelayReservationSupervisor {
   private async renewOnce(): Promise<void> {
     this.inFlight = true;
     try {
-      const reason = await this.renewHeldReservations();
+      const { asked, failure } = await this.renewHeldReservations();
       if (this.stopped) {
         return;
       }
-      if (reason === null) {
-        log('Renewed the relay reservation (%o)', this.addrs);
+      if (failure !== null) {
+        log('Relay reservation renewal did not land (%o): %s', this.addrs, failure);
+      } else if (asked === 0) {
+        // Reported apart from a renewal, because it means the opposite: the reservation
+        // reads as held and yet NO relay of this loop's was asked. That is the shape
+        // gotchoices/sereus#64 wore, so a log saying "renewed" would hide it.
+        log('Relay reservation renewal asked nobody (%o): the store holds no reservation on these relays', this.addrs);
       } else {
-        log('Relay reservation renewal did not land (%o): %s', this.addrs, reason);
+        log('Renewed %d relay reservation(s) (%o)', asked, this.addrs);
       }
     } catch (err) {
       // `renewHeldReservations` is fail-soft by contract; as in `driveOnce`, the loop has to
@@ -1312,19 +1317,25 @@ class RelayReservationLoop implements RelayReservationSupervisor {
 
   /**
    * Renew every reservation this loop's relays hold, under ONE deadline (the drive's
-   * `timeoutMs`). Never throws; `null` when none of them refused.
+   * `timeoutMs`). Never throws. `asked` counts the relays actually asked and `failure` is the
+   * first refusal, `null` when none of them refused — so `asked: 0, failure: null` is "nobody
+   * was asked", which {@link renewOnce} must not report as a renewal.
    *
    * A relay the store holds NO reservation on is skipped, not a failure: a control node
    * supervising three relays holds one reservation, so two of its entries answer that way on
    * every pass. A pass fails only when a relay it did hold a reservation on refused.
    */
-  private async renewHeldReservations(): Promise<string | null> {
+  private async renewHeldReservations(): Promise<{ asked: number; failure: string | null }> {
     const transport = findCircuitRelayTransport(this.node);
     if (transport === null) {
-      return 'node has no circuit-relay transport — add circuitRelayTransport() to its transports';
+      return {
+        asked: 0,
+        failure: 'node has no circuit-relay transport — add circuitRelayTransport() to its transports'
+      };
     }
     const store = transport.reservationStore;
     const deadline = Date.now() + (this.opts.timeoutMs ?? DEFAULT_RELAY_RESERVE_TIMEOUT_MS);
+    let asked = 0;
     let firstError: string | null = null;
     for (const addr of this.addrs) {
       // An addr naming no relay peer id cannot be renewed — the store is keyed by peer id and
@@ -1334,10 +1345,11 @@ class RelayReservationLoop implements RelayReservationSupervisor {
       if (peerId === null || !store.hasReservation(peerId)) {
         continue;
       }
+      asked += 1;
       const reason = await renewOneReservation(store, { addr, peerId }, deadline, this.cancel.signal);
       firstError ??= reason;
     }
-    return firstError;
+    return { asked, failure: firstError };
   }
 
   private async driveOnce(): Promise<void> {

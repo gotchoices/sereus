@@ -105,9 +105,9 @@ Stopping a supervisor also cancels a request in flight, so a node being torn dow
 
 ### What takes a circuit address away
 
-Three events remove a node's `/p2p-circuit` address: the relay restarts, either side closes the relay connection, and libp2p's own reservation refresh, which removes the reservation before re-creating it and needs no network event at all.
+Four events remove a node's `/p2p-circuit` address: the relay restarts, either side closes the relay connection, libp2p's own reservation refresh, which removes the reservation before re-creating it and needs no network event at all, and a relay refusing the supervisor's renewal.
 
-A bare `/p2p-circuit` listener republishes its address when its reservation is re-created, which covers the refresh, and the supervisor covers the other two. A listener configured with the relay's address recovers from none of the three, because it publishes its address only once, when it starts listening. For that reason no `NetworkConfig` can produce one. The control node rejects a hand-written `<relay>/p2p-circuit` entry in `network.listenAddrs` at configuration time, with a message that says to move the relay to `relayAddrs`.
+A bare `/p2p-circuit` listener republishes its address when its reservation is re-created, which covers the refresh, and the supervisor covers the other three. A listener configured with the relay's address recovers from none of the four, because it publishes its address only once, when it starts listening. For that reason no `NetworkConfig` can produce one. The control node rejects a hand-written `<relay>/p2p-circuit` entry in `network.listenAddrs` at configuration time, with a message that says to move the relay to `relayAddrs`.
 
 ## Strand nodes inherit the relay configuration
 
@@ -232,6 +232,7 @@ Nothing in libp2p replaces a relayed connection with a direct one over WebRTC: i
 - **The cap for unknown peers and the store size are kept apart by hand.** Both draw on the relay server's one reservation store. An embedder that raises `unauthorizedRelayReservationCap` or shrinks `maxReservations` must keep the first well below the second, or unknown peers can crowd members out.
 - **Each strand costs a NAT'd machine one more relay slot.** Reservations are per node per network, so a relay serving many parties must be sized for machines × (1 + strands).
 - **A freed slot refills in up to 5 s, not at once.** With discovery off, a slot lost while the relay stays up is noticed at the supervisor's next check.
+- **A reservation the relay forgot without closing the connection costs up to 5 minutes of reachability.** Nothing local says the slot is gone — the node keeps advertising its circuit address — so the renewal interval is the whole detection latency. It is set where it is because the alternative is asking every relay more often for a state that almost never changes. Revisit if a relay is seen dropping reservations faster than it drops connections.
 - **A Node.js host that passes no `defaultTransports` keeps relay discovery on.** Its configured relays still work, but a relay-capable member can take one of their slots.
 - **A node that names its relay only through `reserveRelays()` keeps relay discovery on**, because discovery is the only other thing that could fill its hand-written `/p2p-circuit` listener. Such a node can lose its one slot to a relay-capable member it is connected to. Configure `relayAddrs` to avoid this.
 - **A retry against a relay that is down can take 75 s at the default declared link.** The strand supervisor's announcement to the relay is tried by peer id and then by address before the request starts. The relay is unreachable for that whole time anyway; revisit if recovery time after a relay returns matters.

@@ -391,7 +391,7 @@ async function startFixedRelay(
     ...fixedNodeBase(id),
     services: {
       identify: identify(),
-      relay: circuitRelayServer(reservations === undefined ? {} : { reservations })
+      relay: circuitRelayServer({ reservations })
     }
   });
   nodes.push(node);
@@ -1292,21 +1292,17 @@ describe('superviseRelayReservation — the strand-node shapes', () => {
   });
 });
 
-/** The reservations a relay built by {@link startFixedRelay} currently grants, keyed by client. */
-function relayReservations(relay: Libp2p): {
+/** The reservation records a relay server holds, as much of the map as these specs touch. */
+interface RelayServerReservations {
   has(peer: PeerId): boolean;
   get(peer: PeerId): unknown;
   set(peer: PeerId, reservation: unknown): void;
   delete(peer: PeerId): void;
-} {
-  return (relay.services.relay as {
-    reservations: {
-      has(peer: PeerId): boolean;
-      get(peer: PeerId): unknown;
-      set(peer: PeerId, reservation: unknown): void;
-      delete(peer: PeerId): void;
-    };
-  }).reservations;
+}
+
+/** The reservations a relay built by {@link startFixedRelay} currently grants, keyed by client. */
+function relayReservations(relay: Libp2p): RelayServerReservations {
+  return (relay.services.relay as { reservations: RelayServerReservations }).reservations;
 }
 
 /**
@@ -1396,8 +1392,10 @@ describe('superviseRelayReservation — renewing a held reservation', () => {
 
       // Nothing else can repair this inside the spec: the connection stays open, so no
       // `connection:close` re-drive; libp2p's own refresh timer is ~1 h 55 min out at the
-      // relay's default 2 h TTL; and discovery cannot nominate a relay whose hop protocol the
-      // namespaced client never learned. Only the renewal asks the relay again.
+      // relay's default 2 h TTL; and the CLIENT's store still holds its reservation, so
+      // `relay:not-enough-relays` never fires and discovery is never asked (which is why this
+      // spec needs no {@link forgetRelayProtocol}, unlike the refusal one below). Only the
+      // renewal asks the relay again.
       await waitFor(
         () => relayReservations(relay).has(client.peerId),
         'the supervisor to renew the reservation the relay forgot',
