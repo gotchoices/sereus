@@ -1,4 +1,4 @@
-description: A machine that asks to be notified about a table's changes in the first second of a strand's life is recorded by the wrong machine, so for about a minute and a half nobody tells it when the table changes. The fix belongs in Optimystic, which agents here may not edit, so a person has to carry this report over.
+description: A machine that asks to be notified about a table's changes in the first second of a strand's life is recorded by the wrong machine, so for about a minute and a half nobody tells it when the table changes. Filed in Optimystic 2026-11-22 as `fix/reactivity-registration-held-outside-the-tail-root-group` (optimystic `32c2b236`); this ticket waits for that fix to ship, then re-measures the scenario.
 architecture: docs/strands/app-schema.md#what-a-watcher-sees
 files:
   - packages/integration-tests/src/scenarios/strand-reactivity-wakes-watchers.integration.ts (where it was measured)
@@ -11,6 +11,8 @@ files:
   - ../optimystic/packages/db-p2p/src/reactivity/collection-watch.ts (the watch service that registers and renews)
 difficulty: easy
 ----
+
+> **Filed 2026-11-22** as Optimystic `tickets/fix/reactivity-registration-held-outside-the-tail-root-group.md` (`32c2b236`), at the maintainer's request. When an Optimystic release carries the fix: adopt it, run the scenario 12 times isolated, and close this ticket if none fails; until then the scenario's push assertion can fail about 1 run in 6, as `tickets/.pre-existing-known.md` records.
 
 # Human action: report to Optimystic that a change subscription can be recorded by a machine that is not responsible for the table
 
