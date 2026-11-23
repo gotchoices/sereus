@@ -94,8 +94,10 @@ libp2p has no public API for reserving on one specific relay. `relay-reservation
 
 Because discovery is off, nothing in libp2p asks for a slot again after one is lost. `superviseRelayReservation` does. On each tick:
 
-- **A reservation is held.** The supervisor checks again in 5 s and requests nothing.
+- **A reservation is held.** The supervisor checks again in 5 s and requests nothing, unless a renewal is due.
 - **No reservation is held.** The supervisor makes one request: it dials every relay in its list at once, asks the first that answers for a slot, and waits for the circuit address to appear, all under one deadline. If that fails it waits 2 s, doubling up to 60 s, and tries again.
+
+"Held" is read from the addresses the node itself advertises, which say nothing about whether the relay still keeps the slot: a relay can forget a reservation while the connection to it stays open. So while a reservation reads as held, the supervisor re-sends the reservation request every 5 minutes, jittered by a tenth so many nodes on one relay do not renew in step. A renewal refreshes the reservation in place, leaving the circuit address advertised throughout; a relay that refuses one withdraws the address, which falls through to the re-drive above with no backoff.
 
 Before every attempt the supervisor clears the relay's entry in the reservation store's `relayFilter`. libp2p records a relay there when a request to it fails and never clears the record, so without this step a relay that failed once would be refused for the life of the process.
 

@@ -966,6 +966,8 @@ export {
   DEFAULT_RELAY_CHECK_MS,
   DEFAULT_RELAY_MIN_BACKOFF_MS,
   DEFAULT_RELAY_MAX_BACKOFF_MS,
+  DEFAULT_RELAY_RENEW_MS,
+  RELAY_RENEW_JITTER,
   type RelayReservationStatus,
   type RelayReservationState,
   type RelayReserveOptions,

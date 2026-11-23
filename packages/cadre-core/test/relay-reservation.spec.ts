@@ -8,7 +8,7 @@ import { circuitRelayServer, circuitRelayTransport } from '@libp2p/circuit-relay
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
-import type { PrivateKey } from '@libp2p/interface';
+import type { PeerId, PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
 import { trailingPeerId } from '../src/peer-dial.js';
@@ -375,11 +375,24 @@ function fixedNodeBase(id: FixedIdentity) {
   };
 }
 
-/** A relay at `id`'s exact peer id and port, restartable at that same address. */
-async function startFixedRelay(id: FixedIdentity): Promise<Libp2p> {
+/**
+ * A relay at `id`'s exact peer id and port, restartable at that same address.
+ *
+ * `reservations` reaches libp2p's own server reservation settings, which are fixed at
+ * construction: a short `reservationTtl` brings libp2p's client-side refresh timer —
+ * `max(expiry − 5 min, 30 s)` — down to its 30 s floor so a spec can see one, and a small
+ * `maxReservations` makes the relay's refusal path reachable (see {@link occupyTheOnlySlot}).
+ */
+async function startFixedRelay(
+  id: FixedIdentity,
+  reservations?: { reservationTtl?: number; maxReservations?: number }
+): Promise<Libp2p> {
   const node = await createLibp2p({
     ...fixedNodeBase(id),
-    services: { identify: identify(), relay: circuitRelayServer() }
+    services: {
+      identify: identify(),
+      relay: circuitRelayServer(reservations === undefined ? {} : { reservations })
+    }
   });
   nodes.push(node);
   return node;
@@ -630,6 +643,11 @@ describe('findCircuitRelayTransport (libp2p seam)', () => {
     expect(transport).not.toBeNull();
     expect(typeof transport?.reservationStore.addRelay).toBe('function');
     expect(typeof transport?.reservationStore.hasReservation).toBe('function');
+    // Optional on `RelayReservationStoreLike` so an upgrade that drops it degrades to no
+    // renewal instead of breaking every drive — which is exactly why it has to fail loudly
+    // here rather than quietly: without it a relay that forgets a reservation is never asked
+    // again while the connection stays open (gotchoices/sereus#64).
+    expect(typeof transport?.reservationStore.getReservation).toBe('function');
   });
 
   it('returns null for a node with no circuit-relay transport', async () => {
@@ -947,20 +965,6 @@ describe('superviseRelayReservation', () => {
 });
 
 /**
- * A relay with a SHORT reservation TTL, so libp2p's client-side refresh timer —
- * `max(expiry − 5 min, 30 s)` — fires at its 30 s floor inside a test, and a relay
- * that can be restarted at the same identity and port.
- */
-async function startFixedRelayWithTtl(id: FixedIdentity, reservationTtl: number): Promise<Libp2p> {
-  const node = await createLibp2p({
-    ...fixedNodeBase(id),
-    services: { identify: identify(), relay: circuitRelayServer({ reservations: { reservationTtl } }) }
-  });
-  nodes.push(node);
-  return node;
-}
-
-/**
  * A CADRE-shaped search client: identify under a prefix the stock-identify relay
  * does not speak, so the two never identify and libp2p's own relay discovery
  * cannot nominate the relay for the FIRST reservation. `listeners` bare
@@ -1111,7 +1115,7 @@ describe('superviseRelayReservation — the strand-node shapes', () => {
    */
   it('still holds the circuit addr across libp2p\'s own reservation refresh', async () => {
     const id = await fixedIdentity();
-    const relay = await startFixedRelayWithTtl(id, 40_000);
+    const relay = await startFixedRelay(id, { reservationTtl: 40_000 });
     const client = await startNamespacedSearchClient();
     const relayPeerId = relay.peerId.toString();
 
@@ -1286,6 +1290,164 @@ describe('superviseRelayReservation — the strand-node shapes', () => {
       }
     }, 60_000);
   });
+});
+
+/** The reservations a relay built by {@link startFixedRelay} currently grants, keyed by client. */
+function relayReservations(relay: Libp2p): {
+  has(peer: PeerId): boolean;
+  get(peer: PeerId): unknown;
+  set(peer: PeerId, reservation: unknown): void;
+  delete(peer: PeerId): void;
+} {
+  return (relay.services.relay as {
+    reservations: {
+      has(peer: PeerId): boolean;
+      get(peer: PeerId): unknown;
+      set(peer: PeerId, reservation: unknown): void;
+      delete(peer: PeerId): void;
+    };
+  }).reservations;
+}
+
+/**
+ * Make `relay` forget its reservation for `client` WITHOUT touching the connection — the state
+ * gotchoices/sereus#64 is about, and the one a client reading its own advertised addresses cannot
+ * see. `reservations` is public on libp2p's `CircuitRelayService`, and the server's own
+ * `removeReservation` is this one line.
+ */
+function forgetReservation(relay: Libp2p, client: Libp2p): void {
+  relayReservations(relay).delete(client.peerId);
+}
+
+/**
+ * Make `relay` REFUSE `client`'s next reservation request: drop the reservation it holds and move
+ * it to another peer id, filling the relay's only slot. That reaches libp2p's own refusal
+ * (`reservations.size >= maxReservations` with no reservation for the asking peer) without
+ * patching anything on the relay — the relay has to be built with one slot, because
+ * `maxReservations` is fixed at construction.
+ *
+ * Returns the undo, which frees the slot again.
+ */
+async function occupyTheOnlySlot(relay: Libp2p, client: Libp2p): Promise<() => void> {
+  const squatter = peerIdFromPrivateKey(await generateKeyPair('Ed25519'));
+  const reservations = relayReservations(relay);
+  // The client's own record, reused rather than forged: the relay only counts it here, and its
+  // `retimeableSignal` is read only when something is relayed for that peer.
+  const held = reservations.get(client.peerId);
+  reservations.delete(client.peerId);
+  reservations.set(squatter, held);
+  return () => {
+    reservations.delete(squatter);
+  };
+}
+
+/**
+ * A flag that flips if `client`'s reservation store ever drops its reservation on `relayPeerId`.
+ * That removal is the one thing that withdraws the circuit address (libp2p's circuit listener
+ * withdraws on `relay:removed`), so it catches a withdrawal that polling the advertised addrs
+ * between samples would miss — and `self:peer:update` cannot be used for this, being debounced
+ * by a second inside libp2p's address manager.
+ */
+function watchReservationRemoved(client: Libp2p, relayPeerId: string): () => boolean {
+  const store = findCircuitRelayTransport(client)?.reservationStore as unknown as {
+    addEventListener(
+      type: 'relay:removed',
+      listener: (evt: CustomEvent<{ relay: PeerId }>) => void
+    ): void;
+  };
+  let removed = false;
+  store.addEventListener('relay:removed', (evt) => {
+    if (evt.detail.relay.toString() === relayPeerId) {
+      removed = true;
+    }
+  });
+  return () => removed;
+}
+
+/**
+ * gotchoices/sereus#64. "Held" is read from the node's OWN advertised `/p2p-circuit` addresses, which
+ * say nothing about whether the relay still keeps the slot. A relay that forgot a reservation
+ * while the connection to it stays open used to leave the node undialable through that relay
+ * until the connection dropped: every tick said "held", so nothing was ever requested again.
+ * While held the supervisor now re-sends the reservation request every `renewMs`.
+ *
+ * Both specs run against a live relay because the defect lives in the interaction between
+ * libp2p's reservation store and the relay's own record — a fake store reproduces neither.
+ */
+describe('superviseRelayReservation — renewing a held reservation', () => {
+  /** Renewals at twice the liveness cadence, so one falls due inside a spec. */
+  const FAST_RENEWALS: RelayReservationSupervisorOptions = { ...FAST_SUPERVISOR, renewMs: 500 };
+
+  it('re-requests a reservation the relay forgot, without withdrawing the address', async () => {
+    const id = await fixedIdentity();
+    const relay = await startFixedRelay(id);
+    const client = await startNamespacedSearchClient();
+    const relayPeerId = relay.peerId.toString();
+
+    const supervisor = superviseRelayReservation(client, [id.addr], FAST_RENEWALS);
+    try {
+      await supervisor.firstAttempt;
+      const addrWhileHeld = circuitAddrsVia(client, relayPeerId);
+      expect(addrWhileHeld.length).toBeGreaterThan(0);
+      const withdrawn = watchReservationRemoved(client, relayPeerId);
+
+      forgetReservation(relay, client);
+      expect(relayReservations(relay).has(client.peerId)).toBe(false);
+
+      // Nothing else can repair this inside the spec: the connection stays open, so no
+      // `connection:close` re-drive; libp2p's own refresh timer is ~1 h 55 min out at the
+      // relay's default 2 h TTL; and discovery cannot nominate a relay whose hop protocol the
+      // namespaced client never learned. Only the renewal asks the relay again.
+      await waitFor(
+        () => relayReservations(relay).has(client.peerId),
+        'the supervisor to renew the reservation the relay forgot',
+        30_000
+      );
+
+      // A renewal refreshes the reservation IN PLACE, so the node is dialable throughout —
+      // which is the whole point of renewing rather than waiting for the address to go away.
+      expect(withdrawn()).toBe(false);
+      expect(circuitAddrsVia(client, relayPeerId)).toEqual(addrWhileHeld);
+    } finally {
+      supervisor.stop();
+    }
+  }, 90_000);
+
+  it('re-drives when the relay refuses the renewal', async () => {
+    const id = await fixedIdentity();
+    const relay = await startFixedRelay(id, { maxReservations: 1 });
+    const client = await startNamespacedSearchClient();
+    const relayPeerId = relay.peerId.toString();
+
+    let redrives = 0;
+    const supervisor = superviseRelayReservation(client, [id.addr], {
+      ...FAST_RENEWALS,
+      beforeRedrive: () => { redrives += 1; }
+    });
+    try {
+      await supervisor.firstAttempt;
+      expect(circuitAddrsVia(client, relayPeerId).length).toBeGreaterThan(0);
+      await forgetRelayProtocol(client, relay);
+
+      const freeTheSlot = await occupyTheOnlySlot(relay, client);
+      // A refused renewal makes libp2p remove the entry, which withdraws the address — the
+      // truth at that point, and what the supervisor turns into an immediate re-drive.
+      await waitFor(
+        () => redrives >= 1 && circuitAddrsVia(client, relayPeerId).length === 0,
+        'the refused renewal to withdraw the address and re-drive',
+        30_000
+      );
+
+      freeTheSlot();
+      await waitFor(
+        () => circuitAddrsVia(client, relayPeerId).length > 0,
+        'the following drive to reserve once the relay has a slot again',
+        30_000
+      );
+    } finally {
+      supervisor.stop();
+    }
+  }, 90_000);
 });
 
 describe('withoutRelayDiscovery', () => {
