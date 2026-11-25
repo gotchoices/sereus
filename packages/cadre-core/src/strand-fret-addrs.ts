@@ -22,6 +22,10 @@
  * is self-certifying, the table is reached through a structural type rather than an
  * interface this package depends on, and the address book write is attributed from what
  * the record proves, not from the id the table filed it under.
+ *
+ * The module reads any libp2p node's FRET service; only its name is specific to strands.
+ * The control node reads a sibling's tenure here ({@link fretPeerTenureMs}) to rank the
+ * machines an invitation names.
  */
 
 import debug from 'debug';
@@ -47,6 +51,12 @@ interface FretTableSlice {
 /** The slice of FRET's libp2p service called here. */
 interface FretTableSource {
   exportTable(): FretTableSlice;
+}
+
+/** The slice of FRET's libp2p service {@link fretPeerTenureMs} calls. */
+interface FretTenureSource {
+  /** `undefined` for a peer the table does not hold. */
+  getPeerTenure(peerId: string): number | undefined;
 }
 
 /**
@@ -114,6 +124,17 @@ export function strandFretMembership(host: FretAddrHost): Map<string, FretMember
   return new Map(fretTableEntries(host).map((entry) => [entry.id, asMembership(entry.membership)]));
 }
 
+/**
+ * How long, in ms, `host`'s FRET service has itself watched `peerId` stay continuously up.
+ * FRET measures it from proof of life and never gossips it, so another machine cannot
+ * inflate it. 0 for a peer the table does not hold, and on a node with no FRET service.
+ * Throws what `getPeerTenure()` throws.
+ */
+export function fretPeerTenureMs(host: FretAddrHost, peerId: string): number {
+  const fret = host.services?.fret;
+  return isFretTenureSource(fret) ? fret.getPeerTenure(peerId) ?? 0 : 0;
+}
+
 /** The table's entries other than `host`'s own; none when the node runs no FRET service. */
 function fretTableEntries(host: FretAddrHost): FretTableSlice['entries'] {
   const fret = host.services?.fret;
@@ -132,6 +153,11 @@ function asMembership(label: string | undefined): FretMembership {
 function isFretTableSource(service: unknown): service is FretTableSource {
   return typeof service === 'object' && service !== null
     && typeof (service as { exportTable?: unknown }).exportTable === 'function';
+}
+
+function isFretTenureSource(service: unknown): service is FretTenureSource {
+  return typeof service === 'object' && service !== null
+    && typeof (service as { getPeerTenure?: unknown }).getPeerTenure === 'function';
 }
 
 /**

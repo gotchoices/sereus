@@ -5,7 +5,12 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 
 import { encodeCadreInvitation } from '../src/cadre-invite-protocol.js';
 import { generateStampId } from '../src/control-database.js';
-import { cadreInvitationReach, selectCadreInvitationMembers, type InvitationSibling } from '../src/invitation-bootstrap.js';
+import {
+	cadreInvitationReach,
+	selectCadreInvitationMembers,
+	selectOpenInvitationBootstrap,
+	type InvitationSibling,
+} from '../src/invitation-bootstrap.js';
 import { freshKeyPair, signAs } from './control-constraint-helpers.js';
 
 async function newPeerId(): Promise<string> {
@@ -41,15 +46,25 @@ function webrtcAndRelayed(relays: readonly string[], peerId: string): string[] {
 	return relays.flatMap((relay) => [webrtc(relay, peerId), relayed(relay, peerId)]);
 }
 
+/** What libp2p reports for a phone or laptop listening on every interface: loopback, private, then relayed. */
+function deviceAddrs(relay: string, peerId: string): string[] {
+	return [`/ip4/127.0.0.1/tcp/4001/ws/p2p/${peerId}`, direct(peerId, 4001), relayed(relay, peerId)];
+}
+
+/** A sibling with no evidence beyond its record unless `evidence` gives some. */
+function sibling(peerId: string, addrs: string[], evidence: Partial<InvitationSibling> = {}): InvitationSibling {
+	return { peerId, addrs, updatedAt: 0, alwaysOn: false, reachability: 0, tenureMs: 0, ...evidence };
+}
+
 describe('cadre invitation addresses', () => {
 	it('keeps an invitation with three owner keys, and more relayed addresses offered than the cap, within one QR code', async () => {
 		const relays = await Promise.all([0, 1, 2, 3, 4].map(newPeerId));
 		const issuer = await newPeerId();
 		const siblings: InvitationSibling[] = await Promise.all([0, 1, 2].map(async (i) => {
 			const peerId = await newPeerId();
-			return { peerId, updatedAt: i, addrs: relayedOnly(relays.slice(0, 4), peerId) };
+			return sibling(peerId, relayedOnly(relays.slice(0, 4), peerId), { updatedAt: i });
 		}));
-		const members = selectCadreInvitationMembers(relayedOnly(relays, issuer), siblings, new Set());
+		const members = selectCadreInvitationMembers({ addrs: relayedOnly(relays, issuer), alwaysOn: true }, siblings);
 		const owners = [freshKeyPair(), freshKeyPair(), freshKeyPair()];
 		const signed = {
 			key: freshKeyPair().publicKey,
@@ -77,15 +92,14 @@ describe('cadre invitation addresses', () => {
 	it('keeps each machine\'s relayed address when loopback and private ones are listed ahead of it', async () => {
 		const relay = await newPeerId();
 		const issuer = await newPeerId();
-		const sibling = await newPeerId();
+		const other = await newPeerId();
 		const loopback = (peerId: string): string => `/ip4/127.0.0.1/tcp/4001/ws/p2p/${peerId}`;
 		// As libp2p reports a machine listening on every interface: loopback, then each private interface, then the relay.
 		const own = [loopback(issuer), direct(issuer, 4001), direct(issuer, 4002), direct(issuer, 4003), relayed(relay, issuer)];
-		const siblingAddrs = [loopback(sibling), direct(sibling, 4001), relayed(relay, sibling)];
 
-		const members = selectCadreInvitationMembers(own, [{ peerId: sibling, updatedAt: 0, addrs: siblingAddrs }], new Set());
+		const members = selectCadreInvitationMembers({ addrs: own, alwaysOn: true }, [sibling(other, deviceAddrs(relay, other))]);
 
-		expect(members).toEqual([relayed(relay, issuer), direct(issuer, 4001), direct(issuer, 4002), direct(issuer, 4003), relayed(relay, sibling), direct(sibling, 4001)]);
+		expect(members).toEqual([relayed(relay, issuer), direct(issuer, 4001), direct(issuer, 4002), direct(issuer, 4003), relayed(relay, other), direct(other, 4001)]);
 	});
 
 	it('fills the cap with a machine\'s relayed addresses before its WebRTC ones', async () => {
@@ -95,19 +109,79 @@ describe('cadre invitation addresses', () => {
 		// both go to addresses that connect without ICE.
 		const relays = await Promise.all([0, 1].map(newPeerId));
 		const issuer = await newPeerId();
-		const sibling = await newPeerId();
+		const other = await newPeerId();
 
 		const members = selectCadreInvitationMembers(
-			webrtcAndRelayed(relays, issuer),
-			[{ peerId: sibling, updatedAt: 0, addrs: webrtcAndRelayed(relays, sibling) }],
-			new Set()
+			{ addrs: webrtcAndRelayed(relays, issuer), alwaysOn: true },
+			[sibling(other, webrtcAndRelayed(relays, other))]
 		);
 
 		expect(members).toEqual([
 			relayed(relays[0]!, issuer), relayed(relays[1]!, issuer),
 			webrtc(relays[0]!, issuer), webrtc(relays[1]!, issuer),
-			relayed(relays[0]!, sibling), relayed(relays[1]!, sibling),
+			relayed(relays[0]!, other), relayed(relays[1]!, other),
 		]);
+	});
+
+	it('names a phone that is its party\'s only machine first, with its usual four addresses', async () => {
+		const relays = await Promise.all([0, 1, 2, 3, 4].map(newPeerId));
+		const phone = await newPeerId();
+
+		const members = selectCadreInvitationMembers({ addrs: relayedOnly(relays, phone), alwaysOn: false }, []);
+
+		expect(members).toEqual(relayedOnly(relays.slice(0, 4), phone));
+		expect(cadreInvitationReach(members, phone)).toBe('issuer-only');
+	});
+
+	it('names a phone behind its party\'s always-on machines and ahead of its other devices, with one address held inside the cap', async () => {
+		// The phone is usually closed by the time its invitation is redeemed, and a dead relayed
+		// address costs a whole dial budget before the next machine is tried.
+		const relays = await Promise.all([0, 1].map(newPeerId));
+		const [phone, serverA, serverB, laptop] = await Promise.all([0, 1, 2, 3].map(newPeerId));
+		const siblings = [
+			sibling(laptop!, relayedOnly(relays, laptop!), { updatedAt: 3, reachability: 2 }),
+			sibling(serverA!, [relayed(relays[0]!, serverA!), direct(serverA!, 4001)], { alwaysOn: true, updatedAt: 2 }),
+			sibling(serverB!, [relayed(relays[0]!, serverB!), direct(serverB!, 4001)], { alwaysOn: true, updatedAt: 1 }),
+		];
+		const servers = [relayed(relays[0]!, serverA!), direct(serverA!, 4001), relayed(relays[0]!, serverB!), direct(serverB!, 4001)];
+
+		const members = selectCadreInvitationMembers({ addrs: deviceAddrs(relays[0]!, phone!), alwaysOn: false }, siblings);
+		// Its relay down, the phone has no address, and the siblings take every slot.
+		const withoutOwn = selectCadreInvitationMembers({ addrs: [], alwaysOn: false }, siblings);
+
+		expect(members).toEqual([...servers, relayed(relays[0]!, phone!), relayed(relays[0]!, laptop!)]);
+		expect(withoutOwn).toEqual([...servers, ...relayedOnly(relays, laptop!)]);
+	});
+
+	it('names a phone first when every other machine named is a device too', async () => {
+		const relay = await newPeerId();
+		const [phone, laptop] = await Promise.all([0, 1].map(newPeerId));
+
+		const members = selectCadreInvitationMembers(
+			{ addrs: deviceAddrs(relay, phone!), alwaysOn: false },
+			[sibling(laptop!, deviceAddrs(relay, laptop!), { reachability: 2, tenureMs: 3_600_000 })]
+		);
+
+		expect(members).toEqual([
+			relayed(relay, phone!), direct(phone!, 4001), `/ip4/127.0.0.1/tcp/4001/ws/p2p/${phone!}`,
+			relayed(relay, laptop!), direct(laptop!, 4001),
+		]);
+	});
+
+	it('ranks the other machines by always on, then reachability now, then tenure, then the newest record', async () => {
+		// A live connection outranks tenure, because tenure stops growing while a peer is silent.
+		const relay = await newPeerId();
+		const [server, connected, longest, newest] = await Promise.all([0, 1, 2, 3].map(newPeerId));
+		const siblings = [
+			sibling(newest!, [relayed(relay, newest!)], { reachability: 1, tenureMs: 1_000, updatedAt: 9 }),
+			sibling(longest!, [relayed(relay, longest!)], { reachability: 1, tenureMs: 3_600_000, updatedAt: 1 }),
+			sibling(connected!, [relayed(relay, connected!)], { reachability: 2, updatedAt: 1 }),
+			sibling(server!, [relayed(relay, server!)], { alwaysOn: true, updatedAt: 0 }),
+		];
+
+		const bootstrap = selectOpenInvitationBootstrap({ addrs: [], alwaysOn: true }, siblings);
+
+		expect(bootstrap).toEqual([relayed(relay, server!), relayed(relay, connected!), relayed(relay, longest!)]);
 	});
 
 	it('counts a WebRTC address as reaching from anywhere, since its relay carries signalling from any network', async () => {

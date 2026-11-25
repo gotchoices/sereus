@@ -244,9 +244,9 @@ The bundle (`CadreInvitation`) is encoded as `sereus-invite:1.` followed by base
 - **The party id** and **the invitation's private key**.
 - **The owner-signed `CadreInvite` row**, exactly as issued. A member that has not received the row by replication seats it from the bundle. The row's signature covers every column, so an altered copy is accepted nowhere.
 - **Owner keys** for the device to pin. They come from the issuer's anchor only, never from the replicated `OwnerKey` table, because the device anchors whatever arrives. An issuer with an empty anchor refuses to mint.
-- **Member addresses**, each ending in `/p2p/<peerId>`: the issuer's own first, then other members'.
+- **Member addresses**, each ending in `/p2p/<peerId>`: the issuer's and up to three other members', the member most likely to answer first ([The order of the machines](../strands/formation.md#the-order-of-the-machines)).
 
-The address list is cut to six (`CADRE_INVITATION_MAX_ADDRS`) so that the encoded text fits one QR code: the issuer's own addresses come first, at most four of them, then at most two for each other member. Each machine's addresses are ranked before the cut: relayed and public addresses, then private, then loopback, then plain TCP, which a phone cannot dial.
+The address list is cut to six (`CADRE_INVITATION_MAX_ADDRS`) so that the encoded text fits one QR code: at most two for each other member, and for the issuer at most four, or one when it is a device named behind an always-on member. Each machine's addresses are ranked before the cut: relayed and public addresses, then private, then loopback, then plain TCP, which a phone cannot dial.
 
 `createCadreInvitation` also returns `reach` (`anywhere`, `local-network` or `issuer-only`): where a device could redeem the invitation once the minting machine is gone. An app reads it to warn before it hands over an invitation only the minting machine could answer, and `invitationReach()` gives the same answer without minting. [Whether another machine could redeem it](apps.md#whether-another-machine-could-redeem-it) defines the three values.
 

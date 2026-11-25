@@ -168,12 +168,30 @@ An invitation's bootstrap list names several machines, so that a joiner can form
 
 ### What the inviter puts in the list
 
-`createOpenInvitation` puts the minting machine's own addresses first, because that machine is the most likely to run the host strand, then up to three other machines of the party with at most four addresses each (`invitation-bootstrap.ts`).
+`createOpenInvitation` names the minting machine and up to three other machines of the party, with at most four addresses for each other machine (`invitation-bootstrap.ts`). A cadre invitation names the same machines under smaller caps ([The bundle](../cadre/membership.md#the-bundle)).
 
 - **Source.** Another machine's addresses come from its signed `CadrePeer` address record, which must pass the signature, 15-minute freshness and trust checks. A machine whose record fails them is left out.
-- **Order.** Machines this node is connected to on the control network come first, because a live connection is better evidence that a machine is up than a recent record. Within each group, the newest record comes first.
+- **Order.** The machine most likely to answer when the invitation is redeemed comes first ([The order of the machines](#the-order-of-the-machines)).
 - **No address of its own.** A phone whose relay is down can still mint an invitation that names an always-on machine of its party.
 - **Disclosure.** Whoever holds the invitation learns the peer ids and addresses of the machines it names, before any token check. The party id and the rest of the cadre are disclosed only on approval.
+
+### The order of the machines
+
+The joiner tries the machines in order, and a machine that does not answer costs it one dial deadline ([Deadlines and the link budget](../network/deadlines.md)) before the next is tried. In the main app flow the minting machine is a phone, closed or in the background by the time the invitation is redeemed, while the party often has an always-on machine that could answer at once. An always-on machine runs every strand its party takes part in ([How a strand's data is served](../concepts.md#how-a-strands-data-is-served)), so it can answer the formation in the minting machine's place.
+
+The other machines are sorted by four kinds of evidence, each breaking ties in the one before:
+
+1. **Always on.** The machine's own signed `CadrePeer` record declares it always on. A row that has published no profile counts as not always on.
+2. **Reachable now.** First a machine this node holds a connection to that it opened itself, with no relay hop and no relay's limits, because that shows the machine accepts a plain dial. A WebRTC connection does not count, because ICE may have opened a path the joiner's network will not get. Then a machine connected in any other way, then one not connected.
+3. **Tenure.** How long this node's FRET service has itself watched the machine stay up. FRET never gossips it, so another machine cannot inflate it. A live connection ranks above tenure because tenure stops growing while a peer is silent.
+4. **Newest record.**
+
+Where the minting machine goes depends on its own class (`NodeRoles.alwaysOn`):
+
+- **Always on.** First, with all its addresses (at most four in a cadre invitation), because it is up now and stays up.
+- **A device, with an always-on machine named.** Behind every always-on machine and ahead of any other device, with only its best address for a phone, which is its relayed one when it has one. In a cadre invitation that address's slot is kept inside the cap of six.
+- **A device, with only devices named.** First, because it is the one machine the person handing out the invitation can keep open, and nothing is known about when the others sleep.
+- **A device with no other machine named.** First, with its usual allowance, because it is the only machine that can answer.
 
 ### How the joiner uses the list
 
@@ -308,6 +326,7 @@ Other writes are deferred. While a machine reaches no other machine of a party t
 - **A commit slower than the settle grace leaves a spent invitation reported as a timeout.** If the consent write outlasts the grace, the joiner is told `provisioning-timeout` and its retry gets `token-spent`. The remedy is to raise the declared link round trip.
 - **A membership invitation can be issued and never delivered.** If the consent write fails or is aborted after the responder issued the membership invitation, the `Strand.Invite` row remains with no holder until its 7-day expiry. Nothing can remove a strand-database row and write the control row atomically.
 - **Addresses in an invitation go stale.** The bootstrap list is fixed when the invitation is minted; trying the next machine is the only mitigation.
+- **An always-on declaration is not checked.** A machine that declares itself always on but is down still sorts ahead of every device while its record is fresh, up to 15 minutes, so the joiner spends one dial deadline on it. The declaration is self-signed and unchecked, as a seed's preferred peers already accept it; reachability and tenure only order the machines within the always-on group and within the device group. Revisit if redemptions are seen waiting on a down always-on machine.
 - **An address that never answers can use up a machine's dial deadline.** All addresses of one machine share one dial deadline, so an address that neither connects nor fails holds the dial until libp2p's per-address timeout or the whole deadline.
 - **Formation invitations are sized for text, not QR codes.** An invitation can name up to twelve addresses of other machines; a QR code would need lower limits, as cadre invitations have.
 - **One invitee can hold many responder sessions.** A session keeps its slot for its whole provisioning budget. Only a caller with a valid token reaches provisioning, so this matters only if tokens are published to untrusted parties; the fix then is a per-token session limit.

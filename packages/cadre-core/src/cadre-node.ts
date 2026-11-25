@@ -109,7 +109,7 @@ import {
   type PartyJoinedStrandLedger
 } from './joined-strand-store.js';
 import { addrKey, mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
-import { strandFretPeerAddrs } from './strand-fret-addrs.js';
+import { fretPeerTenureMs, strandFretPeerAddrs } from './strand-fret-addrs.js';
 import { verifyCadrePeerVoucher, verifyInvitationAdmission, verifyRevocationSigner } from './peer-authorization.js';
 import { deriveOwnerAnchor } from './owner-anchor-sync.js';
 import { describeMachines, pendingRotationWaitingOn, planMachineRemoval, MachineRemovalRefusedError, type ClosedStrandState, type PendingRotationStrandState } from './machine-removal.js';
@@ -139,7 +139,7 @@ import { StrandInstanceManager, liveStrandStatus } from './strand-instance-manag
 import { PeerJoinBackfill } from './peer-join-backfill.js';
 import { WebrtcUpgradeService } from './webrtc-upgrade.js';
 import { deriveCohortMembers } from './strand-cohort.js';
-import { encodeAlwaysOn } from './node-class.js';
+import { decodeAlwaysOn, encodeAlwaysOn } from './node-class.js';
 import type { PublishedProfile } from './node-class.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
@@ -203,8 +203,10 @@ import {
 import { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 import {
   cadreInvitationReach,
+  invitationReachability,
   selectCadreInvitationMembers,
-  selectInvitationSiblingAddrs,
+  selectOpenInvitationBootstrap,
+  type InvitationSelf,
   type InvitationSibling
 } from './invitation-bootstrap.js';
 import {
@@ -4126,11 +4128,12 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * {@link resolvePeerAddrs} with the record's `UpdatedAt` kept beside the addresses, for a
-   * caller that ranks peers by how recently they published. `null` wherever that returns `[]`
-   * for a failed gate.
+   * {@link resolvePeerAddrs} with the record's `UpdatedAt` and the machine's always-on
+   * declaration (`decodeAlwaysOn`; a row with no published profile is not always on) kept beside
+   * the addresses, for a caller that ranks peers. `null` wherever that returns `[]` for a failed
+   * gate.
    */
-  private async resolvePeerRecord(peerId: string, opts: ResolveOpts): Promise<{ addrs: Multiaddr[]; updatedAt: number } | null> {
+  private async resolvePeerRecord(peerId: string, opts: ResolveOpts): Promise<{ addrs: Multiaddr[]; updatedAt: number; alwaysOn: boolean } | null> {
     if (!this.controlDatabase) {
       throw new Error('CadreNode must be started before resolving peer addrs');
     }
@@ -4187,7 +4190,11 @@ export class CadreNode implements SAppIdLookup {
     if (opts.signalingOnly) {
       addrs = addrs.filter(isSignalingAddr);
     }
-    return { addrs: this.normalizeDialAddrs(this.parseMultiaddrs(addrs), peerId), updatedAt: record.updatedAt };
+    return {
+      addrs: this.normalizeDialAddrs(this.parseMultiaddrs(addrs), peerId),
+      updatedAt: record.updatedAt,
+      alwaysOn: decodeAlwaysOn(record.profile) === true,
+    };
   }
 
   /**
@@ -11158,8 +11165,8 @@ export class CadreNode implements SAppIdLookup {
    * two cannot disagree.
    */
   private async selectInvitationMembers(): Promise<{ members: string[]; reach: CadreInvitationReach }> {
-    const { siblings, connected } = await this.resolveInvitationSiblings();
-    const members = selectCadreInvitationMembers(await this.resolveInviteAddresses(), siblings, connected);
+    const self = this.invitationSelf(await this.resolveInviteAddresses());
+    const members = selectCadreInvitationMembers(self, await this.resolveInvitationSiblings());
     return { members, reach: cadreInvitationReach(members, this.controlNode!.peerId.toString()) };
   }
 
@@ -11180,9 +11187,9 @@ export class CadreNode implements SAppIdLookup {
    * only, never the raw replicated `OwnerKey` table, because the device anchors whatever
    * arrives and a stranger's genesis-inserted key must not ride an invitation into a fresh
    * node's anchor; an empty anchor is refused because a reply could not be checked), and
-   * at most six addresses: this machine's first ({@link resolveInviteAddresses}, which
-   * honours pushed NAT addresses), then two each of up to three other members
-   * (`selectCadreInvitationMembers`), so the encoded text fits a QR code.
+   * at most six addresses in all, naming this machine ({@link resolveInviteAddresses}, which
+   * honours pushed NAT addresses) and up to three other members, the most reliably reachable
+   * first (`selectCadreInvitationMembers`), so the encoded text fits a QR code.
    *
    * The result's `reach` says where a device could redeem it from once this machine is gone
    * (`cadreInvitationReach`, judged on the other members' addresses only), so an app can warn
@@ -11837,9 +11844,10 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Create an open invitation for others to form strands with this party.
    *
-   * The invitation's bootstrap list names this machine first (it is the one most likely to
-   * run the host strand), then a few of the party's other machines
-   * ({@link siblingInvitationAddrs}), so a joiner can still form while this one is offline.
+   * The invitation's bootstrap list names this machine and a few of the party's other
+   * machines, the most reliably reachable first (`selectOpenInvitationBootstrap`), so a joiner
+   * can still form while this one is offline. An always-on machine runs every strand its party
+   * takes part in, so it can answer the formation in this one's place.
    *
    * @param sAppId - The sApp to use for formed strands
    * @param expirationMs - How long the invitation is valid (ms from now)
@@ -11855,7 +11863,7 @@ export class CadreNode implements SAppIdLookup {
       await this.initializeStrandSolicitation();
     }
 
-    const bootstrap = [...this.getMultiaddrs(), ...await this.siblingInvitationAddrs()];
+    const bootstrap = selectOpenInvitationBootstrap(this.invitationSelf(this.getMultiaddrs()), await this.resolveInvitationSiblings());
     if (bootstrap.length === 0) {
       throw new Error('No multiaddrs available for invitation');
     }
@@ -11867,42 +11875,45 @@ export class CadreNode implements SAppIdLookup {
     );
   }
 
-  /**
-   * Addresses of the party's other machines for an open strand invitation's bootstrap list
-   * ({@link createOpenInvitation}); {@link selectInvitationSiblingAddrs} picks which.
-   */
-  private async siblingInvitationAddrs(): Promise<string[]> {
-    const { siblings, connected } = await this.resolveInvitationSiblings();
-    return selectInvitationSiblingAddrs(siblings, connected);
+  /** This machine as an invitation's selection places it: `addrs` and its own class. */
+  private invitationSelf(addrs: readonly string[]): InvitationSelf {
+    return { addrs, alwaysOn: this.roles.alwaysOn };
   }
 
   /**
    * The party's other machines an invitation may name — an open strand invitation
-   * ({@link siblingInvitationAddrs}) or a cadre invitation ({@link createCadreInvitation}) —
-   * and which of them this node is connected to. The source is each authorized member's
-   * signed `CadrePeer` record ({@link resolvePeerRecord}), so a machine whose record is
-   * missing, stale or untrusted is left out; live connections only order them.
+   * ({@link createOpenInvitation}) or a cadre invitation ({@link createCadreInvitation}) —
+   * with the evidence that ranks them. The source is each authorized member's signed
+   * `CadrePeer` record ({@link resolvePeerRecord}), so a machine whose record is missing, stale
+   * or untrusted is left out. Its always-on declaration comes from that record; reachability
+   * (`invitationReachability`) and tenure come from this node's own connections and FRET table,
+   * read once every record has resolved.
    *
    * Best-effort: a failed read leaves the invitation naming this machine alone, which is what
    * it named before siblings were added.
    */
-  private async resolveInvitationSiblings(): Promise<{ siblings: InvitationSibling[]; connected: ReadonlySet<string> }> {
+  private async resolveInvitationSiblings(): Promise<InvitationSibling[]> {
     const controlNode = this.controlNode;
     if (!controlNode || !this.controlDatabase) {
-      return { siblings: [], connected: new Set() };
+      return [];
     }
     try {
-      const siblings: InvitationSibling[] = [];
+      const resolved: Array<{ peerId: string; updatedAt: number; addrs: string[]; alwaysOn: boolean }> = [];
       for (const { peerId } of await this.listAuthorizedMembers()) {
-        const resolved = await this.resolvePeerRecord(peerId, {});
-        if (resolved && resolved.addrs.length > 0) {
-          siblings.push({ peerId, updatedAt: resolved.updatedAt, addrs: resolved.addrs.map(String) });
+        const record = await this.resolvePeerRecord(peerId, {});
+        if (record && record.addrs.length > 0) {
+          resolved.push({ peerId, updatedAt: record.updatedAt, addrs: record.addrs.map(String), alwaysOn: record.alwaysOn });
         }
       }
-      return { siblings, connected: new Set(controlNode.getConnections().map((c) => c.remotePeer.toString())) };
+      const connections = controlNode.getConnections();
+      return resolved.map((sibling) => ({
+        ...sibling,
+        reachability: invitationReachability(connections.filter((c) => c.remotePeer.toString() === sibling.peerId)),
+        tenureMs: fretPeerTenureMs(controlNode, sibling.peerId),
+      }));
     } catch (error) {
-      log('siblingInvitationAddrs: resolving the other machines failed; the invitation names only this one: %o', error);
-      return { siblings: [], connected: new Set() };
+      log('resolveInvitationSiblings: resolving the other machines failed; the invitation names only this one: %o', error);
+      return [];
     }
   }
 

@@ -879,7 +879,10 @@ export {
   selectCadreInvitationMembers,
   cadreInvitationReach,
   CADRE_INVITATION_MAX_ADDRS,
-  CADRE_INVITATION_ADDRS_PER_SIBLING
+  CADRE_INVITATION_ADDRS_PER_SIBLING,
+  type InvitationReachability,
+  type InvitationSelf,
+  type InvitationSibling
 } from './invitation-bootstrap.js';
 // The pending-join retry loop behind CadreNode.requestJoin (PendingJoinStatus is in types.ts)
 export { PENDING_JOIN_BACKSTOP_MS, PENDING_JOIN_MAX_BACKOFF_MS, MAX_PENDING_JOIN_MS } from './pending-join-runner.js';
