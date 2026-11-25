@@ -2,6 +2,13 @@ description: An invitation minted on a phone lists the phone's own address first
 architecture: docs/strands/formation.md#which-machines-an-invitation-names
 files: packages/cadre-core/src/invitation-bootstrap.ts, packages/cadre-core/src/cadre-node.ts (createOpenInvitation, siblingInvitationAddrs, resolveInvitationSiblings, resolvePeerRecord, selectInvitationMembers, resolveInviteAddresses, issuedBundleParts), packages/cadre-core/src/strand-fret-addrs.ts (structural FRET access to copy), packages/cadre-core/src/node-class.ts (decodeAlwaysOn), packages/cadre-core/src/control-database.ts (peerAddressRecordOf carries `profile`), packages/cadre-core/src/node-claim-payload.ts (classifyDialAddress), packages/cadre-core/test/invitation-bootstrap.spec.ts (if present), docs/strands/formation.md, docs/cadre/membership.md, docs/cadre/owner-keys.md, docs/network/relay.md, docs/cadre/apps.md
 ----
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-11-25T04:15:31.569Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\invitations-lead-with-stable-machines.implement.2026-11-25T04-15-31-568Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 # Invitations lead with the party's stable machines
 
 ## The problem
