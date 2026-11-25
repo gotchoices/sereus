@@ -177,6 +177,9 @@ function selectInvitationAddrs(self: InvitationSelf, siblings: readonly Invitati
 	if (self.alwaysOn || !named.some((machine) => machine.alwaysOn)) {
 		return [...caps.orderAddrs(self.addrs).slice(0, caps.ownAddrs), ...named.flatMap((machine) => machine.addrs)].slice(0, caps.total);
 	}
+	// NOTE: the slot is held even when the device's best address reaches only its own network
+	// (private, loopback, plain TCP), taking a sibling's address; if such devices are seen minting
+	// QR invitations, hold the slot only for an address `cadreInvitationReach` counts as `anywhere`.
 	const ownSlot = rankForPhone(self.addrs).slice(0, 1);
 	const siblingAddrs = named.flatMap((machine) => machine.addrs).slice(0, caps.total - ownSlot.length);
 	// The always-on machines sort first, so their addresses are a prefix of `siblingAddrs`.

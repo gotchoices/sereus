@@ -4151,7 +4151,8 @@ export class CadreNode implements SAppIdLookup {
       return null;
     }
 
-    // Self-signature over (peerId, addrs, updatedAt).
+    // Self-signature over (peerId, addrs, updatedAt, profile), so the always-on declaration
+    // returned below is the machine's own.
     if (!verifyPeerRecordSignature(this.partyId, record)) {
       // Field detail distinguishes "holding the owner-vouch revision (Sig null,
       // no addrs — a not-yet-self-published row)" from a genuinely corrupt or
