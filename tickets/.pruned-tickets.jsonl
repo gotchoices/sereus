@@ -615,3 +615,5 @@
 {"slug":"strand-watcher-change-driven-verification","file":"strand-watcher-change-driven-verification.md","completedAt":"2026-10-20","commit":"f5f0e05353ee4e5a465a6be92424ae7da3f9ad3b","prunedAt":"2026-11-21T06:11:58.560Z"}
 {"slug":"strand-workload-count-driven-fixes","file":"strand-workload-count-driven-fixes.md","completedAt":"2026-10-17","commit":"52a299006837044e079aec05ab3078ec2d67a418","prunedAt":"2026-11-21T06:11:58.560Z"}
 {"slug":"strand-workload-on-a-phone-link-scenario","file":"strand-workload-on-a-phone-link-scenario.md","completedAt":"2026-10-17","commit":"fd9bf77138fd6aa999a6dd575df614eb5cc6c7b1","prunedAt":"2026-11-21T06:11:58.560Z"}
+{"slug":"backfill-pushes-blocks-in-the-optimystic-1-19-form","file":"1-backfill-pushes-blocks-in-the-optimystic-1-19-form.md","completedAt":"2026-10-26","commit":"82f718c220486351eef0f66031bb3abdd401f1f1","prunedAt":"2026-11-25T04:15:31.278Z"}
+{"slug":"decide-optimystic-range-admits-breaking-minors","file":"decide-optimystic-range-admits-breaking-minors.md","completedAt":"2026-10-26","commit":"e51f958e800ab713bb3c271e21f6e41d5f1aee28","prunedAt":"2026-11-25T04:15:31.278Z"}
