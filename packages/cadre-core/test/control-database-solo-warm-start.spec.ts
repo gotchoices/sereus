@@ -107,7 +107,7 @@ async function withDevice(tag: string, body: (device: Device) => Promise<void>):
 	const partyId = freshPartyId(tag);
 	const storage = fileStorageProvider(dir);
 	try {
-		await body({ dir, config: () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage }) });
+		await body({ dir, config: () => controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage }) });
 	} finally {
 		// `force` so a case that failed before creating anything still cleans up; the
 		// retries are for Windows, where `force` swallows ENOENT but not the EBUSY a

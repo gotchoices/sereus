@@ -5,11 +5,11 @@
  *
  * ── The machines ──
  *
- * One party. The PHONE is its owner: `profile: 'transaction'`, no listen address, every strand
+ * One party. The PHONE is its owner: `nodeClass: 'device'`, no listen address, every strand
  * starting in offline mode over a file journal in a temp directory (Optimystic refuses a journal
  * that would not survive a restart). The NODE is an always-on storage machine
  * that pins the phone's owner key and runs a storage replica of every strand the party lists
- * (`hostUnclaimedStrands`), the production storage profile.
+ * (`hostUnclaimedStrands`), as a production server node does.
  *
  * Each runs a test-supplied connection gater (`network.connectionGater`), which cadre-core hands
  * to its control node and to every strand node it launches. While the strand plane is CUT, a
@@ -232,7 +232,7 @@ async function withOfflineParty(
 
 		// ── 1. The phone founds and publishes; the node is admitted and launches a replica ──
 		phone = new CadreNode(controlNodeConfig({
-			partyId, privateKey: phoneKey, profile: 'transaction', listenAddrs: [],
+			partyId, privateKey: phoneKey, nodeClass: 'device', listenAddrs: [],
 			reconcileMs: 2_000, strandAddrRefreshMs: POLL_MS, strandWatchMs: POLL_MS, linkRoundTripMs: LINK_MS,
 			storageProvider: phoneCapture.provider, connectionGater: gaters.phone,
 			strandOffline: { journal, initialMode: 'offline' },
@@ -257,7 +257,7 @@ async function withOfflineParty(
 		say('step 1: the phone founded and published the strand in offline mode');
 
 		node = new CadreNode(controlNodeConfig({
-			partyId, privateKey: nodeKey, profile: 'storage', pinnedOwnerKeys: [owner.publicKey], enableRelay: false,
+			partyId, privateKey: nodeKey, nodeClass: 'server', pinnedOwnerKeys: [owner.publicKey], enableRelay: false,
 			strandFilter: 'all', hostUnclaimedStrands: true, strandWatchMs: POLL_MS, reconcileMs: 2_000, linkRoundTripMs: LINK_MS,
 			storageProvider: nodeCapture.provider, connectionGater: gaters.node,
 			membershipReconciliation: { pollIntervalMs: 2_000 },

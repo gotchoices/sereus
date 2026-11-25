@@ -9,7 +9,7 @@
  */
 
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
-import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability, StoredProofEntry } from '@optimystic/db-p2p';
 
 /** The optional `IRawStorage` members this proxy forwards, delegating when the opened storage has them. */
 type OptionalMethodForwarded = 'getApproximateBytesUsed' | 'listBlockIds';
@@ -131,6 +131,22 @@ class LazyRawStorage implements IRawStorage, Required<Pick<IRawStorage, Optional
 
 	async saveBlockProof(blockId: BlockId, rev: number, proof: BlockCommitProof): Promise<void> {
 		return (await this.storage()).saveBlockProof(blockId, rev, proof);
+	}
+
+	async getProofEntry(blockId: BlockId, rev: number): Promise<StoredProofEntry | undefined> {
+		return (await this.storage()).getProofEntry(blockId, rev);
+	}
+
+	async saveProofEntry(blockId: BlockId, rev: number, entry: StoredProofEntry): Promise<void> {
+		return (await this.storage()).saveProofEntry(blockId, rev, entry);
+	}
+
+	async getCommitProof(messageHash: string): Promise<BlockCommitProof | undefined> {
+		return (await this.storage()).getCommitProof(messageHash);
+	}
+
+	async saveCommitProof(messageHash: string, proof: BlockCommitProof): Promise<void> {
+		return (await this.storage()).saveCommitProof(messageHash, proof);
 	}
 
 	async getMaterializedBlock(blockId: BlockId, actionId: ActionId): Promise<IBlock | undefined> {

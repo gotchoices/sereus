@@ -6,7 +6,7 @@
  * Machines:
  * - **O**, the owner: phone-shaped (`buildPhoneOwner`), its own genesis owner key. It mints a
  *   backup grant (no expiry) and stops: the lost phone.
- * - **M**, the only always-on member: `storage` profile, listening on WebSocket, admitted by O
+ * - **M**, the only always-on member: a server node, listening on WebSocket, admitted by O
  *   the owner-online way, pinning O's key and nothing else, with a 2 s control-cohort reconcile:
  *   on M that timer is what runs the membership refresh its anchor follows a replicated owner
  *   change at.

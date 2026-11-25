@@ -34,7 +34,7 @@ import type { Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import type { StrandAddrRequest, StrandAddrResponse, StrandAddrStatus } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
-import { orderSignalingFirst } from './peer-record.js';
+import { orderRelayedFirst } from './peer-record.js';
 import { type ControlStream, withDeadline, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
 import { toError } from './describe-thrown.js';
@@ -81,9 +81,10 @@ function addrlessResponse(status: StrandAddrStatus, strandId: string): StrandAdd
  */
 export interface StrandAddrServiceOptions {
   /**
-   * The local strand instance's dialable strand-network multiaddrs, ordered
-   * signaling-first. Returns `[]` when the strand is not running / has no live
-   * node (hibernating, quiescing, or never participated). Kept injectable so the
+   * The local strand instance's dialable strand-network multiaddrs, relayed first
+   * and WebRTC last ({@link orderRelayedFirst}). Returns `[]` when the strand is
+   * not running / has no live node (hibernating, quiescing, or never
+   * participated). Kept injectable so the
    * decision logic is unit-testable without a full node.
    */
   getStrandMultiaddrs(strandId: string): string[];
@@ -218,7 +219,7 @@ export class StrandAddrService {
    * - Request carrying a `delegatePeerId` → recorded via
    *   {@link StrandAddrServiceOptions.onDelegateAnnounce} before the lookup.
    * - Strand not running locally → `ok` with empty `multiaddrs` (`getStrandMultiaddrs` → `[]`).
-   * - Running strand → `ok` with the strand's live, signaling-first multiaddrs.
+   * - Running strand → `ok` with the strand's live multiaddrs, relayed first and WebRTC last.
    *
    * A throwing lookup propagates; {@link handleStream} answers it `unavailable`.
    */
@@ -367,7 +368,7 @@ export function nextStrandAddrAsk(
 
 /** Result of {@link collectStrandAddrs}. */
 export interface StrandAddrCollection {
-  /** Deduplicated union of every answer, signaling-first. */
+  /** Deduplicated union of every answer, relayed first and WebRTC last ({@link orderRelayedFirst}). */
   addrs: string[];
   /** One entry per candidate (self excluded), keyed by the sibling's control peerId. */
   outcomes: Map<string, StrandAddrOutcome>;
@@ -382,7 +383,8 @@ interface SiblingAnswer {
 /**
  * Client side: ask each candidate sibling for its live strand-`strandId`
  * multiaddrs and return the **deduplicated union** of every answer, ordered
- * signaling-first, alongside each sibling's {@link StrandAddrOutcome}.
+ * relayed first and WebRTC last ({@link orderRelayedFirst}), alongside each
+ * sibling's {@link StrandAddrOutcome}.
  *
  * Best-effort per peer: a failed/timed-out/empty sibling contributes no address
  * and never fails the collection — an empty union (no sibling online or running
@@ -413,8 +415,9 @@ export async function collectStrandAddrs(
   );
 
   const outcomes = new Map<string, StrandAddrOutcome>();
-  // Deduplicated union in candidate order, then signaling-first for a usable
-  // dial sequence (relay/`p2p-circuit` ahead of direct addrs).
+  // Deduplicated union in candidate order, then ranked for a usable dial sequence:
+  // the plain relayed addresses ahead of the direct ones, and an address that needs
+  // ICE after its relay hop last.
   const seen = new Set<string>();
   const union: string[] = [];
   for (const { peerId, outcome, multiaddrs } of answers) {
@@ -426,7 +429,7 @@ export async function collectStrandAddrs(
       }
     }
   }
-  return { addrs: orderSignalingFirst(union), outcomes };
+  return { addrs: orderRelayedFirst(union), outcomes };
 }
 
 /**
@@ -566,8 +569,8 @@ async function sendStrandAddr(
   signal: AbortSignal,
 ): Promise<StrandAddrResponse> {
   // `runOnLimitedConnection: true`: the sibling may be reachable only over a
-  // circuit-relay connection (the signaling-first addr), which libp2p marks
-  // "limited". The exchange is a single tiny request→response well within the
+  // circuit-relay connection (the relayed addr the ordering tries first), which
+  // libp2p marks "limited". The exchange is a single tiny request→response well within the
   // relay's data/duration cap, so opening it on the limited connection is safe
   // and is the whole point of dialing over the relay.
   const rawStream = await node.dialProtocol(target, protocolId, { runOnLimitedConnection: true, signal });

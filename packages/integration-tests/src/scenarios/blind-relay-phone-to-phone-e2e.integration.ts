@@ -283,12 +283,12 @@ async function runBlindRelayPhoneToPhone(opts: BlindRelayRunOptions): Promise<vo
 		// ── Party A: one phone — relay-only, no relay server of its own ─────
 		// `relayAddrs` is fail-fast, so a resolved start() means the control
 		// reservation landed. `enableRelay: false` because a phone relays for
-		// nobody (the storage-profile default would switch it on).
+		// nobody (the server-node default would switch it on).
 		const aKey = await generateKeyPair('Ed25519');
 		A = new CadreNode(controlNodeConfig({
 			partyId: `blind-a-${runTag}`,
 			privateKey: aKey,
-			profile: 'storage',
+			nodeClass: 'server',
 			enableRelay: false,
 			listenAddrs: [],
 			relayAddrs: [relayA.dialAddr],

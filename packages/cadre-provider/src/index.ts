@@ -71,6 +71,7 @@ export {
   type Subscription,
   type SubscriptionStatus,
   type StopReason,
+  type NodeClass,
   type ApiKey,
   type AuthorizationCode,
   type RefreshToken,

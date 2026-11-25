@@ -268,7 +268,8 @@ describe('linked sibling packages', () => {
 		it('resolves a symlink to the working copy it points at', () => {
 			linkSibling();
 
-			expect(resolveLinkedPackage(nodeModules, '@sibling/pkg')).toEqual({ status: 'linked', root: siblingPkg });
+			expect(resolveLinkedPackage(nodeModules, '@sibling/pkg'))
+				.toEqual({ status: 'linked', root: siblingPkg, junction: installedAt });
 		});
 
 		it('reports not-linked for a real directory installed from the registry', () => {
@@ -426,7 +427,12 @@ describe('node_modules chain', () => {
 	/** What `yarn install` leaves in `nodeModulesDir` for a `link:` resolution. */
 	function link(nodeModulesDir: string, target: string): void {
 		mkdirSync(join(nodeModulesDir, '@sibling'), { recursive: true });
-		symlinkSync(target, join(nodeModulesDir, '@sibling', 'pkg'), 'junction');
+		symlinkSync(target, junctionIn(nodeModulesDir), 'junction');
+	}
+
+	/** The link `link` writes there — what a `linked` result reports as its `junction`. */
+	function junctionIn(nodeModulesDir: string): string {
+		return join(nodeModulesDir, '@sibling', 'pkg');
 	}
 
 	/** What `yarn install` leaves in `nodeModulesDir` for a registry dependency. */
@@ -438,13 +444,15 @@ describe('node_modules chain', () => {
 		link(appNodeModules, workingCopy(local));
 		link(repoNodeModules, workingCopy(hoisted));
 
-		expect(resolveLinkedPackageFrom(fromDir, '@sibling/pkg')).toEqual({ status: 'linked', root: local });
+		expect(resolveLinkedPackageFrom(fromDir, '@sibling/pkg'))
+			.toEqual({ status: 'linked', root: local, junction: junctionIn(appNodeModules) });
 	});
 
 	it('walks on to the repo root when the package has no local install', () => {
 		link(repoNodeModules, workingCopy(hoisted));
 
-		expect(resolveLinkedPackageFrom(fromDir, '@sibling/pkg')).toEqual({ status: 'linked', root: hoisted });
+		expect(resolveLinkedPackageFrom(fromDir, '@sibling/pkg'))
+			.toEqual({ status: 'linked', root: hoisted, junction: junctionIn(repoNodeModules) });
 	});
 
 	it('stops at a package-local registry copy rather than recovering to the root link', () => {
@@ -533,7 +541,7 @@ describe('node_modules chain, on this checkout', () => {
 	 */
 	const expectResolves = (name: string, ...segments: string[]): void => {
 		const expected: LinkedPackage = linked.has(name)
-			? { status: 'linked', root: linkedAt(repoRoot, ...segments) }
+			? { status: 'linked', root: linkedAt(repoRoot, ...segments), junction: join(repoRoot, ...segments) }
 			: { status: 'not-linked' };
 
 		expect(resolveLinkedPackageFrom(webSuite, name)).toEqual(expected);

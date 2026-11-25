@@ -47,7 +47,7 @@ describe('CadreNode.removeMachine and removeOwner', () => {
     identity = await generateKeyPair('Ed25519');
     node = new CadreNode({
       controlNetwork: { partyId: 'remove-machine-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
-      profile: 'transaction',
+      nodeClass: 'device',
       privateKey: identity,
       trustedOwners: { pinnedKeys: [owner.publicKey] },
     });

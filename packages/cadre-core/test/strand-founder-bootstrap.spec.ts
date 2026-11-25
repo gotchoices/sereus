@@ -6,6 +6,7 @@ import { StrandAwaitingFirstSyncError } from '../src/strand-first-sync-gate.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import type { StrandRow } from '../src/types.js';
 import { signedSApp } from './signed-sapp.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * End-to-end plumbing test for the founder flag: `addStrand`/`startStrand`
@@ -30,7 +31,7 @@ function startConfig(strandRow: StrandRow, founder: boolean, partyMemberPrivateK
   return {
     strandRow,
     sAppConfig: signedSApp(),
-    profile: 'transaction',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     founder,
     partyMemberPrivateKey,

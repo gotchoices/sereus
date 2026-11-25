@@ -6,7 +6,7 @@
  *
  * Machines:
  * - **A**, the owner: phone-shaped (`listenAddrs: []`), founds the cadre.
- * - **M**, the one always-on member: `storage` profile on a loopback WebSocket address,
+ * - **M**, the one always-on member: a server node on a loopback WebSocket address,
  *   admitted by A (`addDrone` plus seed delivery), pinning A's owner key. Its raw storage and
  *   identity are kept so it can stop and restart on the same address.
  * - **B**, phone-shaped, a fresh identity started for A's party with no owner genesis.
@@ -80,7 +80,7 @@ describe('E2E an app joins a cadre by invitation and by owner grant', () => {
 		let C: CadreNode | undefined;
 		try {
 			// ── A founds the cadre; M is admitted the owner-online way ──────────────
-			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none', listenAddrs: [] }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none', listenAddrs: [] }));
 			await A.start();
 			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 			M = await startPinningMember(partyId, aOwnerKey, { storageProvider: captureM.provider });

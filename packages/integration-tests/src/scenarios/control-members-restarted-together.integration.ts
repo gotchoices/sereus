@@ -6,7 +6,7 @@
  * - **A**, the owner: phone-shaped (`listenAddrs: []`), founds the cadre and admits M1 and M2 the
  *   owner-online way. A stays up throughout, but a dial gate cuts it off from M1 and M2 while they
  *   restart, so neither restarted member can count A as a reachable sibling.
- * - **M1**, **M2**: `storage` profile on loopback WebSocket, pinning A's owner key, each on a
+ * - **M1**, **M2**: server nodes on loopback WebSocket, pinning A's owner key, each on a
  *   raw store kept across the restart and restarted on the same listen address, as a cadre-cli
  *   node is.
  * - **M3**, the machine added after the restart.
@@ -51,7 +51,7 @@ describe('Two cadre members restarted together', () => {
 		let M3: InviteMember | undefined;
 		try {
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: await generateKeyPair('Ed25519'), profile: 'transaction', strandFilter: 'none', listenAddrs: [],
+				partyId, privateKey: await generateKeyPair('Ed25519'), nodeClass: 'device', strandFilter: 'none', listenAddrs: [],
 				bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId), connectionGater: ownerGate.gater,
 			}));
 			await A.start();

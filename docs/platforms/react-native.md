@@ -144,6 +144,8 @@ It keeps what the incoming config already set. It does not set condition names o
 
 An app whose packages are linked from local checkouts (a monorepo root, sibling repositories) passes them as `linkedRoots`, which lets Metro follow a symlink out of the project. Without them the bundle fails with "Unable to resolve module" for the linked package.
 
+Each root is resolved to the directory it names on disk before being watched, because Metro reads a symlink's target as a string and looks that string up in the file map it crawled from the watched roots, comparing path segments literally. An app may therefore name a root however the filesystem accepts it — through a link, or on a case-insensitive filesystem with letters the directory does not use.
+
 ### Node built-in aliases
 
 Metro follows every import in the graph, including ones behind runtime checks that never pass on a phone, so each Node built-in that libp2p imports must resolve to something. The kit maps each under both its bare name and its `node:` name. Metro consults these only after every `node_modules` lookup fails.
@@ -190,9 +192,9 @@ The app declares `@babel/runtime` `^7.29.2`. Upgrade inside Babel 7 with `yarn u
 
 ## Transport and reachability
 
-A phone dials out over WebSocket and cannot listen. The kit's default transports are WebSockets and circuit relay. An always-on node that a phone dials directly must therefore listen on a `/ws` address, for example `/ip4/0.0.0.0/tcp/4002/ws` in a cadre-cli node's `network.listenAddrs`.
+A phone has no TCP or WebSocket listener: it binds no socket and dials out. The kit's default transports are WebSockets and circuit relay. An always-on node that a phone dials directly must therefore listen on a `/ws` address, for example `/ip4/0.0.0.0/tcp/4002/ws` in a cadre-cli node's `network.listenAddrs`.
 
-An app with `react-native-webrtc` adds the WebRTC transport, which lets a relayed connection upgrade to a direct one while the relay carries only the signalling:
+An app with `react-native-webrtc` adds the WebRTC transport, and passes a listen function that names `/webrtc` whenever the phone has a relay. Both are needed and neither is derived from the other: the transport alone lets the phone dial a WebRTC address, and the listen address is what lets another machine open a direct connection *to* the phone, and what lets a relayed connection upgrade to a direct one while the relay carries only the signalling. A `/webrtc` listener binds nothing — it registers the signalling handler and derives its address from the relay reservation. `webrtcListenAddrs` (`@serfab/cadre-rn/phone-node`) is the listen function to pass, the same one the browser reference app uses:
 
 ```ts
 transports: (relayAddrs) => [
@@ -200,7 +202,10 @@ transports: (relayAddrs) => [
 	circuitRelayTransport(),
 	webRTC({ rtcConfiguration: { iceServers: resolveStunServers([...relayAddrs]) } }),
 ],
+listenAddrs: webrtcListenAddrs,
 ```
+
+With no relay `webrtcListenAddrs` names nothing, since there is then no signalling path, and the phone keeps the posture of accepting no connection.
 
 cadre-core's `resolveStunServers` turns each relay address into `stun:<relay host>:3478`, so each relay is also the phone's STUN server; its second argument replaces the derived list. With no relay the phone has no STUN server, and a WebRTC upgrade uses local network candidates only.
 
@@ -218,7 +223,7 @@ Dialing without TLS is safe here. The Noise handshake encrypts every libp2p conn
 
 ### Reachability: configuring a relay
 
-With no listener, a phone node has no address of its own. The one address it can have is a `/p2p-circuit` address, which it earns by holding a reservation on a circuit relay. [Which nodes can be reached through a relay](../network/relay.md#which-nodes-can-be-reached-through-a-relay) covers the other node kinds.
+Without a relay a phone node has no address of its own. A reservation on a circuit relay earns it a `/p2p-circuit` address, and an app carrying WebRTC a `/webrtc` address derived from that reservation, so a peer can open a direct connection to the phone. [Which nodes can be reached through a relay](../network/relay.md#which-nodes-can-be-reached-through-a-relay) covers the other node kinds.
 
 The relay is a start option: `PhoneNodeOptions.relayAddrs`, a list of full relay dial addresses that each end in the relay's peer id, such as `/ip4/203.0.113.7/tcp/4002/ws/p2p/12D3KooW…`. The edge node puts the list in `network.relayAddrs`, which reaches the control node and every strand node. Both need a circuit address, because a joining party dials the control node first and then the strand nodes.
 
@@ -234,6 +239,7 @@ Inviting needs an address because the phone runs the strand it invites to, so th
 - **A relay never blocks startup.** An unreachable relay is logged and retried in the background, also while the app is backgrounded and the OS lets it run. The reservation state is read live, so a relay that comes back works with no restart.
 - **An unreachable relay slows startup and founding.** cadre-core waits out the first reservation attempt on `start()` and on every strand launch: 18 seconds at the default declared link when the dial is refused (`relayReservationBudgetMs` in `packages/cadre-core/src/link-budget.ts`).
 - **The two ends need not share a relay.** Each phone dials the other through the other's relay.
+- **A direct path is not guaranteed.** Two phones whose networks do not let ICE connect — each behind a carrier NAT that rewrites ports, say — stay on the relay for the life of the connection. Everything still works; the traffic is relayed.
 
 ### Deadlines sized for a phone
 

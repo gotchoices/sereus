@@ -8,7 +8,7 @@
  *   and node-local dial-target store are kept across a stop/start, the two things a machine
  *   carries across a process restart besides its identity key; the restarted A reconnects by
  *   dialing M from that store.
- * - **M**, the only always-on member: `storage` profile, listening on WebSocket, admitted by A
+ * - **M**, the only always-on member: a server node, listening on WebSocket, admitted by A
  *   through `addDrone` plus seed delivery (the owner-online path), pinning A's owner key as an
  *   operator would (`--pin-owner-key`).
  * - **P**, the new device: phone-shaped (`listenAddrs: []`), started with NO pinned key — it
@@ -69,7 +69,7 @@ describe('E2E owner grant and cadre invitation redeemed at a member while the ow
 		/** A's shape, the same for both incarnations: the restart reopens the same stores. */
 		function buildA(): CadreNode {
 			return new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none',
+				partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none',
 				listenAddrs: [], storageProvider: captureA.provider, bootstrapPeerStore: aPeerStore,
 			}));
 		}

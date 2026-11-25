@@ -139,7 +139,7 @@ describe('createCadreInvitation hands out the anchored owner keys', () => {
   function makeNode(replicatedOwnerKeys: Set<string>, anchor: TrustedOwnerStore): CadreNode {
     const node = new CadreNode({
       controlNetwork: { partyId, bootstrapNodes: [] },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
 
     const mockLibp2p = {

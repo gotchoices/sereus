@@ -17,7 +17,7 @@ function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
       partyId: 'replication-test-' + Math.random().toString(36).slice(2),
       bootstrapNodes: []
     },
-    profile: 'transaction',
+    nodeClass: 'device',
     ...overrides
   };
 }

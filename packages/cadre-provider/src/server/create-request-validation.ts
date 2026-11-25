@@ -5,7 +5,7 @@
  *
  * **Why a validator rather than a few more `if`s in the route.** Every field in
  * this body is forwarded verbatim into a spawned container the caller cannot see:
- * the `join` becomes `CADRE_CLAIM_SECRET` or `CADRE_INVITATION`, `profile` and
+ * the `join` becomes `CADRE_CLAIM_SECRET` or `CADRE_INVITATION`, `nodeClass` and
  * `strandFilter` become environment variables (`service/container-env.ts`), and
  * `resources` become Docker limits. A field the route forgets to check is not a 400
  * — it is a container that dies at boot, or comes up subtly wrong, with a 201
@@ -79,13 +79,13 @@ function validateJoin(value: unknown, options: CreateRequestOptions): ValidatedJ
   return { error: 'join.kind must be "claim" or "invitation"' };
 }
 
-/** Absent means `storage` — the profile that participates and is dialable. */
-function validateProfile(value: unknown): { profile: CreateContainerRequest['profile'] } | { error: string } {
-  if (value === undefined) return { profile: 'storage' };
-  if (value !== 'storage' && value !== 'transaction') {
-    return { error: 'profile must be "storage" or "transaction"' };
+/** Absent means `server` — the always-on machine that participates and is dialable. */
+function validateNodeClass(value: unknown): { nodeClass: CreateContainerRequest['nodeClass'] } | { error: string } {
+  if (value === undefined) return { nodeClass: 'server' };
+  if (value !== 'device' && value !== 'server') {
+    return { error: 'nodeClass must be "device" or "server"' };
   }
-  return { profile: value };
+  return { nodeClass: value };
 }
 
 /** `strandFilter` becomes `CADRE_STRAND_FILTER` verbatim; its *syntax* is the node's business. */
@@ -169,8 +169,8 @@ export function validateCreateContainerRequest(
   const join = validateJoin(fields.join, options);
   if ('error' in join) return join;
 
-  const profile = validateProfile(fields.profile);
-  if ('error' in profile) return profile;
+  const nodeClass = validateNodeClass(fields.nodeClass);
+  if ('error' in nodeClass) return nodeClass;
 
   const strandFilter = validateStrandFilter(fields.strandFilter);
   if ('error' in strandFilter) return strandFilter;
@@ -185,7 +185,7 @@ export function validateCreateContainerRequest(
     request: {
       customerId,
       partyId: join.partyId,
-      profile: profile.profile,
+      nodeClass: nodeClass.nodeClass,
       join: join.join,
       ...(strandFilter.strandFilter !== undefined ? { strandFilter: strandFilter.strandFilter } : {}),
       ...(resources.resources ? { resources: resources.resources } : {}),

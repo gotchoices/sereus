@@ -18,7 +18,7 @@ const EXAMPLE_CONFIG = resolve(dirname(fileURLToPath(import.meta.url)), '../exam
 
 const VALID = {
   controlNetwork: { partyId: 'party-1', bootstrapNodes: [] },
-  profile: 'storage',
+  nodeClass: 'server',
   storage: { type: 'memory' },
 };
 
@@ -75,6 +75,21 @@ describe('config file validation', () => {
     expect(message).not.toContain(configPath);
   });
 
+  /**
+   * `network.webrtc` is the only way to ask for WebRTC, because asking for it means a
+   * transport and a set of ICE servers as well as a listen entry, and only the flag brings
+   * all three. A hand-written entry would be accepted by cadre-core — the CLI always passes
+   * `defaultTransports` — and then bind nothing at all.
+   */
+  it('rejects a hand-written /webrtc listen address, naming the setting that replaces it', async () => {
+    const configPath = writeConfig({ ...VALID, network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001', '/webrtc'] } });
+
+    const message = await rejection(loadValidatedConfig(configPath, {}));
+
+    expect(message).toContain('network.listenAddrs names a WebRTC address (/webrtc)');
+    expect(message).toContain('network.webrtc: true');
+  });
+
   it('reports every problem in one error rather than stopping at the first', async () => {
     const configPath = writeConfig({ ...VALID, hibernation: { enabled: 'yes' }, network: { listenAddr: [] } });
 
@@ -84,8 +99,45 @@ describe('config file validation', () => {
     expect(message).toContain('unknown key network.listenAddr');
   });
 
+  /**
+   * The node class is only a preset, so a file may override any of the four roles on its own.
+   * The block has to survive validation into the config the node is built from — a checker that
+   * accepted it and returned nothing would leave the node on its class's presets in silence.
+   */
+  it('accepts a roles block and carries it through to the resolved config', async () => {
+    const configPath = writeConfig({
+      ...VALID,
+      nodeClass: 'device',
+      roles: { alwaysOn: true, overlayTier: 'core', reactivity: 'subscriber', strandCohortMember: true },
+    });
+
+    await expect(loadValidatedConfig(configPath, {})).resolves.toMatchObject({
+      roles: { alwaysOn: true, overlayTier: 'core', reactivity: 'subscriber', strandCohortMember: true },
+    });
+  });
+
+  /**
+   * The one variable per role, and the dotted path and kind each one writes — plain strings in
+   * `ENV_MAPPINGS` that no type checks, so a typo there ships a documented variable that only
+   * refuses to start. `false` over a `server` is in here because it must beat the class preset
+   * rather than read as "not set", which is the shape an operator sets on a machine that is
+   * reachable only some of the time.
+   */
+  it('takes each role from its CADRE_ROLE_* variable, a false included', async () => {
+    const configPath = writeConfig(VALID);
+
+    await expect(loadValidatedConfig(configPath, {
+      CADRE_ROLE_ALWAYS_ON: 'false',
+      CADRE_ROLE_OVERLAY_TIER: 'edge',
+      CADRE_ROLE_REACTIVITY: 'subscriber',
+      CADRE_ROLE_STRAND_COHORT_MEMBER: 'true',
+    })).resolves.toMatchObject({
+      roles: { alwaysOn: false, overlayTier: 'edge', reactivity: 'subscriber', strandCohortMember: true },
+    });
+  });
+
   // The CLI must never reject its own shipped configs.
   it('accepts the shipped example.cadre.yaml with no environment', async () => {
-    await expect(loadValidatedConfig(EXAMPLE_CONFIG, {})).resolves.toMatchObject({ profile: 'storage' });
+    await expect(loadValidatedConfig(EXAMPLE_CONFIG, {})).resolves.toMatchObject({ nodeClass: 'server' });
   });
 });

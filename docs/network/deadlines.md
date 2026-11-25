@@ -64,6 +64,7 @@ The allowance is flat. It is local decision time, so it does not grow with the d
 | Request on an open connection, with payload | 2L + 6,000 | 13,000 ms | The response to one block catch-up push. The 6,000 ms covers the chunk's bytes and does not scale with `L` | `circuitRequestBudgetMs` |
 | Per-peer cluster read | 2L | 7,000 ms | Optimystic's `clusterPolicy.cohortQueryTimeoutMs` | `cohortReadDeadlineMs` |
 | One commit | 20L | 70,000 ms | A term in the formation deadlines | `commitBudgetMs` |
+| WebRTC upgrade dial | 9L + 4,000 + 25,000 | 60,500 ms | One background attempt to replace a relayed connection with a direct one. The 25,000 ms is ICE's own, longer than the stack's give-up time on purpose: nothing waits on this dial | `webrtcUpgradeDialBudgetMs` |
 
 All of these functions are in `link-budget.ts`. Three budgets are built from them elsewhere:
 

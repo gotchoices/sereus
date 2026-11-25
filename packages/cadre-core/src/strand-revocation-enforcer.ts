@@ -678,7 +678,7 @@ export type StrandRevocationJudge = Pick<StrandRevocationEnforcer, 'isRevoked'>;
  *    which keeps Optimystic from wasting a dial timeout on a peer this node
  *    will not talk to anyway.
  *  - `denyInboundRelayReservation`: deny iff revoked — matters when the strand
- *    node runs the relay server (the storage-profile default), where admitting
+ *    node runs the relay server (the default on a `'server'` node), where admitting
  *    the reservation would let a removed party keep using this node's
  *    forwarding capacity.
  *

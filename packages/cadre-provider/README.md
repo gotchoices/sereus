@@ -93,7 +93,7 @@ These steps start a provider on one machine and create a container that waits to
 	      "id": "ctr_V1StGXR8_Z5jdHi6",
 	      "customerId": "admin",
 	      "partyId": "unclaimed",
-	      "profile": "storage",
+	      "nodeClass": "server",
 	      "status": "pending",
 	      "resources": {},
 	      "tags": {},
@@ -453,18 +453,18 @@ A `DELETE` whose stop or removal failed answers `200` with `{ "ok": false, "mess
 
 ### Joining a cadre: claim or invitation
 
-`POST /containers` takes `join`, which is required, and optionally `profile`, `resources`, `strandFilter` and `tags`. The body names no party, address or owner key: a claim supplies the party and the owner, and an invitation bundle carries the party, the members to dial and the owner keys the node trusts. The sequence of each join is in [Provider flow](https://github.com/gotchoices/sereus/blob/master/docs/hosting/provider.md#provider-flow).
+`POST /containers` takes `join`, which is required, and optionally `nodeClass`, `resources`, `strandFilter` and `tags`. The body names no party, address or owner key: a claim supplies the party and the owner, and an invitation bundle carries the party, the members to dial and the owner keys the node trusts. The sequence of each join is in [Provider flow](https://github.com/gotchoices/sereus/blob/master/docs/hosting/provider.md#provider-flow).
 
 ```json
 { "join": { "kind": "claim" } }
-{ "join": { "kind": "invitation", "invitation": "sereus-invite:1.…" }, "profile": "storage", "tags": { "label": "home" } }
+{ "join": { "kind": "invitation", "invitation": "sereus-invite:1.…" }, "nodeClass": "server", "tags": { "label": "home" } }
 ```
 
 | Field | Rule |
 |---|---|
 | `join.kind` | `claim` or `invitation`. `claim` is refused unless `docker.publicHost` is set. |
 | `join.invitation` | The text an owner's app produces with `encodeCadreInvitation`. Checked for shape; an error never echoes it. |
-| `profile` | `storage` (default) or `transaction`. |
+| `nodeClass` | `server` (default), an always-on machine, or `device`. |
 | `resources` | `memoryLimit`, `cpuLimit` and `storageQuotaBytes`, as in `docker.defaultResources`. |
 | `strandFilter` | A string, passed to the node as `CADRE_STRAND_FILTER`. |
 | `tags` | An object of strings, stored on the record and returned. |
@@ -489,7 +489,7 @@ A request that fails any rule is answered `400 INVALID_REQUEST` and nothing is p
 
 | Field | Meaning |
 |---|---|
-| `id`, `customerId`, `profile`, `resources`, `tags`, `createdAt`, `updatedAt` | As created. |
+| `id`, `customerId`, `nodeClass`, `resources`, `tags`, `createdAt`, `updatedAt` | As created. |
 | `status` | `pending`, `creating`, `enrolling`, `running`, `stopping`, `stopped` or `error`. |
 | `error` | The failure, when `status` is `error`. |
 | `partyId` | The cadre the node serves. A claim container reports `unclaimed` until the claim is recorded. |
@@ -585,6 +585,10 @@ A custom orchestrator passed to `createProviderServer` must give each container 
 ### What the host can read
 
 The container record holds the claim secret or the invitation bundle, so that a provider restart can reproduce the container's environment. `docker inspect` on the host shows `CADRE_CLAIM_SECRET`, `CADRE_INVITATION` and `CADRE_PUSH` in a container's environment. Restrict access to the Docker socket and to `storage.path` accordingly.
+
+### The node image ships with the provider
+
+Upgrade `docker.image` with the provider service, from the same release. The provider tells each container what kind of machine it runs on with `CADRE_NODE_CLASS`, and an image that does not know that variable ignores it: the node comes up as an always-on `server`, which is every image's own default, so a `nodeClass: "device"` request is lost with no error anywhere. Run a matched pair.
 
 ### Stuck provisions
 

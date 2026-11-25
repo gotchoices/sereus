@@ -7,6 +7,7 @@ import { StrandDatabase } from '../src/strand-database.js';
 import { signSchema, SchemaVerificationError } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 describe('StrandInstanceManager', () => {
   let authorPrivateKey: string;
@@ -59,7 +60,7 @@ describe('StrandInstanceManager', () => {
     return {
       strandRow: createStrandRow(strandId),
       sAppConfig: createSAppConfig(),
-      profile: 'transaction',
+      roles: NODE_ROLE_PRESETS.device,
       defaultLatencyHint: 'interactive',
       founder: true,
       ...overrides
@@ -136,6 +137,31 @@ describe('StrandInstanceManager', () => {
         expect(manager.isAwaitingFirstSync('seeded-strand')).toBe(true);
       } finally {
         initialize.mockRestore();
+        await manager.stopAll();
+      }
+    }, 30000);
+
+    it('keeps a founding client with no serving machine syncing on its running node, retrying only the database', async () => {
+      // A client (`strandCohortMember: false`) stores none of the strand's blocks, so its own
+      // cluster is empty and every block its launch touches — the schema catalog it opens first,
+      // then a founder's bootstrap rows — falls through to `findCoordinator`, which can resolve
+      // nobody: a node that serves no storage never coordinates a key, however isolated it is,
+      // so founding alone is not open to it either. That throws
+      // Optimystic's `FindCoordinatorError`, not the `cohort-unreachable` the seed case above
+      // raises, and the launch must wait the same way rather than failing.
+      const manager = new StrandInstanceManager();
+      const config = createStartConfig('client-founded-strand', {
+        roles: { ...NODE_ROLE_PRESETS.device, strandCohortMember: false }
+      });
+
+      const instance = await manager.startStrand(config);
+
+      try {
+        expect(instance.status).toBe('syncing');
+        expect(instance.database).toBeUndefined();
+        expect(instance.libp2pNode?.status).toBe('started');
+        expect(manager.isAwaitingFirstSync('client-founded-strand')).toBe(true);
+      } finally {
         await manager.stopAll();
       }
     }, 30000);

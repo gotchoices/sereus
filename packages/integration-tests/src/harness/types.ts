@@ -4,7 +4,7 @@
 
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { ControlDatabase } from '@serfab/cadre-core';
+import type { ControlDatabase, NodeClass } from '@serfab/cadre-core';
 import type { TestOwnerKey } from './owner-key.js';
 
 /**
@@ -50,8 +50,8 @@ export interface TestCadreNode {
   /** Multiaddrs the node is reachable at */
   multiaddrs: string[];
   
-  /** Node profile */
-  profile: 'transaction' | 'storage';
+  /** What kind of machine this node stands for */
+  nodeClass: NodeClass;
   
   /** Coordinated repo from db-p2p (for Optimystic) */
   coordinatedRepo: IRepo;
@@ -105,8 +105,8 @@ export interface CreatePartyOptions {
   /** Number of drone nodes to create (default: 0) */
   droneCount?: number;
   
-  /** Profile for drone nodes (default: 'storage') */
-  droneProfile?: 'transaction' | 'storage';
+  /** Node class for drone nodes (default: 'server') */
+  droneNodeClass?: NodeClass;
 }
 
 /**

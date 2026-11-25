@@ -3,8 +3,10 @@
  * make against them: connection claims, `Strand.*` membership scans, `App.Data` convergence
  * gates with their paired negative, the retrying insert, the control-row gates and the strand
  * mesh. Shared by `strand-removal-cuts-network`, `strand-party-removal-via-formation-e2e`,
- * `machine-removal-rotates-party-key` and `party-key-rotation-across-parties`, which each
- * carried a copy until the fourth arrived.
+ * `machine-removal-rotates-party-key`, `party-key-rotation-across-parties` and
+ * `client-survives-party-key-replacement`, which each carried a copy until the fourth arrived.
+ * {@link strandPeerRoles} is also read by `strand-client-node-holds-no-blocks`, which has no
+ * strand-side claims of its own.
  *
  * Every strand read here scans and filters in JavaScript. A where-equality on a primary key is
  * served as a point lookup that can miss on a networked strand
@@ -25,7 +27,7 @@
  */
 
 import { DEFAULT_STRAND_CLUSTER_SIZE, strandMemberKeyPair } from '@serfab/cadre-core';
-import type { CadreNode, OpenInvitation, StrandInstance, StrandRow } from '@serfab/cadre-core';
+import type { CadreNode, OpenInvitation, StrandInstance, StrandPeerRole, StrandRow } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import { waitForCohortOn } from './control-cohort.js';
 import { connectStrandNodes } from './strand-join.js';
@@ -313,6 +315,20 @@ export async function awaitJoinedStrandRow(node: CadreNode, strandId: string, la
 export async function awaitReplica(node: CadreNode, strandId: string, label: string, gate: StrandGate = STRAND_GATE): Promise<StrandMachine> {
 	await waitUntil(() => node.getStrand(strandId)?.database !== undefined, { ...gate, description: `${label} runs a storage replica of the strand` });
 	return strandMachine(label, node, node.getStrand(strandId));
+}
+
+/**
+ * Every `StrandPeer` row for `strandId` as `node`'s control database holds them, strand peer id to
+ * role: null for a machine that serves the strand's blocks, `'client'` for one that stores none.
+ * The row set is the party's machines that RUN the strand, whatever their role; the role is what
+ * tells a serving sibling's offline queue which of them it may wait for.
+ */
+export async function strandPeerRoles(node: CadreNode, strandId: string, label: string): Promise<Map<string, StrandPeerRole | null>> {
+	const control = node.getControlDatabase();
+	if (!control) {
+		throw new Error(`${label}: no control database, so the party's StrandPeer rows cannot be read`);
+	}
+	return new Map((await control.queryStrandPeers(strandId)).map((row) => [row.strandPeerId, row.role]));
 }
 
 /** Gate: `node`'s control record names a party key whose public half is `newMemberKey`, with no pending row left. */

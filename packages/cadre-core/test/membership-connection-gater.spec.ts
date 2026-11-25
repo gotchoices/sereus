@@ -650,8 +650,8 @@ describe('CadreNode.admitInboundControlConnection (relay server on or off)', () 
     const configs: Parameters<typeof createConfig>[1][] = [
       {},
       { network: { enableRelay: true } },
-      { profile: 'storage' },
-      { profile: 'storage', network: { enableRelay: false } }
+      { nodeClass: 'server' },
+      { nodeClass: 'server', network: { enableRelay: false } }
     ];
     for (const extra of configs) {
       const node = new CadreNode(createConfig([], extra));

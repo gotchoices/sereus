@@ -13,8 +13,8 @@ Every scenario file has exactly one row. A change that adds, renames or removes 
 
 Terms used in the rows:
 
-- **Phone-shaped node**: no listen address, WebSocket and circuit-relay transports only, `transaction` profile (`buildPhoneOwner` in `harness/node-fixtures.ts`).
-- **Always-on member**: a `storage`-profile node that listens on a loopback address.
+- **Phone-shaped node**: no listen address, WebSocket and circuit-relay transports only, the `device` node class (`buildPhoneOwner` in `harness/node-fixtures.ts`).
+- **Always-on member**: a `server`-class node that listens on a loopback address.
 - **Relay-only node**: a node with no listen address, reachable only through its reservation on a relay.
 - **Dedicated relay**: `harness/dedicated-relay.ts`, a bare libp2p relay with no membership gate and no cadre protocols. It stands in for the relay container in `ops/docker/libp2p-infra`.
 - **Hand-dial**: the test dials one node at another itself, where the product would find the address through discovery.
@@ -97,12 +97,13 @@ The claim, invitation and provider scenarios start real `cadre-cli` child proces
 
 | Shape or situation | Scenario | Not covered |
 |---|---|---|
-| An always-on member and a `transaction`-profile node that only dials; one chat strand | `websocket-chat.integration.ts` | — |
+| An always-on member and a `device`-class node that only dials; one chat strand | `websocket-chat.integration.ts` | — |
 | Two machines; bursts and interleaved writes from both; a disconnect and reconnect | `convergence-stress.integration.ts` | Writes issued from both machines at the same instant |
 | Two machines; the second learns the strand's address from its sibling over the control network, no hand-dial | `strand-addr-seed-convergence.integration.ts` | Data replication over the resulting connection |
 | A machine enrolled after the strand has rows, with writes continuing during its enrollment | `strand-late-cadre-join.integration.ts` | A write forced into the gap between catch-up and replication (ticket `debt-late-join-catch-up-seam-is-never-forced`) |
 | An always-on storage replica without the app; the phone is lost and a replacement phone joins | `strand-always-on-replica-survives-phone-loss.integration.ts` | A closed strand |
 | Three machines on a strand with cluster size 2, so each block is on two of them; change notifications | `strand-reactivity-wakes-watchers.integration.ts` | — |
+| Two always-on members and a `device` whose `strandCohortMember` role is off; the chat schema; the client writes and reads through the two serving machines, which hold every block, and is in nobody's cluster; and a client opened with none of them running the strand, which waits and becomes writable | `strand-client-node-holds-no-blocks.integration.ts` | The client's strand node is hand-dialed to the servers; the strand is open, so no membership rows and no party key |
 | Two machines; the strand is removed party-wide and the sibling stops its instance | `strand-unpublish-sibling-convergence.integration.ts` | Closed strands; a removal committed while alone; the remover running the strand itself |
 
 ## Strands across parties: forming and joining
@@ -130,6 +131,7 @@ The claim, invitation and provider scenarios start real `cadre-cli` child proces
 | 2×2 joined by formation, every membership row written by the runtime; removal; a rejoin attempt after removal | `strand-party-removal-via-formation-e2e.integration.ts` | Relayed connections; discovery beyond the pair formation seeds (the rest is hand-dialed) |
 | A three-machine party and a one-machine party on a closed strand the first founded; a machine is removed with the always-on replica online, and with it offline | `machine-removal-rotates-party-key.integration.ts` | Relayed connections; a machine that returns after a key replacement it missed |
 | The same removal in a strand the other party manages; a fresh invitation seats the new key | `party-key-rotation-across-parties.integration.ts` | Relayed connections; the replica offline during the removal |
+| One party of three serving machines and a `device` whose `strandCohortMember` role is off, on a closed strand the owner founded; one serving machine is removed, and the client is bound under the replacement key and keeps writing | `client-survives-party-key-replacement.integration.ts` | Relayed connections; a client whose `StrandPeer` row reaches the remover only after the replacement; the client's own refusal of the removed machine, which the run drives rather than waits for |
 
 ## Relay and reachability
 
@@ -141,9 +143,10 @@ Injected delay and the frame-rate cap (`harness/ws-latency.ts`) apply to every n
 | One party, both machines relay-only on a dedicated relay; strand data both ways; the relay restarts | `strand-circuit-same-party-e2e.integration.ts` | Link delay; a relay run by one of the party's own machines |
 | The relay-only pair on a shared relay, at loopback speed and with 10 ms delay; then one relay per party | `blind-relay-phone-to-phone-e2e.integration.ts` | Loss of a reservation; delay on the relay-per-party arm |
 | The relay-only pair; both restart over the storage each kept | `strand-relay-only-restart-reconverges.integration.ts` | Link delay. Separate processes over on-disk stores run only in an opt-in arm |
-| The relay-only pair; the joiner's first transaction at loopback speed, at 100 ms delay and on a frame-rate-capped link with a busy event loop; a commit made alone, delivered after a restart | `joiner-first-commit-over-slow-relay.integration.ts` | A passing first commit on the capped link: that arm is marked `it.fails` |
+| The relay-only pair; the joiner's first transaction at loopback speed, at 100 ms delay and on a frame-rate-capped link with a busy event loop; a commit made alone, delivered after a restart | `joiner-first-commit-over-slow-relay.integration.ts` | A first commit that must land on the capped link: that arm accepts a named refusal instead |
 | The relay-only pair at 100 ms delay; reads of every table, then with the joiner stopped | `strand-read-cost-over-relay.integration.ts` | The capped link, which runs only in an opt-in arm |
 | The relay-only pair; alternating read and write rounds at loopback speed | `strand-workload-on-a-phone-link.integration.ts` | The capped link, which runs only in an opt-in arm marked `it.fails` |
+| The relay-only pair, both also listening on `/webrtc`; formation, strand bring-up and a write with ICE that can never connect, then the same with ICE that can, where the strand connections must upgrade to WebRTC | `webrtc-ice-failure-falls-back-to-relay.integration.ts` | Link delay; a capped relay; a failed upgrade's backoff |
 
 ## Offline mode and hibernation
 

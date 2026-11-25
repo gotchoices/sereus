@@ -45,7 +45,7 @@ describe('StrandPeer and PendingStrandPartyKey', () => {
 		db.insertCadrePeer({ peerId, publicKey, multiaddr: '', updatedAt: Date.now(), sig: null, profile: null }, owner.publicKey, signAsOwner);
 
 	it('StrandPeer: a row needs the signature of the machine it names, against that machine\'s CadrePeer row', async () => {
-		const row = { strandId: 'strand-signed', strandPeerId: peerIdOf(freshKeyPair()) };
+		const row = { strandId: 'strand-signed', strandPeerId: peerIdOf(freshKeyPair()), role: null };
 		const signAsMachine = (message: Uint8Array): string => signAs(machine, message);
 
 		// The machine's own row has not reached this node yet.
@@ -77,6 +77,27 @@ describe('StrandPeer and PendingStrandPartyKey', () => {
 		);
 
 		expect(await db.queryStrandPeers(strandId)).toEqual([]);
+	});
+
+	it('StrandPeer: a row that states a role is signed over it, and neither signed form passes for the other', async () => {
+		const signAsMachine = (message: Uint8Array): string => signAs(machine, message);
+		const peerId = node.peerId.toString();
+		await seatMachine(peerId, machine.publicKey); // insert-if-absent: the first test may have seated it
+		const strandPeerId = peerIdOf(freshKeyPair());
+		const insertByHand = (strandId: string, role: string | null, signedFields: string[]): Promise<unknown> =>
+			db.getDatabase().exec(
+				'insert into CadreControl.StrandPeer (StrandId, PeerId, StrandPeerId, Role, Sig) values (?, ?, ?, ?, ?)',
+				[strandId, peerId, strandPeerId, role, signAsMachine(buildAuthorizationMessage('CadreControl.StrandPeer', 'add', partyId, signedFields))]
+			);
+
+		const row = { strandId: 'strand-client', strandPeerId, role: 'client' as const };
+		expect(await db.insertStrandPeer(row, signAsMachine)).toBe(true);
+		expect(await db.queryStrandPeers(row.strandId)).toMatchObject([{ ...row, peerId }]);
+
+		// A client's row signed over the three fields a serving machine signs.
+		await expectConstraintFailure(insertByHand('strand-client-three-fields', 'client', ['strand-client-three-fields', peerId, strandPeerId]), 'Authorized');
+		// A serving machine's row (no role) signed over four fields.
+		await expectConstraintFailure(insertByHand('strand-serving-four-fields', null, ['strand-serving-four-fields', peerId, strandPeerId, 'client']), 'Authorized');
 	});
 
 	it('PendingStrandPartyKey: inserts under an owner, and a tombstoned delete retires its stamp', async () => {

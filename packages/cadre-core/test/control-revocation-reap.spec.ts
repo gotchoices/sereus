@@ -40,7 +40,7 @@ import {
  *   guard replication merge bypasses. `NotRevoked`, `RevocationRecorded` and
  *   `AuthorizedDelete` — the rules actually under test — stay intact.
  *
- * Every test boots its OWN `CadreNode` (empty bootstrap, transaction profile) seeded with
+ * Every test boots its OWN `CadreNode` (empty bootstrap, a device) seeded with
  * one founding owner, mirroring `control-revocation-replay.spec.ts`.
  */
 
@@ -96,7 +96,7 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
         bootstrapNodes: [],
         schemaPath,
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

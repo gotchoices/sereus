@@ -9,12 +9,14 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { createEmptyCollections } from '@serfab/quereus-plugin-sereus';
 import type { CollectionRegistrySource } from '@serfab/quereus-plugin-sereus';
-import type { StrandRow, StrandPeerRow, PendingStrandPartyKeyRow, SealedPendingPartyKey, JoinRequestRow, JoinOutcome, PendingJoin, NodeProfile, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalWrites } from './types.js';
+import type { StrandRow, StrandPeerRow, StrandPeerRole, PendingStrandPartyKeyRow, SealedPendingPartyKey, JoinRequestRow, JoinOutcome, PendingJoin, PeerAddressRecord, CadrePeerRow, OwnerKeyRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform, CadreInviteRow, CadreInviteUsageRow, CadreInviteRedemptionResult, CadreInviteStatus, OwnerGrantRow, OwnerGrantUsageRow, OwnerGrantRedemptionResult, OwnerGrantStatus, SeedPeer, MachineRemovalWrites } from './types.js';
 import { APPLY_CONTROL_SCHEMA, CONTROL_SCHEMA_DECLARATION, CONTROL_SCHEMA_NAME, controlSchemaFileDeclaration } from './control-schema.js';
 import { refuseIncompatibleControlStore } from './control-schema-version.js';
+import { decodeAlwaysOn } from './node-class.js';
+import type { PublishedProfile } from './node-class.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, unboundAuthorizationFields, cadreInviteRowFields, ownerGrantRowFields, strandPeerRowFields, pendingStrandPartyKeyRowFields, CONTROL_TABLES } from './control-authorization.js';
-import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields, OwnerGrantSignedFields } from './control-authorization.js';
+import type { ControlTable, RevocableTable, BoundControlDomain, UnboundControlDomain, ControlAction, CadreInviteSignedFields, OwnerGrantSignedFields, StrandPeerSignedFields } from './control-authorization.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 import { verifyCadreInviteRow, verifyOwnerGrantRow, verifyStrandPeerRow } from './peer-authorization.js';
@@ -579,6 +581,51 @@ function pendingPartyKeyOfRow(row: Record<string, SqlValue>): PendingStrandParty
   };
 }
 
+/** The columns every `StrandPeer` read takes, as {@link strandPeerRowOf} maps them. */
+const STRAND_PEER_COLUMNS = 'StrandId, PeerId, StrandPeerId, Role, Sig';
+
+/**
+ * A stored `StrandPeer.Role` as this build knows it. Null, and a row written before the column
+ * existed, read as a serving machine's. A value this build does not know also reads as null, and
+ * the row then fails {@link verifyStrandPeerRow}, whose digest omits a null role, and is dropped:
+ * a reader acts only on roles it knows, as a version-4 reader drops a row marked `'client'`. Such
+ * a value reaches a store only from a machine that bypassed its own `KnownStrandPeerRole` check,
+ * or from a later schema version that adds one.
+ */
+function strandPeerRoleOf(value: SqlValue): StrandPeerRole | null {
+  return value === 'client' ? value : null;
+}
+
+/** A stored `StrandPeer` row as {@link StrandPeerRow}. */
+function strandPeerRowOf(row: Record<string, SqlValue>): StrandPeerRow {
+  return {
+    strandId: row.StrandId as string,
+    peerId: row.PeerId as string,
+    strandPeerId: row.StrandPeerId as string,
+    role: strandPeerRoleOf(row.Role),
+    sig: row.Sig as string,
+  };
+}
+
+/** How a `StrandPeer` role reads in a log line: the null role is the serving machine's. */
+const strandPeerRoleName = (role: StrandPeerRole | null): string => role ?? 'serving';
+
+/**
+ * The "already present" line of {@link ControlDatabase.insertStrandPeer}. The row is immutable, so
+ * when the held row states a role other than the one this machine now publishes, the line names
+ * both: the stored role stands until the machine is removed and re-added.
+ */
+function logHeldStrandPeer(held: StrandPeerRow, role: StrandPeerRole | null): void {
+  if (held.role === role) {
+    log('StrandPeer row already present for strand %s (names %s); insert skipped', held.strandId, held.strandPeerId);
+    return;
+  }
+  log(
+    'StrandPeer row already present for strand %s (names %s) and states role %s; this machine now publishes role %s, and the row cannot be changed; insert skipped',
+    held.strandId, held.strandPeerId, strandPeerRoleName(held.role), strandPeerRoleName(role)
+  );
+}
+
 /**
  * The key the party moves to in one strand, for {@link ControlDatabase.removeMachine}: its public
  * half in the clear, its private half sealed to the machines that remain (`sealed-party-key.ts`).
@@ -852,16 +899,16 @@ function errorChainMatches(error: unknown, pattern: RegExp): boolean {
  *
  * A peer is `preferred` when it is the minter, the one machine certain to be reachable by the
  * receiver at that moment, since it is delivering the seed or the reply, or an always-on
- * machine (`Profile = 'storage'`), the ones that stay dialable. Preference is a dial hint and
- * reads no `OwnerKey` row: owner keys are not machines, and a receiver derives trust from its
- * own anchor, never from this list. A `Profile` is self-declared and not checked here, so a
- * machine misdeclaring one costs the receiver a wasted dial at most.
+ * machine, the ones that stay dialable. Preference is a dial hint and reads no `OwnerKey` row:
+ * owner keys are not machines, and a receiver derives trust from its own anchor, never from
+ * this list. Being always on is self-declared and not checked here, so a machine misdeclaring
+ * it costs the receiver a wasted dial at most.
  */
 export function projectSeedPeers(rows: readonly CadrePeerRow[], minterPeerId: string): SeedPeer[] {
   return rows.map(({ peerId, multiaddr, profile }) => ({
     peerId,
     multiaddrs: multiaddr ? multiaddr.split(',') : [],
-    preferred: peerId === minterPeerId || profile === 'storage',
+    preferred: peerId === minterPeerId || decodeAlwaysOn(profile) === true,
   }));
 }
 
@@ -950,7 +997,7 @@ function cadrePeerRowOf(row: Record<string, SqlValue>): CadrePeerRow {
     publicKey: (row.PublicKey as string | null) ?? null,
     multiaddr: (row.Multiaddr as string | null) ?? null,
     updatedAt: (row.UpdatedAt as number | null) ?? 0,
-    profile: (row.Profile as NodeProfile | null) ?? null,
+    profile: (row.Profile as PublishedProfile | null) ?? null,
     sig: (row.Sig as string | null) ?? null,
     stampId: (row.StampId as string | null) ?? null,
     vouchOwner: (row.VouchOwner as string | null) ?? null,
@@ -2371,19 +2418,12 @@ export class ControlDatabase {
    */
   private async readStrandPeerRows(strandId: string, retry: boolean): Promise<StrandPeerRow[]> {
     const rows = await this.readRows(
-      'select StrandId, PeerId, StrandPeerId, Sig from CadreControl.StrandPeer where StrandId = ?',
+      `select ${STRAND_PEER_COLUMNS} from CadreControl.StrandPeer where StrandId = ?`,
       [strandId],
       'strand-peers',
       retry
     );
-    return rows
-      .filter((row) => row.StrandId === strandId)
-      .map((row) => ({
-        strandId,
-        peerId: row.PeerId as string,
-        strandPeerId: row.StrandPeerId as string,
-        sig: row.Sig as string,
-      }));
+    return rows.filter((row) => row.StrandId === strandId).map(strandPeerRowOf);
   }
 
   /** `ValidationKey` stamp nonce — bound into {@link deleteValidationKey}'s remove digest. */
@@ -3511,32 +3551,36 @@ export class ControlDatabase {
   }
 
   /**
-   * Publish this machine's peer id in one strand (`StrandPeer` row), signed by this machine's
-   * own identity key. Insert-if-absent: `true` when a row was written, `false` when this machine
-   * already has one for the strand. The schema refuses the insert while this node does not hold
-   * the machine's `CadrePeer` row, and that rejection propagates.
+   * Publish this machine's peer id in one strand, and whether it serves the strand (`StrandPeer`
+   * row), signed by this machine's own identity key in the form its role selects
+   * (`strandPeerRowFields`). Insert-if-absent: `true` when a row was written, `false` when this
+   * machine already has one for the strand. The row is immutable, so a held row stands even when
+   * its role differs from `row.role`; that case is logged ({@link logHeldStrandPeer}). The schema
+   * refuses the insert while this node does not hold the machine's `CadrePeer` row, and that
+   * rejection propagates.
    *
-   * @param row - The strand, and this machine's peer id in it (`strandTransportKey`).
+   * @param row - The strand, this machine's peer id in it (`strandTransportKey`), and its role
+   *   there: `'client'` when it stores none of the strand, null when it serves it.
    * @param sign - Signs the raw message bytes with the identity key behind this machine's
    *   control peer id. A callback for the reason {@link updateSelfPeerRecord} takes one: this
    *   class holds no private key.
    */
-  async insertStrandPeer(row: { strandId: string; strandPeerId: string }, sign: ControlSign): Promise<boolean> {
+  async insertStrandPeer(row: Omit<StrandPeerSignedFields, 'peerId'>, sign: ControlSign): Promise<boolean> {
     this.ensureInitialized();
     const peerId = this.config.libp2pNode.peerId.toString();
-    const fields = { strandId: row.strandId, peerId, strandPeerId: row.strandPeerId };
+    const fields: StrandPeerSignedFields = { strandId: row.strandId, peerId, strandPeerId: row.strandPeerId, role: row.role };
     return this.lockedWithRetry(async () => {
       // retry: false — this guard runs inside the locked write body (see queryStampId's NOTE).
       const held = (await this.readStrandPeerRows(row.strandId, false)).find((stored) => stored.peerId === peerId);
       if (held !== undefined) {
-        log('StrandPeer row already present for strand %s (names %s); insert skipped', row.strandId, held.strandPeerId);
+        logHeldStrandPeer(held, row.role);
         return false;
       }
       const sig = await sign(buildAuthorizationMessage('CadreControl.StrandPeer', 'add', this.config.partyId, strandPeerRowFields(fields)));
       // Bare `exec`: already inside the write lock, which is NOT re-entrant.
       await this.db!.exec(
-        'insert into CadreControl.StrandPeer (StrandId, PeerId, StrandPeerId, Sig) values (?, ?, ?, ?)',
-        [fields.strandId, fields.peerId, fields.strandPeerId, sig]
+        `insert into CadreControl.StrandPeer (${STRAND_PEER_COLUMNS}) values (?, ?, ?, ?, ?)`,
+        [fields.strandId, fields.peerId, fields.strandPeerId, fields.role, sig]
       );
       return true;
     }, {}, 'strand-peer-insert');
@@ -3849,7 +3893,7 @@ export class ControlDatabase {
       multiaddr: string;
       updatedAt: number;
       sig: string | null;
-      profile: NodeProfile | null;
+      profile: PublishedProfile | null;
     },
     ownerKey: string,
     signMessage: ControlSign

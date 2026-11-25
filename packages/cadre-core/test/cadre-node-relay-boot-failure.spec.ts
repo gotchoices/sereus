@@ -25,7 +25,7 @@ describe('CadreNode start() failing on its relay reservation', () => {
     return new CadreNode({
       controlNetwork: { partyId: 'relay-boot-failure-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
       privateKey: await generateKeyPair('Ed25519'),
-      profile: 'transaction',
+      nodeClass: 'device',
       strandFilter: { mode: 'none' },
       storage: { provider: () => new MemoryRawStorage() },
       // No direct listener either, so the reservation is the node's only reachability —

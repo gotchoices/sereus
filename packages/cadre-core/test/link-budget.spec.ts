@@ -8,11 +8,13 @@ import {
 	COMMIT_ROUND_TRIPS,
 	DECLARED_LINK_ROUND_TRIP_MS,
 	DIAL_ADMISSION_DECISIONS,
+	ICE_NEGOTIATION_ALLOWANCE_MS,
 	PROTOCOL_NEGOTIATION_ROUND_TRIPS,
 	PUSH_TRANSFER_ALLOWANCE_MS,
 	RELAYED_DIAL_ROUND_TRIPS,
 	RELAYED_REQUEST_ROUND_TRIPS,
 	RELAY_RESERVATION_ROUND_TRIPS,
+	WEBRTC_SIGNALING_ROUND_TRIPS,
 	circuitRequestBudgetMs,
 	cohortReadDeadlineMs,
 	commitBudgetMs,
@@ -21,7 +23,8 @@ import {
 	relayedDialBudgetMs,
 	relayedRequestBudgetMs,
 	relayedStreamOpenBudgetMs,
-	resolveLinkRoundTripMs
+	resolveLinkRoundTripMs,
+	webrtcUpgradeDialBudgetMs
 } from '../src/link-budget.js';
 
 /**
@@ -51,6 +54,25 @@ describe('link budgets', () => {
 		expect(relayedDialBudgetMs(declared) - relayedDialBudgetMs()).toBe(RELAYED_DIAL_ROUND_TRIPS * added);
 		expect(relayReservationBudgetMs(declared) - relayReservationBudgetMs()).toBe(RELAY_RESERVATION_ROUND_TRIPS * added);
 		expect(relayedRequestBudgetMs(declared) - relayedRequestBudgetMs()).toBe(RELAYED_REQUEST_ROUND_TRIPS * added);
+	});
+
+	it('scales only the signalling part of a WebRTC upgrade dial, leaving ICE\'s allowance flat', () => {
+		// ICE's connectivity checks cross the two networks' own paths, not the relay the
+		// signalling went over, so a slow-link declaration must not inflate them — the same
+		// separation a push's bytes get, and the reason the upgrade budget is the one place in
+		// this module where erring long is correct (nothing waits on the dial).
+		const dialDecisionsMs = DIAL_ADMISSION_DECISIONS * ADMISSION_DECISION_TIMEOUT_MS;
+		const atDefault = webrtcUpgradeDialBudgetMs();
+		expect(atDefault).toBe(
+			WEBRTC_SIGNALING_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS + dialDecisionsMs + ICE_NEGOTIATION_ALLOWANCE_MS
+		);
+		expect(webrtcUpgradeDialBudgetMs(2 * DECLARED_LINK_ROUND_TRIP_MS) - atDefault)
+			.toBe(WEBRTC_SIGNALING_ROUND_TRIPS * DECLARED_LINK_ROUND_TRIP_MS);
+
+		// The allowance is what keeps the deadline a backstop rather than the thing that ends an
+		// attempt: a failing ICE negotiation gives up by itself after about 23 s, so no
+		// declaration may put the budget's ICE half below that.
+		expect(ICE_NEGOTIATION_ALLOWANCE_MS).toBeGreaterThan(23_000);
 	});
 
 	it('scales only the latency part of a circuit request, leaving the transfer allowance flat', () => {

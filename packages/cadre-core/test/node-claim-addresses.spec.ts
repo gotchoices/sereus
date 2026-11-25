@@ -58,6 +58,19 @@ describe('selectNodeClaimAddresses', () => {
 		]);
 	});
 
+	it('puts a WebRTC address behind the plain relayed one, keeping it rather than dropping it', () => {
+		// The relay carries both, so a machine listening on `/webrtc` publishes a pair per relay.
+		// The WebRTC one connects only if ICE finds a path between the two networks, and otherwise
+		// answers nothing for about 23 s, so a phone must reach it last.
+		const hop = `/dns4/relay.example.org/tcp/443/wss/p2p/${RELAY}`;
+		const reported = [p2p(`${hop}/p2p-circuit/webrtc`), p2p('/ip4/192.168.2.27/tcp/51234/ws'), p2p(`${hop}/p2p-circuit`)];
+		expect(selectNodeClaimAddresses(reported, PEER, { lan: '192.168.2.27' })).toEqual([
+			p2p('/ip4/192.168.2.27/tcp/51234/ws'),
+			p2p(`${hop}/p2p-circuit`),
+			p2p(`${hop}/p2p-circuit/webrtc`),
+		]);
+	});
+
 	it('gives a relay address that ends at its hop the node\'s id, since the relay\'s /p2p/ is not the destination', () => {
 		const hop = `/dns4/relay.example.org/tcp/443/wss/p2p/${RELAY}/p2p-circuit`;
 		expect(selectNodeClaimAddresses([hop], PEER)).toEqual([p2p(hop)]);

@@ -16,7 +16,7 @@
  * a resolver no app runs.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative } from 'node:path';
@@ -254,5 +254,51 @@ describe('withCadreMetro under sereus-chat\'s resolver settings, through Metro\'
 
 		expect(metroResolve(sereusChatConfig().resolver, '@libp2p/crypto/hmac', appFile())).toBe(join(hmac, 'index.js'));
 		expect(metroResolve(kitResolver(), '@libp2p/crypto/hmac', appFile())).toBe(join(hmac, 'index.browser.js'));
+	});
+});
+
+/**
+ * The watched roots. Metro reads a symlink's target as a string and looks that string up in
+ * the file map it crawled from these, so a root spelled differently from the directory on
+ * disk hides every package linked under it. What provoked this: on Windows the apps name
+ * `../../../optimystic` while the checkout is `C:\Projects\Optimystic`, and the Android
+ * export failed with "Unable to resolve module @optimystic/db-core" from cadre-core.
+ *
+ * Checked through a link rather than through letter case, which only differs on a
+ * case-insensitive filesystem. The link is a junction on Windows, which needs no
+ * privileges, and a plain symlink elsewhere; it lives in its own temporary tree so the
+ * shared fixture stays link-free.
+ */
+describe('withCadreMetro linked roots', () => {
+	let linkRoot: string;
+
+	beforeAll(() => {
+		linkRoot = realpathSync.native(mkdtempSync(join(tmpdir(), 'cadre-metro-link-')));
+		mkdirSync(join(linkRoot, 'sibling', 'node_modules'), { recursive: true });
+		symlinkSync(join(linkRoot, 'sibling'), join(linkRoot, 'alias'), 'junction');
+	});
+
+	afterAll(() => {
+		rmSync(linkRoot, { recursive: true, force: true });
+	});
+
+	function rootsOf(linkedRoots: readonly string[]) {
+		const config = withCadreMetro<MetroConfig>({ resolver: {} }, { projectRoot, linkedRoots });
+		return { watchFolders: config.watchFolders, nodeModulesPaths: config.resolver.nodeModulesPaths };
+	}
+
+	it('watches the directory a root resolves to, not the path the app named', () => {
+		const sibling = join(linkRoot, 'sibling');
+
+		expect(rootsOf([join(linkRoot, 'alias')])).toEqual({
+			watchFolders: [sibling],
+			nodeModulesPaths: [join(projectRoot, 'node_modules'), join(sibling, 'node_modules')],
+		});
+	});
+
+	it('keeps a root that is not there, which Metro ignores', () => {
+		const absent = join(linkRoot, 'no-such-checkout');
+
+		expect(rootsOf([absent]).watchFolders).toEqual([absent]);
 	});
 });

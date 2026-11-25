@@ -35,7 +35,7 @@ An index of the documentation by task and by folder. Every reader starts with [C
 - [Adding and removing machines](cadre/membership.md): seeds, claims, cadre invitations.
 - [Removing a machine](cadre/removing-machines.md): the removal transaction, what the removed machine keeps, key replacement in closed strands.
 - [Several apps in one cadre](cadre/apps.md): an app joining an existing cadre and moving its strands.
-- [The cadre node](cadre/node.md): profiles, strand filter, configuration, keys, storage, the edge node.
+- [The cadre node](cadre/node.md): node classes, strand filter, configuration, keys, storage, the edge node.
 
 ### strands/
 

@@ -53,6 +53,7 @@ import * as SecureStore from 'expo-secure-store';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import {
   createPhoneNode,
+  webrtcListenAddrs,
   type DissolveFormerPartyOptions,
   type JoinCadreOptions,
   type JoinCadreResult,
@@ -102,14 +103,19 @@ const phone = createPhoneNode({
     WriteBatch: LevelDBWriteBatch,
     destroy: (name) => LevelDB.destroyDB(name),
   },
-  // Phone → peer direct upgrade: a relayed `/p2p-circuit` connection hole-punches to a
-  // direct `/webrtc` data path, the relay staying signalling-only. Each relay is also a
-  // STUN server; `EXPO_PUBLIC_STUN_URLS` overrides the derived list.
+  // WebRTC alongside the relay: with a relay reserved the phone also offers a `/webrtc`
+  // address (`listenAddrs` below), so another machine can open a direct connection to it,
+  // and a relayed `/p2p-circuit` connection can be upgraded to a direct data path with the
+  // relay staying signalling-only. Each relay is also a STUN server;
+  // `EXPO_PUBLIC_STUN_URLS` overrides the derived list.
   transports: (relayAddrs) => [
     webSockets(),
     circuitRelayTransport(),
     webRTC({ rtcConfiguration: { iceServers: resolveStunServers([...relayAddrs], process.env.EXPO_PUBLIC_STUN_URLS) } }),
   ],
+  // The address the transport above is dialable at. Configured separately from it: nothing in
+  // cadre-core derives one from the other (`webrtcListenAddrs`).
+  listenAddrs: webrtcListenAddrs,
   noiseCrypto: { build: buildNoiseCrypto, defaultMode: defaultNoiseCryptoMode() },
   // The names installed phones' data is filed under, pinned in `node-local-names.ts`.
   names: {

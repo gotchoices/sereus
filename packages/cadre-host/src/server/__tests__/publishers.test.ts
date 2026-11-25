@@ -93,7 +93,7 @@ describe('publisher wiring', () => {
       id: 'alice',
       dockerId: '111:abc',
       partyId: 'p',
-      profile: 'storage',
+      nodeClass: 'server',
       status: 'stopped',
       spawnedAt: 'x',
       workdir: '/tmp',

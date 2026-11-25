@@ -46,11 +46,12 @@
  * node composes revoked-peer denial onto it in `strand-instance-manager.ts` (every
  * supplied hook still honored — see `strand-revocation-enforcer.ts`).
  *
- * It does carry one non-address option out with them: the WebSocket transport switch
- * a `/ws` listen entry implies (`relay-addrs.ts` → `resolveTransportOptions`). That is
- * DERIVED from the listen entries rather than inherited, so it has to be computed
- * wherever they are, and a strand node whose listen entries reached libp2p without it
- * would bind no WebSocket listener and report nothing.
+ * It does carry the non-address options out with them: the WebSocket transport switch a
+ * `/ws` listen entry implies and the ICE servers a `/webrtc` entry implies (`relay-addrs.ts`
+ * → `resolveTransportOptions`). Both are DERIVED from the listen entries rather than
+ * inherited, so they have to be computed wherever those are — a strand node whose listen
+ * entries reached libp2p without them would bind no WebSocket listener and report nothing,
+ * and would hold a `/webrtc` entry no transport claims.
  */
 
 import { multiaddr, type Component } from '@multiformats/multiaddr';
@@ -62,6 +63,7 @@ import {
   resolveTransportOptions
 } from './relay-addrs.js';
 import { extractCircuitRelayTargets } from './delegate-admission.js';
+import type { StunServer } from './relay-stun.js';
 import type { NetworkConfig } from './types.js';
 
 /**
@@ -95,6 +97,14 @@ export interface StrandNodeAddrs {
    * `/ws` strand listen entry binds nothing and libp2p reports nothing.
    */
   wsPort?: number;
+  /**
+   * The ICE servers a `/webrtc` listen entry implies, present only when one of the entries
+   * names WebRTC (`relay-addrs.ts` → `resolveTransportOptions`). Derived from, and travelling
+   * with, the listen entries for the same reason `wsPort` is — but unlike `wsPort` it is NOT a
+   * `createLibp2pNode` option: only `network.defaultTransports` reads it, so the caller
+   * destructures it off before spreading the rest, as it does {@link relayAddrs}.
+   */
+  webrtcIceServers?: StunServer[];
   /**
    * The relays this strand node reserves through, as DIRECT dial addrs
    * (`<host>/p2p/<relayPeerId>`, no `/p2p-circuit`), one per relay, in config order,
@@ -131,7 +141,7 @@ export function strandNodeAddrs(network: NetworkConfig | undefined): StrandNodeA
   if (!configured && relayAddrs.length === 0) {
     return {};
   }
-  // An explicitly empty `listenAddrs` (the React Native "cannot listen" case) stays
+  // An explicitly empty `listenAddrs` (a device that names no listener of its own) stays
   // empty — rewriting must never resurrect a direct listener that was opted out of.
   // Naming a relay with no `listenAddrs` keeps the direct listener the control node
   // keeps in that case (`relay-addrs.ts`), so a relay ADDS reachability rather than

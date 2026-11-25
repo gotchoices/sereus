@@ -22,7 +22,7 @@ describe('CadreNode invite-address push model', () => {
   async function makeNode(libp2pMultiaddrs: string[]): Promise<CadreNode> {
     const node = new CadreNode({
       controlNetwork: { partyId: PARTY_ID, bootstrapNodes: [] },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
 
     const mockLibp2p = {

@@ -122,8 +122,9 @@ import {
   signPeerRecord,
   verifyPeerRecordSignature,
   isPeerRecordFresh,
-  orderSignalingFirst,
+  orderRelayedFirst,
   isSignalingAddr,
+  firstRelayedAddr,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -136,9 +137,13 @@ import {
 import { StrandWatcher, DEFAULT_STRAND_WATCH_BACKSTOP_MS, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager, liveStrandStatus } from './strand-instance-manager.js';
 import { PeerJoinBackfill } from './peer-join-backfill.js';
+import { WebrtcUpgradeService } from './webrtc-upgrade.js';
 import { deriveCohortMembers } from './strand-cohort.js';
+import { encodeAlwaysOn } from './node-class.js';
+import type { PublishedProfile } from './node-class.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
+  controlCohortSiblingsOf,
   selectControlCohortDials,
   nextReconcileWakeMs,
   CLAIM_RESTART_REDIAL_STEP_MS,
@@ -157,7 +162,7 @@ import {
   withTrailingPeerId,
   type PeerDialBudget
 } from './peer-dial.js';
-import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs } from './link-budget.js';
+import { ADMISSION_DECISION_TIMEOUT_MS, declaredCohortReadDeadlineMs, optimysticDialLimits, peerJoinPushBudget, relayReservationBudgetMs, relayedDialBudgetMs, relayedRequestBudgetMs, resolveLinkRoundTripMs, webrtcUpgradeDialBudgetMs } from './link-budget.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, generateStampId, isPendingJoinConflict, isStrandIdConflict, IssuedRowNotHereYetError, pendingJoinId, type CadrePeerRetouchOutcome, type FoundingInvite, type JoinRequestFields, type PendingPartyKeyEntry, type RevokedRowRef } from './control-database.js';
@@ -220,10 +225,11 @@ import {
   relaysNotRefusing,
   type CircuitRelayTarget
 } from './delegate-admission.js';
-import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, RelayReservationFailedError } from './relay-addrs.js';
+import { relayCircuitAddrs, resolveListenAddrs, resolveTransportOptions, listenTransportNodeOptions, RelayReservationFailedError } from './relay-addrs.js';
 import { selfAddressesChanged } from './self-address-update.js';
 import { nodeTransportsOption } from './node-transports.js';
 import { resolveRelayServer, type ResolvedRelayServer } from './relay-server.js';
+import { resolveHostUnclaimedStrands, resolveNodeRoles, type NodeRoles } from './node-roles.js';
 import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
 import {
   superviseRelayReservation,
@@ -359,7 +365,7 @@ function addressesOfFirst(members: readonly string[], peerId: string | null): st
  * freshly-RPC'd sibling answers and the addresses the strand's formation carried. The
  * caller passes the FRESHER source as `primary`, so a stale entry can only ever be
  * appended, never promoted ahead of a current one, and each source keeps whatever
- * signaling-first ordering it arrived with.
+ * relayed-first ordering it arrived with.
  */
 function unionAddrs(primary: readonly string[], extra: readonly string[]): string[] {
   if (extra.length === 0) {
@@ -528,6 +534,16 @@ async function resolvesBeforeAbort(work: Promise<unknown>, signal: AbortSignal |
 export class CadreNode implements SAppIdLookup {
   private readonly config: CadreNodeConfig;
   /**
+   * What this node DOES, resolved once from `config.nodeClass` and `config.roles`
+   * (`node-roles.ts`). Everything that used to map the node class itself reads this instead:
+   * the control node's FRET tier and Ring Zulu, the relay-server default, the
+   * {@link hostUnclaimedStrands} default, the `CadrePeer.Profile` this machine publishes, and
+   * the roles every strand node is launched with. The class stays on `config` as what it is —
+   * the preset's name, which is what an operator set and what the CLI reports — and is compared
+   * to a literal nowhere outside `node-roles.ts`.
+   */
+  private readonly roles: NodeRoles;
+  /**
    * The resolved node identity key, set once by {@link resolveIdentityKey}
    * during {@link start} (from `config.keyStore`, else `config.privateKey`).
    * Left undefined when neither is configured — libp2p then generates an
@@ -555,6 +571,13 @@ export class CadreNode implements SAppIdLookup {
    * start() cycle rebuilds it with a fresh caught-up-peer memo.
    */
   private controlBackfill: PeerJoinBackfill | null = null;
+  /**
+   * The control node's background WebRTC upgrade of its relayed connections
+   * ({@link startWebrtcUpgrade}). Created in {@link start} and stopped in {@link cleanup}
+   * beside the backfill, so a stop()→start() cycle starts over with no backoff state from the
+   * previous session.
+   */
+  private webrtcUpgrade: WebrtcUpgradeService | null = null;
   /**
    * Devices whose invitation redemption this member has verified and is admitting right now,
    * each with its count of overlapping redemptions. The control backfill's gate and the
@@ -695,7 +718,9 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Whether an unclaimed strand the filter admits is launched as a storage replica
-   * ({@link CadreNodeConfig.hostUnclaimedStrands}), resolved once from the config.
+   * ({@link CadreNodeConfig.hostUnclaimedStrands}), resolved once from the config over the
+   * {@link roles} default (`resolveHostUnclaimedStrands`: `alwaysOn`, on a node that holds strand
+   * blocks).
    *
    * NOTE: a replica host stores every admitted strand of its party with no quota (Arachnode
    * quotas are unimplemented). Fine at a party's handful of strands; if always-on nodes come
@@ -812,7 +837,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Does this node's CONTROL libp2p run the circuit-relay server, and with which
-   * init? Resolved once from `network` and `profile` by the same function every
+   * init? Resolved once from `network` and {@link roles} by the same function every
    * strand node's build uses (`relay-server.ts`). Read by
    * {@link buildControlNodeOptions} (which configures the server from it) and
    * the unauthorized budget above (whose TTL is the server's).
@@ -1296,10 +1321,11 @@ export class CadreNode implements SAppIdLookup {
 
   constructor(config: CadreNodeConfig) {
     this.config = config;
-    this.hostUnclaimedStrands = config.hostUnclaimedStrands ?? config.profile === 'storage';
+    this.roles = resolveNodeRoles(config.nodeClass, config.roles);
+    this.hostUnclaimedStrands = resolveHostUnclaimedStrands(config.hostUnclaimedStrands, this.roles);
     this.strandManager = new StrandInstanceManager();
     this.enrollmentService = new EnrollmentService();
-    this.relayServer = resolveRelayServer(config.network, config.profile);
+    this.relayServer = resolveRelayServer(config.network, this.roles);
     this.unauthorizedRelayReservations = new UnauthorizedReservationBudget(
       config.network?.unauthorizedRelayReservationCap,
       this.relayServer.init.reservations.reservationTtl
@@ -1601,8 +1627,8 @@ export class CadreNode implements SAppIdLookup {
       // strand's loop runs one confirming pass per heartbeat of any party machine, and on a
       // node offering offline mode each running strand's machine tracker one control read
       // (`readPartyStrandPeers`: the strand's rows and the machine rows read fresh); the
-      // reconciler's pass NOTE says what the pass costs. If that read ever shows in a phone's
-      // profile, refresh the trackers only on a `StrandPeer` or `Revocation` change and on a
+      // reconciler's pass NOTE says what the pass costs. If that read ever shows up in a phone's
+      // CPU profile, refresh the trackers only on a `StrandPeer` or `Revocation` change and on a
       // `CadrePeer` row's appearance or disappearance, not on every heartbeat. A table this
       // `Database` has not yet touched hears local commits only (`table-change-watch.ts`):
       // `StrandPeer` is first read by the publish every strand launch makes, by the tracker's
@@ -1738,6 +1764,11 @@ export class CadreNode implements SAppIdLookup {
       // control libp2p node reports a peer connection, and arming it at start is
       // what closes the "genesised alone, headers never replicate" hole.
       this.startControlBackfill();
+
+      // Try a direct WebRTC connection in the background wherever this node ends up talking to
+      // a machine through a relay. Nothing in libp2p does this, and since every dial a caller
+      // waits on now goes relayed-first, nothing else opens a WebRTC connection at all.
+      this.startWebrtcUpgrade();
 
       // Seed the per-stream gate's materialized authorized set now that the
       // control DB is up (non-blocking; the helper never rejects). Until it
@@ -2362,6 +2393,41 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Arm the control node's background WebRTC upgrade: whenever a machine identifies over a
+   * relayed connection and publishes a WebRTC address, dial it once and let new streams move to
+   * the direct connection (`webrtc-upgrade.ts`). The service is inert on a node whose embedder
+   * passed no WebRTC transport: the phones and browser tabs always have one, and a Node host
+   * has one when it asked for it (`cadre-cli`'s `network.webrtc`, which resolves to a `/webrtc`
+   * listen entry — see `node-default-transports.ts`).
+   *
+   * Who this can reach is narrower than the connection gate, and not by anything here: the
+   * trigger is `peer:identify`, and Optimystic gives each control node an identify protocol id
+   * naming its own party (`/optimystic/control-<partyId>/id/1.0.0`, the table in
+   * `control-protocol-guard.ts`). Another party's control node never completes identify with this
+   * one, so a formation joiner or a stranger dialing through this node's relay is never a
+   * candidate however long its connection stays open. What is left is this party's own machines
+   * and a device redeeming an invitation INTO this party.
+   *
+   * NOTE: that device is the one case where an upgrade is attempted against a peer this node has
+   * not yet admitted, and ICE tells it this machine's own interface addresses and the address a
+   * STUN server sees it at, which the relayed connection did not. Accepted: it is a machine in
+   * the act of becoming a member, and the same connection already carries the redemption. If
+   * that exposure ever matters, gate this service's attempts on {@link isAuthorizedMember}
+   * rather than narrowing the gate.
+   */
+  private startWebrtcUpgrade(): void {
+    if (!this.controlNode) {
+      return;
+    }
+    this.webrtcUpgrade = new WebrtcUpgradeService({
+      label: this.controlNetworkName(),
+      node: this.controlNode,
+      dialTimeoutMs: webrtcUpgradeDialBudgetMs(this.config.network?.linkRoundTripMs)
+    });
+    this.webrtcUpgrade.start();
+  }
+
+  /**
    * Admit a device whose invitation redemption has verified to this member's control
    * replication until the returned release is called (the handler's `admitDevice`;
    * `CadreInviteHandler.admitDeviceIfLive` says why the redemption's writes need it): push it
@@ -2520,7 +2586,7 @@ export class CadreNode implements SAppIdLookup {
    * only caller in production is `createControlNode`.
    */
   private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
-    const { network, profile } = this.config;
+    const { network } = this.config;
     const identityKey = this.identityKey;
     // `network.relayAddrs` contributes the bare `/p2p-circuit` SEARCH entry, which
     // opens no connection — the reservation is driven explicitly at the END of
@@ -2546,7 +2612,7 @@ export class CadreNode implements SAppIdLookup {
       bootstrapNodes: [],
       networkName: this.controlNetworkName(),
       storage: controlStorageProvider,
-      fretProfile: profile === 'storage' ? 'core' : 'edge',
+      fretProfile: this.roles.overlayTier,
       relay: this.relayServer.enabled,
       // Merged party-run defaults: no per-connection data/duration cap, a store sized for
       // one party's NAT'd machines. Strand nodes get the same init (`relay-server.ts`).
@@ -2575,7 +2641,10 @@ export class CadreNode implements SAppIdLookup {
         enrolledMachines: this.declaredEnrolledMachines,
         cohortQueryTimeoutMs: declaredCohortReadDeadlineMs(network)
       }),
-      arachnode: { enableRingZulu: profile === 'storage' },
+      // Ring Zulu follows `alwaysOn` rather than being a role of its own: the storage rings it
+      // hints at are unimplemented, so there is nothing else to configure yet
+      // (`backlog/later/5-ring-zulu-storage-rings`).
+      arachnode: { enableRingZulu: this.roles.alwaysOn },
       // One join catch-up per node, for the strand node's reason (`strand-instance-manager.ts`,
       // at its `rebalance` option): Optimystic's rebalance growth arm would push a joining
       // member each control block again, one request per block. Every peer the growth arm
@@ -2617,8 +2686,10 @@ export class CadreNode implements SAppIdLookup {
       // `{}` when `network.transports` is set, since the embedder owns transport policy
       // then. Spread NEXT to `transports` because the two answer the same question, and a
       // no-op whenever a list is passed there — with `relayAddrs` set that list comes from
-      // `network.defaultTransports` when the embedder gave none, on the same switch.
-      ...transportOptions,
+      // `network.defaultTransports` when the embedder gave none, on the same switch. The
+      // resolution's WebRTC half is not a db-p2p option and is dropped here
+      // (`listenTransportNodeOptions`); `nodeTransportsOption` above is what reads it.
+      ...listenTransportNodeOptions(transportOptions),
       // Configured `listenAddrs`, plus the bare `/p2p-circuit` search listener when
       // `network.relayAddrs` is set — that listener registers the pending reservation
       // `driveControlRelayReservation` fills after bring-up.
@@ -2645,11 +2716,11 @@ export class CadreNode implements SAppIdLookup {
         ADMISSION_DECISION_TIMEOUT_MS,
         relayedRequestBudgetMs(network?.linkRoundTripMs)
       ),
-      // Fail-closed per-stream authorization for the four Optimystic control-DB
+      // Fail-closed per-stream authorization for the five Optimystic control-DB
       // protocols — the members-only layer the connection gater's stranger
       // carve-outs cannot express (see authorizeInboundControlStream). Control
       // node only: strand cohort nodes serve cross-party peers. The protocol guard
-      // (installControlProtocolGuard) checks these four with this same predicate
+      // (installControlProtocolGuard) checks these five with this same predicate
       // first; Optimystic's own check is kept because it is a working, supported
       // upstream defence, not a second policy.
       authorizeInboundStream: (remotePeerId, protocol) =>
@@ -2803,7 +2874,7 @@ export class CadreNode implements SAppIdLookup {
    * RESERVE request, so it is never called on a node whose relay server is off.
    *
    * Refuses everyone, ahead of every admission below, while this node is waiting to be
-   * claimed ({@link isAwaitingClaim}): a storage-profile node runs the relay server by
+   * claimed ({@link isAwaitingClaim}): a `'server'` node runs the relay server by
    * default, and an unclaimed node on a public address must not become anyone's relay.
    * The empty-anchor admission in check 1 exists for a node that will be enrolled by
    * its siblings, which an unclaimed node has none of.
@@ -2988,10 +3059,10 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Per-stream authorization for the protocol guard's `members-snapshot` class
-   * (`control-protocol-guard.ts`): the four Optimystic control-DB protocols
-   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), FRET's
+   * (`control-protocol-guard.ts`): the five Optimystic control-DB protocols
+   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer,blob}/…`), FRET's
    * five, and any protocol nobody classed. Also wired as Optimystic's
-   * `authorizeInboundStream` in {@link createControlNode} for the four DB
+   * `authorizeInboundStream` in {@link createControlNode} for the five DB
    * protocols. The fail-closed layer behind the fail-open connection gater.
    * Control node ONLY: strand cohort nodes legitimately serve cross-party peers.
    *
@@ -3058,7 +3129,7 @@ export class CadreNode implements SAppIdLookup {
       // the count of machines serving the network — the quantity
       // `resolveRepairYardstick` asks for. It is NOT that quantity for a strand, which
       // launches only on machines whose embedder registered its sApp config (see
-      // {@link addStrand}) plus storage-profile machines hosting it as a storage replica
+      // {@link addStrand}) plus always-on machines hosting it as a storage replica
       // ({@link CadreNodeConfig.hostUnclaimedStrands}) whose filter admits it — phones
       // serve only what their app claims — so this number must never be routed to a strand node:
       // over-declaring pins Optimystic's repair corroboration floor at two peers and a
@@ -3252,6 +3323,15 @@ export class CadreNode implements SAppIdLookup {
    * and dial each peer once — what `@libp2p/bootstrap` would have done had the node been
    * built with them. Best-effort: a failed dial is logged, and the connection manager and
    * FRET reconnect from the address book as they do for any known peer.
+   *
+   * NOTE: this dials by peer id, so libp2p's own address sorter picks the order rather than
+   * `peer-dial.ts` → `directBeforeRelayed`. A `/p2p-circuit/webrtc` address in a bootstrap
+   * peer's record therefore sorts AHEAD of the plain relayed one (libp2p's
+   * `circuitRelayAddressesLast` counts only an exact `Circuit` match as relayed) and can cost
+   * this peer one ICE timeout, about 23 s, before the relayed address is tried. Left as it is
+   * because nothing waits on this pass — `start()` voids it, and a peer it misses is reconnected
+   * from the address book. Dial by address (`dialPeerAddrs`) if bootstrap peers ever start
+   * publishing WebRTC addresses and the timing of their first connection matters.
    */
   private async dialControlBootstrapPeers(): Promise<void> {
     const node = this.controlNode;
@@ -3494,12 +3574,13 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Publish (or refresh) this node's own signed `CadrePeer` address record so
-   * other members can resolve its current signaling/relay multiaddrs from its
+   * other members can resolve its current relayed and direct multiaddrs from its
    * PeerId alone. Public, awaitable, and idempotent.
    *
    * - Builds a `PeerAddressRecord` from the node's current dialable addrs
-   *   (signaling/`p2p-circuit` first), signed with the ed25519 key behind its
-   *   PeerId (the resolved node identity from `keyStore`/`config.privateKey`).
+   *   ({@link collectSelfAddrs}: relayed first, WebRTC last), signed with the
+   *   ed25519 key behind its PeerId (the resolved node identity from
+   *   `keyStore`/`config.privateKey`).
    * - If the row already exists: a self-signed UPDATE bumping `UpdatedAt`.
    * - If not, and the node is its own owner: an owner-signed INSERT that
    *   also carries the self-signature. That INSERT is idempotent, so if an owner
@@ -3659,14 +3740,14 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Is `record` still the one to publish: signed less than half a heartbeat ago, with this
-   * node's profile, over the addresses it would publish now, and the signature the own row
+   * node's own always-on claim, over the addresses it would publish now, and the signature the own row
    * holds? The age bound keeps a record that is not re-written fresh for resolvers: at most half
    * a heartbeat old here and re-stamped by the heartbeat within one more, so never older than
    * 1.5 heartbeats (11.25 min) against {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}. Cheap checks
    * first: the row comes from the membership view, the addresses from the app's resolver.
    */
   private async isCurrentSelfRecord(record: PeerAddressRecord): Promise<boolean> {
-    if (Date.now() - record.updatedAt >= DEFAULT_PEER_RECORD_HEARTBEAT_MS / 2 || record.profile !== this.config.profile) {
+    if (Date.now() - record.updatedAt >= DEFAULT_PEER_RECORD_HEARTBEAT_MS / 2 || record.profile !== this.publishedProfile()) {
       return false;
     }
     const row = await this.controlDatabase?.queryPeerRecord(record.peerId);
@@ -3763,9 +3844,22 @@ export class CadreNode implements SAppIdLookup {
     const updatedAt = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1);
     return signPeerRecord(
       this.partyId,
-      { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt, profile: this.config.profile },
+      { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt, profile: this.publishedProfile() },
       signingKey.privateKeyB64
     );
+  }
+
+  /**
+   * What this node publishes in its own `CadrePeer.Profile`: the `alwaysOn` role, in the stored
+   * form (`node-class.ts`). The column is the one place the old codes survive, because the
+   * control store is the one place backwards compatibility applies
+   * (`docs/cadre/control-schema.md` → "Schema versions and migrations").
+   *
+   * ONE method for both uses on purpose: the heartbeat republishes when the stored row differs
+   * from this, so a second derivation that disagreed would republish on every heartbeat forever.
+   */
+  private publishedProfile(): PublishedProfile {
+    return encodeAlwaysOn(this.roles.alwaysOn);
   }
 
   /**
@@ -3849,16 +3943,17 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Collect this node's current dialable addresses for publication, signaling
-   * (`/p2p-circuit`) first. Prefers the best invite/NAT-resolved set and folds
-   * in the relay/signaling address (the WebRTC dial input) when not already
-   * present.
+   * Collect this node's current dialable addresses for publication, ranked by
+   * {@link orderRelayedFirst}: the plain relayed addresses, then the direct ones,
+   * then any that needs ICE after its relay hop. Prefers the best
+   * invite/NAT-resolved set and folds in this node's relayed address
+   * ({@link getRelayAddress}) when not already present.
    */
   private async collectSelfAddrs(): Promise<string[]> {
     const resolved = await this.resolveInviteAddresses();
     const relay = await this.getRelayAddress();
     const merged = relay && !resolved.includes(relay) ? [...resolved, relay] : resolved;
-    return orderSignalingFirst([...new Set(merged)]);
+    return orderRelayedFirst([...new Set(merged)]);
   }
 
   /**
@@ -4017,8 +4112,9 @@ export class CadreNode implements SAppIdLookup {
    *   4. freshness — rejected once older than `maxAgeMs` (never a dead relay
    *      reservation),
    *   5. the pluggable trust gate (`opts.trustPolicy`).
-   * Survivors are returned signaling (`/p2p-circuit`) first, filtered to
-   * signaling-only when requested, as parsed `Multiaddr`s (unparsable addrs
+   * Survivors are returned in {@link orderRelayedFirst} order — plain relayed,
+   * then direct, then WebRTC — filtered to the addresses reaching through a relay
+   * when `signalingOnly` is set, as parsed `Multiaddr`s (unparsable addrs
    * dropped). Any gate failure yields an empty array rather than throwing.
    *
    * Every returned address is normalized to terminate in `/p2p/<peerId>` — see
@@ -4083,11 +4179,11 @@ export class CadreNode implements SAppIdLookup {
       return null;
     }
 
-    // Order signaling-first (the on-record order was what we verified above),
-    // optionally restrict to signaling addrs, then parse — dropping any addr
-    // that does not parse as a multiaddr — and finally normalize every survivor
-    // onto `/p2p/<peerId>` so no caller ever sees a mixed list.
-    let addrs = orderSignalingFirst(record.addrs);
+    // Order relayed-first, WebRTC last (the on-record order was what we verified
+    // above), optionally restrict to the addresses that reach through a relay, then
+    // parse — dropping any addr that does not parse as a multiaddr — and finally
+    // normalize every survivor onto `/p2p/<peerId>` so no caller ever sees a mixed list.
+    let addrs = orderRelayedFirst(record.addrs);
     if (opts.signalingOnly) {
       addrs = addrs.filter(isSignalingAddr);
     }
@@ -4398,7 +4494,7 @@ export class CadreNode implements SAppIdLookup {
     // 2. Classify backbone (always-on) members and select a bounded dial set.
     const targetDegree = this.config.network?.controlCohort?.targetDegree
       ?? DEFAULT_CONTROL_COHORT_TARGET_DEGREE;
-    const { dials, cappedNonBackbone } = selectControlCohortDials(siblings, targetDegree);
+    const { dials, cappedNonBackbone } = selectControlCohortDials(controlCohortSiblingsOf(siblings), targetDegree);
     if (cappedNonBackbone > 0) {
       // Don't silently bound coverage — surface what the out-degree cap dropped.
       log('reconcileControlCohort: capped %d non-backbone sibling(s) at targetDegree=%d',
@@ -6061,6 +6157,14 @@ export class CadreNode implements SAppIdLookup {
       this.controlBackfill = null;
     }
 
+    // The WebRTC upgrade service with it, and for the same reason: no new upgrade dial against a
+    // transport being torn down. Its stop() also aborts the attempt in flight, which otherwise
+    // holds an ICE negotiation — and the timer bounding it — past the node's own stop.
+    if (this.webrtcUpgrade) {
+      this.webrtcUpgrade.stop();
+      this.webrtcUpgrade = null;
+    }
+
     // Close control database (this also shuts down the collection factory).
     // Detach the membership hub first: nothing this teardown does should drive a
     // gate refresh, and a notification arriving after this point is a no-op.
@@ -6705,8 +6809,9 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * The party's other machines known to hold `strandId` (each has written its `StrandPeer` row for
-   * it) with no open connection from this node's strand node: what a queued transaction reporting
+   * The party's other machines known to STORE `strandId` (each has a `StrandPeer` row for it whose
+   * role says it serves; a client's row is read and skipped) with no open connection from this
+   * node's strand node: what a queued transaction reporting
    * `waitingFor: 'cohort'` may be waiting for, by control peer id (`listMachines`, `removeMachine`)
    * and strand peer id (docs/strands/writes.md → "Waiting for the party's own machines"). Empty on a
    * strand not running here, and on a node offering no offline mode. Nothing releases the wait on
@@ -7662,7 +7767,7 @@ export class CadreNode implements SAppIdLookup {
       sAppConfig,
       storage: this.config.storage,
       network: this.config.network,
-      profile: this.config.profile,
+      roles: this.roles,
       defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
       privateKey: transportKey,
       bootstrapNodes,
@@ -8409,8 +8514,8 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * The local strand instance's dialable strand-network multiaddrs for the
-   * strand-addr RPC, ordered signaling-first (reusing the control node's
-   * {@link orderSignalingFirst}). Returns `[]` when the strand is not running
+   * strand-addr RPC, ordered relayed-first and WebRTC last (reusing the control
+   * node's {@link orderRelayedFirst}). Returns `[]` when the strand is not running
    * locally or has no live libp2p node (hibernating / quiescing / never
    * participated) — a node only answers for a strand it is actively meshing,
    * regardless of the strand's mode. A `bootstrap`-mode first node still has a
@@ -8443,7 +8548,7 @@ export class CadreNode implements SAppIdLookup {
         addrs.push(bound.toString());
       }
     }
-    return orderSignalingFirst(addrs);
+    return orderRelayedFirst(addrs);
   }
 
   /**
@@ -9252,12 +9357,12 @@ export class CadreNode implements SAppIdLookup {
    * never reach here: {@link ControlDatabase.queryCadrePeers} excludes them, so a
    * revoked peer is not addressable either.
    *
-   * NOTE: answers the whole `CadrePeerRow`, past the fields declared; the integration
-   * harness (`owner-cli-node.ts`, `OwnerCliMemberRow.sig`) reads `sig` off it through the admin
-   * channel to tell a row another member seated from one the subject published itself. Narrow
-   * this to the declared fields only together with that reader.
+   * NOTE: answers the whole row. The integration harness (`owner-cli-node.ts`,
+   * `OwnerCliMemberRow.sig`) reads `sig` off it through the admin channel to tell a row
+   * another member seated from one the subject published itself. Narrow this to fewer fields
+   * only together with that reader.
    */
-  async listMembers(): Promise<CohortPeerRow[]> {
+  async listMembers(): Promise<CadrePeerRow[]> {
     if (!this.controlDatabase) {
       throw new Error('CadreNode must be started before listing members');
     }
@@ -9592,7 +9697,7 @@ export class CadreNode implements SAppIdLookup {
    * Push-wake a hibernating cadre peer over the control network.
    *
    * Resolves the target's signed control-network address from its `CadrePeer`
-   * record (via {@link resolvePeerAddrs}, signaling/relay first — so a NAT'd peer
+   * record (via {@link resolvePeerAddrs}, relayed first — so a NAT'd peer
    * is reachable through its circuit-relay address), dials `WAKE_PROTOCOL`, sends
    * the {@link WakeRequest}, and returns the peer's {@link WakeAck}. The receiver
    * only resumes a strand it already participates in; it acks once it has decided,
@@ -10629,6 +10734,14 @@ export class CadreNode implements SAppIdLookup {
    * the party-machine watch and the next reconciler pass. Written regardless of whether this machine holds the party's
    * member key: a storage replica is bound by its siblings. A node on an ephemeral identity
    * cannot sign the row and writes nothing. Never rejects.
+   *
+   * The row's role is this node's own: null when it serves the blocks of the strands it runs,
+   * `'client'` when it runs them without storing any (`NodeRoles.strandCohortMember`). Read here
+   * rather than carried through {@link deferredStrandPeerWrites}, which stores the strand peer id
+   * alone, because the role cannot change while the node runs. A row already in the party keeps
+   * the role it was written with, since the row is immutable; `ControlDatabase.insertStrandPeer`
+   * logs the mismatch when a reconfigured machine publishes a different one
+   * (`docs/strands/membership.md` → "Limits and accepted tradeoffs").
    */
   private async publishStrandPeer(strandId: string, strandPeerId: string): Promise<void> {
     if (this.strandPeerRowsHeld.has(strandId) || !this._running || !this.controlDatabase) {
@@ -10645,10 +10758,11 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     try {
-      const written = await this.controlDatabase.insertStrandPeer({ strandId, strandPeerId }, ed25519MessageSigner(signingKey.privateKeyB64));
+      const role = this.roles.strandCohortMember ? null : 'client';
+      const written = await this.controlDatabase.insertStrandPeer({ strandId, strandPeerId, role }, ed25519MessageSigner(signingKey.privateKeyB64));
       this.strandPeerRowsHeld.add(strandId);
       this.deferredStrandPeerWrites.delete(strandId);
-      log('StrandPeer row for strand %s %s (this machine is %s there)', strandId, written ? 'written' : 'already present', strandPeerId);
+      log('StrandPeer row for strand %s %s (this machine is %s there, %s)', strandId, written ? 'written' : 'already present', strandPeerId, role ?? 'serving');
     } catch (error) {
       this.deferredStrandPeerWrites.set(strandId, strandPeerId);
       log('StrandPeer row for strand %s refused (this machine\'s own CadrePeer row may not be here yet); retried on cohort growth and by the next membership pass: %o', strandId, error);
@@ -10803,17 +10917,16 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Get this node's circuit relay address for inclusion in seeds.
-   * Returns null if no relay address is available.
+   * This node's one relayed address for a seed, or null when it holds no reservation:
+   * {@link firstRelayedAddr} of its announced addresses, so the plain relayed address
+   * is named ahead of a WebRTC one that needs ICE after the same relay hop.
    */
   async getRelayAddress(): Promise<string | null> {
     if (!this.controlNode) {
       return null;
     }
 
-    const addrs = this.controlNode.getMultiaddrs();
-    const relayAddr = addrs.find(addr => addr.toString().includes('/p2p-circuit/'));
-    return relayAddr?.toString() ?? null;
+    return firstRelayedAddr(this.controlNode.getMultiaddrs().map(addr => addr.toString()));
   }
 
   // ============================================================================

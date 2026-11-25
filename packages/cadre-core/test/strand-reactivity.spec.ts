@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { coreProfile, edgeProfile } from '@optimystic/db-core';
 import { strandCohortTopicOption, type StrandReactivityConfig } from '../src/strand-reactivity.js';
 
 /**
@@ -9,7 +10,7 @@ import { strandCohortTopicOption, type StrandReactivityConfig } from '../src/str
  */
 describe('strandCohortTopicOption', () => {
   const strandId = 'strand-a';
-  const on = { cohortTopic: { enabled: true } };
+  const on = { cohortTopic: { enabled: true, host: { profile: coreProfile() } } };
 
   it.each<[string, StrandReactivityConfig | undefined, typeof on | Record<string, never>]>([
     ['enabled, strandIds absent: every strand', { enabled: true }, on],
@@ -24,8 +25,22 @@ describe('strandCohortTopicOption', () => {
     ['strandIds present but not an array', { enabled: true, strandIds: strandId } as unknown as StrandReactivityConfig, {}],
     ['strandIds null', { enabled: true, strandIds: null } as unknown as StrandReactivityConfig, {}]
   ])('%s', (_label, config, expected) => {
-    const result = strandCohortTopicOption(config, strandId);
+    const result = strandCohortTopicOption(config, strandId, 'forwarder');
     expect(result).toEqual(expected);
     expect('cohortTopic' in result).toBe(expected === on);
+  });
+
+  /**
+   * The node's reactivity role picks the cohort-topic host profile, and `'forwarder'` must pass
+   * `coreProfile()` — which is db-p2p's own default for an absent profile, so the forwarder path
+   * stays today's behaviour. `'subscriber'` passes the edge profile, whose willing-tier set
+   * excludes the reactivity-push tier.
+   */
+  it.each<['forwarder' | 'subscriber', ReturnType<typeof coreProfile>]>([
+    ['forwarder', coreProfile()],
+    ['subscriber', edgeProfile()]
+  ])('%s is built with its own host profile', (reactivity, profile) => {
+    expect(strandCohortTopicOption({ enabled: true }, strandId, reactivity))
+      .toEqual({ cohortTopic: { enabled: true, host: { profile } } });
   });
 });

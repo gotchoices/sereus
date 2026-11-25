@@ -40,7 +40,8 @@ export interface EdgeNodeConfigInputs extends EdgeNodeOptions {
 	transports: Libp2pTransports;
 	/**
 	 * Listen addresses besides the bare `/p2p-circuit` entry cadre-core adds for a named relay.
-	 * Default `[]`: an edge device accepts no inbound connection. See `EdgeNodePlatform.listenAddrs`.
+	 * Default `[]`: an edge device accepts no inbound connection over a socket-bound transport. An
+	 * app carrying WebRTC names `/webrtc` here. See `EdgeNodePlatform.listenAddrs`.
 	 */
 	listenAddrs?: string[];
 	/** See `EdgeNodePlatform.allowPrivateDial`. */
@@ -52,7 +53,7 @@ export interface EdgeNodeConfigInputs extends EdgeNodeOptions {
 }
 
 /**
- * The edge node's config: transaction profile (Ring Zulu only, intermittent connectivity), no
+ * The edge node's config: the `'device'` node class (Ring Zulu only, intermittent connectivity), no
  * listen address unless the platform names one, reachability through the configured relays (if
  * any) but never a hard requirement for one, every strand the control network lists, and no
  * automatic hibernation (the app's lifecycle runner hibernates on background), and offline mode
@@ -70,17 +71,19 @@ export function buildEdgeNodeConfig(inputs: EdgeNodeConfigInputs): CadreNodeConf
 			partyId: inputs.partyId,
 			bootstrapNodes: inputs.bootstrapAddrs,
 		},
-		profile: 'transaction',
+		nodeClass: 'device',
 		storage: {
 			provider: inputs.storageProvider,
 		},
 		network: {
 			transports: inputs.transports,
-			// An edge device accepts no inbound connection, so by default it listens on nothing:
-			// the only address it ever has is the `/p2p-circuit` address a relay reservation earns
-			// it. An explicitly empty `listenAddrs` stays empty through cadre-core's derivation, and
-			// naming a relay adds the bare `/p2p-circuit` search entry to it
-			// (`cadre-core/src/relay-addrs.ts` → `resolveListenAddrs`). A browser adds `/webrtc`.
+			// An edge device binds no socket, so by default it listens on nothing: the only address
+			// it then has is the `/p2p-circuit` address a relay reservation earns it. An explicitly
+			// empty `listenAddrs` stays empty through cadre-core's derivation, and naming a relay
+			// adds the bare `/p2p-circuit` search entry to it
+			// (`cadre-core/src/relay-addrs.ts` → `resolveListenAddrs`). An app whose transports carry
+			// WebRTC — a browser tab or a phone — adds `/webrtc` when it has a relay
+			// (`webrtcListenAddrs`), so a peer can open a direct connection to it.
 			listenAddrs: inputs.listenAddrs ?? [],
 			// Through this config field rather than `CadreNode.reserveRelays()`, which reaches the
 			// control node only: formation has the invitee dial the control node and then the strand

@@ -22,13 +22,13 @@ import {
   describeThrown,
 } from '@serfab/cadre-core';
 import { createPushNotifier } from '@serfab/cadre-core/push-node';
-import { nodeDefaultTransports } from '@serfab/cadre-core/node-default-transports';
 import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
 import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-file';
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
 import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 import type { ResolvedConfig } from '../config/index.js';
 import type { NodeStorage } from './node-session.js';
+import { resolveNodeNetwork } from './node-network.js';
 import { writeClaimRecord, type ClaimRecord } from './claim-record.js';
 import { removalMarkerPath, writeRemovalMarker } from './removal-marker.js';
 
@@ -71,14 +71,16 @@ type ColdStartTrust = Pick<CadreNodeConfig, 'trustedOwners' | 'seedTrustPolicy' 
 /**
  * The `CadreNodeConfig` for `partyId` over `stores` and `storage`: everything in the resolved
  * config, plus `trust`.
+ *
+ * Async only because the `network` block may have to load a transport (`node-network.ts`).
  */
-function buildNodeConfig(
+async function buildNodeConfig(
   config: ResolvedConfig,
   partyId: string,
   stores: NodeStores,
   storage: NodeStorage,
   trust: ColdStartTrust,
-): CadreNodeConfig {
+): Promise<CadreNodeConfig> {
   return {
     privateKey: config.privateKey,
     ...trust,
@@ -86,18 +88,17 @@ function buildNodeConfig(
     enrolledMachines: { store: stores.enrolledMachineStore },
     strandNetworkState: { store: stores.strandNetworkStateStore },
     controlNetwork: { ...config.controlNetwork, partyId },
-    profile: config.profile,
-    // NOTE: `hostUnclaimedStrands` is left to cadre-core's default, so a storage-profile
-    // CLI node (every cadre-host donated node included) hosts a replica of every strand its
-    // party publishes; the only opt-out here is `strandFilter`. If an operator needs
-    // announce-only on an always-on node, surface the field in the CLI config.
+    nodeClass: config.nodeClass,
+    roles: config.roles,
+    // NOTE: `hostUnclaimedStrands` is left to cadre-core's default — the `alwaysOn` role — so a
+    // server CLI node (every cadre-host donated node included) hosts a replica of every strand
+    // its party publishes. `roles.alwaysOn: false` turns that off along with everything else
+    // always-on brings; `strandFilter` is the only opt-out that keeps the node always-on. If an
+    // operator needs announce-only on an always-on node, surface the field in the CLI config.
     strandFilter: config.strandFilter,
     strandReactivity: config.strandReactivity,
     storage: storage.config,
-    // `defaultTransports` from the Node-only subpath: a node with `relayAddrs` is built from an
-    // explicit transport list (libp2p's relay discovery off), and this keeps that list the one
-    // db-p2p would build. See `NetworkConfig.defaultTransports`.
-    network: { ...config.network, defaultTransports: nodeDefaultTransports },
+    network: await resolveNodeNetwork(config.network),
     hibernation: config.hibernation,
     strandWatchInterval: config.strandWatchInterval,
     // Platform push credentials provisioned by the orchestrator (cadre-host
@@ -160,7 +161,7 @@ export async function buildClaimedNode(
   const stores = await openNodeStores(config.nodeStateDir, claim.partyId);
   await stores.trustedOwnerStore.trust(claim.ownerKey, 'claim');
   retainDialTargets(stores.bootstrapPeerStore, dialTargets);
-  const node = new CadreNode(buildNodeConfig(config, claim.partyId, stores, storage, {
+  const node = new CadreNode(await buildNodeConfig(config, claim.partyId, stores, storage, {
     trustedOwners: { store: stores.trustedOwnerStore },
     claim: claimConfig,
   }));
@@ -196,7 +197,7 @@ export async function buildConfiguredNode(
 ): Promise<CadreNode> {
   const partyId = config.controlNetwork.partyId;
   const stores = await openNodeStores(config.nodeStateDir, partyId);
-  const node = new CadreNode(buildNodeConfig(config, partyId, stores, storage, {
+  const node = new CadreNode(await buildNodeConfig(config, partyId, stores, storage, {
     trustedOwners: { store: stores.trustedOwnerStore, pinnedKeys, pinnedSource: 'operator' },
     seedTrustPolicy,
     claim: claimConfig,

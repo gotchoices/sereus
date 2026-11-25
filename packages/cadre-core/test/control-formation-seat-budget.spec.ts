@@ -47,7 +47,7 @@ import type { JoinerConsent } from './formation-consent-helper.js';
  * and is exercised by the `formation-concurrent-redemption` e2e work instead — nothing here
  * stubs a fake race to simulate it.
  *
- * Boots a real `CadreNode` (empty bootstrap, transaction profile) so every constraint,
+ * Boots a real `CadreNode` (empty bootstrap, a device) so every constraint,
  * rollback, and engine error message below is the real one. That real-error material also
  * serves `isRetriableControlWriteFailure`'s negative half (last describe below), the one
  * text-reading classifier left on this path.
@@ -205,7 +205,7 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
 
     node = new CadreNode({
       controlNetwork: { partyId: 'seat-budget-' + rand(), bootstrapNodes: [] },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

@@ -7,6 +7,7 @@ import { mintStrandId, mintPlaceholderStrandId } from '../src/strand-id.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * A strand's storage scope key is its strand id, used verbatim, and a strand row can
@@ -19,7 +20,7 @@ import type { StartStrandConfig } from '../src/strand-instance-manager.js';
  *
  * The mocks follow `strand-instance-manager-storage-ownership.spec.ts`:
  * `createLibp2pNode` and `StrandDatabase` are doubles, so no real libp2p node or
- * Quereus database starts.
+ * Quereus database starts, and every other db-p2p export stays real.
  */
 const mocks = vi.hoisted(() => {
   const stop = vi.fn(async () => {});
@@ -33,7 +34,12 @@ const mocks = vi.hoisted(() => {
   return { stop, close, initialize, createLibp2pNode, StrandDatabase };
 });
 
-vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
+// Partial mock: only `createLibp2pNode` is stubbed (see the backfill spec for why
+// the rest of db-p2p stays real).
+vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
+});
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
 const testSchema = 'table Test (id text primary key);';
@@ -58,7 +64,7 @@ function createStartConfig(strandId: string, provider: (id: string) => IRawStora
     schema: testSchema,
     signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
   };
-  return { strandRow, sAppConfig, profile: 'transaction', defaultLatencyHint: 'interactive', storage: { provider } };
+  return { strandRow, sAppConfig, roles: NODE_ROLE_PRESETS.device, defaultLatencyHint: 'interactive', storage: { provider } };
 }
 
 describe('strand scope key validation', () => {

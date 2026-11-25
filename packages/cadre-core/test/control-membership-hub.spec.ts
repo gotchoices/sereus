@@ -73,7 +73,7 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 
 		node = new CadreNode({
 			controlNetwork: { partyId: 'membership-hub-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
-			profile: 'transaction'
+			nodeClass: 'device'
 		});
 		await node.start();
 

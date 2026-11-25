@@ -12,7 +12,7 @@ A new machine cannot reach that state alone, for three reasons:
 
 1. **Its control database is empty.** It has no address to dial and no owner key against which to judge the rows it would receive.
 2. **The existing machines refuse it.** Each member refuses control-database streams from a peer that is not an authorized member ([Per-stream protocol guard](control-security.md#per-stream-protocol-guard)), and the control schema rejects a write that no owner authorized. The new machine's row has to exist before the members replicate to it.
-3. **One side often cannot be dialed.** A phone or a browser tab listens on nothing, so it accepts a connection only through a relay reservation.
+3. **One side often cannot be dialed.** A phone or a browser tab binds no socket, so every address it has comes from a relay reservation and it accepts a connection only while it holds one.
 
 Every way of adding a machine therefore delivers three things: a `CadrePeer` row written by someone entitled to write it, an owner key for the new machine to trust that arrives outside the replicated data, and an address at which one side can reach the other.
 
@@ -28,7 +28,7 @@ A seed (`ControlNetworkSeed` in `packages/cadre-core/src/types.ts`) is an owner-
 - `peers`: one entry per live `CadrePeer` row, with the peer id, its dial addresses (empty for a machine with no listen address) and a `preferred` flag.
 - `signerKey` and `signature`: an owner key and its ed25519 signature over the SHA-256 digest of the canonical JSON of `{ partyId, peers }` (`seedDigest` in `seed-bootstrap.ts`).
 
-`preferred` marks the peers the receiver dials first: the machine that minted the seed, because it is the one most likely to be reachable at that moment, and every always-on machine (profile `storage`). It is a dial hint and grants nothing.
+`preferred` marks the peers the receiver dials first: the machine that minted the seed, because it is the one most likely to be reachable at that moment, and every machine whose `CadrePeer` row says it is always on. It is a dial hint and grants nothing.
 
 ### What a seed gives and does not give
 

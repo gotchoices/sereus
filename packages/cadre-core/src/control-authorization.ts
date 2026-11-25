@@ -206,6 +206,14 @@ export function ownerGrantRowFields(row: OwnerGrantSignedFields): string[] {
 }
 
 /**
+ * What a machine states about its part in one strand on its `CadreControl.StrandPeer` row.
+ * `'client'`: it runs the strand without storing any of its blocks (`NodeRoles.strandCohortMember`
+ * off). A serving machine states no role (`null` on the row), which is also what every row written
+ * before the column existed means. The schema's `KnownStrandPeerRole` check admits the same values.
+ */
+export type StrandPeerRole = 'client';
+
+/**
  * The `StrandPeer` columns its `'add'` signature binds, in the schema's order. Structurally
  * satisfied by a `StrandPeerRow` (`types.ts`), which adds the signature itself.
  */
@@ -213,16 +221,22 @@ export interface StrandPeerSignedFields {
   strandId: string;
   peerId: string;
   strandPeerId: string;
+  role: StrandPeerRole | null;
 }
 
 /**
  * The row-field half of a `StrandPeer` `'add'` digest, shared by the signer
  * (`ControlDatabase.insertStrandPeer`) and the verifier (`peer-authorization.ts`'s
- * `strandPeerAddDigest`). SQL mirror, in `StrandPeer.Authorized`:
- * `new.StrandId, new.PeerId, new.StrandPeerId`.
+ * `strandPeerAddDigest`). Two forms, chosen by the row's own role, mirroring the two branches
+ * of `StrandPeer.Authorized`: `new.StrandId, new.PeerId, new.StrandPeerId` when `role` is
+ * null, the form every row before control schema version 5 was signed over, and the same with
+ * `new.Role` appended when it is set. The framed digest is injective over its field list, so a
+ * row signed over one form never verifies against the other; the schema's `StrandPeer` comment
+ * says why the null form is kept rather than digesting `coalesce(Role, '')`.
  */
 export function strandPeerRowFields(row: StrandPeerSignedFields): string[] {
-  return [row.strandId, row.peerId, row.strandPeerId];
+  const fields = [row.strandId, row.peerId, row.strandPeerId];
+  return row.role === null ? fields : [...fields, row.role];
 }
 
 /** The `PendingStrandPartyKey` columns its `'add'` signature binds, in the schema's order and with the row's stored forms. */

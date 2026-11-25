@@ -178,8 +178,8 @@ export const nonNegativeInteger = numberWhere(
 
 /**
  * One of a closed set of strings. The set is written as an object with every member as a
- * key, so it is checked against the union type: `oneOf<NodeProfile>({ transaction: true,
- * storage: true })` stops compiling when cadre-core adds a profile or drops one.
+ * key, so it is checked against the union type: `oneOf<NodeClass>({ device: true,
+ * server: true })` stops compiling when cadre-core adds a node class or drops one.
  */
 export function oneOf<T extends string>(members: Record<T, true>): Checker<T> {
   const values = Object.keys(members) as T[];

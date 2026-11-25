@@ -345,7 +345,8 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 |---|---|---|
 | `controlNetwork.partyId` | `CADRE_PARTY_ID` | Required. The party's ID; a placeholder on a node waiting to be claimed |
 | `controlNetwork.bootstrapNodes` | `CADRE_BOOTSTRAP_NODES` | Required. Multiaddrs of the party's machines to dial at start; `[]` when there are none |
-| `profile` | `CADRE_PROFILE` | Required. `storage` for an always-on node, else `transaction` ([Node profiles](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-profiles)) |
+| `nodeClass` | `CADRE_NODE_CLASS` | Required. `server` for an always-on node, else `device` ([Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes)) |
+| `roles` | four `CADRE_ROLE_*` variables | Overrides of the decisions `nodeClass` presets, one role at a time ([Node roles](#node-roles)) |
 | `identity.keyFile` | `CADRE_KEY_FILE` | The node's private key file. Without it the node has a new peer ID on every start |
 | `nodeState.dir` | `CADRE_NODE_STATE_DIR` | Directory for the node's own durable files. Default: the config file's directory |
 | `storage.type`, `storage.path`, `storage.quotaBytes` | `CADRE_STORAGE_TYPE`, `CADRE_STORAGE_PATH`, `CADRE_STORAGE_QUOTA` | `file` or `memory`, the data directory that `file` requires, and a quota in bytes |
@@ -357,6 +358,31 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 
 `strandReactivity` and `push` (variable `CADRE_PUSH`) have sections of their own. `storage.type` and `hibernation.enabled` are required when their block is present. Relative paths in `identity.keyFile`, `owner.keyFile` and `claim.secretFile` resolve against the working directory, not the config file's directory.
 
+### Node roles
+
+`nodeClass` is a preset rather than a classification: it settles four decisions — the node's **roles** — that the optional `roles` block can each set on its own. A role left out of the block keeps the class's value, and `roles: {}` means the same as no block at all.
+
+```yaml
+nodeClass: server
+roles:                      # optional, and so is every role in it
+  alwaysOn: true            # true or false
+  overlayTier: core         # 'edge' or 'core'
+  reactivity: forwarder     # 'forwarder' or 'subscriber'
+  strandCohortMember: true  # true or false
+```
+
+| Role | Variable |
+|---|---|
+| `alwaysOn` | `CADRE_ROLE_ALWAYS_ON` |
+| `overlayTier` | `CADRE_ROLE_OVERLAY_TIER` |
+| `reactivity` | `CADRE_ROLE_REACTIVITY` |
+| `strandCohortMember` | `CADRE_ROLE_STRAND_COHORT_MEMBER` |
+
+[Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes) says what each role decides, what the presets are, and what `alwaysOn` turns on. `cadre status` prints the resolved roles beside the class, so an operator sees what the node is doing and not only which roles were overridden.
+
+- **A misspelled role, or a value outside a role's own set, stops the node**, in the same report as the rest of the file's problems, rather than falling back to the preset.
+- **`strandCohortMember: false` runs every strand as a client**: the node reads and writes each strand through the machines that store it, keeps no strand data under `storage.path`, and is in no strand's cluster. It then hosts no storage replicas, so a strand no app on the machine has claimed is only announced. A client needs a serving machine reachable to open a strand. See [A node that holds no strand blocks](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#a-node-that-holds-no-strand-blocks).
+
 ### Listen and announce addresses
 
 | Key | Variable | Meaning |
@@ -365,13 +391,23 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 | `network.appendAnnounceAddrs` | `CADRE_APPEND_ANNOUNCE_ADDRS` | Addresses to advertise as well: how to publish a forwarded or public address |
 | `network.announceAddrs` | `CADRE_ANNOUNCE_ADDRS` | Addresses to advertise instead of all others, a relay address included |
 | `network.relayAddrs` | `CADRE_RELAY_ADDRS` | Circuit relays to reserve a slot on, each a dial address ending in the relay's peer ID |
-| `network.enableRelay` | `CADRE_ENABLE_RELAY` | Run a circuit-relay server. Default: on for `storage`, off for `transaction` |
+| `network.webrtc` | `CADRE_WEBRTC` | Offer a WebRTC address as well, so peers reaching this node through a relay can go direct. Needs a relay. Default: off |
+| `network.stunUrls` | `CADRE_STUN_URLS` | Comma-separated `stun:` URLs for `network.webrtc`, replacing the ones derived from the relays |
+| `network.enableRelay` | `CADRE_ENABLE_RELAY` | Run a circuit-relay server. Default: the `alwaysOn` role, so on for a `server` and off for a `device` unless [`roles`](#node-roles) says otherwise |
 
 Three more keys have no variable: `network.unauthorizedRelayReservationCap` (default `8`), `network.linkRoundTripMs` (default `3500`; set the same value on every machine of a party) and `network.cohortQueryTimeoutMs` (default: two link round trips). [Configuration](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#configuration) and [Deadlines and the link budget](https://github.com/gotchoices/sereus/blob/master/docs/network/deadlines.md) say what they govern.
 
-- **Bindable transports.** A config file can bind TCP and WebSocket (`/ws`, `/wss`) addresses only.
+- **Bindable transports.** A config file can bind TCP and WebSocket (`/ws`, `/wss`) addresses only. WebRTC has `network.webrtc` instead; a `/webrtc` entry written into `listenAddrs` is refused, since the flag is what also supplies the transport and the ICE servers.
 - **Relays.** Name a relay in `relayAddrs`, not as a `/p2p-circuit` listen address. When no named relay grants a reservation on the first attempt, the start fails ([Relays](https://github.com/gotchoices/sereus/blob/master/docs/network/relay.md)).
 - **Strand nodes.** The configured ports and announce addresses belong to the machine's control node. Each strand's node binds an OS-assigned port, so a forwarded port does not reach it.
+
+### Direct connections over WebRTC
+
+`network.webrtc: true` gives the node a WebRTC address alongside its relayed one, so a peer that reached it through a relay can move the connection onto a direct path and take those bytes off the relay ([Direct connections over WebRTC](https://github.com/gotchoices/sereus/blob/master/docs/network/relay.md#direct-connections-over-webrtc)). It is worth turning on for a machine behind NAT that other machines can only reach through a relay, and worth nothing on one with a public or forwarded address, which peers already dial directly.
+
+It needs `network.relayAddrs`: WebRTC's connection setup is signalled over the relayed connection, so with no relay the node logs one line at start and runs unchanged. Off is the default, including in the Docker image.
+
+**Platform support.** The transport is `@libp2p/webrtc`, which loads a `node-datachannel` native binary. Prebuilt binaries ship for Linux x64 and arm64 (both glibc and musl, so Alpine is covered), macOS x64 and arm64, and Windows x64 and arm64. An install never fails for want of one — the binaries are optional dependencies filtered by platform — but on a platform with no binary (32-bit ARM, for instance) a node with `network.webrtc: true` fails at start with an error naming `node-datachannel` and the platform. With the flag off, nothing WebRTC-related is loaded at all, so such a platform is unaffected.
 
 ### Strand change notifications
 
@@ -485,7 +521,7 @@ identity:
 controlNetwork:
   partyId: unclaimed
   bootstrapNodes: []
-profile: storage
+nodeClass: server
 claim:
   secretFile: /var/lib/cadre/claim.secret
 nodeState:
@@ -551,14 +587,14 @@ const config = await resolveConfig('cadre.yaml');
 const node = new CadreNode({
 	privateKey: config.privateKey,
 	controlNetwork: config.controlNetwork,
-	profile: config.profile,
+	nodeClass: config.nodeClass,
 	strandFilter: config.strandFilter,
 	network: { ...config.network, defaultTransports: nodeDefaultTransports },
 	hibernation: config.hibernation,
 	strandWatchInterval: config.strandWatchInterval,
 });
 
-const health = new HealthServer({ healthPort: 8080, metricsPort: 9090, profile: config.profile });
+const health = new HealthServer({ healthPort: 8080, metricsPort: 9090, nodeClass: config.nodeClass });
 health.attach(node);
 await health.start();
 

@@ -5,14 +5,14 @@
  * connected (and thus replicating), without devolving into an N² mesh.
  *
  * FRET only needs a *connected* graph with the block clusters reachable, not a
- * full mesh. Always-on (`storage` profile) machines are the stable, dialable
- * backbone that hold the control blocks, so the policy is **backbone-preferential
- * with a bounded out-degree**:
+ * full mesh. Always-on machines are the stable, dialable backbone that hold the
+ * control blocks, so the policy is **backbone-preferential with a bounded
+ * out-degree**:
  *
  * - **Always dial every backbone (always-on) member** — a party runs few of them,
  *   and they are the machines that stay reachable while phones sleep or roam.
- * - **Fill the remainder** up to `targetDegree` with the other members (phones,
- *   and machines that have not yet published a profile), ordered
+ * - **Fill the remainder** up to `targetDegree` with the other members (devices,
+ *   and machines that have not yet published whether they are always on), ordered
  *   deterministically (peerId sort) so every node makes the same stable choice
  *   across passes and load spreads predictably.
  *
@@ -21,7 +21,27 @@
  * party it bounds out-degree to `backbone + targetDegree`.
  */
 
+import { decodeAlwaysOn } from './node-class.js';
 import type { CohortPeerRow } from './strand-cohort.js';
+import type { CadrePeerRow } from './types.js';
+
+/**
+ * A sibling as this policy judges it: its addressing row plus the backbone fact, decoded from
+ * the stored `CadrePeer.Profile` code by {@link controlCohortSiblingsOf}. Required, not
+ * optional, so a caller cannot hand the policy raw rows and silently get no backbone.
+ */
+export interface ControlCohortSibling extends CohortPeerRow {
+  /** Whether the machine declared itself always on; null until it self-publishes. */
+  alwaysOn: boolean | null;
+}
+
+/**
+ * Live `CadrePeer` rows as this policy reads them — the one place the stored `Profile` code
+ * reaches a dial decision, so no policy compares it.
+ */
+export function controlCohortSiblingsOf(rows: readonly CadrePeerRow[]): ControlCohortSibling[] {
+  return rows.map(({ peerId, multiaddr, profile }) => ({ peerId, multiaddr, alwaysOn: decodeAlwaysOn(profile) }));
+}
 
 /**
  * Default backstop for {@link CadreNode.reconcileControlCohort} (ms): a pass runs this long
@@ -85,7 +105,7 @@ export interface ControlCohortSelection {
    * Still includes peers that may turn out to be already-connected — the caller
    * diffs against live connections separately.
    */
-  dials: CohortPeerRow[];
+  dials: ControlCohortSibling[];
   /** Non-backbone members dropped by the `targetDegree` cap (0 when none). */
   cappedNonBackbone: number;
 }
@@ -105,7 +125,7 @@ export interface ControlCohortReconcileResult {
 }
 
 /** Stable peerId ordering so the bounded fill is identical across passes/nodes. */
-function byPeerId(a: CohortPeerRow, b: CohortPeerRow): number {
+function byPeerId(a: ControlCohortSibling, b: ControlCohortSibling): number {
   if (a.peerId < b.peerId) return -1;
   if (a.peerId > b.peerId) return 1;
   return 0;
@@ -115,28 +135,27 @@ function byPeerId(a: CohortPeerRow, b: CohortPeerRow): number {
  * Backbone-preferential, bounded-out-degree selection of control-cohort siblings
  * to dial.
  *
- * A member is **backbone** iff its `CadrePeer` row declares the `storage` profile
- * (an always-on machine). All backbone members are selected; the rest fill up to
- * `targetDegree` in deterministic peerId order. A member whose profile is still
- * unknown (it has not self-published) is not backbone until it publishes one.
- * A profile is a dial preference only: it is self-declared, and a machine
- * misdeclaring one costs extra dials, never access.
+ * A member is **backbone** iff its `CadrePeer` row declares it always on. All
+ * backbone members are selected; the rest fill up to `targetDegree` in
+ * deterministic peerId order. A member that has not self-published yet is not
+ * backbone until it does. Being always on is a dial preference only: it is
+ * self-declared, and a machine misdeclaring it costs extra dials, never access.
  *
  * @param siblings - cadre members EXCLUDING self (the caller filters self out).
  * @param targetDegree - cap on non-backbone dials (negative is treated as 0).
  */
 export function selectControlCohortDials(
-  siblings: CohortPeerRow[],
+  siblings: ControlCohortSibling[],
   targetDegree: number,
 ): ControlCohortSelection {
-  const backbone: CohortPeerRow[] = [];
-  const rest: CohortPeerRow[] = [];
+  const backbone: ControlCohortSibling[] = [];
+  const rest: ControlCohortSibling[] = [];
 
   // NOTE: the backbone is uncapped, so out-degree grows with the number of always-on
-  // machines (and with any sibling that declares `storage` without being one); if a party
-  // ever runs more than a handful, cap the backbone too.
+  // machines (and with any sibling that declares itself always on without being one); if a
+  // party ever runs more than a handful, cap the backbone too.
   for (const peer of siblings) {
-    if (peer.profile === 'storage') {
+    if (peer.alwaysOn === true) {
       backbone.push(peer);
     } else {
       rest.push(peer);

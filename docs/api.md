@@ -77,7 +77,7 @@ There are four ways to add a machine, and [Which side dials](cadre/membership.md
 
 ### Listing and removing machines
 
-- `listMachines()`: One entry per machine: its peer id, whether this node trusts it, its profile and when it last published its address.
+- `listMachines()`: One entry per machine: its peer id, whether this node trusts it, whether it is always on (`alwaysOn`, null until that machine has published its own record) and when it last published its address.
 - `planMachineRemoval(peerId)`: What `removeMachine` would do, read without writing: whether this node may remove the machine, which invitations it could return through, and which closed strands need a new party key.
 - `removeMachine(peerId)`: Owner call. Removes the machine, its push token and every invitation it could redeem, in one transaction, then replaces the party's key in each closed strand running here.
 - `listPendingPartyKeyRotations()`: The closed strands where a key replacement started by a removal has not finished.

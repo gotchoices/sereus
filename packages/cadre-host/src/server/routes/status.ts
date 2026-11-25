@@ -28,7 +28,7 @@ export interface StatusResponse {
     id: string;
     partyId: string;
     status: ManagedNodeInfo['status'];
-    profile: ManagedNodeInfo['profile'];
+    nodeClass: ManagedNodeInfo['nodeClass'];
   }>;
   connectivity: NatStatusSnapshot;
   update?: { available?: string; lastChecked?: string };
@@ -40,7 +40,7 @@ export function registerStatusRoute(app: FastifyInstance, opts: StatusRouteOptio
       id: n.id,
       partyId: n.partyId,
       status: n.status,
-      profile: n.profile,
+      nodeClass: n.nodeClass,
     }));
 
     const response: StatusResponse = {

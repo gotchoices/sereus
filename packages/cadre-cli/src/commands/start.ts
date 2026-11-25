@@ -4,6 +4,7 @@ import debug from 'debug';
 import {
   pinnedKeyTrustPolicy,
   requireEd25519PublicKeyB64,
+  resolveNodeRoles,
   type CadreNode,
   type CadreRemoval,
   type ControlNetworkSeed,
@@ -240,10 +241,15 @@ interface HealthServerFlags {
 /**
  * Start the health and metrics servers, unless `--no-health-server`, attached to `node` when there
  * is one, with `facts` behind `/status`. Prints the ports actually bound, so port 0 can be asked for.
+ *
+ * `/status` reports the node's class and the roles it RESOLVED to, so an operator reading it sees
+ * what the node is doing and not only what the config overrode. Resolved here, from the same two
+ * keys `CadreNode` resolves from, because the node keeps the result to itself; the config has
+ * already been validated, so the resolution cannot reject anything.
  */
 async function startHealthServer(
   flags: HealthServerFlags,
-  profile: string,
+  nodeConfig: Pick<ResolvedConfig, 'nodeClass' | 'roles'>,
   node: CadreNode | undefined,
   facts: Pick<HealthServerOptions, 'claim' | 'invitation' | 'ownerGrant' | 'removal'>,
 ): Promise<HealthServer | null> {
@@ -256,7 +262,14 @@ async function startHealthServer(
   // distinct from CADRE_STARTUP_TOKEN (PID-verify / admin-channel bearer).
   const seedToken = commandEnv('CADRE_SEED_TOKEN') ?? '';
 
-  const healthServer = new HealthServer({ healthPort, metricsPort, profile, seedToken, ...facts });
+  const healthServer = new HealthServer({
+    healthPort,
+    metricsPort,
+    nodeClass: nodeConfig.nodeClass,
+    roles: resolveNodeRoles(nodeConfig.nodeClass, nodeConfig.roles),
+    seedToken,
+    ...facts,
+  });
   if (node) healthServer.attach(node);
   await healthServer.start();
   console.log(`✓ Health server on port ${healthServer.healthBoundPort}, metrics on port ${healthServer.metricsBoundPort}`);
@@ -409,7 +422,7 @@ export const startCommand = new Command('start')
         removal: () => removal,
       };
       if (removal) {
-        const healthServer = await startHealthServer(options, config.profile, undefined, statusFacts);
+        const healthServer = await startHealthServer(options, config, undefined, statusFacts);
         return await serveRemoved(removal, config.nodeStateDir, healthServer);
       }
       const noteRemoval = (reported: CadreRemoval): void => { removal = reported; };
@@ -438,7 +451,7 @@ export const startCommand = new Command('start')
       // starts removed. If that exit is ever seen, skip those steps once `removal` is set.
       stopWhenRemoved(node, config.nodeStateDir, noteRemoval);
 
-      const healthServer = await startHealthServer(options, config.profile, node, statusFacts);
+      const healthServer = await startHealthServer(options, config, node, statusFacts);
 
       // The admin channel is created after owner init below; declared here
       // so graceful shutdown can close it.

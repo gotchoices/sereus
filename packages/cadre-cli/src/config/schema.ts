@@ -18,7 +18,7 @@
  * of `CliConfig`, and which `CADRE_*` variables can supply a missing key.
  */
 
-import type { ApnsCredentials, FcmCredentials, LatencyHint, NodeProfile, PushCredentials } from '@serfab/cadre-core';
+import type { ApnsCredentials, FcmCredentials, LatencyHint, NodeClass, OverlayTier, PushCredentials, ReactivityRole } from '@serfab/cadre-core';
 import {
   type Checker,
   arrayOf,
@@ -95,6 +95,23 @@ const strandFilter: Checker<StrandFilterConfig> = (value, keyPath, ctx) => {
   }
 };
 
+/**
+ * Per-role overrides of the node class. Every role is optional — one left out takes the class's
+ * preset — so nothing here is required and `roles: {}` means the same as no block at all. The
+ * value sets are cadre-core's own, written as `oneOf` tables so a role that gains a value there
+ * stops compiling here.
+ *
+ * cadre-core's `resolveNodeRoles` refuses a misnamed role and an out-of-set value too, but it
+ * runs when the node is constructed — after this pass, and one problem at a time. Checking the
+ * block here puts a bad role in the same report as every other problem in the file.
+ */
+const roles = objectOf<Block<'roles'>>({
+  alwaysOn: booleanValue,
+  overlayTier: oneOf<OverlayTier>({ edge: true, core: true }),
+  reactivity: oneOf<ReactivityRole>({ forwarder: true, subscriber: true }),
+  strandCohortMember: booleanValue,
+});
+
 const strandReactivity = objectOf<Block<'strandReactivity'>>(
   {
     enabled: booleanValue,
@@ -120,17 +137,39 @@ const storage = refine(
       : value,
 );
 
-const network = objectOf<Block<'network'>>({
-  listenAddrs: arrayOf(stringValue),
-  announceAddrs: arrayOf(stringValue),
-  appendAnnounceAddrs: arrayOf(stringValue),
-  relayAddrs: arrayOf(stringValue),
-  enableRelay: booleanValue,
-  // 0 is meaningful: refuse every unauthorized reservation.
-  unauthorizedRelayReservationCap: nonNegativeInteger,
-  cohortQueryTimeoutMs: finiteNumber,
-  linkRoundTripMs: finiteNumber,
-});
+const network = refine(
+  objectOf<Block<'network'>>({
+    listenAddrs: arrayOf(stringValue),
+    announceAddrs: arrayOf(stringValue),
+    appendAnnounceAddrs: arrayOf(stringValue),
+    relayAddrs: arrayOf(stringValue),
+    webrtc: booleanValue,
+    stunUrls: stringValue,
+    enableRelay: booleanValue,
+    // 0 is meaningful: refuse every unauthorized reservation.
+    unauthorizedRelayReservationCap: nonNegativeInteger,
+    cohortQueryTimeoutMs: finiteNumber,
+    linkRoundTripMs: finiteNumber,
+  }),
+  // Cross-field: `network.webrtc` is the one way to ask for WebRTC, because asking for it
+  // means a transport and a set of ICE servers as well as a listen entry, and only the flag
+  // brings all three. A hand-written entry would otherwise be accepted by cadre-core (the
+  // node passes `defaultTransports`) and then bind nothing, which is the silent-listener
+  // failure `resolveTransportOptions` exists to prevent.
+  (value, keyPath, ctx) => {
+    // Segment-wise, not substring: `/webrtc-direct` is a different libp2p transport that no
+    // setting here supplies, so it stays with cadre-core's refusal, which names its package.
+    const handWritten = (value.listenAddrs ?? []).filter((addr) => addr.split('/').includes('webrtc'));
+    return handWritten.length === 0
+      ? value
+      : ctx.fail(
+        `${keyPath}.listenAddrs`,
+        `${keyPath}.listenAddrs names a WebRTC address (${handWritten.join(', ')}), which cannot be `
+        + `configured as a listen address. Set ${keyPath}.webrtc: true instead — it adds the listener, `
+        + `the transport and the ICE servers together, and needs ${keyPath}.relayAddrs for signalling.`,
+      );
+  },
+);
 
 const hibernation = objectOf<Block<'hibernation'>>(
   {
@@ -174,7 +213,8 @@ const root = objectOf<CliConfig>(
   {
     identity,
     controlNetwork,
-    profile: oneOf<NodeProfile>({ transaction: true, storage: true }),
+    nodeClass: oneOf<NodeClass>({ device: true, server: true }),
+    roles,
     strandFilter,
     strandReactivity,
     storage,
@@ -186,7 +226,7 @@ const root = objectOf<CliConfig>(
     claim,
     owner,
   },
-  { required: ['controlNetwork', 'profile'] },
+  { required: ['controlNetwork', 'nodeClass'] },
 );
 
 // ---------------------------------------------------------------------------

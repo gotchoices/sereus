@@ -70,7 +70,8 @@ Resolves to a [connection result](#the-connection-result). The options type is `
 | `transactor` | `'network'` | Which Optimystic transactor commits go through. See [`transactor` values](#transactor-values). |
 | `storage` | none | An `IRawStorage` that persists the strand's blocks. Borrowed: `shutdown()` does not close it. |
 | `clusterSize` | `4` | Nodes the strand's replication cluster should have: an integer of at least 2. See [`clusterSize`](#clustersize). |
-| `libp2pNode`, `coordinatedRepo` | none | An existing strand node and its repo, given together. The connection uses the node and leaves it running on `shutdown()`. `port`, `bootstrapNodes`, `fretProfile` and `clusterSize` are then unused. |
+| `libp2pNode` | none | An existing strand node. The connection uses it and leaves it running on `shutdown()`. `port`, `bootstrapNodes`, `fretProfile` and `clusterSize` are then unused. |
+| `coordinatedRepo` | none | The injected node's handle for coordinating writes to the blocks it holds. Required with a node that serves blocks, and refused with a client node (`servesBlocks: false`), which holds none and so reads and writes through the strand's serving machines. |
 | `port` | `0` | TCP listening port of the node the connection creates. `0` picks a free port. The browser entry ignores it. |
 | `fretProfile` | `'edge'` | FRET profile of the node the connection creates: `'edge'` or `'core'`. |
 | `enableCache` | `true` | Passed to the Optimystic plugin as `enable_cache`. |

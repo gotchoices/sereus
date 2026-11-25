@@ -25,7 +25,7 @@ services:
       - CADRE_BOOTSTRAP_NODES=${CADRE_BOOTSTRAP_NODES:-}
       
       # Node configuration
-      - CADRE_PROFILE=${CADRE_PROFILE:-storage}
+      - CADRE_NODE_CLASS=${CADRE_NODE_CLASS:-server}
       - DATA_DIR=/data
       - CADRE_STORAGE_TYPE=file
       - CADRE_STORAGE_PATH=/data/storage
@@ -36,6 +36,8 @@ services:
       - CADRE_ANNOUNCE_ADDRS=${CADRE_ANNOUNCE_ADDRS:-}
       - CADRE_APPEND_ANNOUNCE_ADDRS=${CADRE_APPEND_ANNOUNCE_ADDRS:-}
       - CADRE_RELAY_ADDRS=${CADRE_RELAY_ADDRS:-}
+      - CADRE_WEBRTC=${CADRE_WEBRTC:-}
+      - CADRE_STUN_URLS=${CADRE_STUN_URLS:-}
       - CADRE_ENABLE_RELAY=${CADRE_ENABLE_RELAY:-}
 
       # Hibernation

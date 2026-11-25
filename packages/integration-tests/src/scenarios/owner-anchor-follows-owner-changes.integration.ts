@@ -68,7 +68,7 @@ describe('E2E the trusted-owner anchor follows owner additions and removals', ()
 		let B: InviteMember | undefined;
 		try {
 			// ── A founds the cadre; M and B are admitted the owner-online way ─────────
-			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none' }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none' }));
 			await A.start();
 			const owner = A;
 			const { publicKey: aOwnerKey } = await makeOwnOwner(owner);

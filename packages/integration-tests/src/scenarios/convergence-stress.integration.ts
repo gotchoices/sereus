@@ -154,18 +154,18 @@ async function setupDroneAndPhone(tag: string): Promise<TestContext> {
 	const partyId = `convergence-${tag}-${Date.now()}`;
 	const strandId = `strand-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-	// Drone: storage profile, WS listener
-	const drone = new CadreNode(controlNodeConfig({ partyId, profile: 'storage', enableRelay: true }));
+	// Drone: a server, WS listener
+	const drone = new CadreNode(controlNodeConfig({ partyId, nodeClass: 'server', enableRelay: true }));
 	await drone.start();
 
 	const droneAddrs = drone.getControlNode()!.getMultiaddrs().map(ma => ma.toString());
 
-	// Phone: transaction profile, WS dialer — no listener of its own, so it models a
+	// Phone: a device, WS dialer — no listener of its own, so it models a
 	// dial-only client (`listenAddrs: []` is load-bearing, not an omission).
 	const phone = new CadreNode(controlNodeConfig({
 		partyId,
 		bootstrapNodes: droneAddrs,
-		profile: 'transaction',
+		nodeClass: 'device',
 		listenAddrs: [],
 	}));
 	await phone.start();

@@ -71,7 +71,7 @@ function createNodeConfig(
 	opts: { bootstrapNodes?: string[] } = {},
 ): CadreNodeConfig {
 	// Pins spread LAST: an option added to `opts` later must not silently unpin them.
-	return controlNodeConfig({ partyId, ...opts, profile: 'storage', enableRelay: true });
+	return controlNodeConfig({ partyId, ...opts, nodeClass: 'server', enableRelay: true });
 }
 
 function nowTimestamp(): string {

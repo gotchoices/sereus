@@ -9,6 +9,7 @@ import type { TimeoutScheduler } from '../src/timeout-scheduler.js';
 import type { StrandDatabase } from '../src/strand-database.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * **What this protects: the joining machine's first-sync write gate** —
@@ -48,14 +49,11 @@ const mocks = vi.hoisted(() => {
   return { stop, close, initialize, ensureFounderBootstrap, createLibp2pNode, StrandDatabase, headerCounts };
 });
 
-// `createLibp2pNode` is stubbed; `resolveLinkDeadlines` stays real, because the dial limits
-// cadre-core states on every node it builds are derived from it (`optimysticDialLimits`).
+// Partial mock: only `createLibp2pNode` is stubbed (see the backfill spec for why
+// the rest of db-p2p stays real).
 vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   const actual = await importOriginal();
-  return {
-    createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode,
-    resolveLinkDeadlines: actual.resolveLinkDeadlines
-  };
+  return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
 });
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
@@ -87,7 +85,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   return {
     strandRow,
     sAppConfig,
-    profile: 'transaction',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     firstSync: FAST_GATE,
     ...overrides

@@ -72,7 +72,7 @@ describe('buildEdgeNodeConfig', () => {
 		expect(config().requireSignedSchemas).toBeUndefined();
 	});
 
-	it('still listens on nothing — an edge device is always the side that dials', () => {
+	it('listens on nothing by default, relay or no relay — a platform that wants an address names one', () => {
 		expect(config().network?.listenAddrs).toEqual([]);
 		expect(config([RELAY_ADDR]).network?.listenAddrs).toEqual([]);
 	});

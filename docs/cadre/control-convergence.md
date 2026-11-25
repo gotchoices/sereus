@@ -47,10 +47,10 @@ An offline sibling therefore costs one dial per backstop once the redial delay r
 
 The pass lists its siblings with `listMembers` and selects among them with `selectControlCohortDials`:
 
-- every member whose `CadrePeer.Profile` is `storage`. These always-on machines are the **backbone**: they stay reachable while phones sleep or change networks.
-- the rest (phones, and machines that have not published a profile) in peer-id order, up to `network.controlCohort.targetDegree` (default 6).
+- every member whose `CadrePeer` row says it is always on ([how the row records it](control-schema.md#limits-and-accepted-tradeoffs)). These machines are the **backbone**: they stay reachable while phones sleep or change networks.
+- the rest (phones, and machines that have not published a row of their own) in peer-id order, up to `network.controlCohort.targetDegree` (default 6).
 
-Replication needs a connected graph, not a full mesh. For a small party the selection is a full mesh; for a large one it bounds each node's dials. A profile is self-declared and is only a dial preference, so a machine that misdeclares one costs extra dials and gains no access.
+Replication needs a connected graph, not a full mesh. For a small party the selection is a full mesh; for a large one it bounds each node's dials. Being always on is self-declared and is only a dial preference, so a machine that misdeclares it costs extra dials and gains no access.
 
 For each selected sibling that is not connected, the pass takes addresses from three sources in order: the sibling's signed address record in `CadrePeer` (`resolvePeerAddrs`), the libp2p address book, and the node-local bootstrap-peer store ([Cold-start retry](#cold-start-retry)).
 

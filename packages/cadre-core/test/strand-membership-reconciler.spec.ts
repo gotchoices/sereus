@@ -628,8 +628,9 @@ describe('binding the party\'s other machines', () => {
     const state: { pendingKey: PendingPartyKeyState } = { pendingKey: PENDING_KEY_SEALED_ELSEWHERE };
     const party = partyPeerSource({
       live: [
-        { peerId: 'sibling-1-control', strandPeerId: 'sibling-1' },
-        { peerId: 'sibling-2-control', strandPeerId: 'sibling-2' },
+        { peerId: 'sibling-1-control', strandPeerId: 'sibling-1', serves: true },
+        // A client sibling: bound like any other, since nothing but the offline queue reads the role.
+        { peerId: 'sibling-2-control', strandPeerId: 'sibling-2', serves: false },
       ],
       removed: ['removed-machine'],
     }, state);

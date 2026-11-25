@@ -253,6 +253,8 @@ Notes on reading them:
 
 A link of the form `https://github.com/gotchoices/sereus/blob/master/…` (or `tree/master`) is checked as a local path. Package READMEs are published to npm, where relative links out of the package are dead, so they link to `docs/` by that URL.
 
+A link that resolves to a path declared in `.gitmodules`, or to anything under it, fails the link check even when the file is on disk. A submodule's directory is empty in a fresh worktree, so such a link breaks `yarn check:published`, and GitHub serves nothing under the parent repository's path for a submodule, so it is dead for every reader on the web. Link the submodule's own repository URL instead, on its branch rather than the commit the submodule is pinned to, so the link tracks the rules currently in force and survives a submodule bump.
+
 The budgets exist because a document read at the start of every task is paid for on every task, and because a list item that carries ten claims hides nine of them. A document over its limit is split by topic. A paragraph over its limit becomes several, or a headed section.
 
 The one directory index is [topology-coverage.md](topology-coverage.md), over the `*.integration.ts` files of `packages/integration-tests/src/scenarios`. An agent reads that document to decide whether a network shape is already tested, so a scenario with no row would read as a missing test. Adding, renaming or removing a scenario file therefore fails `yarn lint` until its row is updated.
@@ -272,7 +274,7 @@ The index check runs whenever its document is among the files checked: on a full
 - **Links it does not read.** It does not fetch external URLs, including a GitHub URL of this repository on a branch other than `master`. It does not read reference-style links (`[text][label]`), and does not check a path written in code font without a link.
 - **What an index entry says.** The index check compares file names only. A scenario named in a sentence instead of a table row passes, as does one named in two rows, and nothing checks that a row describes its scenario correctly.
 
-**Where exemptions live.** There is no allowlist of documents that may exceed a limit, carry a dead link or omit an index entry. The excluded directories are `EXCLUDED_ROOTS` in the script, the excluded file is in `EXCLUDED_FILES`, the limits are `BUDGET`, and the indexed directories are `INDEXES`.
+**Where exemptions live.** There is no allowlist of documents that may exceed a limit, carry a dead link, link into a submodule or omit an index entry. The excluded directories are `EXCLUDED_ROOTS` in the script, the excluded file is in `EXCLUDED_FILES`, the limits are `BUDGET`, and the indexed directories are `INDEXES`.
 
 **Script.** `scripts/check-docs.mjs`; its unit test is the root `test:check-docs` script, part of `yarn test`.
 

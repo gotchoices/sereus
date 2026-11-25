@@ -15,7 +15,7 @@ describe('CadreNode bootstrap-peer store wiring', () => {
 	function makeNode(partyId: string, bootstrapPeers?: CadreNodeConfig['bootstrapPeers']): CadreNode {
 		return new CadreNode({
 			controlNetwork: { partyId, bootstrapNodes: [] },
-			profile: 'transaction',
+			nodeClass: 'device',
 			bootstrapPeers,
 		});
 	}
@@ -93,7 +93,7 @@ describe('CadreNode dial targets for the nodes it adds and removes', () => {
 		node: CadreNode;
 		store: BootstrapPeerStore;
 	} {
-		const node = new CadreNode({ controlNetwork: { partyId: 'p', bootstrapNodes: [] }, profile: 'transaction' });
+		const node = new CadreNode({ controlNetwork: { partyId: 'p', bootstrapNodes: [] }, nodeClass: 'device' });
 		const internals = node as unknown as Record<string, unknown>;
 		internals.bootstrapPeerStore = store;
 		internals.controlNode = { peerId: { toString: () => SELF }, getConnections: () => [] };

@@ -18,7 +18,7 @@ function running(id: string, customerId: string): Container {
     id,
     customerId,
     partyId: 'party-1',
-    profile: 'transaction',
+    nodeClass: 'device',
     status: 'running',
     dockerId: `docker-${id}`,
     resources: {},

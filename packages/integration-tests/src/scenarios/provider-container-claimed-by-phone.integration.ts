@@ -19,7 +19,7 @@
  *   would pass with `CADRE_APPEND_ANNOUNCE_ADDRS` never reaching the node. A `/dns4/localhost`
  *   address appears only by being announced.
  * - **Phone-shaped requester** — `buildPhoneOwner`: an in-process `CadreNode` with
- *   `listenAddrs: []`, WebSocket and circuit-relay transports only, `profile: 'transaction'`,
+ *   `listenAddrs: []`, WebSocket and circuit-relay transports only, `nodeClass: 'device'`,
  *   owner genesis run on itself. It can reach the node only at a `/ws` address.
  *
  * What the steps pin, in order, each its own `it` so a failure names the step:
@@ -222,7 +222,7 @@ describe('a phone-shaped requester claims a provider container from its node cod
   }, STARTUP_MS);
 
   it('step 2: a claim container is created under the placeholder party and reaches running, awaiting its claim', async () => {
-    const created = await api.request<ProviderContainerResponse>('POST', '/containers', { join: { kind: 'claim' }, profile: 'storage' });
+    const created = await api.request<ProviderContainerResponse>('POST', '/containers', { join: { kind: 'claim' }, nodeClass: 'server' });
     expect(created.status).toBe(201);
     if (!created.body.ok) throw new Error(`POST /containers refused: ${created.body.error.code}`);
     const record = created.body.data.container;

@@ -62,7 +62,7 @@ describe('E2E an owner removes a machine from the cadre', () => {
 		let B: CadreNode | undefined;
 		try {
 			// ── A founds the cadre; M is admitted the owner-online way ──────────────
-			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none' }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none' }));
 			await A.start();
 			const owner = A;
 			const { publicKey: aOwnerKey } = await makeOwnOwner(owner);
@@ -75,7 +75,7 @@ describe('E2E an owner removes a machine from the cadre', () => {
 			const { invitation } = await owner.createCadreInvitation({ uses: 2 });
 			const inviteKey = invitation.invite.key;
 			const { grant } = await owner.createOwnerGrant();
-			B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', listenAddrs: [], strandFilter: 'none' }));
+			B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, nodeClass: 'device', listenAddrs: [], strandFilter: 'none' }));
 			await B.start();
 			const removed = B;
 			const bPeerId = removed.peerId!.toString();

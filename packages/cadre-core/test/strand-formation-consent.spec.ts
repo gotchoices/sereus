@@ -160,7 +160,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     node = new CadreNode({
       controlNetwork: { partyId: 'formation-consent-' + rand(), bootstrapNodes: [] },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

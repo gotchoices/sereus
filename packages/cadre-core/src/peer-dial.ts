@@ -91,6 +91,64 @@ export function withTrailingPeerId(addr: Multiaddr, peerId: string): Multiaddr |
 }
 
 /**
+ * How an address reaches its peer. One classification, used by everything that has to treat
+ * the three differently: the dial order ({@link directBeforeRelayed}), what an open connection
+ * can stand in for ({@link reusableConnection}), and which addresses formation hands libp2p
+ * (`strand-formation-protocol.ts`).
+ *
+ * - `direct` — no relay hop. `/webrtc-direct` belongs here: it is dialed without a relay and
+ *   needs no fallback.
+ * - `relayed` — a relay hop and nothing negotiated after it. The address a reservation
+ *   publishes, and the one a dial someone is waiting on uses: it connects or fails quickly.
+ * - `webrtc` — a relay hop carrying WebRTC signalling, with the connection itself opening only
+ *   if ICE (WebRTC's connectivity check) finds a path between the two networks. Sereus runs no
+ *   TURN server, so between two networks that allow no direct path ICE never connects and the
+ *   attempt runs to the WebRTC transport's own timeout, measured at about 23 s
+ *   (gotchoices/sereus#61) — longer than any budget something waits on. Hence the policy in
+ *   `docs/network/relay.md` → "Direct connections over WebRTC": a blocking dial goes relayed,
+ *   and WebRTC is an extra tried separately.
+ */
+export type AddrKind = 'direct' | 'relayed' | 'webrtc';
+
+/**
+ * The {@link AddrKind} of `addr`: `webrtc` when a `webrtc` component follows the last relay
+ * hop, `relayed` when a relay hop has nothing after it, `direct` when there is no relay hop.
+ *
+ * The components are walked rather than asking `@multiformats/multiaddr-matcher`'s `Circuit` /
+ * `WebRTC` (what libp2p's own sorter and `isDirect` use), because those are transport-SHAPE
+ * matchers: they recognise a circuit only when its relay leg is a transport they know and only
+ * for a single hop. Measured against 3.0.2, a relay leg over `/memory` and a two-hop circuit
+ * each match neither `Circuit` nor `WebRTC`, which would classify a relayed address as
+ * `direct` and put it ahead of the addresses most likely to work. The question here is
+ * structural — does reaching this peer need a relay hop, and does it need ICE after that hop —
+ * so it is answered from the components, as {@link relaysThrough} already does.
+ *
+ * NOTE: `webrtc` is the only transport cadre negotiates after a relay hop. Another one
+ * (`/p2p-circuit/webtransport`, say) would come back `relayed` and could then hold a blocking
+ * dial; add it here if one is ever configured.
+ */
+export function addrKind(addr: Multiaddr): AddrKind {
+	return addrKindOfComponents(addr.getComponents());
+}
+
+/**
+ * {@link addrKind} for a caller that holds the components already, so the one rule above is
+ * answered in one place rather than re-derived from a second `p2p-circuit` test. Taken by
+ * `node-claim-payload.ts`, which parses an address once and asks several questions of the same
+ * components, and by `peer-record.ts`, which parses a stored string to ask this one.
+ */
+export function addrKindOfComponents(components: readonly Component[]): AddrKind {
+	let lastCircuit = -1;
+	for (let i = 0; i < components.length; i++) {
+		if (components[i].name === 'p2p-circuit') lastCircuit = i;
+	}
+	if (lastCircuit < 0) {
+		return 'direct';
+	}
+	return components.slice(lastCircuit + 1).some((c) => c.name === 'webrtc') ? 'webrtc' : 'relayed';
+}
+
+/**
  * Default limit on ONE address's dial attempt, in ms, at the DEFAULT declared link round trip:
  * `RELAYED_DIAL_ROUND_TRIPS` (5) x `DECLARED_LINK_ROUND_TRIP_MS` (3500 ms) plus
  * `DIAL_ADMISSION_DECISIONS` (2) x `ADMISSION_DECISION_TIMEOUT_MS` (2000 ms) = 21 500 ms
@@ -112,11 +170,12 @@ export function withTrailingPeerId(addr: Multiaddr, peerId: string): Multiaddr |
  * from about 1000 ms of one-way link delay upward. Nothing said so, and a reader raising
  * `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` below would not have found it.
  *
- * NOTE: a `/p2p-circuit/webrtc` address also negotiates a WebRTC session after
- * the relay leg. If such dials are ever seen failing at exactly this limit, raise
- * the declared link round trip (or `network.controlCohort.perAddressDialTimeoutMs` on the
- * affected nodes) rather than the per-peer limit, which cannot help an address that is itself
- * cut off.
+ * It is NOT sized for a `/p2p-circuit/webrtc` address, which negotiates a WebRTC session after
+ * the relay leg and, where ICE cannot connect, answers nothing until the WebRTC transport gives
+ * up (about 23 s). Such an address is dialed last ({@link directBeforeRelayed}), so it is cut
+ * off here having cost the peer's working addresses nothing. Raising this limit to let an
+ * ICE-failing dial run to its own end would only make an address nothing is waiting for
+ * expensive.
  *
  * Override per node with `network.controlCohort.perAddressDialTimeoutMs`.
  */
@@ -327,9 +386,24 @@ function boundPeer(addr: Multiaddr, label: string): PeerId | undefined {
 
 /**
  * An open connection to `target` without relay limits, when the node holds one — the rule
- * libp2p's dial queue applied before dialing (`findExistingConnection`): a direct connection is
- * preferred, and a relayed one is not reused for a direct address, so the dial can upgrade the
- * link. `undefined` when the node holds none, or does not expose its connections.
+ * libp2p's dial queue applies before dialing (`findExistingConnection`, and `isDirect` in
+ * `libp2p/connection-manager/utils.ts`): a direct connection is preferred, and a relayed one
+ * is NOT handed back for an address that would not itself be relayed, so the dial can upgrade
+ * the link. `undefined` when the node holds none, or does not expose its connections.
+ *
+ * Only a `relayed` address ({@link AddrKind}) is served by an open relayed connection. A
+ * `webrtc` address is not, which is the same answer libp2p gives (its `isDirect` is
+ * `!Circuit.exactMatch`, and a `/p2p-circuit/webrtc` address is not an exact `Circuit` match) —
+ * without that, a WebRTC upgrade dial made over a live relayed connection would be handed that
+ * connection back and upgrade nothing. It matters only to such an upgrade dial: a blocking dial
+ * reaches a `webrtc` address only once every relayed one has been tried
+ * ({@link directBeforeRelayed}).
+ *
+ * NOTE: a WebRTC address is published beside the plain relayed address of the same relay, so a
+ * peer never offers one alone and a caller that wants any connection still gets the open relayed
+ * one for the relayed address. If a peer whose ONLY address is a WebRTC one ever appears, a dial
+ * of it will not reuse an open relayed connection and will pay the ICE timeout instead; hand the
+ * open connection back for a `webrtc` address too if that is seen.
  *
  * Returned as the `Connection` it is on a real node. A double that reports an open connection
  * must supply what its caller uses of one.
@@ -342,7 +416,7 @@ function reusableConnection(dialer: AddrDialer, target: PeerId | undefined, addr
 	const open = dialer.getConnections(target)
 		.filter((c) => c.status === 'open' && c.limits === undefined && c.remotePeer.toString() === expected);
 	const existing = open.find((c) => c.direct !== false) ?? open[0];
-	if (existing === undefined || (existing.direct === false && !isRelayed(addr))) {
+	if (existing === undefined || (existing.direct === false && addrKind(addr) !== 'relayed')) {
 		return undefined;
 	}
 	return existing as Connection;
@@ -398,8 +472,8 @@ interface AddrAttemptFailure {
 
 /**
  * Dial `peerId` from `addrs`, one address per {@link dialAddr} call, and return the
- * first connection that forms. Direct addresses are tried before relayed ones
- * ({@link directBeforeRelayed}); otherwise the given order is kept.
+ * first connection that forms. Direct addresses are tried first, then relayed ones, then
+ * WebRTC ones ({@link directBeforeRelayed}); within a group the given order is kept.
  *
  * Every address is first bound to `peerId` ({@link withTrailingPeerId}), so the
  * handshake verifies that the peer expected is the one that answered; an address
@@ -519,8 +593,8 @@ export async function tryAddrsInTurn<T>(
 }
 
 /**
- * `addrs` with every circuit-relay address (one containing `/p2p-circuit`) moved
- * after every direct one, each group keeping its given order.
+ * `addrs` ordered by {@link AddrKind} — every `direct` address, then every `relayed` one,
+ * then every `webrtc` one — each group keeping its given order.
  *
  * The one part of libp2p's own ordering worth keeping: a relayed connection is
  * slower and limited in how much data and time it may carry, so a direct
@@ -529,14 +603,33 @@ export async function tryAddrsInTurn<T>(
  * which is how a forwarded loopback address ended up behind addresses that
  * never answer. With a per-address limit, trying a dead address first costs a
  * bounded amount of time, so the caller's order is the better guide.
+ *
+ * A `webrtc` address goes behind every relayed one rather than being dropped, so a peer whose
+ * only address is a WebRTC one is still dialed; it just no longer takes the time the relayed
+ * address needed. Note that libp2p's own sorter would do the OPPOSITE — its
+ * `circuitRelayAddressesLast` only recognises an exact `Circuit` match, so a
+ * `/p2p-circuit/webrtc` address sorts ahead of the plain relayed one — which is why the
+ * ordering has to be applied here, one address per dial, and cannot be left to a list dial.
  */
 export function directBeforeRelayed(addrs: readonly Multiaddr[]): Multiaddr[] {
-	return [...addrs.filter((addr) => !isRelayed(addr)), ...addrs.filter(isRelayed)];
+	const byKind: readonly AddrKind[] = ['direct', 'relayed', 'webrtc'];
+	return byKind.flatMap((kind) => addrs.filter((addr) => addrKind(addr) === kind));
 }
 
-/** Whether `addr` reaches its target through a circuit relay. */
-function isRelayed(addr: Multiaddr): boolean {
-	return addr.getComponents().some((c) => c.name === 'p2p-circuit');
+/**
+ * `addrs` with every `webrtc` address moved to the end, everything else keeping the order the
+ * caller gave. {@link directBeforeRelayed} applies both of its rules; this applies only the
+ * WebRTC one, for a caller whose own order of the rest must be preserved.
+ *
+ * `dialWake` (`strand-wake-protocol.ts`) is that caller: it wants the relayed address FIRST (a
+ * hibernating machine is usually reachable only through its relay, so its direct addresses
+ * blackhole), which is the order `CadreNode.resolvePeerAddrs` hands it. What it must not do is
+ * spend one of its two whole attempts (`WAKE_DIAL_ATTEMPTS`) on an address that answers nothing
+ * for about 23 s when ICE cannot connect.
+ */
+export function webrtcLast(addrs: readonly Multiaddr[]): Multiaddr[] {
+	const needsIce = (addr: Multiaddr): boolean => addrKind(addr) === 'webrtc';
+	return [...addrs.filter((addr) => !needsIce(addr)), ...addrs.filter(needsIce)];
 }
 
 /** `addrs` without those that relay through `dialer` itself, each dropped one logged. */

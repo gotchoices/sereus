@@ -176,7 +176,7 @@ async function bringUpHost(runTag: number): Promise<HostSide> {
 	const host = new CadreNode(controlNodeConfig({
 		partyId: `host-chat-${runTag}`,
 		privateKey: hostKey,
-		profile: 'storage',
+		nodeClass: 'server',
 		enableRelay: true,
 	}));
 	await host.start();

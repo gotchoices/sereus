@@ -75,7 +75,7 @@
  *
  * ⚠️ WHY LIBP2P'S RELAY DISCOVERY IS SWITCHED OFF. Discovery does reach SOME
  * peers: every connected peer whose identify lists the relay-hop protocol, and a
- * storage-profile member's strand node runs the relay server in the same
+ * `'server'` member's strand node runs the relay server in the same
  * `/optimystic/strand-<id>/…` namespace as this node's strand node (control nodes
  * share `/optimystic/control-<partyId>/…` the same way). Discovery reserves on such
  * a peer as soon as it connects, and that takes one of the slots the configured
@@ -97,6 +97,11 @@
  * cached at drive time: when a relay restarts or the connection drops, libp2p's
  * listener clears its listening addrs and the circuit multiaddr disappears, so a
  * cached snapshot would keep claiming `reserved` for a node nothing can dial.
+ *
+ * That read is still only a LOCAL fact, though, so {@link superviseRelayReservation}
+ * also re-sends the reservation request every `renewMs` while it reads as held: a
+ * relay can forget a reservation with the connection to it still open, and the
+ * renewal is the only thing that asks the relay itself ({@link renewRelayReservation}).
  *
  * And because discovery is either off or blind to the relay, nothing would ever
  * ASK again either —
@@ -226,13 +231,22 @@ export interface RelayFilterLike {
  * the members we call keeps the coupling small, explicit and greppable, and lets
  * {@link findCircuitRelayTransport} duck-type rather than brand-match.
  *
- * `relayFilter` is optional because it is not required to DRIVE a reservation,
- * only to RE-drive one (see {@link clearRelayFilterEntry}); a libp2p version that
- * renames or drops it must degrade, not break.
+ * `relayFilter` and `getReservation` are optional because neither is required to
+ * DRIVE a reservation, only to RE-drive one (see {@link clearRelayFilterEntry}) or
+ * to RENEW one (see {@link renewRelayReservation}); a libp2p version that renames
+ * or drops either must degrade to the behaviour that preceded it, not make
+ * {@link findCircuitRelayTransport} return `null` and break every drive. That is
+ * also why {@link isReservationStore} duck-types on neither.
  */
 export interface RelayReservationStoreLike {
   addRelay(peerId: PeerId, type: 'discovered' | 'configured'): Promise<unknown>;
   hasReservation(peerId: PeerId): boolean;
+  /**
+   * The relay's grant for the reservation this store holds on `peerId` — the LIVE object the
+   * store keeps, not a copy, which is what lets {@link renewRelayReservation} write `expire`
+   * on it. `expire` is the relay's expiry in Unix seconds.
+   */
+  getReservation?(peerId: PeerId): { expire: bigint } | undefined;
   relayFilter?: RelayFilterLike;
 }
 
@@ -286,23 +300,28 @@ export function circuitMultiaddrsVia(node: Libp2p, addrs: readonly string[]): st
 }
 
 /**
- * The NORMALIZED peer id of the relay `addr` names: the `/p2p/` component just
- * before `/p2p-circuit` when there is one, else the trailing `/p2p/` component
- * (a relay DIAL addr). `null` when there is none, or `addr` does not parse.
- *
- * Normalized through `peerIdFromString(…).toString()` so a relay written in a
- * different encoding than libp2p publishes (a CID form, say) still matches.
+ * The relay `addr` names, as the `PeerId` the reservation store's methods are keyed by: the
+ * `/p2p/` component just before `/p2p-circuit` when there is one, else the trailing `/p2p/`
+ * component (a relay DIAL addr). `null` when there is none, or `addr` does not parse.
  */
-function relayPeerIdOf(addr: string): string | null {
+function relayPeerOf(addr: string): PeerId | null {
   try {
     const components = multiaddr(addr).getComponents();
     const circuitIdx = components.findIndex((c) => c.name === 'p2p-circuit');
     const relayScope = circuitIdx >= 0 ? components.slice(0, circuitIdx) : components;
     const raw = trailingPeerId(multiaddr(relayScope));
-    return raw === null ? null : peerIdFromString(raw).toString();
+    return raw === null ? null : peerIdFromString(raw);
   } catch {
     return null;
   }
+}
+
+/**
+ * {@link relayPeerOf} as a string, NORMALIZED through `peerIdFromString(…).toString()` so a
+ * relay written in a different encoding than libp2p publishes (a CID form, say) still matches.
+ */
+function relayPeerIdOf(addr: string): string | null {
+  return relayPeerOf(addr)?.toString() ?? null;
 }
 
 /**
@@ -842,6 +861,23 @@ export const DEFAULT_RELAY_CHECK_MS = 5_000;
 export const DEFAULT_RELAY_MIN_BACKOFF_MS = 2_000;
 /** Ceiling the backoff doubles up to. */
 export const DEFAULT_RELAY_MAX_BACKOFF_MS = 60_000;
+/**
+ * Gap between renewals of a HELD reservation ({@link renewRelayReservation}). It bounds how long
+ * a relay that forgot a reservation leaves this node unreachable through it; the cost is one
+ * RESERVE stream per supervised relay per interval, far inside a relay's two-hour reservation
+ * lifetime.
+ */
+export const DEFAULT_RELAY_RENEW_MS = 5 * 60_000;
+/**
+ * Each renewal interval is `renewMs` ± this fraction, so the many nodes holding reservations on
+ * one relay do not all renew in step.
+ */
+export const RELAY_RENEW_JITTER = 0.1;
+
+/** `ms` scaled by a uniform factor in `1 ± jitter`. */
+function jittered(ms: number, jitter: number): number {
+  return ms * (1 + (Math.random() * 2 - 1) * jitter);
+}
 
 /**
  * Everything one drive takes, minus its `signal`, plus the loop's own cadence.
@@ -860,6 +896,11 @@ export interface RelayReservationSupervisorOptions extends Omit<RelayReserveOpti
   /** Backoff ceiling. Default 60_000. */
   maxBackoffMs?: number;
   /**
+   * Gap between renewals of a held reservation, each jittered by {@link RELAY_RENEW_JITTER}.
+   * Default 300_000. One renewal is bounded by `timeoutMs`, as one drive is.
+   */
+  renewMs?: number;
+  /**
    * Awaited before every drive AFTER the first — never before the first attempt,
    * which the caller has typically prepared for already. A hook that throws or
    * rejects is logged and the drive still runs: the hook is preparation, and a
@@ -870,6 +911,9 @@ export interface RelayReservationSupervisorOptions extends Omit<RelayReserveOpti
    * strand node on an in-memory delegate grant, and a relay restart drops every
    * grant it held — so a re-drive that did not re-announce first would be denied
    * at the relay's connection gate.
+   *
+   * A DRIVE hook only: it does not run before a renewal ({@link renewRelayReservation}) — see
+   * the `NOTE:` there for why that case is self-healing without it.
    */
   beforeRedrive?: () => Promise<void> | void;
 }
@@ -886,9 +930,9 @@ export interface RelayReservationSupervisor {
    * awaiting caller is never left hanging.
    */
   readonly firstAttempt: Promise<void>;
-  /** True while a drive is in flight. */
+  /** True while a drive OR a renewal is in flight — the two are serialized, never concurrent. */
   readonly driving: boolean;
-  /** Epoch ms of the next scheduled tick; `null` while a drive is running. */
+  /** Epoch ms of the next scheduled tick; `null` while a drive or a renewal is running. */
   readonly retryAtMs: number | null;
   /** Reason the last drive produced no reservation; `null` once one is held. */
   readonly lastError: string | null;
@@ -913,12 +957,27 @@ export interface RelayReservationSupervisor {
  * relay restart left a browser tab undialable until the user reloaded the page.
  *
  * Per tick:
- *  - a reservation is held → reset the backoff, clear the error, re-check in
- *    `checkMs`. No drive: a healthy node must not re-request every few seconds.
+ *  - a reservation is held and no renewal is due → reset the backoff, clear the
+ *    error, re-check in `checkMs` (or sooner, when the next renewal is nearer).
+ *    No drive: a healthy node must not re-request every few seconds.
+ *  - a reservation is held and a renewal IS due → run ONE
+ *    {@link renewRelayReservation} per relay this loop holds a reservation on, then
+ *    re-check. Still held → the healthy path above. No longer held, because the
+ *    relay refused and libp2p withdrew the address → drive at once, with no
+ *    backoff: the refusal is already the evidence a backoff would have waited for.
  *  - otherwise → un-poison the reservation store's relay filter (see
  *    {@link clearRelayFilterEntry}) and run ONE {@link driveRelayReservation}.
  *    If that lands a reservation, rejoin the healthy path above; if not, sleep
  *    the current backoff and double it up to `maxBackoffMs`.
+ *
+ * The renewal arm exists because "held" is a LOCAL fact — the node's own advertised
+ * circuit addrs — and says nothing about whether the relay still keeps the slot. A
+ * relay can forget a reservation while the connection to it stays open, and then
+ * every tick says "held", nothing is requested, and the node stays undialable
+ * through that relay until the connection drops (gotchoices/sereus#64). The renewal is
+ * what asks the relay itself. Its clock starts when a drive lands the reservation
+ * or a tick first finds one held, and restarts after every renewal whatever the
+ * outcome; a drive clears it, so whatever that drive lands gets a fresh clock.
  *
  * "Held" is judged PER RELAY — a circuit addr through one of `addrs`' relays
  * ({@link circuitMultiaddrsVia}) — so several loops over one node, one relay each
@@ -979,6 +1038,104 @@ export function clearRelayFilterEntry(store: RelayReservationStoreLike, addr: st
   }
 }
 
+/**
+ * Make the reservation store re-send its RESERVE for the reservation it holds on `relayPeerId`,
+ * so the RELAY's own record is what decides whether the slot is still there — the question the
+ * node's advertised addrs cannot answer.
+ *
+ * Never throws. Resolves `null` once the store renewed the reservation, otherwise the reason it
+ * did not — including that the store holds no reservation on this relay, in which case nothing
+ * is requested. Takes no signal, because `addRelay` accepts none; a caller with a deadline races
+ * it ({@link renewOneReservation}).
+ *
+ * WHY ZEROING `expire` IS THE ROUTE IN, read from `@libp2p/circuit-relay-v2` 4.2.13's
+ * `transport/reservation-store.ts`. `addRelay` on a peer the store already holds a reservation
+ * for, whose original connection is still open, and whose `expire` is more than its
+ * `REFRESH_WINDOW` (10 min) away, returns that entry WITHOUT touching the network — so a plain
+ * `addRelay` cannot repair a relay that forgot the reservation. Anything else refreshes in place:
+ * the still-connected reservation stays advertised, a fresh RESERVE goes over the open
+ * connection, the entry's pending-slot id is reused (so a `'discovered'` renewal never meets
+ * `HadEnoughRelaysError`, whose free-slot check an existing entry skips), libp2p's own refresh
+ * timer is re-armed, the keep-alive tag is renewed, and `relay:created-reservation` is
+ * dispatched. If that RESERVE fails, the `catch` removes the entry, which withdraws the address —
+ * the truth at that point, and the signal the supervisor turns into an immediate re-drive.
+ *
+ * Writing `expire` mutates a libp2p-owned object, which is safe for a bounded reason: `expire` is
+ * read only by that refresh-window check, a successful refresh replaces the entry with the
+ * relay's new expiry, and if `addRelay` throws before its queued job runs the zero simply stays,
+ * which only means the next request refreshes too. On the relay side
+ * (`server/reservation-store.ts`, `reserve`) a RESERVE from a peer that holds a reservation
+ * resets its lifetime and one from a peer it forgot creates a new one, so any RESERVE that
+ * reaches the relay repairs it.
+ *
+ * NOTE: `RelayReservationSupervisorOptions.beforeRedrive` is deliberately NOT run before this. A
+ * strand node uses that hook to re-announce its delegate peer id to a party-run relay, and the
+ * event that drops those in-memory grants — a relay restart — also drops the connection, which
+ * is the DRIVE path. A party-run relay that forgot a reservation without restarting still holds
+ * the grant. If a renewal against such a relay is refused anyway, the refusal withdraws the
+ * address and the normal re-drive announces before dialing, so that case is self-healing.
+ */
+async function renewRelayReservation(
+  store: RelayReservationStoreLike,
+  relayPeerId: PeerId
+): Promise<string | null> {
+  if (typeof store.getReservation !== 'function') {
+    return 'the reservation store has no getReservation() — libp2p internals moved?';
+  }
+  try {
+    const held = store.getReservation(relayPeerId);
+    if (held === undefined) {
+      return `the store holds no reservation on ${relayPeerId} to renew`;
+    }
+    held.expire = 0n;
+    await store.addRelay(relayPeerId, 'discovered');
+    return null;
+  } catch (err) {
+    return `relay reservation renewal on ${relayPeerId} failed: ${describeThrown(err)}`;
+  }
+}
+
+/**
+ * One {@link renewRelayReservation}, bounded by `deadline` and by `signal`.
+ *
+ * Raced rather than passed a signal, for the same reason {@link requestOneReservation} races:
+ * `addRelay` accepts none and runs on libp2p's own (much longer) reservation timeout. The wait is
+ * {@link delay}, not a bare `setTimeout`, so the losing timer is cleared instead of holding a
+ * Node process open for the rest of the deadline.
+ *
+ * NOTE: at the deadline libp2p's refresh is still running, with the address still advertised. If
+ * it later fails, libp2p withdraws the address and the supervisor's next liveness tick re-drives,
+ * so an abandoned renewal costs a check interval, not a reservation. Reasoned from the store's
+ * code, not measured.
+ */
+async function renewOneReservation(
+  store: RelayReservationStoreLike,
+  relay: ConnectedRelay,
+  deadline: number,
+  signal?: AbortSignal
+): Promise<string | null> {
+  const waitOver = new AbortController();
+  const unlink = linkAbort(signal, waitOver);
+  try {
+    const outcome = await Promise.race([
+      renewRelayReservation(store, relay.peerId),
+      // Annotated so the sentinel keeps its unique-symbol type: a widened `symbol` would make
+      // the check below unable to narrow the renewal's own `string | null` back out.
+      delay(Math.max(0, deadline - Date.now()), waitOver.signal).then((): typeof WAIT_OVER => WAIT_OVER)
+    ]);
+    if (outcome !== WAIT_OVER) {
+      return outcome;
+    }
+    if (aborted(signal)) {
+      return `relay reservation renewal on ${relay.addr} was cancelled`;
+    }
+    return `relay reservation renewal on ${relay.addr} did not complete before the deadline`;
+  } finally {
+    unlink();
+    waitOver.abort();
+  }
+}
+
 /** The self-rescheduling loop behind {@link superviseRelayReservation}. */
 class RelayReservationLoop implements RelayReservationSupervisor {
   readonly firstAttempt: Promise<void>;
@@ -986,7 +1143,10 @@ class RelayReservationLoop implements RelayReservationSupervisor {
   private readonly checkMs: number;
   private readonly minBackoffMs: number;
   private readonly maxBackoffMs: number;
+  private readonly renewMs: number;
   private backoffMs: number;
+  /** When the held reservation is next renewed; `null` while this loop holds none. */
+  private nextRenewAtMs: number | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** Tripped by {@link stop}; the only thing that cancels a drive of this loop's. */
   private readonly cancel = new AbortController();
@@ -1011,6 +1171,7 @@ class RelayReservationLoop implements RelayReservationSupervisor {
       this.minBackoffMs,
       opts.maxBackoffMs ?? DEFAULT_RELAY_MAX_BACKOFF_MS
     );
+    this.renewMs = Math.max(1, opts.renewMs ?? DEFAULT_RELAY_RENEW_MS);
     this.backoffMs = this.minBackoffMs;
     this.firstAttempt = new Promise((resolve) => {
       this.settleFirstAttempt = resolve;
@@ -1052,9 +1213,30 @@ class RelayReservationLoop implements RelayReservationSupervisor {
     }
     this.nextTickAtMs = null;
     if (this.reservationHeld()) {
-      this.onReservationHeld();
-      return;
+      if (!this.renewalDue()) {
+        this.onReservationHeld();
+        return;
+      }
+      await this.renewOnce();
+      if (this.stopped) {
+        return;
+      }
+      if (this.reservationHeld()) {
+        this.onReservationHeld();
+        return;
+      }
+      // The relay refused the renewal and libp2p withdrew the address. The refusal is
+      // already the evidence a backoff would have waited for, so fall through and ask
+      // again at once.
     }
+    await this.driveAndSettle();
+  }
+
+  /** One drive, plus the reschedule its outcome calls for. */
+  private async driveAndSettle(): Promise<void> {
+    // Whatever this drive lands is a FRESH reservation, so its renewal clock starts when
+    // it lands rather than carrying over the lost reservation's.
+    this.nextRenewAtMs = null;
     await this.driveOnce();
     if (this.stopped) {
       return;
@@ -1076,12 +1258,98 @@ class RelayReservationLoop implements RelayReservationSupervisor {
     return circuitMultiaddrsVia(this.node, this.addrs).length > 0;
   }
 
-  /** Healthy tick: nothing to request, so only reset and re-check later. */
+  /**
+   * Healthy tick: nothing to request, so only reset and re-check later — or sooner than
+   * `checkMs`, when the next renewal falls inside it.
+   */
   private onReservationHeld(): void {
     this.backoffMs = this.minBackoffMs;
     this.failure = null;
     this.settleFirst();
-    this.schedule(this.checkMs);
+    const renewAtMs = this.nextRenewAtMs ?? this.armRenewal();
+    this.schedule(Math.min(this.checkMs, Math.max(0, renewAtMs - Date.now())));
+  }
+
+  private renewalDue(): boolean {
+    return this.nextRenewAtMs !== null && Date.now() >= this.nextRenewAtMs;
+  }
+
+  /** Start the renewal clock over from now; returns when the next renewal falls due. */
+  private armRenewal(): number {
+    const renewAtMs = Date.now() + jittered(this.renewMs, RELAY_RENEW_JITTER);
+    this.nextRenewAtMs = renewAtMs;
+    return renewAtMs;
+  }
+
+  /**
+   * One renewal pass, logged. Sets the same `inFlight` flag a drive does, so drives and
+   * renewals stay serialized per supervisor, and restarts the renewal clock afterwards
+   * whatever the outcome — a relay that keeps refusing must not be asked in a hot loop.
+   */
+  private async renewOnce(): Promise<void> {
+    this.inFlight = true;
+    try {
+      const { asked, failure } = await this.renewHeldReservations();
+      if (this.stopped) {
+        return;
+      }
+      if (failure !== null) {
+        log('Relay reservation renewal did not land (%o): %s', this.addrs, failure);
+      } else if (asked === 0) {
+        // Reported apart from a renewal, because it means the opposite: the reservation
+        // reads as held and yet NO relay of this loop's was asked. That is the shape
+        // gotchoices/sereus#64 wore, so a log saying "renewed" would hide it.
+        log('Relay reservation renewal asked nobody (%o): the store holds no reservation on these relays', this.addrs);
+      } else {
+        log('Renewed %d relay reservation(s) (%o)', asked, this.addrs);
+      }
+    } catch (err) {
+      // `renewHeldReservations` is fail-soft by contract; as in `driveOnce`, the loop has to
+      // survive that contract breaking rather than stop rescheduling.
+      log('Relay reservation renewal threw, which it should not: %s', describeThrown(err));
+    } finally {
+      this.inFlight = false;
+      if (!this.stopped) {
+        this.armRenewal();
+      }
+    }
+  }
+
+  /**
+   * Renew every reservation this loop's relays hold, under ONE deadline (the drive's
+   * `timeoutMs`). Never throws. `asked` counts the relays actually asked and `failure` is the
+   * first refusal, `null` when none of them refused — so `asked: 0, failure: null` is "nobody
+   * was asked", which {@link renewOnce} must not report as a renewal.
+   *
+   * A relay the store holds NO reservation on is skipped, not a failure: a control node
+   * supervising three relays holds one reservation, so two of its entries answer that way on
+   * every pass. A pass fails only when a relay it did hold a reservation on refused.
+   */
+  private async renewHeldReservations(): Promise<{ asked: number; failure: string | null }> {
+    const transport = findCircuitRelayTransport(this.node);
+    if (transport === null) {
+      return {
+        asked: 0,
+        failure: 'node has no circuit-relay transport — add circuitRelayTransport() to its transports'
+      };
+    }
+    const store = transport.reservationStore;
+    const deadline = Date.now() + (this.opts.timeoutMs ?? DEFAULT_RELAY_RESERVE_TIMEOUT_MS);
+    let asked = 0;
+    let firstError: string | null = null;
+    for (const addr of this.addrs) {
+      // An addr naming no relay peer id cannot be renewed — the store is keyed by peer id and
+      // the connection is the only other place to read one. That addr is already the case
+      // `circuitMultiaddrsVia` falls back for, so "held" through it was approximate anyway.
+      const peerId = relayPeerOf(addr);
+      if (peerId === null || !store.hasReservation(peerId)) {
+        continue;
+      }
+      asked += 1;
+      const reason = await renewOneReservation(store, { addr, peerId }, deadline, this.cancel.signal);
+      firstError ??= reason;
+    }
+    return { asked, failure: firstError };
   }
 
   private async driveOnce(): Promise<void> {

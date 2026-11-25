@@ -1,9 +1,9 @@
 import debug from 'debug';
 import { CadreNode, type CadreNodeConfig, type StorageConfig } from '@serfab/cadre-core';
-import { nodeDefaultTransports } from '@serfab/cadre-core/node-default-transports';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { resolveConfig, type ResolvedConfig } from '../config/index.js';
+import { resolveNodeNetwork } from './node-network.js';
 import { partyOnRecord } from './claim-record.js';
 import { loadOwnerKeyFile } from './owner-key-file.js';
 
@@ -100,15 +100,25 @@ function openFileStorage(path: string, quotaBytes: number | undefined): NodeStor
  * `partyId` is the party the node serves, which on a claimed node is the claim record's rather
  * than the config's placeholder (`partyOnRecord`), so it is passed in rather than read off the
  * config.
+ *
+ * The `network` block is resolved exactly as `cadre start` resolves it (`node-network.ts`), so a
+ * one-shot command dials the same way the long-running node does — which is also what makes a
+ * misconfigured `network.webrtc` fail the first command an operator runs rather than only the
+ * start. Async for that resolution alone.
  */
-export function oneShotNodeConfig(config: ResolvedConfig, partyId: string, storage: NodeStorage): CadreNodeConfig {
+export async function oneShotNodeConfig(
+  config: ResolvedConfig,
+  partyId: string,
+  storage: NodeStorage,
+): Promise<CadreNodeConfig> {
   return {
     privateKey: config.privateKey,
     controlNetwork: { ...config.controlNetwork, partyId },
-    profile: config.profile,
+    nodeClass: config.nodeClass,
+    roles: config.roles,
     strandFilter: config.strandFilter,
     storage: storage.config,
-    network: { ...config.network, defaultTransports: nodeDefaultTransports },
+    network: await resolveNodeNetwork(config.network),
     hibernation: config.hibernation,
     strandWatchInterval: config.strandWatchInterval,
   };
@@ -136,7 +146,7 @@ export async function withConnectedNode(
   // Read before the node starts, so an owner key file that cannot be read fails the command first.
   const ownerSigner = await loadOwnerKeyFile(config.ownerKeyFile);
   const storage = openNodeStorage(config.storage);
-  const node = new CadreNode(oneShotNodeConfig(config, partyId, storage));
+  const node = new CadreNode(await oneShotNodeConfig(config, partyId, storage));
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const connected = new Promise<void>((resolve, reject) => {

@@ -32,7 +32,7 @@ describe('CadreNode announceAddrs warning', () => {
         partyId: 'announce-addrs-warning-' + Math.random().toString(36).slice(2),
         bootstrapNodes: []
       },
-      profile: 'transaction',
+      nodeClass: 'device',
       ...(network ? { network } : {})
     };
   }

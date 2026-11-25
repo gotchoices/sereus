@@ -250,7 +250,7 @@ export class HostedNodeService {
       id,
       join,
       partyId: invitation ? invitation.decoded.partyId : PLACEHOLDER_PARTY,
-      profile: 'storage',
+      nodeClass: 'server',
       status: 'spawning',
       createdAt: nowIso,
       updatedAt: nowIso,
@@ -776,7 +776,7 @@ function decodeInvitation(encoded: string): DecodedInvitation {
 }
 
 /**
- * The spawn a record describes: its party, profile, and how it gets into its cadre. Used
+ * The spawn a record describes: its party, node class, and how it gets into its cadre. Used
  * by `join` and `respawn` alike.
  *
  * An invitation is passed until the node has joined, and never after: a joined node is a
@@ -787,7 +787,7 @@ function spawnRequestFor(node: HostedNode): HostedSpawnRequest {
   const base: HostedSpawnRequest = {
     containerId: node.id,
     partyId: node.partyId,
-    profile: node.profile,
+    nodeClass: node.nodeClass,
   };
   if (node.join.kind === 'claim') return { ...base, claimSecret: node.join.secret };
   return node.status === 'joined' ? base : { ...base, invitation: node.join.encoded };

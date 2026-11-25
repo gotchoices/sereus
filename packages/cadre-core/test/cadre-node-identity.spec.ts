@@ -16,7 +16,7 @@ import type { CadreNodeConfig } from '../src/types.js';
 function makeConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
 	return {
 		controlNetwork: { partyId: 'identity-test-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
-		profile: 'transaction',
+		nodeClass: 'device',
 		...overrides
 	};
 }

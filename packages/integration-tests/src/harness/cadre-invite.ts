@@ -38,8 +38,8 @@ export interface PinningMemberOptions {
 	/** The member's `network.controlCohort.reconcileMs`; on a pinning member that timer is what runs its membership refresh. */
 	reconcileMs?: number;
 	/**
-	 * Run a storage replica of every strand the party lists (`hostUnclaimedStrands`), as the
-	 * production storage profile does. Default false: the member runs no strand at all.
+	 * Run a storage replica of every strand the party lists (`hostUnclaimedStrands`), as a
+	 * production server node does. Default false: the member runs no strand at all.
 	 */
 	hostUnclaimedStrands?: boolean;
 	/** The member's strand watcher backstop; meaningful only with {@link hostUnclaimedStrands}. */
@@ -51,14 +51,14 @@ export interface PinningMemberOptions {
 }
 
 /**
- * An always-on member: `storage` profile on a WebSocket listen address, pinning `ownerKey` as an
+ * An always-on member: `nodeClass: 'server'` on a WebSocket listen address, pinning `ownerKey` as an
  * operator would (`--pin-owner-key`), with the seed handler `cadre start --listen-for-seeds`
  * registers.
  */
 export async function startPinningMember(partyId: string, ownerKey: string, options: PinningMemberOptions = {}): Promise<InviteMember> {
 	const key = options.key ?? await generateKeyPair('Ed25519');
 	const node = new CadreNode(controlNodeConfig({
-		partyId, privateKey: key, profile: 'storage', pinnedOwnerKeys: [ownerKey],
+		partyId, privateKey: key, nodeClass: 'server', pinnedOwnerKeys: [ownerKey],
 		...(options.hostUnclaimedStrands
 			? { strandFilter: 'all', hostUnclaimedStrands: true }
 			: { strandFilter: 'none' }),
@@ -99,7 +99,7 @@ export async function admitMember(owner: CadreNode, member: InviteMember, timeou
  */
 export async function buildPartyDevice(partyId: string, key?: PrivateKey): Promise<CadreNode> {
 	return new CadreNode(controlNodeConfig({
-		partyId, privateKey: key ?? await generateKeyPair('Ed25519'), profile: 'transaction', listenAddrs: [], strandFilter: 'none',
+		partyId, privateKey: key ?? await generateKeyPair('Ed25519'), nodeClass: 'device', listenAddrs: [], strandFilter: 'none',
 	}));
 }
 

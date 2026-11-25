@@ -115,7 +115,7 @@ describe('Two-node strand-unpublish sibling convergence', () => {
 		let A: CadreNode | undefined;
 		let B: CadreNode | undefined;
 		try {
-			// ── Phase 0 — bring-up. A: owner + writer (storage profile); B: plain
+			// ── Phase 0 — bring-up. A: owner + writer (a server node); B: plain
 			// reader, vouched by A so its pull streams pass A's per-stream control-DB
 			// gate. Connect BEFORE the publish and before the removal.
 			({ A, B } = await bootPair('unpublish', 'ctrl', { strandWatchMs: STRAND_WATCH_MS }));

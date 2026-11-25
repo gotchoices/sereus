@@ -5,7 +5,7 @@
  * Machines:
  * - **O**, the owner: phone-shaped (`buildPhoneOwner`: no listen address, a 2 s control-cohort
  *   reconcile), its own genesis owner key. Online throughout.
- * - **M**, the only always-on member: `storage` profile, listening on WebSocket, admitted by O
+ * - **M**, the only always-on member: a server node, listening on WebSocket, admitted by O
  *   the owner-online way, pinning O's key and nothing else. O listens nowhere, so M's addresses
  *   are the only ones the grant names.
  * - **H**, the holder: a node started in the party on an empty store, never admitted, standing

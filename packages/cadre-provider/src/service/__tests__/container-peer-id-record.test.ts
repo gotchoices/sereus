@@ -14,7 +14,7 @@ function pendingContainer(overrides: Partial<Container> = {}): Container {
     id: 'ctr_1',
     customerId: 'cust-1',
     partyId: 'party-1',
-    profile: 'transaction',
+    nodeClass: 'device',
     status: 'pending',
     resources: {},
     tags: {},
@@ -27,7 +27,7 @@ function pendingContainer(overrides: Partial<Container> = {}): Container {
 const provisionRequest: CreateContainerRequest = {
   customerId: 'cust-1',
   partyId: 'party-1',
-  profile: 'transaction',
+  nodeClass: 'device',
   join: { kind: 'invitation', invitation: 'sereus-invite:1.x' },
 };
 

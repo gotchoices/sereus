@@ -111,7 +111,7 @@ On each run `StrandWatcher` reads the party's own `Strand` rows, the party's `Jo
 
 - **The app has registered an sApp config for it** (through `addStrand` or `foundStrand`): the node launches the strand.
 - **No config is registered:** the node emits `strand:discovered` once, so the app can decide whether to claim the strand with `addStrand`.
-- **No config, on a node that hosts unclaimed strands** (`hostUnclaimedStrands`, the default for the `storage` profile): the node also launches the strand as a **storage replica**. A replica runs the strand's network node, storage and `Strand` schema without the app's schema, so an always-on machine keeps a copy of every strand its party runs.
+- **No config, on a node that hosts unclaimed strands** (`hostUnclaimedStrands`, the default for the `server` node class): the node also launches the strand as a **storage replica**. A replica runs the strand's network node, storage and `Strand` schema without the app's schema, so an always-on machine keeps a copy of every strand its party runs.
 
 When a row disappears, the node stops that strand's instance and emits `strand:stopped`.
 
@@ -125,16 +125,31 @@ The watcher runs 100 ms after it starts and then whenever `CadreControl.Strand` 
 
 - **A failed launch** is retried after a delay that starts at 5 seconds, doubles per failure, and stops growing at 5 minutes. Each failed attempt emits `strand:error`. Attempts never stop, because the usual cause is a network or storage fault that can last a long time.
 - **A failed read** of the control tables is retried after a delay that grows from 5 to 60 seconds. A table's change subscription starts at its first successful read, so without this retry a machine whose first read failed would hear nothing until the backstop.
+- **A launch with nobody to answer for the strand's blocks** keeps its runtime up and retries only the database phase, rather than failing ([A launch with nobody to answer waits](#a-launch-with-nobody-to-answer-waits)).
 - **A launch that can never succeed** is not retried: an invalid strand id, or an app schema that cannot apply to the tables the strand holds ([A schema that can never apply here is not retried](app-schema.md#a-schema-that-can-never-apply-here-is-not-retried)).
+
+#### A launch with nobody to answer waits
+
+A launch whose database cannot be built because no machine that can answer for the strand's blocks is reachable does not fail. The strand's network node, its connections and its background loops stay up, the instance reports `'syncing'` with no database, and the database phase alone is retried every 5 seconds on that same node. Failing instead would drop the strand until the watcher rebuilt the whole runtime on the doubling delay above, and `addStrand` would reject with a raw Optimystic error rather than the retryable one below.
+
+Three launches reach this state, for the same reason in three shapes:
+
+- **A joining machine whose seed peer has not answered.** Optimystic will not rule a block absent while a configured seed peer is unanswered, so such a machine cannot build even the schema catalog ([Joining: no writes before the first sync](formation.md#joining-no-writes-before-the-first-sync)).
+- **A founder whose cluster is unreachable.** Its membership writes run inside the same database open, and fail the same way. Normally a founder has no seed peer and commits alone, so this is a founder that was given one.
+- **A machine that holds no strand blocks, with no serving machine reachable.** Its own cluster is empty, so every block its launch touches resolves no coordinator at all — the schema catalog it opens first, and a founding machine's membership rows ([A node that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks)).
+
+Founding waits rather than being refused, because [founding is safe to repeat](#founding-is-safe-to-repeat): each attempt opens a fresh database and re-runs the bootstrap, which skips the rows already written. A party whose only machine holds no strand blocks therefore retries for as long as it has no serving machine. That is what the state means — one appearing fixes it — and refusing would be a per-machine rule a party works around by founding from a different machine, which is the better deployment anyway: the always-on machine founds the strand and the phones run it as clients.
+
+What the app sees is the contract a gated joiner gets. `addStrand` waits, because the instance has no database, and rejects with the retryable `StrandAwaitingFirstSyncError` after `CadreNodeConfig.strandFirstSync.timeoutMs`. Nothing is torn down, and the same call made again once a machine is reachable completes the attach.
 
 ### What a launch does
 
 A launch performs these steps in order (`CadreNode.launchStrand`, `StrandInstanceManager.buildStrandRuntime`):
 
 1. Derives the strand node's transport key, and resolves the addresses of this party's other machines that run the strand ([strand-address resolution](../network/strand-addressing.md#strand-address-resolution)).
-2. Creates the strand's libp2p node under the network name `strand-<strand id>`.
-3. Opens the strand database and applies the `Strand` schema, then the app schema if the app supplied one.
-4. Runs the founder bootstrap on the founding machine. On any other machine it withholds the database from the app until the first sync completes ([Joining: no writes before the first sync](formation.md#joining-no-writes-before-the-first-sync)).
+2. Creates the strand's libp2p node under the network name `strand-<strand id>`: a node that stores the strand's blocks, or a client that stores none of them on a machine whose `strandCohortMember` role is off ([A node that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks)).
+3. Opens the strand database and applies the `Strand` schema, then the app schema if the app supplied one. On a client every one of those writes goes to a serving machine.
+4. Runs the founder bootstrap on the founding machine. On any other machine it withholds the database from the app until the first sync completes ([Joining: no writes before the first sync](formation.md#joining-no-writes-before-the-first-sync)), except on a client, whose database is published as soon as it opens.
 5. Registers the instance for [hibernation](hibernation.md) and emits `strand:started`.
 
 Launch and teardown each emit one event per instance. A launch for a strand that is already running returns the instance without a second `strand:started`, so founding emits one event even though the node's own watcher then finds the row it just published. A teardown for a strand this node never ran emits nothing.
@@ -144,6 +159,8 @@ Launch and teardown each emit one event per instance. A launch for a strand that
 Every strand database commits through Optimystic's network transactor, which commits a transaction to the cluster of nodes that hold the affected blocks. There is no separate local mode for a party that is alone, and the control database works the same way.
 
 A machine that is alone needs no second mode, because the storage engine already handles that case: on a machine that knows of no other member, the cluster for every block is the machine itself, so schema apply, reads, writes and the founder bootstrap commit with no network round trip. When other members connect, the same code path commits to the wider cluster. Being alone is a state of the cohort, handled in storage, and not a property of the strand that the application layer has to track and later change.
+
+The one machine this does not hold for is a [client that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks): it is in no cluster, its own included, so none of those four commit on it until a serving machine is reachable.
 
 Two consequences of writing alone remain. A joining machine must not write before it has received the strand's tables ([Joining: no writes before the first sync](formation.md#joining-no-writes-before-the-first-sync)), and a commit made with no other member connected is held by one machine until it reaches another ([A commit's durability](writes.md#a-commits-durability)).
 
@@ -182,6 +199,9 @@ These four mechanisms keep networks from mixing. They do not decide who may conn
 - **A consent-seated strand records no founder.** A `Strand` row seated by a joiner's consent carries no owner signature, so there is nothing trustworthy to put in `FounderPeerId`. The machine that should found such a strand must pass `founder: true` to `addStrand`, and the app must make sure only one machine does.
 - **No strand admits peers by membership.** An open strand's node accepts any peer that reaches it. A closed strand's node refuses only the machines recorded for removed members, and the read secret is not checked, so a peer that knows the strand id and reaches a serving machine can read either kind ([limits in keys.md](keys.md#limits-and-accepted-tradeoffs), [limits in membership.md](membership.md#limits-and-accepted-tradeoffs)).
 - **Without an identity key, a strand node's peer id changes at every restart.** A node configured with neither a `keyStore` nor a `privateKey` gives each strand node a random key.
+- **A client that can reach no serving machine never becomes writable, and cannot found a strand at all.** Its schema apply and founder bootstrap need a coordinator, and only a serving machine can be one, so such a launch waits instead of opening a database ([A launch with nobody to answer waits](#a-launch-with-nobody-to-answer-waits)). A party whose only machine holds no strand blocks therefore has no way to found a strand; the always-on machine founds it and the phones run it as clients.
+- **A strand whose members are all clients has no cluster anywhere**, so nothing commits and nothing can be read. FRET still seats a client in the ring, and a ring that is mostly clients leaves clusters short, so a client serves a strand with a minority of clients; a strand of tens of thousands of phones waits on Optimystic's `clients-in-the-ring-crowd-out-serving-peers`.
+- **A serving member on an older release still seats clients in its clusters.** A machine running a Sereus release before Optimystic 1.28.0 classifies a peer by the requests it sends rather than by its identify list. A strand whose members all run this release is safe; a cross-party strand with a member on an older release is not.
 
 ## Where to read next
 

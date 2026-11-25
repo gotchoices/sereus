@@ -54,12 +54,16 @@ function stubDatabase() {
 		registerCollation: [] as unknown[],
 		setDefaultVtabName: [] as unknown[],
 		setDefaultVtabArgs: [] as unknown[],
+		registerType: [] as [name: string, definition: unknown][],
 		exec: [] as unknown[],
 	};
 	return {
 		registerModule: (...a: unknown[]) => { calls.registerModule.push(a); },
 		registerFunction: (...a: unknown[]) => { calls.registerFunction.push(a); },
 		registerCollation: (...a: unknown[]) => { calls.registerCollation.push(a); },
+		registerType: (name: string, definition: unknown) => { calls.registerType.push([name, definition]); },
+		// The optimystic plugin subscribes to schema changes while it is built.
+		schemaManager: { getChangeNotifier: () => ({ addListener: () => () => {} }) },
 		setDefaultVtabName: (...a: unknown[]) => { calls.setDefaultVtabName.push(a); },
 		setDefaultVtabArgs: (...a: unknown[]) => { calls.setDefaultVtabArgs.push(a); },
 		setDefaultVtabArgsFromJson: (...a: unknown[]) => { calls.setDefaultVtabArgs.push(a); },
@@ -98,6 +102,9 @@ describe('browser bundle module shape', () => {
 		// time) we'd see zero registrations.
 		expect(db._calls.registerFunction.length).toBeGreaterThan(0);
 		expect(db._calls.registerModule.length).toBeGreaterThan(0);
+		// The optimystic plugin's column types (`blobref`): a table declaring one refuses to open
+		// where the type is unregistered, and `applyRegistrations` registers each kind by hand.
+		expect(db._calls.registerType.map(([name]) => name)).toContain('blobref');
 
 		// Confirm IndexedDB was actually touched. `fake-indexeddb/auto` installs
 		// `indexedDB` on the global. The bundle calls `openOptimysticWebDb(...)`

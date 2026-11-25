@@ -64,7 +64,7 @@ The excerpt omits starting the nodes, publishing the invitation and attaching th
 - `schemas/`: Quereus schemas. `control.qsql` (the control database), `strand.qsql` (the tables every strand carries), `chat.qsql` and `chat-simple.qsql` (sample app schemas).
 - `ops/`: tooling for operating a relay.
 - `scripts/`, `test-harness/`: release and check scripts, and test infrastructure shared across packages.
-- `tickets/`, `tess/`: the ticket workflow; see [`tess/agent-rules/tickets.md`](tess/agent-rules/tickets.md).
+- `tickets/`, `tess/`: the ticket workflow; see [`tess/agent-rules/tickets.md`](https://github.com/gotchoices/tess/blob/main/agent-rules/tickets.md).
 
 ## Contributing
 

@@ -237,7 +237,7 @@ async function foundStrandAlone(label: string, handles: LateJoinHandles): Promis
 
 	const founderKey = await generateKeyPair('Ed25519');
 	const founder = new CadreNode(controlNodeConfig({
-		partyId, privateKey: founderKey, profile: 'storage',
+		partyId, privateKey: founderKey, nodeClass: 'server',
 		strandWatchMs: STRAND_WATCH_MS, storageProvider: founderCapture.provider,
 	}));
 	handles.founder = founder;
@@ -307,7 +307,7 @@ async function enrollNewcomer(founded: FoundedStrand, handles: LateJoinHandles):
 	// so the default anchored seed policy accepts the seed rather than riding the
 	// empty-anchor carve-out.
 	const newcomer = new CadreNode(controlNodeConfig({
-		partyId, privateKey: newcomerKey, profile: 'transaction',
+		partyId, privateKey: newcomerKey, nodeClass: 'device',
 		strandWatchMs: STRAND_WATCH_MS, storageProvider: newcomerCapture.provider,
 		pinnedOwnerKeys: [ownerPublicKey],
 	}));
@@ -610,7 +610,7 @@ describe('Late cadre join: the strand follows the newcomer', () => {
 			await newcomer.stop();
 			handles.newcomer = undefined;
 			const restarted = new CadreNode(controlNodeConfig({
-				partyId: fx.partyId, privateKey: fx.newcomerKey, profile: 'transaction',
+				partyId: fx.partyId, privateKey: fx.newcomerKey, nodeClass: 'device',
 				strandWatchMs: STRAND_WATCH_MS, storageProvider: newcomerCapture.provider,
 				pinnedOwnerKeys: [fx.ownerPublicKey],
 			}));

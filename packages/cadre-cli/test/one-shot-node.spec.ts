@@ -159,7 +159,7 @@ function seedNodeConfig(partyId: string, storage: NodeStorage, privateKey: Priva
   return {
     privateKey,
     controlNetwork: { partyId, bootstrapNodes: [] },
-    profile: 'storage',
+    nodeClass: 'server',
     strandFilter: { mode: 'none' },
     storage: storage.config,
     network: { listenAddrs: [] },
@@ -253,7 +253,7 @@ function ownerCliConfig(dir: string, keyPath: string, partyId: string, blocksDir
   return writeConfig(dir, {
     identity: { keyFile: keyPath },
     controlNetwork: { partyId, bootstrapNodes: [] },
-    profile: 'storage',
+    nodeClass: 'server',
     strandFilter: 'none',
     storage: { type: 'file', path: blocksDir },
     network: { listenAddrs: [] },
@@ -267,7 +267,7 @@ describe('one-shot commands against a real solo node', () => {
       const configPath = writeConfig(dir, {
         identity: { keyFile: keyPath },
         controlNetwork: { partyId: freshPartyId('list'), bootstrapNodes: [] },
-        profile: 'transaction',
+        nodeClass: 'device',
         storage: { type: 'memory' },
         network: { listenAddrs: [] },
       });
@@ -373,7 +373,7 @@ describe('one-shot command config failures', () => {
     await withTempDir('bad-filter', async (dir) => {
       const configPath = writeConfig(dir, {
         controlNetwork: { partyId: freshPartyId('bad-filter'), bootstrapNodes: [] },
-        profile: 'transaction',
+        nodeClass: 'device',
         strandFilter: {},
         storage: { type: 'memory' },
         network: { listenAddrs: [] },
@@ -390,7 +390,7 @@ describe('one-shot command config failures', () => {
     await withTempDir('no-path', async (dir) => {
       const configPath = writeConfig(dir, {
         controlNetwork: { partyId: freshPartyId('no-path'), bootstrapNodes: [] },
-        profile: 'storage',
+        nodeClass: 'server',
         storage: { type: 'file' },
         network: { listenAddrs: [] },
       });

@@ -52,7 +52,7 @@ function bareNode(): { node: CadreNode; internals: NodeInternals } {
 			partyId: 'abandoned-write-report-' + Math.random().toString(36).slice(2),
 			bootstrapNodes: []
 		},
-		profile: 'transaction'
+		nodeClass: 'device'
 	};
 	const node = new CadreNode(config);
 	return { node, internals: node as unknown as NodeInternals };

@@ -87,7 +87,7 @@ Optimystic's cluster policy carries two size declarations with different jobs.
 
 **What it costs.** The same number feeds Optimystic's commit freshness rule: a local commit lets later reads of the block skip the cluster consult only when its approvals exceed half of `max(observed cluster, declared size)`. On a party of three or more with fewer than half its machines awake, a commit does not qualify, and the next read of each such block costs one cluster consult per read-repair window.
 
-**A strand declares nothing.** A strand runs only on machines whose app registered it, plus storage-profile machines that host it as a replica. The party's machine count overstates that, and overstating makes repair impossible. No authenticated count of the machines serving one strand exists, so every strand runs the base policy.
+**A strand declares nothing.** A strand runs only on machines whose app registered it, plus always-on machines that host it as a replica. The party's machine count overstates that, and overstating makes repair impossible. No authenticated count of the machines serving one strand exists, so every strand runs the base policy.
 
 ### The cluster policy
 
@@ -165,8 +165,8 @@ The default policy retries:
 
 ### What is never retried, and why
 
-- **A rejection.** No matcher claims a constraint or authorization failure, or a shortfall that counts a rejection. Presenting it again would present a spent signature to a cluster that already refused it.
-- **An indeterminate commit.** The "some peers did not complete" error is also raised from the commit phase, where the write may have committed with only the reply lost. Running the body again would turn a success into a constraint failure. The classifier tells the phases apart by the error's text, so a rewording upstream disables the retry and never makes it unsafe.
+- **A rejection.** Nothing in the classifier claims a constraint or authorization failure, or a shortfall that counts a rejection. Presenting it again would present a spent signature to a cluster that already refused it. The shortfall's vote count is read off the error, so this holds however the cluster words the failure.
+- **An indeterminate commit.** The "some peers did not complete" error is also raised from the commit phase, where the write may have committed with only the reply lost. Running the body again would turn a success into a constraint failure. The classifier reads which phase raised it off a field on the error, so what fails closed is the error class not arriving at all — a wrapper that drops the cause disables the retry and never makes it unsafe.
 - **A write that may be partly stored.** A spent sync retry budget (which is also how contention on a block ends), a torn write not marked final and a partial commit are declined by type.
 - **A lost update, by default.** A body that signs over a row it read outside the lock would present a record the other writer has already superseded.
 

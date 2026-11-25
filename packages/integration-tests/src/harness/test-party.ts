@@ -7,7 +7,8 @@
 
 import debug from 'debug';
 import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
-import { ControlDatabase, CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH } from '@serfab/cadre-core';
+import { ControlDatabase, CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, NODE_ROLE_PRESETS } from '@serfab/cadre-core';
+import type { NodeClass } from '@serfab/cadre-core';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { allocatePort, releasePorts } from './port-allocator.js';
@@ -29,7 +30,7 @@ interface Libp2pNodeWithRepo extends Libp2p {
 async function createTestNode(
   networkName: string,
   bootstrapNodes: string[],
-  profile: 'transaction' | 'storage'
+  nodeClass: NodeClass
 ): Promise<TestCadreNode> {
   const port = await allocatePort();
 
@@ -40,7 +41,9 @@ async function createTestNode(
     bootstrapNodes,
     networkName,
     storage: () => new MemoryRawStorage(),
-    fretProfile: profile === 'storage' ? 'core' : 'edge',
+    // The class's own `overlayTier` role, not a second copy of the mapping: a bare harness node
+    // must take the tier `CadreNode` would have given it (`cadre-core/src/node-roles.ts`).
+    fretProfile: NODE_ROLE_PRESETS[nodeClass].overlayTier,
     // These are CONTROL-network nodes (networkName `control-<partyId>`), so they must
     // match what CadreNode configures for its control node: a narrower cohort here
     // would leave a party member dependent on read repair, which cannot converge at a
@@ -77,7 +80,7 @@ async function createTestNode(
     peerId,
     port: actualPort,
     multiaddrs,
-    profile,
+    nodeClass,
     coordinatedRepo: node.coordinatedRepo
   };
 }
@@ -86,7 +89,7 @@ async function createTestNode(
  * Create a test party with owner node and optional drones
  */
 export async function createTestParty(options: CreatePartyOptions): Promise<TestParty> {
-  const { name, droneCount = 0, droneProfile = 'storage' } = options;
+  const { name, droneCount = 0, droneNodeClass = 'server' } = options;
   
   // Generate unique party ID
   const partyId = `party-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -98,7 +101,7 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   log('Generated owner key: %s', ownerKey.publicKey);
 
   // Create owner node first (no bootstrap - it IS the bootstrap)
-  const ownerNode = await createTestNode(networkName, [], 'transaction');
+  const ownerNode = await createTestNode(networkName, [], 'device');
   
   // Get bootstrap addresses from owner node
   const bootstrapAddrs = ownerNode.multiaddrs;
@@ -110,7 +113,7 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   const droneNodes: TestCadreNode[] = [];
   for (let i = 0; i < droneCount; i++) {
     log('Creating drone node %d/%d for party %s', i + 1, droneCount, name);
-    const drone = await createTestNode(networkName, bootstrapAddrs, droneProfile);
+    const drone = await createTestNode(networkName, bootstrapAddrs, droneNodeClass);
     droneNodes.push(drone);
   }
   

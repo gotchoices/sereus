@@ -21,7 +21,10 @@ const HEALTH: HealthStatus = {
     running: true,
     peerId: '12D3KooWLivePeer',
     partyId: 'party-live',
-    profile: 'transaction',
+    nodeClass: 'device',
+    // A device that was told to stay on: the overridden role and the three presets, so the
+    // report is checked against roles that are not all one class's defaults.
+    roles: { alwaysOn: true, overlayTier: 'edge', reactivity: 'forwarder', strandCohortMember: true },
     strands: { total: 4, syncing: 1, active: 1, idle: 1, hibernating: 1 },
     connectionPaths: {
       total: 0,
@@ -47,7 +50,8 @@ const HEALTH: HealthStatus = {
 const CONFIG: ConfigSummary = {
   config: 'cadre.yaml',
   partyId: 'party-live',
-  profile: 'transaction',
+  nodeClass: 'device',
+  roles: { alwaysOn: true, overlayTier: 'edge', reactivity: 'forwarder', strandCohortMember: true },
   bootstrapNodes: 2,
   strandFilter: 'all',
   hibernation: false,
@@ -109,7 +113,8 @@ describe('buildStatusReport', () => {
       expect(report.runtime.multiaddrs).toEqual(HEALTH.multiaddrs);
       expect(report.runtime.strands).toEqual({ total: 4, syncing: 1, active: 1, idle: 1, hibernating: 1 });
       expect(report.runtime.partyId).toBe('party-live');
-      expect(report.runtime.profile).toBe('transaction');
+      expect(report.runtime.nodeClass).toBe('device');
+      expect(report.runtime.roles).toEqual(HEALTH.node.roles);
     }
   });
 
@@ -144,6 +149,7 @@ describe('formatStatusReport', () => {
     expect(text).toContain('12D3KooWLivePeer');
     expect(text).toContain('/ip4/10.0.0.5/tcp/4001');
     expect(text).toContain('total=4 syncing=1 active=1 idle=1 hibernating=1');
+    expect(text).toContain('alwaysOn=true overlayTier=edge reactivity=forwarder strandCohortMember=true');
   });
 
   it('renders a clearly-labeled "not reachable" line (never "Running: false") when unreachable', async () => {

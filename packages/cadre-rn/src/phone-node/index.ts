@@ -29,6 +29,7 @@ export {
 	serializeSavedStart,
 	StrandMovePendingError,
 	StrandsNeedOwnerJoinError,
+	webrtcListenAddrs,
 	wireJoinedOwnerKey,
 	type DissolveFormerPartyOptions,
 	type EdgeJoinProgress as PhoneJoinProgress,

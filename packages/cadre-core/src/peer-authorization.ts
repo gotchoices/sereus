@@ -446,7 +446,9 @@ export function verifyInvitationAdmission(
 
 /**
  * Canonical digest a machine signs to state its own peer id in one strand, with its own
- * identity key rather than an owner key. SQL mirror: `StrandPeer.Authorized`.
+ * identity key rather than an owner key. The field list follows the row's role
+ * (`strandPeerRowFields`), so a stored row signed over the other form fails
+ * {@link verifyStrandPeerRow} and is dropped like any forged row. SQL mirror: `StrandPeer.Authorized`.
  */
 export function strandPeerAddDigest(partyId: string, row: StrandPeerSignedFields): string {
   return taggedDigest('CadreControl.StrandPeer', 'add', partyId, strandPeerRowFields(row));

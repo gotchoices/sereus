@@ -25,7 +25,7 @@ CADRE_STARTUP_TOKEN=dev node <repo>/packages/cadre-cli/dist/bin/cadre.js start -
 
 `enroll create` is needed once: it writes the identity `drone.key`, without which the drone would have a new peer id at every start and `--owner` would be refused. `--owner` creates `owner.key` and founds the party with it. `--admin-port` opens the loopback channel the next step uses; `CADRE_STARTUP_TOKEN` is its password and may be any text. In PowerShell, set it with `$env:CADRE_STARTUP_TOKEN = "dev"` before each command.
 
-`drone.cadre.yaml` sets party id `reference-chat-party`, the `storage` profile, `strandFilter: all`, a TCP listener on port 4001, a WebSocket listener on port 4002 and `enableRelay: true`. The phone can only dial WebSocket addresses, so port 4002 is the one it uses. The console prints:
+`drone.cadre.yaml` sets party id `reference-chat-party`, the `server` node class, `strandFilter: all`, a TCP listener on port 4001, a WebSocket listener on port 4002 and `enableRelay: true`. The phone can only dial WebSocket addresses, so port 4002 is the one it uses. The console prints:
 
 ```
 ✓ Connected to control network
@@ -82,7 +82,7 @@ Requirements: an Android emulator running with the development build installed, 
 
 `packages/reference-app-rn/scripts/run-e2e.mjs`:
 
-1. Starts the fixture, `test-fixture/start.mjs`: a `CadreNode` with in-memory storage, the `storage` profile, `strandFilter: all`, a WebSocket listener on `127.0.0.1:4002`, and an HTTP sidecar on port 4080 that lets a test read and write the drone's strand databases.
+1. Starts the fixture, `test-fixture/start.mjs`: a `CadreNode` with in-memory storage, the `server` node class, `strandFilter: all`, a WebSocket listener on `127.0.0.1:4002`, and an HTTP sidecar on port 4080 that lets a test read and write the drone's strand databases.
 2. Waits for `GET http://127.0.0.1:4080/health`.
 3. Reads `test-fixture/test-data.json`, which the fixture writes: the id of a strand the fixture founded, an owner grant and a machine invitation, both valid for one hour and both naming the fixture's WebSocket listener as the member to dial.
 4. Runs `adb reverse` for ports 4002 and 4080, so the emulator's `127.0.0.1` reaches the host.

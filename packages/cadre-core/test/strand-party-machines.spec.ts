@@ -11,7 +11,8 @@ import type { PartyStrandPeer, PartyStrandPeers } from '../src/strand-party-peer
  */
 
 const SELF = 'self';
-const NODE: PartyStrandPeer = { peerId: 'node-control', strandPeerId: 'node-strand' };
+const NODE: PartyStrandPeer = { peerId: 'node-control', strandPeerId: 'node-strand', serves: true };
+const CLIENT: PartyStrandPeer = { peerId: 'phone-control', strandPeerId: 'phone-strand', serves: false };
 
 /** A `PartyStrandPeerSource.read` the test scripts one answer at a time. */
 function scriptedSource(): { read: () => Promise<PartyStrandPeers>; answer: (live: PartyStrandPeer[], removed?: string[]) => void; fail: (error: Error) => void; reads: () => number } {
@@ -104,6 +105,34 @@ describe('cohortGateWaitingForMachines', () => {
 });
 
 describe('StrandPartyMachines', () => {
+  it('counts only the machines that serve the strand, and every removed id whether it served or not', async () => {
+    const source = scriptedSource();
+    const tracker = new StrandPartyMachines({ label: 's', source });
+    const changes = vi.fn();
+    tracker.onChange(changes);
+
+    tracker.refresh();
+    source.answer([NODE, CLIENT], ['gone-server', 'gone-phone']);
+    await tracker.settled();
+    expect(tracker.machines()).toEqual([NODE]);
+    expect([...tracker.removed()].sort()).toEqual(['gone-phone', 'gone-server']);
+    expect(changes).toHaveBeenCalledTimes(1);
+
+    // A client LEAVING the live set changes neither answer, so nothing is announced.
+    tracker.refresh();
+    source.answer([NODE], ['gone-server', 'gone-phone']);
+    await settle();
+    expect(tracker.machines()).toEqual([NODE]);
+    expect(changes).toHaveBeenCalledTimes(1);
+
+    // Nor does a client ARRIVING: a row reaching the party must not wake the gate.
+    tracker.refresh();
+    source.answer([NODE, CLIENT], ['gone-server', 'gone-phone']);
+    await settle();
+    expect(tracker.machines()).toEqual([NODE]);
+    expect(changes).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the last answer through a failed read, coalesces refreshes, and announces only a change', async () => {
     const source = scriptedSource();
     const tracker = new StrandPartyMachines({ label: 's', source });

@@ -5,6 +5,7 @@ import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 import type { RelayReservationSupervisorOptions } from '../src/relay-reservation.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * The per-strand relay-reservation supervisors `buildStrandRuntime` wires over the
@@ -85,14 +86,11 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-// `createLibp2pNode` is stubbed; `resolveLinkDeadlines` stays real, because the dial limits
-// cadre-core states on every node it builds are derived from it (`optimysticDialLimits`).
+// Partial mock: only `createLibp2pNode` is stubbed (see the backfill spec for why
+// the rest of db-p2p stays real).
 vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   const actual = await importOriginal();
-  return {
-    createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode,
-    resolveLinkDeadlines: actual.resolveLinkDeadlines
-  };
+  return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
 });
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 // The real `withoutRelayDiscovery`: a relay-configured strand node's transports pass through it
@@ -138,7 +136,7 @@ describe('StrandInstanceManager relay-reservation supervisors', () => {
     return {
       strandRow,
       sAppConfig,
-      profile: 'transaction',
+      roles: NODE_ROLE_PRESETS.device,
       defaultLatencyHint: 'interactive',
       network: { listenAddrs: [], relayAddrs: [RELAY_1] },
       ...overrides

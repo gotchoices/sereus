@@ -104,10 +104,10 @@ describe('E2E relay-only control node circuit address', () => {
 		let B: CadreNode | undefined;
 		let C: CadreNode | undefined;
 		try {
-			// ── A: owner + relay provider (storage profile runs circuitRelayServer) ──
+			// ── A: owner + relay provider (a server node runs circuitRelayServer) ──
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none',
+				partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true, strandFilter: 'none',
 			}));
 			await A.start();
 			await makeOwnOwner(A);
@@ -205,7 +205,7 @@ describe('E2E relay-only control node circuit address', () => {
 		try {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none',
+				partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true, strandFilter: 'none',
 			}));
 			await A.start();
 			await makeOwnOwner(A);
@@ -266,7 +266,7 @@ describe('E2E relay-only control node circuit address', () => {
 		try {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none',
+				partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true, strandFilter: 'none',
 			}));
 			await A.start();
 			await makeOwnOwner(A);
@@ -319,7 +319,7 @@ describe('E2E relay-only control node circuit address', () => {
 		try {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none', linkRoundTripMs,
+				partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true, strandFilter: 'none', linkRoundTripMs,
 			}));
 			await A.start();
 			await makeOwnOwner(A);
@@ -396,7 +396,7 @@ describe('E2E relay-only control node circuit address', () => {
 		try {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(controlNodeConfig({
-				partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandFilter: 'none',
+				partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true, strandFilter: 'none',
 				unauthorizedRelayReservationCap: 1,
 			}));
 			await A.start();

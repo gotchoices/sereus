@@ -23,7 +23,7 @@ import { FakeOrchestrator } from './fake-orchestrator.js';
 const request = (containerId: string): HostedSpawnRequest => ({
   containerId,
   partyId: 'party-P',
-  profile: 'storage',
+  nodeClass: 'server',
 });
 
 describeHandleContract<FakeOrchestrator>('FakeOrchestrator', {

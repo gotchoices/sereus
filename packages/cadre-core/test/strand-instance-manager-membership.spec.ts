@@ -11,6 +11,7 @@ import type {
   StrandMembershipReconciliationConfig,
   PendingMembershipInviteSource,
 } from '../src/strand-membership-reconciler.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * **What this protects: the ARMING GATE and lifecycle of the membership
@@ -137,7 +138,7 @@ function createStartConfig(strandId: string, type: 'o' | 'c', overrides?: Partia
   return {
     strandRow,
     sAppConfig,
-    profile: 'transaction',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     ...overrides,
   };

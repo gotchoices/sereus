@@ -5,6 +5,7 @@ import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 // Mock the heavy runtime dependencies so quiesce/resume can be exercised without
 // standing up a real libp2p node or Quereus database. The real-node integration
@@ -27,14 +28,11 @@ const mocks = vi.hoisted(() => {
   return { stop, close, initialize, ensureFounderBootstrap, createLibp2pNode, StrandDatabase };
 });
 
-// `createLibp2pNode` is stubbed; `resolveLinkDeadlines` stays real, because the dial limits
-// cadre-core states on every node it builds are derived from it (`optimysticDialLimits`).
+// Partial mock: only `createLibp2pNode` is stubbed (see the backfill spec for why
+// the rest of db-p2p stays real).
 vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   const actual = await importOriginal();
-  return {
-    createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode,
-    resolveLinkDeadlines: actual.resolveLinkDeadlines
-  };
+  return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
 });
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
@@ -69,7 +67,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   return {
     strandRow: createStrandRow(strandId),
     sAppConfig: createSAppConfig(),
-    profile: 'transaction',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     ...overrides
   };

@@ -19,7 +19,8 @@ import type { StrandNetworkStateStore } from './strand-network-state.js';
 import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { JoinedStrandStore } from './joined-strand-store.js';
 import type { PushNotifier } from './push-notifier.js';
-import type { CadreInviteSignedFields, OwnerGrantSignedFields, RevocableTable } from './control-authorization.js';
+import type { CadreInviteSignedFields, OwnerGrantSignedFields, RevocableTable, StrandPeerRole } from './control-authorization.js';
+export type { StrandPeerRole } from './control-authorization.js';
 import type { FoundingInvite } from './control-database.js';
 import type { CadreInvitation } from './cadre-invite-protocol.js';
 import type { OwnerGrantBundle } from './owner-grant-protocol.js';
@@ -27,13 +28,21 @@ import type { RedemptionAddressOutcome } from './member-redemption.js';
 import type { ControlRetryAbandonment } from './control-retry.js';
 import type { FormationRejectionCode } from './strand-formation-rejection.js';
 import type { ListenTransportOptions } from './relay-addrs.js';
+import type { NodeClass, PublishedProfile } from './node-class.js';
+import type { NodeRoles } from './node-roles.js';
 
 /**
- * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
- * createLibp2pNode after node creation (not surfaced on the base Libp2p type).
+ * Extended Libp2p node with the attachments db-p2p's createLibp2pNode adds after node
+ * creation (not surfaced on the base Libp2p type).
  */
 export interface Libp2pNodeWithRepo extends Libp2p {
-  coordinatedRepo: IRepo;
+  /**
+   * The repo this node coordinates writes to its own blocks through. Optional because a
+   * **client** node (`servesBlocks: false`, built for a strand on a node whose
+   * `strandCohortMember` role is off) stores no blocks and so carries none; the control node
+   * always has one, and `createControlNode` throws if it does not.
+   */
+  coordinatedRepo?: IRepo;
   /**
    * The node's key-addressed peer network, attached by db-p2p's factory alongside
    * `coordinatedRepo` (`libp2p-node-base.ts`). Optional deliberately: the base
@@ -67,11 +76,6 @@ export interface Libp2pNodeWithRepo extends Libp2p {
    */
   reportBlockHeld?: (blockId: string, rev: number, peerId: string) => Promise<void>;
 }
-
-/**
- * Node profile determines storage participation
- */
-export type NodeProfile = 'transaction' | 'storage';
 
 /**
  * Strand filter configuration - determines which strands this node participates in
@@ -199,7 +203,7 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
 export type RawStorageProvider = IRawStorage | ((scope: string) => IRawStorage);
 
 /**
- * Storage configuration for storage profile nodes
+ * Storage configuration for a node that stores blocks
  */
 export interface StorageConfig {
   /**
@@ -375,9 +379,27 @@ export interface NetworkConfig {
    */
   requireRelay?: boolean;
   /**
+   * STUN servers for this node's WebRTC transport, as a comma-separated list of `stun:`
+   * URLs, overriding the ones derived from {@link relayAddrs}. Read on the path that derives
+   * a transport list here — a Node host's `/webrtc` listen entry (`relay-addrs.ts` →
+   * `resolveTransportOptions`), which is `cadre-cli`'s `network.webrtc`. The phone and browser
+   * apps build their own transports, so they call `resolveStunServers` (`relay-stun.ts`)
+   * themselves with the same spelling, from `EXPO_PUBLIC_STUN_URLS` / `VITE_STUN_URLS`.
+   *
+   * Omitted, each relay in {@link relayAddrs} supplies one `stun:<relay host>:3478`, since
+   * a Sereus relay answers STUN on that fixed port. Set this for a relay that answers STUN
+   * somewhere else, or to point ICE at a STUN server that is not a relay. An empty or
+   * whitespace-only value falls back to the relays, so a launcher passing an unset variable
+   * through changes nothing.
+   *
+   * Ignored by a node with no WebRTC transport, which is every node that neither supplies
+   * {@link transports} carrying one nor asks for a `/webrtc` listen entry.
+   */
+  stunUrls?: string;
+  /**
    * Enable circuit relay server - allows this node to relay connections for other peers.
-   * When undefined, defaults to true for storage profile nodes (they typically have
-   * better connectivity and uptime), false for transaction profile nodes.
+   * When undefined, defaults to the resolved `roles.alwaysOn`: an always-on machine has the
+   * connectivity and uptime to be a relay, anything else does not.
    */
   enableRelay?: boolean;
   /**
@@ -828,8 +850,21 @@ export interface CadreNodeConfig {
   /** Control network connection settings */
   controlNetwork: ControlNetworkConfig;
 
-  /** Node profile: transaction-only or storage */
-  profile: NodeProfile;
+  /** What kind of machine this node runs on ({@link NodeClass}): a device, or an always-on server. */
+  nodeClass: NodeClass;
+
+  /**
+   * Per-role overrides of what {@link nodeClass} means — each of the four decisions the class
+   * would otherwise settle on its own, settable one at a time. A role left out takes the
+   * class's preset; a misnamed role, or a value outside a role's own set, throws at
+   * construction rather than falling back to the preset. See {@link NodeRoles} for what each role does and
+   * `node-roles.ts` → `NODE_ROLE_PRESETS` for the two presets.
+   *
+   * `strandCohortMember: false` runs every strand as a client that stores none of its blocks
+   * (`docs/cadre/node.md` → "Node classes"); together with an explicit {@link hostUnclaimedStrands}
+   * `true` it is refused at construction, since a replica that stores nothing is a contradiction.
+   */
+  roles?: Partial<NodeRoles>;
 
   /** Which strands to participate in */
   strandFilter?: StrandFilter;
@@ -845,12 +880,16 @@ export interface CadreNodeConfig {
    * The strand is still announced as `strand:discovered` (once) and stays in
    * `getDiscoveredStrands()` until an app claims it. A replica is always a joiner.
    *
-   * Default: `profile === 'storage'` — always-on machines host replicas, phones
-   * (`'transaction'`) keep today's announce-only behaviour.
+   * Default: the resolved `roles.alwaysOn` on a node that holds strand blocks — an always-on
+   * machine hosts replicas, anything else keeps the announce-only behaviour — and `false` on a
+   * node whose `strandCohortMember` role is off, which can store nothing for a replica to
+   * serve. An explicit value here still wins, so a phone can be told to host replicas and an
+   * always-on machine told not to; an explicit `true` with `strandCohortMember: false` is
+   * refused at construction (`node-roles.ts` → `resolveHostUnclaimedStrands`).
    */
   hostUnclaimedStrands?: boolean;
 
-  /** Storage configuration (only for storage profile) */
+  /** Storage configuration (only for a node that stores blocks) */
   storage?: StorageConfig;
 
   /** Network configuration */
@@ -1745,9 +1784,9 @@ export interface StrandFormationDisclosure {
  * Arachnode ring participation stub - will be implemented when arachnode is built
  */
 export interface ArachnodeConfig {
-  /** Enable Arachnode subsystem (Ring Zulu + storage rings). Storage-profile only. */
+  /** Enable Arachnode subsystem (Ring Zulu + storage rings). `'server'` nodes only. */
   enableRingZulu: boolean;
-  /** Storage ring participation (storage profile only) */
+  /** Storage ring participation (`'server'` nodes only) */
   storageRing?: {
     /** Which ring to participate in based on capacity */
     ring: number;
@@ -1928,7 +1967,7 @@ export interface CadreNodeEvents {
    * `addStrand` has resolved).
    *
    * On a node that hosts storage replicas ({@link CadreNodeConfig.hostUnclaimedStrands},
-   * the default for `profile: 'storage'`) the event still fires once, and the node launches
+   * the default on an always-on node) the event still fires once, and the node launches
    * the strand as a replica right after it — so there `getStrands().has(id)` soon turns
    * true for a strand no app has claimed; an unclaimed instance has no `sAppInfo`. A
    * launch that fails is retried by the watcher without a second `strand:discovered`.
@@ -2009,7 +2048,7 @@ export interface CadreNodeEvents {
  *
  * This is the logical shape of a `CadreControl.CadrePeer` row. A node publishes
  * its own record (signing with the ed25519 key behind its PeerId); any node can
- * resolve another member's current signaling/relay multiaddrs from only its
+ * resolve another member's current relayed and direct multiaddrs from only its
  * PeerId by reading the record, re-verifying the self-signature against
  * `publicKey`, checking freshness, and applying a trust gate.
  *
@@ -2024,16 +2063,16 @@ export interface PeerAddressRecord {
   peerId: string;
   /** ed25519 public key (base64url) whose libp2p identity IS `peerId`. */
   publicKey: string;
-  /** Current dialable multiaddrs, signaling (`/p2p-circuit`) first. */
+  /** Current dialable multiaddrs, relayed first and WebRTC last (`orderRelayedFirst` in `peer-record.ts`). */
   addrs: string[];
   /** epoch ms — freshness; strictly increasing per peer. */
   updatedAt: number;
   /**
-   * The publisher's own {@link CadreNodeConfig.profile}: `'transaction'` is an app (phone,
-   * browser), `'storage'` an always-on node. Null on a row the machine has not yet
-   * self-published (an owner or an invitation seated it).
+   * Whether the publisher is always on, in the stored form the column holds
+   * ({@link PublishedProfile}: `'storage'` yes, `'transaction'` no). Null on a row the machine
+   * has not yet self-published (an owner or an invitation seated it).
    */
-  profile: NodeProfile | null;
+  profile: PublishedProfile | null;
   /** ed25519 self-signature over the signed payload, base64url. */
   sig: string;
 }
@@ -2062,8 +2101,8 @@ export interface CadrePeerRow {
   multiaddr: string | null;
   /** The machine's freshness stamp (epoch ms); 0 when it has never self-published. */
   updatedAt: number;
-  /** The machine's self-declared node profile; null until it self-publishes. */
-  profile: NodeProfile | null;
+  /** Whether the machine declared itself always on, stored form; null until it self-publishes. */
+  profile: PublishedProfile | null;
   /** The machine's self-signature over its address record (`peerRecordSignedPayload`); null until it self-publishes. */
   sig: string | null;
   /** Single-use anti-replay nonce the voucher signature, or the usage row, is bound to. */
@@ -2205,7 +2244,7 @@ export interface OwnerGrantChain {
  * One machine of the cadre as `CadreNode.listMachines` reports it: a live `CadrePeer` row. An
  * owner key is not a machine; `CadreNode.listOwnerKeys` lists those.
  *
- * `profile` and `lastPublishedAt` are the machine's own claim only when the row's
+ * `alwaysOn` and `lastPublishedAt` are the machine's own claim only when the row's
  * self-signature verifies; both are null otherwise, so an owner re-vouch that bumped
  * `UpdatedAt` without re-signing, or a row the machine never published, reports nothing
  * rather than someone else's stamp.
@@ -2218,9 +2257,9 @@ export interface CadreMachine {
   isSelf: boolean;
   /** Passes this node's authorized-membership predicate now (`CadreNode.listAuthorizedMembers`; always false for self, which that set excludes). */
   trusted: boolean;
-  /** The machine's self-published node profile; null until it publishes, or when its signature does not verify. */
-  profile: NodeProfile | null;
-  /** `UpdatedAt` of its self-signed record, re-stamped while it runs; null on the same terms as `profile`. */
+  /** Whether the machine says it is always on; null until it publishes, or when its signature does not verify. */
+  alwaysOn: boolean | null;
+  /** `UpdatedAt` of its self-signed record, re-stamped while it runs; null on the same terms as `alwaysOn`. */
   lastPublishedAt: number | null;
   /** `CadrePeer.VouchOwner`: the owner key that vouched it, or the issuer of the invitation that admitted it. */
   vouchedBy: string | null;
@@ -2475,8 +2514,9 @@ export interface OwnerGrantRedemptionResult {
 
 /**
  * One `CadreControl.StrandPeer` row: a machine's own signed statement of the peer id it uses
- * in one strand. {@link ControlDatabase.queryStrandPeers} returns only rows whose `sig`
- * verifies; whether `peerId` is a live or removed machine is its caller's question.
+ * in one strand, and of whether it serves the strand. {@link ControlDatabase.queryStrandPeers}
+ * returns only rows whose `sig` verifies; whether `peerId` is a live or removed machine is its
+ * caller's question.
  */
 export interface StrandPeerRow {
   strandId: string;
@@ -2484,7 +2524,9 @@ export interface StrandPeerRow {
   peerId: string;
   /** That machine's peer id in the strand's own network (`strandTransportKey`). */
   strandPeerId: string;
-  /** The machine's signature over the `'add'` digest (`strandPeerAddDigest`). */
+  /** `'client'` when the machine stores none of the strand, null when it serves it. Fixed when the row is written. */
+  role: StrandPeerRole | null;
+  /** The machine's signature over the `'add'` digest (`strandPeerAddDigest`), in the form `role` selects. */
   sig: string;
 }
 
@@ -2557,7 +2599,11 @@ export interface ResolveOpts {
    * {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}.
    */
   maxAgeMs?: number;
-  /** Return only `/p2p-circuit` signaling addrs (the WebRTC dial input). */
+  /**
+   * Return only the addresses that reach the peer through a relay hop — the plain relayed
+   * shape and the WebRTC one alike ({@link isSignalingAddr}). The survivors keep the
+   * relayed-first, WebRTC-last order every resolve applies.
+   */
   signalingOnly?: boolean;
   /**
    * Pluggable trust gate, evaluated after signature + freshness pass. Defaults
@@ -2727,7 +2773,7 @@ export interface SeedPeer {
   multiaddrs: string[];
   /**
    * Dial this peer first: the machine that minted the seed (or answered the redemption) and
-   * every always-on machine (`CadrePeer.Profile = 'storage'`). A dial hint only — it grants
+   * every machine that published itself as always on. A dial hint only — it grants
    * nothing, and says nothing about owner keys (`projectSeedPeers`).
    */
   preferred: boolean;
@@ -2908,8 +2954,9 @@ export interface StrandAddrResponse {
   /** Echoes the requested strand id; always empty on an `unavailable` reply. */
   strandId: string;
   /**
-   * Dialable strand-network multiaddr strings (signaling/`p2p-circuit` first);
-   * empty unless `status` is `ok` and the responder runs that strand.
+   * Dialable strand-network multiaddr strings, relayed first and WebRTC last
+   * (`orderRelayedFirst` in `peer-record.ts`); empty unless `status` is `ok` and
+   * the responder runs that strand.
    */
   multiaddrs: string[];
 }
@@ -2998,7 +3045,11 @@ export interface CreateCadreInvitationOptions {
  * closed?". A minting machine that is itself always on can therefore read `issuer-only`.
  */
 export type CadreInvitationReach =
-  /** Another machine has a relayed (`/p2p-circuit`), public-name or public-IP WebSocket address. */
+  /**
+   * Another machine has a relayed (`/p2p-circuit`), public-name or public-IP WebSocket address.
+   * A WebRTC address counts: its relay carries the signalling from any network. Whether ICE then
+   * finds a path is a separate matter this does not judge — see `cadreInvitationReach`.
+   */
   | 'anywhere'
   /** Other machines are named, but only at private or loopback addresses: works on their network only. */
   | 'local-network'

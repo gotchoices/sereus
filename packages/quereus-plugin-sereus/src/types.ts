@@ -68,7 +68,13 @@ export interface StrandConnectionBaseOptions {
 	clusterSize?: number;
 	/** Inject an existing libp2p node instead of creating one */
 	libp2pNode?: Libp2p;
-	/** Required when libp2pNode is provided */
+	/**
+	 * The handle through which {@link libp2pNode} coordinates writes to the blocks it holds.
+	 * Required with an injected node that serves blocks, and refused with one that does not
+	 * (a client node, `NodeOptions.servesBlocks: false`, holds no blocks and so has none).
+	 * Unused when no node is injected: a node this connection creates always serves blocks,
+	 * and its repo is read off the node.
+	 */
 	coordinatedRepo?: IRepo;
 	/**
 	 * Persistent raw storage. When provided:
@@ -231,9 +237,19 @@ export interface SereusPluginResult {
 }
 
 /**
- * Extended Libp2p node type with coordinatedRepo attached by createLibp2pNode.
+ * A libp2p node as the composition reads it: the handles `createLibp2pNode` attaches that
+ * matter here. Both fields are optional because neither is guaranteed on a node that reaches
+ * `composeStrand`:
+ *
+ *  - a client node (`NodeOptions.servesBlocks: false`) declares `servesBlocks: false` and carries
+ *    no `coordinatedRepo` at all — it stores no blocks, so there is nothing to coordinate writes to;
+ *  - a node built by something other than `createLibp2pNode` carries neither field.
+ *
+ * Optimystic's own `FactoryNode` records the same reasoning. Read `servesBlocks === false`
+ * explicitly, never `!servesBlocks`: the second treats a node that declares nothing as a client.
  * @internal
  */
 export interface Libp2pNodeWithRepo extends Libp2p {
-	coordinatedRepo: IRepo;
+	coordinatedRepo?: IRepo;
+	servesBlocks?: boolean;
 }

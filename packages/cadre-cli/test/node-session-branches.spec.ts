@@ -93,7 +93,7 @@ beforeEach(() => {
   configPath = join(dir, 'cadre.json');
   writeFileSync(configPath, JSON.stringify({
     controlNetwork: { partyId: 'node-session-branches', bootstrapNodes: [] },
-    profile: 'transaction',
+    nodeClass: 'device',
     storage: { type: 'memory' },
     network: { listenAddrs: [] },
   }), 'utf8');

@@ -34,6 +34,7 @@ import {
 } from './control-database.js';
 import { verifyCadreInviteRow, verifyCadreInviteRedemption } from './peer-authorization.js';
 import { verifyPeerRecordSignature } from './peer-record.js';
+import { isPublishedProfile } from './node-class.js';
 import { ed25519PublicKeyB64FromPeerId } from './ed25519-key.js';
 import { CADRE_INVITATION_PREFIX, CADRE_JOIN_REQUEST_PREFIX, OWNER_GRANT_PREFIX, OWNER_KEY_EXPORT_STEM } from './cadre-join-request.js';
 import {
@@ -369,7 +370,7 @@ function isWellFormedRedeemRequest(value: unknown): value is CadreInviteRedeemRe
 interface AdmittedRecord {
   /** The record's addresses, sanitized ({@link sanitizeAddrs}): stored whether or not the rest is. */
   addrs: string[];
-  /** The record's freshness, profile and signature, or null when they cannot be stored as the device's own. */
+  /** The record's freshness, stored `Profile` code and signature, or null when they cannot be stored as the device's own. */
   signed: Pick<PeerAddressRecord, 'updatedAt' | 'profile' | 'sig'> | null;
   /** Why `signed` is null; absent when it is not. */
   unsignedBecause?: string;
@@ -377,9 +378,9 @@ interface AdmittedRecord {
 
 /**
  * Judge the device's record (`request.record`) for its admission row. The signature covers the
- * exact address list, so it is kept only when sanitizing dropped nothing, the profile is one the
- * schema's `KnownProfile` check admits, the stamp and signature are in their stored forms, and
- * the signature verifies for `partyId` under the device's key. Anything less admits the device
+ * exact address list, so it is kept only when sanitizing dropped nothing, the stored `Profile`
+ * code is one the schema's `KnownProfile` check admits, the stamp and signature are in their
+ * stored forms, and the signature verifies for `partyId` under the device's key. Anything less admits the device
  * with its addresses and no signature, as an owner-written row is, and the device's next
  * publish fills it in. No clock check: a stamp in the future or the past is one the device's own
  * self-publish could write too.
@@ -392,7 +393,7 @@ function admittedRecord(partyId: string, remotePeerId: string, request: Pick<Cad
   if (!Array.isArray(offered) || addrs.length !== offered.length) {
     return unsigned('sanitizing changed the signed address list');
   }
-  if (profile !== null && profile !== 'transaction' && profile !== 'storage') {
+  if (profile !== null && !isPublishedProfile(profile)) {
     return unsigned('unknown profile');
   }
   if (typeof updatedAt !== 'number' || !Number.isSafeInteger(updatedAt) || updatedAt <= 0 || !isBoundedString(sig)) {

@@ -79,7 +79,7 @@ export function initConfig(dir: string, tcpPort: number, wsPort: number, appendA
   return {
     identity: { keyFile: path.join(dir, INIT_FILES.key) },
     controlNetwork: { partyId: 'unclaimed', bootstrapNodes: [] },
-    profile: 'storage',
+    nodeClass: 'server',
     claim: { secretFile: path.join(dir, INIT_FILES.secret) },
     nodeState: { dir: path.join(dir, 'state') },
     storage: { type: 'file', path: path.join(dir, 'data') },

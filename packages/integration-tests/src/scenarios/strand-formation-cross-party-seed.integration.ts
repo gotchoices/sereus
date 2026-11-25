@@ -101,12 +101,12 @@ describe('Cross-party strand seed carried by formation', () => {
 			const strandId = `strand-cross-party-${runTag}`;
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 
-			// ── HOST: sole owner of its own party, storage profile so it can relay ──
+			// ── HOST: sole owner of its own party, a server node so it can relay ──
 			const hostKey = await generateKeyPair('Ed25519');
 			host = new CadreNode(controlNodeConfig({
 				partyId: `host-${runTag}`,
 				privateKey: hostKey,
-				profile: 'storage',
+				nodeClass: 'server',
 				enableRelay: true,
 			}));
 			await host.start();
@@ -274,7 +274,7 @@ describe('Cross-party strand seed carried by formation', () => {
 			host = new CadreNode(controlNodeConfig({
 				partyId: `host-c-${runTag}`,
 				privateKey: hostKey,
-				profile: 'storage',
+				nodeClass: 'server',
 				enableRelay: true,
 			}));
 			await host.start();

@@ -10,7 +10,7 @@ import { Parser } from '@quereus/quereus';
  * docs/cadre/control-schema.md → "Schema versions and migrations", enforced by
  * `control-schema-versions.spec.ts`.
  */
-export const CONTROL_SCHEMA_VERSION = 4;
+export const CONTROL_SCHEMA_VERSION = 5;
 
 /**
  * The first control schema version whose fixture is kept, and the oldest a store can be
@@ -442,7 +442,7 @@ declare schema CadreControl {
     table CadrePeer (
         PeerId text primary key,
         PublicKey text null,            -- ed25519 (base64url) behind PeerId; null if not ed25519
-        Multiaddr text,                 -- comma-joined current addrs (signaling / p2p-circuit first)
+        Multiaddr text,                 -- comma-joined current addrs (relayed first, WebRTC last)
         UpdatedAt int null,             -- epoch ms; strictly increases per self-update
         Sig text null,                  -- self-signature over the 'publish' digest; null until self-published
         StampId text unique,
@@ -454,11 +454,14 @@ declare schema CadreControl {
                                         -- can pollute.
         VouchUsage text null,           -- the CadreInviteUsage.UsageStampId that admitted this row; null on an
                                         -- owner-vouched row. A row carries exactly one proof: a signature or a usage.
-        Profile text null,              -- the machine's own node profile (cadre-core NodeProfile): 'transaction' is an
-                                        -- app (phone, browser), 'storage' an always-on node; null until it self-publishes.
-                                        -- Self-declared and covered by Sig. No insert rule constrains it: an owner could
-                                        -- only mislabel a machine it already has full authority over, and that machine's
-                                        -- next self-publish corrects it.
+        Profile text null,              -- whether the machine is always on: 'storage' yes, 'transaction' no; null until
+                                        -- it self-publishes. The two codes are a stored form only (cadre-core
+                                        -- node-class.ts), kept because a column rename cannot be migrated and a party's
+                                        -- machines update one at a time, so an older build would refuse a new value
+                                        -- replicated from an updated sibling (docs/cadre/control-schema.md -> "Schema
+                                        -- versions and migrations"). Self-declared and covered by Sig. No insert rule
+                                        -- constrains it: an owner could only mislabel a machine it already has full
+                                        -- authority over, and that machine's next self-publish corrects it.
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = new.StampId)
         ),
@@ -506,7 +509,7 @@ declare schema CadreControl {
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = A.StampId) and verify(digest('CadreControl.CadrePeer', 'remove', party_id(), old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
                 or exists (select 1 from committed.Revocation R where R.TableName = 'CadrePeer' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
-        -- A peer re-publishes its own addrs, profile and freshness under its own key (cadre-core
+        -- A peer re-publishes its own addrs, always-on code and freshness under its own key (cadre-core
         -- peer-record.ts); everything else is immutable and UpdatedAt must increase. Or an owner
         -- re-vouches the row over its current stamp, which also clears VouchUsage: the row then
         -- stands on the signature and its invitation is no longer consulted for it. The owner
@@ -597,12 +600,25 @@ declare schema CadreControl {
         )
     ) with context (OwnerKey text null, Signature text);
 
-    -- Each machine's own signed statement of the peer id it uses in one strand. That id derives from
-    -- the machine's private identity seed (cadre-core strandTransportKey), so no other machine can
-    -- compute it, and a machine removal needs it to tell the removed machine's Strand.MemberPeer
-    -- binding from its siblings'. A row is a permanent fact: the derivation is deterministic, and a
-    -- removed machine's rows are how its orphaned bindings stay attributed to it. So no stamp, no
-    -- tombstone and no delete, and no Revocation.RowIsGone branch.
+    -- Each machine's own signed statement of the peer id it uses in one strand, and of whether it
+    -- serves that strand (Role). The id derives from the machine's private identity seed (cadre-core
+    -- strandTransportKey), so no other machine can compute it, and a machine removal needs it to tell
+    -- the removed machine's Strand.MemberPeer binding from its siblings'. A row is a permanent fact:
+    -- the derivation is deterministic, and a removed machine's rows are how its orphaned bindings
+    -- stay attributed to it. So no stamp, no tombstone and no delete, and no Revocation.RowIsGone
+    -- branch. Being immutable, the row fixes the role at the machine's first publish for the strand.
+    -- Role: null means the machine serves the strand, that is, stores its blocks, because that is
+    -- what every row written before the column existed meant; 'client' means it runs the strand
+    -- without storing any of it (docs/concepts.md). Per strand rather than per machine, because a
+    -- node's strandCohortMember role is a node setting and nothing stops one node from being
+    -- reconfigured between strands.
+    -- Two signed forms, because the framed digest is injective over its field list. A row with Role
+    -- null is signed over (StrandId, PeerId, StrandPeerId), exactly as under version 4, so a serving
+    -- machine's row is byte-identical to one written then and a machine still on version 4 verifies
+    -- it. A row with Role set is signed over those three and Role; a version-4 machine verifies it
+    -- against the three-field form, fails, and drops it, which leaves that machine where it was
+    -- before the client had a row. One digest over coalesce(Role, '') would instead change the form
+    -- every serving machine signs, and a version-4 reader would then drop every new serving row.
     -- The check defers (it has a subquery), so a CadrePeer row written in the same transaction
     -- counts. A node that does not hold the machine's CadrePeer row yet refuses the insert, and the
     -- writer tries again later. The check runs only on the node that takes the insert, and it cannot
@@ -613,11 +629,16 @@ declare schema CadreControl {
         StrandId text,              -- a Strand.Id or JoinedStrand.Id
         PeerId text,                -- the machine's control peer id (CadrePeer.PeerId)
         StrandPeerId text,          -- that machine's peer id in the strand's own network
-        Sig text,                   -- the machine's signature over the 'add' digest
+        Role text null,             -- null: the machine serves the strand; 'client': it stores none of it
+        Sig text,                   -- the machine's signature over the 'add' digest, in the form Role selects
         primary key (StrandId, PeerId),
         constraint Immutable check on update, delete (false),
+        constraint KnownStrandPeerRole check (new.Role is null or new.Role = 'client'),
         constraint Authorized check on insert (
-            exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and verify(digest('CadreControl.StrandPeer', 'add', party_id(), new.StrandId, new.PeerId, new.StrandPeerId), new.Sig, P.PublicKey, 'ed25519'))
+            exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and (
+                (new.Role is null and verify(digest('CadreControl.StrandPeer', 'add', party_id(), new.StrandId, new.PeerId, new.StrandPeerId), new.Sig, P.PublicKey, 'ed25519'))
+                or (new.Role is not null and verify(digest('CadreControl.StrandPeer', 'add', party_id(), new.StrandId, new.PeerId, new.StrandPeerId, new.Role), new.Sig, P.PublicKey, 'ed25519'))
+            ))
         )
     );
 

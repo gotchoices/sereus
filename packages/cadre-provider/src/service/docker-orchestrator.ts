@@ -310,7 +310,7 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
           // containerId → handle mapping that survives a provider restart.
           [CONTAINER_ID_LABEL]: request.containerId,
           'sereus.party-id': request.partyId,
-          'sereus.profile': request.profile,
+          'sereus.node-class': request.nodeClass,
         },
       });
 

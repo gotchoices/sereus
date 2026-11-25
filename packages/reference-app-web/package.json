@@ -1,6 +1,6 @@
 {
   "name": "@serfab/reference-app-web",
-  "version": "1.23.0",
+  "version": "1.24.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -22,10 +22,10 @@
     "@libp2p/webrtc": "6.0.33",
     "@libp2p/websockets": "^10.1.21",
     "@multiformats/multiaddr": "^13.0.3",
-    "@optimystic/db-core": "^1.27.0",
-    "@optimystic/db-p2p": "^1.27.0",
-    "@optimystic/db-p2p-storage-web": "^1.27.0",
-    "@quereus/quereus": "^5.4.0",
+    "@optimystic/db-core": "^1.29.0",
+    "@optimystic/db-p2p": "^1.29.0",
+    "@optimystic/db-p2p-storage-web": "^1.29.0",
+    "@quereus/quereus": "^5.6.1",
     "@serfab/cadre-core": "workspace:^",
     "buffer": "^6.0.3",
     "idb": "^8.0.3",

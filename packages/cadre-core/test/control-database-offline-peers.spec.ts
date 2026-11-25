@@ -22,7 +22,8 @@ import {
 	withinOp,
 	type OfflinePeer
 } from './control-db-node-helpers.js';
-import type { NetworkConfig, NodeProfile } from '../src/types.js';
+import type { NetworkConfig } from '../src/types.js';
+import type { NodeClass } from '../src/node-class.js';
 import { startSilentServer, type SilentServer } from './silent-server.js';
 
 /**
@@ -183,14 +184,14 @@ async function rejoinOwner(owner: OwnerNode): Promise<void> {
  * by construction.
  */
 async function bootOwnerNode(
-	profile: NodeProfile,
+	nodeClass: NodeClass,
 	tag: string,
 	transports?: NetworkConfig['transports']
 ): Promise<OwnerNode> {
 	const keyStore = new InMemoryKeyStore();
 	const owner = await startControlNode(new CadreNode(controlNodeConfig({
 		partyId: freshPartyId(`offline-${tag}`),
-		profile,
+		nodeClass,
 		keyStore,
 		storage: new MemoryRawStorage(),
 		controlCohort: { dialTimeoutMs: DIAL_TIMEOUT_MS },
@@ -234,7 +235,7 @@ async function mintDepartedPeer(owner: OwnerNode): Promise<OfflinePeer> {
 			partyId: freshPartyId('offline-departed-sibling'),
 			bootstrapNodes: []
 		},
-		profile: 'transaction',
+		nodeClass: 'device',
 		privateKey: key,
 		storage: { provider: () => new MemoryRawStorage() },
 		network: {
@@ -533,10 +534,10 @@ async function expectIntactAfterPass(owner: OwnerNode, offline: OfflinePeer[], a
 }
 
 describe('control database with known-but-offline peers (no listen addr, no bootstrap peers)', () => {
-	for (const profile of ['transaction', 'storage'] as const) {
-		describe(`${profile} profile`, () => {
+	for (const nodeClass of ['device', 'server'] as const) {
+		describe(`a ${nodeClass}`, () => {
 			it('serves every control read/write locally with a DEPARTED sibling on record', async () => {
-				const owner = await bootOwnerNode(profile, `${profile}-departed`);
+				const owner = await bootOwnerNode(nodeClass, `${nodeClass}-departed`);
 				try {
 					const departed = await mintDepartedPeer(owner);
 					const authorizedPeerId = await runControlOperationSet(owner, [departed]);
@@ -552,7 +553,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 			}, 120_000);
 
 			it('serves every control read/write locally with a BLACKHOLE sibling on record', async () => {
-				const owner = await bootOwnerNode(profile, `${profile}-blackhole`);
+				const owner = await bootOwnerNode(nodeClass, `${nodeClass}-blackhole`);
 				try {
 					const blackhole = await mintBlackholePeer(owner, 1);
 					const authorizedPeerId = await runControlOperationSet(owner, [blackhole]);
@@ -578,7 +579,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		const keyStore = new InMemoryKeyStore();
 		const storage = new MemoryRawStorage();
 		const config = () => controlNodeConfig({
-			partyId, profile: 'transaction', keyStore, storage,
+			partyId, nodeClass: 'device', keyStore, storage,
 			controlCohort: { dialTimeoutMs: DIAL_TIMEOUT_MS }
 		});
 
@@ -615,9 +616,9 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 	// into its own spec and lift the rest of the shared scaffolding
 	// (`bootOwnerNode`, `runControlOperationSet`, `expectIntactAfterPass`,
 	// `within`) alongside them.
-	describe('stress and transport shapes (transaction profile)', () => {
+	describe('stress and transport shapes (a device)', () => {
 		it('three blackhole siblings: the sequential dial loop accumulates cost but the pass stays bounded', async () => {
-			const owner = await bootOwnerNode('transaction', 'three-blackhole');
+			const owner = await bootOwnerNode('device', 'three-blackhole');
 			try {
 				const blackholes = [
 					await mintBlackholePeer(owner, 1),
@@ -637,7 +638,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		// Named for what is concurrent: the local ops against the pass, NOT the dials
 		// against each other — `reconcileControlCohort` dials its siblings one at a time.
 		it('a reconcile pass grinding through dead dials cannot block a local read or write', async () => {
-			const owner = await bootOwnerNode('transaction', 'dial-storm');
+			const owner = await bootOwnerNode('device', 'dial-storm');
 			try {
 				const blackholes = [
 					await mintBlackholePeer(owner, 11),
@@ -662,7 +663,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		}, 180_000);
 
 		it('stop() resolves inside its budget with a dial in flight to an address that never answers', async () => {
-			const owner = await bootOwnerNode('transaction', 'stop-mid-dial');
+			const owner = await bootOwnerNode('device', 'stop-mid-dial');
 			const silent = await startSilentServer();
 			try {
 				await mintSilentPeer(owner, silent);
@@ -695,7 +696,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		}, 120_000);
 
 		it('serves every control read/write locally with circuit-relay in the transport set', async () => {
-			const owner = await bootOwnerNode('transaction', 'relay-transport', [webSockets(), circuitRelayTransport()]);
+			const owner = await bootOwnerNode('device', 'relay-transport', [webSockets(), circuitRelayTransport()]);
 			try {
 				const blackhole = await mintBlackholePeer(owner, 31);
 				const authorizedPeerId = await runControlOperationSet(owner, [blackhole]);
@@ -713,7 +714,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		// assert WHICH transport libp2p picked before running the operation set —
 		// see `expectDialRouting`.
 		it('serves every control read/write locally with the BROWSER reference transport list', async () => {
-			const owner = await bootOwnerNode('transaction', 'webrtc-browser', browserTransports());
+			const owner = await bootOwnerNode('device', 'webrtc-browser', browserTransports());
 			try {
 				const sibling = await mintWebRtcPeer(owner, 51, true);
 				expectDialRouting(owner.node, [
@@ -731,7 +732,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		}, 120_000);
 
 		it('serves every control read/write locally with the PHONE reference transport list', async () => {
-			const owner = await bootOwnerNode('transaction', 'webrtc-phone', phoneTransports());
+			const owner = await bootOwnerNode('device', 'webrtc-phone', phoneTransports());
 			try {
 				const sibling = await mintWebRtcPeer(owner, 52, false);
 				expectDialRouting(owner.node, [
@@ -756,7 +757,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		// concurrent is the local ops against the pass, not the dials against each
 		// other.
 		it('a WebRTC reconcile pass grinding through dead dials cannot block a local read or write', async () => {
-			const owner = await bootOwnerNode('transaction', 'webrtc-dial-storm', browserTransports());
+			const owner = await bootOwnerNode('device', 'webrtc-dial-storm', browserTransports());
 			try {
 				const siblings = [
 					await mintWebRtcPeer(owner, 53, true),
@@ -781,7 +782,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		}, 180_000);
 
 		it('stop() resolves inside its budget with a WebRTC dial in flight', async () => {
-			const owner = await bootOwnerNode('transaction', 'webrtc-stop-mid-dial', browserTransports());
+			const owner = await bootOwnerNode('device', 'webrtc-stop-mid-dial', browserTransports());
 			try {
 				const sibling = await mintWebRtcPeer(owner, 56, true);
 				expectDialRouting(owner.node, [

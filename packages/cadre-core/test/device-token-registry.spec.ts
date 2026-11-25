@@ -33,7 +33,7 @@ async function bootOwnerNode(): Promise<BootedNode> {
       partyId: 'device-token-' + Math.random().toString(36).slice(2),
       bootstrapNodes: [],
     },
-    profile: 'transaction',
+    nodeClass: 'device',
     privateKey: libp2pKey,
   });
   await node.start();
@@ -59,7 +59,7 @@ async function bootNonOwnerNode(): Promise<CadreNode> {
       partyId: 'device-token-na-' + Math.random().toString(36).slice(2),
       bootstrapNodes: [],
     },
-    profile: 'transaction',
+    nodeClass: 'device',
     privateKey: libp2pKey,
   });
   await node.start();

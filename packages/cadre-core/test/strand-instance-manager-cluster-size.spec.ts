@@ -5,6 +5,7 @@ import { signSchema } from '../src/schema-verification.js';
 import { COHORT_READ_DEADLINE_MS, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE, STRAND_CLUSTER_POLICY, strandClusterPolicy } from '../src/types.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 // Same doubles as strand-instance-manager-hibernation.spec.ts: the assertions
 // here are purely about what reaches `createLibp2pNode`, so no real node or
@@ -21,14 +22,11 @@ const mocks = vi.hoisted(() => {
   return { stop, createLibp2pNode, StrandDatabase };
 });
 
-// `createLibp2pNode` is stubbed; `resolveLinkDeadlines` stays real, because the dial limits
-// cadre-core states on every node it builds are derived from it (`optimysticDialLimits`).
+// Partial mock: only `createLibp2pNode` is stubbed (see the backfill spec for why
+// the rest of db-p2p stays real).
 vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   const actual = await importOriginal();
-  return {
-    createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode,
-    resolveLinkDeadlines: actual.resolveLinkDeadlines
-  };
+  return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
 });
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
@@ -66,7 +64,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     return {
       strandRow,
       sAppConfig,
-      profile: 'transaction',
+      roles: NODE_ROLE_PRESETS.device,
       defaultLatencyHint: 'interactive',
       ...overrides
     };

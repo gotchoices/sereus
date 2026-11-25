@@ -32,7 +32,7 @@ describe('CadreNode', () => {
         partyId: 'test-party-' + Math.random().toString(36).slice(2),
         bootstrapNodes: []
       },
-      profile: 'transaction',
+      nodeClass: 'device',
       ...overrides
     };
   }
@@ -110,7 +110,7 @@ describe('CadreNode', () => {
 
     it('should create a node with full config', () => {
       const config = createConfig({
-        profile: 'storage',
+        nodeClass: 'server',
         strandFilter: { mode: 'all' },
         storage: { provider: () => new MemoryRawStorage() },
         hibernation: { enabled: true, defaultLatencyHint: 'interactive' },
@@ -119,6 +119,14 @@ describe('CadreNode', () => {
 
       const node = new CadreNode(config);
       expect(node.isRunning).toBe(false);
+    });
+
+    // A node that holds no strand blocks runs every strand as a client, so the role is accepted on
+    // either class; a server's replica-host default comes out false under it rather than refused
+    // (`resolveHostUnclaimedStrands`, pinned in `node-roles.spec.ts`).
+    it('constructs with strandCohortMember: false, on a server too', () => {
+      expect(() => new CadreNode(createConfig({ roles: { strandCohortMember: false } }))).not.toThrow();
+      expect(() => new CadreNode(createConfig({ nodeClass: 'server', roles: { strandCohortMember: false } }))).not.toThrow();
     });
   });
 

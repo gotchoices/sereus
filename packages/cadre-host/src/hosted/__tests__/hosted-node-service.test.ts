@@ -104,7 +104,7 @@ function statusBody(answer: StatusAnswer): unknown {
       running: true,
       peerId,
       partyId: answer.partyId ?? 'unclaimed',
-      profile: 'storage',
+      nodeClass: 'server',
       strands: { total: 0, syncing: 0, active: 0, idle: 0, hibernating: 0 },
       connectionPaths: { total: answer.connections ?? 0, relayed: 0, direct: answer.connections ?? 0, stuckOnRelay: 0, byTransport: {} },
       claim: answer.claim ?? 'awaiting',
@@ -173,13 +173,13 @@ function secretOf(node: HostedNode): string {
 }
 
 describe('HostedNodeService.join', () => {
-  it('spawns a storage node under the placeholder party with a fresh claim secret, then records it unclaimed', async () => {
+  it('spawns a server node under the placeholder party with a fresh claim secret, then records it unclaimed', async () => {
     const { orch, store, svc, changes } = makeHarness();
 
     const view = await svc.join();
 
     expect(view.id).toMatch(/^hn_[A-Za-z0-9_-]{16}$/);
-    expect(view).toMatchObject({ status: 'unclaimed', partyId: 'unclaimed', profile: 'storage', join: { kind: 'claim' }, dockerId: 'dock_1' });
+    expect(view).toMatchObject({ status: 'unclaimed', partyId: 'unclaimed', nodeClass: 'server', join: { kind: 'claim' }, dockerId: 'dock_1' });
     // The secret never crosses the boundary.
     expect((view.join as Record<string, unknown>).secret).toBeUndefined();
 
@@ -190,7 +190,7 @@ describe('HostedNodeService.join', () => {
     expect(orch.createCalls).toEqual([{
       containerId: view.id,
       partyId: 'unclaimed',
-      profile: 'storage',
+      nodeClass: 'server',
       claimSecret: secretOf(stored),
     }]);
     expect(changes).toEqual([{ kind: 'added', id: view.id }]);
@@ -457,7 +457,7 @@ describe('HostedNodeService join by invitation', () => {
     // The invitation's party from the start; the bundle reaches the child and nothing else.
     expect(view).toMatchObject({ status: 'joining', partyId: 'party-P', join: { kind: 'invitation' } });
     expect(JSON.stringify(view)).not.toContain(invitation);
-    expect(orch.createCalls).toEqual([{ containerId: view.id, partyId: 'party-P', profile: 'storage', invitation }]);
+    expect(orch.createCalls).toEqual([{ containerId: view.id, partyId: 'party-P', nodeClass: 'server', invitation }]);
 
     stubStatusFetch({ partyId: 'party-P', invitation: { state: 'pending' } });
     await svc.pollStatuses();
@@ -507,7 +507,7 @@ describe('HostedNodeService.respawn', () => {
     // The claimed party now, and the same secret: cadre-cli honours claim.json and
     // answers a rival `already-claimed` with the secret still set.
     expect(orch.createCalls[1]).toEqual({
-      containerId: view.id, partyId: 'party-P', profile: 'storage', claimSecret: secret,
+      containerId: view.id, partyId: 'party-P', nodeClass: 'server', claimSecret: secret,
     });
     expect(orch.getNode(view.id)!.ports).toEqual(portsBefore);
 
@@ -636,7 +636,7 @@ describe('HostedNodeService.remove', () => {
     const { orch, store, svc } = makeHarness();
     const at = '2025-01-01T00:00:00.000Z';
     store.put({
-      id: 'hn_stuck', join: { kind: 'claim', secret: 's' }, partyId: 'unclaimed', profile: 'storage',
+      id: 'hn_stuck', join: { kind: 'claim', secret: 's' }, partyId: 'unclaimed', nodeClass: 'server',
       status: 'spawning', createdAt: at, updatedAt: at,
     });
 
@@ -649,7 +649,7 @@ describe('HostedNodeService.remove', () => {
 
   it('removes a handle no record names, so a lost hosted-nodes.json cannot strand a child', async () => {
     const { orch, svc, changes } = makeHarness();
-    const spawn = await orch.createContainer({ containerId: 'hn_orphan', partyId: 'party-P', profile: 'storage' });
+    const spawn = await orch.createContainer({ containerId: 'hn_orphan', partyId: 'party-P', nodeClass: 'server' });
 
     await svc.remove('hn_orphan');
 
@@ -679,7 +679,7 @@ describe('HostedNodeService.reset', () => {
 describe('HostedNodeService.reapStuckSpawning', () => {
   /** A record whose host died right after writing the `spawning` row. */
   const stuckRecord = (id: string, at: string): HostedNode => ({
-    id, join: { kind: 'claim', secret: 's' }, partyId: 'unclaimed', profile: 'storage',
+    id, join: { kind: 'claim', secret: 's' }, partyId: 'unclaimed', nodeClass: 'server',
     status: 'spawning', createdAt: at, updatedAt: at,
   });
 
@@ -688,7 +688,7 @@ describe('HostedNodeService.reapStuckSpawning', () => {
     const { orch, store, svc, changes } = makeHarness({ now: () => clock });
     // One whose child was spawned before the host died (the orchestrator knows it
     // by dockerId), one that never got that far.
-    const spawn = await orch.createContainer({ containerId: 'hn_spawned', partyId: 'unclaimed', profile: 'storage' });
+    const spawn = await orch.createContainer({ containerId: 'hn_spawned', partyId: 'unclaimed', nodeClass: 'server' });
     store.put(stuckRecord('hn_spawned', clock.toISOString()));
     store.put(stuckRecord('hn_never', clock.toISOString()));
     clock = new Date(clock.getTime() + HOSTED_NODE_SPAWNING_TTL_MS + 60_000);

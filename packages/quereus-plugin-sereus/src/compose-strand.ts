@@ -1,5 +1,5 @@
 import debug from 'debug';
-import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInfo } from '@quereus/quereus';
+import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInfo, TypePluginInfo } from '@quereus/quereus';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
@@ -29,7 +29,12 @@ const FOUNDED_SCHEMAS = ['Strand', 'App'] as const;
  * We only need the methods this composition actually uses.
  */
 interface CollectionFactory {
-	registerLibp2pNode(networkName: string, node: Libp2p, coordinatedRepo: IRepo): void;
+	/**
+	 * `coordinatedRepo` is optional upstream, and left out for a client node (`NodeOptions.servesBlocks:
+	 * false`), which holds no blocks: the transactor the factory then builds has no local store and
+	 * sends every read and write to a remote coordinator.
+	 */
+	registerLibp2pNode(networkName: string, node: Libp2p, coordinatedRepo?: IRepo): void;
 	/**
 	 * Register the reachability gate for the transactor under `key` (`${transactor}:${keyNetwork}`),
 	 * replacing the node's own, which the network transactor registers unless one is here first.
@@ -111,11 +116,13 @@ interface PluginRegistrations {
 	vtables?: VTablePluginInfo[];
 	functions?: FunctionPluginInfo[];
 	collations?: CollationPluginInfo[];
+	/** Column types, such as the optimystic plugin's `blobref`. A table declaring one refuses to open where it is unregistered. */
+	types?: TypePluginInfo[];
 }
 
 /**
- * Inline equivalent of `@quereus/quereus`'s `registerPlugin` for plugins that
- * only return functions/vtables/collations. Used directly for the optimystic
+ * Inline equivalent of `@quereus/quereus`'s `registerPlugin`, registering the same four
+ * kinds (vtables, functions, collations, types). Used directly for the optimystic
  * result (so the composition can read `collectionFactory` off the same object),
  * and by the browser crypto strategy to keep the browser bundle from pulling a
  * duplicate `@quereus/quereus` next to the host's instance.
@@ -129,6 +136,9 @@ export function applyRegistrations(db: Database, result: PluginRegistrations): v
 	}
 	for (const collation of result.collations ?? []) {
 		db.registerCollation(collation.name, collation.func, collation.normalizer);
+	}
+	for (const type of result.types ?? []) {
+		db.registerType(type.name, type.definition);
 	}
 }
 
@@ -203,6 +213,43 @@ export interface StrandPlatform {
 	 * Returns the created node (its `coordinatedRepo` is read by the composition).
 	 */
 	createNode(ctx: CreateNodeContext): Promise<Libp2p>;
+}
+
+/**
+ * Whether a node stores none of its network's blocks — a client node, built
+ * `NodeOptions.servesBlocks: false`, which registers no storage protocol service and so is left out
+ * of every cohort, including its own view of itself.
+ *
+ * Tested `=== false` and nothing weaker: a node built by something other than `createLibp2pNode`
+ * declares neither attachment, and `!node.servesBlocks` would read it as a client and compose a
+ * remote-only transactor over it.
+ */
+function isClientNode(node: Libp2p): boolean {
+	return (node as Libp2pNodeWithRepo).servesBlocks === false;
+}
+
+/**
+ * The repo to register an injected node's coordinated writes under, and the refusal of the two
+ * pairings that cannot be composed. `undefined` for a client node, which holds no blocks and so
+ * coordinates none: the transactor Optimystic then builds has no local store and sends every read
+ * and write to a remote coordinator.
+ */
+function injectedNodeRepo(node: Libp2p, coordinatedRepo: IRepo | undefined): IRepo | undefined {
+	if (isClientNode(node)) {
+		// A client holds no blocks, so a repo offered for one can only be another machine's: writing
+		// through it would land the strand's blocks on a machine the strand does not think holds any.
+		if (coordinatedRepo) {
+			throw new Error('coordinatedRepo must not be provided with a client libp2pNode (servesBlocks: false)');
+		}
+		return undefined;
+	}
+	// Refused rather than left to the factory's `node.coordinatedRepo` default: a serving node that
+	// reaches here without its repo was built wrong, and a remote-only transactor over it would read
+	// and write correctly while storing nothing — the bug this check exists to catch.
+	if (!coordinatedRepo) {
+		throw new Error('coordinatedRepo is required when a block-serving libp2pNode is provided');
+	}
+	return coordinatedRepo;
 }
 
 /**
@@ -316,15 +363,13 @@ export async function composeStrand(
 		// transactor with no injected node — every real path needs a node.
 		if (resolvedTransactor !== 'test' || options.libp2pNode) {
 			let node: Libp2p;
-			let coordinatedRepo: IRepo;
+			// Absent for an injected client node, which holds no blocks and so coordinates none.
+			let coordinatedRepo: IRepo | undefined;
 
 			if (options.libp2pNode) {
 				node = options.libp2pNode;
-				if (!options.coordinatedRepo) {
-					throw new Error('coordinatedRepo is required when libp2pNode is provided');
-				}
-				coordinatedRepo = options.coordinatedRepo;
-				log('Using injected libp2p node');
+				coordinatedRepo = injectedNodeRepo(node, options.coordinatedRepo);
+				log('Using injected libp2p node (client=%s)', isClientNode(node));
 			} else {
 				// NOTE: this path takes the frozen policy whole, so it takes COHORT_READ_DEADLINE_MS
 				// with no way to override it — `StrandConnectionOptions` has no counterpart to

@@ -21,6 +21,8 @@ import type {
   CadreNodeConfig,
   EnrolledMachineStore,
   JoinedStrandStore,
+  NodeClass,
+  NodeRoles,
   RawStorageProvider,
   SAppConfig,
   StrandNetworkStateStore,
@@ -68,12 +70,18 @@ export interface ControlNodeOpts {
    * Left unset the node runs this build's schema.
    */
   schemaPath?: string;
-  profile?: 'storage' | 'transaction';
+  nodeClass?: NodeClass;
+  /**
+   * Becomes `roles` verbatim: per-role overrides of what {@link nodeClass} presets
+   * (`CadreNodeConfig.roles`). `{ strandCohortMember: false }` makes a client machine, whose
+   * strand nodes store none of a strand's blocks and read and write through the machines that do.
+   */
+  roles?: Partial<NodeRoles>;
   /**
    * Run the circuit-relay server? Left unset this is NOT off — `CadreNode`
-   * defaults it to `profile === 'storage'`, so a storage node relays unless a
-   * scenario says otherwise. Pass `false` explicitly for a storage node that
-   * takes no reservations.
+   * defaults it to the node's `alwaysOn` role, which the `server` class presets on, so a
+   * server node relays unless a scenario says otherwise. Pass `false` explicitly for a server
+   * node that takes no reservations.
    */
   enableRelay?: boolean;
   /**
@@ -86,6 +94,19 @@ export interface ControlNodeOpts {
    */
   linkRoundTripMs?: number;
   listenAddrs?: string[];
+  /**
+   * Becomes `network.transports` verbatim, replacing the {@link wsTransports} pair every
+   * control node otherwise gets. For a scenario that needs a transport beyond WebSockets and
+   * circuit relay — the WebRTC ones pass `[...wsTransports(), webRTC(...)]`. Keep the
+   * circuit-relay transport in whatever list you pass: every harness node reaches a relayed
+   * address through it, and `relayAddrs` cannot be filled without it.
+   *
+   * Setting this also means `cadre-core` derives no transport options from `listenAddrs`
+   * (`relay-addrs.ts` → `resolveTransportOptions` returns `{}` once an embedder supplies
+   * transports), which is what lets a scenario listen on an address the default transports
+   * would refuse, such as `/webrtc`.
+   */
+  transports?: Libp2pTransports;
   /**
    * Relay servers to reserve a `/p2p-circuit` slot through — the FAIL-FAST route:
    * `relay-addrs.ts` gives the control node a bare `/p2p-circuit` search listener
@@ -107,8 +128,8 @@ export interface ControlNodeOpts {
   /**
    * Launch a storage replica of every unclaimed strand the filter admits
    * (`CadreNodeConfig.hostUnclaimedStrands`). Default `false` here, unlike production's
-   * `profile === 'storage'`: a harness storage node stands for "holds control blocks", and
-   * scenarios assert which machines run a strand.
+   * `alwaysOn` role: a harness server node stands for "holds control blocks", and scenarios
+   * assert which machines run a strand.
    */
   hostUnclaimedStrands?: boolean;
   /**
@@ -255,7 +276,8 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
       bootstrapNodes: opts.bootstrapNodes ?? [],
       ...(opts.schemaPath !== undefined ? { schemaPath: opts.schemaPath } : {}),
     },
-    profile: opts.profile ?? 'transaction',
+    nodeClass: opts.nodeClass ?? 'device',
+    ...(opts.roles !== undefined ? { roles: opts.roles } : {}),
     strandFilter: { mode: opts.strandFilter ?? 'all' },
     hostUnclaimedStrands: opts.hostUnclaimedStrands ?? false,
     storage: {
@@ -279,11 +301,11 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
     ...(opts.enrolledMachines ? { enrolledMachines: { store: opts.enrolledMachines } } : {}),
     network: {
-      transports: wsTransports(),
+      transports: opts.transports ?? wsTransports(),
       listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
       ...(opts.relayAddrs ? { relayAddrs: opts.relayAddrs } : {}),
       // Forwarded on `!== undefined`, not on truthiness: `false` is a meaningful
-      // value here (it overrides the storage-profile default), and a truthiness
+      // value here (it overrides the server-node default), and a truthiness
       // test would silently drop it and leave the relay server on.
       ...(opts.enableRelay !== undefined ? { enableRelay: opts.enableRelay } : {}),
       ...(opts.linkRoundTripMs !== undefined ? { linkRoundTripMs: opts.linkRoundTripMs } : {}),
@@ -336,7 +358,7 @@ const PHONE_RECONCILE_MS = 2_000;
 
 /**
  * A phone-shaped owner node of its own party, not yet started: `listenAddrs: []`, the WebSocket
- * and circuit-relay transports every control node gets (no TCP), `profile: 'transaction'` — the
+ * and circuit-relay transports every control node gets (no TCP), `nodeClass: 'device'` — the
  * shape `reference-app-rn` runs, minus WebRTC. Start it, then make it its own owner with
  * {@link makeOwnOwner}. Pass `bootstrapPeerStore` to read what `addDrone`
  * or `claimNode` retained as a dial target.
@@ -348,7 +370,7 @@ export async function buildPhoneOwner(
   return new CadreNode(controlNodeConfig({
     partyId,
     privateKey: await generateKeyPair('Ed25519'),
-    profile: 'transaction',
+    nodeClass: 'device',
     // Nothing can dial a phone: whatever connects the two, the phone opened it.
     listenAddrs: [],
     reconcileMs: PHONE_RECONCILE_MS,
@@ -485,7 +507,7 @@ export async function startPairNodes(
   const { strandWatchMs, started } = opts;
 
   const aKey = await generateKeyPair('Ed25519');
-  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandWatchMs }));
+  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true, strandWatchMs }));
   await A.start();
   started?.push(A);
 
@@ -494,7 +516,7 @@ export async function startPairNodes(
   const ownerKey = ordering === 'genesis-before-b' ? await makeOwnOwner(A) : undefined;
 
   const bKey = await generateKeyPair('Ed25519');
-  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
+  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, nodeClass: 'device', strandWatchMs }));
   await B.start();
   started?.push(B);
 
@@ -502,7 +524,7 @@ export async function startPairNodes(
 }
 
 /**
- * Boot node A (owner + writer, storage profile so it holds the CadrePeer blocks) and
+ * Boot node A (owner + writer, a server so it holds the CadrePeer blocks) and
  * node B (a plain READER — deliberately NOT its own owner, so every row it observes
  * must have arrived over the wire) on a fresh party, DISCONNECTED. A vouches B
  * (`authorizePeer`) right after B starts, so A's inbound connection gate later admits

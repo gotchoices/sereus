@@ -26,7 +26,7 @@ function claimContainer(overrides: Partial<Container> = {}): Container {
     id: 'ctr_1',
     customerId: 'cust-1',
     partyId: UNCLAIMED_PARTY_ID,
-    profile: 'storage',
+    nodeClass: 'server',
     status: 'running',
     dockerId: 'docker-1',
     healthEndpoint: 'http://localhost:8080/health',

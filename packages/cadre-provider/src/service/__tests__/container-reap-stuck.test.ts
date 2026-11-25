@@ -28,7 +28,7 @@ function record(status: ContainerStatus, msAgo: number, extra: Partial<Container
     id: 'ctr_1',
     customerId: 'cust-1',
     partyId: 'party-1',
-    profile: 'transaction',
+    nodeClass: 'device',
     status,
     resources: {},
     tags: {},

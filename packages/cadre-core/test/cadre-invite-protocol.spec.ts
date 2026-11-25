@@ -132,7 +132,7 @@ describe('cadre invitation redemption protocol', () => {
     partyId = 'cadre-invite-proto-' + Math.random().toString(36).slice(2);
     member = new CadreNode({
       controlNetwork: { partyId, bootstrapNodes: [] },
-      profile: 'transaction',
+      nodeClass: 'device',
       // The member judges the device's chain against THIS anchor once the rows are written.
       trustedOwners: { pinnedKeys: [founder.publicKey] }
     });

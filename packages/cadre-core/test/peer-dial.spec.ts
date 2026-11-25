@@ -8,7 +8,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Connection, PeerId } from '@libp2p/interface';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
-import { dialAddr, dialPeerAddrs, directBeforeRelayed, tryAddrsInTurn, trailingPeerId, withTrailingPeerId, SelfRelayOnlyError, type AddrDialer } from '../src/peer-dial.js';
+import { addrKind, dialAddr, dialPeerAddrs, directBeforeRelayed, tryAddrsInTurn, trailingPeerId, withTrailingPeerId, SelfRelayOnlyError, type AddrDialer } from '../src/peer-dial.js';
 import { startSilentServer, type SilentServer } from './silent-server.js';
 
 /**
@@ -305,16 +305,53 @@ describe('withTrailingPeerId', () => {
 	});
 });
 
-describe('directBeforeRelayed', () => {
-	it('moves circuit-relay addresses after direct ones, keeping each group in order', () => {
-		const relayId = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-		const circuitA = multiaddr(`/ip4/9.9.9.9/tcp/4001/p2p/${relayId}/p2p-circuit`);
-		const circuitB = multiaddr(`/dns4/r.example.org/tcp/443/wss/p2p/${relayId}/p2p-circuit`);
-		const lan = multiaddr('/ip4/192.168.1.5/tcp/4002/ws');
-		const loopback = multiaddr('/ip4/127.0.0.1/tcp/4002/ws');
+/**
+ * The ordering contract a dial someone is waiting on depends on: a WebRTC address, whose
+ * connection opens only if ICE finds a path between the two networks, must never be tried
+ * before an address that would have worked (gotchoices/sereus#61). Stated as the classification
+ * plus the order it produces over one mixed list, because every site that treats the three
+ * kinds differently — the order here, `reusableConnection`, formation's filter — reads the same
+ * `addrKind`, so a change to it that put WebRTC back in front shows up here.
+ */
+describe('addrKind + directBeforeRelayed', () => {
+	const RELAY_1 = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+	const RELAY_2 = '12D3KooWRelayBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+	const PEER = '12D3KooWTargetAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+	/** An arbitrary sha2-256 multihash; nothing here verifies it (no connection is attempted). */
+	const CERTHASH = 'uEiDriKKtLzKrTdlDsdqSFqCGZ5uV1Sy4rDeYcTNTNKgpJQ';
 
-		expect(directBeforeRelayed([circuitA, lan, circuitB, loopback]).map(String))
-			.toEqual([lan, loopback, circuitA, circuitB].map(String));
+	const relayed = (relay: string): string => `/ip4/9.9.9.9/tcp/4001/ws/p2p/${relay}/p2p-circuit/p2p/${PEER}`;
+	const webrtc = (relay: string): string => `/ip4/9.9.9.9/tcp/4001/ws/p2p/${relay}/p2p-circuit/webrtc/p2p/${PEER}`;
+	const lan = `/ip4/192.168.1.5/tcp/4002/ws/p2p/${PEER}`;
+	const webrtcDirect = `/ip4/9.9.9.9/udp/4001/webrtc-direct/certhash/${CERTHASH}/p2p/${PEER}`;
+	const hopOnly = `/ip4/9.9.9.9/tcp/4001/ws/p2p/${RELAY_1}/p2p-circuit`;
+
+	it.each([
+		// `/webrtc-direct` is DIRECT: it is dialed without a relay, so there is nothing to fall
+		// back to and no reason to put it last.
+		[webrtcDirect, 'direct'],
+		[lan, 'direct'],
+		// A relay hop with the destination still missing — what `withTrailingPeerId` completes —
+		// is relayed, not direct.
+		[hopOnly, 'relayed'],
+		[relayed(RELAY_1), 'relayed'],
+		[webrtc(RELAY_1), 'webrtc'],
+	] as const)('classifies %s as %s', (addr, kind) => {
+		expect(addrKind(multiaddr(addr))).toBe(kind);
+	});
+
+	it('orders direct, then every relayed address, then every WebRTC one', () => {
+		// Two relays, so the per-relay pairs would interleave under any sort that kept them
+		// together: all relayed addresses must come before the FIRST WebRTC one.
+		const given = [webrtc(RELAY_1), relayed(RELAY_1), webrtcDirect, webrtc(RELAY_2), lan, relayed(RELAY_2)];
+
+		expect(directBeforeRelayed(given.map((a) => multiaddr(a))).map(String))
+			.toEqual([webrtcDirect, lan, relayed(RELAY_1), relayed(RELAY_2), webrtc(RELAY_1), webrtc(RELAY_2)]);
+	});
+
+	it('keeps a peer whose only addresses are WebRTC ones dialable', () => {
+		const only = [webrtc(RELAY_1), webrtc(RELAY_2)];
+		expect(directBeforeRelayed(only.map((a) => multiaddr(a))).map(String)).toEqual(only);
 	});
 });
 

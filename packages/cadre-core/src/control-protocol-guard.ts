@@ -32,7 +32,7 @@
  *    guard existed, so moving it here changes nobody's admission. That matters most for
  *    strand-addr's delegate grant, which hands out connection and relay admission. The live read
  *    also has no window during `start()` where it admits everyone, which the snapshot does.
- *  - `members-snapshot` — the four Optimystic control-database protocols and the five FRET
+ *  - `members-snapshot` — the five Optimystic control-database protocols and the five FRET
  *    protocols. Authorized members by the in-memory snapshot
  *    (`CadreNode.authorizeInboundControlStream`). These serve the reads a live membership check
  *    would itself make, so a live read from inside their guard would deadlock two machines into
@@ -85,6 +85,7 @@ import { CADRE_INVITE_PROTOCOL } from './cadre-invite-protocol.js';
 import { OWNER_GRANT_PROTOCOL } from './owner-grant-protocol.js';
 import { WAKE_PROTOCOL } from './strand-wake-protocol.js';
 import { STRAND_ADDR_PROTOCOL } from './strand-addr-protocol.js';
+import { WEBRTC_SIGNALING_PROTOCOL } from './webrtc-upgrade.js';
 import { withTimeout } from './control-stream.js';
 import { describeThrown } from './describe-thrown.js';
 
@@ -171,6 +172,9 @@ export function controlProtocolClasses(partyId: string): ReadonlyMap<string, Con
 		...controlDatabaseProtocols(partyId).map((protocol): [string, ControlProtocolClass] => [protocol, 'members-snapshot']),
 		[`${prefix}/db-p2p/sync/1.0.0`, 'members-snapshot'],
 		[`${prefix}/db-p2p/block-transfer/1.0.0`, 'members-snapshot'],
+		// Blob pieces (Optimystic 1.29.0). Its announce handler reads committed state to check a
+		// reference, so it belongs with the reads a live membership check would itself make.
+		[`${prefix}/db-p2p/blob/1.0.0`, 'members-snapshot'],
 		[`${fret}/neighbors`, 'members-snapshot'],
 		[`${fret}/neighbors/announce`, 'members-snapshot'],
 		[`${fret}/maybeAct`, 'members-snapshot'],
@@ -183,10 +187,10 @@ export function controlProtocolClasses(partyId: string): ReadonlyMap<string, Con
 		['/libp2p/dcutr', 'transport'],
 		['/libp2p/autonat/1.0.0', 'transport'],
 		['/libp2p/circuit/relay/0.2.0/stop', 'transport'],
-		// Registered only while the relay server runs (the storage profile's default).
+		// Registered only while the relay server runs (a `'server'` node's default).
 		['/libp2p/circuit/relay/0.2.0/hop', 'transport'],
 		// Registered only when an embedder's `network.transports` includes WebRTC.
-		['/webrtc-signaling/0.0.1', 'transport'],
+		[WEBRTC_SIGNALING_PROTOCOL, 'transport'],
 	]);
 }
 

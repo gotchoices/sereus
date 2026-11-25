@@ -76,7 +76,7 @@ describe('JoinedStrand authorization (row-bound + single-use stamp)', () => {
         partyId: 'joined-strand-authz-' + rand(),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

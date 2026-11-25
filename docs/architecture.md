@@ -15,24 +15,24 @@ A **control network** connects the control nodes of one party and carries that p
 ```mermaid
 graph TB
     subgraph PA["Party A's cadre"]
-        subgraph AP["Phone app (transaction profile)"]
+        subgraph AP["Phone app (device class)"]
             APC["control node"]
             APX["strand node X"]
         end
-        subgraph AH["Home machine (storage profile)"]
+        subgraph AH["Home machine (server class)"]
             AHC["control node"]
             AHX["strand node X"]
             AHY["strand node Y"]
         end
     end
     subgraph PB["Party B's cadre"]
-        subgraph BT["Browser tab (transaction profile)"]
+        subgraph BT["Browser tab (device class)"]
             BTC["control node"]
             BTX["strand node X"]
         end
     end
     subgraph PC["Party C's cadre"]
-        subgraph CS["Server (storage profile)"]
+        subgraph CS["Server (server class)"]
             CSC["control node"]
             CSY["strand node Y"]
         end
@@ -137,7 +137,7 @@ A started node replicates the control database, stays connected to its siblings,
 
 Four choices shape a node:
 
-- **Profile.** `transaction` for an app that is connected some of the time, `storage` for an always-on node. The profile sets defaults: a storage node runs a relay server, runs strands no local app has claimed, and is the peer other nodes always dial.
+- **Node class and roles.** `device` for an app that is connected some of the time, `server` for an always-on node. The class is only a preset for four decisions a deployment can set one at a time: whether the machine declares itself always on, its overlay resource tier, whether it carries other subscribers' change notifications, and whether it holds the data of the strands it runs. Declaring itself always on is what makes a node run a relay server, run strands no local app has claimed, and be the peer other nodes always dial.
 - **Strand filter.** Which of the party's strands this node may run: all, one sApp's, one strand, or none.
 - **Key material.** The node's identity key and the owner key live in a `KeyStore` the embedder supplies, which in a React Native app is the platform's secure store.
 - **Storage.** The embedder supplies a block store for the control database and one per strand. A few records the node keeps for itself, such as the anchor, are stored separately and never replicated.
@@ -180,7 +180,7 @@ Start with [Strands: model and lifecycle](strands/lifecycle.md). Then: [Inviting
 
 ### Relays
 
-A phone, a browser tab or a home machine without a forwarded port cannot accept connections. Such a node asks a relay for a reservation, and while it holds one, other machines dial it at an address on the relay. Each control node and each strand node holds its own reservation, because a relay identifies clients by peer id. A dedicated relay, which serves any node that reaches it, is deployed from `ops/`. A storage-profile node also runs a relay server by default, for the nodes of its own party.
+A phone, a browser tab or a home machine without a forwarded port cannot accept connections. Such a node asks a relay for a reservation, and while it holds one, other machines dial it at an address on the relay. Each control node and each strand node holds its own reservation, because a relay identifies clients by peer id. A dedicated relay, which serves any node that reaches it, is deployed from `ops/`. A `server`-class node also runs a relay server by default, for the nodes of its own party.
 
 Owned by [Relays](network/relay.md).
 
@@ -219,8 +219,8 @@ Each platform document lists the globals the runtime lacks, the bundler settings
 
 ## Deployment shapes
 
-- **A single phone.** One transaction-profile node is the whole cadre. A commit made while no other member of a strand is connected is held by the phone alone, and other parties can reach the party only while the app runs and holds a relay reservation.
-- **A phone and an always-on node.** The phone holds the owner key. A cadre-host node, a rented node or a cadre-cli server joins as a storage-profile member, keeps a replica of every strand the party takes part in, answers formation for the party and can wake the phone. This is the shape the hosting programs exist for.
+- **A single phone.** One `device`-class node is the whole cadre. A commit made while no other member of a strand is connected is held by the phone alone, and other parties can reach the party only while the app runs and holds a relay reservation.
+- **A phone and an always-on node.** The phone holds the owner key. A cadre-host node, a rented node or a cadre-cli server joins as a `server`-class member, keeps a replica of every strand the party takes part in, answers formation for the party and can wake the phone. This is the shape the hosting programs exist for.
 - **Mixed.** Several apps and devices with several always-on nodes. The largest party the project plans for is about seven machines (for example a phone, a laptop, three rented nodes and two home machines); the control network's replication breadth of 16 is sized against that. The same rules apply at any size: every node holds the whole control database, the always-on nodes are the ones every other node dials, and a strand served by more nodes than its cluster size stores each block on a subset of them.
 
 The limits of each shape are stated in the subsystem documents: [Writing to a strand](strands/writes.md) for a commit only one machine holds, [Relays](network/relay.md) for reachability, and [Control database replication](cadre/control-replication.md) for cluster sizes.

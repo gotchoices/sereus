@@ -1,6 +1,6 @@
 /**
  * The environment a provider-hosted node is started with — the entire
- * contract between the provider and the node it spawns: party id, profile,
+ * contract between the provider and the node it spawns: party id, node class,
  * listen and announced addresses, health/metrics ports, and how the node joins
  * its cadre: the claim secret (`CADRE_CLAIM_SECRET`) or the invitation bundle
  * (`CADRE_INVITATION`) of a `join`. No `CADRE_SEED_TOKEN`, so the node registers
@@ -92,7 +92,7 @@ export function buildNodeEnv(spec: NodeEnvSpec): string[] {
     // The placeholder party (`UNCLAIMED_PARTY_ID`) for a claim, the bundle's for an
     // invitation; the request carries the right one either way.
     `CADRE_PARTY_ID=${request.partyId}`,
-    `CADRE_PROFILE=${request.profile}`,
+    `CADRE_NODE_CLASS=${request.nodeClass}`,
     `CADRE_HEALTH_PORT=${ports.health}`,
     `CADRE_METRICS_PORT=${ports.metrics}`,
     `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/${ports.p2p},/ip4/0.0.0.0/tcp/${ports.ws}/ws`,

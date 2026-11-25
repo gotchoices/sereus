@@ -42,7 +42,7 @@ import { join } from 'node:path';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode, CONTROL_SCHEMA_VERSION, CONTROL_SCHEMA_VERSION_TAG, buildAuthorizationMessage } from '@serfab/cadre-core';
-import type { ControlDatabase } from '@serfab/cadre-core';
+import type { ControlDatabase, NodeClass } from '@serfab/cadre-core';
 import { controlSchemaReleases, writeSchemaFile } from '../../../../test-harness/control-schema-releases.js';
 import {
 	awaitBlockCoverage,
@@ -66,10 +66,10 @@ function nodeOn(
 	partyId: string,
 	privateKey: PrivateKey,
 	capture: RawStorageCapture,
-	profile: 'storage' | 'transaction',
+	nodeClass: NodeClass,
 	schemaPath: string,
 ): CadreNode {
-	return new CadreNode(controlNodeConfig({ partyId, privateKey, profile, storageProvider: capture.provider, schemaPath }));
+	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: capture.provider, schemaPath }));
 }
 
 const controlDb = (node: CadreNode): ControlDatabase => {
@@ -155,14 +155,14 @@ describe('Control schema migration with mixed releases in one party', () => {
 		const v1 = createTestOwnerKey().publicKey;
 		const v2 = createTestOwnerKey().publicKey;
 
-		let A: CadreNode | undefined = nodeOn(partyId, aKey, captureA, 'storage', previous);
+		let A: CadreNode | undefined = nodeOn(partyId, aKey, captureA, 'server', previous);
 		let B: CadreNode | undefined;
 		try {
 			// ── 1. The party under the previous release; each machine writes a row the other reads ──
 			await A.start();
 			const owner = await makeOwnOwner(A);
 			const sign = (message: Uint8Array): string => signMessageEd25519(message, owner.privateKeyB64);
-			B = nodeOn(partyId, bKey, captureB, 'transaction', previous);
+			B = nodeOn(partyId, bKey, captureB, 'device', previous);
 			await B.start();
 			await A.authorizePeer(B.peerId!.toString());
 			await connectControlNodes(B, A);
@@ -182,7 +182,7 @@ describe('Control schema migration with mixed releases in one party', () => {
 			// ── 2. A updates: restarts under the next release and migrates its catalog; B keeps running ──
 			await A.stop();
 			A = undefined;
-			A = nodeOn(partyId, aKey, captureA, 'storage', next);
+			A = nodeOn(partyId, aKey, captureA, 'server', next);
 			await A.start();
 			await A.useOwnerSigner(owner.signer);
 			expect(storeVersionOf(A)).toBe(releases.nextVersion);
@@ -209,7 +209,7 @@ describe('Control schema migration with mixed releases in one party', () => {
 			await registered(B, 'B');
 			await B.stop();
 			B = undefined;
-			B = nodeOn(partyId, bKey, captureB, 'transaction', previous);
+			B = nodeOn(partyId, bKey, captureB, 'device', previous);
 			await B.start();
 			expect(storeVersionOf(B)).toBe(releases.baseVersion);
 			await expectEveryRow(B, { x1, x2, x3, v1, v2, owner: owner.publicKey }, 'without the column');
@@ -217,7 +217,7 @@ describe('Control schema migration with mixed releases in one party', () => {
 			B = undefined;
 
 			// ── 5. B updates: restarts under the next release, migrates its own lineage, and reads every row ──
-			B = nodeOn(partyId, bKey, captureB, 'transaction', next);
+			B = nodeOn(partyId, bKey, captureB, 'device', next);
 			await B.start();
 			expect(storeVersionOf(B)).toBe(releases.nextVersion);
 			await expectEveryRow(B, { x1, x2, x3, v1, v2, owner: owner.publicKey }, 'with the column');

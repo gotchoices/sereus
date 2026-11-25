@@ -2,7 +2,7 @@
  * An always-on machine keeps a full copy of a strand its app is not installed on, so a phone
  * that is lost after its writes reached that machine loses nothing.
  *
- * One party. The ALWAYS-ON node (`profile: 'storage'`, `hostUnclaimedStrands: true`) never
+ * One party. The ALWAYS-ON node (`nodeClass: 'server'`, `hostUnclaimedStrands: true`) never
  * calls `addStrand`: it runs the strand as a storage replica — the strand's libp2p node, raw
  * store and `Strand` membership schema, without the app's schema. A PHONE founds an open
  * strand and writes rows, some before the replica exists (they reach it by the peer-join
@@ -133,7 +133,7 @@ async function startAlwaysOn(capture: RawStorageCapture): Promise<Owner & { disc
 	const partyId = `always-on-replica-${Date.now()}`;
 	const key = await generateKeyPair('Ed25519');
 	const node = new CadreNode(controlNodeConfig({
-		partyId, privateKey: key, profile: 'storage', hostUnclaimedStrands: true,
+		partyId, privateKey: key, nodeClass: 'server', hostUnclaimedStrands: true,
 		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.provider,
 	}));
 	const discovered = collectDiscovered(node);
@@ -160,7 +160,7 @@ async function enrollPhone(
 	const peerId = peerIdFromPrivateKey(key).toString();
 	await owner.node.authorizePeer(peerId);
 	const node = new CadreNode(controlNodeConfig({
-		partyId: owner.partyId, privateKey: key, profile: 'transaction',
+		partyId: owner.partyId, privateKey: key, nodeClass: 'device',
 		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.provider,
 		pinnedOwnerKeys: [owner.publicKey],
 	}));

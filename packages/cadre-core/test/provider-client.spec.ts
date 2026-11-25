@@ -7,7 +7,7 @@ import type { TokenSource } from '../src/provider/oauth.js';
 function provider(): { fetch: typeof fetch; requests: { path: string; bearer: string | null }[] } {
 	const requests: { path: string; bearer: string | null }[] = [];
 	const container = {
-		id: 'ctr_1', customerId: 'c1', partyId: 'unclaimed', profile: 'storage', status: 'running',
+		id: 'ctr_1', customerId: 'c1', partyId: 'unclaimed', nodeClass: 'server', status: 'running',
 		resources: {}, tags: {}, createdAt: '2026-10-12T10:00:00.000Z', updatedAt: '2026-10-12T10:00:05.000Z',
 		join: { kind: 'claim' }, joinState: { kind: 'claim', state: 'awaiting' },
 	};

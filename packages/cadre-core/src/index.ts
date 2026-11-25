@@ -1,6 +1,26 @@
 // Core types
 export * from './types.js';
 
+// What kind of machine a node runs on, and the stored form of "is this machine always on"
+// the replicated `CadrePeer.Profile` column still holds
+export {
+  type NodeClass,
+  type PublishedProfile,
+  encodeAlwaysOn,
+  decodeAlwaysOn,
+  isPublishedProfile
+} from './node-class.js';
+
+// What a node DOES: the four separately-settable roles, the per-class presets, and the
+// resolution an embedder's `CadreNodeConfig.roles` goes through
+export {
+  type NodeRoles,
+  type OverlayTier,
+  type ReactivityRole,
+  NODE_ROLE_PRESETS,
+  resolveNodeRoles
+} from './node-roles.js';
+
 // Canonical JSON serialization (shared signing payload format)
 export { canonicalJson } from './canonical-json.js';
 
@@ -551,7 +571,7 @@ export {
   verifyPeerRecordSignature,
   isPeerRecordFresh,
   isSignalingAddr,
-  orderSignalingFirst,
+  orderRelayedFirst,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -597,10 +617,12 @@ export {
 // the backstop, redial and degree defaults the proactive reconcile routine reads.
 export {
   selectControlCohortDials,
+  controlCohortSiblingsOf,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
   CONTROL_COHORT_REDIAL_MS,
   type ControlCohortSelection,
+  type ControlCohortSibling,
   type ControlCohortReconcileResult
 } from './control-cohort.js';
 
@@ -905,10 +927,17 @@ export {
 // reference apps) can assert on the resulting SHAPE rather than on its own field names,
 // which is the difference between a test that proves reachability and one that proves a
 // spelling.
+//
+// The two listen-entry constants are exported for the same reason: a host that APPENDS a
+// `/webrtc` entry to an unset `network.listenAddrs` (cadre-cli, for `network.webrtc`) has to
+// carry the default direct listener forward with it, and the spelling of each entry has one
+// home beside the classifier that reads it.
 export {
   RelayReservationFailedError,
   UnbindableListenAddressError,
   RELAY_SEARCH_LISTEN_ADDR,
+  DEFAULT_DIRECT_LISTEN_ADDR,
+  WEBRTC_LISTEN_ADDR,
   resolveListenAddrs
 } from './relay-addrs.js';
 export { strandNodeAddrs, type StrandNodeAddrs } from './strand-network-config.js';
@@ -937,6 +966,8 @@ export {
   DEFAULT_RELAY_CHECK_MS,
   DEFAULT_RELAY_MIN_BACKOFF_MS,
   DEFAULT_RELAY_MAX_BACKOFF_MS,
+  DEFAULT_RELAY_RENEW_MS,
+  RELAY_RENEW_JITTER,
   type RelayReservationStatus,
   type RelayReservationState,
   type RelayReserveOptions,

@@ -91,8 +91,15 @@ export type StaleReason = 'unresolved' | 'missing' | 'stale';
 
 /** What `node_modules/<pkg>` turned out to be, once one was found. */
 export type LinkedPackage =
-	/** A symlink into a working copy at `root`, which is therefore worth checking. */
-	| { readonly status: 'linked'; readonly root: string }
+	/**
+	 * A symlink into a working copy at `root`, which is therefore worth checking.
+	 *
+	 * `junction` is the `node_modules/<pkg>` path that produced `root` — the link
+	 * itself, not its target. `linked-package-spellings.ts` reports it, because a
+	 * package reached under two spellings is fixed by repointing a specific link
+	 * and naming only the target leaves the reader to find which one.
+	 */
+	| { readonly status: 'linked'; readonly root: string; readonly junction: string }
 	/** A real directory — installed from the registry, so its mtimes mean nothing. */
 	| { readonly status: 'not-linked' }
 	/** Nowhere in the chain, or a symlink whose target is gone. `detail` says which. */
@@ -218,7 +225,7 @@ export function resolveLinkedPackage(nodeModulesDir: string, packageName: string
 		// `realpath` both follows the link and normalises the platform's spelling
 		// of its target (a Windows junction target carries a `\\?\` prefix). It
 		// throws when the sibling working copy has been moved or deleted.
-		return { status: 'linked', root: realpathSync(entry) };
+		return { status: 'linked', root: realpathSync(entry), junction: entry };
 	} catch {
 		return { status: 'unresolved', detail: `links to ${linkTarget(entry)}, which no longer exists` };
 	}
@@ -392,7 +399,7 @@ let cachedRoots: Map<string, string> | undefined;
  * outside this repository — so they go through `resolveLinkedPackageFrom`
  * instead, which reads the same kind of symlink from the other end.
  */
-function workspacePackageRoots(): Map<string, string> {
+export function workspacePackageRoots(): Map<string, string> {
 	if (cachedRoots !== undefined) return cachedRoots;
 
 	const packagesDir = join(findRepoRoot(), 'packages');
@@ -427,13 +434,24 @@ export function findWorkspaceRoot(from: string): string | undefined {
 	}
 }
 
-interface PackageManifest {
+export interface PackageManifest {
 	name?: string;
 	workspaces?: unknown;
+	dependencies?: Record<string, string>;
+	peerDependencies?: Record<string, string>;
+	optionalDependencies?: Record<string, string>;
 }
 
-/** Parsed manifest, or `undefined` when there is no readable `package.json` there. */
-function readPackageJson(path: string): PackageManifest | undefined {
+/**
+ * Parsed manifest, or `undefined` when there is no readable `package.json` there.
+ *
+ * Tolerant on purpose, and shared with `linked-package-spellings.ts` for that
+ * reason: both callers read manifests they only hope are there (a package root
+ * found by walking, a sibling's own checkout), and neither can act on a parse
+ * failure. `build-targets.ts` keeps its own throwing reader, which reads a
+ * manifest whose absence would be a bug.
+ */
+export function readPackageJson(path: string): PackageManifest | undefined {
 	try {
 		return JSON.parse(readFileSync(path, 'utf8')) as PackageManifest;
 	} catch {

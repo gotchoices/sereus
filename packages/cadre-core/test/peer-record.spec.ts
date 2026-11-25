@@ -9,8 +9,9 @@ import {
   signPeerRecord,
   verifyPeerRecordSignature,
   isPeerRecordFresh,
+  firstRelayedAddr,
   isSignalingAddr,
-  orderSignalingFirst,
+  orderRelayedFirst,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -136,17 +137,43 @@ describe('isPeerRecordFresh', () => {
   });
 });
 
-describe('signaling address ordering', () => {
-  it('detects /p2p-circuit addrs', () => {
-    expect(isSignalingAddr('/dns4/r/tcp/4001/p2p/X/p2p-circuit/p2p/Y')).toBe(true);
-    expect(isSignalingAddr('/ip4/1.2.3.4/tcp/4001')).toBe(false);
+/**
+ * The ordering parses each address, so these cases use addresses a machine really publishes.
+ * `RELAY`/`PEER` are real peer ids because `@multiformats/multiaddr` validates a `/p2p/` value.
+ */
+const RELAY = '12D3KooWQ7wMHcR6Z9zr2qmFyKW6pYp1VzJPfgoTHKGdEfMXz2Ve';
+const PEER = '12D3KooWQqAJCA3dguWYHWGzwSrVnsxTcPmL68TPqw4or6SLVkUS';
+const RELAYED = `/ip4/203.0.113.10/tcp/443/wss/p2p/${RELAY}/p2p-circuit/p2p/${PEER}`;
+const WEBRTC = `/ip4/203.0.113.10/tcp/443/wss/p2p/${RELAY}/p2p-circuit/webrtc/p2p/${PEER}`;
+const DIRECT = `/ip4/192.168.1.20/tcp/4001/ws/p2p/${PEER}`;
+
+describe('relayed address ordering', () => {
+  it('counts both relayed shapes as signaling, and nothing else', () => {
+    expect(isSignalingAddr(RELAYED)).toBe(true);
+    expect(isSignalingAddr(WEBRTC)).toBe(true);
+    expect(isSignalingAddr(DIRECT)).toBe(false);
+    expect(isSignalingAddr('not a multiaddr')).toBe(false);
   });
-  it('puts signaling addrs first, preserving relative order, without mutating input', () => {
-    const input = ['/ip4/1.1.1.1/tcp/1', '/p2p-circuit/a', '/ip4/2.2.2.2/tcp/2', '/p2p-circuit/b'];
-    const ordered = orderSignalingFirst(input);
-    expect(ordered).toEqual(['/p2p-circuit/a', '/p2p-circuit/b', '/ip4/1.1.1.1/tcp/1', '/ip4/2.2.2.2/tcp/2']);
+
+  it('puts a WebRTC addr behind the relayed and direct ones, each group keeping its order', () => {
+    // The order a machine listening on `/webrtc` reports: `webrtcListenAddrs` puts `/webrtc`
+    // ahead of the relay's own `/p2p-circuit` entry, so the WebRTC addr arrives first.
+    const secondRelay = `/ip4/203.0.113.11/tcp/443/wss/p2p/${RELAY}/p2p-circuit/p2p/${PEER}`;
+    const input = [WEBRTC, DIRECT, RELAYED, secondRelay];
+    expect(orderRelayedFirst(input)).toEqual([RELAYED, secondRelay, DIRECT, WEBRTC]);
     // input untouched
-    expect(input[0]).toBe('/ip4/1.1.1.1/tcp/1');
+    expect(input[0]).toBe(WEBRTC);
+  });
+
+  it('keeps an addr that does not parse, grouped with the direct ones', () => {
+    expect(orderRelayedFirst([WEBRTC, 'not a multiaddr', RELAYED])).toEqual([RELAYED, 'not a multiaddr', WEBRTC]);
+  });
+
+  it('names the plain relayed addr for a seed, and a WebRTC one only when there is no other', () => {
+    expect(firstRelayedAddr([WEBRTC, DIRECT, RELAYED])).toBe(RELAYED);
+    expect(firstRelayedAddr([DIRECT, WEBRTC])).toBe(WEBRTC);
+    // An addr that ends AT its hop names no destination, so it is no use in a seed.
+    expect(firstRelayedAddr([DIRECT, `/ip4/203.0.113.10/tcp/443/wss/p2p/${RELAY}/p2p-circuit`])).toBeNull();
   });
 });
 

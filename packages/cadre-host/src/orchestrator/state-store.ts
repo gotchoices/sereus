@@ -2,6 +2,8 @@ import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from '
 import { dirname, join } from 'node:path';
 import debug from 'debug';
 
+import type { NodeClass } from '@serfab/cadre-core';
+
 import type { NodePorts } from './types.js';
 
 const log = debug('cadre:host:state-store');
@@ -20,7 +22,7 @@ export interface PersistedHandle {
   ports: NodePorts;
   spawnedAt: string;          // ISO timestamp
   partyId: string;
-  profile: 'storage' | 'transaction';
+  nodeClass: NodeClass;
   /** The public addresses the child was started announcing. Absent in a file written before they existed. */
   announcedAddrs?: string[];
 }
@@ -42,23 +44,30 @@ export class StateStore {
   }
 
   load(): PersistedState {
+    const handles = this.readHandles();
+    assertNodeClass(handles, this.path);
+    return { version: STATE_VERSION, handles };
+  }
+
+  /** The file's handles — none when it is missing, unreadable, or not the shape this writes. */
+  private readHandles(): PersistedHandle[] {
     if (!existsSync(this.path)) {
-      return { version: STATE_VERSION, handles: [] };
+      return [];
     }
     try {
       const raw = readFileSync(this.path, 'utf8');
       const parsed = JSON.parse(raw) as PersistedState;
       if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.handles)) {
         log('state file at %s has unexpected shape; treating as empty', this.path);
-        return { version: STATE_VERSION, handles: [] };
+        return [];
       }
-      return { version: STATE_VERSION, handles: parsed.handles };
+      return parsed.handles;
     } catch (err) {
       // A corrupt state file is operationally significant — surviving children
       // may now be leaked to the OS without an in-memory handle. Make the
       // failure visible rather than silently returning empty.
       log('failed to load state file at %s: %o', this.path, err);
-      return { version: STATE_VERSION, handles: [] };
+      return [];
     }
   }
 
@@ -73,4 +82,18 @@ export class StateStore {
   filePath(): string {
     return this.path;
   }
+}
+
+/**
+ * A handle written before `profile` became `nodeClass` carries no node class, and there
+ * is no migration from the old field. Refuse the whole file by name: re-attaching to its
+ * children would re-spawn them as the wrong kind of machine, and treating it as empty
+ * would leak every surviving child to the OS with no handle to stop it by.
+ */
+function assertNodeClass(handles: readonly PersistedHandle[], path: string): void {
+  if (!handles.some((handle) => typeof handle === 'object' && handle !== null && 'profile' in handle)) return;
+  throw new Error(
+    `state file at ${path} names "profile" on a handle, which this version replaced with "nodeClass"; `
+    + 'there is no migration — stop the node processes it lists, delete the file, and start cadre-host again',
+  );
 }

@@ -36,7 +36,7 @@ import { expectConstraintFailure } from './control-constraint-helpers.js';
  * Each test here captures a legitimately-signed approval for one rule and asserts the
  * previously-colliding rule refuses it BY CONSTRAINT NAME.
  *
- * Every test boots its own `CadreNode` (empty bootstrap, transaction profile): these
+ * Every test boots its own `CadreNode` (empty bootstrap, a device): these
  * probes mutate the owner set and sibling tables, so a shared database would leak
  * state between them.
  */
@@ -204,7 +204,7 @@ describe('CadreControl approval domain separation', () => {
         partyId: 'domain-separation-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

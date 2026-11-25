@@ -9,8 +9,16 @@
  * carries no party id: the claim supplies it, and the node records it.
  *
  * The decoder lives here, beside the encoder, because the phone and the host both need
- * it and neither depends on the other. Imports only `@multiformats/multiaddr`,
- * `@libp2p/peer-id` and `uint8arrays`, so it loads on React Native and in the browser.
+ * it and neither depends on the other. Its own code is pure, and it imports only
+ * `@multiformats/multiaddr`, `@libp2p/peer-id` and `uint8arrays` — nothing platform-bound —
+ * so it loads on React Native and in the browser.
+ *
+ * The one exception is {@link addrKindOfComponents} from `peer-dial.ts`, taken rather than
+ * restated so that "does this address need ICE after its relay hop" has ONE answer in the
+ * package (`docs/network/relay.md` → "Direct connections over WebRTC" is the rule it serves).
+ * That import's own graph reaches `link-budget.ts` and therefore `@optimystic/db-p2p`, which is
+ * heavier than anything else here but is not platform-bound either, and this module is reachable
+ * only through the package index, which loads it regardless.
  */
 import { peerIdFromString } from '@libp2p/peer-id';
 import {
@@ -30,6 +38,7 @@ import {
 import { fromString as uint8ArrayFromString, toString as uint8ArrayToString } from 'uint8arrays';
 import { canonicalJson } from './canonical-json.js';
 import { parseClaimSecret } from './claim-proof.js';
+import { addrKindOfComponents } from './peer-dial.js';
 
 /** Version 1 of the payload; the only one either side reads. */
 export const NODE_CLAIM_PAYLOAD_PREFIX = 'sereus-join:1.';
@@ -102,23 +111,25 @@ export interface NodeClaimAddressOptions {
  *   unparsable ones are dropped, and so is plain TCP unless `includeTcp`.
  * - Public names (`/dns*`) come first: they work away from home. Public IP addresses are
  *   kept only when there is no public name, since they reach the same machine.
- * - Private addresses follow, narrowed by {@link NodeClaimAddressOptions.lan}; relay
- *   addresses last.
+ * - Private addresses follow, narrowed by {@link NodeClaimAddressOptions.lan}; then relay
+ *   addresses, and last of all a relayed address that needs ICE after its hop (`webrtc`),
+ *   which answers nothing for about 23 s when ICE cannot connect.
  *
- * Pure and dependency-light, like the codec beside it, so it loads on React Native too.
- * Finding the LAN address is the caller's (Node: `@serfab/cadre-core/primary-lan-address`).
+ * Pure, like the codec beside it, so it loads on React Native too. Finding the LAN address is
+ * the caller's (Node: `@serfab/cadre-core/primary-lan-address`).
  */
 export function selectNodeClaimAddresses(reported: readonly string[], peerId: string, options: NodeClaimAddressOptions = {}): string[] {
 	const names: string[] = [];
 	const publicIps: string[] = [];
 	const privates: string[] = [];
 	const relayed: string[] = [];
+	const webrtc: string[] = [];
 	for (const raw of reported) {
 		const classified = classifyClaimAddress(raw.trim(), peerId, options);
 		if (!classified) continue;
-		({ name: names, public: publicIps, private: privates, relay: relayed })[classified.kind].push(classified.addr);
+		({ name: names, public: publicIps, private: privates, relay: relayed, webrtc })[classified.kind].push(classified.addr);
 	}
-	return [...new Set([...names, ...(names.length > 0 ? [] : publicIps), ...privates, ...relayed])];
+	return [...new Set([...names, ...(names.length > 0 ? [] : publicIps), ...privates, ...relayed, ...webrtc])];
 }
 
 /**
@@ -133,10 +144,17 @@ export function withClaimDestination(addr: string, peerId: string): string {
 }
 
 /**
- * Where a phone could dial an address from: a relayed address (`/p2p-circuit`), a public name,
- * a public IP, a private (LAN, VPN, link-local) IP, or this machine's own loopback.
+ * Where a phone could dial an address from: a relayed address (`/p2p-circuit`), a relayed
+ * address carrying WebRTC signalling, a public name, a public IP, a private (LAN, VPN,
+ * link-local) IP, or this machine's own loopback.
+ *
+ * `webrtc` is not restricted to the phone's own network — the relay carries its signalling from
+ * anywhere — but the connection itself opens only if ICE finds a path between the two networks,
+ * and otherwise answers nothing for about 23 s. So it is kept apart from `relay`, and everything
+ * that ranks these kinds puts it below the plain relayed address published beside it: see
+ * `docs/network/relay.md` → "Direct connections over WebRTC".
  */
-export type DialAddressKind = 'relay' | 'name' | 'public' | 'private' | 'loopback';
+export type DialAddressKind = 'relay' | 'webrtc' | 'name' | 'public' | 'private' | 'loopback';
 
 /**
  * Classify `addr` for a phone dialing it, or undefined when no phone can dial it at all: it
@@ -160,7 +178,11 @@ function componentsOf(addr: string): AddressComponents | undefined {
 
 /** {@link classifyDialAddress}, keeping the IP for a caller that narrows private addresses by it. */
 function classifyComponents(components: AddressComponents, includeTcp: boolean): { kind: DialAddressKind; ip?: string } | undefined {
-	if (components.some((c) => c.code === CODE_P2P_CIRCUIT)) return { kind: 'relay' };
+	// One answer to "does this need a relay hop, and does it need ICE after that hop"; the
+	// `CODE_P2P_CIRCUIT` test below in `destinationIn` asks a different question.
+	const relayHop = addrKindOfComponents(components);
+	if (relayHop === 'relayed') return { kind: 'relay' };
+	if (relayHop === 'webrtc') return { kind: 'webrtc' };
 	if (!includeTcp && !components.some((c) => c.code === CODE_WS || c.code === CODE_WSS)) return undefined;
 	const host = components[0];
 	if (!host?.value) return undefined;

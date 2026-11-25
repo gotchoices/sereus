@@ -122,7 +122,7 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			// ── The dedicated relay: ungated, no cadre protocols, no default limit ──
 			relay = await startDedicatedRelay();
 
-			// ── A: founder/owner, storage profile, RELAY-ONLY ────────────────────
+			// ── A: founder/owner, a server node, RELAY-ONLY ──────────────────────
 			// `listenAddrs: []` models a machine that cannot accept inbound
 			// connections; `relayAddrs` is fail-fast, so a resolved start() means
 			// the search-route reservation landed.
@@ -130,7 +130,7 @@ describe('E2E same-party strand over a dedicated circuit relay (both ends relay-
 			A = new CadreNode(controlNodeConfig({
 				partyId,
 				privateKey: aKey,
-				profile: 'storage',
+				nodeClass: 'server',
 				listenAddrs: [],
 				relayAddrs: [relay.dialAddr],
 			}));

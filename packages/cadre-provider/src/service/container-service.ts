@@ -225,7 +225,7 @@ export class ContainerService {
       // A claim names the party; until it does the record and the node carry the
       // placeholder, whatever a direct caller passed (the route derives it from the join).
       partyId: join.kind === 'claim' ? UNCLAIMED_PARTY_ID : request.partyId,
-      profile: request.profile,
+      nodeClass: request.nodeClass,
       status: 'pending',
       resources: request.resources ?? {},
       tags: request.tags ?? {},
@@ -267,7 +267,7 @@ export class ContainerService {
       const result = await this.orchestrator.createContainer({
         containerId: container.id,
         partyId: container.partyId,
-        profile: request.profile,
+        nodeClass: request.nodeClass,
         resources: request.resources,
         strandFilter: request.strandFilter,
         ...(push ? { push } : {}),

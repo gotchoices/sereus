@@ -29,7 +29,7 @@ const SAMPLE_NODE: ManagedNodeInfo = {
   id: 'alice',
   dockerId: '12345:abcdef',
   partyId: 'party-alice',
-  profile: 'storage',
+  nodeClass: 'server',
   status: 'running',
   spawnedAt: '2025-01-01T00:00:00Z',
   workdir: '',

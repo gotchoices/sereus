@@ -26,7 +26,7 @@
  * - no member connected and none known: likewise nothing (a founder alone, a storage replica
  *   before anyone arrives).
  * - no member connected and some known: dial every known member at once
- *   ({@link dialPeerAddrs}, direct addresses before relayed ones), each address with the
+ *   ({@link dialPeerAddrs}, direct addresses first, then relayed, then WebRTC), each address with the
  *   relayed-dial budget. A round that connects to one goes back to watching; one that does
  *   not waits a backoff starting at that budget and doubling to
  *   {@link STRAND_REDIAL_MAX_BACKOFF_MS}.

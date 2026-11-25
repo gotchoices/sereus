@@ -107,7 +107,7 @@
  *   A->B block-transfer       92    182   +90 single-block `reason=rebalance` pushes (below)
  *   B->A block-transfer        6      5
  *
- * The invite case's growth is Optimystic's rebalance growth arm on the storage-profile owner: it
+ * The invite case's growth is Optimystic's rebalance growth arm on the server-class owner: it
  * pushes a joiner each block whose cohort the joiner entered unless the owner's rebalance monitor
  * already counts the joiner as holding it, which the monitor learns only from pushes the owner
  * receives. The joiner used to push the owner's own blocks back (101 blocks), which taught it; now
@@ -126,8 +126,8 @@
  *   cadre  A->M block-transfer      96     96
  *   cadre  M->A block-transfer       7      5   M's 2 `reason=rebalance` pushes
  *
- * The strand case is unchanged (A->B block-transfer 44, B->A sync 35): its machines are transaction
- * profile, which runs no rebalance reaction.
+ * The strand case is unchanged (A->B block-transfer 44, B->A sync 35): its machines are devices,
+ * which run no rebalance reaction.
  *
  * MEASURED_ON 2026-10-20, one run of all three cases, on the published Optimystic 1.17.0 and FRET
  * 1.2.1 (`adopt-optimystic-1-17-0`; sereus `ea3eed00`, `@optimystic/*` linked at `0e70f551`, FRET at
@@ -583,7 +583,7 @@ async function cadreCase(): Promise<void> {
 		const partyId = `acct-cadre-${runTag}`
 		acct.alias(partyId, '<party>')
 		const aKey = await generateKeyPair('Ed25519')
-		const nodeA = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'transaction', strandFilter: 'none', listenAddrs: [] }))
+		const nodeA = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none', listenAddrs: [] }))
 		A = nodeA
 		acct.label(peerIdFromPrivateKey(aKey).toString(), 'A.ctl')
 		acct.addCadre('A', nodeA)
@@ -620,7 +620,7 @@ async function cadreInviteCase(): Promise<void> {
 		const partyId = `acct-inv-${runTag}`
 		acct.alias(partyId, '<party>')
 		const aKey = await generateKeyPair('Ed25519')
-		const nodeA = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', strandFilter: 'none' }))
+		const nodeA = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'server', strandFilter: 'none' }))
 		A = nodeA
 		acct.label(peerIdFromPrivateKey(aKey).toString(), 'A.ctl')
 		acct.addCadre('A', nodeA)

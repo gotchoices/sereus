@@ -5,7 +5,7 @@
 import { StrandAwaitingFirstSyncError } from '../strand-first-sync-gate.js';
 import type { CadreNode } from '../cadre-node.js';
 import type { StrandConfig, StrandInstance } from '../types.js';
-import { describeThrown } from '../describe-thrown.js';
+import { causeChain, reportsUnansweredShortfall } from '../control-retry.js';
 
 /** Default patience for {@link attachStrandWhenWritable}: generous enough that running out means something is wrong. */
 export const DEFAULT_STRAND_PATIENCE_MS = 240_000;
@@ -38,16 +38,6 @@ export async function attachStrandWhenWritable(
 }
 
 /**
- * Optimystic's cluster coordinator reports a write that could not gather enough approvals this
- * way. It is transient right after a node restarts alone: its cohort has not reconnected yet.
- *
- * NOTE: matched on the message. Optimystic 1.20.0 raises this failure as `PromiseShortfallError` and
- * keeps the sentence unchanged as a contract, so the match holds; moving to the type is the second arm
- * of backlog `debt-control-write-retry-matches-the-shortfall-by-type`.
- */
-const SUPER_MAJORITY_FAILURE = /Failed to get super-majority/i;
-
-/**
  * Run a write, retrying only on the transient super-majority failure the first writes after a lone
  * restart hit (v1.9 release notes): `attempts` tries, `delayMs` apart. Any other error, and the
  * last attempt's, propagates.
@@ -69,6 +59,31 @@ export async function retryAfterRestart<T>(
 	}
 }
 
+/**
+ * Optimystic's cluster coordinator reporting a write too few of the cohort answered. Transient right
+ * after a node restarts alone: its cohort has not reconnected yet. A lone node's own refusal to
+ * write by itself is claimed too — `CoordinatorRepo.refuseSoloPend` builds the shortfall with
+ * `approvals: 1, rejections: 0`, a zero rejection count like any silent-cohort shortfall, and
+ * `soloRefused` naming why, which nothing here branches on.
+ *
+ * The SAME predicate the control-write classifier claims the shortfall with
+ * ({@link reportsUnansweredShortfall}), so the funnel every control write passes through and this
+ * helper cannot drift apart on which shortfall is worth re-presenting. What this helper does NOT
+ * share is that funnel's commit-phase veto: it wraps an app's own write, with no transactor
+ * aggregate around it to read a phase off.
+ *
+ * Matching the class rather than the sentence NARROWS this helper, deliberately. A shortfall
+ * carrying a REJECTION is no longer claimed (a member voted no, and no backoff changes that), nor is
+ * a non-`Error` throw, which can carry no typed link at all — and this helper sleeps 3 s between
+ * five attempts, so claiming one on its text would spend 12 s before the identical failure.
+ *
+ * It does not measurably widen the reach, despite now walking the chain: the old match read
+ * `describeThrown(err)`, the top-level `message` alone, but every wrapper between the raise site and
+ * an app interpolates the inner message into its own, so the sentence was visible there anyway.
+ * Reaching the typed link at any depth is what makes the claim independent of that — an upstream
+ * rewording, or a wrapper that summarises instead of interpolating, no longer silently disables the
+ * retry.
+ */
 function isTransientWriteFailure(err: unknown): boolean {
-	return SUPER_MAJORITY_FAILURE.test(describeThrown(err));
+	return reportsUnansweredShortfall(causeChain(err));
 }

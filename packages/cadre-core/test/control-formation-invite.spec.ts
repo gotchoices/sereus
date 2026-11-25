@@ -37,7 +37,7 @@ const log = debug('sereus:cadre:test:formation-invite');
  *     by the FormationUsage branch of `Strand.AuthorizedInsert`.
  *  3. Rejection of redemptions against a non-existent or expired invite.
  *
- * Boots a real CadreNode (empty bootstrap, transaction profile — no network
+ * Boots a real CadreNode (empty bootstrap, a device — no network
  * peers), the same harness the genesis / authorization-binding specs use.
  */
 describe('control formation invite (consent path: FormationInvite + FormationUsage)', () => {
@@ -113,7 +113,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         partyId: 'formation-invite-' + rand(),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 
@@ -1440,7 +1440,7 @@ describe('ControlDatabase.hasOutstandingFormationInvite (DB-wide redeemable scan
 
     node = new CadreNode({
       controlNetwork: { partyId: 'formation-outstanding-' + rand(), bootstrapNodes: [] },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

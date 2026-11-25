@@ -44,7 +44,7 @@ const YEAR_MS = 365 * 24 * 3600_000;
 const POLL_MS = 250;
 
 const options = JSON.parse(process.argv[2]);
-const { label, partyId, stateDir, relayAddr, profile, offline } = options;
+const { label, partyId, stateDir, relayAddr, nodeClass, offline } = options;
 const say = (msg) => console.log(`[restart-party ${label}] ${msg}`);
 
 const keyStore = new FileKeyStore(join(stateDir, 'keys'));
@@ -63,9 +63,9 @@ const journalFor = (scope) => {
 };
 const node = new CadreNode({
 	controlNetwork: { partyId, bootstrapNodes: [] },
-	profile,
+	nodeClass,
 	strandFilter: { mode: 'all' },
-	// Not a replica host: the storage profile here stands for "holds control blocks", and
+	// Not a replica host: a server node here stands for "holds control blocks", and
 	// the scenario asserts which strands each party runs.
 	hostUnclaimedStrands: false,
 	storage: { provider: (scope) => new FileRawStorage(join(stateDir, 'storage', scope)) },

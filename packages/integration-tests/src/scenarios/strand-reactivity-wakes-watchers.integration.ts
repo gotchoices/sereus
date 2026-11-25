@@ -30,11 +30,21 @@
  * REGISTRATION. The table is tagged in the sApp schema, and the scenario first checks that the
  * tag opened a network watch on every machine. That watch opened while the collection was still
  * empty, so nothing registers until a renewal tick (30 s) reads a committed tail. The scenario
- * commits a seed row and waits for every machine to register on its own, at nearly the same
- * moment — the first at a cold root after a proof of work (0.3-17 s on Node, optimystic
- * `bug-first-registration-proof-of-work-freezes-the-node-for-seconds`). Only then does each
+ * commits a seed row and waits for every machine to register on its own. Each machine's renewal
+ * timer runs on its own phase (it starts when that machine's watch opens), so they register at
+ * their OWN ticks rather than together: measured, one machine is registered as the seed commit
+ * resolves and the others follow up to 30 s later, which is what {@link REGISTRATION_BUDGET_MS}
+ * covers. The first registration at a cold root also pays a proof of work (0.3-17 s on Node,
+ * optimystic `bug-first-registration-proof-of-work-freezes-the-node-for-seconds`). Only then does each
  * machine open its app-level `Database.watch`, so the watch service's one wake for its first tail
  * read (`collection-watch.ts` module doc) has already fired and no measured round counts it.
+ *
+ * The seed commit is preceded by a check that the machines answer alike about who serves the strand
+ * ({@link awaitSettledCohortView}). It is a guard, not a remedy — see its own comment for what was
+ * measured — because the flake it was meant to remove is upstream: a watcher that registers in the
+ * seconds after its machine joins can be recorded outside the group that announces the table's
+ * commits, and is then woken only by its own 30 s tail read for about 90 s
+ * (`report-reactivity-registration-lands-outside-the-root-group`, `tickets/blocked/`).
  *
  * Commits are sequential, never `Promise.all` across machines (simultaneous writers block each
  * other; see `convergence-stress.integration.ts`). A machine that both stores and watches can
@@ -56,19 +66,26 @@ import {
 	bootTopology,
 	joinStrandOn,
 	createSignedSAppConfig,
+	waitForCohortAgreement,
 	waitUntil,
 	sleep,
 	type Topology,
 	type TopologyMachine,
 } from '../harness/index.js';
 
-/** One tagged table: the only collection on the strand with a network watch. */
+/**
+ * One tagged app table. The strand's own `Strand.AppSchemaVersion` is tagged too
+ * (docs/strands/app-schema.md), so each machine holds {@link SCHEMA_TAG_WATCHES} network watches.
+ */
 const TAGGED_SCHEMA = `
 table Data (
     Key text primary key,
     Val text
 ) with tags ("optimystic.network_watch" = true);
 `;
+
+/** `App.Data` and `Strand.AppSchemaVersion`, each a primary key only: one collection apiece. */
+const SCHEMA_TAG_WATCHES = 2;
 
 /** Every block on two of the three machines, so one machine is outside any block's storage group. */
 const STRAND_BREADTH = 2;
@@ -85,6 +102,14 @@ const WAKE_BOUND_MS = 35_000;
 const REGISTRATION_BUDGET_MS = 90_000;
 
 /**
+ * Budget for the machines to answer alike about who serves the strand, before the seed commit. It
+ * resolves in about 260 ms in practice; the budget is wide because the ring reaches every member
+ * within a few seconds (`harness/control-cohort.ts` header) and a slow bring-up should not be
+ * reported as a disagreement.
+ */
+const COHORT_AGREEMENT_BUDGET_MS = 20_000;
+
+/**
  * Wait after the last registration before the first measured commit: two rounds of db-p2p's
  * cohort gossip (`DEFAULT_GOSSIP_INTERVAL_MS`, 5 s).
  *
@@ -98,8 +123,12 @@ const REGISTRATION_BUDGET_MS = 90_000;
  */
 const RECORD_GOSSIP_SETTLE_MS = 10_000;
 
-/** Bring-up (~6 libp2p nodes, ~4 s), the registration budget, the settle, and three rounds at the bound. */
-const TEST_TIMEOUT_MS = 240_000;
+/**
+ * Every budget below it, summed, with headroom: bring-up (~6 libp2p nodes, ~4 s), the schema-tag
+ * watch wait (10 s), the cohort-agreement and registration budgets, the settle, and three rounds at
+ * the bound — 239 s of worst case.
+ */
+const TEST_TIMEOUT_MS = 270_000;
 
 /**
  * The collection id the plugin opens `App.Data`'s network watch under: the table's default
@@ -220,13 +249,43 @@ function watchedCollections(machine: StrandMachine): number {
 /** The tag in the sApp schema opened a network watch on every machine (the production path). */
 async function awaitSchemaTagWatches(machines: ReadonlyArray<StrandMachine>): Promise<void> {
 	try {
-		await waitUntil(() => machines.every((m) => watchedCollections(m) === 1), { timeoutMs: 10_000, intervalMs: 50 });
+		await waitUntil(() => machines.every((m) => watchedCollections(m) === SCHEMA_TAG_WATCHES), { timeoutMs: 10_000, intervalMs: 50 });
 	} catch (error) {
 		throw new Error(
 			"the sApp schema's network_watch tag did not open a network watch on every machine ("
 			+ machines.map((m) => `${m.label}: ${watchedCollections(m)} watched`).join(', ') + ')',
 			{ cause: error });
 	}
+}
+
+/**
+ * The machines answer alike about who serves the strand, so the root group they each compute for a
+ * tail is the same one.
+ *
+ * NOTE: this is a GUARD, not the remedy it was added as. It was meant to move the seed commit out
+ * of a window in which the machines still disagreed about the watched table's root group
+ * (`report-reactivity-registration-lands-outside-the-root-group`, `tickets/blocked/`). Measured on
+ * 2026-11-21, there is no such window to move out of here: the machines already answer alike about
+ * every one of the wait's probe coordinates within about 260 ms of the schema-tag watches opening,
+ * and their answers do not change across the seed commit (sampled every 300 ms through it, in two
+ * runs). The scenario still failed 2 of 12 runs with the wait in place, against 2 of 8 without it.
+ *
+ * It also cannot cover the coordinate the failure turns on. It probes eight FIXED ring coordinates,
+ * while a notification is rooted at the log tail's own coordinate — which does not exist until the
+ * seed commit creates the tail, so no pre-commit wait can ask about it. A resolved wait therefore
+ * says the machines agree about the strand in general, never that they agree about the tail.
+ *
+ * What the wait is worth is the failure it raises if that precondition ever stops holding: it names
+ * the machines that disagree, instead of surfacing as the push assertion 30 s later. Remove it —
+ * rather than keeping it — if the upstream report closes on a different cause.
+ */
+async function awaitSettledCohortView(machines: ReadonlyArray<StrandMachine>): Promise<void> {
+	await waitForCohortAgreement(
+		machines.map((machine) => ({ libp2p: machine.node, label: machine.label })),
+		{
+			timeoutMs: COHORT_AGREEMENT_BUDGET_MS,
+			description: `${machines.length} strand machines to answer every probe key alike`
+		});
 }
 
 /** Seed commit, then wait for every machine's schema-opened watch to register on its own. */
@@ -376,6 +435,7 @@ describe('Strand change notifications wake watchers on other machines', () => {
 
 			machines.push(...instances.map((instance, i) => strandMachine(`p[${i}]`, instance)));
 			await awaitSchemaTagWatches(machines);
+			await awaitSettledCohortView(machines);
 			await seedThenAwaitRegistrations(machines);
 			for (const machine of machines) {
 				spyOnDeliveries(machine);

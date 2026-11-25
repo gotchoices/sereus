@@ -5,17 +5,25 @@
  * statement of its peer id in the strand), the live `CadrePeer` rows judged by this node's
  * membership predicate, and the `CadrePeer` tombstones.
  *
- * Two readers. The closed-strand membership reconciler (`strand-membership-reconciler.ts`)
- * binds every live sibling under the party's current member key and clears a removed
- * machine's binding, so a sibling that was offline when the party's key changed is already
- * bound when it returns, and a machine wrongly bound under a key is cleared. Who binds whom is
- * stated in `docs/strands/membership.md` → Binding the party's machines. The same loop reads the
- * party's pending key through this seam ({@link PartyStrandPeerSource.pendingKey}): while the
- * party is moving to another key in the strand, a staged invitation is redeemed under that key
- * rather than the current one (`docs/strands/keys.md` → Replacing the party's key). On a node
- * offering offline mode, `strand-party-machines.ts` reads the live machines of every strand,
- * open or closed, as the machines a queued transaction must not be committed without
- * (`docs/strands/writes.md` → Waiting for the party's own machines).
+ * Three readers, two of which bind and read {@link PartyStrandPeers.live} whole, clients
+ * included; only the third cares which machines serve.
+ *
+ * The closed-strand membership reconciler (`strand-membership-reconciler.ts`) binds every live
+ * sibling under the party's current member key and clears a removed machine's binding, so a
+ * sibling that was offline when the party's key changed is already bound when it returns, and a
+ * machine wrongly bound under a key is cleared. Who binds whom is stated in
+ * `docs/strands/membership.md` → Binding the party's machines. The same loop reads the party's
+ * pending key through this seam ({@link PartyStrandPeerSource.pendingKey}): while the party is
+ * moving to another key in the strand, a staged invitation is redeemed under that key rather
+ * than the current one (`docs/strands/keys.md` → Replacing the party's key).
+ *
+ * The party key rotation driver (`strand-party-key-rotation.ts`, step 3) binds the same live
+ * machines under the key the party is moving to, through `CadreNode`'s `readSiblingPeerIds`.
+ *
+ * On a node offering offline mode, `strand-party-machines.ts` reads the live machines of every
+ * strand, open or closed, and keeps the ones that SERVE the strand as the machines a queued
+ * transaction must not be committed without (`docs/strands/writes.md` → Waiting for the party's
+ * own machines).
  */
 
 import type { OpenedPendingPartyKey } from './strand-party-key-rotation.js';
@@ -38,6 +46,14 @@ export interface PartyStrandPeer {
   readonly peerId: string;
   /** Its peer id in this strand's network. */
   readonly strandPeerId: string;
+  /**
+   * Whether the machine stores the strand's blocks: the row's role is not `'client'`. Only the
+   * offline queue's machine tracker (`strand-party-machines.ts`) reads it, to leave a client out
+   * of the machines a queued transaction waits for. Fixed at the machine's first publish for the
+   * strand, since the row is immutable (`docs/strands/membership.md` → "Limits and accepted
+   * tradeoffs").
+   */
+  readonly serves: boolean;
 }
 
 /** The party's machines' peer ids in one strand, as {@link partitionPartyStrandPeers} sorts them. */
@@ -46,6 +62,11 @@ export interface PartyStrandPeers {
    * The party's live machines other than this one: each has a `StrandPeer` row and a live
    * `CadrePeer` row that passes the membership predicate (`CadreMachine.trusted`, which is false
    * for this node itself). One entry per strand peer id.
+   *
+   * Clients are in this list, with {@link PartyStrandPeer.serves} false: a closed strand's
+   * bindings must cover every machine of the party, serving or not, or a client is refused once
+   * the key it was bound under leaves (`docs/strands/membership.md` → "Binding the party's
+   * machines"). The one reader that must skip them filters on `serves` itself.
    */
   live: readonly PartyStrandPeer[];
   /**
@@ -97,9 +118,10 @@ export interface PartyStrandPeerSource {
  * Sort a strand's `StrandPeer` rows into the party's live siblings and its removed machines
  * ({@link PartyStrandPeers}). A row whose machine has a live `CadrePeer` row is a live sibling
  * when that row passes the membership predicate and is ignored otherwise (this node's own row,
- * or a machine this node's anchor does not trust). A row whose machine has no live `CadrePeer`
- * row is a removed machine only when a `CadrePeer` tombstone names it; otherwise the machine's
- * row has simply not replicated here yet, and the row is ignored.
+ * or a machine this node's anchor does not trust). The row's role becomes the sibling's
+ * {@link PartyStrandPeer.serves}; no row is dropped for its role. A row whose machine has no
+ * live `CadrePeer` row is a removed machine only when a `CadrePeer` tombstone names it;
+ * otherwise the machine's row has simply not replicated here yet, and the row is ignored.
  */
 export function partitionPartyStrandPeers(
   rows: readonly StrandPeerRow[],
@@ -116,7 +138,7 @@ export function partitionPartyStrandPeers(
     const machine = liveMachines.get(row.peerId);
     if (machine !== undefined) {
       if (machine.trusted && !live.has(row.strandPeerId)) {
-        live.set(row.strandPeerId, { peerId: row.peerId, strandPeerId: row.strandPeerId });
+        live.set(row.strandPeerId, { peerId: row.peerId, strandPeerId: row.strandPeerId, serves: row.role !== 'client' });
       }
     } else if (removedMachines.has(row.peerId)) {
       removed.add(row.strandPeerId);

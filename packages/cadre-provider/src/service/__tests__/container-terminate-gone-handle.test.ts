@@ -19,7 +19,7 @@ function reclaimedRecord(): Container {
     id: 'ctr_1',
     customerId: 'cust-1',
     partyId: 'party-1',
-    profile: 'transaction',
+    nodeClass: 'device',
     status: 'error',
     error: 'container process exited during enrollment (restarts=2, exitCode=1)',
     resources: {},

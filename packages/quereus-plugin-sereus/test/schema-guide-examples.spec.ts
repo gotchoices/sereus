@@ -1,9 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { Database, Parser, createScalarFunction, quoteIdentifier, registerPlugin } from '@quereus/quereus';
+import { Database, Parser, createScalarFunction, quoteIdentifier } from '@quereus/quereus';
 import type { TableSchema } from '@quereus/quereus';
-import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import { applyAppSchema } from '../src/app-schema.js';
 import { fencedBlocks } from './helpers/fenced-blocks.js';
 import { applyStrandSchema } from './helpers/strand-schema.js';
@@ -92,11 +91,10 @@ function schemaNames(blocks: GuideBlock[]): string[] {
 
 async function guideDatabase(): Promise<Database> {
 	const db = new Database();
-	// Registered as the Node platform does (`src/connect.ts`): every strand has digest/verify.
-	await registerPlugin(db, cryptoPlugin);
 	for (const fn of APP_SUPPLIED_FUNCTIONS) {
 		db.registerFunction(fn);
 	}
+	// Registers the crypto plugin too, so every example has digest/verify.
 	await applyStrandSchema(db);
 	return db;
 }

@@ -6,6 +6,7 @@ import { signSchema } from '../src/schema-verification.js';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
+import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
  * **What this protects: the ARMING GATE of the peer-join block catch-up.**
@@ -44,7 +45,11 @@ const mocks = vi.hoisted(() => {
 
 // Partial mock: only `createLibp2pNode` is stubbed. The real module stays for the
 // storage classes (`MemoryRawStorage`, `CachedRawStorage`) that cadre-core's cache
-// wrap (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`) instanceof-checks on every strand launch.
+// wrap (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`) instanceof-checks on every strand launch,
+// for `resolveLinkDeadlines`, from which cadre-core derives the dial limits it states on every node
+// it builds (`optimysticDialLimits`), and for `FindCoordinatorError`, which `control-read-retry.ts`
+// matches a launch that reached no machine by. A narrowed mock fails on the missing export instead,
+// naming the mock rather than the cause.
 vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
@@ -82,7 +87,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   return {
     strandRow,
     sAppConfig,
-    profile: 'transaction',
+    roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
     storage: { provider: fakeStorage() },
     ...overrides

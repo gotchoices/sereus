@@ -125,7 +125,7 @@ describe('ControlDatabase — membership views', () => {
 
 		node = new CadreNode({
 			controlNetwork: { partyId: 'membership-view-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
-			profile: 'transaction'
+			nodeClass: 'device'
 		});
 		await node.start();
 		clearTimeout(selfRegistrationTimerSlot(node).selfRegistrationTimer ?? undefined);

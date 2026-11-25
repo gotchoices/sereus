@@ -21,7 +21,7 @@
  * the inner storage without sleeping: it issues no operation of its own.
  */
 
-import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability, StoredProofEntry } from '@optimystic/db-p2p';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 
@@ -102,6 +102,26 @@ export class SlowRawStorage implements IRawStorage {
 	async saveBlockProof(blockId: BlockId, rev: number, proof: BlockCommitProof): Promise<void> {
 		await this.slow();
 		return this.inner.saveBlockProof(blockId, rev, proof);
+	}
+
+	async getProofEntry(blockId: BlockId, rev: number): Promise<StoredProofEntry | undefined> {
+		await this.slow();
+		return this.inner.getProofEntry(blockId, rev);
+	}
+
+	async saveProofEntry(blockId: BlockId, rev: number, entry: StoredProofEntry): Promise<void> {
+		await this.slow();
+		return this.inner.saveProofEntry(blockId, rev, entry);
+	}
+
+	async getCommitProof(messageHash: string): Promise<BlockCommitProof | undefined> {
+		await this.slow();
+		return this.inner.getCommitProof(messageHash);
+	}
+
+	async saveCommitProof(messageHash: string, proof: BlockCommitProof): Promise<void> {
+		await this.slow();
+		return this.inner.saveCommitProof(messageHash, proof);
 	}
 
 	async getMaterializedBlock(blockId: BlockId, actionId: ActionId): Promise<IBlock | undefined> {

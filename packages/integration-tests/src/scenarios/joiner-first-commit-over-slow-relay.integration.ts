@@ -11,7 +11,7 @@
  * The schema reproduces the app's shape with nothing app-specific in it:
  * - several tables, most of which the founder never writes (the app has 17);
  * - the joiner's first act writes three tables in ONE transaction: a seat, its key, and its
- *   profile -- two of which the founder already wrote to;
+ *   node class -- two of which the founder already wrote to;
  * - a constraint on the key reads a table nobody has written (`Revocation`), as an
  *   authorization check does.
  *
@@ -28,16 +28,22 @@
  *
  * What it asserts, after the joiner's first sync: the joiner's first transaction commits, and
  * every row of it is readable on the founder even though the joiner stops the moment its commit
- * returns. A commit that reported success must not live only on the machine that made it.
+ * returns. A commit that reported success must not live only on the machine that made it. The
+ * third arm is the one exception, and it pins the other outcome instead of ignoring it.
  *
- * What the third arm shows: on the slow link the joiner's strand becomes writable after about 45 s
- * while still connected to the founder's strand node, because the founder creates every declared
- * table's collection when it founds the strand (`strand-founder-commits-every-table-collection`).
- * The joiner's first commit therefore goes to a cohort of both members and needs both approvals.
- * The drop cycle below resets the founder's leg while the commit is in flight, and the commit
- * fails with "Failed to get super-majority: 1/2 approvals": the app is told, and can retry. It
- * logs how long each step took and every node's peer id, so a run's `DEBUG=optimystic:db-p2p:*`
- * log can be read against them.
+ * What the third arm shows: on the slow link the joiner's strand becomes writable while still
+ * connected to the founder's strand node, because the founder creates every declared table's
+ * collection when it founds the strand (`strand-founder-commits-every-table-collection`). The
+ * joiner's first commit therefore goes to a cohort of both members and needs both approvals, and
+ * whether it gets them is a race: the drop cycle below can reset the founder's leg while the
+ * commit is in flight, and then the promise round counts one approval out of two with the founder
+ * silent, so the commit is refused, nothing is saved, and the app is told. The arm accepts either
+ * end of that race and pins each one: a commit whose rows must outlive the joiner, or exactly the
+ * refusal `expectFounderSilentShortfall` holds it to. The deadline that fires on the founder's
+ * queued answer is `blocked/decide-link-deadlines-from-measured-response-time`; the arm records
+ * which way the race fell rather than requiring either. First sync on this arm measured 147 s to
+ * 239 s over seven runs on 2026-11-21. Every step's duration and every node's peer id are logged,
+ * so a run's `DEBUG=optimystic:db-p2p:*` log can be read against them.
  *
  * Why the strand nodes keep losing each other on that link: an outbound frame waits 10 to 22 s in
  * its socket's queue, so a liveness ping can outlast the pinging node's 30 s deadline, and its
@@ -91,6 +97,7 @@ import {
 	generateStrandMemberKey,
 } from '@serfab/cadre-core';
 import type { DurableSlot, SAppConfig, StrandCommitDurability, StrandInstance, StrandRow } from '@serfab/cadre-core';
+import { PromiseShortfallError } from '@optimystic/db-core';
 import type { Database } from '@quereus/quereus';
 import {
 	waitUntil,
@@ -101,6 +108,7 @@ import {
 	installWsLatency,
 	occupyEventLoop,
 	captureRawStorage,
+	errorChainLinks,
 	type DedicatedRelay,
 	type RawStorageCapture,
 	type WsLatencyOptions,
@@ -142,10 +150,11 @@ const YEAR_MS = 365 * 24 * 3600_000;
 /**
  * Generous on purpose: the arm reports how long each step took; a gate only bounds a hang.
  *
- * NOTE: the slow-link arms' first sync takes about 45 s. If one times out here, look at the drop
- * cycle (the connection monitor's aborts, see the header) and the saturated link before raising
- * this. A first sync past 600 s would keep the third arm's `it.fails` green
- * for the wrong reason.
+ * NOTE: against the frame-capped arm's measured first sync (the header carries the range) the
+ * margin here is about 2.5x, not the order of magnitude it looks like. If one times out here,
+ * measure a series and look at the drop cycle (the connection monitor's aborts, see the header)
+ * and the saturated link before raising this: the constant is not where that cost lives, and a
+ * higher gate only hides how long the link took.
  */
 const FIRST_SYNC_MS = 600_000;
 const CONVERGE = { timeoutMs: 180_000, intervalMs: 500 } as const;
@@ -172,6 +181,14 @@ interface RunOptions {
 	latency?: WsLatencyOptions;
 	/** Fraction of every 100 ms this process's event loop is kept busy. */
 	eventLoopBusy?: number;
+	/**
+	 * Accept a refusal of the joiner's first commit as an outcome of this arm, provided it is the
+	 * one {@link expectFounderSilentShortfall} describes. Only the frame-capped arm sets this: on
+	 * that link whether the commit gets both approvals is a race (see the header), and an arm that
+	 * demanded either end of it would be red in some runs and green in others. The loopback and
+	 * 100 ms arms still require the commit, so a refusal there is a failure.
+	 */
+	refusalAccepted?: boolean;
 }
 
 function since(t0: number): string {
@@ -249,7 +266,12 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
 
 		// ── The joiner's first act ──
 		const tCommit = Date.now();
-		await bDb.exec(seatBatch('F', 'sid-b', 'key-b', 'Joiner'), undefined, { transaction: true });
+		const refused = await execOrShortfall(bDb, seatBatch('F', 'sid-b', 'key-b', 'Joiner'), opts.refusalAccepted ?? false);
+		if (refused) {
+			console.log(`[first-commit ${label}] joiner's seat REFUSED after ${since(tCommit)}: ${describeShortfall(refused)}`);
+			expectFounderSilentShortfall(refused, founded.instance.libp2pNode!.peerId);
+			return;
+		}
 		console.log(`[first-commit ${label}] joiner's seat committed after ${since(tCommit)}`);
 
 		// ── A committed transaction does not depend on the committer staying up ──
@@ -269,6 +291,73 @@ async function runJoinerFirstCommit(opts: RunOptions = {}): Promise<void> {
 		release?.();
 		link?.restore();
 	}
+}
+
+/**
+ * Run `sql` as one transaction on `db`. Returns `undefined` when it commits, and the promise-round
+ * shortfall the cohort refused it with when `refusalAccepted` and the failure carries one.
+ *
+ * Any other failure is re-thrown, `refusalAccepted` or not: the only outcome this arm trades the
+ * commit for is the refusal {@link expectFounderSilentShortfall} pins, and a failure of a different
+ * kind is news. Claimed by TYPE over the whole `cause` chain ({@link errorChainLinks} says why a
+ * chain walk is needed), as upstream's own comment on the class asks and as the production
+ * classifier `reportsUnansweredShortfall` does. `instanceof` holds here because
+ * `@optimystic/db-core` resolves to one copy for the plugin and for this package alike; if that
+ * ever stops being true the class check fails closed, re-throwing a refusal this arm would
+ * otherwise have accepted, which is the safe direction.
+ */
+async function execOrShortfall(db: Database, sql: string, refusalAccepted: boolean): Promise<PromiseShortfallError | undefined> {
+	try {
+		await db.exec(sql, undefined, { transaction: true });
+		return undefined;
+	} catch (error) {
+		if (!refusalAccepted) throw error;
+		const shortfall = errorChainLinks(error).find((link): link is PromiseShortfallError => link instanceof PromiseShortfallError);
+		if (!shortfall) throw error;
+		return shortfall;
+	}
+}
+
+/** A refused commit's facts, for the run output and for an assertion message. */
+function describeShortfall(shortfall: PromiseShortfallError): string {
+	return `${shortfall.approvals}/${shortfall.peerCount} approvals (needed ${shortfall.needed}, ${shortfall.rejections} rejections), `
+		+ `silent [${shortfall.silentPeers.join(', ')}], soloRefused ${shortfall.soloRefused ?? 'unset'}`;
+}
+
+/**
+ * The one refusal of the joiner's first commit this scenario accepts: the cohort was both members,
+ * both approvals were needed, the joiner approved its own pend, nobody voted no, and the founder's
+ * strand node answered nothing inside the deadline. That is the link giving up on a queued answer
+ * (`blocked/decide-link-deadlines-from-measured-response-time`), and nothing was saved.
+ *
+ * Every other shape is a failure of the arm, which is the point of asserting on the fields rather
+ * than on the class alone: a shortfall over a cohort that is not both members, one naming the
+ * joiner itself as silent, a member that actually rejected the write, or a lone coordinator's
+ * refusal to write alone (`soloRefused`) are each a different defect, and none of them is what the
+ * drop cycle does here.
+ *
+ * NOTE: that nothing was saved is Optimystic's contract for this refusal, not something the arm
+ * checks — it ends here rather than reading the founder back. A negative read is only as good as
+ * how long it waits, and a hold-down on this arm would re-introduce the flapping the arm exists to
+ * remove. If a refusal whose rows reached the founder anyway is ever suspected, read the founder in
+ * a scenario built for it rather than widening this one.
+ */
+function expectFounderSilentShortfall(shortfall: PromiseShortfallError, founderStrandPeer: PeerId): void {
+	expect({
+		approvals: shortfall.approvals,
+		rejections: shortfall.rejections,
+		peerCount: shortfall.peerCount,
+		needed: shortfall.needed,
+		silentPeers: [...shortfall.silentPeers],
+		soloRefused: shortfall.soloRefused,
+	}, describeShortfall(shortfall)).toEqual({
+		approvals: 1,
+		rejections: 0,
+		peerCount: 2,
+		needed: 2,
+		silentPeers: [founderStrandPeer.toString()],
+		soloRefused: undefined,
+	});
 }
 
 /** Every row of the joiner's seat batch is readable on `db`. */
@@ -591,17 +680,15 @@ describe("a joiner's first transaction over a relayed link", () => {
 		await runJoinerFirstCommit({ latency: { delayMs: 100, mode: 'pipelined' } });
 	}, 1_800_000);
 
-	// KNOWN FAILURE, kept as `it.fails` so the suite stays green while it reproduces: on this link
-	// the joiner is connected to the founder when its strand becomes writable, so its first commit
-	// goes to both members, and it fails with "Failed to get super-majority: 1/2 approvals" when the
-	// ping drop cycle (see the header) resets the founder's leg. When this `it.fails` turns red, the
-	// arm passes: that drop cycle no longer cuts a commit on this link, so make it a plain `it`.
-	// NOTE: failed in 2 of 2 runs (2026-10-17), and in the 2026-10-20 run with every node's ping
-	// handler at 60 s, but only because a drop landed while the commit was in flight; if it turns red
-	// once and not on a rerun, the commit missed a drop by timing. Still failing in the one run on
-	// Optimystic 1.19.0 (2026-10-25), cause not traced.
-	it.fails('commits, and its rows outlive the joiner, on a 20 ms frame cap with a 70%-busy event loop', async () => {
-		await runJoinerFirstCommit({ latency: { delayMs: 20, mode: 'serial' }, eventLoopBusy: 0.7 });
+	// Whether this commit gets both approvals is a race, so the arm takes either end of it and pins
+	// each: 7 of 13 recorded runs on Optimystic 1.29.0 committed, 6 were refused, and every refusal
+	// had the one shape `expectFounderSilentShortfall` holds it to. The deadline that gives up on
+	// the founder's queued answer is `blocked/decide-link-deadlines-from-measured-response-time`,
+	// not this repo's to fix, so this arm is not the signal for whether that landed — the phone arm
+	// under that ticket's "How to confirm" is. A commit that reports success while the founder never
+	// sees the rows still fails the arm, which is the phone defect this scenario was written for.
+	it('commits with its rows outliving the joiner, or is refused by name, on a 20 ms frame cap with a 70%-busy event loop', async () => {
+		await runJoinerFirstCommit({ latency: { delayMs: 20, mode: 'serial' }, eventLoopBusy: 0.7, refusalAccepted: true });
 	}, 1_800_000);
 
 	it("delivers the rows of a commit made alone once the joiner restarts over its kept storage", async () => {

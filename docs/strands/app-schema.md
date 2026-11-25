@@ -217,7 +217,7 @@ A notification tree is rooted at the machines that store a collection's log tail
 - **A machine in the tail's storage group is woken by its own storage,** before the push arrives. The notification that follows wakes nothing new.
 - **A table watched before its first commit registers at the first renewal tick after that commit,** up to 30 s later, because the watch service registers only once it has read a committed tail. Until then a commit reaches the watcher only through the tail read.
 - **The first registration at a root is slower than later ones.** It is a cold start, and if it backs off it retries at the next 30 s tick.
-- **Machines that register together are all admitted.** On a new strand every machine's watch opens at launch, so all of them register on the same renewal tick after the first commit.
+- **Machines that register together are all admitted,** because a root nobody has registered under yet holds the first registration that reaches it while the other members answer with their willingness. They do not usually register together, though: each machine's renewal timer starts when its own watch opens, so a strand's machines register at their own ticks — observed spread across most of one 30 s period on a three-machine strand.
 - **For up to 5 s after a machine registers, a commit can be pushed to nobody.** A registration is held by the one tail-storing machine it lands on and reaches the others in that storage group by gossip every 5 s. A commit announced only by a machine that has not heard of the registration waits for the 30 s tail read.
 
 ### What enabling exposes
@@ -235,7 +235,11 @@ With the option off, both postures are unchanged.
 - **Each watched table registers on every node build,** and every hibernation wake registers again. A cold-start registration carries one signature, a self-endorsement made with the strand node's peer key.
 - **While idle, each renewal tick reads the log tails of all the strand's watched tables in one read.** A machine that holds those blocks answers it from its own store.
 - **Registration renewals cost one request per watched table** whose registration is held by another machine.
-- **Every strand node built with the option is a core notification host, whatever its profile.** A `transaction`-profile phone is therefore eligible to forward notifications to other subscribers, and renews at the core interval of 30 s. The `NOTE:` in `strand-reactivity.ts` names the revisit condition.
+- **A node whose [`reactivity` role](../cadre/node.md#node-classes) is `subscriber` is not a notification host, and inside a table's root group that costs latency.** Notifications for a table are rooted at the storage group of its log tail, so a member of that group that will not host declines the work and the watch service's tail poll delivers the change instead — every 30 s on a `forwarder` node, every 20 s on a `subscriber`. Both presets are `forwarder` today, so neither case below arises until a deployment sets the role.
+
+	**A subscriber asked to register.** It declines and names the group's forwarder members, and the asking node retries one of those. The exception is the first registration at that root: there it answers "no state" and names no alternative, so the asking node simply tries again on its next tick. A root group whose first-dialed member is a subscriber can therefore stay on the poll indefinitely.
+
+	**A commit a subscriber coordinated.** In a storage group of three or fewer, only the coordinating member keeps a full commit certificate, so no sibling announces in its place and that commit is announced to nobody. Subscribers see it on their next poll.
 
 ## Limits and accepted tradeoffs
 
@@ -251,3 +255,4 @@ With the option off, both postures are unchanged.
 - **Explicit table locations are not checked for collisions.** Optimystic refuses two tables sharing one collection only once the collection holds rows, not at strand bring-up when both are empty. If sApps start declaring explicit locations, Sereus would need to check resolved URIs.
 - **Change notifications are off by default and enabled in none of this repo's apps** (ticket `feat-reference-apps-watch-strand-changes`). Nodes started by cadre-host and cadre-provider cannot be given the setting (ticket `feat-cadre-host-and-provider-nodes-carry-strand-reactivity`).
 - **Behaviour with the option on only some machines is not established.** What a watcher sees when some of the tail's storage machines lack the option is unverified; the renewal tail read should still bound the delay to 30 s.
+- **A watcher whose table is first committed to in the seconds after its machine joins can be registered outside the group that announces the table's commits.** Its registration is then invisible to every announcer, so that watcher is woken only by the 30 s tail read for up to 90 s, until the registration's keep-alive gives up and registers again. Why the registration goes to a machine outside the group is not yet settled, and the fix is Optimystic's (ticket `report-reactivity-registration-lands-outside-the-root-group`).

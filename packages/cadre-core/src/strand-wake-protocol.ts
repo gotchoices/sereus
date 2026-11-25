@@ -30,7 +30,7 @@ import type { Multiaddr } from '@multiformats/multiaddr';
 import type { StrandInstance, WakeRequest, WakeAck } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { type ControlStream, exchangeFrame, readStreamToEnd, replyAndClose } from './control-stream.js';
-import { dialAddr, tryAddrsInTurn } from './peer-dial.js';
+import { dialAddr, tryAddrsInTurn, webrtcLast } from './peer-dial.js';
 import { relayedRequestBudgetMs } from './link-budget.js';
 
 const log = debug('sereus:cadre:strand-wake');
@@ -64,8 +64,14 @@ const MAX_WAKE_SIZE = 64 * 1024;
 export const DEFAULT_WAKE_TIMEOUT_MS = relayedRequestBudgetMs();
 
 /**
- * Whole attempts one {@link dialWake} call budgets for: a stale signaling address, then the
+ * Whole attempts one {@link dialWake} call budgets for: a stale relayed address, then the
  * direct address that works.
+ *
+ * Two RELAYED OR DIRECT attempts. {@link dialWake} moves every address that needs ICE after its
+ * relay hop behind them ({@link webrtcLast}), because such an address answers nothing for about
+ * 23 s when ICE cannot connect — so without that ordering one of these two attempts could be
+ * spent on an address nothing is waiting for, and a target whose first relay reservation has
+ * rotated would never be reached at its second relay.
  */
 export const WAKE_DIAL_ATTEMPTS = 2;
 
@@ -85,7 +91,7 @@ export const WAKE_DIAL_ATTEMPTS = 2;
  * `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` in `peer-dial.ts`, though not the same
  * count: that one is sized to fit several dead addresses ahead of a working one,
  * while a wake target is expected to be awake and reachable on its first or second
- * address. Two whole attempts so a reachable peer whose signaling address is stale
+ * address. Two whole attempts so a reachable peer whose relayed address is stale
  * still gets a genuine try at its direct one; a peer needing longer than that is
  * not "asleep and reachable", which is the only case a wake is for. The last
  * attempt inside the budget gets whatever remains of it, so the call returns at
@@ -308,24 +314,30 @@ export interface DialWakeOptions {
  * Sender side: dial a target's control-network address(es), send a
  * {@link WakeRequest} over `WAKE_PROTOCOL`, and return the peer's {@link WakeAck}.
  *
- * Tries each candidate address in order (signaling/relay first, as produced by
+ * Tries each candidate address in order (relayed first, as produced by
  * `CadreNode.resolvePeerAddrs`) until one dials, so a NAT'd peer is reachable via
  * its circuit-relay address. Each attempt is bounded by `timeoutMs` and the call
  * as a whole by `budgetMs` (see {@link DEFAULT_WAKE_DIAL_BUDGET_MS}); a candidate
  * the budget leaves no room for is reported as untried rather than silently
  * dropped.
  *
+ * The caller's order is kept but for one rule enforced here, at the site that owns the budget:
+ * an address that needs ICE after its relay hop goes last ({@link webrtcLast}), whatever order
+ * the caller gave. Only that rule is applied — unlike `dialPeerAddrs`, this does NOT hoist
+ * direct addresses ahead of relayed ones, because a hibernating machine is usually reachable
+ * only through its relay and its direct addresses blackhole.
+ *
  * Throws if no address is dialable — with an error naming EVERY candidate and
  * why it failed, not merely the last one ({@link tryAddrsInTurn}). That
  * distinction is not cosmetic: with only the last candidate's message the
- * failure that mattered (usually the signaling address, tried first) is
+ * failure that mattered (usually the relayed address, tried first) is
  * invisible outside a debug log, and the surfaced message points at whichever
  * address happened to be tried last.
  *
  * The candidate loop is deliberately explicit rather than one
  * `dialProtocol(addrs)` call. libp2p sorts any multi-address dial with
  * `defaultAddressSorter`, whose `circuitRelayAddressesLast` pass would demote
- * exactly the signaling address this ordering puts first — silently inverting
+ * exactly the relayed address this ordering puts first — silently inverting
  * it, with no per-dial sorter override to opt out of. For the same reason this
  * does not use `dialPeerAddrs`, which puts relayed addresses last.
  *
@@ -351,7 +363,7 @@ export async function dialWake(
   };
   // The attempt's signal aborts the in-flight dialProtocol and resets the live
   // stream, so neither the connect nor the ack-read leaks.
-  return await tryAddrsInTurn(addrs, budget, 'Wake dial', (addr, signal, attemptMs) =>
+  return await tryAddrsInTurn(webrtcLast(addrs), budget, 'Wake dial', (addr, signal, attemptMs) =>
     sendWake(node, addr, protocolId, request, attemptMs, signal));
 }
 
@@ -375,7 +387,7 @@ async function sendWake(
 ): Promise<WakeAck> {
   const connection = await dialAddr(node, addr, signal, 'Wake dial');
   // `runOnLimitedConnection: true`: the target may be reachable only over a
-  // circuit-relay connection (the signaling-first addr), which libp2p marks
+  // circuit-relay connection (the relayed addr tried first), which libp2p marks
   // "limited". The wake exchange is a single tiny request→ack well within the
   // relay's data/duration cap, so opening it on the limited connection is safe
   // and is the whole point of dialing the relay address.

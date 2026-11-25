@@ -16,7 +16,7 @@ function minted(peers: SeedPeer[]): DroneInitResult {
 }
 
 describe('buildEnrollAddReport', () => {
-  // Preferred, as on a re-run for a machine that has since published the `storage` profile.
+  // Preferred, as on a re-run for a machine that has since published that it is always on.
   const newPeer: SeedPeer = { peerId: NEW_PEER, multiaddrs: ['/ip4/10.0.0.9/tcp/4001'], preferred: true };
   const unaddressedOwner: SeedPeer = { peerId: '12D3KooWOwner', multiaddrs: [], preferred: true };
 

@@ -84,7 +84,7 @@ describe('cadre-host joins a cadre by invitation (real cadre-host, real cadre-cl
     return new CadreNode(controlNodeConfig({
       partyId,
       privateKey: aKey,
-      profile: 'transaction',
+      nodeClass: 'device',
       strandFilter: 'none',
       enableRelay: true,
       storageProvider: captureA.provider,

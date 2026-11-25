@@ -25,8 +25,17 @@ controlNetwork:
     - "/dns4/bootstrap.example.com/tcp/4001/p2p/12D3KooW..."
     - "/ip4/192.168.1.100/tcp/4001/p2p/12D3KooW..."
 
-# Node profile: 'transaction' (mobile/edge) or 'storage' (server)
-profile: storage
+# Node class: 'device' (mobile/edge) or 'server' (always-on machine)
+nodeClass: server
+
+# Per-role overrides of what the node class presets (optional, and so is every role in it):
+# a role left out keeps the class's value. Each role also has a CADRE_ROLE_* variable. See
+# the README's "Node roles" for the accepted values and what each role decides.
+# roles:
+#   alwaysOn: true
+#   overlayTier: core
+#   reactivity: forwarder
+#   strandCohortMember: true
 
 # Strand filtering (optional, defaults to 'all')
 # Options: 'all', 'none', { sAppId: "..." }, { strandId: "..." }
@@ -65,7 +74,7 @@ strandFilter: all
 # claim:
 #   secretFile: /var/lib/cadre/claim.secret
 
-# Storage configuration (for storage profile)
+# Storage configuration (for a server node)
 storage:
   type: file
   path: ./data
@@ -113,8 +122,24 @@ network:
   # than being silently ignored, and so does a relay that grants no reservation.
   # relayAddrs:
   #   - "/dns4/relay.example.com/tcp/4001/p2p/12D3KooW..."
+  # Offer a WebRTC address as well, so a peer that reached this node through a relay
+  # above can move the connection onto a direct path and stop paying the relay for
+  # every byte. Needs relayAddrs: WebRTC's connection setup is signalled over the
+  # relayed connection, so with no relay the node logs one line and runs unchanged.
+  # Worth turning on for a machine behind NAT that nobody can reach directly; worth
+  # nothing on one with a public or forwarded address. Do NOT write "/webrtc" into
+  # listenAddrs above — that is refused; this flag is what also supplies the transport
+  # and the STUN servers. It loads a node-datachannel native binary at start, and the
+  # start fails naming that module on a platform with no prebuilt binary (see the
+  # README, "Direct connections over WebRTC"). Off when absent.
+  # webrtc: true
+  # STUN servers for webrtc above, comma-separated, replacing the ones derived from
+  # relayAddrs. Each Sereus relay answers STUN on port 3478, so the derived set is
+  # right for a relay running the shipped container; set this for a relay that answers
+  # STUN elsewhere, or for a STUN server that is not a relay.
+  # stunUrls: "stun:stun.example.com:3478"
   # Enable circuit relay server - allows this node to relay connections for other peers.
-  # Defaults to true for storage profile nodes, false for transaction profile.
+  # Defaults to true for server nodes, false for a device.
   # enableRelay: true
 
 # Hibernation settings

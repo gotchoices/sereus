@@ -56,6 +56,14 @@ export type ContainerStatus =
 /** Why a container was stopped: its customer asked (`DELETE`), or the customer's subscription lapsed. */
 export type StopReason = 'customer' | 'non-payment';
 
+/**
+ * What kind of machine a node runs on: a phone, laptop or browser running an app
+ * (`device`, intermittently connected), or an always-on machine (`server`). Mirrors
+ * cadre-core's `NodeClass`, restated here because the provider does not depend on
+ * cadre-core (`server/invitation-validation.ts` says why).
+ */
+export type NodeClass = 'device' | 'server';
+
 /** Container resource specifications */
 export interface ContainerResources {
   /** Memory limit (e.g., "512M", "2G") */
@@ -75,8 +83,8 @@ export interface CreateContainerRequest {
    * invitation. Derived from `join` by the create validator, never taken from the body.
    */
   partyId: string;
-  /** Node profile: storage or transaction */
-  profile: 'storage' | 'transaction';
+  /** What kind of machine the node runs on; `server` unless the caller asked otherwise. */
+  nodeClass: NodeClass;
   /** Resource specifications */
   resources?: ContainerResources;
   /** Optional strand filter */
@@ -100,8 +108,8 @@ export interface Container {
   customerId: string;
   /** Party ID for the control network */
   partyId: string;
-  /** Node profile */
-  profile: 'storage' | 'transaction';
+  /** What kind of machine the node runs on. */
+  nodeClass: NodeClass;
   /** Current status */
   status: ContainerStatus;
   /** Docker container ID */

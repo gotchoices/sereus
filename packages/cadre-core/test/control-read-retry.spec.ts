@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
-import { BlockPossiblyStaleError, BlockUnavailableError } from '@optimystic/db-core';
+import { BlockPossiblyStaleError, BlockUnavailableError, PeersIncompleteError } from '@optimystic/db-core';
 import type { BlockUnavailableReason } from '@optimystic/db-core';
 import {
 	CONTROL_READ_ATTEMPTS,
@@ -26,9 +26,10 @@ import { captureDebugLog } from './capture-debug-log.js';
  * failure during iteration killed `queryRevokedStamps` after exactly one `eval` call
  * while the same injection against `exec` was absorbed; measured 2026-09-01).
  *
- * The transactor-aggregate cases assert against message LITERALS, a known dependency on
- * transactor error text (upstream raises the aggregate as a plain `Error`); every matcher fails
- * CLOSED — an upstream rewording stops the retry engaging rather than making it unsafe.
+ * Every failure this classifier claims is matched by TYPE, so its fixtures build the real upstream
+ * classes: the transactor's aggregate names the phase it came from on the error itself. Both
+ * matchers fail CLOSED — a wrapper that loses the typed link stops the retry engaging rather than
+ * making it unsafe.
  *
  * Block unavailability is matched by TYPE, by the retry classifier and by
  * `isCohortUnreachableRead` alike, so those cases build real `BlockUnavailableError`s /
@@ -40,12 +41,16 @@ import { captureDebugLog } from './capture-debug-log.js';
 
 /**
  * The real failure arrives as `QuereusError` → `Error` → `Error`, with the recognisable
- * message potentially at any depth — so classifier cases assert through a three-level
+ * link potentially at any depth — so classifier cases assert through a three-level
  * `cause` chain with decoy text on the outer layers, not only a flat message.
+ *
+ * Takes a message for the text cases, or a built error for the type-classified ones — the
+ * delivery is the same either way, and only what sits at the bottom of the chain differs.
  */
-function nested(message: string): Error {
+function nested(failure: string | Error): Error {
+	const inner = typeof failure === 'string' ? new Error(failure) : failure;
 	return new Error('Runtime error during read', {
-		cause: new Error('control read failed', { cause: new Error(message) }),
+		cause: new Error('control read failed', { cause: inner }),
 	});
 }
 
@@ -55,20 +60,25 @@ function immediatePacing(overrides: ControlReadRetryOptions = {}): ControlReadRe
 }
 
 /**
- * The transactor's read/pend-phase aggregate — the class that killed
- * `CadreNode.registerSelf`'s own-row read in 23–28 ms (recorded in the fix ticket). Same
- * captured literal `control-write-retry.spec.ts` uses; a `get` batch formats the
- * single-block `[block:` token.
+ * The transactor's read-phase aggregate — the failure that killed
+ * `CadreNode.registerSelf`'s own-row read in 23–28 ms (recorded in the fix ticket). Built from the
+ * same captured per-peer details `control-write-retry.spec.ts` uses, through the same upstream
+ * factory, so the composed message is byte-identical there and here.
  */
-const TRANSACTOR_AGGREGATE =
-	'Some peers did not complete: 12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU[block:PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk](in-flight) cause=The stream has been reset; root: The stream has been reset';
+function transactorAggregate(): PeersIncompleteError {
+	return PeersIncompleteError.peersDidNotComplete('get',
+		'12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU[block:PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk](in-flight) cause=The stream has been reset',
+		new Error('The stream has been reset'));
+}
 /**
- * The commit-phase shape (`[blocks:`). A READ can never produce it — no read commits —
- * so the read classifier simply never matches it (default: no retry) rather than
- * carrying the write side's veto.
+ * The commit phase. A READ can never produce it — no read commits — so the read classifier
+ * simply never claims it (default: no retry) rather than carrying the write side's veto.
  */
-const TRANSACTOR_AGGREGATE_COMMIT_PHASE =
-	'Some peers did not complete: 12D3KooWpeer[blocks:3](in-flight) cause=The stream has been reset; root: The stream has been reset';
+function commitPhaseAggregate(): PeersIncompleteError {
+	return PeersIncompleteError.peersDidNotComplete('commit',
+		'12D3KooWpeer[blocks:3](in-flight) cause=The stream has been reset',
+		new Error('The stream has been reset'));
+}
 
 /** Upstream's exact `BlockUnavailableError` template, per reason. */
 function blockUnavailable(reason: string): string {
@@ -109,8 +119,22 @@ function scanWrappedTyped(typed: Error): Error {
 
 describe('isRetriableControlReadFailure', () => {
 	it('retries the transactor\'s read-phase aggregate ("the cohort did not answer")', () => {
-		expect(isRetriableControlReadFailure(nested(TRANSACTOR_AGGREGATE))).toBe(true);
-		expect(isRetriableControlReadFailure(scanWrapped(TRANSACTOR_AGGREGATE))).toBe(true);
+		expect(isRetriableControlReadFailure(transactorAggregate())).toBe(true);
+		expect(isRetriableControlReadFailure(nested(transactorAggregate()))).toBe(true);
+		expect(isRetriableControlReadFailure(scanWrappedTyped(transactorAggregate()))).toBe(true);
+	});
+
+	/**
+	 * The claim is by TYPE, so the same sentence as plain text is NOT claimed — the assertion that
+	 * reddens if a text fallback for the aggregate is ever reintroduced, on this path as well as the
+	 * write one. Asserted bare and through the scan-path wrappers, since text is all a
+	 * rebuilt-from-its-message aggregate could ever offer at either depth. The equivalent for
+	 * `BlockUnavailableError` is the last entry of the unmatched table below.
+	 */
+	it('never retries the aggregate sentence as plain text — the claim is by type', () => {
+		const sentence = transactorAggregate().message;
+		expect(isRetriableControlReadFailure(nested(sentence))).toBe(false);
+		expect(isRetriableControlReadFailure(scanWrapped(sentence))).toBe(false);
 	});
 
 	/**
@@ -154,10 +178,16 @@ describe('isRetriableControlReadFailure', () => {
 	 * transaction; if the sentence ever reaches a read it arrives inside the aggregate,
 	 * which the first case already claims), durable faults, constraint refusals, and an
 	 * unavailability that survived only as text (the match is by type).
+	 *
+	 * The `pend` arm of the shared aggregate predicate is likewise unreachable from a read, for the
+	 * same reason the shortfall is: no read presents a transaction to promise. It is claimed anyway
+	 * so that one predicate serves both classifiers (see `isUncommittedTransactorAggregate`).
 	 */
 	it('never retries anything unmatched — the default is no retry', () => {
+		// The one typed entry: a commit-phase aggregate is a real link, not a sentence, and the read
+		// classifier declines it by claiming nothing rather than by vetoing it.
+		expect(isRetriableControlReadFailure(nested(commitPhaseAggregate()))).toBe(false);
 		for (const message of [
-			TRANSACTOR_AGGREGATE_COMMIT_PHASE,
 			'Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)',
 			'Missing block (jQlkVafUFlI6FzOGGAlViyK5GrgcSm_4SL7HfPKwhis)',
 			'CHECK constraint failed: Authorized',
@@ -170,13 +200,14 @@ describe('isRetriableControlReadFailure', () => {
 
 	/** Same non-Error discipline as the write classifier — answer, never throw. */
 	it('never retries a non-Error throw, and survives a non-Error cause link', () => {
-		expect(isRetriableControlReadFailure(TRANSACTOR_AGGREGATE)).toBe(false);
+		expect(isRetriableControlReadFailure(transactorAggregate().message)).toBe(false);
 		expect(isRetriableControlReadFailure(undefined)).toBe(false);
-		expect(isRetriableControlReadFailure({ message: TRANSACTOR_AGGREGATE })).toBe(false);
+		expect(isRetriableControlReadFailure({ message: transactorAggregate().message })).toBe(false);
 		expect(isRetriableControlReadFailure(
 			new Error('control read failed', { cause: 'connection closed' }))).toBe(false);
-		expect(isRetriableControlReadFailure(
-			new Error(TRANSACTOR_AGGREGATE, { cause: { reason: 'aborted' } }))).toBe(true);
+		const oddCause = transactorAggregate();
+		oddCause.cause = { reason: 'aborted' };
+		expect(isRetriableControlReadFailure(oddCause)).toBe(true);
 	});
 });
 
@@ -236,7 +267,7 @@ describe('retryControlRead', () => {
 		try {
 			await retryControlRead(async () => {
 				runs++;
-				const error = nested(TRANSACTOR_AGGREGATE);
+				const error = nested(transactorAggregate());
 				errors.push(error);
 				throw error;
 			}, immediatePacing());
@@ -257,7 +288,7 @@ describe('retryControlRead', () => {
 		let clock = 0;
 		let runs = 0;
 		let slept = 0;
-		const failure = nested(TRANSACTOR_AGGREGATE);
+		const failure = nested(transactorAggregate());
 		await expect(retryControlRead(async () => {
 			runs++;
 			clock += CONTROL_READ_RETRY_BUDGET_MS;
@@ -290,7 +321,7 @@ describe('retryControlRead', () => {
 		let runs = 0;
 		await expect(retryControlRead(async () => {
 			runs++;
-			throw nested(TRANSACTOR_AGGREGATE);
+			throw nested(transactorAggregate());
 		}, { now: () => 0, sleep: (ms) => { delays.push(ms); return Promise.resolve(); } }))
 			.rejects.toThrow();
 
@@ -312,7 +343,7 @@ describe('retryControlRead', () => {
 			let runs = 0;
 			await retryControlRead(async () => {
 				runs++;
-				if (runs === 1) throw nested(TRANSACTOR_AGGREGATE);
+				if (runs === 1) throw nested(transactorAggregate());
 				return [];
 			}, immediatePacing({ label: 'revoked-stamps' }));
 		});
@@ -375,7 +406,8 @@ function coldMembershipViews(db: ControlDatabase): void {
 
 /** A read-phase transactor failure, as `control-write-lock.spec.ts` builds it. */
 function transientClusterFailure(): Error {
-	return new Error('Some peers did not complete: 12D3KooWpeer[block:blk-1](no-response) cause=The stream has been reset; root: The stream has been reset');
+	return PeersIncompleteError.peersDidNotComplete('get',
+		'12D3KooWpeer[block:blk-1](no-response)', new Error('The stream has been reset'));
 }
 
 /** The inner Quereus `eval` surface the harness swaps out. */
@@ -405,7 +437,7 @@ describe('ControlDatabase — read retry', () => {
 
 		node = new CadreNode({
 			controlNetwork: { partyId: 'read-retry-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
-			profile: 'transaction'
+			nodeClass: 'device'
 		});
 		await node.start();
 

@@ -1,6 +1,6 @@
 # Running a node in a browser
 
-This document is for a developer who embeds a cadre node in a web page. It covers what the page supplies to cadre-core's edge node, how the node's data is laid out in IndexedDB, how a tab that cannot listen becomes reachable through a relay, and what a bundler must alias. All of it is taken from `packages/reference-app-web`, a Svelte and Vite single-page app.
+This document is for a developer who embeds a cadre node in a web page. It covers what the page supplies to cadre-core's edge node, how the node's data is laid out in IndexedDB, how a tab that binds no socket becomes reachable through a relay, and what a bundler must alias. All of it is taken from `packages/reference-app-web`, a Svelte and Vite single-page app.
 
 Related: [The cadre node](../cadre/node.md) · [Relays](../network/relay.md) · [React Native](react-native.md) · [NativeScript](nativescript.md) · [The reference apps](reference-apps.md) · [reference-app-web README](../../packages/reference-app-web/README.md)
 
@@ -26,7 +26,7 @@ createEdgeNode({
 		webRTC({ rtcConfiguration: { iceServers: resolveStunServers(relayAddrs) } }),
 		webRTCDirect(),
 	],
-	listenAddrs: (relayAddrs) => (relayAddrs.length > 0 ? ['/webrtc'] : []),
+	listenAddrs: webrtcListenAddrs,
 });
 ```
 
@@ -114,7 +114,7 @@ The app reads the addresses at each start, restart and join, so a value written 
 
 ### WebRTC upgrade and STUN
 
-With a relay named, the reference platform adds `/webrtc` to the listen addresses, so a connection that began through the relay can be replaced by a direct WebRTC one. cadre-core adds the bare `/p2p-circuit` entry for the relay itself. With no relay, the listen addresses are empty.
+With a relay named, cadre-core's `webrtcListenAddrs` adds `/webrtc` to the listen addresses, so a peer can open a direct connection to the tab and a connection that began through the relay can be replaced by a direct WebRTC one. cadre-core adds the bare `/p2p-circuit` entry for the relay itself. With no relay there is no signalling path, so the listen addresses are empty. A phone app passes the same function ([React Native](react-native.md#transport-and-reachability)).
 
 WebRTC needs a STUN server to discover the tab's public address. `resolveStunServers(relayAddrs, override)` from `@serfab/cadre-core` returns one `stun:<relay host>:3478` URL per relay, because each Sereus relay also answers STUN on that port. The second argument replaces them with a comma-separated list of `stun:` URLs, for a relay whose STUN service is published elsewhere; the reference app passes `VITE_STUN_URLS`. With no relay and no override the list is empty and WebRTC uses host and LAN candidates only. `ops/docs/ice-servers.md` describes the server side.
 

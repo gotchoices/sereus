@@ -14,17 +14,18 @@ The relay process answers STUN itself, on UDP `3478` by default. There is no sep
 
 ## How clients find it
 
-The reference apps derive one STUN server from each relay address they are configured with, using cadre-core's `resolveStunServers` (`packages/cadre-core/src/relay-stun.ts`). Both `/dns4/relay.example.org/tcp/4011/ws/p2p/…` and `/dnsaddr/relay.example.org/p2p/…` give `stun:relay.example.org:3478`.
+Every node with a WebRTC transport — the reference apps, and a `cadre-cli` node with `network.webrtc` on — derives one STUN server from each relay address it is configured with, using cadre-core's `resolveStunServers` (`packages/cadre-core/src/relay-stun.ts`). Both `/dns4/relay.example.org/tcp/4011/ws/p2p/…` and `/dnsaddr/relay.example.org/p2p/…` give `stun:relay.example.org:3478`.
 
 Two consequences for the operator:
 
 - **The name in the relay address must resolve to a relay.** For a DNSADDR name shared by several relays, give that name an A record that points at one of them.
 - **The port is always `3478`.** A relay advertises only its libp2p listeners, so an app cannot discover a different STUN port. A relay that publishes STUN on another port needs each app to be told explicitly:
 
-| App | Setting (comma-separated `stun:` URLs) |
+| Program | Setting (comma-separated `stun:` URLs) |
 | --- | --- |
 | `reference-app-web` | `VITE_STUN_URLS` |
 | `reference-app-rn` | `EXPO_PUBLIC_STUN_URLS` |
+| `cadre-cli` | `network.stunUrls`, or `CADRE_STUN_URLS` |
 
 A node with no relay address and no explicit setting has no STUN server. No public STUN service is used as a fallback, so no third party learns of the node. A WebRTC upgrade can then use only the nodes' own interface addresses, which works between nodes on one local network, and every other connection stays on the relay.
 
@@ -41,5 +42,7 @@ The address it prints must be that machine's public IP address. Docker's port ma
 ## Why there is no TURN
 
 A TURN server relays traffic when two peers cannot find a direct path. The circuit relay already does that: when a WebRTC upgrade fails, the connection stays on the relay.
+
+A failed ICE negotiation costs a join almost nothing either, even though it takes about 23 s to give up: the dials a formation or a cohort pass waits on go relayed and leave the WebRTC address for last. The sites that keep their caller's address order still spend one attempt on it — see [Direct connections over WebRTC](../../docs/network/relay.md#direct-connections-over-webrtc) and that page's limits.
 
 This holds only while the relay runs without libp2p's per-connection limit, which is the default (`RELAY_APPLY_DEFAULT_LIMIT` empty or `false`). With the limit on, the relay resets each relayed connection after 128 KiB or two minutes, so a failed upgrade leaves no path that database traffic can use. See [Relay limits](../docker/libp2p-infra/README.md#relay-limits).

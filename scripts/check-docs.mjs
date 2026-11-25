@@ -9,6 +9,9 @@
  *    must name a file that exists, and a `#fragment` on a Markdown target must name a heading (or
  *    an explicit `<a id>`) in that file. Published package READMEs link to `docs/` by GitHub URL
  *    because relative links are dead on npm, which is why those URLs are checked as local paths.
+ *    A link into a path declared as a submodule in `.gitmodules` is refused even when the file is
+ *    there: a submodule's directory is empty in a fresh worktree, and GitHub serves nothing under
+ *    the parent repository's path for it, so such a link is dead for every reader but this one.
  *
  * 2. Size budgets hold. A document, a paragraph or list item, and a table cell each have a word
  *    limit (`BUDGET` below). A document over its limit is split by topic; a paragraph over its
@@ -108,6 +111,43 @@ function proseLines(text) {
 }
 
 const anchorCache = new Map();
+let submodulePathsCache;
+
+/**
+ * The submodules declared in `.gitmodules`, read through git's own config parser rather than by
+ * hand-parsing the INI. A repository without a `.gitmodules` declares none.
+ */
+function submodules() {
+	if (submodulePathsCache) return submodulePathsCache;
+	submodulePathsCache = [];
+	if (!existsSync(join(rootDir, '.gitmodules'))) return submodulePathsCache;
+	let out;
+	try {
+		out = execFileSync('git', ['config', '--file', '.gitmodules', '--get-regexp', '-z', String.raw`^submodule\..*\.path$`], {
+			cwd: rootDir,
+			encoding: 'utf8',
+		});
+	} catch (error) {
+		// Status 1 is `git config`'s "no key matched": a `.gitmodules` that declares no path. Any
+		// other status is a real git failure and is not ours to swallow.
+		if (error.status !== 1) throw error;
+		return submodulePathsCache;
+	}
+	// `-z` prints each match as `key\nvalue\0`, so a space in either the submodule's name or its
+	// path cannot be mistaken for the separator.
+	for (const record of out.split('\0').filter(Boolean)) {
+		const newline = record.indexOf('\n');
+		const key = record.slice(0, newline);
+		submodulePathsCache.push({ name: key.slice('submodule.'.length, -'.path'.length), path: record.slice(newline + 1) });
+	}
+	return submodulePathsCache;
+}
+
+/** The submodule a resolved link target is at or inside, or `undefined` for a target outside one. */
+function submoduleOf(target) {
+	const path = toPosix(relative(rootDir, target));
+	return submodules().find(submodule => path === submodule.path || path.startsWith(`${submodule.path}/`));
+}
 
 function anchorsOf(absPath) {
 	if (anchorCache.has(absPath)) return anchorCache.get(absPath);
@@ -143,7 +183,12 @@ function checkLinks(path, lines) {
 			const [href, fragment] = match[1].split('#');
 			const target = localTarget(href, absPath);
 			if (target === undefined) continue;
-			if (!existsSync(target)) {
+			const submodule = submoduleOf(target);
+			if (submodule) {
+				problems.push(
+					`${path}:${number}: link into the "${submodule.name}" submodule: ${match[1]}. A submodule path is empty in a fresh worktree and 404s on GitHub; link its repository URL instead.`,
+				);
+			} else if (!existsSync(target)) {
 				problems.push(`${path}:${number}: link target does not exist: ${match[1]}`);
 			} else if (fragment && target.endsWith('.md') && statSync(target).isFile() && !anchorsOf(target).has(fragment)) {
 				problems.push(`${path}:${number}: no heading for #${fragment} in ${toPosix(relative(rootDir, target))}`);

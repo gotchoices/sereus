@@ -1,5 +1,6 @@
 import { BlockUnavailableError } from '@optimystic/db-core';
-import { causeChain, chainMessages, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
+import { FindCoordinatorError } from '@optimystic/db-p2p';
+import { causeChain, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 import { isUncommittedTransactorAggregate } from './control-write-retry.js';
 
@@ -26,8 +27,8 @@ import { isUncommittedTransactorAggregate } from './control-write-retry.js';
  * (`quereus-plugin-optimystic/src/optimystic-module.ts`), which keeps the typed
  * `BlockUnavailableError` on `cause`, and Quereus wraps that as
  * `Error during query on table '<T>': …`, again preserving `cause`
- * (`quereus/src/runtime/emit/scan.ts`). The transactor's aggregate is matched by TEXT, since
- * upstream raises it as a plain `Error`. Every matcher fails CLOSED — an upstream rewording or
+ * (`quereus/src/runtime/emit/scan.ts`). The transactor's aggregate is matched by type too — it
+ * arrives as a `PeersIncompleteError` naming the phase it came from. Both matchers fail CLOSED:
  * a lost `cause` stops the retry engaging, it never makes it unsafe.
  */
 
@@ -95,25 +96,25 @@ export type ControlReadRetryOptions = ControlRetryOptions;
  *
  * Two classes, both meaning "the cluster could not be ASKED properly just now":
  *
- * - the transactor's read-phase aggregate (`Some peers did not complete: …[block:…]`),
- *   reused verbatim from the write classifier — a `get` batch formats the single-block
- *   `[block:` token, and a read can never produce the commit-phase `[blocks:` token, so
- *   the write side's indeterminate-commit veto has nothing to veto here (a read commits
- *   nothing and re-running it is always safe);
+ * - the transactor's read-phase aggregate ({@link isUncommittedTransactorAggregate}),
+ *   reused verbatim from the write classifier — including its `pend` arm, which a read
+ *   cannot produce at all because it presents no transaction, so claiming that phase here
+ *   is unreachable rather than unsafe and one shared predicate is one thing to keep
+ *   correct. The write side's indeterminate-commit veto likewise has nothing to veto here
+ *   (a read commits nothing and re-running it is always safe);
  * - a block read the cohort could not answer ({@link reportsUnreachableCohort}, the
  *   predicate the write classifier shares — see it for the reasons and the measured
  *   exclusions).
  *
- * The aggregate is matched by message at any depth of the `cause` chain (`chainMessages`),
- * the unavailability by type on the same chain. Anything that is not an `Error` is never
- * retried, and anything unmatched is not retried either.
+ * Both are matched by TYPE, over one walk of the `cause` chain. Anything that is not an
+ * `Error` is never retried, and anything unmatched is not retried either.
  */
 export function isRetriableControlReadFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) {
 		return false;
 	}
-	return reportsUnreachableCohort(causeChain(error))
-		|| chainMessages(error).some(isUncommittedTransactorAggregate);
+	const links = causeChain(error);
+	return reportsUnreachableCohort(links) || isUncommittedTransactorAggregate(links);
 }
 
 /**
@@ -141,6 +142,47 @@ export function isRetriableControlReadFailure(error: unknown): boolean {
 export function isCohortUnreachableRead(error: unknown): boolean {
 	return causeChain(error).some(link =>
 		link instanceof BlockUnavailableError && link.reason === 'cohort-unreachable');
+}
+
+/**
+ * Did this failure mean no coordinator could be resolved for a block AT ALL — a
+ * `FindCoordinatorError` anywhere on the `cause` chain?
+ *
+ * The sibling of {@link isCohortUnreachableRead} for the failure shape a machine that stores
+ * none of a strand's blocks produces. Such a node's `findCluster` returns an EMPTY cohort, so
+ * every block falls through to `findCoordinator`, which waits out its bounded retry window and
+ * throws `FindCoordinatorError` — code `NO_NETWORK_COORDINATOR` when the only peers it saw were
+ * unconfirmed or serve another network, `NO_COORDINATOR_AVAILABLE` otherwise.
+ *
+ * Matched by CLASS, so all four of `FIND_COORDINATOR_ERROR_CODES` match, not only the two a
+ * client produces. That is the intent, not laxity: every code means "no coordinator was
+ * resolved", NONE of them means "the block does not exist", and the one reader
+ * (`StrandInstanceManager.buildStrandDatabase`) waits for a machine that can answer in every
+ * case. The two self-coordination codes reach a Sereus node only from a detected partition or
+ * suspicious cohort shrinkage — Sereus never switches self-coordination off by config — and
+ * waiting is the right answer there too.
+ *
+ * Not a retry classifier, and deliberately NOT folded into {@link isCohortUnreachableRead}:
+ * that predicate's other reader, `ControlDatabase.queryRevokedStamps`, reads an unmatched block
+ * as "no revocations known", so admitting a new class of failure there would widen a
+ * security-relevant default. One predicate per reader is what keeps that default where it was.
+ *
+ * The walk is over the same {@link causeChain}, because `StrandDatabase.initialize` runs the
+ * failure through Quereus's `db.exec`, which may wrap it. Fails CLOSED the same way: a
+ * non-`Error`, a text-only copy of the message, and an error built by a second loaded copy of
+ * `@optimystic/db-p2p` (which `instanceof` cannot recognise) all answer false, and the caller
+ * throws as it did before this existed.
+ *
+ * NOTE: matching the class rather than `.code` is the deliberate call, and the one code it
+ * admits against its own upstream advice is `SELF_COORDINATION_BLOCKED`, whose comment says
+ * retrying is unlikely to help. It costs a launch that hits it a `'syncing'` runtime retrying
+ * every 5 s instead of a watcher rebuild on a doubling delay, and only a SERVING node can hit
+ * it at all (a client is never a candidate coordinator, so it gets `NO_COORDINATOR_AVAILABLE`).
+ * Narrow this to `.code` if a config switch for self-coordination is ever passed from Sereus, or
+ * if a partition verdict is ever made from something that does not heal on its own.
+ */
+export function isNoCoordinatorResolved(error: unknown): boolean {
+	return causeChain(error).some(link => link instanceof FindCoordinatorError);
 }
 
 /**

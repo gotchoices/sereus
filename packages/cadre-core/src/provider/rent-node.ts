@@ -20,6 +20,7 @@ import debug from 'debug';
 import type { CadreNode } from '../cadre-node.js';
 import { decodeNodeClaimPayload } from '../node-claim-payload.js';
 import { ProviderApiError, type ProviderClient, type RentedContainerStatusReport } from './client.js';
+import type { NodeClass } from '../node-class.js';
 
 const log = debug('sereus:cadre:provider-rent');
 
@@ -29,8 +30,8 @@ export type RentNodeJoin = 'claim' | 'invitation';
 export type RentNodeStep = 'creating' | 'waiting-for-code' | 'claiming' | 'inviting' | 'done';
 
 export interface RentNodeOptions {
-	/** Default `storage`. */
-	profile?: 'storage' | 'transaction';
+	/** Default `server`. */
+	nodeClass?: NodeClass;
 	/** Called at each step; an exception it throws is logged and ignored. */
 	onProgress?: (step: RentNodeStep) => void;
 	/**
@@ -147,7 +148,7 @@ async function rentByInvitation(node: RentingNode, client: ProviderClient, optio
 	report(options, 'creating');
 	let container;
 	try {
-		container = await client.createContainer({ join: { kind: 'invitation', invitation: encoded }, profile: options.profile ?? 'storage' });
+		container = await client.createContainer({ join: { kind: 'invitation', invitation: encoded }, nodeClass: options.nodeClass ?? 'server' });
 	} catch (error) {
 		await withdrawQuietly(node, invitation.invite.key);
 		throw error;
@@ -168,7 +169,7 @@ async function withdrawQuietly(node: RentingNode, key: string): Promise<void> {
 
 async function rentByClaim(node: RentingNode, client: ProviderClient, options: RentNodeOptions): Promise<RentNodeResult> {
 	report(options, 'creating');
-	const container = await client.createContainer({ join: { kind: 'claim' }, profile: options.profile ?? 'storage' });
+	const container = await client.createContainer({ join: { kind: 'claim' }, nodeClass: options.nodeClass ?? 'server' });
 	log('container %s created for a claim', container.id);
 	return await claimContainer(node, client, container.id, options);
 }

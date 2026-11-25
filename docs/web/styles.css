@@ -38,6 +38,7 @@ body {
 .site-title {
   font-size: 1.5rem;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .logo { height: 50px; margin-right: .5rem; }
@@ -51,14 +52,15 @@ nav ul {
 .nav-links {
   display: flex;
   flex-direction: row;
-  gap: 1rem;
+  gap: .25rem;
 }
 
 .nav-links li a {
+  white-space: nowrap;
   color: var(--primary);
   font-weight: 600;
   text-decoration: none;
-  padding: 0.5rem 0.75rem;
+  padding: 0.5rem 0.6rem;
   border-radius: 6px;
 }
 
@@ -109,7 +111,7 @@ h2 { color: var(--primary); }
 .hamburger { display: none; background: none; border: 0; }
 .bar { height: 3px; width: 24px; background: var(--primary); display: block; margin: 4px 0; transition: all .3s; }
 
-@media (max-width: 900px) {
+@media (max-width: 1000px) {
   .hamburger { display: block; }
   #nav-menu { display: none; position: absolute; right: 0; top: 80px; background: var(--off-white); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
   #nav-menu.open { display: block; }
@@ -121,3 +123,42 @@ h2 { color: var(--primary); }
 .news-date { color: #777; font-style: italic; margin-bottom: .5rem; }
 
 
+
+/* ── Apps ─────────────────────────────────────────────────────────────── */
+.apps-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin: 1rem 0 2rem; }
+.app-card { background: #fff; border-radius: 10px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); padding: 1.25rem; display: flex; flex-direction: column; gap: .5rem; }
+.app-card-head { display: flex; align-items: center; gap: .75rem; }
+.app-card-head img { width: 48px; height: 48px; border-radius: 10px; flex: none; }
+.app-card-head .app-icon-placeholder { width: 48px; height: 48px; border-radius: 10px; flex: none; background: var(--light-blue); color: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.25rem; }
+.app-card h3 { margin: 0; color: var(--primary); font-size: 1.2rem; }
+.app-card h3 a { color: inherit; text-decoration: none; }
+.app-tagline { font-weight: 600; color: var(--primary); margin: 0; }
+.app-card p { margin: 0; }
+.app-card .app-links { margin-top: auto; padding-top: .5rem; display: flex; gap: 1rem; flex-wrap: wrap; }
+.app-card .app-links a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.app-card.in-development { background: #fbfdff; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+
+.badge { display: inline-block; font-size: .75rem; font-weight: 700; letter-spacing: .02em; padding: .15rem .55rem; border-radius: 999px; vertical-align: middle; white-space: nowrap; }
+.badge.available { background: #e3f5e9; color: #1d6b3a; }
+.badge.development { background: #fff4dc; color: #7a5300; }
+
+.app-callout { background: var(--light-blue); border-left: 4px solid var(--accent); border-radius: 6px; padding: .9rem 1rem; margin: 0 0 1.5rem; display: flex; gap: .75rem; align-items: center; }
+.app-callout img { width: 40px; height: 40px; border-radius: 8px; flex: none; }
+.app-callout p { margin: 0; }
+.app-callout a { color: var(--accent); font-weight: 600; }
+
+.use-case-card .badge { margin-left: .4rem; }
+
+/* ── News timeline ───────────────────────────────────────────────────── */
+.news-header p { color: #555; }
+.news-year { color: var(--primary); font-size: 1.4rem; margin: 2rem 0 .5rem; padding-bottom: .25rem; border-bottom: 2px solid var(--light-blue); }
+.news-item { border-left: 4px solid var(--accent-light-blue); }
+.news-item h3 { margin: 0 0 .25rem; color: var(--primary); }
+.news-item p { margin: .4rem 0 0; }
+.news-item a { color: var(--accent); }
+.news-item .news-date { font-style: normal; font-size: .85rem; }
+.news-tag { display: inline-block; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); margin-right: .5rem; }
+.news-item.app { border-left-color: #2e9e5b; }
+.news-item.app .news-tag { color: #1d6b3a; }
+.news-item.milestone { border-left-color: var(--primary); background: linear-gradient(90deg, #eef5ff, #fff 60%); }
+.news-item.milestone .news-tag { color: var(--primary); }

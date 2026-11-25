@@ -42,14 +42,14 @@ describe('Basic Connectivity', () => {
     const bob = await network.createParty({ 
       name: 'bob',
       droneCount: 2,
-      droneProfile: 'storage'
+      droneNodeClass: 'server'
     });
     
     expect(bob.droneNodes).toHaveLength(2);
     
     for (const drone of bob.droneNodes) {
       expect(drone.peerId).toMatch(/^12D3KooW/);
-      expect(drone.profile).toBe('storage');
+      expect(drone.nodeClass).toBe('server');
       expect(drone.multiaddrs.length).toBeGreaterThan(0);
     }
   });

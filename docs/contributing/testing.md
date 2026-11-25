@@ -36,7 +36,7 @@ The integration suite runs one file at a time, because scenarios bind real ports
 
 ## What a ticket stage must run
 
-The stage rules are owned by [tess/agent-rules/tickets.md](../../tess/agent-rules/tickets.md). This table restates what they require, as root commands:
+The stage rules are owned by [tess/agent-rules/tickets.md](https://github.com/gotchoices/tess/blob/main/agent-rules/tickets.md). This table restates what they require, as root commands:
 
 | Stage | Owes before handing off |
 |---|---|
@@ -62,6 +62,20 @@ The ticket runner stops an agent whose command prints nothing for ten minutes. R
 On Windows, start every Vitest run from a working directory whose drive letter is uppercase (`C:\projects\sereus`). From a lowercase one (`c:\projects\sereus`, the form VS Code gives its terminals) Vitest loads a second copy of its runner, and every file of a run with two or more files fails at its first `describe` with "Vitest failed to find the runner". Changing directory inside the run does not help.
 
 Each package's global setup refuses such a run and prints the path to start from (`assertUppercaseDriveLetter` in `test-harness/working-directory.ts`). In Git Bash, `cd /c/projects/sereus` gives the uppercase form; in PowerShell, `Set-Location 'C:\projects\sereus'` does.
+
+### Windows: one sibling under two path spellings
+
+The same failure as the rule above, from the other direction: one file loaded twice because two path strings lead to it. A junction stores the exact string it was created with, and Windows compares paths without regard to case, so `C:\Projects\optimystic\packages\db-core` and `C:\Projects\Optimystic\packages\db-core` are one directory under two spellings.
+
+Node keys its module cache by the resolved string and keeps whichever spelling the junction stored, so a package reached under both is loaded twice. The two copies share no classes. Every `instanceof` across them is false, and an error thrown by one is not recognised by code that imported the other — which reads as a bug in this repository rather than in the install.
+
+The two spellings come from two installs. Yarn writes this repository's junctions with the `link:` paths in the root `package.json`'s `resolutions` (`../optimystic`), while a sibling's own install writes its nested links relative to its own checkout (`C:\Projects\Optimystic`). Those nested links are inside the sibling and not ours to change. A spelling that disagrees with the disk is harmless as long as every junction agrees with every other one, so the check compares them against each other rather than against the disk.
+
+Each package's global setup refuses such a run before anything is loaded (`assertOneSpellingPerLinkedPackage` in `test-harness/linked-package-spellings.ts`), naming each package, each spelling, each junction holding it, and the sibling checkout when one is involved. The remedy is to make every junction for that package store one spelling:
+
+- **Only this repository's own junctions disagree:** repoint the odd ones out. Delete each non-recursively and recreate it against the spelling the others use; [tickets/rules/sibling-repos.md](../../tickets/rules/sibling-repos.md) says why a recursive delete is never used near these.
+- **A junction inside a sibling checkout disagrees:** repoint this repository's junctions to the spelling the sibling uses, or rename the sibling's folder to match the `resolutions` paths, after which its owner reinstalls it because its nested links still store the old spelling. Never write in the sibling.
+- **`yarn install` is not the remedy.** It rewrites every junction from `resolutions`, so they agree with each other and may still disagree with the nested links a sibling's own install wrote.
 
 ### A stale-build abort means stop
 
@@ -92,11 +106,11 @@ A failing test is never skipped, commented out or loosened to get a green run. I
 1. Look for the test in `tickets/.pre-existing-known.md`. An entry marked `in-flight` or `blocked` is tracked by the ticket it names: say in the handoff that the failure is known and continue. An entry marked `one-off` was diagnosed without a ticket: follow the check its record describes, and report only if the failure is back.
 2. Otherwise write `tickets/.pre-existing-error.md` with the command, the failing test and the error, and finish the ticket. The runner triages it afterwards.
 
-[tess/agent-rules/tickets.md](../../tess/agent-rules/tickets.md) has the full procedure.
+[tess/agent-rules/tickets.md](https://github.com/gotchoices/tess/blob/main/agent-rules/tickets.md) has the full procedure.
 
 ### Scratch worktrees and clones
 
-To check a fresh install by hand, add the worktree or clone beside this repository, so that `../optimystic` and `../quereus` resolve for the root `resolutions`. For most purposes `yarn check:published` is the safer scratch copy, because it removes the links before it deletes anything.
+To check a fresh install by hand, add the worktree or clone beside this repository, so that `../optimystic` and `../quereus` resolve for the root `resolutions`. For most purposes `yarn check:published` is the safer scratch copy, because it removes the links before it deletes anything. A worktree carries no submodule contents: `tess/` is created empty there, which is why documentation may not link into it ([Documentation](gates.md#documentation)).
 
 Never delete such a checkout recursively while its `node_modules` holds `link:` junctions; [tickets/rules/sibling-repos.md](../../tickets/rules/sibling-repos.md) states the rule and what it protects. To remove one, find the junctions by walking the tree without following reparse points, unlink each with a non-recursive delete (`[System.IO.Directory]::Delete(<link>, $false)` in PowerShell), and only then remove the directory. If that is not possible, leave the checkout in place and say so in the ticket.
 
@@ -106,7 +120,7 @@ Scenarios live in `packages/integration-tests/src/scenarios` and run real nodes 
 
 ### The default is no new test
 
-A ticket adds a test when the test reproduces the bug being fixed, at the lowest layer that reproduces it, or when it pins a named rule on logic with real branching. It does not add one for wiring, constants, or anything a type, a lint rule or a check script already enforces. A change that owes no test ships with none, and a reviewer removes tests that fail this bar. The rule is owned by "Tests must pay for themselves" in [tess/agent-rules/tickets.md](../../tess/agent-rules/tickets.md). Before writing a scenario, check [topology-coverage.md](topology-coverage.md) for one that already boots the shape.
+A ticket adds a test when the test reproduces the bug being fixed, at the lowest layer that reproduces it, or when it pins a named rule on logic with real branching. It does not add one for wiring, constants, or anything a type, a lint rule or a check script already enforces. A change that owes no test ships with none, and a reviewer removes tests that fail this bar. The rule is owned by "Tests must pay for themselves" in [tess/agent-rules/tickets.md](https://github.com/gotchoices/tess/blob/main/agent-rules/tickets.md). Before writing a scenario, check [topology-coverage.md](topology-coverage.md) for one that already boots the shape.
 
 ### Asserting a quantity that has to travel between machines
 

@@ -61,7 +61,7 @@ const within = scopedWithin('strand-write-budget');
  * a budget with no provenance cannot tell the next reader whether the count
  * grew or the budget was always wrong.
  */
-const MEASURED_ON = '2026-11-13';
+const MEASURED_ON = '2026-11-20';
 /**
  * The `../optimystic` commit these figures were measured against. At `03ffadc4` (2026-09-17)
  * the SELECT phase fell to zero backend operations, when that repo made a refresh of an
@@ -86,16 +86,23 @@ const MEASURED_ON = '2026-11-13';
  * Re-measured whole at `087bfc11` on 2026-11-13, three runs identical: insert and select equal
  * the `b7d70516` figures, and launch moved from this side (`app-schema-version-gates-strand-open`,
  * explained on {@link LAUNCH}).
+ *
+ * Re-measured whole at `e81f33e3` (Optimystic 1.29.0) on 2026-11-20: launch 423, insert 88,
+ * select 0. The whole rise is upstream's commit-proofs store (1.28.0, GitHub #60): each
+ * proof is stored once per node under its message hash, with one `getCommitProof` and one
+ * `saveCommitProof` per commit message (15 in launch, 5 in insert), and each block's
+ * `saveBlockProof` became a `saveProofEntry` referencing it, one for one. Without the 30 and 10
+ * new operations every method's count equals the `087bfc11` figures.
  */
-const BASELINE_UPSTREAM = 'optimystic 087bfc11';
+const BASELINE_UPSTREAM = 'optimystic e81f33e3';
 /**
  * Launch: `addStrand` on an empty store — strand libp2p node up, Strand
  * schema (9 tables + 1 index) applied, the App schema version recorded (its row creates
  * `Strand.AppSchemaVersion`'s collection), the one-table sApp schema applied,
  * open-strand founder bootstrap: an empty collection for each of the 11 declared trees the
  * founding transaction does not write (7 strand tables, 3 unique stamp indexes, `App.Note`),
- * then the founding transaction, whose Header row creates that table's collection. 393 over
- * 42 blocks. The version record is 27 of those over 3 blocks: one pend on each new block, at the
+ * then the founding transaction, whose Header row creates that table's collection. 423 over
+ * 42 blocks, 30 of them the commit-proofs store (see {@link BASELINE_UPSTREAM}); 393 before it. The version record is 27 of those over 3 blocks: one pend on each new block, at the
  * 9 operations per block every other pend here costs (2 reads, 7 writes). Before it, 366 over
  * 39 blocks. At 380, when the Header had an empty commit of its own before its row, the empty
  * collections were 300 of those operations over 22 of the blocks, about 25 operations per
@@ -121,10 +128,11 @@ const BASELINE_UPSTREAM = 'optimystic 087bfc11';
  * same batched launch measured 322 uncached on 2026-09-14 (155 of them `getMetadata`), before
  * the empty collections.
  */
-const LAUNCH: Budget = { ops: 393, blocks: 42, opBudget: 407, blockBudget: 45 };
+const LAUNCH: Budget = { ops: 423, blocks: 42, opBudget: 437, blockBudget: 45 };
 /**
  * Insert: {@link ROW_COUNT} single-row autocommit inserts into `App.Note`.
- * 78 over 2 blocks — nearly all writes (the cache absorbs the transactor's
+ * 88 over 2 blocks — nearly all writes, 10 of them the commit-proofs store (see
+ * {@link BASELINE_UPSTREAM}); 78 before it (the cache absorbs the transactor's
  * re-reads; 366 uncached on 2026-08-13). History: 75 on 2026-08-17, 86 on 2026-09-14, 80 at
  * optimystic `03ffadc4`, 99 at optimystic `2a1bfedb`, 88 over 3 at `fbf165ee`, 78 over 2 once
  * launch committed `App.Note`'s empty collection (2026-10-17): the first insert no longer
@@ -138,13 +146,13 @@ const LAUNCH: Budget = { ops: 393, blocks: 42, opBudget: 407, blockBudget: 45 };
  * from `9cbc7427` are gone. The budget keeps 10 operations of headroom over an explained,
  * intended cost (90 → 98 at `fbf165ee`, 98 → 88 with the drop to 78); it was NOT raised to absorb
  * those no-op deletes, which were fixed upstream instead. It sits one operation below their
- * return (78 + 11 = 89), so this phase, not launch, is the one that catches them. What is still
+ * return (88 + 11 = 99; 78 + 11 = 89 before the commit-proofs store), so this phase, not launch, is the one that catches them. What is still
  * uneven across commit steps is `saveMaterializedBlock` at 18 against 10 of each other step;
  * that excess has not been attributed to a named change, and the figure repeats exactly across
  * runs. This is the phase carrying the spec's anti-vacuity duty — see the NOTE on
  * {@link SELECT} — so the next rise should be explained before anyone raises the budget.
  */
-const INSERT: Budget = { ops: 78, blocks: 2, opBudget: 88, blockBudget: 4 };
+const INSERT: Budget = { ops: 88, blocks: 2, opBudget: 98, blockBudget: 4 };
 /**
  * Select: {@link ROW_COUNT} full-table selects of `App.Note`. 0 operations —
  * after the launch/insert phases every read the selects need is already cached,
@@ -227,7 +235,7 @@ async function measureSoloStrand(): Promise<RunCost> {
 		return storage;
 	};
 
-	const node = new CadreNode(controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage: provider }));
+	const node = new CadreNode(controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage: provider }));
 	try {
 		await within('start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
 		// The control start must not have touched the counted storage — a provider

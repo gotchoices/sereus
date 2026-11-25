@@ -48,7 +48,7 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 
 			// A: owner + storage (holds the CadrePeer blocks) + relay.
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'server', enableRelay: true }));
 			await A.start();
 			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
 			const aPeerId = A.peerId!.toString();
@@ -57,7 +57,7 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 			// also caps its redial ladder, so the proactive routine runs several times
 			// within the convergence window.
 			const bKey = await generateKeyPair('Ed25519');
-			B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', reconcileMs: 2_000 }));
+			B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, nodeClass: 'device', reconcileMs: 2_000 }));
 			await B.start();
 
 			// Wait for A to self-register its own CadrePeer row WITH a dialable address,

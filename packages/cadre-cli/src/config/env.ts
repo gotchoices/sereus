@@ -32,7 +32,14 @@ export interface EnvMapping {
 export const ENV_MAPPINGS = {
   CADRE_PARTY_ID: { path: 'controlNetwork.partyId', kind: 'string' },
   CADRE_BOOTSTRAP_NODES: { path: 'controlNetwork.bootstrapNodes', kind: 'list' },
-  CADRE_PROFILE: { path: 'profile', kind: 'string' },
+  CADRE_NODE_CLASS: { path: 'nodeClass', kind: 'string' },
+  // One variable per role rather than one JSON block, because a role is overridden on its own:
+  // a unit file or a container that sets `alwaysOn` must not have to restate the other three,
+  // and each leaf keeps its own attribution when the validator rejects its value.
+  CADRE_ROLE_ALWAYS_ON: { path: 'roles.alwaysOn', kind: 'boolean' },
+  CADRE_ROLE_OVERLAY_TIER: { path: 'roles.overlayTier', kind: 'string' },
+  CADRE_ROLE_REACTIVITY: { path: 'roles.reactivity', kind: 'string' },
+  CADRE_ROLE_STRAND_COHORT_MEMBER: { path: 'roles.strandCohortMember', kind: 'boolean' },
   CADRE_KEY_FILE: { path: 'identity.keyFile', kind: 'string' },
   CADRE_STORAGE_PATH: { path: 'storage.path', kind: 'string' },
   CADRE_STORAGE_TYPE: { path: 'storage.type', kind: 'string' },
@@ -41,6 +48,11 @@ export const ENV_MAPPINGS = {
   CADRE_ANNOUNCE_ADDRS: { path: 'network.announceAddrs', kind: 'list' },
   CADRE_APPEND_ANNOUNCE_ADDRS: { path: 'network.appendAnnounceAddrs', kind: 'list' },
   CADRE_RELAY_ADDRS: { path: 'network.relayAddrs', kind: 'list' },
+  CADRE_WEBRTC: { path: 'network.webrtc', kind: 'boolean' },
+  // A comma-separated list of `stun:` URLs, kept as ONE string: `resolveStunServers` in
+  // cadre-core splits it, so the apps' `VITE_STUN_URLS` / `EXPO_PUBLIC_STUN_URLS` and this
+  // variable take the same spelling.
+  CADRE_STUN_URLS: { path: 'network.stunUrls', kind: 'string' },
   CADRE_ENABLE_RELAY: { path: 'network.enableRelay', kind: 'boolean' },
   CADRE_HIBERNATION_ENABLED: { path: 'hibernation.enabled', kind: 'boolean' },
   CADRE_LATENCY_HINT: { path: 'hibernation.defaultLatencyHint', kind: 'string' },

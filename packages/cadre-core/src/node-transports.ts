@@ -5,8 +5,9 @@
  * transports through {@link withoutRelayDiscovery}, so libp2p's relay discovery cannot hand those
  * slots to some other relay-capable peer before the per-relay supervisors fill them (see
  * `relay-reservation.ts`, "WHY LIBP2P'S RELAY DISCOVERY IS SWITCHED OFF"). Every other node gets
- * the embedder's list as it was, or no option at all, and `@optimystic/db-p2p` builds its own
- * default list.
+ * the embedder's list as it was, or — when its listen entries name a transport db-p2p's own
+ * default list does not carry — the injected default list unwrapped, or no option at all, and
+ * `@optimystic/db-p2p` builds its own default list.
  *
  * The wrapper needs a list to wrap. React Native and browser embedders always supply one
  * (`network.transports`); a Node host supplies the default list through
@@ -25,6 +26,9 @@ const log = debug('sereus:cadre:node-transports');
 /**
  * The `transports` option to spread into a node's `createLibp2pNode` options.
  *
+ * Only the supervised case wraps the list: with no cadre-generated `/p2p-circuit` entry there is
+ * no slot for libp2p's relay discovery to take, so discovery stays as db-p2p leaves it.
+ *
  * @param listenTransports what the node's resolved listen entries imply (`resolveTransportOptions`
  *   in `relay-addrs.ts`), handed to `network.defaultTransports`.
  * @param relaySlotsSupervised whether cadre generated this node's bare `/p2p-circuit` entries for
@@ -36,14 +40,47 @@ export function nodeTransportsOption(
   listenTransports: ListenTransportOptions,
   relaySlotsSupervised: boolean
 ): { transports?: Libp2pTransports } {
-  if (!relaySlotsSupervised) {
-    return network?.transports ? { transports: network.transports } : {};
-  }
-  const transports = network?.transports ?? network?.defaultTransports?.(listenTransports);
+  const transports = resolveTransportList(network, listenTransports, relaySlotsSupervised);
   if (transports === undefined) {
-    log('Relays are configured but no transport list was supplied (network.transports or ' +
-      'network.defaultTransports); libp2p relay discovery stays on and can take their slots');
     return {};
   }
-  return { transports: withoutRelayDiscovery(transports) };
+  return { transports: relaySlotsSupervised ? withoutRelayDiscovery(transports) : transports };
+}
+
+/**
+ * The list this node is built from, or `undefined` to leave `transports` off and let
+ * `@optimystic/db-p2p` build its own default list.
+ *
+ * The embedder's `network.transports` wins wherever it is set. Otherwise the injected default
+ * list is built for either of the two reasons cadre has to own the list at all:
+ *
+ * - **The relay slots are supervised** — the list has to be wrapped so libp2p's relay discovery
+ *   cannot fill them first (`relay-reservation.ts`).
+ * - **The listen entries name a transport db-p2p's default list does not carry** — today that is
+ *   `/webrtc`, which `nodeDefaultTransports` adds from the ICE servers beside it
+ *   (`node-default-transports.ts`). db-p2p knows nothing of that field, so leaving `transports`
+ *   off here would hand libp2p a `/webrtc` entry no transport claims and it would be dropped in
+ *   silence — the defect `resolveTransportOptions` refuses the entry to prevent, reappearing on
+ *   the node that was allowed to keep it. Reached by a Node host with `/webrtc` and no relay,
+ *   which is a real configuration: ICE with no STUN server still finds a LAN path.
+ */
+function resolveTransportList(
+  network: NetworkConfig | undefined,
+  listenTransports: ListenTransportOptions,
+  relaySlotsSupervised: boolean
+): Libp2pTransports | undefined {
+  if (network?.transports) {
+    return network.transports;
+  }
+  if (!relaySlotsSupervised && listenTransports.webrtcIceServers === undefined) {
+    return undefined;
+  }
+  const transports = network?.defaultTransports?.(listenTransports);
+  if (transports === undefined) {
+    // Only reachable on the supervised arm: a `/webrtc` entry on a node that passed no
+    // `defaultTransports` never resolves, it throws out of `resolveTransportOptions`.
+    log('Relays are configured but no transport list was supplied (network.transports or ' +
+      'network.defaultTransports); libp2p relay discovery stays on and can take their slots');
+  }
+  return transports;
 }

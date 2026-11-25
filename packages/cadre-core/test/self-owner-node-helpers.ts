@@ -65,7 +65,7 @@ export async function newUnstartedNode(
       bootstrapNodes: [],
     },
     privateKey: nodeKey,
-    profile: 'transaction',
+    nodeClass: 'device',
     strandWatchInterval: config.strandWatchInterval,
     strandFilter: config.strandFilter,
     storage: config.storage,

@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
 	BlockUnavailableError,
 	CoordinatorPartialCommitError,
+	PeersIncompleteError,
+	PromiseShortfallError,
 	SyncRetryExhaustedError,
 	SyncRevisionStalledError,
 	TornActionError,
+	type SoloRefusalReason,
 	type WriteDurability,
 } from '@optimystic/db-core';
 import { ConcurrentModificationError, PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
@@ -30,39 +33,54 @@ import type { ControlRetryAbandonment } from '../src/control-retry.js';
  * The transient-control-write classifier and retry loop behind
  * `ControlDatabase.lockedWithRetry`, in isolation — no database, no network.
  *
- * The classifier table below asserts against message LITERALS, a known dependency on
- * engine/transactor error text. It is only half the coverage, deliberately:
+ * Every failure the default policy re-presents is claimed by TYPE, so the fixtures below build the
+ * real upstream classes. The message literals that remain are the NON-retriable side, and the
+ * per-peer details an upstream class composes its own sentence over — kept verbatim where they are
+ * captured evidence of what the wire produced. Coverage is deliberately partial either way:
  *
  *  - the NON-retriable side (constraint/authorization failures) is additionally driven
  *    from the REAL engine in `control-formation-seat-budget.spec.ts`, which boots a
  *    `CadreNode` — so a reworded constraint message reddens a spec there;
- *  - the RETRIABLE side cannot be produced here at all. Both messages come off a real
+ *  - the RETRIABLE side cannot be produced here at all. Both come off a real
  *    multi-node cluster (the network transactor's aggregate, the cluster coordinator's
  *    super-majority shortfall), which needs an integration scenario, not a unit spec.
  *    `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
- *    produces the shortfall LIVE and asserts this classifier against it, so an upstream
- *    rewording reddens there rather than silently disabling the retry (on Optimystic 1.20.0 it
- *    no longer produces the aggregate: see `isUncommittedTransactorAggregate`'s NOTE). The literals below
- *    are transcribed from the transactor's own format strings
- *    (`db-core/src/transactor/network-transactor.ts`) — they are not claimed to be
- *    captured output.
+ *    produces the shortfall LIVE and asserts this classifier against it, so a wrapper that loses
+ *    the typed link reddens there rather than silently disabling the retry (on Optimystic 1.20.0 it
+ *    no longer produces the aggregate: see `isUncommittedTransactorAggregate`'s NOTE).
  */
 
 /**
  * The real failure arrives as `QuereusError` → `Error` → `Error`, with the recognisable
  * message potentially at any depth — so every classifier case here asserts through a
  * three-level `cause` chain with decoy text on the outer layers, not a flat message.
+ *
+ * Takes a message for the text-classified cases, or a built error for the type-classified ones —
+ * the delivery is the same either way, and only what sits at the bottom of the chain differs.
  */
-function nested(message: string): Error {
+function nested(failure: string | Error): Error {
+	const inner = typeof failure === 'string' ? new Error(failure) : failure;
 	return new Error('Runtime error during write', {
-		cause: new Error('control write failed', { cause: new Error(message) }),
+		cause: new Error('control write failed', { cause: inner }),
 	});
+}
+
+/**
+ * `error` with `cause` replaced — used to hang a NON-`Error` link under a typed failure, the chain
+ * shape `unwrapError` reports an `undefined` message for.
+ */
+function withCause<T extends Error>(error: T, cause: unknown): T {
+	error.cause = cause;
+	return error;
 }
 
 /** Pacing that never sleeps and never advances the budget clock. */
 function immediatePacing(overrides: ControlWriteRetryOptions = {}): ControlWriteRetryOptions {
 	return { sleep: () => Promise.resolve(), now: () => 0, ...overrides };
 }
+
+/** The DDL text {@link ddlFailure} and {@link ddlChain} both report a failure of. */
+const FAILING_DDL = 'create table CadreControl.FormationUsage (Token text not null, UsageStampId text not null)';
 
 /**
  * One `create table` of the control DDL failing, as Quereus' migration loop reports it:
@@ -71,55 +89,110 @@ function immediatePacing(overrides: ControlWriteRetryOptions = {}): ControlWrite
  * `quereus/src/runtime/emit/schema-declarative.ts`). The classifier walks the chain, so it
  * sees the inner message either way — the outer text is here so the schema-init cases below
  * fail against the surface a real startup actually produces.
+ *
+ * TEXT only: the returned string reaches the classifier with no typed link below it, which is what
+ * the cases genuinely about text want (the self-coordination refusal, whose matcher stays textual).
+ * {@link ddlChain} is the same surface as a real chain, for the cases classified by type.
  */
 function ddlFailure(causeMessage: string): string {
-	return `Failed to execute DDL: create table CadreControl.FormationUsage (Token text not null, UsageStampId text not null)\nError: ${causeMessage}`;
+	return `Failed to execute DDL: ${FAILING_DDL}\nError: ${causeMessage}`;
 }
 
 /**
- * The transactor aggregate as the block-read (`get`) and phase-1 (`pend`) sites format it:
- * per-batch details name a SINGLE block, `<peerId>[block:<id>](<status>)`. Nothing has
- * committed when either site raises, so the write is known not to have landed.
+ * The same startup surface as {@link ddlFailure}, but as a real `cause` CHAIN rather than text — for
+ * the failures classified by TYPE, which need the typed link to survive the wrappers rather than
+ * only its sentence.
  *
- * This one is a real captured message (recorded in
- * `tickets/fix/control-read-over-fresh-edge-stream-resets.md`), not a reconstruction.
+ * Mirrors what the wrappers really build, each of which passes the inner error as `cause`: Quereus'
+ * DDL wrapper (`Failed to execute DDL: <ddl>\nError: <inner>`, `runBatchedMigrationLoop` in
+ * `quereus/src/runtime/emit/schema-declarative.ts`) over, optionally, its module-create wrapper
+ * (`Module '<m>' create failed for table '<T>'`, `quereus/src/schema/manager.ts`) over the failure.
  */
-const TRANSACTOR_AGGREGATE =
-	'Some peers did not complete: 12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU[block:PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk](in-flight) cause=The stream has been reset; root: The stream has been reset';
+function ddlChain(inner: Error, options: { readonly viaModuleCreate?: boolean } = {}): QuereusError {
+	const wrapped = options.viaModuleCreate
+		? new QuereusError(`Module 'optimystic' create failed for table 'FormationUsage': ${inner.message}`,
+			StatusCode.ERROR, inner)
+		: inner;
+	return new QuereusError(`Failed to execute DDL: ${FAILING_DDL}\nError: ${wrapped.message}`, StatusCode.ERROR, wrapped);
+}
+
 /**
- * The SAME aggregate message from the phase-2 (`commitBlocks`) site, which formats a batch's
- * block COUNT instead — `<peerId>[blocks:<count>](<status>)`. A no-response there is
- * indeterminate (the coordinator may have committed and only the reply was lost), so this one
- * must never be re-presented.
+ * The cluster coordinator's super-majority shortfall, as the real upstream class. Claimed by TYPE
+ * with a zero rejection count, so a fixture has to be the class — the sentence it composes is
+ * byte-identical to the literals these cases used to carry, which is why the `toMatch` assertions
+ * elsewhere in the tree still hold.
+ *
+ * `silentPeers` is not read by the classifier; one id stands in for the members whose vote the round
+ * did not count.
+ */
+function shortfall(
+	facts: { approvals: number; peerCount: number; needed: number; rejections?: number; soloRefused?: SoloRefusalReason },
+): PromiseShortfallError {
+	return new PromiseShortfallError({
+		approvals: facts.approvals,
+		rejections: facts.rejections ?? 0,
+		peerCount: facts.peerCount,
+		needed: facts.needed,
+		silentPeers: ['12D3KooWSilentMember'],
+		...(facts.soloRefused === undefined ? {} : { soloRefused: facts.soloRefused }),
+	});
+}
+
+/** The transport fault every aggregate fixture below carries as its root cause. */
+function streamReset(): Error {
+	return new Error('The stream has been reset');
+}
+
+/**
+ * The transactor aggregate from the block-read (`get`) site — one of the two phases where nothing
+ * can have committed yet, so the write is known not to have landed. Upstream composes the sentence;
+ * the per-peer `details` argument is what the caller renders, naming a SINGLE block as both `get`
+ * and `pend` do (`<peerId>[block:<id>](<status>)`).
+ *
+ * Those details are a real captured message (recorded in
+ * `tickets/fix/control-read-over-fresh-edge-stream-resets.md`), not a reconstruction — the sentence
+ * `PeersIncompleteError.peersDidNotComplete` wraps them in, plus its `; root: …` tail, reproduces
+ * the captured line byte for byte. Do not shorten the details to a placeholder: they are the record.
+ */
+function transactorAggregate(cause: Error = streamReset()): PeersIncompleteError {
+	return PeersIncompleteError.peersDidNotComplete('get',
+		'12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU[block:PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk](in-flight) cause=The stream has been reset',
+		cause);
+}
+/**
+ * The same aggregate from the phase-2 (`commitBlocks`) site. A no-response there is indeterminate
+ * (the coordinator may have committed and only the reply was lost), so this one must never be
+ * re-presented — `phase: 'commit'` is what says so, and the details' block COUNT
+ * (`<peerId>[blocks:<count>](<status>)`) is only how upstream renders a commit batch.
  *
  * The status reads `in-flight`, not `no-response`, because a batch can only carry a `cause=` if
  * its RPC REJECTED — and `Pending.isError` implies `isResponse` is false, which every one of the
- * transactor's three formatters renders as `in-flight`. `no-response` means the batch has no
+ * transactor's formatters renders as `in-flight`. `no-response` means the batch has no
  * request at all, and those never print a cause.
  */
-const TRANSACTOR_AGGREGATE_COMMIT_PHASE =
-	'Some peers did not complete: 12D3KooWpeer[blocks:3](in-flight) cause=The stream has been reset; root: The stream has been reset';
-/** The aggregate with no per-batch details at all — `formatBatchStatuses` had nothing to format. */
-const TRANSACTOR_AGGREGATE_NO_DETAILS =
-	'Some peers did not complete: ; root: The stream has been reset';
+function commitPhaseAggregate(cause: Error = streamReset()): PeersIncompleteError {
+	return PeersIncompleteError.peersDidNotComplete('commit',
+		'12D3KooWpeer[blocks:3](in-flight) cause=The stream has been reset', cause);
+}
+/** A `get` aggregate with no per-batch details at all — `formatBatchStatuses` had nothing to format. */
+function aggregateWithoutDetails(): PeersIncompleteError {
+	return PeersIncompleteError.peersDidNotComplete('get', '', streamReset());
+}
 /**
- * The THIRD and last place `[block:` appears — `NetworkTransactor.dischargeCancel`
- * (`db-core/src/transactor/network-transactor.ts` ~1156; the other two are `get` at ~304 and
- * `pend` at ~579, and the commit site at ~942 renders `[blocks:` instead), raised when a failed commit
- * attempt's own cancel could not discharge the pend it left behind within its bounded
- * six rounds. This is a reconstruction (built from that formatter's literal template),
- * not a capture — no run recorded in `tickets/.pre-existing-known.md` has produced one.
+ * The cancel aggregate — `NetworkTransactor.dischargeCancel`, raised when a failed commit attempt's
+ * own cancel could not discharge the pend it left behind within its bounded six rounds. It has its
+ * own sentence and `phase: 'cancel'`, which the classifier neither claims nor vetoes.
  *
- * The status token reads `in-flight`, not `no-response`, for the same reason
- * {@link TRANSACTOR_AGGREGATE_COMMIT_PHASE} does: a batch only carries a `cause=` when its
- * RPC rejected, and every one of the transactor's three formatters — including this one —
- * renders that as `in-flight`.
+ * A reconstruction (built from that formatter's literal template), not a capture — no run recorded
+ * in `tickets/.pre-existing-known.md` has produced one. The status token reads `in-flight` for the
+ * same reason {@link commitPhaseAggregate}'s does.
  */
-const CANCEL_DISCHARGE_AGGREGATE =
-	'Cancel of action N7Wj4Q9nOWCkm5G1cxTPWg did not discharge 1 block(s): '
-	+ 'PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk; peers: '
-	+ '12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU[block:PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk](in-flight) '
-	+ 'cause=The stream has been reset; root: The stream has been reset';
+function cancelDischargeAggregate(): PeersIncompleteError {
+	return PeersIncompleteError.cancelNotDischarged('N7Wj4Q9nOWCkm5G1cxTPWg',
+		['PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk'],
+		'12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU[block:PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk](in-flight) cause=The stream has been reset',
+		streamReset());
+}
 /**
  * A collection's own retry budget giving up on a standing `pending conflict` — Optimystic's
  * `SyncRetryExhaustedError`, raised by `Collection.sync` after it has already spent its own
@@ -145,42 +218,52 @@ const CANCEL_DISCHARGE_AGGREGATE =
 const SYNC_RETRY_EXHAUSTED_PENDING_CONFLICT =
 	'sync for collection default/cadrecontrol/CadrePeer exhausted 10 retries: pending conflict: '
 	+ 'block(s) held by unresolved rival action(s) f7cM8wOiFkZ4O_bOrXFVQQ';
-const SUPER_MAJORITY_NONE_ANSWERED =
-	'Failed to get super-majority: 0/3 approvals (needed 3, 0 rejections)';
-const SUPER_MAJORITY_PARTIAL =
-	'Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)';
-const SUPER_MAJORITY_REJECTED =
-	'Failed to get super-majority: 2/3 approvals (needed 3, 1 rejections)';
 /**
- * The shortfall exactly as a THREE-node party raises it — the shape that makes a third
- * node's join fragile. A control transaction there needs 2 of 2 remaining peers to answer,
- * so ONE flaky peer response is fatal where a two-node party would have tolerated it.
- * Transcribed from a failing run of the since-deleted `provider-seed-accepted` scenario,
- * recorded in `tickets/implement/29.3-third-node-join-ddl-init.md`.
- *
- * A RECONSTRUCTION, and knowingly a partial one: the transcription kept this inner sentence
- * but elided the surrounding transactor aggregate, which is where the `[block:`/`[blocks:`
- * token that decides retriability lives (see the two aggregate forms below). Attempts to
- * re-capture it saw only `Missing block` deaths, so the elided segment is still unrecorded.
+ * The approval facts of the three-machine party's shortfall, which is what a cadre's control writes
+ * actually meet: unanimity (`ceil(3 × 0.75) = 3`), and a round that heard nobody vote no. Zero
+ * approvals is the round that heard nothing at all; two is the one where only the silent member's
+ * vote was missing.
  */
-const SUPER_MAJORITY_THIRD_NODE_JOIN =
-	'Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
+const NONE_ANSWERED_FACTS = { approvals: 0, peerCount: 3, needed: 3 } as const;
+const PARTIALLY_ANSWERED_FACTS = { approvals: 2, peerCount: 3, needed: 3 } as const;
+/** The same round with one member voting NO — a verdict, not a silence, so never re-presented. */
+const REJECTED_FACTS = { approvals: 2, peerCount: 3, needed: 3, rejections: 1 } as const;
+/**
+ * The approval facts a THREE-node party's shortfall carries — the shape that makes a third node's
+ * join fragile. A control transaction there needs 2 of the 2 remaining peers to answer, so ONE
+ * flaky peer response is fatal where a two-node party would have tolerated it. Transcribed from a
+ * failing run of the since-deleted `provider-seed-accepted` scenario, recorded in
+ * `tickets/implement/29.3-third-node-join-ddl-init.md`.
+ *
+ * The transcription kept the shortfall sentence but elided the surrounding transactor aggregate,
+ * whose PHASE is what decides retriability (see the two aggregate forms below). Attempts to
+ * re-capture it saw only `Missing block` deaths, so the elided segment is still unrecorded — which
+ * is why the aggregate cases drive both phases rather than asserting the one a real joining node
+ * carries.
+ */
+const THIRD_NODE_JOIN_FACTS = { approvals: 1, peerCount: 2, needed: 2 } as const;
 /**
  * How a pend's shortfall reached this classifier before Optimystic 1.20.0: inline, as one batch's
  * `cause=` inside a transactor aggregate, with the same text repeated as the aggregate's `root:`.
- * From 1.20.0 the coordinator returns a pend's shortfall and the writer raises it on its own (the
- * bare-sentence cases above), while a commit's still arrives this way ({@link
- * SUPER_MAJORITY_IN_COMMIT_AGGREGATE}) — so the identical sentence can arrive from either phase, and
- * only the bracket token tells them apart.
+ * From 1.20.0 the coordinator returns a pend's shortfall and the writer raises it as the real class
+ * on its own, while a commit's still arrives this way ({@link shortfallInCommitAggregate}) — so the
+ * identical sentence can arrive from either phase, and only `phase` tells them apart.
  *
- * This pend-phase form is retried twice over: `isUncommittedTransactorAggregate` claims it on
- * `[block:`, and `isUnansweredSuperMajorityShortfall` claims the inline sentence.
+ * The typed {@link shortfall} is passed as the aggregate's `cause`, which is what the real chain
+ * carries: upstream embeds its message as the `root:` tail and keeps the error itself. The details
+ * are transcribed from the pend site's own format string, so the composed message is byte-identical
+ * to the literal these cases carried before the aggregate was typed.
  */
-const SUPER_MAJORITY_IN_PEND_AGGREGATE =
-	'Some peers did not complete: 12D3KooWa[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections), 12D3KooWb[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=The stream has been reset; root: Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
+function shortfallInPendAggregate(): PeersIncompleteError {
+	const cause = shortfall(THIRD_NODE_JOIN_FACTS);
+	return PeersIncompleteError.peersDidNotComplete('pend',
+		`12D3KooWa[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=${cause.message}, `
+		+ '12D3KooWb[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=The stream has been reset',
+		cause);
+}
 /**
- * A promise-phase REJECTION, not a shortfall — wrapped in the same `[block:` aggregate as every
- * other promise-phase failure. `isUncommittedTransactorAggregate` claims the wrapper on its own,
+ * A promise-phase REJECTION, not a shortfall — wrapped in the same `pend` aggregate as every
+ * other promise-phase failure. `isUncommittedTransactorAggregate` claims the phase on its own,
  * whatever the cause inside says (its accepted-tradeoff `NOTE:` explains why that is kept), and
  * this case is what pins that.
  *
@@ -196,19 +279,31 @@ const SUPER_MAJORITY_IN_PEND_AGGREGATE =
  * A real captured message, not a reconstruction: the `[peer-insert]` write A ran on 2026-09-17,
  * refused by C's unresolved pending action. It was transcribed from
  * `tickets/.logs/control-write-hears-zero.gate-r1.log`, which that directory's pruner ages out —
- * the literal below is the surviving copy, so do not "restore" it from a shorter paraphrase.
+ * the details and the rejection text below are the surviving copy, and upstream's own sentence and
+ * `; root: …` tail close over them to reproduce the captured line byte for byte. Do not "restore"
+ * either from a shorter paraphrase.
  */
-const PROMISE_PHASE_REJECTION_IN_PEND_AGGREGATE =
-	'Some peers did not complete: 12D3KooWSsZxd8HWy9sqb9h81WTJZTwyvBQVVtnnzAP9WbvHdq7M[block:BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y](in-flight) cause=Transaction rejected by validators (1/3 rejected): 12D3KooWM6oCfDDA1T9bD3A4nm4di5LdG7fkgkrZKr1W9zmfViGj: pending conflict: block BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y held by unresolved action(s) Iw7_hcvHMj5jXg0VRx3xDA; root: Transaction rejected by validators (1/3 rejected): 12D3KooWM6oCfDDA1T9bD3A4nm4di5LdG7fkgkrZKr1W9zmfViGj: pending conflict: block BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y held by unresolved action(s) Iw7_hcvHMj5jXg0VRx3xDA';
+function rejectionInPendAggregate(): PeersIncompleteError {
+	const cause = new Error('Transaction rejected by validators (1/3 rejected): '
+		+ '12D3KooWM6oCfDDA1T9bD3A4nm4di5LdG7fkgkrZKr1W9zmfViGj: pending conflict: '
+		+ 'block BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y held by unresolved action(s) Iw7_hcvHMj5jXg0VRx3xDA');
+	return PeersIncompleteError.peersDidNotComplete('pend',
+		'12D3KooWSsZxd8HWy9sqb9h81WTJZTwyvBQVVtnnzAP9WbvHdq7M'
+		+ `[block:BWDONTuAJIRFiDg3IXDvK7UGss915dSNOT62ze8Ni-Y](in-flight) cause=${cause.message}`,
+		cause);
+}
 /**
- * The SAME shortfall sentence carried by a COMMIT-phase aggregate. Vetoed, and this is the case
+ * The SAME shortfall carried by a COMMIT-phase aggregate. Vetoed, and this is the case
  * that decides whether the schema-init retry does anything at all: if a joining node's real
- * failure looks like this, the retry silently never engages. Do not widen
+ * failure looks like this, the retry silently never engages. Do not narrow
  * `reportsIndeterminateCommit` to make this pass — the veto is there because re-running a write
  * that may have landed turns a success into a constraint failure.
  */
-const SUPER_MAJORITY_IN_COMMIT_AGGREGATE =
-	'Some peers did not complete: 12D3KooWa[blocks:2](in-flight) cause=Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections); root: Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
+function shortfallInCommitAggregate(): PeersIncompleteError {
+	const cause = shortfall(THIRD_NODE_JOIN_FACTS);
+	return PeersIncompleteError.peersDidNotComplete('commit',
+		`12D3KooWa[blocks:2](in-flight) cause=${cause.message}`, cause);
+}
 /**
  * A durable convergence fault, not a transient one: a collection reports a committed
  * revision whose header block reads as affirmatively ABSENT. Tracked separately in
@@ -224,8 +319,8 @@ const MISSING_BLOCK = 'Missing block (jQlkVafUFlI6FzOGGAlViyK5GrgcSm_4SL7HfPKwhi
  * Retriable for SCHEMA INIT only: a write refused at coordinator SELECTION never reached a peer,
  * so nothing pended and nothing committed. Not retriable in general — `findCoordinator` is also
  * reached from `NetworkTransactor.commitBlock`'s phase 2, where a refusal can land after the
- * header block already committed, and carries no `[blocks:` token for
- * `reportsIndeterminateCommit` to veto on.
+ * header block already committed, and normally arrives with no commit-phase aggregate around it
+ * for `reportsIndeterminateCommit` to veto on.
  */
 const SELF_COORDINATION_BLOCKED =
 	'Self-coordination blocked: grace-period-not-elapsed. No coordinator available for key.';
@@ -252,101 +347,161 @@ const SELF_COORDINATION_OTHER_REASONS = [
 
 describe('isRetriableControlWriteFailure', () => {
 	it('retries the read/pend-phase transactor aggregate ("the cohort did not answer")', () => {
-		expect(isRetriableControlWriteFailure(nested(TRANSACTOR_AGGREGATE))).toBe(true);
+		expect(isRetriableControlWriteFailure(nested(transactorAggregate()))).toBe(true);
 	});
 
 	/**
-	 * The distinction the `[block:` / `[blocks:` token draws. A commit-phase no-response is
+	 * The distinction `phase` draws. A commit-phase no-response is
 	 * INDETERMINATE — the coordinator runs consensus internally and may have committed with only
 	 * the reply lost — so re-running the write body would risk turning a success into a
-	 * constraint failure. Same message prefix, same `cause`; only the per-batch detail differs.
+	 * constraint failure. Same sentence, same `cause`; only `phase` differs.
 	 */
 	it('never retries the commit-phase aggregate — the write may have landed', () => {
-		expect(isRetriableControlWriteFailure(nested(TRANSACTOR_AGGREGATE_COMMIT_PHASE))).toBe(false);
-	});
-
-	it('never retries an aggregate whose phase cannot be told from its details', () => {
-		// No details, so no token: an unattributable failure is not a proven non-commit.
-		expect(isRetriableControlWriteFailure(nested(TRANSACTOR_AGGREGATE_NO_DETAILS))).toBe(false);
-		// A single-block batch alongside a commit batch: the conservative arm wins.
-		expect(isRetriableControlWriteFailure(nested(
-			'Some peers did not complete: 12D3KooWa[block:blk-7](no-response), 12D3KooWb[blocks:3](no-response)',
-		))).toBe(false);
+		expect(isRetriableControlWriteFailure(nested(commitPhaseAggregate()))).toBe(false);
 	});
 
 	/**
-	 * The veto spans the `cause` chain, not one message. A read-phase aggregate at one level
-	 * must not license a retry when ANOTHER level reports a commit-phase batch — whichever
+	 * `phase` is on the error whether or not a batch formatted, so an aggregate with no per-peer
+	 * details is as attributable as one with them — and `get` is itself the proof that nothing
+	 * committed. This case asserted the opposite verdict while the phase could only be read off a
+	 * batch token: no details meant no token, so the phase was unknown and the failure was declined.
+	 */
+	it('retries a get-phase aggregate whose per-peer details came out empty', () => {
+		expect(isRetriableControlWriteFailure(nested(aggregateWithoutDetails()))).toBe(true);
+	});
+
+	/**
+	 * The veto spans the `cause` chain, not one link. A get-phase aggregate at one level
+	 * must not license a retry when ANOTHER level reports a commit-phase one — whichever
 	 * order the two land in. Asserted for the retriable transactor arm and the super-majority
 	 * arm alike, since an indeterminate commit disqualifies a re-run no matter what else in
 	 * the chain looks transient.
+	 *
+	 * This is also where a get aggregate and a commit aggregate meet: one `PeersIncompleteError`
+	 * carries one `phase`, so the two phases that used to be two batch tokens inside one message
+	 * are now two links on one chain, and the veto beats the claim at either depth.
 	 */
-	it('never retries a chain that reports a commit-phase batch at ANY level', () => {
-		const chained = (outer: string, inner: string): Error =>
-			new Error(outer, { cause: new Error(inner) });
+	it('never retries a chain that reports a commit-phase aggregate at ANY level', () => {
+		// Fresh each time: the second arm hangs a `cause` off the link itself.
+		const retriableLinks = (): Error[] => [transactorAggregate(), shortfall(NONE_ANSWERED_FACTS)];
 
-		for (const retriable of [TRANSACTOR_AGGREGATE, SUPER_MAJORITY_NONE_ANSWERED]) {
+		for (const retriable of retriableLinks()) {
 			// The control: on its own, each of these IS retried.
-			expect(isRetriableControlWriteFailure(new Error(retriable))).toBe(true);
-			expect(isRetriableControlWriteFailure(
-				chained(retriable, TRANSACTOR_AGGREGATE_COMMIT_PHASE))).toBe(false);
-			expect(isRetriableControlWriteFailure(
-				chained(TRANSACTOR_AGGREGATE_COMMIT_PHASE, retriable))).toBe(false);
+			expect(isRetriableControlWriteFailure(retriable)).toBe(true);
+		}
+		for (const retriable of retriableLinks()) {
+			retriable.cause = commitPhaseAggregate();
+			expect(isRetriableControlWriteFailure(retriable)).toBe(false);
+		}
+		for (const retriable of retriableLinks()) {
+			expect(isRetriableControlWriteFailure(commitPhaseAggregate(retriable))).toBe(false);
 		}
 	});
 
 	it('retries a super-majority shortfall with ZERO rejections, at any approval count', () => {
-		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_NONE_ANSWERED))).toBe(true);
-		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_PARTIAL))).toBe(true);
+		expect(isRetriableControlWriteFailure(nested(shortfall(NONE_ANSWERED_FACTS)))).toBe(true);
+		expect(isRetriableControlWriteFailure(nested(shortfall(PARTIALLY_ANSWERED_FACTS)))).toBe(true);
 	});
 
 	it('never retries a super-majority shortfall carrying a rejection — somebody voted no', () => {
-		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_REJECTED))).toBe(false);
+		expect(isRetriableControlWriteFailure(nested(shortfall(REJECTED_FACTS)))).toBe(false);
+	});
+
+	/**
+	 * The claim is by TYPE, so the same sentence as plain text is NOT claimed — the assertion that
+	 * reddens if a text fallback for the shortfall ever creeps back. `control-read-retry.spec.ts`
+	 * pins the equivalent for `BlockUnavailableError`.
+	 *
+	 * Asserted bare and through the DDL wrapper, because text is all a rebuilt-from-its-message
+	 * shortfall could ever offer at either depth.
+	 */
+	it('never retries the shortfall sentence as plain text — the claim is by type', () => {
+		const sentence = shortfall(NONE_ANSWERED_FACTS).message;
+		expect(isRetriableControlWriteFailure(nested(sentence))).toBe(false);
+		expect(isRetriableControlWriteFailure(nested(ddlFailure(sentence)))).toBe(false);
+	});
+
+	/**
+	 * The typed link is claimed wherever it sits on the chain, including under the wrappers a real
+	 * startup prints — which is what the old text match could not see past, since it read the top
+	 * message alone. Bare is the shape measured live on 2026-10-28 (a single-link chain).
+	 */
+	it('retries a shortfall at any depth of the cause chain', () => {
+		for (const delivered of [
+			shortfall(THIRD_NODE_JOIN_FACTS),
+			viaQuereus(shortfall(THIRD_NODE_JOIN_FACTS)),
+			ddlChain(shortfall(THIRD_NODE_JOIN_FACTS)),
+			ddlChain(shortfall(THIRD_NODE_JOIN_FACTS), { viaModuleCreate: true }),
+		]) {
+			expect(isRetriableControlWriteFailure(delivered)).toBe(true);
+		}
+	});
+
+	/**
+	 * A lone node refusing to write by itself: `CoordinatorRepo.refuseSoloPend` builds the shortfall
+	 * with its own approval and nobody voting no, so it is claimed like any silent-cohort shortfall.
+	 * `soloRefused` names why, and nothing branches on it — asserted across EVERY reason, keyed off
+	 * the upstream union so a reason added there fails to compile here rather than going unasserted.
+	 */
+	it('retries a lone node\'s own refusal to write alone, whatever reason it names', () => {
+		const everyReason: Record<SoloRefusalReason, true> =
+			{ 'absent-members': true, 'awaiting-bootstrap': true, 'unrouted': true };
+
+		for (const soloRefused of Object.keys(everyReason) as SoloRefusalReason[]) {
+			expect(isRetriableControlWriteFailure(
+				nested(shortfall({ approvals: 1, peerCount: 3, needed: 3, soloRefused })))).toBe(true);
+		}
 	});
 
 	/**
 	 * Pins the accepted tradeoff recorded at `isUncommittedTransactorAggregate`'s `NOTE:`: unlike
-	 * the bare-message rejection above, a rejection carried inside a promise-phase `[block:`
-	 * aggregate IS retried — the matcher claims the wrapper on its own, whatever the cause inside
-	 * it says. Real capture (see the constant's comment), though its particular cause text is
-	 * historical; what this case guards is the wrapper rule, which still governs every rejection
+	 * the bare rejection above, a rejection carried inside a promise-phase
+	 * aggregate IS retried — the matcher claims the phase on its own, whatever the cause inside
+	 * it says. Real capture (see the fixture's comment), though its particular cause text is
+	 * historical; what this case guards is the phase rule, which still governs every rejection
 	 * the promise phase can still raise.
 	 */
-	it('retries a promise-phase rejection carried inside a [block: aggregate — the accepted tradeoff', () => {
-		expect(isRetriableControlWriteFailure(nested(PROMISE_PHASE_REJECTION_IN_PEND_AGGREGATE))).toBe(true);
+	it('retries a promise-phase rejection carried inside a pend aggregate — the accepted tradeoff', () => {
+		expect(isRetriableControlWriteFailure(nested(rejectionInPendAggregate()))).toBe(true);
 	});
 
 	/**
-	 * Pins `isUncommittedTransactorAggregate`'s NOTE: the discriminator is the `Some peers did
-	 * not complete:` PREFIX and the `[block:` token together, never `[block:` alone. A cancel
-	 * that fails to discharge a pend also formats a `[block:` batch detail, but under a
-	 * different prefix (`Cancel of action … did not discharge …`) — so it must stay declined.
-	 * Relaxing the discriminator to "contains `[block:`" would read this as a retriable
-	 * get/pend and re-present a write whose own cancel is what is still unresolved.
+	 * `phase: 'cancel'` is neither claimed nor vetoed, so an undischarged cancel falls through
+	 * unmatched. Re-presenting a write whose own cancel is what is still unresolved is exactly what
+	 * must not happen, and the phase keeps that case apart from `get`/`pend` without the classifier
+	 * reading a word of the message — which is what it took while the three phases shared the
+	 * `[block:` batch token between them.
 	 */
-	it('never retries the cancel-discharge aggregate, even though it contains `[block:`', () => {
-		expect(isRetriableControlWriteFailure(nested(CANCEL_DISCHARGE_AGGREGATE))).toBe(false);
+	it('never retries the cancel-discharge aggregate', () => {
+		expect(isRetriableControlWriteFailure(nested(cancelDischargeAggregate()))).toBe(false);
 	});
 
 	/**
 	 * The shape a third node's join failure ACTUALLY has: the shortfall inline inside a
-	 * transactor aggregate, not on its own. Same sentence, same `cause` chain, opposite verdicts
-	 * — the per-batch bracket token is the whole discriminator, so this pair is what makes the
-	 * schema-init retry either useful or a no-op. Asserted bare and through the `Failed to
-	 * execute DDL:` wrapper a joining node actually prints.
+	 * transactor aggregate, not on its own — and the typed shortfall still chained below it, which
+	 * is what the wire carries. Same sentence, same `cause` chain, opposite verdicts: the
+	 * aggregate's `phase` is the whole discriminator, so this pair is what makes the schema-init
+	 * retry either useful or a no-op. A commit-phase no-response stays vetoed however clearly the
+	 * shortfall below it says the cohort was silent.
 	 *
-	 * Which token a real joining node carries is still UNCAPTURED (see
-	 * {@link SUPER_MAJORITY_THIRD_NODE_JOIN}). If a capture ever arrives and it is `[blocks:`,
-	 * the second half of this case is the proof that the retry never engages for it.
+	 * Driven bare, through the decoy chain and through the `Failed to execute DDL:` wrapper chain a
+	 * joining node actually prints, because both the claim and the veto have to find their typed
+	 * link at any depth.
+	 *
+	 * Which phase a real joining node carries is still UNCAPTURED (see
+	 * {@link THIRD_NODE_JOIN_FACTS}). If a capture ever arrives and it is `commit`,
+	 * the second arm of this case is the proof that the retry never engages for it.
 	 */
 	it('separates the pend- and commit-phase forms of the SAME super-majority shortfall', () => {
-		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_IN_PEND_AGGREGATE))).toBe(true);
-		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_IN_COMMIT_AGGREGATE))).toBe(false);
-
-		expect(isRetriableControlWriteFailure(
-			nested(ddlFailure(SUPER_MAJORITY_IN_PEND_AGGREGATE)))).toBe(true);
-		expect(isRetriableControlWriteFailure(
-			nested(ddlFailure(SUPER_MAJORITY_IN_COMMIT_AGGREGATE)))).toBe(false);
+		const deliveries: ((failure: Error) => Error)[] = [
+			(failure) => failure,
+			(failure) => nested(failure),
+			(failure) => ddlChain(failure),
+		];
+		for (const deliver of deliveries) {
+			expect(isRetriableControlWriteFailure(deliver(shortfallInPendAggregate()))).toBe(true);
+			expect(isRetriableControlWriteFailure(deliver(shortfallInCommitAggregate()))).toBe(false);
+		}
 	});
 
 	/**
@@ -362,7 +517,7 @@ describe('isRetriableControlWriteFailure', () => {
 	});
 
 	/**
-	 * A `pending conflict` that reaches this classifier NOT wrapped in a `[block:` aggregate —
+	 * A `pending conflict` that reaches this classifier NOT wrapped in a get/pend aggregate —
 	 * because Optimystic's own collection sync already spent its own ten retries racing the
 	 * rival action and gave up. Correctly declined here: nothing in this message says the
 	 * cohort did not answer, and re-presenting it a further two times inside this loop's
@@ -395,6 +550,19 @@ describe('isRetriableControlWriteFailure', () => {
 	});
 
 	/**
+	 * The aggregate's claim is by TYPE, so the same sentence as plain text is NOT claimed — the
+	 * assertion that reddens if a text fallback for the aggregate is ever reintroduced. Asserted
+	 * bare and through the DDL wrapper, because text is all a rebuilt-from-its-message aggregate
+	 * could ever offer at either depth. (`control-read-retry.spec.ts` pins the equivalent on the
+	 * read path, and for `BlockUnavailableError`.)
+	 */
+	it('never retries the aggregate sentence as plain text — the claim is by type', () => {
+		const sentence = transactorAggregate().message;
+		expect(isRetriableControlWriteFailure(nested(sentence))).toBe(false);
+		expect(isRetriableControlWriteFailure(nested(ddlFailure(sentence)))).toBe(false);
+	});
+
+	/**
 	 * A `cause` chain link that is not an `Error`. `unwrapError` follows `.cause` blindly and
 	 * reports an `undefined` message for such a link, so matching on it unguarded throws a
 	 * `TypeError` — and it would throw from inside `retryControlWrite`'s catch, replacing the real
@@ -405,15 +573,15 @@ describe('isRetriableControlWriteFailure', () => {
 		expect(isRetriableControlWriteFailure(
 			new Error('control write failed', { cause: 'connection closed' }))).toBe(false);
 		expect(isRetriableControlWriteFailure(
-			new Error(TRANSACTOR_AGGREGATE, { cause: { reason: 'aborted' } }))).toBe(true);
+			withCause(transactorAggregate(), { reason: 'aborted' }))).toBe(true);
 		expect(isRetriableControlWriteFailure(
-			new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, { cause: 'connection closed' }))).toBe(false);
+			withCause(commitPhaseAggregate(), 'connection closed'))).toBe(false);
 	});
 
 	it('never retries a non-Error throw, even one whose text would match', () => {
-		expect(isRetriableControlWriteFailure(TRANSACTOR_AGGREGATE)).toBe(false);
+		expect(isRetriableControlWriteFailure(transactorAggregate().message)).toBe(false);
 		expect(isRetriableControlWriteFailure(undefined)).toBe(false);
-		expect(isRetriableControlWriteFailure({ message: TRANSACTOR_AGGREGATE })).toBe(false);
+		expect(isRetriableControlWriteFailure({ message: transactorAggregate().message })).toBe(false);
 	});
 });
 
@@ -449,45 +617,46 @@ describe('isRetriableSchemaInitFailure', () => {
 
 	/**
 	 * The indeterminate-commit veto is NOT relaxed for this policy. A chain carrying a commit-phase
-	 * batch token is refused even when another level shows the retriable refusal — re-running the
-	 * DDL is safe, but only because nothing committed, and `[blocks:` is precisely the evidence
-	 * that something may have.
+	 * aggregate is refused even when another level shows the retriable refusal — re-running the
+	 * DDL is safe, but only because nothing committed, and `phase: 'commit'` is precisely the
+	 * evidence that something may have.
 	 */
 	it('keeps the commit-phase veto in force', () => {
 		expect(isRetriableSchemaInitFailure(new Error(SELF_COORDINATION_BLOCKED, {
-			cause: new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE),
+			cause: commitPhaseAggregate(),
 		}))).toBe(false);
-		expect(isRetriableSchemaInitFailure(new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, {
-			cause: new Error(SELF_COORDINATION_BLOCKED),
-		}))).toBe(false);
-		expect(isRetriableSchemaInitFailure(nested(SUPER_MAJORITY_IN_COMMIT_AGGREGATE))).toBe(false);
+		expect(isRetriableSchemaInitFailure(
+			commitPhaseAggregate(new Error(SELF_COORDINATION_BLOCKED)))).toBe(false);
+		expect(isRetriableSchemaInitFailure(nested(shortfallInCommitAggregate()))).toBe(false);
 	});
 
 	/**
 	 * Widened, not replaced: every verdict the default classifier reaches, this one reaches too.
 	 * Driven from the same table so a future edit to either list cannot silently diverge.
 	 */
-	it('agrees with the default classifier on every other message', () => {
+	it('agrees with the default classifier on every other failure', () => {
 		const retriable = [
-			TRANSACTOR_AGGREGATE,
-			SUPER_MAJORITY_NONE_ANSWERED,
-			SUPER_MAJORITY_PARTIAL,
-			SUPER_MAJORITY_IN_PEND_AGGREGATE,
+			transactorAggregate(),
+			aggregateWithoutDetails(),
+			shortfall(NONE_ANSWERED_FACTS),
+			shortfall(PARTIALLY_ANSWERED_FACTS),
+			shortfallInPendAggregate(),
 		];
 		const notRetriable = [
-			TRANSACTOR_AGGREGATE_NO_DETAILS,
-			SUPER_MAJORITY_REJECTED,
+			commitPhaseAggregate(),
+			cancelDischargeAggregate(),
+			shortfall(REJECTED_FACTS),
 			MISSING_BLOCK,
 			'UNIQUE constraint failed: FormationUsage.UsageStampId',
 			'CHECK constraint failed: Authorized',
 		];
-		for (const message of retriable) {
-			expect(isRetriableControlWriteFailure(nested(message))).toBe(true);
-			expect(isRetriableSchemaInitFailure(nested(message))).toBe(true);
+		for (const failure of retriable) {
+			expect(isRetriableControlWriteFailure(nested(failure))).toBe(true);
+			expect(isRetriableSchemaInitFailure(nested(failure))).toBe(true);
 		}
-		for (const message of notRetriable) {
-			expect(isRetriableControlWriteFailure(nested(message))).toBe(false);
-			expect(isRetriableSchemaInitFailure(nested(message))).toBe(false);
+		for (const failure of notRetriable) {
+			expect(isRetriableControlWriteFailure(nested(failure))).toBe(false);
+			expect(isRetriableSchemaInitFailure(nested(failure))).toBe(false);
 		}
 	});
 
@@ -581,7 +750,7 @@ describe('isRetriableLostUpdateFailure', () => {
 	});
 
 	it('keeps the commit-phase veto in force', () => {
-		expect(isRetriableLostUpdateFailure(new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, { cause: lostUpdate() }))).toBe(false);
+		expect(isRetriableLostUpdateFailure(commitPhaseAggregate(lostUpdate()))).toBe(false);
 	});
 
 	it('never retries the lost-update text on a plain Error — the claim is by type', () => {
@@ -595,26 +764,28 @@ describe('isRetriableLostUpdateFailure', () => {
 		}
 	});
 
-	it('agrees with the default classifier on every other message', () => {
+	it('agrees with the default classifier on every other failure', () => {
 		const retriable = [
-			TRANSACTOR_AGGREGATE,
-			SUPER_MAJORITY_NONE_ANSWERED,
-			SUPER_MAJORITY_PARTIAL,
-			SUPER_MAJORITY_IN_PEND_AGGREGATE,
+			transactorAggregate(),
+			aggregateWithoutDetails(),
+			shortfall(NONE_ANSWERED_FACTS),
+			shortfall(PARTIALLY_ANSWERED_FACTS),
+			shortfallInPendAggregate(),
 		];
 		const notRetriable = [
-			TRANSACTOR_AGGREGATE_NO_DETAILS,
-			SUPER_MAJORITY_REJECTED,
+			commitPhaseAggregate(),
+			cancelDischargeAggregate(),
+			shortfall(REJECTED_FACTS),
 			MISSING_BLOCK,
 			SELF_COORDINATION_BLOCKED,
 			'UNIQUE constraint failed: CadrePeer.PeerId',
 			'CHECK constraint failed: AuthorizedUpdate',
 		];
-		for (const message of retriable) {
-			expect(isRetriableLostUpdateFailure(nested(message))).toBe(true);
+		for (const failure of retriable) {
+			expect(isRetriableLostUpdateFailure(nested(failure))).toBe(true);
 		}
-		for (const message of notRetriable) {
-			expect(isRetriableLostUpdateFailure(nested(message))).toBe(false);
+		for (const failure of notRetriable) {
+			expect(isRetriableLostUpdateFailure(nested(failure))).toBe(false);
 		}
 	});
 });
@@ -642,12 +813,13 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 	});
 
 	/**
-	 * `detail` is the responder's own words, and upstream embeds it in the message. When those
-	 * words are a pend-phase aggregate, the message alone would satisfy the text matcher's prefix
-	 * and `[block:` token — this pins the typed veto running first.
+	 * `detail` is the responder's own words, and upstream embeds it in the message. This pinned the
+	 * typed veto beating a text matcher that read the aggregate's sentence out of exactly such a
+	 * message; now that the aggregate is claimed by type, the embedded text is not claimable on its
+	 * own at all, so the case pins the weaker property that the veto still declines the chain.
 	 */
 	it('never retries a non-final torn write whose detail embeds a pend-phase aggregate', () => {
-		for (const delivered of everyDelivery(tornWrite(false, TRANSACTOR_AGGREGATE))) {
+		for (const delivered of everyDelivery(tornWrite(false, transactorAggregate().message))) {
 			expect(classify(delivered)).toBe(false);
 		}
 	});
@@ -655,15 +827,16 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 	/**
 	 * Upstream documents resubmitting after a spent sync budget as unsafe: the attempt that spent
 	 * it may have left its log entry standing. `lastReason` is embedded in the message, so the
-	 * aggregate-bearing variant pins the veto against the text matcher again; the stalled-revision
-	 * subclass is covered by the same `instanceof`.
+	 * aggregate-bearing variant pins the veto over a message that reads retriable — weaker than it
+	 * was, now that aggregate TEXT is claimed by nothing; the stalled-revision subclass is covered
+	 * by the same `instanceof`.
 	 */
 	it('never retries a SyncRetryExhaustedError, whatever its last reason says', () => {
 		const exhausted = [
 			new SyncRetryExhaustedError(PEER_COLLECTION, 10),
-			new SyncRetryExhaustedError(PEER_COLLECTION, 10, TRANSACTOR_AGGREGATE),
+			new SyncRetryExhaustedError(PEER_COLLECTION, 10, transactorAggregate().message),
 			new SyncRevisionStalledError(PEER_COLLECTION, 3, { blockId: 'PaWaynQLVfuwhcw4tGh0uX', rev: 13 }, 13, 12,
-				TRANSACTOR_AGGREGATE),
+				transactorAggregate().message),
 		];
 		for (const error of exhausted) {
 			for (const delivered of everyDelivery(error)) {
@@ -682,16 +855,21 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 
 	/**
 	 * Both partial-commit errors embed their reason's message (`Underlying failure: …`), so a
-	 * pend-phase aggregate from a sibling collection puts the text matcher's prefix and token into
-	 * a message that also reports a durable half. Re-running the whole write body would double-apply
+	 * pend-phase aggregate from a sibling collection puts a retriable-reading sentence into a
+	 * message that also reports a durable half. Re-running the whole write body would double-apply
 	 * that half; upstream's contract says the whole transaction must not be blindly retried.
+	 *
+	 * Neither class chains its reason on `cause` today, so the typed aggregate passed below reaches
+	 * the classifier as text only — which nothing claims any more. The case therefore pins the veto
+	 * over a message that reads retriable rather than the veto beating a claim, and would pin the
+	 * stronger property again the day upstream starts chaining the reason.
 	 */
 	it('never retries a partial commit whose failure is a pend-phase aggregate', () => {
 		const partials = [
 			new CoordinatorPartialCommitError(savedHoldersUnknown('default/cadrecontrol/CadrePeer$PeerIdIndex'), [PEER_COLLECTION],
-				new Error(TRANSACTOR_AGGREGATE)),
+				transactorAggregate()),
 			new PartialCommitError(['default/cadrecontrol/CadrePeer'], ['default/cadrecontrol/CadrePeer$PeerIdIndex'],
-				new Error(TRANSACTOR_AGGREGATE)),
+				transactorAggregate()),
 		];
 		for (const partial of partials) {
 			for (const delivered of everyDelivery(partial)) {
@@ -721,7 +899,7 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed possibly-stored failures', (_name
 
 /**
  * A read in the write body that no coordinator answered, as Optimystic reports it: a typed
- * `BlockUnavailableError`, not the `[block:` aggregate (which a read raises only when a coordinator
+ * `BlockUnavailableError`, not the get-phase aggregate (which a read raises only when a coordinator
  * answered and left the block out). Claimed
  * by type in the classifiers' shared body, after both vetoes — so schema init inherits it, and the
  * same read on a chain that also reports a commit-phase batch stays declined.
@@ -732,7 +910,7 @@ describe.each(WRITE_CLASSIFIERS)('%s — typed unanswered read', (_name, classif
 		for (const delivered of [unanswered, viaQuereus(unanswered)]) {
 			expect(classify(delivered)).toBe(true);
 		}
-		expect(classify(viaQuereus(new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, { cause: unanswered })))).toBe(false);
+		expect(classify(viaQuereus(commitPhaseAggregate(unanswered)))).toBe(false);
 	});
 });
 
@@ -742,7 +920,7 @@ describe('retryControlWrite', () => {
 		const result = await retryControlWrite(async () => {
 			runs++;
 			if (runs === 1) {
-				throw nested(TRANSACTOR_AGGREGATE);
+				throw nested(transactorAggregate());
 			}
 			return 'committed';
 		}, immediatePacing());
@@ -758,7 +936,7 @@ describe('retryControlWrite', () => {
 		try {
 			await retryControlWrite(async () => {
 				runs++;
-				const error = nested(SUPER_MAJORITY_NONE_ANSWERED);
+				const error = nested(shortfall(NONE_ANSWERED_FACTS));
 				errors.push(error);
 				throw error;
 			}, immediatePacing());
@@ -782,7 +960,7 @@ describe('retryControlWrite', () => {
 		let clock = 0;
 		let runs = 0;
 		let slept = 0;
-		const failure = nested(TRANSACTOR_AGGREGATE);
+		const failure = nested(transactorAggregate());
 		await expect(retryControlWrite(async () => {
 			runs++;
 			clock += CONTROL_WRITE_RETRY_BUDGET_MS;
@@ -801,7 +979,7 @@ describe('retryControlWrite', () => {
 	 */
 	it('still runs the body once when attempts is below 1', async () => {
 		let runs = 0;
-		const failure = nested(TRANSACTOR_AGGREGATE);
+		const failure = nested(transactorAggregate());
 		await expect(retryControlWrite(async () => {
 			runs++;
 			throw failure;
@@ -857,7 +1035,7 @@ describe('retryControlWrite', () => {
 		let runs = 0;
 		await expect(retryControlWrite(async () => {
 			runs++;
-			throw nested(TRANSACTOR_AGGREGATE);
+			throw nested(transactorAggregate());
 		}, { now: () => 0, sleep: (ms) => { delays.push(ms); return Promise.resolve(); } }))
 			.rejects.toThrow();
 
@@ -953,7 +1131,7 @@ describe('retryControlWrite', () => {
 		expect(unlabelled.some((line) => line.includes('Control write failed transiently'))).toBe(true);
 		expect(unlabelled.some((line) => line.includes('Control write committed on attempt 2/3'))).toBe(true);
 		// (Only the TAG position matters — the error text these lines carry has brackets of
-		// its own, `[block:…]`, which is exactly what the classifier reads.)
+		// its own, from the aggregate's per-peer details.)
 		expect(unlabelled.every((line) => !line.includes('Control write ['))).toBe(true);
 	});
 });
@@ -1005,7 +1183,7 @@ describe('retryControlWrite — abandonment notification', () => {
 		let runs = 0;
 		await expect(retryControlWrite(async () => {
 			runs++;
-			throw nested(TRANSACTOR_AGGREGATE);
+			throw nested(transactorAggregate());
 		}, immediatePacing({ label: 'peer-insert', onAbandon }))).rejects.toThrow();
 
 		expect(runs).toBe(CONTROL_WRITE_ATTEMPTS);
@@ -1029,7 +1207,7 @@ describe('retryControlWrite — abandonment notification', () => {
 		let clock = 0;
 		await expect(retryControlWrite(async () => {
 			clock += CONTROL_WRITE_RETRY_BUDGET_MS;
-			throw nested(TRANSACTOR_AGGREGATE);
+			throw nested(transactorAggregate());
 		}, { now: () => clock, sleep: () => Promise.resolve(), label: 'peer-remove', onAbandon }))
 			.rejects.toThrow();
 
@@ -1083,7 +1261,7 @@ describe('retryControlWrite — abandonment notification', () => {
 		let caught: unknown;
 		try {
 			await retryControlWrite(async () => {
-				const error = nested(TRANSACTOR_AGGREGATE);
+				const error = nested(transactorAggregate());
 				transient.push(error);
 				throw error;
 			}, immediatePacing({ onAbandon: () => { throw new Error('observer blew up'); } }));
@@ -1100,7 +1278,7 @@ async function runOneTransientFailure(options: ControlWriteRetryOptions): Promis
 	let runs = 0;
 	await retryControlWrite(async () => {
 		runs++;
-		if (runs === 1) throw nested(TRANSACTOR_AGGREGATE);
+		if (runs === 1) throw nested(transactorAggregate());
 	}, immediatePacing(options));
 }
 
@@ -1158,19 +1336,20 @@ function schemaInitHarness(exec: (sql: string) => Promise<void>): SchemaInitHarn
  */
 describe('ControlDatabase.applyControlSchema — transient-failure retry', () => {
 	/**
-	 * Driven from both faces of the shortfall: the bare sentence, and the pend-phase aggregate
-	 * that actually carries it on the wire. The aggregate form is the one that matters — the
-	 * bare form would still be retried even if a real joining node never produced it.
+	 * Driven from both faces of the shortfall: the typed error the coordinator raises on its own,
+	 * and the pend-phase aggregate that carries it as its cause. Both go through the real wrapper
+	 * chain ({@link ddlChain}), since both claims depend on their typed link surviving the wrappers.
 	 */
 	it('re-presents the whole DDL after a third-node-join super-majority shortfall', async () => {
-		for (const causeMessage of [SUPER_MAJORITY_THIRD_NODE_JOIN, SUPER_MAJORITY_IN_PEND_AGGREGATE]) {
+		const failures = [ddlChain(shortfall(THIRD_NODE_JOIN_FACTS)), ddlChain(shortfallInPendAggregate())];
+		for (const failure of failures) {
 			let runs = 0;
 			const executed: string[] = [];
 			const harness = schemaInitHarness(async (sql) => {
 				runs++;
 				executed.push(sql);
 				if (runs === 1) {
-					throw nested(ddlFailure(causeMessage));
+					throw failure;
 				}
 			});
 
@@ -1220,16 +1399,17 @@ describe('ControlDatabase.applyControlSchema — transient-failure retry', () =>
 	 * the first attempt: a silent extra ~2 s of retry before the identical error is pure cost.
 	 */
 	it('never re-presents an indeterminate commit or a durable convergence fault', async () => {
-		for (const causeMessage of [
-			TRANSACTOR_AGGREGATE_COMMIT_PHASE,
-			SUPER_MAJORITY_IN_COMMIT_AGGREGATE,
-			MISSING_BLOCK,
+		for (const failure of [
+			// The two commit-phase aggregates through the wrapper chain a real startup prints, since
+			// the veto reads their typed link rather than the text the wrappers embed.
+			ddlChain(commitPhaseAggregate()),
+			ddlChain(shortfallInCommitAggregate()),
+			nested(ddlFailure(MISSING_BLOCK)),
 			// The self-coordination refusal IS absorbed here, but only for the grace-period
 			// reason — a disabled guard or a detected partition still surfaces immediately.
-			...SELF_COORDINATION_OTHER_REASONS,
+			...SELF_COORDINATION_OTHER_REASONS.map(reason => nested(ddlFailure(reason))),
 		]) {
 			let runs = 0;
-			const failure = nested(ddlFailure(causeMessage));
 			const harness = schemaInitHarness(async () => {
 				runs++;
 				throw failure;
@@ -1269,7 +1449,7 @@ describe('ControlDatabase.applyControlSchema — transient-failure retry', () =>
 	it('surfaces the last error unchanged once the attempt budget is spent', async () => {
 		const thrown: Error[] = [];
 		const harness = schemaInitHarness(async () => {
-			const failure = nested(ddlFailure(SUPER_MAJORITY_THIRD_NODE_JOIN));
+			const failure = ddlChain(shortfall(THIRD_NODE_JOIN_FACTS));
 			thrown.push(failure);
 			throw failure;
 		});

@@ -27,7 +27,7 @@ import { expectConstraintFailure } from './control-constraint-helpers.js';
  * final block here covers the `deleteStrand` / `deleteValidationKey` WRITERS that mint
  * that pair in production.
  *
- * Boots a real CadreNode (empty bootstrap, transaction profile — no network peers), the
+ * Boots a real CadreNode (empty bootstrap, a device — no network peers), the
  * same harness the genesis spec uses, and drives both the real writers
  * (`insertStrand` / `insertValidationKey` / `deleteStrand` / `deleteValidationKey`) and
  * raw SQL to exercise the attack paths.
@@ -190,7 +190,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
         partyId: 'authz-binding-' + Math.random().toString(36).slice(2),
         bootstrapNodes: [],
       },
-      profile: 'transaction',
+      nodeClass: 'device',
     });
     await node.start();
 

@@ -1,5 +1,5 @@
 import type { PrivateKey } from '@libp2p/interface';
-import type { NodeProfile, LatencyHint, StrandFilter, PushCredentials, StrandReactivityConfig } from '@serfab/cadre-core';
+import type { NodeClass, NodeRoles, LatencyHint, StrandFilter, PushCredentials, StrandReactivityConfig } from '@serfab/cadre-core';
 
 /** The forms the `strandFilter` key may take in a config file. */
 export type StrandFilterConfig =
@@ -41,8 +41,16 @@ export interface CliConfig {
     bootstrapNodes: string[];
   };
 
-  /** Node profile: transaction or storage */
-  profile: NodeProfile;
+  /** What kind of machine this node runs on: a device or a server */
+  nodeClass: NodeClass;
+
+  /**
+   * Per-role overrides of what {@link nodeClass} means — each of the four decisions the class
+   * would otherwise settle, settable one at a time. Absent, or present and empty, leaves every
+   * role at the class's preset. See `CadreNodeConfig.roles` in `@serfab/cadre-core` for what each
+   * role does, and `docs/cadre/node.md` → "Node classes" for the presets.
+   */
+  roles?: Partial<NodeRoles>;
 
   /** Strand filter configuration */
   strandFilter?: StrandFilterConfig;
@@ -55,7 +63,7 @@ export interface CliConfig {
    */
   strandReactivity?: StrandReactivityConfig;
 
-  /** Storage configuration (required for storage profile) */
+  /** Storage configuration (required for a server node) */
   storage?: {
     type: 'memory' | 'file';
     path?: string;
@@ -67,9 +75,10 @@ export interface CliConfig {
     /**
      * Addresses this machine's nodes bind. Only TCP, WebSocket (`/ws`, `/wss`) and
      * circuit-relay addresses can be bound from a config file — a config file cannot
-     * express a libp2p transport factory, so anything else (`/quic-v1`, `/webrtc`,
-     * `/webtransport`) fails startup naming the address and the package it would need.
-     * A `/ws` entry brings its own transport. See `NetworkConfig.listenAddrs` in
+     * express a libp2p transport factory, so anything else (`/quic-v1`, `/webtransport`)
+     * fails startup naming the address and the package it would need. A `/ws` entry
+     * brings its own transport. WebRTC has a setting of its own (`webrtc` below) and a
+     * `/webrtc` entry here is refused. See `NetworkConfig.listenAddrs` in
      * `@serfab/cadre-core`.
      */
     listenAddrs?: string[];
@@ -91,8 +100,36 @@ export interface CliConfig {
     appendAnnounceAddrs?: string[];
     relayAddrs?: string[];
     /**
+     * Offer a WebRTC address as well, so that a peer reaching this machine through a relay
+     * can move the connection onto a direct path. Off when absent.
+     *
+     * It needs a relay: WebRTC's connection setup is signalled over the relayed connection,
+     * so with no `relayAddrs` entry there is no signalling path and the node logs once at
+     * start and carries on unchanged. On a machine with a public or forwarded address it buys
+     * nothing — peers already reach it directly. On one behind NAT that can only be reached
+     * through a relay, it takes the forwarded bytes off the relay wherever a direct path
+     * exists.
+     *
+     * Turning it on loads `@libp2p/webrtc`, whose Node build needs a `node-datachannel`
+     * native binary for the platform; the start fails naming the module when there is none.
+     * The cadre-cli README lists the platforms that have one. Leaving it off loads nothing.
+     *
+     * The flag is the ONLY way to ask for it: a hand-written `/webrtc` entry in
+     * `listenAddrs` is rejected, since it would be a second surface for the same thing
+     * without the transport or the ICE servers that make it work.
+     */
+    webrtc?: boolean;
+    /**
+     * STUN servers for `webrtc` above, as a comma-separated list of `stun:` URLs, replacing
+     * the ones derived from `relayAddrs`. Each Sereus relay answers STUN on port 3478, so
+     * the derived set is right for a relay running the shipped container; set this for a
+     * relay that answers STUN elsewhere, or to use a STUN server that is not a relay. See
+     * `NetworkConfig.stunUrls` in `@serfab/cadre-core`.
+     */
+    stunUrls?: string;
+    /**
      * Enable circuit relay server - allows this node to relay connections for other peers.
-     * Defaults to true for storage profile nodes, false for transaction profile.
+     * Defaults to true for server nodes, false for a device.
      */
     enableRelay?: boolean;
     /**
@@ -195,7 +232,7 @@ export type DeepPartial<T> = T extends readonly unknown[]
 
 /**
  * What a config file may contain on its own, before environment overrides fill it in.
- * Required keys (`controlNetwork`, `profile`, ...) are checked on the merged tree, not the
+ * Required keys (`controlNetwork`, `nodeClass`, ...) are checked on the merged tree, not the
  * file, because real deployments supply them through `CADRE_*` variables — so a writer that
  * produces a partial file types its output against this.
  */

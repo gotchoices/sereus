@@ -8,7 +8,7 @@ Related: [How a strand's nodes find each other](strand-addressing.md) · [Deadli
 
 Relay support has two halves, and only one of them makes a node reachable.
 
-- A **relay server** forwards connections for other nodes. `network.enableRelay` turns it on. A storage-profile node runs one unless the option is `false`; a transaction-profile node does not unless it is `true`.
+- A **relay server** forwards connections for other nodes. `network.enableRelay` turns it on. A `server`-class node runs one unless the option is `false`; a `device`-class node does not unless it is `true`.
 - A **relay reservation** is a slot a node holds on a relay server. While the node holds the slot it has a `/p2p-circuit` address, of the form `<relay address>/p2p/<relay peer id>/p2p-circuit/p2p/<node peer id>`, that other machines can dial.
 
 A node that cannot accept connections is reachable only while it holds a reservation. Running a relay server does nothing for the node's own reachability.
@@ -94,8 +94,10 @@ libp2p has no public API for reserving on one specific relay. `relay-reservation
 
 Because discovery is off, nothing in libp2p asks for a slot again after one is lost. `superviseRelayReservation` does. On each tick:
 
-- **A reservation is held.** The supervisor checks again in 5 s and requests nothing.
+- **A reservation is held.** The supervisor checks again in 5 s and requests nothing, unless a renewal is due.
 - **No reservation is held.** The supervisor makes one request: it dials every relay in its list at once, asks the first that answers for a slot, and waits for the circuit address to appear, all under one deadline. If that fails it waits 2 s, doubling up to 60 s, and tries again.
+
+"Held" is read from the addresses the node itself advertises, which say nothing about whether the relay still keeps the slot: a relay can forget a reservation while the connection to it stays open. So while a reservation reads as held, the supervisor re-sends the reservation request every 5 minutes, jittered by a tenth so many nodes on one relay do not renew in step. A renewal refreshes the reservation in place, leaving the circuit address advertised throughout; a relay that refuses one withdraws the address, which falls through to the re-drive above with no backoff.
 
 Before every attempt the supervisor clears the relay's entry in the reservation store's `relayFilter`. libp2p records a relay there when a request to it fails and never clears the record, so without this step a relay that failed once would be refused for the life of the process.
 
@@ -103,9 +105,9 @@ Stopping a supervisor also cancels a request in flight, so a node being torn dow
 
 ### What takes a circuit address away
 
-Three events remove a node's `/p2p-circuit` address: the relay restarts, either side closes the relay connection, and libp2p's own reservation refresh, which removes the reservation before re-creating it and needs no network event at all.
+Four events remove a node's `/p2p-circuit` address: the relay restarts, either side closes the relay connection, libp2p's own reservation refresh, which removes the reservation before re-creating it and needs no network event at all, and a relay refusing the supervisor's renewal.
 
-A bare `/p2p-circuit` listener republishes its address when its reservation is re-created, which covers the refresh, and the supervisor covers the other two. A listener configured with the relay's address recovers from none of the three, because it publishes its address only once, when it starts listening. For that reason no `NetworkConfig` can produce one. The control node rejects a hand-written `<relay>/p2p-circuit` entry in `network.listenAddrs` at configuration time, with a message that says to move the relay to `relayAddrs`.
+A bare `/p2p-circuit` listener republishes its address when its reservation is re-created, which covers the refresh, and the supervisor covers the other three. A listener configured with the relay's address recovers from none of the four, because it publishes its address only once, when it starts listening. For that reason no `NetworkConfig` can produce one. The control node rejects a hand-written `<relay>/p2p-circuit` entry in `network.listenAddrs` at configuration time, with a message that says to move the relay to `relayAddrs`.
 
 ## Strand nodes inherit the relay configuration
 
@@ -149,7 +151,7 @@ Before each retry against a relay, a strand supervisor first tells that relay wh
 There are two kinds of relay.
 
 - A **dedicated relay** is the container in `ops/docker/libp2p-infra`. It has no membership check and relays for anyone who reaches it.
-- A **party-run relay** is any node of a party whose relay server is on, which by default is every storage-profile machine. It is the party's own infrastructure. It relays for the party's nodes: the control nodes of the party's machines and the strand nodes those machines run.
+- A **party-run relay** is any node of a party whose relay server is on, which by default is every `server`-class machine. It is the party's own infrastructure. It relays for the party's nodes: the control nodes of the party's machines and the strand nodes those machines run.
 
 A phone, a browser tab or any other machine behind NAT can therefore hold its reservations on its party's own always-on machine, by naming that machine in `relayAddrs`, and the party's other machines can reach it through that relay. A party-run relay does not replace a dedicated one, for two reasons:
 
@@ -181,10 +183,48 @@ The dedicated relay container follows the same policy with its own values. Its s
 
 ### Relay servers on strand nodes
 
-A storage-profile machine's strand nodes run a relay server with the same settings. They have no budget for unknown peers, because a strand's peers come from other parties by design, so any peer that reaches a strand node's relay server is bounded only by `maxReservations`. A closed strand's node refuses a reservation from a peer whose membership was revoked (`strand-revocation-enforcer.ts`).
+A `server`-class machine's strand nodes run a relay server with the same settings. They have no budget for unknown peers, because a strand's peers come from other parties by design, so any peer that reaches a strand node's relay server is bounded only by `maxReservations`. A closed strand's node refuses a reservation from a peer whose membership was revoked (`strand-revocation-enforcer.ts`).
+
+## Direct connections over WebRTC
+
+A node that listens on `/webrtc` is reachable two ways through each relay it holds a slot on: at the plain relayed address, and at a WebRTC one whose signalling the same relay carries (`<relay address>/p2p/<relay peer id>/p2p-circuit/webrtc/p2p/<node peer id>`). A WebRTC connection opens only if ICE — WebRTC's connectivity check, run over each side's own interface addresses plus whatever a [STUN server](../../ops/docs/ice-servers.md) reports as its address outside its NAT — finds a path between the two networks. Sereus runs no TURN server, so between two networks that allow no direct path there is no path to find, and the attempt answers nothing until the WebRTC stack gives up, about 23 s later.
+
+### Which nodes offer a WebRTC address
+
+A node needs two things: the WebRTC transport, and a `/webrtc` listen entry. Neither is derivable from the other — a transport factory is opaque, so nothing can infer the entry from it — so a node that has one and not the other either advertises an address nothing claims or stays relay-only.
+
+| Node kind | Offers a WebRTC address |
+| --- | --- |
+| Phone and browser apps (`createEdgeNode`) | Whenever the app has a relay. The app passes the transport, and `webrtcListenAddrs` supplies the entry. |
+| `cadre-cli` node | Only with `network.webrtc: true` and a relay. Off by default; see its [README](../../packages/cadre-cli/README.md#direct-connections-over-webrtc) for the platforms the native binary covers. |
+| `cadre-host` hosted nodes | No — no reservation, so no signalling path (see [Node kinds](#node-kinds); ticket `feat-cadre-host-children-reserve-on-a-relay`). |
+| `cadre-provider` tenant containers | No — directly dialable, so there is nothing to improve on. |
+
+A Node host's transport cannot be a static import: `@libp2p/webrtc`'s Node build loads a `node-datachannel` native addon as its module is evaluated, which fails on a platform with no prebuilt binary for it. So `@serfab/cadre-core/node-default-transports` loads it on demand, on the branch that asked for it, and a node with the setting off loads nothing. A machine whose only reachability is a relay is the case the setting is for; one with a public or forwarded address gains nothing from it.
+
+**A dial whose result something is waiting for goes through the relay. WebRTC is an extra, attempted separately.** The rule holds at every site: one classification answers which shape an address is, and each site asks it rather than testing for a relay hop itself. It covers the order a dial tries a peer's addresses in, the order a machine publishes its own addresses in (and so the order every resolve hands a dial), the single relayed address a seed carries, and the ranking that fills an invitation to its size cap. A wake applies it at its own dial too, so a WebRTC address takes one of its two attempts only when the target published nothing else.
+
+- **Dials by address** (the control-cohort reconcile pass, seed delivery, a strand peer redial) try every direct address, then every relayed one, then every WebRTC one. A WebRTC address stays in the list, so a peer whose only address is a WebRTC one is still dialed; it just no longer takes the time the relayed address needed. The order is applied one address per dial in `peer-dial.ts`, because libp2p re-sorts any list given to a single dial, and its own sorter puts a `/p2p-circuit/webrtc` address *before* the plain relayed one.
+- **Formation** (a joiner's dial of an inviting machine) leaves WebRTC addresses out whenever that machine published any other address. Formation needs one short-lived stream, so a direct connection would make nothing faster. Reordering is not an option here: the whole list goes to libp2p as one dial, which re-sorts it.
+- **Dials by peer id** cannot be ordered from here — libp2p's sorter picks, and it picks the WebRTC address first. Three paths dial that way: the once-per-start dial of configured bootstrap peers, which nothing waits for, `@optimystic/db-p2p`'s strand-peer dials, which forward no address sorter, and a sibling's strand-address request, whose first attempt is libp2p's pick by peer id — the addresses it falls back to behind that are ordered.
+
+An open relayed connection is never handed back to a dial of a WebRTC address, so an attempt to replace it can go ahead. This is the rule libp2p applies as well.
+
+### Relayed connections are upgraded in the background
+
+Nothing in libp2p replaces a relayed connection with a direct one over WebRTC: it has no such upgrade, and DCUtR, its hole-punching service, does not use WebRTC. Since no dial a caller waits on tries a WebRTC address first either, cadre-core makes the attempt itself (`webrtc-upgrade.ts`), on the control node and on every strand node whose embedder passed a WebRTC transport. It is worth making: a 1 MB strand write measured 2.4-3.2 s direct against 3.8 s relayed, a phone and a node on one local network opened directly in about 0.5 s, and a direct path takes those bytes off the relay.
+
+- **The trigger is a peer's identify over a relay-carried connection,** because identify is when the remote's addresses, the WebRTC one among them, are known. A peer that gains its WebRTC address later is judged again when it pushes the new address.
+- **Which nodes it reaches follows from that trigger.** Optimystic names each node's identify protocol after the network it serves, so two parties' strand nodes identify each other and their control nodes do not. On a strand, whose peers are other parties' machines, the upgrade therefore applies between parties; on the control network it applies to a party's own machines and to a device redeeming an invitation into the party, and never to another party's node.
+- **Exactly one side dials,** so that two upgrades do not cross: the side with the lower peer id when both publish a WebRTC address, otherwise whichever side has one to dial. A dialer needs the WebRTC transport, not a `/webrtc` listener, so a node that publishes no WebRTC address of its own still upgrades towards one that does.
+- **One attempt at a time per peer, then a doubling wait** from 1 minute to 30 minutes, cleared by a success. Two networks that allow no direct path between them fail every time, and each attempt costs relay signalling and ICE gathering, which wakes a phone's radio. The wait is held in memory only, so a restart tries each peer once more.
+- **A capped relayed connection is upgraded on the same terms.** There a direct path is the only one the database protocols can use at all ([Why there is no TURN](../../ops/docs/ice-servers.md#why-there-is-no-turn)).
+- **The relayed connection is left open after a success.** Closing it would race the streams already on it, and new streams prefer the direct connection without being told to: libp2p hands back a direct connection ahead of a relayed one, and Optimystic's stream paths try uncapped connections newest first.
 
 ## Limits and accepted tradeoffs
 
+- **A cadre invitation ranks addresses per machine, not across the whole bundle.** The machines keep their own order — the minting one, then siblings by how likely each is to be up — because that order carries information an address-kind sort would discard. So the minting machine's WebRTC address can still stand ahead of a sibling's relayed one, and a redeemer dialing the bundle in order pays about 23 s on it when the minting machine is down. Revisit if redemptions are seen paying that.
+- **A direct connection that drops is not replaced while the relayed one beside it survives.** The upgrade is judged on a peer's identify, and libp2p runs identify per new connection and on an address push, never on a timer — so after an ICE consent failure on a network that is otherwise still up, that peer stays relayed until it reconnects or publishes new addresses. Traffic keeps flowing over the relay throughout, so this costs speed, not reachability. Revisit if peers are seen stuck relayed after a direct connection dropped.
 - **A `cadre-host` node behind carrier-grade NAT cannot be reached from outside its network.** The host gives its nodes no relay, and neither UPnP nor a port forward helps under carrier-grade NAT. See [NAT and DDNS](../hosting/cadre-host.md#nat-and-ddns) (ticket `feat-cadre-host-children-reserve-on-a-relay`).
 - **Provider containers hold no reservation.** They are expected to be directly dialable at a published port, so the provider has no relay setting to pass.
 - **A party-run relay closes an outsider's connection through it.** A peer that dials through a party's relay to reach a member is unknown to the relay. Unless the relay holds an outstanding invitation, it closes that connection at its provisional admission deadline (28.5 s at the default declared link), and the relayed connection ends with it. A party's own machine therefore cannot yet stand in for a dedicated relay towards other parties (ticket `bug-party-run-relay-drops-a-stranger-dialing-through-it`).
@@ -192,6 +232,7 @@ A storage-profile machine's strand nodes run a relay server with the same settin
 - **The cap for unknown peers and the store size are kept apart by hand.** Both draw on the relay server's one reservation store. An embedder that raises `unauthorizedRelayReservationCap` or shrinks `maxReservations` must keep the first well below the second, or unknown peers can crowd members out.
 - **Each strand costs a NAT'd machine one more relay slot.** Reservations are per node per network, so a relay serving many parties must be sized for machines × (1 + strands).
 - **A freed slot refills in up to 5 s, not at once.** With discovery off, a slot lost while the relay stays up is noticed at the supervisor's next check.
+- **A reservation the relay forgot without closing the connection costs up to 5 minutes of reachability.** Nothing local says the slot is gone — the node keeps advertising its circuit address — so the renewal interval is the whole detection latency. It is set where it is because the alternative is asking every relay more often for a state that almost never changes. Revisit if a relay is seen dropping reservations faster than it drops connections.
 - **A Node.js host that passes no `defaultTransports` keeps relay discovery on.** Its configured relays still work, but a relay-capable member can take one of their slots.
 - **A node that names its relay only through `reserveRelays()` keeps relay discovery on**, because discovery is the only other thing that could fill its hand-written `/p2p-circuit` listener. Such a node can lose its one slot to a relay-capable member it is connected to. Configure `relayAddrs` to avoid this.
 - **A retry against a relay that is down can take 75 s at the default declared link.** The strand supervisor's announcement to the relay is tried by peer id and then by address before the request starts. The relay is unreachable for that whole time anyway; revisit if recovery time after a relay returns matters.

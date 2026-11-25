@@ -8,7 +8,7 @@
  *   with `CADRE_CLAIM_SECRET` (`HostedNodeService.join`); it belongs to nobody until a
  *   phone claims it (docs/hosting/cadre-host.md → Join a cadre).
  * - **Phone-shaped claimant** — an in-process `CadreNode` with `listenAddrs: []`, WebSocket
- *   and circuit-relay transports only, `profile: 'transaction'`, owner genesis run on
+ *   and circuit-relay transports only, `nodeClass: 'device'`, owner genesis run on
  *   itself: the claimant of `node-claim-by-phone.integration.ts`.
  * - **The QR payload** — `GET /api/hosted-nodes/:id/claim`, decoded with cadre-core's
  *   `decodeNodeClaimPayload`: the node's peer id, the addresses the phone dials, and the
@@ -145,7 +145,7 @@ describe('a phone claims a cadre-host node from its QR payload (real cadre-host,
     const res = await host.request({ method: 'POST', path: '/api/hosted-nodes' });
     expect(res.status).toBe(201);
     node = (res.body as { ok: boolean; data: { node: HostedNodeView } }).data.node;
-    expect(node).toMatchObject({ status: 'unclaimed', partyId: 'unclaimed', profile: 'storage', join: { kind: 'claim' } });
+    expect(node).toMatchObject({ status: 'unclaimed', partyId: 'unclaimed', nodeClass: 'server', join: { kind: 'claim' } });
     expect(node.id).toMatch(/^hn_/);
     expect(res.raw).not.toContain('secret');
 

@@ -131,13 +131,13 @@ function responderTransports(): Libp2pTransports {
  * Build the `CadreNodeConfig` for the in-process responder. Mirrors the integration
  * harness's Node node — in-memory raw storage — but with a WS-only transport that
  * listens on an ephemeral WS port (`tcp/0/ws`) so the browser can dial it directly.
- * `storage` profile matches the integration responder (a willing cohort holder).
+ * `nodeClass: 'server'` matches the integration responder (a willing cohort holder).
  */
 function buildResponderConfig(privateKey: CadreNodeConfig['privateKey'], partyId: string): CadreNodeConfig {
 	return {
 		privateKey,
 		controlNetwork: { partyId, bootstrapNodes: [] },
-		profile: 'storage',
+		nodeClass: 'server',
 		strandFilter: { mode: 'all' },
 		// Not a replica host, as in the integration harness: `foundStrand` below publishes the
 		// row and then attaches, and a watcher poll landing between those two halves would
