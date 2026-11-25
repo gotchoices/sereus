@@ -66,15 +66,24 @@ async function pollUntil(condition: () => boolean | Promise<boolean>, what: stri
 }
 
 /**
+ * How long a stopped node may stay in the member's cohort. A node that stops sends FRET's leave
+ * notice, and a member that reads it sheds the node in about a tenth of a second. The notice is
+ * write-only, though: the stopping node closes its connection without waiting for the member to
+ * read it, so it is sometimes lost (the member logs a leave handler `FrameTruncationError`). The
+ * member then sheds the node only when FRET's contact strikes mark it dead, about 21 seconds after
+ * the stop. The wait covers that path with room for a loaded machine.
+ */
+const SHED_WAIT_MS = 45_000;
+
+/**
  * Wait until `member` is alone again: no control connection, and no other peer in the cohort
- * above. A node that stops is shed in about a tenth of a second, but a control write that
- * starts inside that window assembles a cohort of two and then spends its whole budget on the
- * peer that is already gone, and is abandoned (docs/network/deadlines.md → "What a silent
- * member costs a control write"). Every test here that stopped a node therefore waits before
- * the next one writes.
+ * above. A control write that starts before the stopped node is shed assembles a cohort of two
+ * and then spends its whole budget on the peer that is already gone, and is abandoned
+ * (docs/network/deadlines.md → "What a silent member costs a control write"). Every test here
+ * that stopped a node therefore waits before the next one writes.
  */
 async function waitUntilAlone(member: CadreNode): Promise<void> {
-  await pollUntil(() => member.getControlConnectionCount() === 0 && othersInControlCohort(member).length === 0, 'the member to be alone');
+  await pollUntil(() => member.getControlConnectionCount() === 0 && othersInControlCohort(member).length === 0, 'the member to be alone', SHED_WAIT_MS);
 }
 
 describe('CadreNode owner grants', () => {
@@ -219,5 +228,5 @@ describe('CadreNode owner grants', () => {
 
     expect(signer.approvals).toBe(0);
     expect((await member.node.getControlDatabase()!.getOwnerKeys()).has(signer.publicKey)).toBe(false);
-  }, 60_000);
+  }, 90_000);
 });
