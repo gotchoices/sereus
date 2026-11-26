@@ -5,7 +5,9 @@ files: packages/cadre-core/src/types.ts (`StorageConfig.provider`, `RawStoragePr
 
 ## Source
 
-Optimystic's pending release notes, `../optimystic/.release-notes.pending.md` → "v1.30.0" (committed `3d7d025e`). As of 2026-11-25 it is not yet on npm: the latest is 1.29.1, there is no `v1.30.0` tag, and the checkout's package versions say 1.29.1. The linked `../optimystic` already carries the new API, so `yarn build` and `yarn typecheck` here fail today with `IRawStorage` lacking `deleteBlock` and `storage` expecting a `NodeStorage`.
+Optimystic 1.30.0, published 2026-11-25 (tag `v1.30.0`, `209882e5`; every `@optimystic/*` package is 1.30.0 on npm). Its release notes are on GitHub and in `../optimystic/.release-notes.pending.md` → "v1.30.0". It requires `@quereus/quereus` `^5.7.1`, so this adoption raises Sereus's Quereus floor too. The linked `../optimystic` (`v1.30.0`) and `../quereus` (`v5.7.1`) match the published versions.
+
+**Quereus 5.7.** It refuses a view, materialized view, maintained table or assertion whose body contains a nested write; check that no Sereus schema (`schemas/*.qsql`, the control and Strand schemas) has one. In autocommit, a writing statement now opens its transaction before evaluating `values`, `set`, `where` and `returning`, so `StampId()` there no longer returns NULL. Check whether any Sereus workaround for that can go. Commit-time foreign-key and cross-table CHECK rules now judge each row as it stands at commit.
 
 Optimystic says the release answers sereus#67, except that a node cannot yet free old revisions of blocks it still holds.
 
@@ -41,7 +43,7 @@ Optimystic says the release answers sereus#67, except that a node cannot yet fre
 
 ## Outline of the work once decided
 
-- Raise every `@optimystic/*` range to `^1.30.0` only once npm has 1.30.0 (`check:dep-ranges`).
+- Raise every `@optimystic/*` range to `^1.30.0` and every `@quereus/quereus` range to `^5.7.1` (`check:dep-ranges`).
 - Migrate cadre-core's config, the node builders, `LazyRawStorage` and the test doubles. Then the plugin's `storageFactory` (also through `connect.ts` and `connect-browser.ts`), the CLI, host and provider configs, the RN kit and the reference apps.
 - Classify `CohortOutOfSpaceError` in the control write retry and the strand write paths.
 - Re-baseline the storage budgets with the new provenance.
