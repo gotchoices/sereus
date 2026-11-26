@@ -17,7 +17,7 @@
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { webSockets } from '@libp2p/websockets';
-import { MemoryRawStorage, type Libp2pTransports } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type Libp2pTransports } from '@optimystic/db-p2p';
 import { CadreNode, createOwnerKey, InMemoryKeyStore } from '@serfab/cadre-core';
 import type { CadreInvitationReach, CadreNodeConfig } from '@serfab/cadre-core';
 
@@ -63,7 +63,7 @@ function buildMemberConfig(privateKey: CadreNodeConfig['privateKey'], partyId: s
 		controlNetwork: { partyId, bootstrapNodes: [] },
 		nodeClass: 'server',
 		strandFilter: { mode: 'none' },
-		storage: { provider: () => new MemoryRawStorage() },
+		storage: { open: async () => memoryNodeStorage() },
 		network: {
 			transports: memberTransports(),
 			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],

@@ -34,7 +34,7 @@
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { webSockets } from '@libp2p/websockets';
-import { MemoryRawStorage, type Libp2pTransports } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type Libp2pTransports } from '@optimystic/db-p2p';
 import {
 	CadreNode,
 	createOwnerKey,
@@ -129,7 +129,7 @@ function responderTransports(): Libp2pTransports {
 
 /**
  * Build the `CadreNodeConfig` for the in-process responder. Mirrors the integration
- * harness's Node node — in-memory raw storage — but with a WS-only transport that
+ * harness's Node node — one fresh in-memory node storage per scope — but with a WS-only transport that
  * listens on an ephemeral WS port (`tcp/0/ws`) so the browser can dial it directly.
  * `nodeClass: 'server'` matches the integration responder (a willing cohort holder).
  */
@@ -143,7 +143,7 @@ function buildResponderConfig(privateKey: CadreNodeConfig['privateKey'], partyId
 		// row and then attaches, and a watcher poll landing between those two halves would
 		// launch the strand without the chat schema.
 		hostUnclaimedStrands: false,
-		storage: { provider: () => new MemoryRawStorage() },
+		storage: { open: async () => memoryNodeStorage() },
 		network: {
 			transports: responderTransports(),
 			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],

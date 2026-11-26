@@ -4,6 +4,13 @@ architecture: docs/cadre/node.md#storage
 files: .release-notes.pending.md, tickets/backlog/feat-strand-blobs-persist.md, tickets/backlog/feat-strand-offline-mode-nativescript.md, tickets/backlog/debt-shared-store-provider-never-exercised-end-to-end.md, tickets/backlog/later/5-quota-enforcement.md, tickets/backlog/later/3-mobile-resource-awareness.md, docs/cadre/node.md
 difficulty: easy
 ----
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-11-26T12:23:38.580Z (agent: claude)
+  Log file: C:\Projects\sereus\tickets\.logs\5-optimystic-1-30-release-notes-and-fold.implement.2026-11-26T12-23-38-580Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 
 # Release notes for the storage upgrade, and the queue it empties
 

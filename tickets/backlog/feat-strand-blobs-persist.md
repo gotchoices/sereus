@@ -1,26 +1,25 @@
-description: An app can now declare a column that references a large file (a photo, a document) stored outside the row, but Sereus machines keep those files only in memory, so they are lost when the machines holding them restart. Give every platform a persistent store for them so apps can attach files to strand rows.
+description: Apps can attach a large file (a photo, a document) to a row, and those files now survive a restart, but an app still has no supported way to hand us the bytes or read them back — and a phone keeps every file its group shares rather than only the ones it sent or opened.
 architecture: docs/schema-guide.md#limits-and-accepted-tradeoffs
-files: packages/cadre-core/src/strand-instance-manager.ts (createLibp2pNode ~978), packages/cadre-core/src/cadre-node.ts (buildControlNodeOptions), packages/cadre-core/src/peer-join-backfill.ts (NOTE on strand nodes having no kvStore), packages/cadre-core/src/edge-node/*, packages/cadre-rn, packages/reference-app-web/src/lib/strand-storage.ts, packages/reference-app-ns, ../optimystic/docs/blobs.md, ../optimystic/packages/db-p2p/src/blob/piece-store.ts (IPieceStore), docs/schema-guide.md, docs/strands/app-schema.md
-tradeoffs: No Sereus app asks for attachments yet, and the work touches every platform's storage wiring plus a per-node-class choice of how much of other people's files a phone keeps, so it can wait until an app needs it.
+files: packages/cadre-core/src/strand-instance-manager.ts (the strand node's options), packages/cadre-core/src/node-roles.ts, packages/cadre-core/src/types.ts, packages/quereus-plugin-sereus/src/compose-strand.ts, docs/strands/app-schema.md, docs/schema-guide.md, ../optimystic/docs/blobs.md
+tradeoffs: No Sereus app asks for attachments yet, and the remaining work still needs a per-node-class decision about how much of other people's files a phone keeps, so it can wait until an app needs it.
 ----
 
-# Strand blobs survive a restart
+# Strand blobs an app can actually use
 
-## What changed upstream
+## Where this stands
 
-Optimystic 1.29.0 adds blobs: a large value cut into content-addressed pieces, kept outside transactions, copied to the machines responsible for it, and referenced from a SQL row by a `blobref` column (`../optimystic/docs/blobs.md`). A node keeps pieces in `NodeOptions.pieceStorage` and its pin, owed-copy and reclaim records in `NodeOptions.kvStore`. Without a piece store a node uses an in-memory one (logged on the `node-wiring` debug channel).
+Optimystic calls a large value stored outside a row a **blob**: it is cut into content-addressed pieces, kept outside transactions, copied to the machines responsible for it, and referenced from a SQL row by a `blobref` column (`../optimystic/docs/blobs.md`).
 
-## What Sereus does today
+**The storage half landed with the Optimystic 1.30 adoption — do not redo it.** A node now takes one `NodeStorage` carrying its blocks, its node-local records and its blob pieces together, and that value has no part a platform can leave out, so every platform in this repository passes all three. Blob pieces and blob records survive a restart on the CLI, both phone kits and the browser; a strand client gets a storage scope too, since the pieces it holds may be its host's only copy; and the `NOTE:` in `peer-join-backfill.ts` that asked for a key-value store on strand nodes is answered. That was the first of the three things [gotchoices/sereus#67](https://github.com/gotchoices/sereus/issues/67) asked for. The limit line in `docs/schema-guide.md` now says what is actually left.
 
-No Sereus node passes `pieceStorage`, and strand nodes pass no `kvStore`. An app that declares a `blobref` column in its strand schema gets a working column whose bytes live only in memory on the writer and on each cohort member that pulled them. Restarting every holder loses the bytes while the row keeps the reference. `docs/schema-guide.md` → "Limits and accepted tradeoffs" says not to use the type yet.
+## What remains
 
-Since Optimystic 1.30 there are no separate `pieceStorage` and `kvStore` options to pass: a node takes one `NodeStorage` carrying the blocks, the node-local records and the pieces together, so each platform's work here is one opener rather than three fields. The SQL plugin already hands that whole value to the strand node (ticket `optimystic-1-30-plugin-node-storage`), which narrows what is left.
+**The hold choice.** Optimystic's `NodeOptions.blobs.hold` decides whether a node keeps every blob its cohort is responsible for (`'eager'`) or only what it put, pinned or read (`'on-demand'`). A phone should not store the group's photo library because it is a cohort member. `'on-demand'` for a device and `'eager'` for a server is the wanted behaviour; the open question is whether that follows the node class or becomes a fifth entry in the `roles` block, which is where every other per-machine behaviour decision now lives.
 
-One site this leaves, found reviewing that ticket: `composeStrand` passes the storage to the Optimystic plugin's `storageFactory` on the `local` transactor only, so a `network` connection over a *client* node — one that holds no blocks and therefore carries no blob service of its own — leaves the plugin to build a blob service over memory piece and key-value stores even though the connection was given real ones. Unreachable while no schema declares a `blobref` column; a `NOTE:` sits at the site.
+**The app-facing API.** An app needs a way to hand bytes to its strand and get back the reference it writes into a row, and a way to read the bytes behind a reference it read. Both exist on the strand node's blob service today and are reachable only by reaching inside the instance (`instance.libp2pNode.blobs`), which is not a supported surface. Decide where this belongs: on the strand handle an app already holds, or through the SQL plugin keyed on the table.
 
-## What is wanted
+**The two-commit pattern, in `docs/strands/app-schema.md`.** No member may see a reference before the bytes have moved, which means the bytes are put and copied first and the row carrying the reference is committed second (`../optimystic/docs/blobs.md` → "Committing a reference"). An app that writes the row in one transaction with the put publishes a reference its partners cannot resolve.
 
-- Every platform passes a persistent piece store beside its block store, with the matching upstream backend: `FilePieceStore` (Node: cadre-cli, cadre-host, provider), `LevelDBPieceStore` (React Native, not yet run on a device upstream), `IndexedDBPieceStore` (browser), `SqlitePieceStore` (NativeScript). Strand nodes also get a persistent `kvStore`, which the peer-join-backfill NOTE already asks for.
-- A phone keeps only what it put, pinned or read: `NodeOptions.blobs.hold: 'on-demand'` for the `device` node class, `'eager'` for `server`. Decide whether that follows the node class or the per-node roles.
-- The app-facing API: how an app puts bytes and gets a reference to write (`plugin.blobsFor(table)` or `node.blobs` through the strand handle), and how it reads them back. The two-commit pattern for "no one sees the reference before the bytes moved" (`../optimystic/docs/blobs.md` → "Committing a reference") goes in `docs/strands/app-schema.md`.
-- Remove the limit line from `docs/schema-guide.md`.
+**A `network` connection over a client node builds its blob service over memory.** `composeStrand` passes the storage to the Optimystic plugin's `storageFactory` on the `local` transactor only, so a connection made over a client node — which holds no blocks and carries no blob service of its own — leaves the plugin to build one over memory piece and key-value stores even though the connection was handed real ones. Unreachable while no schema declares a `blobref` column, and a `NOTE:` sits at the site; it becomes a real defect the moment one does.
+
+**Then remove the limit.** `docs/schema-guide.md` → "Limits and accepted tradeoffs" tells an app not to declare a `blobref` column. That line goes when the three above are done, not before.

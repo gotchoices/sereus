@@ -23,7 +23,7 @@ Mobile cadre nodes operate under resource constraints that do not apply to serve
 
 - Limit the number of concurrently-`active` strand instances on mobile (e.g., a configurable cap like 3–5). Strands beyond the cap stay `idle`/`hibernating` even if activity would normally activate them; LRU eviction when the cap is hit.
 - The cap interacts with `strandFilter` — a mobile app typically uses `sAppId:<id>` so only a small number of strands are eligible at all, but users in apps that span many strands still need the cap.
-- Storage quota on mobile is already covered by `storage.quotaBytes` in `CadreNodeConfig`; this ticket does not redesign quota, only notes that mobile defaults should be conservative.
+- A storage limit on mobile already exists and is declared by the platform, not by the app's config: `EdgeNodeStorage.allotmentBytes`, which both phone kits set from `DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES` (because LevelDB and SQLite report no free space of their own). This ticket does not redesign that, only notes that mobile defaults should be conservative.
 
 ### Requirements
 
