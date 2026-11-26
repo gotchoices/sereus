@@ -175,6 +175,10 @@ export const nonNegativeInteger = numberWhere(
   (n) => Number.isSafeInteger(n) && n >= 0,
   'a whole number of zero or more',
 );
+export const positiveInteger = numberWhere(
+  (n) => Number.isSafeInteger(n) && n > 0,
+  'a whole number above zero',
+);
 
 /**
  * One of a closed set of strings. The set is written as an object with every member as a

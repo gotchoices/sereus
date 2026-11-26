@@ -273,8 +273,8 @@ A phone node keeps state in two places. The **secure store** is the iOS Keychain
 | Enrolled-machine count | Node-local LevelDB | `enrolled-machines.<partyId>` | Party |
 | Strand network state | Node-local LevelDB | `strand-network.<partyId>` | Party |
 | Provider rentals | Node-local LevelDB | `rentals.<partyId>` | Party |
-| Control database | Its own LevelDB database | `<storagePrefix><control scope>` | Party |
-| Strand data and offline queue | Its own LevelDB database | `<storagePrefix><strandId>` | Strand |
+| Control database and its blob pieces | Its own LevelDB database | `<storagePrefix><control scope>` | Party |
+| Strand data, blob pieces and offline queue | Its own LevelDB database | `<storagePrefix><strandId>` | Strand |
 
 What each record is for is in [Node-local state](../cadre/node.md#node-local-state). The key-store slots are stored under `sereus.ks.` plus the base64url of the slot id, with a `sereus.ks.__index` entry that lists them, because neither platform store can enumerate its keys. The anchor and the provider tokens have prefixes of their own.
 
@@ -286,6 +286,18 @@ The module comment of `packages/cadre-rn/src/node-local.ts` has the full reasoni
 - **The anchor goes in the secure store although it is not secret.** Anything that can edit it can make the device trust a stranger as an owner ([The trusted-owner anchor](../cadre/control-security.md#the-trusted-owner-anchor)). It gets the most tamper-resistant store the app has, and is kept or lost together with the identity it qualifies.
 - **The other records go in LevelDB.** None of them grants authority, and the dial targets and the strand network state outgrow the secure store's value guideline of 2,048 bytes. They get a database of their own, not a strand's, so that clearing it cannot disturb replicated data.
 - **A strand's offline queue sits in that strand's database**, beside the blocks it refers to ([Offline mode](../strands/writes.md#offline-mode)).
+
+### One database per storage scope
+
+`levelDbNodeStorage` opens all of a scope's storage over the scope's one handle: the blocks, the node-local records the node must keep across a restart (its blob records, owed-blob and under-replication ledgers, clock high-water mark and transaction state), and the blob pieces this phone holds. The keys of the three are tagged apart in one keyspace, so the database's byte count measures all of it.
+
+- **The offline queue is that same store.** `EdgeNodeStorage.offlineJournal` returns the scope's own key-value store rather than a second one over its handle: Optimystic declares the journal's key prefix among the node's own namespaces for exactly this sharing, and two stores over one handle would not see each other's unflushed writes.
+- **One call per handle.** Opening a scope's storage claims the handle in Optimystic's read-cache pool, so a second open over a handle already open throws rather than handing a node a view that cannot see the other's writes. The kit opens each scope once and hands that value to every caller.
+- **Closed before its handle.** `PhoneNode.stop()` closes each scope's storage — which commits what its stores hold and releases the cache-pool claim — and then the LevelDB handle. `destroyScope` does the same before `destroyDB`, which throws on an open database.
+
+### The storage allotment
+
+LevelDB reports no free space, so the kit declares how much of the device a node may use: `storageAllotmentBytes`, 2 GiB by default (`DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES`). An app that knows the device will give it more or less passes its own. The figure bounds **each** network the node serves rather than the device, and it is what the node measures itself against as it fills ([The storage allotment](../cadre/node-storage.md#the-storage-allotment)); without it a phone node could not tell how full it is at all.
 
 ### Secure-store gating
 

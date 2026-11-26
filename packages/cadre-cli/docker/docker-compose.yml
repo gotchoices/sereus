@@ -29,7 +29,7 @@ services:
       - DATA_DIR=/data
       - CADRE_STORAGE_TYPE=file
       - CADRE_STORAGE_PATH=/data/storage
-      - CADRE_STORAGE_QUOTA=${CADRE_STORAGE_QUOTA:-}
+      - CADRE_STORAGE_ALLOTMENT=${CADRE_STORAGE_ALLOTMENT:-}
       
       # Network
       - CADRE_LISTEN_ADDRS=${CADRE_LISTEN_ADDRS:-/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws}

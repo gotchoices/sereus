@@ -12,6 +12,7 @@
 
 import {
 	createEdgeNode,
+	DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES,
 	DEFAULT_EDGE_NODE_NAMES,
 	type EdgeNode,
 	type EdgeNodeNames,
@@ -38,6 +39,14 @@ export interface PhoneNodePlatform extends Omit<EdgeNodePlatform, 'keyStore' | '
 	secureStoreOptions?: SecureStoreKeyStoreOptions;
 	/** `rn-leveldb`'s two constructors, through which every database is opened, and its `destroyDB`. */
 	leveldb: LevelDBNative;
+	/**
+	 * How many bytes of this device every node over this storage may use, each network separately
+	 * (`EdgeNodeStorage.allotmentBytes`). Default
+	 * {@link DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES}. An app states its own when it knows better
+	 * what the device will give it; it cannot be left out, because LevelDB reports no free space
+	 * and a node with neither an allotment nor a measuring backend cannot tell how full it is.
+	 */
+	storageAllotmentBytes?: number;
 	/**
 	 * Storage names. Each is a persistence contract: renaming one orphans every installed phone's
 	 * records. The defaults are the reference app's; an app that names its own should pin them in
@@ -72,9 +81,14 @@ export type PhoneNode = EdgeNode;
  * development reload re-runs the module that calls this).
  */
 export function createPhoneNode(platform: PhoneNodePlatform): PhoneNode {
-	const { secureStore, secureStoreOptions, leveldb, names: overrides, ...shared } = platform;
+	const { secureStore, secureStoreOptions, leveldb, storageAllotmentBytes, names: overrides, ...shared } = platform;
 	const names: PhoneNodeNames = { ...DEFAULT_PHONE_NODE_NAMES, ...overrides };
-	const storage = new LevelDBEdgeStorage(leveldb, names, (partyId) => anchorSlot(secureStore, secureStoreOptions, partyId));
+	const storage = new LevelDBEdgeStorage(
+		leveldb,
+		names,
+		(partyId) => anchorSlot(secureStore, secureStoreOptions, partyId),
+		storageAllotmentBytes ?? DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES,
+	);
 	return createEdgeNode({ ...shared, keyStore: new SecureStoreKeyStore(secureStore, secureStoreOptions), storage, names });
 }
 

@@ -54,7 +54,7 @@ describe('CADRE_* variable names', () => {
 describe('CADRE_* value parsing', () => {
   it.each([
     ['CADRE_ENABLE_RELAY', 'yes', /Invalid CADRE_ENABLE_RELAY "yes": expected true, false, 1 or 0/],
-    ['CADRE_STORAGE_QUOTA', '10G', /Invalid CADRE_STORAGE_QUOTA "10G": expected a number/],
+    ['CADRE_STORAGE_ALLOTMENT', '10G', /Invalid CADRE_STORAGE_ALLOTMENT "10G": expected a number/],
   ])('rejects %s=%s rather than guessing', (name, value, message) => {
     expect(() => applyEnvironmentOverrides({}, { [name]: value })).toThrow(message);
   });

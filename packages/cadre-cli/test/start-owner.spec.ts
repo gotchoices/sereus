@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type NodeStorage, type OpenNodeStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '@serfab/cadre-core';
 import { loadServerOwnerKey, wireServerOwnerKey } from '../src/commands/start-owner.js';
 import { ownerKeyFingerprint } from '../src/commands/owner-key-file.js';
@@ -26,8 +26,8 @@ const LABEL = 'server test-host';
 let dir: string;
 let partyId: string;
 let identity: PrivateKey;
-/** One store per scope, kept across the nodes of a test, as a server's files are across restarts. */
-let stores: Map<string, MemoryRawStorage>;
+/** One scope's stores, kept across the nodes of a test, as a server's files are across restarts. */
+let stores: Map<string, OpenNodeStorage>;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'cadre-start-owner-'));
@@ -41,10 +41,10 @@ afterEach(() => {
 });
 
 async function withNode(body: (node: CadreNode) => Promise<void>): Promise<void> {
-  const provider = (scope: string): MemoryRawStorage => {
+  const open = async (scope: string): Promise<NodeStorage> => {
     let store = stores.get(scope);
     if (!store) {
-      store = new MemoryRawStorage();
+      store = memoryNodeStorage();
       stores.set(scope, store);
     }
     return store;
@@ -54,7 +54,7 @@ async function withNode(body: (node: CadreNode) => Promise<void>): Promise<void>
     controlNetwork: { partyId, bootstrapNodes: [] },
     nodeClass: 'server',
     strandFilter: { mode: 'none' },
-    storage: { provider },
+    storage: { open },
     network: { listenAddrs: [] },
   });
   try {

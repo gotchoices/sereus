@@ -173,10 +173,19 @@ The identity, the owner key and the anchor are in one file on purpose: clearing 
 
 cadre-core asks for storage by scope key: `controlStorageScope(partyId)` for the party's control database and the strand id for each strand ([Storage](../cadre/node.md#storage)). The platform names the database `sereus-<scope>`. The control key contains the party id, so two parties on one device use two databases.
 
-- **Opened on first use.** `EdgeNodeStorage.rawStorage` is synchronous and opening SQLite is not, so the platform returns cadre-core's `lazyRawStorage`, which awaits the open before each operation. The storage's `durability` is read before any open, so the platform states `'power-loss'`, the value `SqliteRawStorage` reports.
-- **One open per database name.** Every caller for a scope shares one connection. The platform caches the pending open, not the handle, so two first uses that overlap do not open two native handles on one file. A failed open is forgotten: the operations waiting on it fail with its error and the next operation opens again.
-- **Closed by every stop.** A stop, and a failed start, flush and close the identity database and every scope's block store and database (`EdgeNodeStorage.close`). The next start reopens them. A screen must therefore not keep a strand instance across a stop; the reference app's view model drops its strand list whenever the edge node reports `stopped`, `removed` or `failed`.
-- **Deleted by a removal or a dissolve.** `destroyScope` closes the scope's handle and then deletes its file with the plugin's `deleteDatabase`.
+- **One call opens all of the scope's storage.** `sqliteNodeStorage` returns the scope's blocks, the node-local records the node must keep across a restart (its blob records, the owed-blob and under-replication ledgers, the clock's high-water mark and its transaction state) and the blob pieces this phone holds, over the one connection. It asserts that all three report one store identity, so everything the node keeps is inside the one file its block store measures.
+- **Opened on first use.** `EdgeNodeStorage.nodeStorage` is asynchronous, so the platform opens the database and then the storage over it; nothing is opened ahead of a start or a strand launch.
+- **One open per database name.** Every caller for a scope shares one connection and one set of stores. The platform caches the pending open, not the handle, so two first uses that overlap do not open two native handles on one file. A failed open is forgotten: the operations waiting on it fail with its error and the next operation opens again.
+- **Closed by every stop.** A stop, and a failed start, flush and close the identity database and every scope's node storage and then its database (`EdgeNodeStorage.close`). Node storage goes first because it flushes the pieces and the key-value store and closes the block store, all of which write through the connection the next step closes. The next start reopens them. A screen must therefore not keep a strand instance across a stop; the reference app's view model drops its strand list whenever the edge node reports `stopped`, `removed` or `failed`.
+- **Deleted by a removal or a dissolve.** `destroyScope` closes the scope's node storage and then its handle, and deletes the file with the plugin's `deleteDatabase`.
+
+### The offline journal
+
+`EdgeNodeStorage.offlineJournal` returns the scope's own key-value store — the one `sqliteNodeStorage` opened — rather than a second store over its database. Optimystic declares the journal's key prefix among the node's own key-value namespaces for exactly this sharing, so the journal's rows stay out of every block listing, and a strand's queued writes are flushed and closed with the rest of that scope's storage. Offline mode is therefore available on NativeScript ([Offline mode](../strands/writes.md#offline-mode)); what the reference chat does not yet have is the surface for it — a toggle, a queue line, per-message progress (ticket `feat-strand-offline-mode-nativescript`).
+
+### The storage allotment
+
+SQLite reports no free space of its own, so the platform declares how much of the device a node may use: `DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES`, 2 GiB. The figure bounds **each** network the node serves rather than the device, and it is what the node measures itself against as it fills ([The storage allotment](../cadre/node-storage.md#the-storage-allotment)); without it a node here could not tell how full it is at all.
 
 ### Opening a database on Android
 
@@ -189,7 +198,7 @@ The edge node saves the options of each successful start under `start-options` a
 ## Limits and accepted tradeoffs
 
 - **Keys are stored in plaintext.** The identity, the owner key and the trusted-owner anchor are in an unencrypted SQLite file, where React Native uses the platform secure store. NativeScript has no Keychain or Keystore integration here. Whoever adds one must move the identity, the owner key and the anchor together, because protecting one of them alone protects nothing.
-- **No offline mode.** The platform implements no `EdgeNodeStorage.offlineJournal`, so `EdgeNode.setStrandOfflineMode` throws a plain `Error` naming the missing journal ([Offline mode](../strands/writes.md#offline-mode)). (ticket `feat-strand-offline-mode-nativescript`)
+- **Offline mode has no app surface.** The platform keeps the journal, so `EdgeNode.setStrandOfflineMode` works, but the reference chat offers no toggle, queue line or per-message progress as the other two reference apps do (ticket `feat-strand-offline-mode-nativescript`).
 - **No WebRTC.** The node has WebSocket and relay transports only, so a connection made through a relay stays on the relay.
 - **Noise runs in JavaScript.** The Noise shim uses `@noble` for every handshake and every frame, and the platform supplies no `EdgeNodePlatform.noiseCrypto`. React Native replaces the same code with native crypto because it dominates connection setup on Hermes; the cost on NativeScript has not been measured.
 - **Android only.** The package declares `@nativescript/android` and no iOS runtime, and `scripts/bundle-check.js` compiles for Android. The local time zone is read through an Android API, so on iOS the implicit zone would be UTC. Nothing else about iOS is established.

@@ -127,7 +127,6 @@ On a [machine that holds no strand blocks](../cadre/node.md#a-node-that-holds-no
 Where it is not offered:
 
 - **The always-on programs** (cadre-host, cadre-provider, cadre-cli) configure no `strandOffline`, because a node that is always connected gains nothing from a local acknowledgement.
-- **NativeScript** has no journal, so the edge node configures no `strandOffline` there. `EdgeNode.setStrandOfflineMode` throws a plain `Error` naming the missing journal, and `CadreNode.setStrandOfflineMode` throws `StrandOfflineUnavailableError`.
 - **The control database** registers Optimystic without `offline`. Its writes are owner-signed membership and authorization facts, and the retry and veto rules of `control-write-retry.ts` assume a network answer.
 - **A strand loaded through the SQL plugin config** (`parse-config.ts`). A journal is an object, and that config carries only SQL values and refuses keys it does not know.
 
@@ -135,11 +134,14 @@ Where it is not offered:
 
 A journal is an Optimystic `IKVStore`. Each queued transaction is saved in it before its commit resolves. On the next connect, the queue's `hydrate` step puts the saved transactions back before the `Strand` and `App` schemas are applied, so the first statement any caller runs sees their rows. Without a journal the queue lives in memory and is lost with the process, which is why a cadre node never builds a queue without one.
 
-- **Phone:** a `LevelDBKVStore` over the strand's own rn-leveldb database (`sereus-<strandId>`), beside the blocks its transactions refer to.
-- **Browser:** an `IndexedDBKVStore` over the strand's own IndexedDB database (`sereus-strand-<strandId>`, its `kv` object store). The plugin's browser connect (`connectToStrandBrowser`) journals there too when it defaulted the storage there and the caller gave no `journal`.
-- **Node embedder:** its own store, for example a `FileKVStore` (`@optimystic/db-p2p-storage-fs`) in the strand's directory. The plugin's Node connect passes on only what it is given.
+On every platform in this repository the journal is **the strand scope's own key-value store** — the `kv` of the one `NodeStorage` the platform opened for that scope — and never a second store over the same handle, which would not see the first's unflushed writes:
 
-Both edge stores keep their key-value keys apart from blocks, so the journal's records (under `optimystic-offline/`) cannot collide with them. The records are keyed by a label derived from the strand id (`strandJournalLabel` in `compose-strand.ts`). No two strand ids share a label, so an embedder that passes one store to several strands keeps their records apart. Every store Sereus itself opens is per strand.
+- **Phone:** the `kv` of the strand's rn-leveldb database (`sereus-<strandId>`), beside the blocks its transactions refer to.
+- **Browser:** the `kv` object store of the strand's IndexedDB database (`sereus-strand-<strandId>`). The plugin's browser connect (`connectToStrandBrowser`) journals there too when it defaulted the storage there and the caller gave no `journal`.
+- **NativeScript:** the `kv` table of the strand's SQLite database (`sereus-<strandId>`).
+- **Node embedder:** its own store, for example the `kv` of a `fileNodeStorage` (`@optimystic/db-p2p-storage-fs`) over the strand's directory. The plugin's Node connect passes on only what it is given.
+
+Sharing one store is safe because Optimystic declares the journal's key prefix (`optimystic-offline/`) among the node's own key-value namespaces, so a block listing over a store that shares a location with blocks skips the journal's records. The records are keyed by a label derived from the strand id (`strandJournalLabel` in `compose-strand.ts`). No two strand ids share a label, so an embedder that passes one store to several strands keeps their records apart. Every store Sereus itself opens is per strand.
 
 ### Membership tables are always acknowledged by the network
 
@@ -254,7 +256,7 @@ The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-nod
 - **The saved mode follows the app, not the party.** It carries into a joined cadre and back to the founded one after a removal. A start whose options name no mode takes the saved start's, so a start from a form, or from options held since before a change, keeps the app's choice.
 - **`EdgeNode.setStrandOfflineMode(mode)` changes that default without a restart.** Every strand the running node runs takes the mode at once, each strand it starts later takes it too, and the saved start keeps it. It throws a plain `Error` while no node runs and on a platform with no journal. It overrides a mode set on one strand with `CadreNode.setStrandOfflineMode`.
 - **The journal is in the strand's own database** ([Where queued transactions are saved](#where-queued-transactions-are-saved)).
-- **One store per scope until the storage closes.** A store serves its unflushed writes from memory, so a second store over the same handle would not see them. The edge node's stop stops the node, its strands included, before `EdgeNodeStorage.close` flushes and closes the journals. `destroyScope` closes the scope's journal before deleting the database.
+- **The journal is the scope's own key-value store.** `EdgeNodeStorage.offlineJournal(scope)` returns the `kv` of that scope's `NodeStorage`, so there is one store and the node and the queue see each other's writes. The edge node's stop stops the node, its strands included, before `EdgeNodeStorage.close` flushes and closes each scope's storage and then its handle. `destroyScope` does the same before deleting the database.
 
 ## Limits and accepted tradeoffs
 
@@ -268,7 +270,7 @@ The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-nod
 - **A held queue delays a removed machine's removal from a closed strand.** The key replacement that follows `removeMachine` waits for the queue to empty. A queue still waiting for a second unreachable machine therefore keeps the removed machine a member of the closed strand until it drains, unless another owner machine carries out the replacement. Letting those writes past the refusal would bring back the bounded wait the refusal avoids.
 - **A client's first write after a machine is removed retries for longer than a serving machine's.** Nothing wakes a client's revoked-peer gate ([a node that holds no strand blocks](../cadre/node.md#a-node-that-holds-no-strand-blocks)), so until that gate's backstop the client stays connected to the removed machine and keeps it in every cohort, and the write commits only once the cluster downsizes to the machines that answer. Revisit if a client's writes in that window have to be prompt: the remedy is a gate woken by what the client reads, not only by what it stores.
 - **The network-commit wait is the plugin's five-minute default.** Nothing has been measured that would justify another value.
-- **Offline mode is unavailable on NativeScript** (ticket `feat-strand-offline-mode-nativescript`). The other places it is not offered are deliberate ([Turning it on](#turning-it-on)).
+- **The NativeScript reference app offers no way to turn offline mode on.** The platform keeps the journal, so `setStrandOfflineMode` works there; what is missing is the app's own surface — a toggle, a queue line, per-message progress (ticket `feat-strand-offline-mode-nativescript`). The places offline mode is not offered at all are deliberate ([Turning it on](#turning-it-on)).
 - **Deleting the journal's records on a leave without asking was rejected.** Dropping transactions the user was told were saved must be the user's explicit choice, which is also why the default is to refuse.
 - **The reference apps show the refusal's message and nothing more.** They already surface a failed write's message, and this message names the machines that are full, which is the useful thing to put in front of a user; a dedicated screen for it was not built. Revisit if a deployment reports users who cannot act on the message.
 - **The queue is not held for a current app schema version.** A member offline on an older schema keeps queuing, and its queue can drain before it learns of a newer version ([A running member stops](app-schema.md#a-running-member-stops)).

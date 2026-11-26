@@ -1,7 +1,7 @@
 import debug from 'debug';
 import { CadreNode, type CadreNodeConfig, type StorageConfig } from '@serfab/cadre-core';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { memoryNodeStorage, type NodeStorage, type OpenNodeStorage } from '@optimystic/db-p2p';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
 import { resolveConfig, type ResolvedConfig } from '../config/index.js';
 import { resolveNodeNetwork } from './node-network.js';
 import { partyOnRecord } from './claim-record.js';
@@ -13,36 +13,36 @@ const log = debug('cadre:cli:node-session');
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
 
 /**
- * A node's raw storage as the CLI opens it: the cadre-core `StorageConfig` whose provider
- * opens the stores, and the `close` that releases them.
+ * A node's storage as the CLI opens it: the cadre-core `StorageConfig` whose `open` opens one
+ * scope's stores, and the `close` that releases them all.
  *
- * cadre-core never closes a store its provider returned (`RawStorageProvider`, types.ts);
- * the embedder that built it does. A `FileRawStorage` left open holds its directory's
- * `store.lock` for as long as this process lives, so another process cannot open that
- * directory, and its writes not yet flushed are lost when the process exits.
+ * Named for the handle, not for what it holds: `NodeStorage` is Optimystic's type for one scope's
+ * three stores (`StorageConfig.open`'s return), and two meanings of one name in one file is how a
+ * later reader comes to pass the wrong thing.
+ *
+ * cadre-core never closes storage its `open` returned (`StorageConfig.open`, types.ts); the
+ * embedder that opened it does. A file store left open holds its directory's `store.lock` for as
+ * long as this process lives, so another process cannot open that directory, and its writes not
+ * yet flushed are lost when the process exits.
  */
-export interface NodeStorage {
+export interface NodeStorageHandle {
   /** What `CadreNodeConfig.storage` takes; undefined when the config has no `storage` block. */
   readonly config: StorageConfig | undefined;
   /**
-   * Flush and close every store the provider has opened. Call it after the node using them
-   * has stopped; a provider called afterwards opens its stores again.
+   * Flush and close every scope's stores. Call it after the node using them has stopped; an
+   * `open` called afterwards opens that scope's stores again.
    */
   close(): Promise<void>;
 }
 
 /**
- * Convert CLI storage config to cadre-core StorageConfig with provider, and the handle that
- * closes what the provider opens.
+ * Convert CLI storage config to cadre-core's `StorageConfig`, and the handle that closes what its
+ * `open` opened.
  *
  * Shared by every command that constructs a `CadreNode` — the long-running `start` and the
- * one-shot commands alike — so the memory/file provider mapping has exactly one home.
+ * one-shot commands alike — so the memory/file mapping has exactly one home.
  *
- * The file provider opens one `FileRawStorage` per scope and hands the same one back when
- * cadre-core calls it again for that scope (after a `stopStrand`, or a node restart), so
- * each directory has one store to close.
- *
- * The file provider maps a cadre-core storage scope key straight onto a subdirectory of
+ * The file branch maps a cadre-core storage scope key straight onto a subdirectory of
  * `storage.path`: the strand id for each strand, `controlStorageScope(partyId)` for the
  * control database. Every key cadre-core mints is within `[a-z0-9._-]`, so it is safe
  * as a path segment as-is — which is also why a party id containing `/` or `..` can no
@@ -50,42 +50,68 @@ export interface NodeStorage {
  * directory on a filesystem that ignores case. Two config files naming two parties over
  * one `storage.path` therefore get two control directories (`control-<hex party id>`)
  * rather than sharing one.
+ *
+ * The memory branch calls `memoryNodeStorage()`, which is how a host says it meant memory:
+ * Optimystic warns on an ABSENT storage option, not on stores that happen to be in memory. It
+ * declares no allotment — nothing measures a memory store's free space, so a memory node measures
+ * nothing, which is what a throwaway node should do.
  */
-export function openNodeStorage(config: ResolvedConfig['storage']): NodeStorage {
+export function openNodeStorage(config: ResolvedConfig['storage']): NodeStorageHandle {
   if (config?.type === 'memory') {
-    return {
-      config: { provider: () => new MemoryRawStorage(), quotaBytes: config.quotaBytes },
-      close: async () => {},
-    };
+    return storagePerScope(() => memoryNodeStorage(), undefined);
   }
 
   if (config?.type === 'file') {
     if (!config.path) {
       throw new Error('Storage path is required for file storage type');
     }
-    return openFileStorage(config.path, config.quotaBytes);
+    const basePath = config.path;
+    return storagePerScope((scope) => fileNodeStorage(`${basePath}/${scope}`), config.allotmentBytes);
   }
 
   return { config: undefined, close: async () => {} };
 }
 
-/** {@link openNodeStorage}'s file branch: one `FileRawStorage` per scope under `path`. */
-function openFileStorage(path: string, quotaBytes: number | undefined): NodeStorage {
-  const stores = new Map<string, FileRawStorage>();
-  const provider = (scope: string): FileRawStorage => {
-    let store = stores.get(scope);
-    if (!store) {
-      store = new FileRawStorage(`${path}/${scope}`);
-      stores.set(scope, store);
+/**
+ * {@link openNodeStorage}'s shape either way: one `OpenNodeStorage` per scope, opened on first ask
+ * and closed by {@link NodeStorageHandle.close}.
+ *
+ * The memo is no longer the only thing keeping two sets of stores off one location — `fileNodeStorage`
+ * hands back one set per directory per process, counted by holder, and `memoryNodeStorage` has no
+ * location to share. It stays because it is what `close` iterates, and because a memoized memory
+ * scope is what lets a node stopped and started in one process read back what it wrote.
+ *
+ * `openScope` is synchronous, as every storage-package factory is, so two concurrent first asks for
+ * one scope cannot both open it.
+ */
+function storagePerScope(
+  openScope: (scope: string) => OpenNodeStorage,
+  allotmentBytes: number | undefined,
+): NodeStorageHandle {
+  const opened = new Map<string, OpenNodeStorage>();
+  // NOTE: an entry is kept after a `stopStrand`, because cadre-core may ask for that scope again
+  // and `close` must still reach it. On a file store the holder is the point — the process owns
+  // the directory and its lock. On a memory store it means a process that launches and stops many
+  // strands keeps every one's blocks until exit; harmless while memory storage is for tests and
+  // throwaway nodes, so if a long-lived memory node ever churns strands, drop an entry whose scope
+  // cadre-core has stopped.
+  const open = async (scope: string): Promise<NodeStorage> => {
+    let storage = opened.get(scope);
+    if (!storage) {
+      storage = openScope(scope);
+      opened.set(scope, storage);
     }
-    return store;
+    return storage;
   };
   const close = async (): Promise<void> => {
-    const open = [...stores.values()];
-    stores.clear();
-    await Promise.all(open.map((store) => store.close()));
+    const held = [...opened.values()];
+    opened.clear();
+    await Promise.all(held.map((storage) => storage.close()));
   };
-  return { config: { provider, quotaBytes }, close };
+  return {
+    config: { open, ...(allotmentBytes !== undefined && { allotmentBytes }) },
+    close,
+  };
 }
 
 /**
@@ -109,7 +135,7 @@ function openFileStorage(path: string, quotaBytes: number | undefined): NodeStor
 export async function oneShotNodeConfig(
   config: ResolvedConfig,
   partyId: string,
-  storage: NodeStorage,
+  storage: NodeStorageHandle,
 ): Promise<CadreNodeConfig> {
   return {
     privateKey: config.privateKey,

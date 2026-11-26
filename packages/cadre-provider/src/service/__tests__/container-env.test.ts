@@ -101,7 +101,7 @@ describe('buildNodeEnv matches what DockerOrchestrator actually sends', () => {
 
     const env = await captureOrchestratorEnv(base, config);
 
-    expect(env).toContain('CADRE_STORAGE_QUOTA=4096');
+    expect(env).toContain('CADRE_STORAGE_ALLOTMENT=4096');
     expect(env).toEqual(buildNodeEnv({ request: base, resources: config.defaultResources }));
   });
 
@@ -111,7 +111,7 @@ describe('buildNodeEnv matches what DockerOrchestrator actually sends', () => {
 
     const env = await captureOrchestratorEnv(request, config);
 
-    expect(env).toContain('CADRE_STORAGE_QUOTA=1024');
-    expect(env.some(e => e === 'CADRE_STORAGE_QUOTA=4096')).toBe(false);
+    expect(env).toContain('CADRE_STORAGE_ALLOTMENT=1024');
+    expect(env.some(e => e === 'CADRE_STORAGE_ALLOTMENT=4096')).toBe(false);
   });
 });

@@ -101,7 +101,7 @@ function validateStrandFilter(value: unknown): { strandFilter?: string } | { err
  * Resource limits. `memoryLimit` / `cpuLimit` must be text the orchestrator can turn into a
  * Docker limit (`service/resource-limits.ts`, the same rule the config's defaults are held to):
  * text it cannot read used to pass through and start the container with *no* limit at all.
- * `storageQuotaBytes` becomes `CADRE_STORAGE_QUOTA`, so only its kind is checked.
+ * `storageQuotaBytes` becomes `CADRE_STORAGE_ALLOTMENT`, so only its kind is checked.
  */
 function validateResources(value: unknown): { resources?: ContainerResources } | { error: string } {
   if (value === undefined) return {};

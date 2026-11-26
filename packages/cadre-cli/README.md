@@ -349,7 +349,7 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 | `roles` | four `CADRE_ROLE_*` variables | Overrides of the decisions `nodeClass` presets, one role at a time ([Node roles](#node-roles)) |
 | `identity.keyFile` | `CADRE_KEY_FILE` | The node's private key file. Without it the node has a new peer ID on every start |
 | `nodeState.dir` | `CADRE_NODE_STATE_DIR` | Directory for the node's own durable files. Default: the config file's directory |
-| `storage.type`, `storage.path`, `storage.quotaBytes` | `CADRE_STORAGE_TYPE`, `CADRE_STORAGE_PATH`, `CADRE_STORAGE_QUOTA` | `file` or `memory`, the data directory that `file` requires, and a quota in bytes |
+| `storage.type`, `storage.path`, `storage.allotmentBytes` | `CADRE_STORAGE_TYPE`, `CADRE_STORAGE_PATH`, `CADRE_STORAGE_ALLOTMENT` | `file` or `memory`, the data directory that `file` requires, and the storage allotment in bytes (below) |
 | `strandFilter` | `CADRE_STRAND_FILTER` | The strands this node runs: `all` (default), `none`, `{ sAppId: "…" }` or `{ strandId: "…" }`; JSON in the variable ([Strand filtering](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#strand-filtering)) |
 | `hibernation.enabled`, `hibernation.defaultLatencyHint` | `CADRE_HIBERNATION_ENABLED`, `CADRE_LATENCY_HINT` | Whether idle strands hibernate (they do not when the block is absent), and the default hint: `realtime`, `interactive`, `background` or `archive` ([States](https://github.com/gotchoices/sereus/blob/master/docs/strands/hibernation.md#states)) |
 | `strandWatchInterval` | `CADRE_STRAND_WATCH_INTERVAL` | The longest the strand watcher goes without re-reading its tables. Default `300000` ms |
@@ -357,6 +357,8 @@ Prints the enrolled approver keys, one per line, or a JSON array under `--json`.
 | `claim.secretFile` | `CADRE_CLAIM_SECRET_FILE` | File holding the claim secret |
 
 `strandReactivity` and `push` (variable `CADRE_PUSH`) have sections of their own. `storage.type` and `hibernation.enabled` are required when their block is present. Relative paths in `identity.keyFile`, `owner.keyFile` and `claim.secretFile` resolve against the working directory, not the config file's directory.
+
+`storage.allotmentBytes` bounds **each** network this node serves rather than the machine: the control network and every strand are given the figure in full, so a node running N strands can hold up to (N+1) times it. A `file` store is bounded by the filesystem's free space as well, whichever is smaller. It must be a whole number above zero, and only a `file` store may have one — nothing measures a `memory` store, so naming one there is refused rather than ignored. Left out, the node measures only against the free space the filesystem reports. [The storage allotment](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node-storage.md#the-storage-allotment) has what the node does as it fills.
 
 ### Node roles
 
@@ -494,7 +496,7 @@ The routes, all under `/admin`, are `GET identity`, `GET multiaddrs`, `GET membe
   - `removed.<partyId>.json`: the removal on record.
   - `owner.key`: the owner key, created by `cadre start --owner`, an owner grant or `cadre owner-key import`.
   - `trusted-owners.<partyId>.json`, `bootstrap-peers.<partyId>.json`, `enrolled-machines.<partyId>.json`, `strand-network.<partyId>.json`: the node's own stores ([Node-local state](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-local-state)).
-- **Under `storage.path`:** a directory per strand and one for the control database, each holding that database's blocks and a `store.lock` naming the process that has it open.
+- **Under `storage.path`:** a directory per strand and one for the control database, each holding that database's blocks, the node-local records that must survive a restart, the blob pieces this machine holds (`optimystic-pieces/`) and a `store.lock` naming the process that has the directory open.
 
 Key and secret files are written with mode 600.
 

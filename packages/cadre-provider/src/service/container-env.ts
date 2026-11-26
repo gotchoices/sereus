@@ -103,7 +103,10 @@ export function buildNodeEnv(spec: NodeEnvSpec): string[] {
     // per-container path or port on that proxy to tell tenants apart.
     announce.length ? `CADRE_APPEND_ANNOUNCE_ADDRS=${announce.join(',')}` : '',
     request.strandFilter ? `CADRE_STRAND_FILTER=${request.strandFilter}` : '',
-    resources.storageQuotaBytes ? `CADRE_STORAGE_QUOTA=${resources.storageQuotaBytes}` : '',
+    // The tenant's quota reaches the container's node as its storage ALLOTMENT, which bounds each
+    // network that node serves rather than the container's total; the Docker volume's size is what
+    // enforces the quota (docs/hosting/provider.md).
+    resources.storageQuotaBytes ? `CADRE_STORAGE_ALLOTMENT=${resources.storageQuotaBytes}` : '',
     // This tenant's push credentials, JSON-encoded (handles the PEM newlines)
     // — only ever this tenant's, resolved upstream by ContainerService. The
     // node reads it via the CADRE_PUSH env mapping. Never logged.

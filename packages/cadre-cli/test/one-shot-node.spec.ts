@@ -45,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode, type CadreNodeConfig, type OwnerSigner, type StrandRow } from '@serfab/cadre-core';
-import { openNodeStorage, type NodeStorage } from '../src/commands/node-session.js';
+import { openNodeStorage, type NodeStorageHandle } from '../src/commands/node-session.js';
 import { loadOrCreateOwnerKeyFile } from '../src/commands/owner-key-file.js';
 
 /** The compiled entry the `cadre` bin points at — what an operator actually runs. */
@@ -155,7 +155,7 @@ async function writeIdentity(dir: string): Promise<{ keyPath: string; privateKey
  * forward-slash template, not `path.join` — so restating it here would risk a Windows-only
  * mismatch, and would drift the moment the template changes.
  */
-function seedNodeConfig(partyId: string, storage: NodeStorage, privateKey: PrivateKey): CadreNodeConfig {
+function seedNodeConfig(partyId: string, storage: NodeStorageHandle, privateKey: PrivateKey): CadreNodeConfig {
   return {
     privateKey,
     controlNetwork: { partyId, bootstrapNodes: [] },

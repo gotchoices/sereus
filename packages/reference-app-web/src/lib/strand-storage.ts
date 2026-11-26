@@ -6,24 +6,26 @@
  * id. Every key cadre-core mints is already within `[a-z0-9._-]`, so this module concatenates it
  * into a database name (`sereus-strand-<key>`) without escaping.
  *
- * `IndexedDBRawStorage` wraps an **already-open** `OptimysticWebDBHandle`, and the opener is
- * async, while `EdgeNodeStorage.rawStorage` is synchronous. The platform (`web-edge-platform.ts`)
- * returns cadre-core's `lazyRawStorage` over {@link openStore}, so a scope's database opens on its
- * first use: nothing is opened ahead of a start or an `addStrand`, and a strand the control
- * network lists gets storage like any other. One handle and one `IndexedDBRawStorage` per key,
- * cached here until {@link closeStores} (which the edge node calls on every stop), so two proxies
- * over one scope share a store and diagnostics can read the control database once the node has
- * opened it ({@link getStoreHandle}). A strand's offline journal ({@link openJournal}) is the
- * `kv` object store of that same database, over the same handle.
+ * `indexedDbNodeStorage` opens all of one scope's storage over an **already-open**
+ * `OptimysticWebDBHandle`: the blocks, the node-local records the node keeps across a reload (its
+ * blob records, the owed-blob and under-replication ledgers, the clock's high-water mark and its
+ * transaction state) and the blob pieces this tab holds. The three share the one handle, so the
+ * database's byte count — the origin's estimate — measures all of it.
+ *
+ * A scope's database opens on its first use: nothing is opened ahead of a start or an `addStrand`,
+ * and a strand the control network lists gets storage like any other. One handle and one node
+ * storage per key, cached here until {@link closeStores} (which the edge node calls on every stop),
+ * so every caller for a scope shares one set of stores and diagnostics can read the control
+ * database once the node has opened it ({@link getStoreHandle}). A strand's offline journal
+ * ({@link openJournal}) is that same storage's `kv`.
  */
 
 import {
-	IndexedDBKVStore,
-	IndexedDBRawStorage,
+	indexedDbNodeStorage,
 	openOptimysticWebDb,
 	type OptimysticWebDBHandle,
 } from '@optimystic/db-p2p-storage-web';
-import type { IKVStore, IRawStorage } from '@optimystic/db-p2p';
+import type { IKVStore, IRawStorage, OpenNodeStorage } from '@optimystic/db-p2p';
 
 /** IndexedDB database-name prefix; one database per scope key. */
 const DB_PREFIX = 'sereus-strand-';
@@ -52,8 +54,7 @@ const DB_PREFIX = 'sereus-strand-';
 export const NODE_LOCAL_STORE_KEY = 'control';
 
 const handles = new Map<string, OptimysticWebDBHandle>();
-const storages = new Map<string, IRawStorage>();
-const journals = new Map<string, IndexedDBKVStore>();
+const storages = new Map<string, OpenNodeStorage>();
 /** Opens in flight, so two first uses of one key (a strand's read and its write) share one open. */
 const opening = new Map<string, Promise<OptimysticWebDBHandle>>();
 
@@ -74,34 +75,34 @@ export async function openHandle(key: string): Promise<OptimysticWebDBHandle> {
 	}
 }
 
-/** The `IndexedDBRawStorage` for `key`, over {@link openHandle}'s handle. One per key until {@link closeStores}. */
-export async function openStore(key: string): Promise<IRawStorage> {
+/**
+ * All of `key`'s node storage, over {@link openHandle}'s handle: `EdgeNodeStorage.nodeStorage`. One
+ * set of stores per key until {@link closeStores}, because each store serves its unflushed writes
+ * from memory and a second set over the handle would not see them.
+ */
+export async function openNodeStorage(key: string): Promise<OpenNodeStorage> {
+	// NOTE: a call whose handle was cached before a concurrent closeStores cleared the maps caches a
+	// storage over a closed handle. The edge node stops its strands before closing storage, so no
+	// build asks then; if one ever can, check the handle is still `handles.get(key)`.
 	const handle = await openHandle(key);
 	let storage = storages.get(key);
 	if (!storage) {
-		storage = new IndexedDBRawStorage(handle);
+		// Synchronous after the await, so two first uses of one key cannot both open a set of stores.
+		storage = indexedDbNodeStorage(handle);
 		storages.set(key, storage);
 	}
 	return storage;
 }
 
 /**
- * The strand's offline journal for `key`, over {@link openHandle}'s handle: `EdgeNodeStorage.offlineJournal`.
- * One per key until {@link closeStores}, because the store serves its unflushed writes from memory
- * and a second one over the handle would not see them. The store's default key prefix, as the
- * plugin's own browser connect uses over the same database (`connectToStrandBrowser`).
+ * The strand's offline journal for `key`: `EdgeNodeStorage.offlineJournal`, which is that scope's
+ * OWN key-value store and never a second one over its handle. Optimystic declares the journal's key
+ * prefix among the node's own key-value namespaces for exactly this sharing, so the journal's keys
+ * stay out of every block listing — and it is the same default prefix the plugin's browser connect
+ * uses over a database of this name (`connectToStrandBrowser`).
  */
 export async function openJournal(key: string): Promise<IKVStore> {
-	// NOTE: like openStore, a call whose handle was cached before a concurrent closeStores cleared
-	// the maps caches a journal over a closed handle. The edge node stops its strands before closing
-	// storage, so no build asks then; if one ever can, check the handle is still `handles.get(key)`.
-	const handle = await openHandle(key);
-	let journal = journals.get(key);
-	if (!journal) {
-		journal = new IndexedDBKVStore(handle);
-		journals.set(key, journal);
-	}
-	return journal;
+	return (await openNodeStorage(key)).kv;
 }
 
 /** The open IndexedDB handle for `key`, or null if not opened. */
@@ -109,15 +110,15 @@ export function getStoreHandle(key: string): OptimysticWebDBHandle | null {
 	return handles.get(key) ?? null;
 }
 
-/** The `IRawStorage` for `key`, or null if not opened (used by diagnostics). */
+/** The block store for `key`, or null if not opened: diagnostics reads its backend label and byte count. */
 export function getStoreStorage(key: string): IRawStorage | null {
-	return storages.get(key) ?? null;
+	return storages.get(key)?.blocks ?? null;
 }
 
 /**
- * Close every open handle and drop the caches: `EdgeNodeStorage.close`. Each storage and journal
- * applies what it still holds before its handle closes; a failure doing so is logged and the rest
- * still close. Waits for an open in flight first, so it cannot land a handle after the clear.
+ * Close every open handle and drop the caches: `EdgeNodeStorage.close`. Each scope's node storage
+ * commits what its stores still hold before its handle closes; a failure doing so is logged and the
+ * rest still close. Waits for an open in flight first, so it cannot land a handle after the clear.
  */
 export async function closeStores(): Promise<void> {
 	await Promise.allSettled([...opening.values()]);
@@ -125,10 +126,7 @@ export async function closeStores(): Promise<void> {
 	handles.clear();
 	const stores = [...storages.values()];
 	storages.clear();
-	const openJournals = [...journals.values()];
-	journals.clear();
-	for (const storage of stores) await closeLogged('a raw storage', storage);
-	for (const journal of openJournals) await closeLogged('an offline journal', journal);
+	for (const storage of stores) await closeLogged('a node storage', storage);
 	for (const [, handle] of open) handle.close();
 }
 
@@ -171,10 +169,8 @@ export async function deleteStore(key: string): Promise<void> {
 	if (inFlight) await inFlight.catch(() => undefined);
 	const storage = storages.get(key);
 	storages.delete(key);
-	if (storage) await closeLogged('a raw storage', storage);
-	const journal = journals.get(key);
-	journals.delete(key);
-	if (journal) await closeLogged('an offline journal', journal);
+	// Before the handle, as in closeStores: the stores commit what they hold through it.
+	if (storage) await closeLogged('a node storage', storage);
 	handles.get(key)?.close();
 	handles.delete(key);
 	await deleteDatabase(key);

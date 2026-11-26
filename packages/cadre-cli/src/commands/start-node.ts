@@ -27,7 +27,7 @@ import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
 import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 import type { ResolvedConfig } from '../config/index.js';
-import type { NodeStorage } from './node-session.js';
+import type { NodeStorageHandle } from './node-session.js';
 import { resolveNodeNetwork } from './node-network.js';
 import { writeClaimRecord, type ClaimRecord } from './claim-record.js';
 import { removalMarkerPath, writeRemovalMarker } from './removal-marker.js';
@@ -78,7 +78,7 @@ async function buildNodeConfig(
   config: ResolvedConfig,
   partyId: string,
   stores: NodeStores,
-  storage: NodeStorage,
+  storage: NodeStorageHandle,
   trust: ColdStartTrust,
 ): Promise<CadreNodeConfig> {
   return {
@@ -153,7 +153,7 @@ export function claimConfigFor(
  */
 export async function buildClaimedNode(
   config: ResolvedConfig,
-  storage: NodeStorage,
+  storage: NodeStorageHandle,
   claim: NodeClaimRecord,
   claimConfig: CadreNodeConfig['claim'],
   dialTargets: readonly SeedDialTarget[] = [],
@@ -190,7 +190,7 @@ function retainDialTargets(store: BootstrapPeerStore, targets: readonly SeedDial
  */
 export async function buildConfiguredNode(
   config: ResolvedConfig,
-  storage: NodeStorage,
+  storage: NodeStorageHandle,
   pinnedKeys: string[],
   seedTrustPolicy: SeedTrustPolicy | undefined,
   claimConfig: CadreNodeConfig['claim'],

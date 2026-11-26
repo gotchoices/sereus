@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webSockets } from '@libp2p/websockets';
-import type { IRawStorage } from '@optimystic/db-p2p';
-import { LevelDBRawStorage, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
+import type { NodeStorage, OpenNodeStorage } from '@optimystic/db-p2p';
+import { levelDbNodeStorage, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
+import { DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES } from '@serfab/cadre-core/edge-node';
 import {
 	CadreNode,
 	InMemoryKeyStore,
@@ -27,8 +28,8 @@ import { FakeWriteBatch, fakeRNLevelDBOpener } from '../../../test-harness/fake-
  *
  * The node is built by the kit's `buildPhoneNodeConfig` and `runOwnerGenesis` — what
  * `cadre-phone.ts` runs — with this app's one override (unsigned schemas allowed). Storage is the
- * phone's real rn-leveldb adapter — `openOptimysticRNDb` into `LevelDBRawStorage`,
- * the calls `cadre-phone.ts` makes — over an in-memory fake of the native module.
+ * phone's real rn-leveldb adapter — `openOptimysticRNDb` into `levelDbNodeStorage`,
+ * the calls `createPhoneNode` makes — over an in-memory fake of the native module.
  * That is also the adapter's first Node coverage: optimystic's own tests drive
  * `classic-level` instead.
  *
@@ -71,10 +72,23 @@ function phoneConfig(inputs: Omit<Parameters<typeof buildPhoneNodeConfig>[0], 'a
 	return { ...buildPhoneNodeConfig({ ...inputs, allowPrivateDial: true }), requireSignedSchemas: false };
 }
 
-/** The kit's per-scope storage (`sereus-<scope>` over rn-leveldb), with the native constructors swapped for the fake. */
-function phoneStorageOverFakeNative(): (id: string) => IRawStorage {
+/**
+ * The kit's per-scope storage (`sereus-<scope>` over rn-leveldb), with the native constructors
+ * swapped for the fake. Memoized per scope as `LevelDBEdgeStorage` is: `levelDbNodeStorage` claims
+ * its handle in Optimystic's read-cache pool and refuses a second call over an open one. Nothing
+ * closes them — the node closes nothing it was handed, and the fake device dies with the process.
+ */
+function phoneStorageOverFakeNative(): (scope: string) => Promise<NodeStorage> {
 	const openFn = fakeRNLevelDBOpener();
-	return (id) => new LevelDBRawStorage(openOptimysticRNDb({ openFn, WriteBatch: FakeWriteBatch, name: `sereus-${id}` }));
+	const opened = new Map<string, OpenNodeStorage>();
+	return async (scope) => {
+		let storage = opened.get(scope);
+		if (!storage) {
+			storage = levelDbNodeStorage(openOptimysticRNDb({ openFn, WriteBatch: FakeWriteBatch, name: `sereus-${scope}` }));
+			opened.set(scope, storage);
+		}
+		return storage;
+	};
 }
 
 describe('solo phone founding (app node config over the rn-leveldb adapter)', () => {
@@ -93,7 +107,9 @@ describe('solo phone founding (app node config over the rn-leveldb adapter)', ()
 			bootstrapAddrs: [],
 			relayAddrs: [],
 			keyStore,
-			storageProvider: phoneStorageOverFakeNative(),
+			openStorage: phoneStorageOverFakeNative(),
+			// What `createPhoneNode` declares, since LevelDB reports no free space.
+			allotmentBytes: DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES,
 			transports: [webSockets(), circuitRelayTransport()],
 			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
 			bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),
@@ -194,7 +210,9 @@ describe('solo phone founding with a relay configured but unreachable', () => {
 			bootstrapAddrs: [],
 			relayAddrs: [UNREACHABLE_RELAY],
 			keyStore,
-			storageProvider: phoneStorageOverFakeNative(),
+			openStorage: phoneStorageOverFakeNative(),
+			// What `createPhoneNode` declares, since LevelDB reports no free space.
+			allotmentBytes: DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES,
 			transports: [webSockets(), circuitRelayTransport()],
 			trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
 			bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),

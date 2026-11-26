@@ -43,7 +43,7 @@ export const ENV_MAPPINGS = {
   CADRE_KEY_FILE: { path: 'identity.keyFile', kind: 'string' },
   CADRE_STORAGE_PATH: { path: 'storage.path', kind: 'string' },
   CADRE_STORAGE_TYPE: { path: 'storage.type', kind: 'string' },
-  CADRE_STORAGE_QUOTA: { path: 'storage.quotaBytes', kind: 'number' },
+  CADRE_STORAGE_ALLOTMENT: { path: 'storage.allotmentBytes', kind: 'number' },
   CADRE_LISTEN_ADDRS: { path: 'network.listenAddrs', kind: 'list' },
   CADRE_ANNOUNCE_ADDRS: { path: 'network.announceAddrs', kind: 'list' },
   CADRE_APPEND_ANNOUNCE_ADDRS: { path: 'network.appendAnnounceAddrs', kind: 'list' },
@@ -109,6 +109,10 @@ const RETIRED_ENV = new Map<string, string>([
   [
     'CADRE_IDENTITY_PROTOBUF',
     'set CADRE_KEY_FILE instead (same libp2p protobuf key file, no file change needed)',
+  ],
+  [
+    'CADRE_STORAGE_QUOTA',
+    'set CADRE_STORAGE_ALLOTMENT instead (same unit, and now read: it bounds each network this node serves)',
   ],
 ]);
 

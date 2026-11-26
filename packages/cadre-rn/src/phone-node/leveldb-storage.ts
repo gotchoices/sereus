@@ -1,19 +1,20 @@
 /**
  * The phone's `EdgeNodeStorage`: one rn-leveldb database per cadre-core storage scope, named
- * `<storagePrefix><scope>`, holding the scope's blocks and, for a strand, its offline journal; and
- * one more (`nodeLocalDb`) holding the node-local records under `nodeLocalKvPrefix`. rn-leveldb
- * holds a lock per name, so one left open fails the next start; `close` is what the edge node
- * calls on every stop so that cannot happen.
+ * `<storagePrefix><scope>`, holding all of that scope's node storage — its blocks, the node-local
+ * records that must survive a restart, its blob pieces and, for a strand, its offline journal; and
+ * one more database (`nodeLocalDb`) holding the edge node's node-local records under
+ * `nodeLocalKvPrefix`. rn-leveldb holds a lock per name, so one left open fails the next start;
+ * `close` is what the edge node calls on every stop so that cannot happen.
  */
 
 import {
 	LevelDBKVStore,
-	LevelDBRawStorage,
+	levelDbNodeStorage,
 	openOptimysticRNDb,
 	type RNLevelDBOpenFn,
 	type RNLevelDBWriteBatchCtor,
 } from '@optimystic/db-p2p-storage-rn';
-import type { IKVStore, IRawStorage } from '@optimystic/db-p2p';
+import type { IKVStore, NodeStorage, OpenNodeStorage } from '@optimystic/db-p2p';
 import type { EdgeNodeStorage, NodeLocalKv, RemovableSlot } from '@serfab/cadre-core/edge-node';
 
 /**
@@ -48,57 +49,56 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 	 * neither read it back nor flush it. Closed, which flushes it, before the database is.
 	 */
 	private nodeLocalStore: LevelDBKVStore | null = null;
-	/** Each strand scope's offline journal, by scope: one store per handle, as {@link nodeLocalStore} is. */
-	private readonly journals = new Map<string, LevelDBKVStore>();
 	/**
-	 * Each scope's block storage, by scope. It carries its own read cache, and Optimystic refuses a
-	 * second one over the same handle while the first is open, so every caller for a scope gets this one.
+	 * Each scope's node storage, by scope.
+	 *
+	 * **One `levelDbNodeStorage` call per handle, and this memo is what guarantees it.** The call's
+	 * block store claims the handle in Optimystic's read-cache pool, so a second call over an open
+	 * handle throws outright rather than handing a node a view that cannot see the first's writes.
+	 * Every caller for a scope — the node, and `offlineJournal` — therefore gets this one value.
 	 */
-	private readonly blockStores = new Map<string, LevelDBRawStorage>();
+	private readonly storages = new Map<string, OpenNodeStorage>();
 
 	constructor(
 		private readonly leveldb: LevelDBNative,
 		private readonly names: LevelDBStorageNames,
 		/** The party's trusted-owner anchor, which the phone keeps in its secure store rather than here. */
 		private readonly anchorSlot: (partyId: string) => RemovableSlot,
+		/** `EdgeNodeStorage.allotmentBytes`: declared, because LevelDB reports no free space. */
+		readonly allotmentBytes: number,
 	) {
 		this.id = names.storagePrefix;
 	}
 
-	rawStorage(scope: string): IRawStorage {
-		let storage = this.blockStores.get(scope);
-		if (!storage) {
-			storage = new LevelDBRawStorage(this.database(this.names.storagePrefix + scope));
-			this.blockStores.set(scope, storage);
-		}
-		return storage;
+	/**
+	 * All of the scope's storage over the scope's own database. Synchronous throughout — the handle
+	 * and the three stores are all opened by constructors that touch nothing yet — so two concurrent
+	 * first asks for one scope cannot both reach the one-call-per-handle rule above.
+	 */
+	async nodeStorage(scope: string): Promise<NodeStorage> {
+		return this.scopeStorage(scope);
 	}
 
 	/**
-	 * Over the scope's database, whose key-value keys are tagged apart from its blocks', under the
-	 * store's default key prefix, as the browser's journal is.
+	 * The scope's own key-value store, not a second one over its handle: Optimystic lists the
+	 * journal's key prefix in `NODE_KV_NAMESPACES` so one store serves both, and two stores over one
+	 * handle do not see each other's unflushed writes.
 	 */
 	async offlineJournal(scope: string): Promise<IKVStore> {
-		let journal = this.journals.get(scope);
-		if (!journal) {
-			journal = new LevelDBKVStore(this.database(this.names.storagePrefix + scope));
-			this.journals.set(scope, journal);
-		}
-		return journal;
+		return this.scopeStorage(scope).kv;
 	}
 
 	/** rn-leveldb's `destroyDB` throws on an open database, so this storage's own handle on it closes first. */
 	async destroyScope(scope: string): Promise<void> {
 		const name = this.names.storagePrefix + scope;
-		const journal = this.journals.get(scope);
-		this.journals.delete(scope);
-		const blocks = this.blockStores.get(scope);
-		this.blockStores.delete(scope);
+		const storage = this.storages.get(scope);
+		this.storages.delete(scope);
 		const db = this.databases.get(name);
 		this.databases.delete(name);
 		try {
-			await journal?.close();
-			await blocks?.close();
+			// Commits what the key-value store holds and releases the block store's cache-pool claim,
+			// which is what lets a relaunch of this scope open the handle and call the factory again.
+			await storage?.close();
 		} finally {
 			await db?.close();
 		}
@@ -117,16 +117,25 @@ export class LevelDBEdgeStorage implements EdgeNodeStorage {
 	async close(): Promise<void> {
 		const store = this.nodeLocalStore;
 		this.nodeLocalStore = null;
-		const journals = [...this.journals.values()];
-		this.journals.clear();
-		const blockStores = [...this.blockStores.values()];
-		this.blockStores.clear();
+		const storages = [...this.storages.values()];
+		this.storages.clear();
 		const open = [...this.databases.values()];
 		this.databases.clear();
 		if (store) await closeLogged('the node-local store', store);
-		for (const journal of journals) await closeLogged('an offline journal', journal);
-		for (const blocks of blockStores) await closeLogged('a block storage', blocks);
+		// Node storage before handles: each commits what its stores hold and releases its cache-pool
+		// claim, which a closed handle would make impossible.
+		for (const storage of storages) await closeLogged('a scope\'s node storage', storage);
 		for (const db of open) await closeLogged('a database', db);
+	}
+
+	/** The scope's node storage, opening its database and its three stores on first use. */
+	private scopeStorage(scope: string): OpenNodeStorage {
+		let storage = this.storages.get(scope);
+		if (!storage) {
+			storage = levelDbNodeStorage(this.database(this.names.storagePrefix + scope));
+			this.storages.set(scope, storage);
+		}
+		return storage;
 	}
 
 	/** The open database of this name, opening it on first use: one native handle per name. */

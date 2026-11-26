@@ -113,6 +113,7 @@ Passed to `createPhoneNode` and fixed for the app's lifetime. `PhoneNodePlatform
 | `secureStore` | required | `expo-secure-store`, or an adapter with the same three methods (see [Key store and node-local records](#key-store-and-node-local-records)). |
 | `secureStoreOptions` | none | One options object for the identity, the owner key and the anchor. Use `{ keychainAccessible: AFTER_FIRST_UNLOCK }` and no `requireAuthentication`. |
 | `leveldb` | required | rn-leveldb's two constructors and its `destroyDB`, as under [First run](#first-run). |
+| `storageAllotmentBytes` | 2 GiB (`DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES`) | How many bytes of the device each network the node serves may use. LevelDB reports no free space, so the figure is declared rather than measured ([The storage allotment](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node-storage.md#the-storage-allotment)). |
 | `names` | `DEFAULT_PHONE_NODE_NAMES` | Database prefix, node-local database name and record keys. Renaming one orphans installed phones' records. |
 | `transports` | WebSockets and circuit relay | A function of the relay addresses. An app with WebRTC adds `webRTC({ rtcConfiguration: { iceServers: resolveStunServers(relayAddrs) } })`. |
 | `listenAddrs` | `[]` (accepts nothing but a relayed connection) | A function of the relay addresses. An app with WebRTC passes the kit's `webrtcListenAddrs`, which names `/webrtc` whenever the phone has a relay, so a peer can open a direct connection to it. |
@@ -536,7 +537,7 @@ The LevelDB names are the defaults (`DEFAULT_PHONE_NODE_NAMES`), which the `name
 | Secure store | `sereus.anchor.<party>` | The party's trusted-owner anchor |
 | Secure store | `sereus.provider-tokens.<provider>` | One provider's tokens |
 | LevelDB | `sereus-node-local` | The saved start and the other node-local records |
-| LevelDB | `sereus-<scope>` | One per storage scope: the control database and each strand |
+| LevelDB | `sereus-<scope>` | One per storage scope — the control database and each strand — holding that scope's blocks, its node-local records, its blob pieces and, for a strand, its offline queue |
 
 [Where node state is kept](https://github.com/gotchoices/sereus/blob/master/docs/platforms/react-native.md#where-node-state-is-kept) lists every record and what survives a reinstall.
 

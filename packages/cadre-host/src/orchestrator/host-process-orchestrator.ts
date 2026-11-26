@@ -904,8 +904,11 @@ export class HostProcessOrchestrator implements Orchestrator {
       cfg.storage = {
         type: 'file',
         path: join(workdir, 'storage'),
+        // The management API's own field name is kept (renaming it is an API change); what it
+        // means in the child's config is the node's storage allotment, which bounds each network
+        // that node serves rather than the node's total (docs/hosting/cadre-host.md).
         ...(req.resources?.storageQuotaBytes !== undefined
-          ? { quotaBytes: req.resources.storageQuotaBytes }
+          ? { allotmentBytes: req.resources.storageQuotaBytes }
           : {}),
       };
     }

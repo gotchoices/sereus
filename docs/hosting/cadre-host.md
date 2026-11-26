@@ -126,6 +126,8 @@ The directory must persist: the owner's cadre admitted one specific peer id, and
 
 ### Child configuration
 
+The storage limit an admin sets for a hosted node (`resources.storageQuotaBytes` in the create request) becomes that node's `storage.allotmentBytes`, which bounds **each** network the node serves rather than the node's total: a hosted node running several strands can hold more than the figure in total ([The storage allotment](../cadre/node-storage.md#the-storage-allotment)). The node's working directory is on the host's own filesystem, whose free space bounds it too.
+
 A child takes its configuration only from its own `cadre.json` and the variables the orchestrator sets for it. `cadre-cli` lets `CADRE_*` environment variables override the config file, and a child inherits the manager's environment, so one `CADRE_PARTY_ID` set on the manager would reconfigure every node. `HostProcessOrchestrator` therefore removes every `CADRE_`-prefixed variable from the inherited environment before adding the per-child ones.
 
 ### Ports

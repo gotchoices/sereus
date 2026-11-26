@@ -14,7 +14,7 @@ createEdgeNode({
 	keyStore: nodeLocalKeyStore(openNodeLocal),
 	storage: {
 		id: 'sereus-web',
-		rawStorage: (scope) => lazyRawStorage(() => openStore(scope), durability),
+		nodeStorage: (scope) => openNodeStorage(scope),
 		offlineJournal: (scope) => openJournal(scope),
 		destroyScope: (scope) => deleteStore(scope),
 		nodeLocal: () => nodeLocal,
@@ -30,7 +30,7 @@ createEdgeNode({
 });
 ```
 
-- **A key store and storage over IndexedDB.** `@optimystic/db-p2p-storage-web` provides the block store (`IndexedDBRawStorage`), a key-value store (`IndexedDBKVStore`) and the opener (`openOptimysticWebDb`). The page adds the glue between them and the edge node ([Storage](#storage)).
+- **A key store and storage over IndexedDB.** `@optimystic/db-p2p-storage-web` provides the opener (`openOptimysticWebDb`), the one call that opens all of a scope's node storage over the handle it returns (`indexedDbNodeStorage`), and the key-value store the page's own node-local slots are built on (`IndexedDBKVStore`). The page adds the glue between them and the edge node ([Storage](#storage)).
 - **Browser transports.** WebSockets and the circuit-relay transport, plus the two WebRTC transports if relayed connections should upgrade to direct ones ([Transport and reachability](#transport-and-reachability)). When `transports` is omitted the edge node uses WebSockets and circuit relay only.
 - **Relay addresses, if the tab is to be reachable.** The start option `relayAddrs` names the relays the node reserves on. How the page obtains the addresses is its own choice.
 - **Two polyfills, loaded before any other module,** and a handful of bundler aliases ([Bundling](#bundling)).
@@ -43,21 +43,23 @@ createEdgeNode({
 
 cadre-core asks for storage by scope key: `controlStorageScope(partyId)` for the control database and the strand id for each strand ([Storage](../cadre/node.md#storage)). Every key is within `[a-z0-9._-]`, so the reference app's `src/lib/strand-storage.ts` concatenates it into a database name, `sereus-strand-<key>`, without escaping.
 
-The bridge exists because the two sides disagree about timing. `EdgeNodeStorage.rawStorage` is synchronous, while `IndexedDBRawStorage` wraps a database handle that is already open, and opening is asynchronous. The platform therefore returns cadre-core's `lazyRawStorage` over an opener:
+The bridge exists because the two sides disagree about timing: `indexedDbNodeStorage` takes a handle that is already open, and opening is asynchronous. `EdgeNodeStorage.nodeStorage` is asynchronous too, so the platform simply opens the database and then the storage over it.
 
+- **One call opens all of a scope's storage.** `indexedDbNodeStorage` returns the scope's blocks, the node-local records the node must keep across a reload (its blob records, the owed-blob and under-replication ledgers, the clock's high-water mark and its transaction state) and the blob pieces this tab holds. The three share the handle, so the byte count the block store reports — the origin's estimate — measures all of it.
 - **A database opens on its first use.** Nothing is opened ahead of a start, and a strand that the control database lists gets storage the same way as one the page adds.
-- **One handle and one store per scope key.** `openHandle` shares an open that is in flight, so a strand's first read and first write do not open the database twice. The handle and its `IndexedDBRawStorage` are cached until the edge node's stop closes them (`closeStores`, the platform's `EdgeNodeStorage.close`).
-- **Durability is stated before the open.** `lazyRawStorage` is asked for the store's `durability` before any database exists, so the platform reports what `IndexedDBRawStorage` will report: `'power-loss'` where the browser honours strict transactions (`supportsStrictDurability()`), otherwise `'process-crash'`.
-- **A strand's offline journal shares the strand's database.** `EdgeNodeStorage.offlineJournal` returns one `IndexedDBKVStore` over the same handle, kept in the database's `kv` object store. One instance per key, because the store serves its unflushed writes from memory and a second instance would not see them ([Offline mode](../strands/writes.md#offline-mode)).
-- **Deleting a scope deletes its database.** `destroyScope` closes the page's handle and calls `indexedDB.deleteDatabase`. If another tab still has the database open the browser reports `blocked`; `deleteStore` then throws `StoreDeleteBlockedError` instead of waiting, and the browser completes the deletion when that tab closes.
+- **One handle and one set of stores per scope key.** `openHandle` shares an open that is in flight, so a strand's first read and first write do not open the database twice. The handle and its node storage are cached until the edge node's stop closes them (`closeStores`, the platform's `EdgeNodeStorage.close`), node storage first so each store commits what it holds through a handle still open.
+- **The store reports its own durability.** `'power-loss'` where the browser honours strict transactions, otherwise `'process-crash'` — the store is asked after it exists, so the page states nothing.
+- **A strand's offline journal is the strand's own key-value store.** `EdgeNodeStorage.offlineJournal` returns that scope's `kv` rather than a second store over its handle: Optimystic declares the journal's key prefix among the node's own key-value namespaces so one store serves both, and two stores over one handle would not see each other's unflushed writes ([Offline mode](../strands/writes.md#offline-mode)).
+- **Deleting a scope deletes its database.** `destroyScope` closes the scope's node storage and then the page's handle, and calls `indexedDB.deleteDatabase`. If another tab still has the database open the browser reports `blocked`; `deleteStore` then throws `StoreDeleteBlockedError` instead of waiting, and the browser completes the deletion when that tab closes.
+- **No storage allotment is declared, deliberately.** IndexedDB reports the origin's own storage estimate, so each node measures against what the browser actually grants this origin; a figure the page made up could only be wrong in one direction or the other ([The storage allotment](../cadre/node-storage.md#the-storage-allotment)).
 
 ### Which database holds what
 
 | Database | Holds |
 |---|---|
 | `sereus-strand-control` | The tab's node-local records, in the `kv` object store: the key store and the edge node's records. One per origin. |
-| `sereus-strand-control-<hex of the party id>` | One party's control database blocks. |
-| `sereus-strand-<strand id>` | One strand's blocks and, in `kv`, the transactions offline mode has queued. |
+| `sereus-strand-control-<hex of the party id>` | One party's control database blocks, its blob pieces, and in `kv` the node's own records. |
+| `sereus-strand-<strand id>` | One strand's blocks, its blob pieces, and in `kv` the node's own records and the transactions offline mode has queued. |
 
 The first row is not a storage scope, although its name resembles the second. It holds what the node reads before it knows its party, so it cannot be named after the party. `src/lib/node-local-slots.ts` builds two stores over its `kv` object store:
 

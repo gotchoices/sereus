@@ -67,7 +67,15 @@ export interface CliConfig {
   storage?: {
     type: 'memory' | 'file';
     path?: string;
-    quotaBytes?: number;
+    /**
+     * How many bytes of this machine each network this node serves may use, passed to every node
+     * the process builds as `StorageConfig.allotmentBytes`. It bounds one network's share, not the
+     * machine: see `CadreNodeConfig.storage.allotmentBytes` in `@serfab/cadre-core`. Left out on a
+     * `file` store, the node measures against the free space the filesystem reports instead. A
+     * `memory` store may not have one at all — nothing measures it, so the validator refuses the
+     * key rather than letting the node drop it (`storageCrossFields` in `schema.ts`).
+     */
+    allotmentBytes?: number;
   };
 
   /** Network configuration */

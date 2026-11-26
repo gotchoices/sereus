@@ -30,10 +30,12 @@ import {
   nonNegativeNumber,
   objectOf,
   oneOf,
+  positiveInteger,
   positiveNumber,
   refine,
   secretString,
   stringValue,
+  type ValidationContext,
   validateTree,
 } from '@serfab/config-check';
 import { describeThrown } from '@serfab/cadre-core';
@@ -120,22 +122,54 @@ const strandReactivity = objectOf<Block<'strandReactivity'>>(
   { required: ['enabled'] },
 );
 
+// NOTE: transitional, as RETIRED_IDENTITY_KEYS is — a pointed error for a config still naming
+// the key the allotment replaced, instead of a bare "unknown key". Deletable once no config in
+// circulation names it.
+const RETIRED_STORAGE_KEYS = new Map<string, string>([
+  ['quotaBytes', "renamed to 'allotmentBytes', and now read: it bounds each network this node serves"],
+]);
+
 const storage = refine(
   objectOf<Block<'storage'>>(
     {
       type: oneOf<Block<'storage'>['type']>({ memory: true, file: true }),
       path: nonEmptyString,
-      quotaBytes: nonNegativeInteger,
+      // Above zero, not merely non-negative: Optimystic throws when a node is constructed with an
+      // allotment of zero, so `config-check` refuses it here, where the message names the file.
+      allotmentBytes: positiveInteger,
     },
-    { required: ['type'] },
+    { required: ['type'], retired: RETIRED_STORAGE_KEYS },
   ),
-  // Cross-field: a file store needs somewhere to put the files. `openNodeStorage` checks
-  // this too, without naming the file; this check runs first.
-  (value, keyPath, ctx) =>
-    value.type === 'file' && value.path === undefined
-      ? ctx.missing(`${keyPath}.path`, `when ${keyPath}.type is 'file'`)
-      : value,
+  storageCrossFields,
 );
+
+/**
+ * The storage block's cross-field rules.
+ *
+ * A file store needs somewhere to put the files; `openNodeStorage` checks that too, without naming
+ * the file, and this check runs first.
+ *
+ * A memory store may not name an allotment. `openNodeStorage` passes none for memory — nothing
+ * measures a memory store's free space, so a memory node measures nothing, which is what a
+ * throwaway node should do — and a key that is quietly dropped is the thing this validator exists
+ * to prevent.
+ */
+function storageCrossFields(
+  value: Block<'storage'>,
+  keyPath: string,
+  ctx: ValidationContext,
+): Block<'storage'> | undefined {
+  if (value.type === 'file' && value.path === undefined) {
+    return ctx.missing(`${keyPath}.path`, `when ${keyPath}.type is 'file'`);
+  }
+  if (value.type === 'memory' && value.allotmentBytes !== undefined) {
+    return ctx.fail(
+      `${keyPath}.allotmentBytes`,
+      `${keyPath}.allotmentBytes cannot be set when ${keyPath}.type is 'memory': nothing measures a memory store, so the node would ignore it.`,
+    );
+  }
+  return value;
+}
 
 const network = refine(
   objectOf<Block<'network'>>({

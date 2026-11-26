@@ -13,12 +13,14 @@
  *   anchor, bootstrap peers, enrolled-machine count and strand network state) in its `s_val`
  *   column. It cannot be party-scoped: the party id is read out of it.
  * - **`sereus-<scope>`**, one per cadre-core storage scope: the party's control database and each
- *   strand's, opened on first use and closed by every stop.
+ *   strand's, opened on first use and closed by every stop. Each holds all of that scope's node
+ *   storage — its blocks, the node's own key-value records, its blob pieces and, for a strand, its
+ *   offline journal.
  */
 import { DEFAULT_IDENTITY_KEY_ID, KeyStoreAccessError, type KeyId, type KeyStore } from '@serfab/cadre-core';
 import {
 	createEdgeNode,
-	lazyRawStorage,
+	DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES,
 	type EdgeNode,
 	type EdgeNodePlatform,
 	type EdgeNodeStorage,
@@ -27,11 +29,12 @@ import {
 import {
 	DEFAULT_PEER_KEY_NAME,
 	openOptimysticNSDb,
+	sqliteNodeStorage,
 	SqliteKVStore,
-	SqliteRawStorage,
 	syncSqliteDb,
 	type OptimysticNSDBHandle,
 } from '@optimystic/db-p2p-storage-ns';
+import type { IKVStore, NodeStorage, OpenNodeStorage } from '@optimystic/db-p2p';
 import { deleteDatabase } from '@nativescript-community/sqlite';
 import { nsDbPath } from './ns-db-path';
 
@@ -147,10 +150,10 @@ function sqliteKeyStore(open: () => Promise<OptimysticNSDBHandle>): KeyStore {
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 
-/** A scope's database and the one block store over it. */
+/** A scope's database and all of the node storage over it. */
 interface ScopeDb {
 	db: OptimysticNSDBHandle;
-	storage: SqliteRawStorage;
+	storage: OpenNodeStorage;
 }
 
 /**
@@ -162,18 +165,26 @@ interface ScopeDb {
  * NOTE: `SqliteRawStorage.listBlockIds` reads every block id into memory before yielding, and runs
  * at node startup and at each peer join. Cost on a large phone database is unmeasured; if either is
  * seen stalling, the upstream statement needs to page.
+ *
+ * `sqliteNodeStorage` opens the blocks, the node's own key-value records and the blob pieces over
+ * this one handle, and asserts that all three report one store identity, so everything the node
+ * keeps is inside the one file its block store measures.
  */
 async function openScopeDb(name: string): Promise<ScopeDb> {
 	const db = await openOptimysticNSDb(nsDbPath(name));
-	return { db, storage: new SqliteRawStorage(db) };
+	return { db, storage: sqliteNodeStorage(db) };
 }
 
 /**
- * The edge node's storage. `rawStorage` hands out a fresh lazy proxy per call over one open per
- * database name (cadre-core asks once per scope per runtime, and again after a strand stops), so
- * every proxy over a scope shares one connection and its prepared statements until `close`.
- * No `trustedOwnerSlot`: the anchor is the node-local record `trusted-owners.<partyId>`, the key
- * this app has always written, beside the identity it qualifies.
+ * The edge node's storage: one open per database name (cadre-core asks once per scope per runtime,
+ * and again after a strand stops), so every caller for a scope shares one connection, its prepared
+ * statements and one set of stores until `close`. No `trustedOwnerSlot`: the anchor is the
+ * node-local record `trusted-owners.<partyId>`, the key this app has always written, beside the
+ * identity it qualifies.
+ *
+ * `allotmentBytes` is declared because SQLite reports no free space of its own: a node with neither
+ * an allotment nor a measuring backend cannot tell how full it is and acts on nothing
+ * (`docs/cadre/node-storage.md` → "The storage allotment").
  */
 function nsEdgeStorage(identity: SharedOpen<IdentityDb>): EdgeNodeStorage {
 	const scopes = new Map<string, SharedOpen<ScopeDb>>();
@@ -185,11 +196,16 @@ function nsEdgeStorage(identity: SharedOpen<IdentityDb>): EdgeNodeStorage {
 		}
 		return open;
 	};
+	const scopeStorage = async (key: string): Promise<OpenNodeStorage> =>
+		(await scope(scopeDbName(key)).get()).storage;
 	return {
 		id: NS_STORAGE_ID,
-		// `'power-loss'` is what `SqliteBatchBackend` fixes for every SQLite store, stated here
-		// because the proxy is read before any open.
-		rawStorage: (key) => lazyRawStorage(async () => (await scope(scopeDbName(key)).get()).storage, 'power-loss'),
+		allotmentBytes: DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES,
+		nodeStorage: (key): Promise<NodeStorage> => scopeStorage(key),
+		// That scope's OWN key-value store, never a second one over its database: Optimystic declares
+		// the journal's key prefix among the node's own key-value namespaces so one store serves both,
+		// and `sqliteNodeStorage` flushes it on close.
+		offlineJournal: async (key): Promise<IKVStore> => (await scopeStorage(key)).kv,
 		async destroyScope(key) {
 			const name = scopeDbName(key);
 			await closeScopeDb(name, await scopes.get(name)?.take());
@@ -226,10 +242,14 @@ async function closeIdentityDb(opened: IdentityDb | undefined): Promise<void> {
 	await logFailure(`closing ${IDENTITY_DB_NAME}`, () => opened.db.close());
 }
 
-/** Apply and sync what the block store still holds, then close its database; failures are logged. */
+/**
+ * Flush and apply what the scope's stores still hold, then close its database; failures are logged.
+ * Node storage first: it flushes the pieces and the key-value store and closes the block store,
+ * all of which write through the connection the second step closes.
+ */
 async function closeScopeDb(name: string, opened: ScopeDb | undefined): Promise<void> {
 	if (!opened) return;
-	await logFailure(`closing the block store of ${name}`, () => opened.storage.close());
+	await logFailure(`closing the node storage of ${name}`, () => opened.storage.close());
 	await logFailure(`closing ${name}`, () => opened.db.close());
 }
 

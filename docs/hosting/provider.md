@@ -167,6 +167,12 @@ A hosted node's peer id must survive a container restart. A node that comes back
 - **Other node-local state uses the same volume.** The node-state directory defaults to `/data`, so the saved peer addresses, the trusted-owner anchor and the claim record persist with the key ([Node-local state](../cadre/node.md#node-local-state)).
 - **The volume is deleted with the container.** Terminating a container removes the container and then its named volume, as cadre-host deletes a hosted node's working directory. Renewing a lapsed subscription therefore does not bring a stopped node back; the customer rents a new one.
 
+### The tenant's storage quota
+
+A tenant's `resources.storageQuotaBytes` reaches the container as `CADRE_STORAGE_ALLOTMENT`, the node's storage allotment. The allotment bounds **each** network the node serves rather than the container's total, so a container running several strands can hold more than the quota in total ([The storage allotment](../cadre/node-storage.md#the-storage-allotment)).
+
+**The volume is the enforcement; the allotment is the declaration.** A provider that must hold a tenant to its quota sizes the Docker volume to it: the file backend reports the volume's free space, and each node measures against the smaller of that and its allotment, so a full volume stops every node in the container whatever the allotment says.
+
 ## How the provider tracks a container
 
 A container record moves through `pending`, `creating`, `enrolling` and `running`, and ends at `stopped` (through `stopping`) or `error`. The provider writes the record before it starts provisioning and advances it before each call to Docker, so a provider process that dies in between leaves a record that no running code will finish. The wait that follows a create and a periodic sweep resolve such records. Both are in `ContainerService` (`packages/cadre-provider/src/service/container-service.ts`), whose comments hold the per-case rules.

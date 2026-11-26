@@ -36,9 +36,9 @@ import { assertUppercaseDriveLetter } from '../../../test-harness/working-direct
  * reach `cadre-cli` and `cadre-host` list for.
  *
  * `@optimystic/db-p2p-storage-web` is listed because `node-local-slots.ts` reads its
- * durability probe at runtime and `strand-storage.ts` constructs its `IndexedDBRawStorage`,
- * so both specs run its `dist`; it is also a declared, link-resolved dependency the
- * drift spec checks against the manifest.
+ * durability probe at runtime and `strand-storage.ts` opens each scope's storage through its
+ * `indexedDbNodeStorage`, so both specs run its `dist`; it is also a declared, link-resolved
+ * dependency the drift spec checks against the manifest.
  */
 export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },

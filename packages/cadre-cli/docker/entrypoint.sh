@@ -70,9 +70,9 @@ storage:
   path: ${CADRE_STORAGE_PATH:-$DATA_DIR/storage}
 EOF
 
-  # Add quota if specified
-  if [ -n "$CADRE_STORAGE_QUOTA" ]; then
-    echo "  quotaBytes: $CADRE_STORAGE_QUOTA" >> "$CADRE_CONFIG_FILE"
+  # Add the storage allotment if specified
+  if [ -n "$CADRE_STORAGE_ALLOTMENT" ]; then
+    echo "  allotmentBytes: $CADRE_STORAGE_ALLOTMENT" >> "$CADRE_CONFIG_FILE"
   fi
 
   # Add network configuration

@@ -74,11 +74,13 @@ strandFilter: all
 # claim:
 #   secretFile: /var/lib/cadre/claim.secret
 
-# Storage configuration (for a server node)
+# Storage configuration (for a server node). allotmentBytes is how much of this machine
+# EACH network this node serves may use, not the machine's total: with N strands running,
+# the node can hold up to (N+1) times it. The filesystem's own free space bounds it too.
 storage:
   type: file
   path: ./data
-  quotaBytes: 10737418240  # 10 GB
+  allotmentBytes: 10737418240  # 10 GB
 
 # Network configuration (optional)
 network:

@@ -303,7 +303,7 @@ The table lists every per-machine record, keys and block stores included, for `c
 | Dial targets, machine count, strand network state | `bootstrap-peers`, `enrolled-machines` and `strand-network` files beside the anchor | LevelDB database `sereus-node-local` | Same table | Same store |
 | Joined-strand records | In memory | Secure store | Same table | Same store |
 | Saved start | Not used | `sereus-node-local` | Same table | Same store |
-| Block stores | `storage.path/<scope>` | LevelDB database `sereus-<scope>` | SQLite database `sereus-<scope>` | IndexedDB database `sereus-strand-<scope>` |
+| A scope's node storage: blocks, the node's own key-value records, blob pieces | Directory `storage.path/<scope>` (`fileNodeStorage`) | LevelDB database `sereus-<scope>` (`levelDbNodeStorage`) | SQLite database `sereus-<scope>` (`sqliteNodeStorage`) | IndexedDB database `sereus-strand-<scope>` (`indexedDbNodeStorage`) |
 
 - **`cadre-cli` keeps its files in the state directory**: `nodeState.dir` (or `CADRE_NODE_STATE_DIR`), defaulting to the directory that holds the config file. It also holds the claim record `claim.json` ([cadre-cli README](../../packages/cadre-cli/README.md)).
 - **`cadre-host` and provider nodes are `cadre-cli` processes** that hold no owner key. `cadre-host` gives each node a directory of its own and deletes it with the node ([Hosted nodes](../hosting/cadre-host.md#hosted-nodes)). A provider mounts a named Docker volume at `/data` and deletes it with the container ([Durable container identity](../hosting/provider.md#durable-container-identity)).
