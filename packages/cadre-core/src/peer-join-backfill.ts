@@ -182,9 +182,9 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // admitted it and the store is listable. A refusal does not hold that back, since it is
 // remembered per block. It stays caught up until its last connection closes
 // (`peer:disconnect`): `peer:identify` churn for a connected, caught-up peer is dropped before
-// any work, and a reconnect re-runs past the debounce, pushing only what the memo and the
-// proofs do not cover. Two things run past `done`, with the same per-block skips: a
-// commit-driven run, which offers only the blocks it owes that peer, and
+// any work unless blocks are owed to it, and a reconnect re-runs past the debounce, pushing
+// only what the memo and the proofs do not cover. Two things run past `done`, with the same
+// per-block skips: a commit-driven run, which offers only the blocks it owes that peer, and
 // {@link PeerJoinBackfill.forceCatchUpPeer}, which offers the whole store. Neither clears
 // `done` — `forgetCaughtUp` keeps sole ownership of it.
 //
@@ -195,7 +195,9 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // happen) is not de-scheduled; `runCatchUp`'s own unreachable-peer bail is what would catch
 // that case instead. `peer:identify` also fires on every identify-push from a connected peer
 // (address or protocol changes), which only re-enters the debounce — cheap, and dropped
-// outright for caught-up peers and peers inside a backoff wait.
+// outright for peers inside a backoff wait and for caught-up peers with nothing owed. A
+// caught-up peer WITH blocks owed is scheduled by it, and never has its armed timer re-set, so
+// churn cannot postpone a delta delivery (see {@link PeerJoinBackfill.schedulePeer}).
 //
 // NOTE: a same-network peer whose identify never completes on a connection (the identify
 // stream times out over a slow relayed link, say) is not caught up until a later identify
@@ -449,6 +451,16 @@ function emptyChunk(): Chunk {
   return { blocks: {}, meta: {}, proofs: {}, bytes: 0 };
 }
 
+/** `map`'s value for `key`, inserting what `make` builds when there is none yet. */
+function getOrCreate<K, V>(map: Map<K, V>, key: K, make: () => V): V {
+  let value = map.get(key);
+  if (value === undefined) {
+    value = make();
+    map.set(key, value);
+  }
+  return value;
+}
+
 /**
  * Copies every block in one network's own raw store to each peer its libp2p node connects
  * to, so a peer that joined the network after blocks were committed still ends up holding
@@ -579,12 +591,7 @@ export class PeerJoinBackfill {
 
   /** This peer's owed-block set, created empty on first use. */
   private owedFor(key: string): Set<BlockId> {
-    let owed = this.owed.get(key);
-    if (!owed) {
-      owed = new Set();
-      this.owed.set(key, owed);
-    }
-    return owed;
+    return getOrCreate(this.owed, key, () => new Set());
   }
 
   /**
@@ -720,15 +727,17 @@ export class PeerJoinBackfill {
    * turn still collapses, and no work happens inside the libp2p or storage event dispatch). The
    * run's KIND is decided when the timer fires ({@link runFor}), not here.
    *
-   * `keepPendingTimer` is what the commit-driven trigger passes. Re-setting an armed timer is the
-   * right settle behaviour for connection churn, which is a burst that should collapse to one run
-   * at its end; under a steady write stream it would postpone delivery indefinitely instead. The
-   * owed set grows while the already-armed timer runs down, and the run that fires carries
-   * everything in it.
+   * Re-setting an ARMED timer is the right settle behaviour only for a burst that should collapse
+   * to one run at its end, which is what connection churn is. Two schedules must leave an armed
+   * timer alone instead, or delivery is postponed for as long as they keep arriving: the
+   * commit-driven trigger (`keepPendingTimer`), and anything scheduling over a pending `delta` run
+   * — a delta's owed set only grows, so the run that eventually fires carries everything added
+   * while its timer ran down.
    */
   private schedulePeer(peerId: PeerId, opts: { keepPendingTimer?: boolean } = {}): void {
     const key = peerId.toString();
-    if (this.stopped || this.runFor(key) === 'none') return;
+    const kind = this.runFor(key);
+    if (this.stopped || kind === 'none') return;
     if (this.inFlight.has(key)) {
       // Defer rather than drop: the running pass may already be past its gate check (or
       // past the block this schedule was meant to carry), so replay it when that pass ends.
@@ -743,7 +752,7 @@ export class PeerJoinBackfill {
     if (retryAt !== undefined && Date.now() < retryAt) return;
     const existing = this.timers.get(key);
     if (existing) {
-      if (opts.keepPendingTimer) return;
+      if (opts.keepPendingTimer || kind === 'delta') return;
       clearTimeout(existing);
     }
     const delayMs = this.contacted.has(key) ? this.config.debounceMs : 0;
@@ -824,9 +833,11 @@ export class PeerJoinBackfill {
       // NOTE: a run that hit `maxBlocks` is still "clean" and still marks the peer caught up,
       // so no `peer:identify` run reaches the tail past the ceiling. Loud in the log below
       // (capped > 0). Blocks the peer is known to hold are not offered and do not count toward
-      // the ceiling, so a forced run resumes past the prefix already sent. If a store can
-      // realistically exceed maxBlocks, leave a capped run out of `done` so each identify run
-      // sends the next `maxBlocks`.
+      // the ceiling, so a forced run resumes past the prefix already sent. The same tradeoff
+      // reaches `clearOwed`: a capped run drops the owed ids it never reached, so those
+      // revisions wait for the peer's next reconnect rather than a delta run of their own. If a
+      // store can realistically exceed maxBlocks, leave a capped run out of `done` AND out of
+      // `clearOwed` so each identify run sends the next `maxBlocks`.
       if (clean && !this.stopped) {
         this.clearOwed(key, worked);
         // A disconnect mid-run cleared `done` already; re-adding it would drop the reconnect.
@@ -909,12 +920,7 @@ export class PeerJoinBackfill {
 
   /** This peer's memo, created empty on first use. */
   private memoFor(key: string): PeerMemo {
-    let memo = this.memos.get(key);
-    if (!memo) {
-      memo = { accepted: new Map(), rejected: new Map() };
-      this.memos.set(key, memo);
-    }
-    return memo;
+    return getOrCreate(this.memos, key, () => ({ accepted: new Map(), rejected: new Map() }));
   }
 
   /**

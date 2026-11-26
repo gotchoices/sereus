@@ -1098,6 +1098,32 @@ describe('PeerJoinBackfill', () => {
     backfill.stop();
   });
 
+  it('delivers a commit to a caught-up peer whose identify keeps re-firing', async () => {
+    // `peer:identify` fires on every identify-push from a connected peer (an address or protocol
+    // change), and re-setting the armed timer on each would postpone the delta run's delivery for
+    // as long as the churn lasted — the owed set only grows, so there is nothing to collapse.
+    const blocks: Record<string, FakeBlock> = { b1: committed('b1', 1) };
+    const feed = makeChangeFeed();
+    const { backfill, pushes, fake } = makeBackfill(blocks, { debounceMs: 60 }, { subscribeStorageChanges: feed.subscribe });
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 1);
+
+    blocks.b1 = committed('b1', 2);
+    feed.commit(['b1'], 2);
+    // Churn well inside the settle window, so each event lands on a timer that is still armed.
+    const churn = setInterval(() => fake.dispatchConnectionOpen(peer('p1')), 10);
+    try {
+      await until(() => pushes.length === 2, 500);
+    } finally {
+      clearInterval(churn);
+    }
+    expect(pushes[1]!.ids).toEqual(['b1']);
+
+    backfill.stop();
+  });
+
   it('never dials, re-arms, or warns about a peer whose identify omits the block-transfer protocol, while a speaking peer is caught up normally', async () => {
     // gotchoices/sereus#18: a relay is a connected peer of every strand node but speaks no
     // `/optimystic/strand-<id>/…` protocol, so a push to it can never land. Before this

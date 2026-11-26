@@ -1288,6 +1288,7 @@ export class StrandInstanceManager {
       // move to one shared listener that dispatches by strand id.
       if (backfillArms) {
         if (node.keyNetwork) {
+          const storageRepo = node.storageRepo;
           const backfill = new PeerJoinBackfill({
             label: strandId,
             libp2p: node,
@@ -1303,8 +1304,7 @@ export class StrandInstanceManager {
             // The second trigger: a revision this node commits while a peer stays connected and
             // caught up is re-offered to it. Only commits are acted on, so a push landing in this
             // store is not bounced back to the peer that sent it — see the module comment.
-            subscribeStorageChanges: node.storageRepo
-              && ((listener) => node.storageRepo!.onAnyCollectionChange(listener))
+            subscribeStorageChanges: storageRepo && ((listener) => storageRepo.onAnyCollectionChange(listener))
           }, {
             // Dial and response deadlines counted in link round trips, not fixed milliseconds:
             // a relayed dial costs a fixed number of exchanges, so a fixed budget has a link
