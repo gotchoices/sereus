@@ -153,24 +153,51 @@ export function captureRawStorage(
 }
 
 /**
+ * `storage.listBlockIds()`, refusing a backend that does not implement it rather than
+ * answering with an empty enumeration — which would make every claim built on it, coverage
+ * and emptiness alike, pass vacuously. Streamed, as the backend streams it.
+ */
+function durableBlockIds(storage: IRawStorage): AsyncIterable<BlockId> {
+	if (!storage.listBlockIds) {
+		throw new BlockStoreProbeError(
+			'raw storage does not implement the optional listBlockIds(); a block index cannot be read from it',
+		);
+	}
+	return storage.listBlockIds();
+}
+
+/**
+ * Every block id this store holds ANY durable state for — a block whose only state is an
+ * uncommitted pending transform included (`IRawStorage.listBlockIds`).
+ *
+ * This, not {@link readBlockIndex}, is what a "this store holds NOTHING" claim must read:
+ * `readBlockIndex` drops blocks with no committed revision, so a store holding pending
+ * transforms answers it with an empty map.
+ *
+ * @throws {BlockStoreProbeError} if the backend does not implement the optional
+ *   `listBlockIds`. Reporting nothing instead would make every assertion built on it pass
+ *   vacuously.
+ */
+export async function readDurableBlockIds(storage: IRawStorage): Promise<BlockId[]> {
+	const ids: BlockId[] = [];
+	for await (const blockId of durableBlockIds(storage)) ids.push(blockId);
+	return ids;
+}
+
+/**
  * Every block this store holds durably, mapped to its latest COMMITTED revision.
  *
  * Blocks whose metadata carries no `latest` are omitted: `savePendingTransaction` seeds
  * metadata for a block that has not committed here, and a pending-only block is not yet a
- * durability claim about this node.
+ * durability claim about this node. {@link readDurableBlockIds} is the unfiltered form.
  *
  * @throws {BlockStoreProbeError} if the backend does not implement the optional
  *   `listBlockIds`. Reporting an empty index instead would make every coverage assertion
  *   built on it pass vacuously.
  */
 export async function readBlockIndex(storage: IRawStorage): Promise<Map<BlockId, ActionRev>> {
-	if (!storage.listBlockIds) {
-		throw new BlockStoreProbeError(
-			'raw storage does not implement the optional listBlockIds(); a block index cannot be read from it',
-		);
-	}
 	const index = new Map<BlockId, ActionRev>();
-	for await (const blockId of storage.listBlockIds()) {
+	for await (const blockId of durableBlockIds(storage)) {
 		const metadata = await storage.getMetadata(blockId);
 		if (metadata?.latest) index.set(blockId, metadata.latest);
 	}

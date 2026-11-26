@@ -84,8 +84,13 @@ const BOOTSTRAP_DISCOVERY_TIMEOUT_MS = 1_000;
  * today's measurement. `control-start-storage-op-budget.spec.ts` pins cold start at
  * 48 operations and fails below half that, so 24 is the lowest count that can reach
  * here without something else going red first. At 50 ms: 24 × 50 ms = 1200 ms at
- * that floor, 48 × 50 ms = 2400 ms as measured today — past the fuse either way, and
- * about 1.5 s of added wall clock for one node.
+ * that floor — past the fuse. Bring-up measured 4,639 ms on 2026-11-26, so more than
+ * 48 operations reach the slow store today; that arithmetic is a floor, not a forecast.
+ *
+ * It is a SOFT floor from here on: the operations that cost 50 ms each are the ones that
+ * MISS the read cache cadre-core now fronts the block store with, not every operation the
+ * budget spec counts (see the NOTE in `harness/slow-raw-storage.ts`). The measured margin
+ * is wide enough that this stays a caution rather than a correction.
  *
  * If optimystic cuts the operation count again, this fails loudly rather than going
  * quietly vacuous, and the fix is to raise the delay — not to lower the assertion.

@@ -287,6 +287,12 @@ async function withOfflineParty(
 		// directory goes. Only files written by this process: no node_modules junctions.
 		await Promise.allSettled(opened.map((storage) => storage.close()));
 		rmSync(home, { recursive: true, force: true });
+		// NOTE: intermittently a run still leaves `home` behind holding one empty directory (seen
+		// once in 8 test executions on 2026-11-26, `storage/<strand>/under-replicated`). A ledger
+		// write lands after both `stop()` and `close()` and recreates the path this line just
+		// removed, so retrying the removal would not catch it. Cost is one empty directory in the
+		// OS temp directory; if that ever matters, or if a post-close write starts throwing where
+		// it is issued, the thing to find is which background task outlives `CadreNode.stop()`.
 	}
 }
 

@@ -151,8 +151,10 @@ export interface ControlNodeOpts {
    * Becomes `storage.open` verbatim — for scenarios that must observe or keep
    * the node's stores, e.g. a `captureRawStorage()` capture's `open`
    * (`block-store-probe.ts`) or storage reused across a stop/restart cycle. Left unset
-   * the default one fresh `memoryNodeStorage()` per scope stands. Mutually exclusive
-   * with {@link storageOpDelayMs}: both answer "what storage does this node get", so
+   * the default stands: one fresh `memoryNodeStorage()` per CALL, so a scope opened a
+   * second time (a strand relaunch, a node restart) starts empty — memoize, as
+   * `captureRawStorage` does, when the second lifetime must read the first's writes.
+   * Mutually exclusive with {@link storageOpDelayMs}: both answer "what storage does this node get", so
    * `controlNodeConfig` throws rather than silently picking one.
    */
   storageProvider?: NodeStorageOpener;

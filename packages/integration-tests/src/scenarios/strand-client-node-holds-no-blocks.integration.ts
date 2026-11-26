@@ -58,6 +58,7 @@ import {
 	createSignedSAppConfig,
 	captureRawStorage,
 	readBlockIndex,
+	readDurableBlockIds,
 	awaitBlockCoverage,
 	readCohort,
 	strandPeerRoles,
@@ -242,8 +243,11 @@ describe('A strand node that holds no blocks', () => {
 			// had somewhere to put blocks and put none there, while the two serving machines
 			// hold every block above.
 			expect(clientCapture.scopes(), "the client's storage was opened for the strand too").toContain(strandId);
-			const clientIndex = await readBlockIndex(clientCapture.forStrand(strandId));
-			expect([...clientIndex.keys()], 'the client stores none of the strand\'s blocks').toEqual([]);
+			// Every id the store holds durable state for, not `readBlockIndex`'s committed ones:
+			// a client that wrote pending transforms into its own block store would still be
+			// holding blocks, and the committed-only form would call that empty.
+			const clientBlockIds = await readDurableBlockIds(clientCapture.forStrand(strandId));
+			expect(clientBlockIds, 'the client stores none of the strand\'s blocks').toEqual([]);
 
 			// ── 4. After that traffic, no serving machine counts the client as serving ──
 			for (const [i, server] of serverNodes.entries()) {

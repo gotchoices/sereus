@@ -1,12 +1,13 @@
 /**
  * A raw-storage backend that sleeps a fixed amount before every operation.
  *
- * Control-database bring-up costs (raw-storage operations issued) × per-operation
- * latency, and the operation count is fixed and known — `control-database.ts`'s
- * `loadSchema` note records it, and `control-start-storage-op-budget.spec.ts` pins
- * it. So multiplying the per-operation latency is a DETERMINISTIC way to make
- * bring-up take a chosen number of seconds, which is what a scenario needs when it
- * wants to prove something about a window bring-up would otherwise flash past.
+ * Control-database bring-up costs (raw-storage operations that reach this store) ×
+ * per-operation latency, and the operation count is fixed and known —
+ * `control-database.ts`'s `loadSchema` note records it, and
+ * `control-start-storage-op-budget.spec.ts` pins it. So multiplying the per-operation
+ * latency makes bring-up take a chosen number of seconds without depending on machine
+ * speed, which is what a scenario needs when it wants to prove something about a window
+ * bring-up would otherwise flash past.
  *
  * The concrete use is `control-bring-up-quiet-period.integration.ts`:
  * `@libp2p/bootstrap` emits its discovery events one second after
@@ -19,10 +20,22 @@
  * streaming methods sleep once and then hand back the underlying iterable, since
  * per-ITEM latency is not what bring-up duration is made of. `whenDurable` waits on
  * the inner storage without sleeping: it issues no operation of its own.
+ *
+ * NOTE: not every bring-up operation reaches this store. cadre-core fronts a scope's block
+ * store with a leased read cache (`node-storage-cache.ts`), which passes a
+ * `MemoryRawStorage` through untouched but NOT this wrapper around one — so a block read
+ * the cache already holds never sleeps, and the count that matters is the operations that
+ * MISS the cache, not the operations issued. The margin is not thin: measured 2026-11-26,
+ * `control-bring-up-quiet-period` at `storageOpDelayMs: 50` brought up in 4,639 ms against
+ * the 1,000 ms bootstrap fuse it has to clear. If that gap ever closes, slow the cache's
+ * own misses rather than raising the delay until the remaining misses add up again —
+ * raising it buys less time than the arithmetic in that scenario's `STORAGE_OP_DELAY_MS`
+ * comment implies.
  */
 
-import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, NodeStorage, StoreDurability, StoredProofEntry } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability, StoredProofEntry } from '@optimystic/db-p2p';
 import { memoryNodeStorage } from '@optimystic/db-p2p';
+import type { NodeStorageOpener } from './node-fixtures.js';
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 
 function sleep(ms: number): Promise<void> {
@@ -180,7 +193,7 @@ export class SlowRawStorage implements IRawStorage {
  * the blob records and the owed-blob ledger, which this option was never about: a scenario
  * asking for a few milliseconds per block operation would silently pay for those as well.
  */
-export function slowMemoryStorageProvider(opDelayMs: number): (scope: string) => Promise<NodeStorage> {
+export function slowMemoryStorageProvider(opDelayMs: number): NodeStorageOpener {
 	return async (_scope: string) => {
 		const storage = memoryNodeStorage();
 		return { ...storage, blocks: new SlowRawStorage(storage.blocks, opDelayMs) };
