@@ -248,6 +248,14 @@ export interface RelayReservationStoreLike {
    */
   getReservation?(peerId: PeerId): { expire: bigint } | undefined;
   relayFilter?: RelayFilterLike;
+  /**
+   * How long libp2p gives ONE `addRelay` call — the relay dial and the RESERVE exchange
+   * together — before aborting it. A plain mutable field on libp2p's store, read per request, so
+   * {@link withReservationCompletionBudget} can bring it under cadre's derivation before the node
+   * starts. Optional for the reason {@link isReservationStore} duck-types on neither this nor
+   * `getReservation`: a libp2p version that renames it must degrade, not break every drive.
+   */
+  reservationCompletionTimeout?: number;
 }
 
 /** The slice of libp2p's circuit-relay transport that owns the reservation store. */
@@ -382,8 +390,85 @@ export function withoutRelayDiscovery(transports: Libp2pTransports): Libp2pTrans
   return transports.map((factory) => (components) => switchOffRelayDiscovery(factory(components)));
 }
 
+/**
+ * `transports` with libp2p's own per-request reservation timeout set to `budgetMs`, for a node
+ * whose bare `/p2p-circuit` slots cadre's supervisors fill. Wrapped per factory and composed with
+ * {@link withoutRelayDiscovery} by `nodeTransportsOption`, for the reason given on that function.
+ *
+ * ⚠️ WHY THIS IS NOT LEFT AT LIBP2P'S DEFAULT. `@libp2p/circuit-relay-v2`'s reservation store
+ * wraps each `addRelay` — the relay dial AND the RESERVE exchange that follows it — in
+ * `AbortSignal.timeout(reservationCompletionTimeout)`, whose default is a flat 5 000 ms
+ * (`DEFAULT_RESERVATION_COMPLETION_TIMEOUT`; the transport's own JSDoc saying 10 000 is stale).
+ * That is a millisecond deadline over the link in the one exchange `link-budget.ts` exists to
+ * derive, and it sits INSIDE cadre's drive deadline: on a link where the two legs cost more than
+ * 5 s the inner cap fires first, `addRelay` rejects with `TimeoutError: The operation was aborted
+ * due to timeout`, the drive polls out the rest of its budget and reports that message, and
+ * `driveControlRelayReservation` fails `start()` outright. So the declaration could be moved to
+ * any value and the node would still be unable to reserve — the symptom
+ * `joiner-first-commit-over-slow-relay` hit as an intermittent start failure on its frame-capped
+ * arms, where the Noise handshake's own queued frames cost seconds before RESERVE is even sent.
+ *
+ * So it is given the SAME budget cadre derives for the whole drive — `relayReservationBudgetMs` at
+ * the node's declaration ({@link DEFAULT_RELAY_RESERVE_TIMEOUT_MS} at the default one), the value
+ * both the control node's drive and each strand supervisor already use. Equal is the point: this
+ * cap bounds strictly less work than that drive, so it can never expire first, and the drive's
+ * single deadline is what gives up — which is what this module documents it as doing. Nothing is
+ * widened either way; a node that declares a FASTER link gets a shorter cap than libp2p's default,
+ * at the same moment its own drive was going to give up regardless.
+ *
+ * NOTE: covers the supervised nodes only. A browser tab driving a hand-written bare
+ * `/p2p-circuit` through `reserveRelays()` with no `network.relayAddrs` builds its transports
+ * unwrapped and keeps the 5 000 ms cap — the same posture as the discovery note on
+ * `CadreNode.reserveRelays`. Give such a tab `relayAddrs` to get both.
+ */
+export function withReservationCompletionBudget(transports: Libp2pTransports, budgetMs: number): Libp2pTransports {
+  return transports.map((factory) => (components) => setReservationCompletionBudget(factory(components), budgetMs));
+}
+
 /** Logged once per process, not per node: every node in it runs the same `@libp2p/circuit-relay-v2`. */
 let reportedDiscoveryFieldMissing = false;
+/** As {@link reportedDiscoveryFieldMissing}, for the reservation store's own timeout field. */
+let reportedCompletionTimeoutFieldMissing = false;
+
+/**
+ * `transport` as libp2p's circuit-relay transport, or `null` for any other transport — duck-typed
+ * by its reservation store, exactly as {@link findCircuitRelayTransport} finds it on a node that
+ * is already running.
+ */
+function asCircuitRelayTransport(transport: unknown): CircuitRelayTransportLike | null {
+  if (typeof transport !== 'object' || transport === null) {
+    return null;
+  }
+  const candidate = transport as { reservationStore?: unknown };
+  return isReservationStore(candidate.reservationStore) ? candidate as CircuitRelayTransportLike : null;
+}
+
+/**
+ * Write `budgetMs` over the reservation store's own per-request timeout when `transport` is the
+ * circuit-relay transport. The store reads the field inside each queued request rather than
+ * capturing it, so a write before `start()` reaches every reservation and every refresh.
+ */
+function setReservationCompletionBudget<T>(transport: T, budgetMs: number): T {
+  const store = asCircuitRelayTransport(transport)?.reservationStore;
+  if (store === undefined) {
+    return transport;
+  }
+  if (typeof store.reservationCompletionTimeout !== 'number') {
+    // Not thrown: a node left on libp2p's default still reserves, just not on a link slower than
+    // that default — see this function's caller for what that costs.
+    if (!reportedCompletionTimeoutFieldMissing) {
+      reportedCompletionTimeoutFieldMissing = true;
+      console.warn(
+        'cadre: the circuit-relay transport\'s reservation store has no `reservationCompletionTimeout` ' +
+        'to raise — the @libp2p/circuit-relay-v2 shape changed. Reservations keep libp2p\'s own flat ' +
+        'timeout, which a link slower than it cannot complete within whatever network.linkRoundTripMs says.'
+      );
+    }
+    return transport;
+  }
+  store.reservationCompletionTimeout = budgetMs;
+  return transport;
+}
 
 /**
  * Clear `transport`'s `discovery` when it is the circuit-relay transport — duck-typed by its
@@ -395,13 +480,10 @@ let reportedDiscoveryFieldMissing = false;
  * peer-store scan.
  */
 function switchOffRelayDiscovery<T>(transport: T): T {
-  if (typeof transport !== 'object' || transport === null) {
+  if (asCircuitRelayTransport(transport) === null) {
     return transport;
   }
-  const candidate = transport as { reservationStore?: unknown; discovery?: unknown };
-  if (!isReservationStore(candidate.reservationStore)) {
-    return transport;
-  }
+  const candidate = transport as { discovery?: unknown };
   if (!Object.prototype.hasOwnProperty.call(candidate, 'discovery')) {
     // Not thrown: a node with discovery left on still works, it is only exposed to the slot theft
     // again — which the `withoutRelayDiscovery` spec in `relay-reservation.spec.ts` reproduces.
@@ -738,8 +820,9 @@ async function requestReservation(
  * Returns `null` on success, or the reason it stopped waiting.
  *
  * Raced rather than passed a signal because `addRelay` accepts none and runs on
- * libp2p's own (much longer) reservation timeout: without the race a drive given
- * 1.5 s would sit on a silent relay for libp2p's timeout instead. The abandoned
+ * libp2p's own reservation timeout — which {@link withReservationCompletionBudget} sets to this
+ * same whole-drive budget, so it can never be the shorter of the two: without the race a drive
+ * given 1.5 s would sit on a silent relay for that budget instead. The abandoned
  * promise stays handled — `Promise.race` attaches its own handlers — so a later
  * rejection is not unhandled, and is not logged either: a request abandoned at a
  * cancellation must not print a relay failure the caller would read as real.

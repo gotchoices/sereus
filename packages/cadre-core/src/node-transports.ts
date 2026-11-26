@@ -4,12 +4,14 @@
  * A node whose bare `/p2p-circuit` search entries cadre generated for configured relays gets its
  * transports through {@link withoutRelayDiscovery}, so libp2p's relay discovery cannot hand those
  * slots to some other relay-capable peer before the per-relay supervisors fill them (see
- * `relay-reservation.ts`, "WHY LIBP2P'S RELAY DISCOVERY IS SWITCHED OFF"). Every other node gets
- * the embedder's list as it was, or — when its listen entries name a transport db-p2p's own
- * default list does not carry — the injected default list unwrapped, or no option at all, and
- * `@optimystic/db-p2p` builds its own default list.
+ * `relay-reservation.ts`, "WHY LIBP2P'S RELAY DISCOVERY IS SWITCHED OFF"), and through
+ * {@link withReservationCompletionBudget}, so the reservation each supervisor drives is bounded by
+ * the declared link rather than by libp2p's flat default. Every other node gets the embedder's
+ * list as it was, or — when its listen entries name a transport db-p2p's own default list does not
+ * carry — the injected default list unwrapped, or no option at all, and `@optimystic/db-p2p`
+ * builds its own default list.
  *
- * The wrapper needs a list to wrap. React Native and browser embedders always supply one
+ * The wrappers need a list to wrap. React Native and browser embedders always supply one
  * (`network.transports`); a Node host supplies the default list through
  * `network.defaultTransports` instead, since db-p2p builds its default internally and it names
  * `@libp2p/tcp`, which this module's graph must not reach (`node-default-transports.ts`).
@@ -17,7 +19,8 @@
 
 import debug from 'debug';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
-import { withoutRelayDiscovery } from './relay-reservation.js';
+import { withReservationCompletionBudget, withoutRelayDiscovery } from './relay-reservation.js';
+import { relayReservationBudgetMs } from './link-budget.js';
 import type { ListenTransportOptions } from './relay-addrs.js';
 import type { NetworkConfig } from './types.js';
 
@@ -26,8 +29,13 @@ const log = debug('sereus:cadre:node-transports');
 /**
  * The `transports` option to spread into a node's `createLibp2pNode` options.
  *
- * Only the supervised case wraps the list: with no cadre-generated `/p2p-circuit` entry there is
- * no slot for libp2p's relay discovery to take, so discovery stays as db-p2p leaves it.
+ * Only the supervised case wraps the list, in both of the ways cadre has to adapt libp2p's
+ * circuit-relay transport for a node whose slots its own supervisors fill: relay discovery off
+ * (`withoutRelayDiscovery`), and the reservation store's per-request timeout derived from the
+ * declared link instead of libp2p's flat default (`withReservationCompletionBudget`, whose doc
+ * comment says what the default costs). With no cadre-generated `/p2p-circuit` entry there is no
+ * slot for discovery to take and no supervisor driving a reservation, so both stay as db-p2p
+ * leaves them.
  *
  * @param listenTransports what the node's resolved listen entries imply (`resolveTransportOptions`
  *   in `relay-addrs.ts`), handed to `network.defaultTransports`.
@@ -44,7 +52,11 @@ export function nodeTransportsOption(
   if (transports === undefined) {
     return {};
   }
-  return { transports: relaySlotsSupervised ? withoutRelayDiscovery(transports) : transports };
+  if (!relaySlotsSupervised) {
+    return { transports };
+  }
+  const reservationBudgetMs = relayReservationBudgetMs(network?.linkRoundTripMs);
+  return { transports: withReservationCompletionBudget(withoutRelayDiscovery(transports), reservationBudgetMs) };
 }
 
 /**

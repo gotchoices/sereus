@@ -49,13 +49,14 @@ vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
 });
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
-// The real `withoutRelayDiscovery`: a relay-configured strand node's transports pass through it
+// The real transport wrappers: a relay-configured strand node's transports pass through both
 // (`node-transports.ts`), and the fake node never calls the factories.
 vi.mock(import('../src/relay-reservation.js'), async (importOriginal) => {
   const actual = await importOriginal();
   return {
     superviseRelayReservation: mocks.superviseRelayReservation as unknown as typeof actual.superviseRelayReservation,
-    withoutRelayDiscovery: actual.withoutRelayDiscovery
+    withoutRelayDiscovery: actual.withoutRelayDiscovery,
+    withReservationCompletionBudget: actual.withReservationCompletionBudget
   };
 });
 

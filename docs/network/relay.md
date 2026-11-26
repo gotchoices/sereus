@@ -88,7 +88,7 @@ libp2p normally fills a pending reservation through its relay discovery, which p
 
 So a node with configured relays is built with relay discovery switched off (`withoutRelayDiscovery`, applied by `nodeTransportsOption` in `node-transports.ts`), and only the supervisors fill its slots. Switching it off needs the node's transport list. React Native and browser embedders already pass one as `network.transports`. A Node.js host passes `nodeDefaultTransports` from the `@serfab/cadre-core/node-default-transports` subpath as `network.defaultTransports`, as cadre-cli does. That list is injected, not built in, because it names `@libp2p/tcp`, which must stay out of React Native and browser bundles.
 
-libp2p has no public API for reserving on one specific relay. `relay-reservation.ts` reaches the circuit-relay transport's reservation store through libp2p's internal layout. Every step of that reach returns an error instead of throwing when the layout is not what it expects, and a unit test pins the layout so that a libp2p upgrade which moves it fails the test suite.
+libp2p has no public API for reserving on one specific relay. `relay-reservation.ts` reaches the circuit-relay transport's reservation store through libp2p's internal layout. The same reach sets that store's own per-request timeout from the declared link, because libp2p bounds each reservation request by a flat default that expires inside the supervisor's deadline on a slow link — see [Opening and keeping a connection](deadlines.md#opening-and-keeping-a-connection). Every step of that reach returns an error instead of throwing when the layout is not what it expects, and a unit test pins the layout so that a libp2p upgrade which moves it fails the test suite.
 
 ### The supervisor
 
